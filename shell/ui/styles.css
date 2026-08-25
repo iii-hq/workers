@@ -2866,3 +2866,58 @@
   border: 0;
   background: color-mix(in srgb, #000 42%, transparent);
 }
+
+/* new file / folder actions beside the tree filter */
+[data-iii-ui="shell"] .shui-tree-filter-shell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+[data-iii-ui="shell"] .shui-tree-filter-shell .shui-tree-filter {
+  flex: 1;
+  min-width: 0;
+}
+[data-iii-ui="shell"] .shui-tree-new-actions {
+  display: flex;
+  gap: 2px;
+}
+[data-iii-ui="shell"] .shui-tree-new-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-tree-new-btn:hover {
+  background: var(--color-surface-active);
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-tree-new-btn svg {
+  width: 14px;
+  height: 14px;
+}
+[data-iii-ui="shell"] .shui-tree-new-row {
+  padding: 4px 8px 6px;
+  border-bottom: 1px solid var(--color-rule-2);
+}
+[data-iii-ui="shell"] .shui-tree-new-row input {
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid var(--color-rule);
+  border-radius: 4px;
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+[data-iii-ui="shell"] .shui-tree-new-error {
+  margin-top: 4px;
+  color: var(--color-warn);
+  font-size: 11px;
+}

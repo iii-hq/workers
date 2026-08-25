@@ -77,6 +77,8 @@ import {
   joinPath,
   type TreeNode,
   workspaceValidate,
+  coderCreateNewFile,
+  shellCreateFolder,
 } from './coder'
 import {
   type EditorCache,
@@ -1361,7 +1363,10 @@ export function ShellExplorerPage({
       .then((turns) => {
         if (cancelled || rootRef.current !== root) return
         setSessionTurns(turns)
-        const latest = turns.find((turn) => turn.file_count > 0) ?? turns[0]
+        // Only a turn that touched files is worth restoring: landing a
+        // chat-switcher on "0 files at 02:55 PM" reads as a broken pane,
+        // where the plain Last Turn default reads as an empty one.
+        const latest = turns.find((turn) => turn.file_count > 0)
         if (!latest || observedReviewKeyRef.current !== null) return
         if (reviewEntriesRef.current.size > 0) return
         const scope = {
@@ -2421,12 +2426,35 @@ export function ShellExplorerPage({
   // Chat-synced roots can be subfolders of a base path — surface the
   // current root as an option so the select never holds a value its
   // options don't contain (and the user can always pop back to a base).
+  // "New file" / "New folder" from the Files tree: root-relative path,
+  // parents created, a new file opens in the editor right away.
+  const createTreeEntry = useCallback(
+    async (kind: 'file' | 'folder', rel: string) => {
+      const currentRoot = rootRef.current
+      if (!currentRoot) return
+      const absPath = joinPath(currentRoot, rel)
+      if (kind === 'folder') {
+        await shellCreateFolder(host, absPath)
+      } else {
+        await coderCreateNewFile(host, absPath)
+      }
+      refreshTree()
+      void refreshGit()
+      if (kind === 'file') pinFile(rel)
+    },
+    [host, refreshTree, refreshGit, pinFile],
+  )
+
   const rootOptions = useMemo(() => {
     if (!info || !root) return []
-    return info.base_paths.includes(root)
+    const bases = info.base_paths.includes(root)
       ? info.base_paths
       : [root, ...info.base_paths]
-  }, [info, root])
+    // The console's remembered working directories (the composer's picker
+    // list) are as reachable here as a chat-synced root; offer them too.
+    const remembered = host.workspace?.recentDirectories() ?? []
+    return [...new Set([...bases, ...remembered])]
+  }, [info, root, host])
 
   const changeTerminalDock = useCallback((next: TerminalDock) => {
     setTerminalOpen(true)
@@ -2759,6 +2787,7 @@ export function ShellExplorerPage({
                   activePath={diff?.change.path ?? tabs.active}
                   onActivateFile={activateFile}
                   onPinFile={pinFile}
+                  onCreate={createTreeEntry}
                 />
               ) : (
                 <SearchTab

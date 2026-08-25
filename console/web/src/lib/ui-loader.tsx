@@ -21,6 +21,7 @@ import { registerPageCommands } from '@/lib/page-commands'
 import { requestPaletteOpen } from '@/lib/palette/open-request'
 import { registerPaletteSource } from '@/lib/palette/providers'
 import { requestPanelOpen } from '@/lib/panel-context'
+import { loadRecentProjects } from '@/lib/storage'
 import { ExtensionScopeProvider } from '@/lib/ui-scope'
 import {
   registerExtConfigForm,
@@ -157,6 +158,11 @@ function makeHost(
         return track(
           registerPageCommands({ pageId, source: 'worker', commands }),
         )
+      },
+    },
+    workspace: {
+      recentDirectories() {
+        return loadRecentProjects()
       },
     },
     palette: {
