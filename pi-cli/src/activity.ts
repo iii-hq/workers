@@ -1,0 +1,216 @@
+/**
+ * pi's extension events in, AgentEvent frames out.
+ *
+ * The extension this worker installs (`src/extension.ts`) posts one flat
+ * event per pi lifecycle callback, and this is where a terminal turn becomes
+ * the same wire shape a headless agent worker emits: a user message, an
+ * assistant message per tool call, a `function_execution_start`/`end` pair
+ * with a real duration, and `turn_end`/`agent_end` when the run finishes. The
+ * console then renders this terminal's turns like any other agent's.
+ *
+ * The function itself is plumbing — one call per event — so it is
+ * `trace_hidden`: the signal is the stream, not the delivery.
+ */
+
+import type { IIIClient } from 'iii-sdk';
+import type { Emit } from './events.js';
+import type {
+  AgentMessage,
+  AssistantMessage,
+  ContentBlock,
+  FunctionResultMessage,
+  PiEvent,
+} from './types.js';
+
+const IDLE_MS = 60 * 60_000;
+
+type ToolCall = { function_id: string; started_at: number };
+
+type SessionState = {
+  transcript: AgentMessage[];
+  calls: Map<string, ToolCall>;
+  results: FunctionResultMessage[];
+  touched: number;
+};
+
+/** pi's built-in tools are this worker's; an MCP-style name keeps its server. */
+export function toolFunctionId(name: string): string {
+  if (!name) return 'pi-cli::tool';
+  return name.includes('__') ? name.replace(/__/g, '::') : `pi-cli::${name}`;
+}
+
+function assistant(content: ContentBlock[], stop_reason = 'tool_use'): AssistantMessage {
+  return {
+    role: 'assistant',
+    content,
+    stop_reason,
+    error_message: null,
+    usage: null,
+    model: 'pi',
+    provider: 'pi-cli',
+    timestamp: Date.now(),
+  };
+}
+
+function resultContent(result: unknown): ContentBlock[] {
+  if (result == null) return [];
+  if (typeof result === 'string') return [{ type: 'text', text: result }];
+  if (typeof result === 'object') {
+    const blocks = (result as { content?: unknown }).content;
+    if (Array.isArray(blocks)) {
+      const text = blocks
+        .map((block) =>
+          typeof block === 'object' &&
+          block !== null &&
+          typeof (block as { text?: unknown }).text === 'string'
+            ? (block as { text: string }).text
+            : '',
+        )
+        .filter(Boolean)
+        .join('\n');
+      if (text) return [{ type: 'text', text }];
+    }
+  }
+  return [{ type: 'text', text: JSON.stringify(result) }];
+}
+
+export class ActivityTracker {
+  private sessions = new Map<string, SessionState>();
+
+  constructor(private readonly emit: Emit) {}
+
+  private state(sessionId: string): SessionState {
+    let state = this.sessions.get(sessionId);
+    if (!state) {
+      state = { transcript: [], calls: new Map(), results: [], touched: Date.now() };
+      this.sessions.set(sessionId, state);
+    }
+    state.touched = Date.now();
+    this.sweep();
+    return state;
+  }
+
+  /** A terminal left open for a day should not hold a day of transcripts. */
+  private sweep(): void {
+    const now = Date.now();
+    for (const [id, state] of this.sessions) {
+      if (now - state.touched > IDLE_MS) this.sessions.delete(id);
+    }
+  }
+
+  async handle(event: PiEvent): Promise<{ ok: true; event: string }> {
+    const name = event.event ?? 'unknown';
+    const sessionId = event.session_id || 'pi-cli';
+    const state = this.state(sessionId);
+
+    switch (name) {
+      case 'agent_start': {
+        const message: AgentMessage = {
+          role: 'user',
+          content: [{ type: 'text', text: event.prompt ?? '' }],
+          timestamp: Date.now(),
+        };
+        state.transcript.push(message);
+        state.results = [];
+        await this.emit(sessionId, { type: 'message_complete', message });
+        break;
+      }
+
+      case 'tool_start': {
+        const id = event.call_id || `${event.tool ?? 'tool'}-${state.calls.size}`;
+        const function_id = toolFunctionId(event.tool ?? '');
+        state.calls.set(id, { function_id, started_at: Date.now() });
+        const message = assistant([
+          { type: 'function_call', id, function_id, arguments: event.args ?? {} },
+        ]);
+        state.transcript.push(message);
+        await this.emit(sessionId, { type: 'message_complete', message });
+        await this.emit(sessionId, {
+          type: 'function_execution_start',
+          function_call_id: id,
+          function_id,
+          args: event.args ?? {},
+        });
+        break;
+      }
+
+      case 'tool_end': {
+        const id = event.call_id || `${event.tool ?? 'tool'}-${state.calls.size}`;
+        const call = state.calls.get(id);
+        state.calls.delete(id);
+        const function_id = call?.function_id ?? toolFunctionId(event.tool ?? '');
+        const content = resultContent(event.result);
+        const failed = event.is_error === true;
+        const result: FunctionResultMessage = {
+          role: 'function_result',
+          function_call_id: id,
+          function_id,
+          content,
+          details: null,
+          is_error: failed,
+          timestamp: Date.now(),
+        };
+        state.transcript.push(result);
+        state.results.push(result);
+        await this.emit(sessionId, {
+          type: 'function_execution_end',
+          function_call_id: id,
+          function_id,
+          result: { content, details: null },
+          is_error: failed,
+          duration_ms: call ? Date.now() - call.started_at : 0,
+        });
+        break;
+      }
+
+      case 'agent_end': {
+        const message = assistant([], 'end');
+        state.transcript.push(message);
+        await this.emit(sessionId, { type: 'turn_end', message, function_results: state.results });
+        await this.emit(sessionId, { type: 'agent_end', messages: state.transcript });
+        state.results = [];
+        break;
+      }
+
+      case 'session_end':
+        this.sessions.delete(sessionId);
+        break;
+
+      default:
+        // session_start, and anything a newer pi adds: the session bucket now
+        // exists, which is all an unmapped event has to do.
+        break;
+    }
+
+    return { ok: true, event: name };
+  }
+}
+
+export function registerActivity(iii: IIIClient, emit: Emit): ActivityTracker {
+  const tracker = new ActivityTracker(emit);
+  iii.registerFunction('pi-cli::activity', (input: PiEvent) => tracker.handle(input ?? {}), {
+    description:
+      'A pi lifecycle event from a terminal session (session_start, agent_start, tool_start, tool_end, agent_end, session_end), posted by the workspace extension. Translated into AgentEvent frames on the events stream.',
+    request_format: {
+      type: 'object',
+      properties: {
+        event: { type: 'string' },
+        session_id: { type: 'string' },
+        cwd: { type: 'string' },
+        prompt: { type: 'string' },
+        tool: { type: 'string' },
+        call_id: { type: 'string' },
+        args: { type: 'object' },
+        result: {},
+        is_error: { type: 'boolean' },
+      },
+    },
+    response_format: {
+      type: 'object',
+      required: ['ok', 'event'],
+      properties: { ok: { type: 'boolean' }, event: { type: 'string' } },
+    },
+    metadata: { internal: true, trace_hidden: true },
+  });
+  return tracker;
+}
