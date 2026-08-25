@@ -497,16 +497,15 @@ pub async fn run_step(
     // Build every deterministic model-facing input before context assembly.
     // Registry-change notice: if the function registry changed since this
     // session last acknowledged its generation, tell the model its cached
-    // contracts may be stale. First sighting stamps silently.
+    // contracts may be stale. First sighting stamps silently. The notice rides
+    // as a tail message, never a system-prompt mutation: the system prompt is
+    // the provider's first input item, and a one-shot append-then-remove there
+    // invalidates the whole prompt-cache prefix twice per event.
     let current_generation = functions.generation;
-    let mut assembly_system_prompt =
+    let assembly_system_prompt =
         with_runtime_context(record.options.system_prompt.clone(), &record);
-    if let Some(notice) = registry_notice(record.functions_generation, current_generation) {
-        assembly_system_prompt = Some(match assembly_system_prompt.take() {
-            Some(prompt) if !prompt.is_empty() => format!("{prompt}\n\n{notice}"),
-            _ => notice,
-        });
-    }
+    let registry_notice_message =
+        registry_notice(record.functions_generation, current_generation).map(notice_message);
     record.functions_generation = Some(current_generation);
 
     // Resolve the output-contract strategy and build the invocation surface:
@@ -632,8 +631,12 @@ pub async fn run_step(
                 .await;
             }
         };
-        let hook_appended = !appended.is_empty();
+        // The notice lands after the hooks ran (they must not read it as the
+        // newest user message) and before their appends (hook messages stay
+        // last, closest to the decision point).
+        let hook_appended = !appended.is_empty() || registry_notice_message.is_some();
         let mut gen_messages = assembled.messages.clone();
+        gen_messages.extend(registry_notice_message.iter().cloned());
         gen_messages.extend(appended);
 
         // Post-assembly invariant guard: providers reject a context where an
@@ -3016,9 +3019,20 @@ fn patch_orphaned_calls(messages: &mut Vec<Value>) -> usize {
     patched
 }
 
-/// The single-line notice appended to the system prompt when the registry
+/// The single-line notice delivered as a tail message when the registry
 /// changed under a session that had already acknowledged an earlier generation.
 const REGISTRY_CHANGED_NOTICE: &str = "NOTE: the function registry changed during this conversation. Function contracts fetched earlier may be stale — re-fetch the contracts you rely on (engine::functions::info) before calling those functions again.";
+
+/// Wrap the notice as an ephemeral tail user message for the generate request.
+/// `timestamp` is mandatory — the router's message types have no serde default
+/// for it — and never reaches the provider wire.
+fn notice_message(text: String) -> Value {
+    json!({
+        "role": "user",
+        "content": [{ "type": "text", "text": text }],
+        "timestamp": AgentMessage::now_ms(),
+    })
+}
 
 /// Decide the registry-change notice for a step. `None` when the record already
 /// matches the live generation, or is being stamped for the first time; `Some`
@@ -3277,7 +3291,7 @@ mod tests {
 
         let (second, updates) =
             crate::trigger::prepare_info_result("call-2", &arguments, &data, &ledger, true);
-        assert_eq!(second.content, data.content, "a sibling result stays full");
+        assert_eq!(second.content, first.content, "a sibling result stays full");
         crate::trigger::apply_contract_updates_after_append(&mut ledger, "call-2", updates);
 
         crate::trigger::retain_visible_contract_sources(
@@ -3304,7 +3318,19 @@ mod tests {
             )]
         );
         assert!(updates.is_empty());
-        assert_eq!(first.content, data.content);
+        assert_eq!(
+            first.content,
+            crate::trigger::prepare_info_result(
+                "probe",
+                &arguments,
+                &data,
+                &Default::default(),
+                true
+            )
+            .0
+            .content,
+            "the first result is the full (response-schema-stripped) rendering"
+        );
     }
 
     #[test]
@@ -3646,6 +3672,17 @@ mod tests {
         assert!(super::registry_notice(Some(7), 7).is_none());
         // Registry moved on: notice fires.
         assert!(super::registry_notice(Some(6), 7).is_some());
+    }
+
+    #[test]
+    fn notice_message_is_a_timestamped_tail_user_message() {
+        let msg = super::notice_message(super::REGISTRY_CHANGED_NOTICE.to_string());
+        assert_eq!(msg["role"], "user");
+        assert_eq!(msg["content"][0]["type"], "text");
+        assert_eq!(msg["content"][0]["text"], super::REGISTRY_CHANGED_NOTICE);
+        // The router's message types have no serde default for `timestamp`;
+        // omitting it fails deserialization at the router boundary.
+        assert!(msg["timestamp"].is_i64());
     }
 
     #[test]

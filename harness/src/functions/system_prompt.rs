@@ -37,7 +37,6 @@ pub enum SystemPromptPartKind {
     Selected,
     Skills,
     Runtime,
-    RegistryNotice,
     Injected,
 }
 
@@ -96,13 +95,6 @@ pub async fn handle(
     };
     let runtime =
         crate::turn_loop::runtime_context_aid(&req.session_id, filesystem_root.as_deref(), policy);
-    let registry_notice = match record.as_ref() {
-        Some(record) => crate::turn_loop::registry_notice(
-            record.functions_generation,
-            deps.functions().await.generation,
-        ),
-        None => None,
-    };
     let skills = record
         .as_ref()
         .and_then(|record| record.options.skill_context.as_ref())
@@ -129,7 +121,6 @@ pub async fn handle(
             req.selected_prompt,
             skills,
             runtime,
-            registry_notice,
             injections,
         ),
     })
@@ -159,7 +150,6 @@ fn build_parts(
     selected: Option<SelectedSystemPrompt>,
     skills: Option<String>,
     runtime: String,
-    registry_notice: Option<String>,
     injections: Vec<SystemPromptPart>,
 ) -> Vec<SystemPromptPart> {
     let selected = selected.filter(|prompt| !prompt.body.is_empty());
@@ -198,13 +188,6 @@ fn build_parts(
         name: None,
         body: runtime,
     });
-    if let Some(body) = registry_notice {
-        parts.push(SystemPromptPart {
-            kind: SystemPromptPartKind::RegistryNotice,
-            name: None,
-            body,
-        });
-    }
     parts.extend(injections);
     parts
 }
@@ -239,7 +222,6 @@ mod tests {
             }),
             Some("skill index".into()),
             "session context".into(),
-            None,
             vec![SystemPromptPart {
                 kind: SystemPromptPartKind::Injected,
                 name: Some("fp".into()),
@@ -272,7 +254,6 @@ mod tests {
             }),
             None,
             "session context".into(),
-            None,
             Vec::new(),
         );
         assert_eq!(parts.len(), 2);
@@ -290,7 +271,6 @@ mod tests {
             None,
             None,
             "session context".into(),
-            None,
             Vec::new(),
         );
         assert_eq!(parts[0].kind, SystemPromptPartKind::BuiltIn);
@@ -304,7 +284,6 @@ mod tests {
             None,
             None,
             "session context".into(),
-            None,
             Vec::new(),
         );
         assert_eq!(parts.len(), 1);

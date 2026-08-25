@@ -133,7 +133,6 @@
           "selected",
           "skills",
           "runtime",
-          "registry_notice",
           "injected"
         ],
         "type": "string"
