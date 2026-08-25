@@ -145,6 +145,9 @@ export function FileDiff({
       edit={editing}
       editorOptions={editing ? editorOptions : undefined}
       className={cn('[--diffs-font-family:var(--font-code)]', className)}
+      // Read-mode diff text takes clicks and selection without input focus;
+      // a bare shortcut must not fire from inside it.
+      data-keybindings-standdown=""
       options={{
         diffStyle,
         overflow,

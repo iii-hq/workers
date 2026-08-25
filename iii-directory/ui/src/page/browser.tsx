@@ -27,6 +27,7 @@
 import {
   Button,
   CodeEditor,
+  ConfirmDialog,
   type Host,
   Input,
   MarkdownPreview,
@@ -304,6 +305,28 @@ export function CollectionBrowser({
 
   const dirtyRef = useRef(dirty)
   dirtyRef.current = dirty
+  // A dirty draft asks in the console's own dialog, never window.confirm:
+  // the native box blocks the whole tab and cannot say what is at stake
+  // when the draft is a new, unnamed entry.
+  const [pendingConfirm, setPendingConfirm] = useState<{
+    title: string
+    description: string
+    confirmLabel: string
+    proceed: () => void
+  } | null>(null)
+  const guardDirty = useCallback((proceed: () => void) => {
+    if (!dirtyRef.current) {
+      proceed()
+      return
+    }
+    const label = selectedRef.current ?? 'this new entry'
+    setPendingConfirm({
+      title: 'Discard unsaved changes?',
+      description: `The unsaved changes to ${label} will be lost.`,
+      confirmLabel: 'Discard',
+      proceed,
+    })
+  }, [])
   const selectedRef = useRef(selected)
   selectedRef.current = selected
   const creatingRef = useRef(creating)
@@ -345,43 +368,42 @@ export function CollectionBrowser({
 
   const open = useCallback(
     (key: string, opts?: { reload?: boolean }) => {
-      if (!opts?.reload) {
-        // Re-clicking the open entry must not clobber the draft; switching
-        // away from an unsaved draft asks first.
-        if (key === selectedRef.current) return
-        if (
-          dirtyRef.current &&
-          !window.confirm(`Discard unsaved changes to ${selectedRef.current}?`)
-        ) {
-          return
-        }
-      }
       // Discard confirmed (or a reload): the persisted draft dies now, not
       // when the load lands — an unmount in between must not resurrect it.
-      removeStored(`${storageKey}:draft`)
-      setSelected(key)
-      setCreating(false)
-      setLoaded(null)
-      setDraft('')
-      setLoadError(null)
-      setSaveError(null)
-      setDeleteError(null)
-      setStaleOnDisk(false)
-      adapter
-        .load(host, key)
-        .then((content) => {
-          // Stale async result: the user opened another entry (or drilled
-          // out) while this load was in flight — applying it would show A's
-          // content under B's title and risk saving it there.
-          if (selectedRef.current !== key) return
-          setLoaded({ key, content })
-          setDraft(content)
-        })
-        .catch((e) => {
-          if (selectedRef.current === key) setLoadError(String(e))
-        })
+      const proceed = () => {
+        removeStored(`${storageKey}:draft`)
+        setSelected(key)
+        setCreating(false)
+        setLoaded(null)
+        setDraft('')
+        setLoadError(null)
+        setSaveError(null)
+        setDeleteError(null)
+        setStaleOnDisk(false)
+        adapter
+          .load(host, key)
+          .then((content) => {
+            // Stale async result: the user opened another entry (or drilled
+            // out) while this load was in flight — applying it would show A's
+            // content under B's title and risk saving it there.
+            if (selectedRef.current !== key) return
+            setLoaded({ key, content })
+            setDraft(content)
+          })
+          .catch((e) => {
+            if (selectedRef.current === key) setLoadError(String(e))
+          })
+      }
+      if (opts?.reload) {
+        proceed()
+        return
+      }
+      // Re-clicking the open entry must not clobber the draft; switching
+      // away from an unsaved draft asks first.
+      if (key === selectedRef.current) return
+      guardDirty(proceed)
     },
-    [host, adapter, storageKey],
+    [host, adapter, storageKey, guardDirty],
   )
 
   const appliedOpenRef = useRef(0)
@@ -395,22 +417,18 @@ export function CollectionBrowser({
       template, so the scaffold already counts as unsaved work and ⌘S/save is
       live immediately. */
   const startCreate = useCallback(() => {
-    if (
-      dirtyRef.current &&
-      !window.confirm(`Discard unsaved changes to ${selectedRef.current}?`)
-    ) {
-      return
-    }
-    removeStored(`${storageKey}:draft`)
-    setCreating(true)
-    setSelected(null)
-    setLoaded({ key: '', content: '' })
-    setDraft(NEW_TEMPLATE)
-    setLoadError(null)
-    setSaveError(null)
-    setDeleteError(null)
-    setStaleOnDisk(false)
-  }, [storageKey])
+    guardDirty(() => {
+      removeStored(`${storageKey}:draft`)
+      setCreating(true)
+      setSelected(null)
+      setLoaded({ key: '', content: '' })
+      setDraft(NEW_TEMPLATE)
+      setLoadError(null)
+      setSaveError(null)
+      setDeleteError(null)
+      setStaleOnDisk(false)
+    })
+  }, [storageKey, guardDirty])
 
   // External change (download / update from anywhere): refresh the list;
   // reload the open entry only when the editor has no unsaved edits.
@@ -522,15 +540,17 @@ export function CollectionBrowser({
   const remove = useCallback(() => {
     if (readOnly || !adapter.remove || !loaded || creating || saving || deleting) return
     const key = loaded.key
-    const dirtyNote = dirty ? '\n\nYour unsaved changes will also be lost.' : ''
-    if (
-      !window.confirm(
-        `Delete ${adapter.noun} “${key}”? This removes its file and cannot be undone.${dirtyNote}`,
-      )
-    ) {
-      return
-    }
+    const dirtyNote = dirty ? ' Your unsaved changes will also be lost.' : ''
+    setPendingConfirm({
+      title: `Delete ${adapter.noun} “${key}”?`,
+      description: `This removes its file and cannot be undone.${dirtyNote}`,
+      confirmLabel: 'Delete',
+      proceed: () => removeNow(key),
+    })
+  }, [adapter, loaded, creating, saving, deleting, readOnly, dirty])
 
+  const removeNow = useCallback((key: string) => {
+    if (!adapter.remove) return
     setDeleting(true)
     setDeleteError(null)
     setSaveError(null)
@@ -570,16 +590,17 @@ export function CollectionBrowser({
 
   // Narrow-mode drill-out: back to the list, guarding an unsaved draft.
   const goBack = () => {
-    if (dirty && !window.confirm('Discard unsaved changes?')) return
-    removeStored(`${storageKey}:draft`)
-    setSelected(null)
-    setCreating(false)
-    setLoaded(null)
-    setDraft('')
-    setLoadError(null)
-    setSaveError(null)
-    setDeleteError(null)
-    setStaleOnDisk(false)
+    guardDirty(() => {
+      removeStored(`${storageKey}:draft`)
+      setSelected(null)
+      setCreating(false)
+      setLoaded(null)
+      setDraft('')
+      setLoadError(null)
+      setSaveError(null)
+      setDeleteError(null)
+      setStaleOnDisk(false)
+    })
   }
 
   // The collection's primary verbs, for the palette and for the keyboard
@@ -738,6 +759,19 @@ export function CollectionBrowser({
       ref={rootRef}
       onKeyDown={onRootKeyDown}
     >
+      <ConfirmDialog
+        open={pendingConfirm !== null}
+        onOpenChange={(next) => {
+          if (!next) setPendingConfirm(null)
+        }}
+        title={pendingConfirm?.title ?? ''}
+        description={pendingConfirm?.description}
+        confirmLabel={pendingConfirm?.confirmLabel}
+        onConfirm={() => {
+          pendingConfirm?.proceed()
+          setPendingConfirm(null)
+        }}
+      />
       {showSide ? (
         <PageSidebar
           label={`${adapter.noun} list`}
