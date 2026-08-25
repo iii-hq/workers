@@ -79,7 +79,7 @@ describe('page commands', () => {
     expect(paneCommands('pane-2')).toEqual([])
   })
 
-  it("refuses the console's own keys, digits and chord prefixes, keeps the row", () => {
+  it('refuses the palette chord and browser keys, keeps the freed keys', () => {
     registerPageCommands(
       {
         pageId: 'shell',
@@ -104,14 +104,14 @@ describe('page commands', () => {
     expect(
       getPageCommands().map((entry) => [entry.command.id, entry.bindings]),
     ).toEqual([
-      ['a', []],
-      ['b', []],
-      ['c', []],
+      ['a', ['t']],
+      ['b', ['5']],
+      ['c', ['G L']],
       ['d', []],
       ['e', []],
       ['f', ['P']],
     ])
-    expect(console.warn).toHaveBeenCalledTimes(5)
+    expect(console.warn).toHaveBeenCalledTimes(2)
   })
 
   it('lets a re-registration from the same pane replace the older one', () => {

@@ -101,18 +101,17 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
   // Windows and Linux, where the same menu item is ⌘N on a Mac and ctrl is
   // free. ctrl+P follows it rather than quietly eating Print on one platform
   // and meaning "previous" on the other.
-  // Bare keys, not chords. The browser has already taken almost every
-  // Mod+key worth having (see BROWSER_RESERVED and MAC_RESERVED), and a page
-  // that fights it ships shortcuts that silently do nothing. Single keys are
-  // free, they are what GitHub and Linear use for the same reason, and the
-  // console already had one in `?`. None of them fire while you are typing.
+  // These actions carry no keys of their own: bare single-key shortcuts kept
+  // firing under people's hands (any surface whose focus target is not
+  // literally an input leaks them), so the palette is the one way in. An
+  // empty bindings list keeps the action searchable in the palette and the
+  // definition addressable, without reserving a key.
   {
     id: 'workspace.selectByIndex',
     title: 'Select workspace 1 to 9',
     group: 'Workspace',
     scope: 'global',
-    bindings: ['1'],
-    digitIndex: true,
+    bindings: [],
     keywords: ['tab', 'switch', 'workspace'],
   },
   {
@@ -120,7 +119,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     title: 'New workspace',
     group: 'Workspace',
     scope: 'global',
-    bindings: ['t'],
+    bindings: [],
     keywords: ['tab', 'new', 'create'],
   },
   {
@@ -128,7 +127,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     title: 'Next workspace',
     group: 'Workspace',
     scope: 'global',
-    bindings: [']'],
+    bindings: [],
     keywords: ['tab', 'switch', 'cycle'],
   },
   {
@@ -136,7 +135,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     title: 'Previous workspace',
     group: 'Workspace',
     scope: 'global',
-    bindings: ['['],
+    bindings: [],
     keywords: ['tab', 'switch', 'cycle'],
   },
   {
@@ -144,7 +143,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     title: 'Close the workspace',
     group: 'Workspace',
     scope: 'global',
-    bindings: ['Shift+W'],
+    bindings: [],
     keywords: ['tab', 'close', 'remove'],
   },
   {
@@ -152,7 +151,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     title: 'Split the workspace',
     group: 'Workspace',
     scope: 'global',
-    bindings: ['\\'],
+    bindings: [],
     keywords: ['panel', 'column', 'split'],
   },
   // Go-to chords: a prefix key, then a letter for the place. The prefix never
@@ -163,7 +162,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     title: 'Go to chat',
     group: 'Go to',
     scope: 'global',
-    bindings: ['G C'],
+    bindings: [],
     keywords: ['chat', 'conversation', 'go', 'page'],
   },
   {
@@ -171,7 +170,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     title: 'Go to workers',
     group: 'Go to',
     scope: 'global',
-    bindings: ['G W'],
+    bindings: [],
     keywords: ['workers', 'functions', 'go', 'page'],
   },
   {
@@ -179,7 +178,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     title: 'Go to traces',
     group: 'Go to',
     scope: 'global',
-    bindings: ['G T'],
+    bindings: [],
     keywords: ['traces', 'spans', 'go', 'page'],
   },
   {
@@ -187,7 +186,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     title: 'Focus the next panel',
     group: 'Workspace',
     scope: 'global',
-    bindings: ['}'],
+    bindings: [],
     keywords: ['panel', 'pane', 'focus', 'split'],
   },
   {
@@ -195,7 +194,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     title: 'Focus the previous panel',
     group: 'Workspace',
     scope: 'global',
-    bindings: ['{'],
+    bindings: [],
     keywords: ['panel', 'pane', 'focus', 'split'],
   },
   {
@@ -203,7 +202,7 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     title: 'Open settings',
     group: 'Console',
     scope: 'global',
-    bindings: [','],
+    bindings: [],
     keywords: ['configuration', 'preferences'],
   },
   {

@@ -42,7 +42,6 @@ describe('the registry itself', () => {
     for (const platform of PLATFORMS) {
       for (const definition of KEYBINDINGS) {
         const bindings = resolveBindings(definition.bindings, platform)
-        expect(bindings.length).toBeGreaterThan(0)
         for (const binding of bindings) {
           expect({ binding, parsed: parseSequence(binding) !== null }).toEqual({
             binding,
@@ -69,7 +68,7 @@ describe('the registry itself', () => {
 describe('lookup', () => {
   it('finds a definition by id', () => {
     expect(keybinding('palette.toggle').bindings).toEqual(['Mod+K'])
-    expect(bindingsFor('workspace.close', 'mac')).toEqual(['Shift+W'])
+    expect(bindingsFor('workspace.close', 'mac')).toEqual([])
   })
 
   it('resolves a per-platform binding list', () => {
@@ -82,22 +81,22 @@ describe('lookup', () => {
     expect(keybinding('workspace.create').firesWhileTyping).toBeUndefined()
   })
 
-  it('spells a hover title with the key for the platform', () => {
+  it('spells a hover title with the key, or plain text for an unbound action', () => {
     expect(hoverTitle('New workspace', 'workspace.create', 'mac')).toBe(
-      'New workspace (T)',
+      'New workspace',
     )
-    expect(hoverTitle('Close', 'workspace.close', 'mac')).toBe('Close (⇧ W)')
+    expect(hoverTitle('Close', 'workspace.close', 'mac')).toBe('Close')
     expect(hoverTitle('Search', 'palette.toggle', 'other')).toBe(
       'Search (ctrl K)',
     )
-    expect(hoverTitle('Chat', 'page.chat', 'mac')).toBe('Chat (G then C)')
+    expect(hoverTitle('Chat', 'page.chat', 'mac')).toBe('Chat')
   })
 
   it('says why a page may not take a key, or lets it', () => {
-    expect(shortcutClaimReason('t', 'mac')).toMatch(/New workspace/)
-    expect(shortcutClaimReason('7', 'mac')).toMatch(/Select workspace/)
-    expect(shortcutClaimReason('G', 'mac')).toMatch(/Go to/)
-    expect(shortcutClaimReason('G X', 'mac')).toMatch(/starts like/)
+    expect(shortcutClaimReason('t', 'mac')).toBeNull()
+    expect(shortcutClaimReason('7', 'mac')).toBeNull()
+    expect(shortcutClaimReason('G', 'mac')).toBeNull()
+    expect(shortcutClaimReason('G X', 'mac')).toBeNull()
     expect(shortcutClaimReason('Mod+K', 'other')).toMatch(
       /command palette|Search|palette/i,
     )
@@ -108,13 +107,13 @@ describe('lookup', () => {
     expect(shortcutClaimReason('Q L', 'mac')).toBeNull()
   })
 
-  it('steps panel focus with the braces', () => {
-    expect(bindingsFor('panel.next', 'mac')).toEqual(['}'])
-    expect(bindingsFor('panel.previous', 'other')).toEqual(['{'])
+  it('exposes no key for an unbound action', () => {
+    expect(bindingsFor('panel.next', 'mac')).toEqual([])
+    expect(bindingsFor('panel.previous', 'other')).toEqual([])
   })
 
-  it('lists the chords of a go-to sequence', () => {
-    expect(sequencesFor('page.workers', 'mac')).toEqual([['G', 'W']])
+  it('lists no chords for unbound actions', () => {
+    expect(sequencesFor('page.workers', 'mac')).toEqual([])
     expect(sequencesFor('workspace.create', 'mac')).toEqual([])
   })
 })
@@ -183,21 +182,12 @@ describe('matchDigitIndex', () => {
     }
   }
 
-  it('returns the position the digit selects, zero based', () => {
-    expect(matchDigitIndex('workspace.selectByIndex', digit('1'), 'mac')).toBe(
-      0,
-    )
-    expect(matchDigitIndex('workspace.selectByIndex', digit('9'), 'mac')).toBe(
-      8,
-    )
-  })
-
-  it('fires for every digit, not just the one stored', () => {
-    expect(bindingsFor('workspace.selectByIndex', 'mac')).toEqual(['1'])
+  it('selects nothing now that the digits are unbound', () => {
+    expect(bindingsFor('workspace.selectByIndex', 'mac')).toEqual([])
     for (let value = 1; value <= 9; value++) {
       expect(
         matchDigitIndex('workspace.selectByIndex', digit(String(value)), 'mac'),
-      ).toBe(value - 1)
+      ).toBeNull()
     }
   })
 

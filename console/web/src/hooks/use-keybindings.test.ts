@@ -68,72 +68,34 @@ describe('createKeyDispatcher', () => {
   beforeEach(() => vi.useFakeTimers())
   afterEach(() => vi.useRealTimers())
 
-  it('fires a single chord and a digit index', () => {
+  it('fires nothing for the retired bare keys, and still opens the palette', () => {
     const seen: string[] = []
     const dispatcher = createKeyDispatcher(
       () => ({
         'workspace.create': () => seen.push('create'),
         'workspace.selectByIndex': (index) => seen.push(`select ${index}`),
+        'palette.toggle': () => seen.push('palette'),
       }),
       'mac',
     )
     dispatcher.onKeyDown(key('t'))
     dispatcher.onKeyDown(key('3'))
-    expect(seen).toEqual(['create', 'select 2'])
+    expect(seen).toEqual([])
+    dispatcher.onKeyDown(key('k', { metaKey: true }))
+    expect(seen).toEqual(['palette'])
   })
 
-  it('completes a go-to chord and swallows its prefix', () => {
+  it('no longer arms a go-to prefix', () => {
     const seen: string[] = []
     const dispatcher = createKeyDispatcher(
-      () => ({
-        'page.chat': () => seen.push('chat'),
-        'workspace.create': () => seen.push('create'),
-      }),
+      () => ({ 'page.chat': () => seen.push('chat') }),
       'mac',
     )
     const prefix = key('g')
     dispatcher.onKeyDown(prefix)
-    expect(prefix.defaultPrevented).toBe(true)
-    expect(seen).toEqual([])
-    dispatcher.onKeyDown(key('c'))
-    expect(seen).toEqual(['chat'])
-  })
-
-  it('lets a pending prefix take a letter that is also a single key', () => {
-    const seen: string[] = []
-    const dispatcher = createKeyDispatcher(
-      () => ({
-        'page.traces': () => seen.push('traces'),
-        'workspace.create': () => seen.push('create'),
-      }),
-      'mac',
-    )
-    dispatcher.onKeyDown(key('g'))
-    dispatcher.onKeyDown(key('t'))
-    expect(seen).toEqual(['traces'])
-    dispatcher.onKeyDown(key('t'))
-    expect(seen).toEqual(['traces', 'create'])
-  })
-
-  it('forgets the prefix after the timeout or an unrelated key', () => {
-    const seen: string[] = []
-    const dispatcher = createKeyDispatcher(
-      () => ({
-        'page.chat': () => seen.push('chat'),
-        'workspace.create': () => seen.push('create'),
-      }),
-      'mac',
-    )
-    dispatcher.onKeyDown(key('g'))
-    vi.advanceTimersByTime(CHORD_TIMEOUT_MS + 1)
+    expect(prefix.defaultPrevented).toBe(false)
     dispatcher.onKeyDown(key('c'))
     expect(seen).toEqual([])
-
-    dispatcher.onKeyDown(key('g'))
-    dispatcher.onKeyDown(key('t'))
-    expect(seen).toEqual(['create'])
-    dispatcher.onKeyDown(key('c'))
-    expect(seen).toEqual(['create'])
   })
 
   it('stands down inside a declared standdown surface', () => {
@@ -212,21 +174,51 @@ describe('createKeyDispatcher', () => {
       expect(inside.defaultPrevented).toBe(true)
     })
 
-    it('never shadows a console key and skips a disabled command', () => {
+    it('never shadows the palette chord and skips a disabled command', () => {
       const seen: string[] = []
       const dispatcher = createKeyDispatcher(
-        () => ({ 'workspace.create': () => seen.push('create') }),
+        () => ({ 'palette.toggle': () => seen.push('palette') }),
         'mac',
         () => [
-          entry('pane-1', 'T', () => seen.push('page-t')),
+          entry('pane-1', 'Mod+K', () => seen.push('page-k')),
           entry('pane-1', 'X', () => seen.push('page-x'), {
             enabled: () => false,
           }),
         ],
       )
-      dispatcher.onKeyDown(key('t', { target: pane('pane-1') }))
+      dispatcher.onKeyDown(key('k', { metaKey: true, target: pane('pane-1') }))
       dispatcher.onKeyDown(key('x', { target: pane('pane-1') }))
-      expect(seen).toEqual(['create'])
+      expect(seen).toEqual(['palette'])
+    })
+
+    it('lets a pending page prefix take a letter that is also a single key', () => {
+      const seen: string[] = []
+      const dispatcher = createKeyDispatcher(
+        () => ({}),
+        'mac',
+        () => [
+          entry('pane-1', 'Q T', () => seen.push('chord')),
+          entry('pane-1', 'T', () => seen.push('single')),
+        ],
+      )
+      dispatcher.onKeyDown(key('q', { target: pane('pane-1') }))
+      dispatcher.onKeyDown(key('t', { target: pane('pane-1') }))
+      expect(seen).toEqual(['chord'])
+      dispatcher.onKeyDown(key('t', { target: pane('pane-1') }))
+      expect(seen).toEqual(['chord', 'single'])
+    })
+
+    it('forgets a page prefix after the timeout', () => {
+      const seen: string[] = []
+      const dispatcher = createKeyDispatcher(
+        () => ({}),
+        'mac',
+        () => [entry('pane-1', 'Q C', () => seen.push('chord'))],
+      )
+      dispatcher.onKeyDown(key('q', { target: pane('pane-1') }))
+      vi.advanceTimersByTime(CHORD_TIMEOUT_MS + 1)
+      dispatcher.onKeyDown(key('c', { target: pane('pane-1') }))
+      expect(seen).toEqual([])
     })
 
     it('completes a page chord and stands down in a field unless asked', () => {

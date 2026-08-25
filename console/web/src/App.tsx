@@ -1786,7 +1786,19 @@ function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
           <KeyCombo binding={bindingsFor('palette.toggle')[0] ?? 'Mod+K'} />{' '}
           shows its key, so this list is a reference, not homework.
         </DialogDescription>
-        {keybindingGroups().map(([group, entries]) => (
+        {keybindingGroups()
+          .map(
+            ([group, entries]) =>
+              [
+                group,
+                entries.filter(
+                  (entry) =>
+                    resolveBindings(entry.bindings, platform).length > 0,
+                ),
+              ] as const,
+          )
+          .filter(([, entries]) => entries.length > 0)
+          .map(([group, entries]) => (
           <section key={group} className="mt-4">
             <h3 className="text-[11px] uppercase tracking-[0.18em] text-ink-ghost">
               {group}
