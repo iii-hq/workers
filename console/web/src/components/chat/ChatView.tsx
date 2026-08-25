@@ -228,9 +228,9 @@ export function ChatView({
     draft: conversation.draft,
     hydrated: conversation.hydrated,
   })
-  const composerBlocked = harnessBlocked || sessionHydrating
-  const composerBlockedRef = useRef(composerBlocked)
-  composerBlockedRef.current = composerBlocked
+  const submitBlocked = harnessBlocked || sessionHydrating
+  const submitBlockedRef = useRef(submitBlocked)
+  submitBlockedRef.current = submitBlocked
   // This view is keyed by conversation, so mounting IS opening a session:
   // the caret belongs in the composer, on the devices where that is free.
   const focusComposerOnOpen = useMediaQuery(DESKTOP_POINTER_QUERY)
@@ -1065,7 +1065,7 @@ export function ChatView({
 
   const handleSubmit = useCallback(
     async (payload: ComposerSubmitPayload) => {
-      if (composerBlockedRef.current) return
+      if (submitBlockedRef.current) return
       const conversationId = conversation.id
       // Steering a discovered/sub-agent session: inherit the model the
       // transcript shows when the conversation carries none of its own.
@@ -2263,14 +2263,13 @@ export function ChatView({
             onBrowseChange={setBrowsedQueuedId}
             isStreaming={streamingIndicator}
             queueWhileStreaming={!!backend.queueMessage}
-            blocked={composerBlocked}
-            autoFocus={focusComposerOnOpen && !composerBlocked}
+            blocked={harnessBlocked}
+            submitBlocked={submitBlocked}
+            autoFocus={focusComposerOnOpen && !harnessBlocked}
             blockedPlaceholder={
-              sessionHydrating
-                ? 'loading conversation…'
-                : conversationsCtx
-                  ? harnessComposerPlaceholder(conversationsCtx.harnessStatus)
-                  : undefined
+              conversationsCtx
+                ? harnessComposerPlaceholder(conversationsCtx.harnessStatus)
+                : undefined
             }
           />
         </div>

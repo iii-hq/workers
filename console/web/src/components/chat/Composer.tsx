@@ -109,6 +109,8 @@ interface ComposerProps {
   queueWhileStreaming?: boolean
   /** External lock (e.g. harness not installed). Editor + send disabled. */
   blocked?: boolean
+  /** Prevent sending without locking the editor (e.g. transcript hydration). */
+  submitBlocked?: boolean
   /** Placeholder while `blocked` is true. */
   blockedPlaceholder?: string
   /**
@@ -183,6 +185,7 @@ export function Composer({
   isStreaming,
   queueWhileStreaming,
   blocked,
+  submitBlocked,
   blockedPlaceholder = 'chat unavailable…',
   autoFocus,
   initialContent,
@@ -269,12 +272,13 @@ export function Composer({
   )
 
   const inputDisabled = blocked || (isStreaming && !queueWhileStreaming)
+  const submitDisabled = inputDisabled || submitBlocked
   // Turn options are frozen on the running turn; changing them mid-stream
   // would silently not apply, so the pickers stay locked while streaming.
   const optionsDisabled = isStreaming || blocked
 
   const handleSubmit = useCallback(() => {
-    if (inputDisabled) return
+    if (submitDisabled) return
     const text = textRef.current.trim()
     const empty = !text && attachments.length === 0
     // Editing a queued message: save it in place (or remove it when emptied)
@@ -294,7 +298,7 @@ export function Composer({
     setAttachments([])
     setClearToken((t) => t + 1)
   }, [
-    inputDisabled,
+    submitDisabled,
     attachments,
     onSubmit,
     browseId,
@@ -353,7 +357,7 @@ export function Composer({
       <button
         type="button"
         onClick={handleSubmit}
-        disabled={blocked}
+        disabled={submitDisabled}
         aria-label={isStreaming ? 'queue message' : 'send message'}
         className={cn(
           actionButtonClass,
