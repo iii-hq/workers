@@ -1,6 +1,6 @@
 {
   "function_id": "browser::session-open",
-  "description": "Open a persistent HTTP/browser session; returns a session_id that reuses cookies + state.",
+  "description": "Open a persistent scraping session (HTTP or headless fetcher) whose session_id reuses cookies and state across fetches. Renders nothing the user can see; to open a page in the visible browser use browser::sessions::start.",
   "request_schema": {
     "type": "object",
     "properties": {
