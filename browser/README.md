@@ -384,7 +384,7 @@ browser:
     max_bulk_concurrency: 5
     max_sessions: 8
     session_idle_timeout_s: 900
-    adaptive_storage_path: ./data/scrapling/elements.db
+    adaptive_storage_path: data/scrapling/elements.db # relative to III_COMPOSE_DIR
     adaptive_max_bytes: 268435456 # safe only; compat preserves unbounded oracle behavior
 ```
 

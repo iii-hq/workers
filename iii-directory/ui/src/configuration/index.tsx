@@ -84,8 +84,8 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
       <TextField
         field="skills_folder"
         label="Skills folder"
-        placeholder="~/.iii/skills"
-        hint="Global root every read scans and downloads write into — absolute, ~-prefixed, or CWD-relative"
+        placeholder="skills"
+        hint="Global root every read scans and downloads write into — absolute, ~-prefixed, or relative to III_COMPOSE_DIR (process cwd when standalone)"
         value={asString(value.skills_folder)}
         onChange={setString}
         errors={props.errors}
@@ -94,8 +94,8 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
       <TextField
         field="local_skills_folder"
         label="Local skills folder"
-        placeholder="./.iii/skills"
-        hint="Project-scoped overrides — a namespace directory here shadows the same namespace in the global folder entirely"
+        placeholder="skills/iii"
+        hint="Project-scoped overrides relative to III_COMPOSE_DIR (process cwd when standalone) — a namespace here shadows the global folder"
         value={asString(value.local_skills_folder)}
         onChange={setString}
         errors={props.errors}
@@ -104,8 +104,8 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
       <TextField
         field="agents_skills_folder"
         label="Agents skills folder"
-        placeholder="~/.agents/skills"
-        hint="Read-only system root scanned shallowly (<skill>/SKILL.md); skills installed by external agent tooling"
+        placeholder=".agents/skills"
+        hint="Read-only root relative to III_COMPOSE_DIR (process cwd when standalone), scanned shallowly as <skill>/SKILL.md"
         value={asString(value.agents_skills_folder)}
         onChange={setString}
         errors={props.errors}

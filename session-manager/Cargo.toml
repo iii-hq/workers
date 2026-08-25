@@ -16,6 +16,7 @@ path = "src/lib.rs"
 
 [dependencies]
 iii-sdk = "=0.23.0-rc.2"
+iii-worker-paths = { path = "../crates/worker-paths" }
 # `run_with_baggage` for call-site span hiding (`iii.tag.hidden` on the
 # session-event fan-out — see src/events.rs `IiiDeliverer`).
 iii-helpers = "=0.23.0-rc.2"

@@ -1,5 +1,5 @@
-import { useEffect, useRef } from 'react'
 import type { ConfigFormProps, JsonValue } from '@iii-dev/console-ui'
+import { useEffect, useRef } from 'react'
 
 type JsonObject = { [key: string]: JsonValue }
 
@@ -30,7 +30,8 @@ const PRUNING_FIELDS: NumericField[] = [
     key: 'protect_recent_tokens',
     label: 'Protected recent output (tokens)',
     defaultValue: 40_000,
-    description: 'Newest function-output tokens protected from age-based pruning.',
+    description:
+      'Newest function-output tokens protected from age-based pruning.',
   },
   {
     key: 'min_free_tokens',
@@ -42,7 +43,8 @@ const PRUNING_FIELDS: NumericField[] = [
     key: 'max_output_chars',
     label: 'Verbose output threshold (characters)',
     defaultValue: 2_000,
-    description: 'Shorter function outputs are not considered for normal pruning.',
+    description:
+      'Shorter function outputs are not considered for normal pruning.',
   },
   {
     key: 'max_result_tokens',
@@ -63,7 +65,8 @@ const RUNTIME_FIELDS: NumericField[] = [
     key: 'lease_ttl_secs',
     label: 'Compaction lease TTL (seconds)',
     defaultValue: 300,
-    description: 'How long another worker must honor an active compaction lease.',
+    description:
+      'How long another worker must honor an active compaction lease.',
   },
   {
     key: 'summarizer_timeout_ms',
@@ -107,7 +110,8 @@ function NumericInput(props: {
         onChange={(event) => props.onChange(event.target.value)}
       />
       <span className="ctx-cfg-hint" id={hintId}>
-        {props.field.description} Default: {props.field.defaultValue.toLocaleString()}.
+        {props.field.description} Default:{' '}
+        {props.field.defaultValue.toLocaleString()}.
       </span>
     </div>
   )
@@ -182,8 +186,8 @@ export function ContextManagerConfigForm(props: ConfigFormProps) {
           <span>
             <strong>Allow fallback model limits</strong>
             <small>
-              Use conservative 8,192 / 1,024 limits when model limits cannot
-              be resolved. Default: enabled.
+              Use conservative 8,192 / 1,024 limits when model limits cannot be
+              resolved. Default: enabled.
             </small>
           </span>
         </label>
@@ -205,13 +209,16 @@ export function ContextManagerConfigForm(props: ConfigFormProps) {
             className="ctx-cfg-input"
             type="text"
             value={asString(value.lease_dir)}
-            placeholder="~/.iii/data/context-manager"
+            placeholder="data/context-manager"
             aria-describedby="context-manager-cfg-lease-dir-hint"
             onChange={(event) => commitString('lease_dir', event.target.value)}
           />
-          <span className="ctx-cfg-hint" id="context-manager-cfg-lease-dir-hint">
+          <span
+            className="ctx-cfg-hint"
+            id="context-manager-cfg-lease-dir-hint"
+          >
             Compaction lease files live here; a leading ~/ expands to the home
-            directory. Default: ~/.iii/data/context-manager.
+            directory. Default: data/context-manager under III_COMPOSE_DIR.
           </span>
         </div>
       </section>

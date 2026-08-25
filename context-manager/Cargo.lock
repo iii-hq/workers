@@ -226,6 +226,7 @@ dependencies = [
  "futures",
  "iii-console-ui",
  "iii-sdk",
+ "iii-worker-paths",
  "schemars",
  "serde",
  "serde_json",
@@ -991,6 +992,10 @@ dependencies = [
  "tracing",
  "uuid",
 ]
+
+[[package]]
+name = "iii-worker-paths"
+version = "0.1.0"
 
 [[package]]
 name = "indexmap"

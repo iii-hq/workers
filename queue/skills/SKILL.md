@@ -101,7 +101,7 @@ adapter:
   name: builtin
   config:
     store_method: file_based
-    file_path: ./data/queue
+    file_path: data/queue
     save_interval_ms: 5000
 ```
 

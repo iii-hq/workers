@@ -35,7 +35,8 @@ downloaded, so when one is missing, install it and look again. With
 `auto_download` enabled the worker subscribes to the engine `worker` add event
 and pulls a newly added worker's skills automatically, so freshly installed
 workers can appear without a manual download. System-installed agent skills
-under the read-only `agents_skills_folder` (`~/.agents/skills` by default) are
+under the read-only `agents_skills_folder` (`.agents/skills` under
+`III_COMPOSE_DIR`, or the process current directory when standalone) are
 also always visible in `list`/`get` — they are skills, not workers, so they
 never appear in `index` and `update`/`delete` refuse them.
 

@@ -12,7 +12,7 @@
 //! adapter:
 //!   name: fs
 //!   config:
-//!     data_dir: ~/.iii/data/session-manager
+//!     data_dir: /project/data/session-manager
 //! ```
 //!
 //! or
@@ -83,15 +83,15 @@ impl Default for StorageAdapter {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FsBackendConfig {
-    /// Directory holding one `<session_id>.jsonl` per session. A
-    /// leading `~/` expands to the home directory.
+    /// Directory holding one `<session_id>.jsonl` per session. Relative paths
+    /// resolve against `III_COMPOSE_DIR` when available.
     #[serde(default = "default_data_dir")]
     pub data_dir: String,
 }
 
 impl FsBackendConfig {
     pub fn resolved_data_dir(&self) -> PathBuf {
-        expand_tilde(&self.data_dir)
+        iii_worker_paths::resolve_path(&self.data_dir)
     }
 }
 
@@ -195,7 +195,7 @@ pub struct BootSignature {
 }
 
 pub fn default_data_dir() -> String {
-    "~/.iii/data/session-manager".to_string()
+    iii_worker_paths::default_path("data/session-manager")
 }
 
 fn default_bridge_timeout_ms() -> u64 {
@@ -208,19 +208,6 @@ fn default_default_list_limit() -> usize {
 
 fn default_max_list_limit() -> usize {
     500
-}
-
-fn expand_tilde(path: &str) -> PathBuf {
-    if path == "~" {
-        if let Some(home) = dirs::home_dir() {
-            return home;
-        }
-    } else if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest);
-        }
-    }
-    PathBuf::from(path)
 }
 
 /// Expand `${NAME}` occurrences against the process environment. Unknown
@@ -280,7 +267,7 @@ mod tests {
         let StorageAdapter::Fs(fs) = cfg.resolve_adapter() else {
             panic!("expected fs adapter");
         };
-        assert_eq!(fs.data_dir, "~/.iii/data/session-manager");
+        assert_eq!(fs.data_dir, default_data_dir());
     }
 
     #[test]
@@ -296,7 +283,9 @@ mod tests {
 
     #[test]
     fn tilde_data_dir_expands_to_home() {
-        let fs = FsBackendConfig::default();
+        let fs = FsBackendConfig {
+            data_dir: "~/.iii/data/session-manager".to_string(),
+        };
         let resolved = fs.resolved_data_dir();
         if let Some(home) = dirs::home_dir() {
             assert!(resolved.starts_with(home));

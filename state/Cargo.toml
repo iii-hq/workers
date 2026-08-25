@@ -19,6 +19,7 @@ path = "src/main.rs"
 
 [dependencies]
 iii-sdk = "=0.23.0-rc.2"
+iii-worker-paths = { path = "../crates/worker-paths" }
 # UpdateOp / StreamSetResult / StreamUpdateResult / UpdateOpError / MergePath —
 # the exact types the builtin used; pinned to the version iii-sdk resolves.
 iii-helpers = "=0.23.0-rc.2"
