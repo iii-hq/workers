@@ -450,30 +450,37 @@ async fn wait_for_gate_state(
     }
 }
 
-/// Drop iii-directory's `<discovery_assist>` hint messages from the MATCHED
-/// view of a request. The hint is an ephemeral tail user message whose
-/// presence depends on the booted stack (inject_hint config, worker count,
-/// per-turn gates), so no fixture can pin it deterministically — exactly as
-/// before, when it was an unpinned system-prompt mutation. Only the matched
-/// copy is filtered; call evidence keeps the raw request. The registry-changed
-/// notice is NOT filtered: it is deterministic within a scenario's script and
-/// INT-017 pins it as a message.
-fn without_discovery_hints(input: &Value) -> Value {
+/// Drop the harness's ephemeral advisory tail messages from the MATCHED view
+/// of a request: iii-directory's `<discovery_assist>` hint and the harness
+/// registry-changed notice. Both ride as tail user messages whose presence
+/// depends on the booted stack (inject_hint config, worker count, per-turn
+/// gates, registration timing while the stack settles), so no fixture can pin
+/// them deterministically — exactly as before, when they were unpinned
+/// system-prompt mutations. Only the matched copy is filtered; call evidence
+/// keeps the raw request, so a scenario that asserts an advisory was
+/// delivered does it over `router_evidence` (INT-017 does).
+fn without_advisory_tail_messages(input: &Value) -> Value {
     let mut matched = input.clone();
     if let Some(messages) = matched.get_mut("messages").and_then(Value::as_array_mut) {
-        messages.retain(|message| {
-            let is_hint = message.get("role").and_then(Value::as_str) == Some("user")
-                && message
-                    .get("content")
-                    .and_then(Value::as_array)
-                    .and_then(|blocks| blocks.first())
-                    .and_then(|block| block.get("text"))
-                    .and_then(Value::as_str)
-                    .is_some_and(|text| text.starts_with("<discovery_assist"));
-            !is_hint
-        });
+        messages.retain(|message| !is_advisory_message(message));
     }
     matched
+}
+
+/// True for the hint / registry-notice user messages the harness appends per
+/// generation (never persisted to the transcript).
+pub fn is_advisory_message(message: &Value) -> bool {
+    message.get("role").and_then(Value::as_str) == Some("user")
+        && message
+            .get("content")
+            .and_then(Value::as_array)
+            .and_then(|blocks| blocks.first())
+            .and_then(|block| block.get("text"))
+            .and_then(Value::as_str)
+            .is_some_and(|text| {
+                text.starts_with("<discovery_assist")
+                    || text.starts_with("NOTE: the function registry changed")
+            })
 }
 
 async fn chat(
@@ -482,7 +489,7 @@ async fn chat(
     client: Arc<IIIClient>,
     input: Value,
 ) -> Result<Value, Error> {
-    let matched_input = without_discovery_hints(&input);
+    let matched_input = without_advisory_tail_messages(&input);
     // Match under the lock; stream outside it.
     let (generation, writer_ref, request_id) = {
         let mut state = state.lock().expect("router state");
@@ -850,27 +857,29 @@ mod tests {
     }
 
     #[test]
-    fn discovery_hint_messages_are_invisible_to_matchers() {
+    fn advisory_tail_messages_are_invisible_to_matchers() {
         let input = serde_json::json!({ "messages": [
             { "role": "user", "content": [{ "type": "text", "text": "do the task" }] },
             { "role": "user", "content": [{ "type": "text",
                 "text": "<discovery_assist functions_generation=3>\nBefore calling..." }] },
             { "role": "user", "content": [{ "type": "text",
                 "text": "NOTE: the function registry changed during this conversation. ..." }] },
+            // A user message merely QUOTING an advisory mid-text stays.
+            { "role": "user", "content": [{ "type": "text",
+                "text": "what does NOTE: the function registry changed mean?" }] },
         ]});
-        let matched = super::without_discovery_hints(&input);
+        let matched = super::without_advisory_tail_messages(&input);
         let texts: Vec<&str> = matched["messages"]
             .as_array()
             .unwrap()
             .iter()
             .map(|m| m["content"][0]["text"].as_str().unwrap())
             .collect();
-        // The hint is stripped; the user message and the (deterministic,
-        // INT-017-pinned) registry notice stay.
+        // Both advisories are stripped; real user messages stay.
         assert_eq!(texts.len(), 2);
         assert!(texts[0].starts_with("do the task"));
-        assert!(texts[1].starts_with("NOTE: the function registry changed"));
-        // The raw input is untouched.
-        assert_eq!(input["messages"].as_array().unwrap().len(), 3);
+        assert!(texts[1].starts_with("what does NOTE:"));
+        // The raw input is untouched (call evidence keeps advisories).
+        assert_eq!(input["messages"].as_array().unwrap().len(), 4);
     }
 }
