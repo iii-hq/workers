@@ -1,0 +1,39 @@
+{
+  "name": "claude-cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Claude Code as a terminal on the iii console: the worker installs the CLI, equips its workspace, runs it in a shell::pty session, and streams its hook events onto agent::events.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.18.2",
+  "scripts": {
+    "build": "npm run build:ui && tsc -b",
+    "build:bundle": "npm run build:ui && node scripts/build-bundle.mjs",
+    "build:ui": "node ui/build.mjs",
+    "typecheck": "npm run build:ui && tsc -b --noEmit",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "test": "vitest run",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "iii-sdk": "0.23.0-rc.2"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.10",
+    "@types/node": "^22.10.0",
+    "esbuild": "^0.25.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}

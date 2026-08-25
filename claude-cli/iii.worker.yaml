@@ -1,0 +1,23 @@
+iii: v1
+name: claude-cli
+language: javascript
+deploy: bundle
+manifest: package.json
+license: Apache-2.0
+tags: [coding-agent, claude, cli, terminal, console-ui]
+description: Claude Code as a terminal on the iii console — the worker installs the CLI, equips its workspace with the iii skills, runs it in a shell::pty session, and streams its hook events onto agent::events.
+
+runtime:
+  kind: javascript
+
+scripts:
+  start: node ./index.mjs
+
+dependencies:
+  # The terminal itself: shell::pty runs the CLI, shell::exec installs it and
+  # equips the workspace, coder::read-file reads the files back.
+  shell: "^0.12.0"
+  # The page this worker injects.
+  console: "^1.9.11"
+  configuration: "0.x"
+  iii-stream: "0.x"
