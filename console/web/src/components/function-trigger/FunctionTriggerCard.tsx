@@ -2,6 +2,10 @@ import { Check, Copy, Loader2, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { CopyMessageButton } from '@/components/chat/CopyMessageButton'
 import {
+  TimelineActivityDisclosure,
+  TimelineActivityTrail,
+} from '@/components/chat/TimelineActivityTrail'
+import {
   firstNonNull,
   firstRendered,
   rawRedactor,
@@ -458,9 +462,9 @@ export function FunctionTriggerCard({
     >
       {/* The copy affordance must be a sibling of the collapse toggle
           (nested buttons are invalid HTML): the labeled toggle carries the
-          title with the copy icon in flow right after it, and the caret
-          strip is a pointer-only duplicate target so clicking anywhere on
-          the row still collapses. */}
+          title with the copy icon in flow right after it, and the trailing
+          activity disclosure/caret is a pointer-only duplicate target so
+          clicking anywhere on the row still collapses. */}
       <div
         className={cn(
           'group/fchdr flex items-center gap-2',
@@ -502,6 +506,7 @@ export function FunctionTriggerCard({
                 )}
               />
             )}
+            <TimelineActivityTrail kind="function" />
             <div
               className={cn(
                 'min-w-0 truncate',
@@ -535,14 +540,11 @@ export function FunctionTriggerCard({
                 <>Triggered </>
               ) : null}
               {!description ? (
-                <>
-                  <span className="text-accent italic font-semibold">ƒ</span>{' '}
-                  {running && message.unresolvedTarget ? (
-                    <span className="text-ink-faint">…</span>
-                  ) : (
-                    <FunctionIdLabel functionId={message.functionId} />
-                  )}
-                </>
+                running && message.unresolvedTarget ? (
+                  <span className="text-ink-faint">…</span>
+                ) : (
+                  <FunctionIdLabel functionId={message.functionId} />
+                )
               ) : null}
               {!description && !pending && !running && preview ? (
                 <span className="text-ink-ghost"> ({preview})</span>
@@ -575,22 +577,24 @@ export function FunctionTriggerCard({
           tabIndex={-1}
           onClick={() => setOpen((v) => !v)}
           className={cn(
-            'flex cursor-pointer items-center self-stretch',
+            'flex cursor-pointer items-center self-stretch overflow-visible',
             expandedSurface
               ? 'flex-1 justify-end pr-3'
               : 'w-8 shrink-0 justify-center',
           )}
         >
-          <span
-            className={cn(
-              'inline-block shrink-0 text-ink-ghost transition-[transform,opacity] duration-150',
-              open
-                ? 'rotate-90 opacity-100'
-                : 'opacity-0 group-hover/fchdr:opacity-100 group-focus-within/fchdr:opacity-100',
-            )}
-          >
-            ▸
-          </span>
+          {expandedSurface ? (
+            <span
+              className={cn(
+                'inline-block shrink-0 text-ink-ghost transition-transform duration-150',
+                open && 'rotate-90',
+              )}
+            >
+              ▸
+            </span>
+          ) : (
+            <TimelineActivityDisclosure />
+          )}
         </button>
       </div>
 

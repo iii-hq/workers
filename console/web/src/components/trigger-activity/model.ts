@@ -83,12 +83,16 @@ export function registrationFromCall({
         ? lifecycle.once
         : false)
   const triggerType = stringOf(request.trigger_type) ?? 'trigger'
+  const metadata = recordOf(request.metadata)
   const activity: TriggerActivityMessage = {
     id,
     kind: 'registration',
     triggerType,
     ...(request.config !== undefined ? { config: request.config } : {}),
     ...(stringOf(request.label) ? { label: stringOf(request.label) } : {}),
+    ...(stringOf(metadata?.action)
+      ? { action: stringOf(metadata?.action) }
+      : {}),
     ...(Array.isArray(request.conditions)
       ? { conditions: request.conditions }
       : {}),
@@ -124,6 +128,7 @@ export function registrationFromRow(
     conditions: row.conditions?.length ? row.conditions : undefined,
     once: row.once,
     label: row.label,
+    metadata: row.action ? { action: row.action } : undefined,
     function_id:
       row.delivery.kind === 'call' ? row.delivery.functionId : undefined,
   }
@@ -133,6 +138,7 @@ export function registrationFromRow(
     triggerType: row.triggerType,
     ...(row.config !== undefined ? { config: row.config } : {}),
     ...(row.label ? { label: row.label } : {}),
+    ...(row.action ? { action: row.action } : {}),
     ...(row.conditions?.length ? { conditions: row.conditions } : {}),
     delivery: row.delivery,
     lifecycle: {
@@ -219,6 +225,9 @@ export function activityFromTriggerRecord(
     ...(config !== undefined ? { config } : {}),
     ...((trigger.label ?? inherited?.label)
       ? { label: trigger.label ?? inherited?.label }
+      : {}),
+    ...((trigger.action ?? inherited?.action)
+      ? { action: trigger.action ?? inherited?.action }
       : {}),
     ...(inherited?.conditions ? { conditions: inherited.conditions } : {}),
     delivery,

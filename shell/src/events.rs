@@ -99,7 +99,7 @@ fn watch_root(config: &Value, resolver: &PathResolver) -> Result<PathBuf, Error>
 }
 
 /// Map a notify event kind onto the wire vocabulary.
-fn kind_of(kind: &notify::EventKind) -> &'static str {
+pub(crate) fn kind_of(kind: &notify::EventKind) -> &'static str {
     use notify::EventKind;
     match kind {
         EventKind::Create(_) => "created",
@@ -111,7 +111,7 @@ fn kind_of(kind: &notify::EventKind) -> &'static str {
 /// Reads and bare metadata touches are not workspace changes — reporting
 /// them would turn every `cat` and `chmod` into a phantom modification.
 /// Content writes carry their own Data events regardless.
-fn is_noise_kind(kind: &notify::EventKind) -> bool {
+pub(crate) fn is_noise_kind(kind: &notify::EventKind) -> bool {
     use notify::event::ModifyKind;
     use notify::EventKind;
     matches!(
@@ -123,7 +123,7 @@ fn is_noise_kind(kind: &notify::EventKind) -> bool {
 /// Git internals churn constantly during any git operation and mean
 /// nothing to a workspace surface — the visible outcome arrives as
 /// worktree events of its own.
-fn is_git_internal(path: &Path) -> bool {
+pub(crate) fn is_git_internal(path: &Path) -> bool {
     path.components()
         .any(|c| c.as_os_str().to_str() == Some(".git"))
 }
@@ -133,7 +133,7 @@ fn is_git_internal(path: &Path) -> bool {
 /// `.coder-tmp-`, the fs backend's `.iii-tmp-` and `.tmp.<uuid>`).
 /// Reporting them would hand every write a phantom neighbor — and the
 /// rename lands as an event on the REAL path regardless.
-fn is_own_temp(path: &Path) -> bool {
+pub(crate) fn is_own_temp(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
         return false;
     };
@@ -148,7 +148,7 @@ fn is_own_temp(path: &Path) -> bool {
 /// the write that fills the file is still a creation; a deletion
 /// supersedes what came before it; a creation after a deletion is a
 /// creation again.
-fn merge_kinds(prev: &'static str, next: &'static str) -> &'static str {
+pub(crate) fn merge_kinds(prev: &'static str, next: &'static str) -> &'static str {
     match (prev, next) {
         ("created", "modified") => "created",
         _ => next,

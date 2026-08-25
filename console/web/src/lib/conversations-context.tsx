@@ -87,6 +87,8 @@ interface ConversationsContextValue extends ConversationsApi {
    * backend.
    */
   memoryAvailable: boolean
+  /** Open a chat pinned to this session without replacing the current chat. */
+  openConversationInPanel: (sessionId: string) => void
 }
 
 const ConversationsContext = createContext<ConversationsContextValue | null>(
@@ -104,6 +106,8 @@ interface ConversationsProviderProps {
   /** Called when an injected page asks for a conversation, so the host can
       place the chat pane when none is open. */
   onConversationRequested?: (sessionId: string) => void
+  /** Called when chat UI requests a dedicated, session-pinned panel. */
+  onConversationPanelRequested?: (sessionId: string) => void
 }
 
 /**
@@ -116,6 +120,7 @@ export function ConversationsProvider({
   children,
   injectableUiRuntime,
   onConversationRequested,
+  onConversationPanelRequested,
 }: ConversationsProviderProps) {
   const harnessStatus = useHarnessStatus(backend.id === 'real')
   const harnessAvailable = isHarnessAvailable(harnessStatus)
@@ -172,6 +177,20 @@ export function ConversationsProvider({
   activeIdRef.current = api.activeId
   const conversationRequestedRef = useRef(onConversationRequested)
   conversationRequestedRef.current = onConversationRequested
+  const conversationPanelRequestedRef = useRef(onConversationPanelRequested)
+  conversationPanelRequestedRef.current = onConversationPanelRequested
+  const openConversationInPanel = useCallback((sessionId: string) => {
+    const id = sessionId.trim()
+    if (!id) return
+    if (conversationPanelRequestedRef.current) {
+      conversationPanelRequestedRef.current(id)
+      return
+    }
+    // Standalone/story renders have no workspace controller; retain the old
+    // selectable-chat behavior as a graceful fallback.
+    selectConversationRef.current(id)
+    conversationRequestedRef.current?.(id)
+  }, [])
   const conversationAdapterRef = useRef<ConversationAdapter | null>(null)
   if (!conversationAdapterRef.current) {
     conversationAdapterRef.current = {
@@ -224,6 +243,7 @@ export function ConversationsProvider({
     shellAvailable,
     worktreeAvailable,
     memoryAvailable,
+    openConversationInPanel,
   }
 
   return (

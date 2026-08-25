@@ -33,7 +33,8 @@ pub struct WorkerConfig {
     #[serde(default = "default_max_depth")]
     pub max_depth: u32,
 
-    /// Fan-out budget: non-terminal children of a turn past this is refused.
+    /// Fan-out budget: child sessions created by a turn past this are refused;
+    /// appending work to an existing eligible session does not consume a slot.
     #[serde(default = "default_max_children")]
     pub max_children: u32,
 
@@ -202,7 +203,8 @@ fn default_max_depth() -> u32 {
     3
 }
 fn default_max_children() -> u32 {
-    // Per-turn spawn total (fire-and-forget spawns settle instantly). Live
+    // Per-turn child-session creation total (re-tasking an existing session
+    // does not consume another slot). Live
     // testing showed 6-wide fan-outs are a mundane ask ("one worker per
     // planet") that forced workarounds at 5; 8 covers the ordinary case
     // while the guard still stops runaways.

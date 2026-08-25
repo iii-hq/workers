@@ -87,9 +87,43 @@ describe('sub-agent activity', () => {
 
   it('lets terminal session status override stale streaming activity', () => {
     const signal = { kind: 'messaging' as const, timestamp: 10 }
-    expect(displayedSubagentActivity('working', signal)).toBe('messaging')
-    expect(displayedSubagentActivity('done', signal)).toBe('active')
-    expect(displayedSubagentActivity('error', signal)).toBe('error')
+    expect(
+      displayedSubagentActivity(conversation({ status: 'working' }), signal),
+    ).toBe('messaging')
+    expect(
+      displayedSubagentActivity(conversation({ status: 'done' }), signal),
+    ).toBe('completed')
+    expect(
+      displayedSubagentActivity(
+        conversation({ status: 'done', statusReason: 'stopped' }),
+        signal,
+      ),
+    ).toBe('stopped')
+    expect(
+      displayedSubagentActivity(conversation({ status: 'error' }), signal),
+    ).toBe('error')
+    expect(
+      displayedSubagentActivity(
+        conversation({ status: 'working' }),
+        signal,
+        'reconnecting',
+      ),
+    ).toBe('disconnected')
+  })
+
+  it('uses the same queued and waiting states as composer chips', () => {
+    expect(
+      displayedSubagentActivity(conversation({ status: 'idle' }), null),
+    ).toBe('queued')
+    expect(
+      displayedSubagentActivity(
+        conversation({
+          status: 'working',
+          statusReason: 'waiting for model',
+        }),
+        null,
+      ),
+    ).toBe('waiting')
   })
 })
 

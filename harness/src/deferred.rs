@@ -251,6 +251,7 @@ pub async fn resolve(
                     cp.held_by = None;
                     cp.child_session_id = child.as_ref().map(|c| c.session_id.clone());
                     cp.child_turn_id = child.as_ref().map(|c| c.turn_id.clone());
+                    cp.child_session_reused = child.as_ref().is_some_and(|c| c.reused);
                 }
                 let turn_resumed = persist_and_maybe_resume(deps, &cfg, &mut record).await?;
                 return Ok(FunctionResolveResponse {
@@ -705,6 +706,7 @@ mod tests {
             } else {
                 None
             },
+            child_session_reused: false,
             held_by: held_by.map(str::to_string),
             held_arguments: None,
             pending_timeout_ms: timeout_ms,

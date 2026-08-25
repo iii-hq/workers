@@ -269,6 +269,8 @@ export interface TriggerActivityMessage {
   triggerType: string
   config?: unknown
   label?: string
+  /** What this event means in user-facing prose (`metadata.action`). */
+  action?: string
   conditions?: readonly unknown[]
   delivery: { kind: 'notify' } | { kind: 'call'; functionId: string }
   lifecycle: {
@@ -300,16 +302,22 @@ export interface TriggerActivityMessage {
     | 'exhausted'
 }
 
-/**
- * Renders only the source-specific section of a trigger activity. Dispatch is
- * registration-ordered and `null` falls through to the next renderer before
- * the host's generic source fallback.
- */
+/** Worker-owned presentation hooks for one trigger type. The base `tryRender`
+ * remains the source-section hook for compatibility. Optional detail and
+ * display hooks replace the expanded Terminal surface and compact timeline
+ * content while the host keeps disclosure and raw-data access. */
 export interface TriggerActivityRenderer {
   /** e.g. `cron/page.js#trigger-activity` */
   id: string
   isMatch(triggerType: string): boolean
+  /** Source-specific content used by the host's generic detail view. */
   tryRender(activity: TriggerActivityMessage): React.ReactNode | null
+  /** Complete expanded Terminal tab. `null` keeps the generic detail view. */
+  tryRenderDetails?(activity: TriggerActivityMessage): React.ReactNode | null
+  /** Compact clickable timeline content. Do not return interactive children. */
+  tryRenderDisplay?(activity: TriggerActivityMessage): React.ReactNode | null
+  /** Redact registration/fire raw values before display or copy. */
+  redactRaw?(value: unknown): unknown
 }
 
 export type JsonValue =
@@ -493,9 +501,7 @@ export interface Host {
     registerSessionChip(chip: SessionChipRegistration): () => void
     /** Optional on consoles that predate the footer turn-summary slot. */
     registerTurnSummary?(summary: SessionTurnSummaryRegistration): () => void
-    registerTranscriptRenderer?(
-      renderer: TranscriptRendererRegistration,
-    ): () => void
+    registerTranscriptRenderer?(renderer: TranscriptRendererRegistration): () => void
     /** Optional on consoles that predate worker-driven conversation switching. */
     selectConversation?(sessionId: string): void
     /** Live composer model for a conversation, including unsaved drafts. */

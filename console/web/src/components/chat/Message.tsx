@@ -1,10 +1,12 @@
-import { Blocks, SquareSlash } from 'lucide-react'
+import { Blocks, Bot, Sparkles, SquareSlash } from 'lucide-react'
 import { FunctionTriggerCard } from '@/components/function-trigger/FunctionTriggerCard'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import type { TriggerRegistration } from '@/components/trigger-activity/model'
 import { TriggerActivityCard } from '@/components/trigger-activity/TriggerActivityCard'
 import { Caret } from '@/components/ui/Caret'
+import { Chip } from '@/components/ui/Chip'
 import { Prompt } from '@/components/ui/Prompt'
+import { Card, CardBody, CardHeader } from '@/components/ui/Surface'
 import { Markdown } from '@/lib/markdown'
 import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
@@ -12,9 +14,11 @@ import type {
   AssistantMessage as AssistantMessageType,
   Attachment,
   Message as MessageType,
+  SubagentAppearance,
   SystemMessage as SystemMessageType,
   UserMessage as UserMessageType,
 } from '@/types/chat'
+import { SUBAGENT_ICON_COMPONENTS } from './ActiveSubagentChips'
 import { AttachmentChip, formatSize } from './AttachmentChip'
 import { CopyMessageButton } from './CopyMessageButton'
 import { MemoryChip } from './MemoryChip'
@@ -49,6 +53,14 @@ interface MessageProps {
   registration?: TriggerRegistration
   /** The machine-authored wake entry paired with a durable trigger record. */
   triggerNotification?: UserMessageType
+  /** Current child-session identity for a direct spawn seed message. */
+  spawnContext?: SpawnTaskContext
+}
+
+export interface SpawnTaskContext {
+  title?: string | null
+  model?: string | null
+  appearance?: SubagentAppearance
 }
 
 export function Message({
@@ -62,6 +74,7 @@ export function Message({
   defaultOpenCalls,
   registration,
   triggerNotification,
+  spawnContext,
 }: MessageProps) {
   switch (message.role) {
     case 'user':
@@ -69,11 +82,12 @@ export function Message({
         <TriggerActivityCard
           notification={message}
           registration={registration}
+          defaultOpen={defaultOpenCalls}
         />
       ) : message.reaction ? (
         <ReactionTaskMessage message={message} />
       ) : message.spawn ? (
-        <SpawnTaskMessage message={message} />
+        <SpawnTaskMessage message={message} context={spawnContext} />
       ) : message.validation ? (
         <ValidationNudgeMessage message={message} />
       ) : (
@@ -126,6 +140,7 @@ export function Message({
           record={message}
           registration={registration}
           notification={triggerNotification}
+          defaultOpen={defaultOpenCalls}
         />
       ) : (
         <SystemNotice message={message} />
@@ -325,15 +340,72 @@ function ValidationNudgeMessage({ message }: { message: UserMessageType }) {
  * input, but sent by the PARENT agent — labeled and left-aligned like a
  * reaction task so it never reads as something the human typed.
  */
-function SpawnTaskMessage({ message }: { message: UserMessageType }) {
+function SpawnTaskMessage({
+  message,
+  context,
+}: {
+  message: UserMessageType
+  context?: SpawnTaskContext
+}) {
+  const appearance = context?.appearance
+  const title = appearance?.name.trim() || context?.title?.trim() || 'Sub-agent'
+  const AgentIcon = appearance?.icon
+    ? SUBAGENT_ICON_COMPONENTS[appearance.icon]
+    : Bot
+
   return (
-    <article className="flex flex-col items-start gap-2">
-      <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost">
-        <Prompt symbol="⚙">Spawn · sub-agent task</Prompt>
-      </header>
-      <div className="max-w-[80%] border-l border-rule pl-4 pr-1 py-1 break-words text-ink-faint">
-        <Markdown>{message.content}</Markdown>
-      </div>
+    <article
+      className="w-full"
+      data-message-role="spawn-task"
+      aria-label={`${title} spawn task`}
+    >
+      <Card>
+        <CardHeader className="border-b border-edge">
+          <Sparkles aria-hidden className="size-4 shrink-0 stroke-accent" />
+          <div className="flex min-w-0 items-center gap-2 font-mono text-[0.8125rem] font-medium tracking-[0.06em]">
+            <span className="shrink-0">Spawn</span>
+            {context?.model ? (
+              <>
+                <span aria-hidden className="shrink-0 text-ink-ghost">
+                  ·
+                </span>
+                <span
+                  className="min-w-0 truncate font-normal normal-case tracking-normal text-ink-faint"
+                  title={context.model}
+                >
+                  {context.model}
+                </span>
+              </>
+            ) : null}
+          </div>
+        </CardHeader>
+
+        <div className="flex min-w-0 items-center gap-3 p-3 bg-ink-faint/3">
+          <AgentIcon
+            aria-hidden
+            className="size-5 shrink-0 stroke-accent sm:size-4"
+          />
+          <div className="flex min-w-0 flex-1 flex-wrap align-center items-center gap-2 font-sans text-base sm:text-sm">
+            <div
+              className="min-w-0 truncate font-semibold text-ink"
+              title={title}
+            >
+              {title}
+            </div>
+            <Chip tone="accent">Sub-agent</Chip>
+          </div>
+        </div>
+
+        <div className="h-px bg-edge/40" style={{ width: 'calc(100% + 24px)', marginLeft: '-12px' }}></div>
+
+        <CardBody className="p-0">
+          <div className="break-words p-4 text-ink-faint sm:p-3">
+            <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
+              {message.content}
+            </Markdown>
+          </div>
+        </CardBody>
+      </Card>
     </article>
   )
 }

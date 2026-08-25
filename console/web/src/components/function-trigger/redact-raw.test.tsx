@@ -125,6 +125,18 @@ afterEach(() => {
 })
 
 describe('compact activity presentation', () => {
+  it('keeps a function marker visible and moves the disclosure chevron outside', () => {
+    const out = collapsedHtml({ description: 'Updating project files' })
+
+    expect(out).toContain('data-timeline-activity-kind="function"')
+    expect(out).toContain('>ƒ</div>')
+    expect(out).toContain('lucide-chevron-right')
+    expect(out).toContain('left-full')
+    expect(out.indexOf('lucide-check')).toBeLessThan(
+      out.indexOf('data-timeline-activity-kind="function"'),
+    )
+  })
+
   it('uses the muted foreground token for the agent description', () => {
     expect(collapsedHtml({ description: 'Updating project files' })).toContain(
       'text-muted-foreground',

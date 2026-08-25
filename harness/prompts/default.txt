@@ -124,7 +124,7 @@ assistant: The payload was a JSON-encoded string. Re-issuing the SAME function w
 
 ## Starting a sub-agent
 
-`harness::spawn { task, model?, provider?, session_id?, options? }` starts a separate agent
+`harness::spawn { task, display?, model?, provider?, session_id?, options? }` starts a separate agent
 session and returns `{ child_session_id, child_turn_id }` immediately — it never waits and
 never parks your turn. The child receives ONLY its task text: no transcript, no knowledge of
 you or the wider goal. Its result is NOT delivered back to you — if you need it, the task
@@ -138,10 +138,13 @@ trigger registration, so it performs its assignment and updates shared state —
 else. Pass `options: { orchestrator: true }` only when the child itself must coordinate
 further agents; without it, a child that tries is refused by policy and reports FAILED.
 
-Name every child you spawn: always pass `session_id`. When an id is GIVEN to you — by the
+Give each child a short functional display name, such as `Frontend`, `Explorer`, or `Reviewer`,
+with `display: { name, icon?, color? }`; use only the icon and color tokens in the contract.
+This is its user-visible identity, not its technical id. Always pass `session_id`.
+When an id is GIVEN to you — by the
 task, the operator, or a consumer already watching for it — pass it EXACTLY as given, down
 to the character: appending your own suffix renames the thing everyone else is waiting on,
-and their lookups then find nothing. When YOU choose the name, use a short readable slug
+and their lookups then find nothing. When YOU choose the id, use a short readable slug
 plus a few random characters, e.g. `fetch-headlines-b4k9`; a bare slug risks landing on an
 earlier run's session (reuse inside your own tree is reported back as `reused`, and a spawn
 into another owner's session is refused outright). Omitted entirely, the engine mints an

@@ -85,10 +85,13 @@ import {
 } from '@/lib/workspace-mobile'
 import {
   CHAT_SCREEN,
+  chatSessionScreen,
   extPageIdForScreen,
+  isChatScreen,
   MAX_COLUMNS,
   MIN_COLUMN_FRACTION,
   screenForView,
+  sessionIdForChatScreen,
   type TabScreen,
   tabColumns,
   tabPaneIds,
@@ -102,7 +105,7 @@ import { Workers } from '@/pages/Workers'
 import type { PageCommandsApi, PanelSide } from '@/types/injectable-ui'
 
 function firstPartyPageTitle(screen: TabScreen): string {
-  if (screen === CHAT_SCREEN) return 'Chat'
+  if (isChatScreen(screen)) return 'Chat'
   if (screen === 'workers') return 'Workers'
   if (screen === 'traces') return 'Traces'
   return screen
@@ -363,7 +366,7 @@ export function App({
   // tabs under the user). Pre-marking keeps the hash-inbound effect quiet.
   const closeSettings = useCallback(() => {
     const primary = workspaceRef.current.activeTab.screens.find(
-      (s): s is TabScreen => s !== null && s !== CHAT_SCREEN,
+      (s): s is TabScreen => s !== null && !isChatScreen(s),
     )
     if (primary) {
       lastHashScreenRef.current = primary
@@ -426,7 +429,7 @@ export function App({
     // matters — `screens.includes(null)` would match an EMPTY column.
     if (hashScreen !== null && activeTab.screens.includes(hashScreen)) return
     const primary = activeTab.screens.find(
-      (s): s is TabScreen => s !== null && s !== CHAT_SCREEN,
+      (s): s is TabScreen => s !== null && !isChatScreen(s),
     )
     if (!primary) return
     // Pre-mark so the hash-inbound effect treats this as already handled.
@@ -489,10 +492,14 @@ export function App({
       onConversationRequested={() => {
         openWorkspaceScreen(CHAT_SCREEN)
       }}
+      onConversationPanelRequested={(conversationId) => {
+        openWorkspaceScreen(chatSessionScreen(conversationId))
+      }}
     >
       <Sheet>
         <Header
           workspace={workspace}
+          onOpenScreen={openWorkspaceScreen}
           mobilePanelIndex={mobilePanelIndex}
           onCloseTab={requestCloseTab}
           settingsOpen={view === 'configuration'}
@@ -739,6 +746,22 @@ function WorkspacePanes({
     index: number
     armed: boolean
   } | null>(null)
+  const pendingMobileScreenRef = useRef<TabScreen | null>(null)
+
+  const focusMobilePanel = useCallback(
+    (index: number) => {
+      if (window.matchMedia('(min-width: 640px)').matches) return
+      onMobilePanelIndexChange(index)
+      const container = containerRef.current
+      if (container) {
+        container.scrollTo({
+          left: container.clientWidth * index,
+          behavior: 'auto',
+        })
+      }
+    },
+    [onMobilePanelIndexChange],
+  )
 
   // First-run discoverability for the edge add zones: nudge until the user
   // adds a panel THROUGH a zone (either side), then remember in localStorage
@@ -772,19 +795,41 @@ function WorkspacePanes({
     addEdgeColumn('right', columns)
   }, [activeTab.id, addEdgeColumn, columns, enteringPanel])
 
-  // A tab switch lands on the panel that tab was last showing; native
-  // horizontal scrolling does the gesture work inside a tab.
-  useEffect(() => {
+  // A tab switch restores the panel that tab was last showing. An `open`
+  // command takes precedence and reveals its exact target once committed.
+  // Keeping both cases in one layout effect prevents the tab restoration
+  // from undoing the requested focus before paint.
+  useLayoutEffect(() => {
     const container = containerRef.current
-    if (!container || container.dataset.activeTab === activeTab.id) return
-    pendingMobileColumnRef.current = null
-    container.dataset.activeTab = activeTab.id
-    const index = Math.max(0, Math.min(columns - 1, mobilePanelIndex))
-    container.scrollTo({
-      left: container.clientWidth * index,
-      behavior: 'auto',
-    })
-  }, [activeTab.id, columns, mobilePanelIndex])
+    const tabChanged = container?.dataset.activeTab !== activeTab.id
+    if (container && tabChanged) {
+      pendingMobileColumnRef.current = null
+      container.dataset.activeTab = activeTab.id
+    }
+
+    const pendingScreen = pendingMobileScreenRef.current
+    const pendingIndex = pendingScreen
+      ? activeTab.screens.indexOf(pendingScreen)
+      : -1
+    if (pendingIndex >= 0) {
+      pendingMobileScreenRef.current = null
+      focusMobilePanel(pendingIndex)
+      return
+    }
+    if (container && tabChanged) {
+      const index = Math.max(0, Math.min(columns - 1, mobilePanelIndex))
+      container.scrollTo({
+        left: container.clientWidth * index,
+        behavior: 'auto',
+      })
+    }
+  }, [
+    activeTab.id,
+    activeTab.screens,
+    columns,
+    focusMobilePanel,
+    mobilePanelIndex,
+  ])
 
   useEffect(() => {
     const pending = pendingMobileColumnRef.current
@@ -1088,7 +1133,14 @@ function WorkspacePanes({
       if (command.type === 'open') {
         const origin = current.tabs.find((tab) => tab.id === command.tabId)
         if (!origin || origin.id === current.activeTab.id) {
-          if (current.activeTab.screens.includes(command.screen)) return false
+          const existingColumn = current.activeTab.screens.indexOf(
+            command.screen,
+          )
+          if (existingColumn >= 0) {
+            focusMobilePanel(existingColumn)
+            return false
+          }
+          pendingMobileScreenRef.current = command.screen
           current.openScreen(command.screen)
           return true
         }
@@ -1142,7 +1194,7 @@ function WorkspacePanes({
       current.addColumn(command.tabId, side)
       return true
     },
-    [edgeNudge, reducedMotion],
+    [edgeNudge, focusMobilePanel, reducedMotion],
   )
 
   const startPanelCommand = useCallback(
@@ -1469,6 +1521,20 @@ function ScreenBody({
     extId === null ? firstPartyPageTitle(screen) : undefined,
     paneId,
   )
+  if (isChatScreen(screen)) {
+    const conversationId = sessionIdForChatScreen(screen)
+    // The compact header variant — a tab column is width-constrained the
+    // same way the old side dock was, especially in two-column layouts.
+    return (
+      <ChatPanel
+        density="dock"
+        panelSide={panelSide}
+        onRequestClose={onClose}
+        conversationId={conversationId ?? undefined}
+        commands={commands}
+      />
+    )
+  }
   if (extId !== null) {
     return (
       <ExtPage
@@ -1484,29 +1550,16 @@ function ScreenBody({
       />
     )
   }
-  switch (screen) {
-    case CHAT_SCREEN:
-      // The compact header variant — a tab column is width-constrained the
-      // same way the old side dock was, especially in two-column layouts.
-      return (
-        <ChatPanel
-          density="dock"
-          panelSide={panelSide}
-          onRequestClose={onClose}
-          commands={commands}
-        />
-      )
-    case 'workers':
-      return <Workers onRequestClose={onClose} commands={commands} />
-    default:
-      return <TracesV2 onRequestClose={onClose} commands={commands} />
-  }
+  if (screen === 'workers')
+    return <Workers onRequestClose={onClose} commands={commands} />
+  return <TracesV2 onRequestClose={onClose} commands={commands} />
 }
 
 interface HeaderProps {
   workspace: UseWorkspaceTabsReturn
   /** Close a workspace after the dirty-work guard has had its say. */
   onCloseTab: (id: string) => void
+  onOpenScreen: (screen: TabScreen) => void
   mobilePanelIndex: number
   settingsOpen: boolean
   onToggleSettings: () => void
@@ -1516,6 +1569,7 @@ interface HeaderProps {
 function Header({
   workspace,
   onCloseTab,
+  onOpenScreen,
   mobilePanelIndex,
   settingsOpen,
   onToggleSettings,
@@ -1526,6 +1580,7 @@ function Header({
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const columns = tabColumns(workspace.activeTab)
   const mobileScreen = workspace.activeTab.screens[mobilePanelIndex] ?? null
+  const mobileIsChat = mobileScreen !== null && isChatScreen(mobileScreen)
 
   return (
     <>
@@ -1582,15 +1637,19 @@ function Header({
           <button
             type="button"
             onClick={() => {
-              if (mobileScreen === CHAT_SCREEN) createNew()
-              else workspace.createTab({ columns: 1 })
+              if (mobileScreen === CHAT_SCREEN) {
+                createNew()
+              } else if (mobileIsChat) {
+                createNew()
+                onOpenScreen(CHAT_SCREEN)
+              } else {
+                workspace.createTab({ columns: 1 })
+              }
             }}
-            aria-label={
-              mobileScreen === CHAT_SCREEN ? 'new chat' : 'new workspace'
-            }
+            aria-label={mobileIsChat ? 'new chat' : 'new workspace'}
             className="flex size-12 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
           >
-            {mobileScreen === CHAT_SCREEN ? (
+            {mobileIsChat ? (
               <SquarePen className="size-6" aria-hidden />
             ) : (
               <Plus className="size-6" aria-hidden />

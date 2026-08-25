@@ -12,7 +12,7 @@ use crate::config::WorkerConfig;
 use crate::deps::Deps;
 use crate::error::HarnessError;
 use crate::functions::send::{self as send, normalize_message, TurnLineage};
-use crate::functions::spawn::SpawnRequest;
+use crate::functions::spawn::{SpawnRequest, SubagentDisplay};
 use crate::ids;
 use crate::policy;
 use crate::prompt;
@@ -59,30 +59,78 @@ pub async fn spawn_from_turn(
             ),
         ));
     }
-    // Fan-out budget: children spawned by this turn (spawns settle instantly,
-    // so the cap is a per-turn total, not a live count).
-    let spawned = parent.spawned_children().len() as u32;
-    if spawned >= cfg.max_children {
-        return Err(is_error(
-            "harness/spawn_fanout_exceeded",
-            format!(
-                "{spawned} children spawned this turn at or above max_children {} — the cap is \
-                 PER TURN. Consolidate the remaining work into the children already running \
-                 (one child can cover several parts), or start the remainder from a later turn \
-                 (e.g. your next notification-woken one); do not retry this spawn in this turn.",
-                cfg.max_children
-            ),
-        ));
-    }
+    // Fan-out budget: only child SESSIONS created by this turn consume slots.
+    // At capacity, resolve an explicit target before rejecting it: appending a
+    // task to an eligible existing session creates no child and must remain
+    // available even when every creation slot has been used.
+    let created = parent.created_child_session_count() as u32;
+    let reuses_existing = if created >= cfg.max_children {
+        request_targets_reusable_session(deps, parent, &req)
+            .await
+            .map_err(|e| is_error(e.code(), e.to_string()))?
+    } else {
+        false
+    };
+    enforce_fanout(created, cfg.max_children, reuses_existing)?;
 
     let parent_link = ParentLink {
         session_id: parent.session_id.clone(),
         turn_id: parent.turn_id.clone(),
         function_call_id: call_id.to_string(),
     };
-    seed_child(deps, &cfg, &req, Some(&parent_link), Some(parent))
-        .await
-        .map_err(|e| is_error(e.code(), e.to_string()))
+    seed_child(
+        deps,
+        &cfg,
+        &req,
+        Some(&parent_link),
+        Some(parent),
+        reuses_existing,
+    )
+    .await
+    .map_err(|e| is_error(e.code(), e.to_string()))
+}
+
+/// At-capacity preflight for an explicitly named session. A successful result
+/// switches `seed_child` to reuse-only admission: it rechecks existence and
+/// ownership, but can no longer create the target if it disappears meanwhile.
+async fn request_targets_reusable_session(
+    deps: &Deps,
+    parent: &TurnRecord,
+    req: &SpawnRequest,
+) -> Result<bool, HarnessError> {
+    let Some(target_session_id) = req.session_id.as_deref() else {
+        return Ok(false);
+    };
+    let session = deps.session().await;
+    let Some(metadata) = session.metadata_of(target_session_id).await? else {
+        return Ok(false);
+    };
+    validate_turn_reuse(
+        &parent.session_id,
+        target_session_id,
+        metadata.get("parent_session_id").and_then(Value::as_str),
+    )?;
+    Ok(true)
+}
+
+fn enforce_fanout(
+    created: u32,
+    max_children: u32,
+    reuses_existing: bool,
+) -> Result<(), ResultData> {
+    if reuses_existing || created < max_children {
+        return Ok(());
+    }
+    Err(is_error(
+        "harness/spawn_fanout_exceeded",
+        format!(
+            "{created} child sessions created this turn at or above max_children \
+             {max_children} — the cap is PER TURN. Consolidate the remaining work into the \
+             children already running (one child can cover several parts), or start the \
+             remainder from a later turn (e.g. your next notification-woken one); do not \
+             retry this spawn in this turn."
+        ),
+    ))
 }
 
 /// The immediate function result for a successful fire-and-forget spawn. The
@@ -126,7 +174,7 @@ pub async fn spawn_child(
     parent: Option<&ParentLink>,
 ) -> Result<ChildIds, HarnessError> {
     let cfg = deps.cfg().await;
-    seed_child(deps, &cfg, req, parent, None).await
+    seed_child(deps, &cfg, req, parent, None, false).await
 }
 
 /// Resolve a child's dispatch policy. An in-turn child starts from the
@@ -185,8 +233,10 @@ async fn seed_child(
     req: &SpawnRequest,
     parent: Option<&ParentLink>,
     parent_record: Option<&TurnRecord>,
+    reuse_only: bool,
 ) -> Result<ChildIds, HarnessError> {
     let session = deps.session().await;
+    let display = normalize_display(req.display.as_ref())?;
 
     let model = req
         .model
@@ -230,64 +280,9 @@ async fn seed_child(
         None => requested_turns,
     };
 
-    // Child session, with sub-agent linkage merged into SessionMeta.metadata.
-    // A live parent turn gives the full linkage (resolve + display). A direct
-    // parentless spawn has no parent turn, but a caller-supplied
-    // `parent_session_id` still writes a display-only link so the console
-    // nests the child (no policy inheritance, no parent-call resolution).
-    // `spawned_by` is always "agent": every spawn is a direct call now —
-    // trigger delivery never creates an agent.
-    let linkage = match parent {
-        Some(p) => Some(json!({
-            "parent_session_id": p.session_id,
-            "parent_turn_id": p.turn_id,
-            "function_call_id": p.function_call_id,
-            "depth": depth,
-            "spawned_by": "agent",
-        })),
-        None => req.parent_session_id.as_ref().map(|psid| {
-            json!({
-                "parent_session_id": psid,
-                "depth": depth,
-                "spawned_by": "agent",
-            })
-        }),
-    };
-    let mut reused = false;
-    let child_session_id = match &req.session_id {
-        Some(id) => {
-            let created = session.ensure(id, None, linkage.as_ref()).await?;
-            if !created {
-                // Reuse is legitimate for a parentless caller (a fork, or
-                // delivering a reaction into an existing chat). From a live
-                // turn it is almost always a cross-run id collision — models
-                // re-invent the same "random" ids — so it is confined to the
-                // caller's own tree and reported back either way (`reused`).
-                if let Some(p) = parent {
-                    // A session that vanished between ensure and get behaves
-                    // like a fresh create; malformed metadata stays an error.
-                    if let Some(metadata) = session.metadata_of(id).await? {
-                        validate_turn_reuse(
-                            &p.session_id,
-                            id,
-                            metadata.get("parent_session_id").and_then(Value::as_str),
-                        )?;
-                    }
-                }
-                reused = true;
-                tracing::info!(
-                    child_session_id = %id,
-                    "harness::spawn reused an existing session — prior transcript and parent linkage retained"
-                );
-            }
-            id.clone()
-        }
-        None => session.create(None, linkage.as_ref()).await?,
-    };
-
-    // The task is the child's opening user message — machine-sent, so every
-    // spawn marks the entry (origin + a readable id prefix, the notify
-    // pattern) or clients would render it as something the human typed.
+    // Resolve every locally fallible input before creating a session. An
+    // invalid task or filesystem root must not leave behind an uncounted empty
+    // session that a later call can reuse around the fan-out budget.
     let task = normalize_message(req.task.clone())?;
     let (entry_id, origin) = (Some(ids::spawn_entry_id()), Some(json!({ "spawn": true })));
     let mut options = TurnOptions {
@@ -338,6 +333,72 @@ async fn seed_child(
             .unwrap_or(cfg.max_validation_retries),
         max_transient_resumes: cfg.max_transient_resumes,
     };
+    // Child session, with sub-agent linkage and optional display identity
+    // merged into SessionMeta.metadata. The display name is also the title on
+    // creation; `session::ensure` deliberately keeps an existing session's
+    // title and metadata on reuse.
+    // A live parent turn gives the full linkage (resolve + display). A direct
+    // parentless spawn has no parent turn, but a caller-supplied
+    // `parent_session_id` still writes a display-only link so the console
+    // nests the child (no policy inheritance, no parent-call resolution).
+    // `spawned_by` is always "agent": every spawn is a direct call now —
+    // trigger delivery never creates an agent.
+    let linkage = child_session_metadata(
+        parent,
+        req.parent_session_id.as_deref(),
+        depth,
+        display.as_ref(),
+    );
+    let title = display.as_ref().map(|value| value.name.as_str());
+    let mut reused = false;
+    let child_session_id = match &req.session_id {
+        Some(id) if reuse_only => {
+            let metadata = session.metadata_of(id).await?.ok_or_else(|| {
+                HarnessError::InvalidRequest(format!(
+                    "spawn session_id `{id}` no longer exists: the turn is already at its \
+                     max_children creation cap, so this call may reuse an existing session but \
+                     cannot recreate one — retry after the session exists again"
+                ))
+            })?;
+            if let Some(p) = parent {
+                validate_turn_reuse(
+                    &p.session_id,
+                    id,
+                    metadata.get("parent_session_id").and_then(Value::as_str),
+                )?;
+            }
+            reused = true;
+            id.clone()
+        }
+        Some(id) => {
+            let ensured = session.ensure(id, title, linkage.as_ref()).await?;
+            if !ensured.created {
+                // Reuse is legitimate for a parentless caller (a fork, or
+                // delivering a reaction into an existing chat). From a live
+                // turn it is almost always a cross-run id collision — models
+                // re-invent the same "random" ids — so it is confined to the
+                // caller's own tree and reported back either way (`reused`).
+                if let Some(p) = parent {
+                    validate_turn_reuse(
+                        &p.session_id,
+                        id,
+                        ensured
+                            .metadata
+                            .get("parent_session_id")
+                            .and_then(Value::as_str),
+                    )?;
+                }
+                reused = true;
+                tracing::info!(
+                    child_session_id = %id,
+                    "harness::spawn reused an existing session — prior transcript and parent linkage retained"
+                );
+            }
+            id.clone()
+        }
+        None => session.create(title, linkage.as_ref()).await?,
+    };
+
     let previous_child = if reused {
         crate::state::get_turn(&deps.iii, &child_session_id, cfg.session_timeout_ms).await?
     } else {
@@ -425,6 +486,69 @@ fn caller_holds_child_session_lock(
     parent_record.is_some_and(|parent| parent.session_id == child_session_id)
 }
 
+fn normalize_display(
+    display: Option<&SubagentDisplay>,
+) -> Result<Option<SubagentDisplay>, HarnessError> {
+    let Some(display) = display else {
+        return Ok(None);
+    };
+    let name = display.name.trim();
+    if name.is_empty() {
+        return Err(HarnessError::InvalidRequest(
+            "spawn display.name must not be empty".into(),
+        ));
+    }
+    if name.chars().count() > 48 {
+        return Err(HarnessError::InvalidRequest(
+            "spawn display.name must be at most 48 characters".into(),
+        ));
+    }
+    Ok(Some(SubagentDisplay {
+        name: name.to_string(),
+        icon: display.icon,
+        color: display.color,
+    }))
+}
+
+fn child_session_metadata(
+    parent: Option<&ParentLink>,
+    display_parent_session_id: Option<&str>,
+    depth: u32,
+    display: Option<&SubagentDisplay>,
+) -> Option<Value> {
+    let mut metadata = serde_json::Map::new();
+    if let Some(parent) = parent {
+        metadata.insert(
+            "parent_session_id".into(),
+            Value::String(parent.session_id.clone()),
+        );
+        metadata.insert(
+            "parent_turn_id".into(),
+            Value::String(parent.turn_id.clone()),
+        );
+        metadata.insert(
+            "function_call_id".into(),
+            Value::String(parent.function_call_id.clone()),
+        );
+        metadata.insert("depth".into(), json!(depth));
+        metadata.insert("spawned_by".into(), Value::String("agent".into()));
+    } else if let Some(parent_session_id) = display_parent_session_id {
+        metadata.insert(
+            "parent_session_id".into(),
+            Value::String(parent_session_id.to_string()),
+        );
+        metadata.insert("depth".into(), json!(depth));
+        metadata.insert("spawned_by".into(), Value::String("agent".into()));
+    }
+    if let Some(display) = display {
+        metadata.insert(
+            "subagent_display".into(),
+            serde_json::to_value(display).expect("sub-agent display always serializes"),
+        );
+    }
+    (!metadata.is_empty()).then_some(Value::Object(metadata))
+}
+
 /// The child's provider. An explicit request wins; otherwise the parent's
 /// provider is inherited ONLY when the model is inherited too — model and
 /// provider must stay a coherent pair. A spawn that names its own model must
@@ -509,6 +633,7 @@ fn is_error(code: &str, message: String) -> ResultData {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::functions::spawn::{SubagentColor, SubagentIcon};
     use crate::types::output::OutputContract;
     use crate::types::turn::TurnStatus;
 
@@ -576,12 +701,76 @@ mod tests {
     fn spawn_request(model: Option<&str>, provider: Option<&str>) -> SpawnRequest {
         SpawnRequest {
             task: crate::functions::send::MessageInput::Text("t".into()),
+            display: None,
             model: model.map(str::to_string),
             provider: provider.map(str::to_string),
             session_id: None,
             parent_session_id: None,
             options: None,
         }
+    }
+
+    fn display(name: &str) -> SubagentDisplay {
+        SubagentDisplay {
+            name: name.into(),
+            icon: Some(SubagentIcon::Code),
+            color: Some(SubagentColor::Blue),
+        }
+    }
+
+    #[test]
+    fn display_name_is_trimmed_and_bounded_by_characters() {
+        let normalized = normalize_display(Some(&display("  Frontend  ")))
+            .unwrap()
+            .unwrap();
+        assert_eq!(normalized.name, "Frontend");
+        assert_eq!(normalized.icon, Some(SubagentIcon::Code));
+        assert_eq!(normalized.color, Some(SubagentColor::Blue));
+
+        assert!(normalize_display(Some(&display(" \n\t "))).is_err());
+        assert!(normalize_display(Some(&display(&"é".repeat(48)))).is_ok());
+        let error = normalize_display(Some(&display(&"é".repeat(49)))).unwrap_err();
+        assert_eq!(error.code(), "harness/invalid_request");
+        assert!(error.to_string().contains("at most 48 characters"));
+    }
+
+    #[test]
+    fn display_metadata_is_merged_with_the_durable_parent_link() {
+        let parent = ParentLink {
+            session_id: "s_parent".into(),
+            turn_id: "t_parent".into(),
+            function_call_id: "call_spawn".into(),
+        };
+        assert_eq!(
+            child_session_metadata(Some(&parent), None, 1, Some(&display("Frontend"))),
+            Some(json!({
+                "parent_session_id": "s_parent",
+                "parent_turn_id": "t_parent",
+                "function_call_id": "call_spawn",
+                "depth": 1,
+                "spawned_by": "agent",
+                "subagent_display": {
+                    "name": "Frontend",
+                    "icon": "code",
+                    "color": "blue"
+                }
+            }))
+        );
+    }
+
+    #[test]
+    fn parentless_display_still_creates_session_metadata() {
+        assert_eq!(
+            child_session_metadata(None, None, 0, Some(&display("Explorer"))),
+            Some(json!({
+                "subagent_display": {
+                    "name": "Explorer",
+                    "icon": "code",
+                    "color": "blue"
+                }
+            }))
+        );
+        assert_eq!(child_session_metadata(None, None, 0, None), None);
     }
 
     #[test]
@@ -997,5 +1186,17 @@ mod tests {
         let text = serde_json::to_string(&reused.content).unwrap();
         assert!(text.contains("already existed"), "{text}");
         assert!(text.contains("transcript is retained"), "{text}");
+    }
+
+    #[test]
+    fn existing_session_reuse_is_not_blocked_at_fanout_capacity() {
+        assert!(enforce_fanout(8, 8, true).is_ok());
+
+        let error = enforce_fanout(8, 8, false).unwrap_err();
+        assert!(error.is_error);
+        assert_eq!(error.details["error"], "harness/spawn_fanout_exceeded");
+        assert!(error.details["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("8 child sessions created this turn")));
     }
 }

@@ -373,10 +373,10 @@ impl SessionService {
         let mut meta = self.meta_or_not_found(&req.session_id).await?;
 
         // Reason is retained while `working` (live phase detail, e.g.
-        // "waiting for <model>") and on `error` (failure cause);
-        // idle/done always clear it.
+        // "waiting for <model>"), on `error` (failure cause), and on `done`
+        // when the driver needs to distinguish a stopped turn. Idle clears it.
         let new_reason = match req.status {
-            SessionStatus::Working | SessionStatus::Error => req.reason,
+            SessionStatus::Working | SessionStatus::Done | SessionStatus::Error => req.reason,
             _ => None,
         };
 

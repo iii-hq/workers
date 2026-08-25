@@ -20,6 +20,7 @@ use serde_json::{json, Map, Value};
 use crate::configuration::{existing_value, set_value};
 
 pub const CHAT_SCREEN: &str = "chat";
+pub const CHAT_SESSION_SCREEN_PREFIX: &str = "chat:";
 pub const EXT_SCREEN_PREFIX: &str = "ext:";
 pub const ROUTED_SCREENS: [&str; 2] = ["traces", "workers"];
 pub const MAX_COLUMNS: usize = 64;
@@ -133,11 +134,21 @@ impl Tab {
 }
 
 pub fn is_valid_screen(screen: &str) -> bool {
-    screen == CHAT_SCREEN
+    is_chat_screen(screen)
         || ROUTED_SCREENS.contains(&screen)
         || screen
             .strip_prefix(EXT_SCREEN_PREFIX)
             .is_some_and(|id| !id.is_empty())
+}
+
+pub fn session_id_for_chat_screen(screen: &str) -> Option<&str> {
+    screen
+        .strip_prefix(CHAT_SESSION_SCREEN_PREFIX)
+        .filter(|session_id| !session_id.is_empty())
+}
+
+pub fn is_chat_screen(screen: &str) -> bool {
+    screen == CHAT_SCREEN || session_id_for_chat_screen(screen).is_some()
 }
 
 fn migrate_screen(screen: Option<String>) -> Option<String> {
@@ -284,7 +295,7 @@ pub enum Placement {
     EmptyColumn,
     /// A new column was added to the active tab.
     NewColumn,
-    /// The active tab was full; a fresh chat + screen tab was created.
+    /// The active tab was full; a fresh tab was created.
     NewTab,
 }
 
@@ -310,7 +321,7 @@ fn place_beside_chat(
     let mut screens = tab.normalized_screens(columns);
     let chat_index = screens
         .iter()
-        .position(|s| s.as_deref() == Some(CHAT_SCREEN));
+        .position(|s| s.as_deref().is_some_and(is_chat_screen));
     let adjacent_empty = chat_index
         .map(|i| i + 1)
         .filter(|&i| i < columns && screens[i].is_none());
@@ -346,7 +357,7 @@ fn place_beside_chat(
 
 /// Stay on the active tab when it already shows the screen, else reuse the
 /// tab that does; otherwise place it beside chat in the active tab; otherwise
-/// open a fresh chat + screen tab. Existing screens are never replaced.
+/// open a fresh tab. Existing screens are never replaced.
 pub fn open_screen(
     tabs: &[Tab],
     active_tab_id: &str,
@@ -390,11 +401,19 @@ pub fn open_screen(
             tabs: Some(next),
         };
     }
+    let (screens, column) = if is_chat_screen(screen) {
+        (vec![Some(screen.to_string())], 0)
+    } else {
+        (
+            vec![Some(CHAT_SCREEN.to_string()), Some(screen.to_string())],
+            1,
+        )
+    };
     let tab = Tab {
         id: new_id(),
         name: None,
-        columns: Some(2),
-        screens: vec![Some(CHAT_SCREEN.to_string()), Some(screen.to_string())],
+        columns: Some(screens.len() as u64),
+        screens,
         sizes: None,
         rest: Map::new(),
     };
@@ -405,7 +424,7 @@ pub fn open_screen(
     Opened {
         tabs: Some(next),
         tab_id,
-        column: 1,
+        column,
         placement: Placement::NewTab,
         screens,
     }
@@ -481,9 +500,35 @@ fn validated_screen(raw: &str) -> Result<String, Error> {
     } else {
         Err(remote(
             CODE_INVALID_SCREEN,
-            format!("screen '{screen}' is not `chat`, `traces`, `workers`, or `ext:<page-id>`"),
+            format!(
+                "screen '{screen}' is not `chat`, `chat:<session-id>`, `traces`, `workers`, or `ext:<page-id>`"
+            ),
         ))
     }
+}
+
+fn validated_screen_target(
+    raw_screen: &str,
+    raw_session_id: Option<&str>,
+) -> Result<String, Error> {
+    let screen = raw_screen.trim();
+    let Some(raw_session_id) = raw_session_id else {
+        return validated_screen(screen);
+    };
+    if screen != CHAT_SCREEN {
+        return Err(remote(
+            CODE_INVALID_SCREEN,
+            "`session_id` is only allowed when `screen` is `chat`",
+        ));
+    }
+    let session_id = raw_session_id.trim();
+    if session_id.is_empty() {
+        return Err(remote(
+            CODE_INVALID_SCREEN,
+            "`session_id` must not be empty",
+        ));
+    }
+    Ok(format!("{CHAT_SESSION_SCREEN_PREFIX}{session_id}"))
 }
 
 struct Layout {
@@ -550,9 +595,11 @@ pub struct ListOutput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct OpenInput {
-    /// `chat`, `traces`, `workers`, or `ext:<page-id>` for a worker page
-    /// (`ext:shell`, `ext:browser`, `ext:editor`, ...).
+    /// `chat`, `traces`, `workers`, or `ext:<page-id>` for a worker page.
     pub screen: String,
+    /// With `screen: "chat"`, pin the panel to this conversation session.
+    #[serde(default)]
+    pub session_id: Option<String>,
     /// Make the tab holding the screen the active one (default true).
     #[serde(default)]
     pub activate: Option<bool>,
@@ -570,6 +617,9 @@ pub struct OpenOutput {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CloseInput {
     pub screen: String,
+    /// With `screen: "chat"`, close only this conversation session panel.
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -606,8 +656,8 @@ pub fn register(iii: &Arc<IIIClient>) {
         })
         .description(
             "List the console workspace the human sees: every tab with its columns and \
-             screens, plus which tab is active. Screens are `chat`, `traces`, `workers`, \
-             or `ext:<page>` for worker pages.",
+             screens, plus which tab is active. Screens are `chat`, `chat:<session-id>`, \
+             `traces`, `workers`, or `ext:<page>` for worker pages.",
         ),
     );
 
@@ -619,7 +669,7 @@ pub fn register(iii: &Arc<IIIClient>) {
             let iii = client.clone();
             let lock = lock.clone();
             async move {
-                let screen = validated_screen(&input.screen)?;
+                let screen = validated_screen_target(&input.screen, input.session_id.as_deref())?;
                 let activate = input.activate.unwrap_or(true);
                 let _guard = lock.lock().await;
                 let layout = load_layout(&iii).await?;
@@ -656,7 +706,9 @@ pub fn register(iii: &Arc<IIIClient>) {
         .description(
             "Show a screen to the human in the console workspace, next to the conversation. \
              Reuses the tab that already shows it, else places it beside chat in the active \
-             tab, else opens a new chat + screen tab. Every browser on this engine updates. \
+             tab, else opens a new tab. Every browser on this engine updates. Use \
+             `{\"screen\":\"chat\",\"session_id\":\"<id>\"}` to open a chat panel pinned \
+             to one conversation. \
              Use `ext:shell` for the file explorer, `ext:browser` for browser sessions, \
              `ext:editor` for the editor, `workers` for the worker catalog.",
         ),
@@ -670,7 +722,7 @@ pub fn register(iii: &Arc<IIIClient>) {
             let iii = client.clone();
             let lock = lock.clone();
             async move {
-                let screen = validated_screen(&input.screen)?;
+                let screen = validated_screen_target(&input.screen, input.session_id.as_deref())?;
                 let _guard = lock.lock().await;
                 let layout = load_layout(&iii).await?;
                 let (tabs, tab_ids) = close_screen(&layout.tabs, &screen);
@@ -682,8 +734,9 @@ pub fn register(iii: &Arc<IIIClient>) {
             }
         })
         .description(
-            "Remove a screen from the console workspace wherever it is shown. Idempotent: \
-             an unmounted screen returns an empty `tab_ids`.",
+            "Remove a screen from the console workspace wherever it is shown. Pass `screen: \
+             chat` with `session_id` to close one pinned conversation panel. Idempotent: an \
+             unmounted screen returns an empty `tab_ids`.",
         ),
     );
 }
@@ -708,12 +761,40 @@ mod tests {
 
     #[test]
     fn screen_validation() {
-        for ok in ["chat", "traces", "workers", "ext:shell", "ext:browser"] {
+        for ok in [
+            "chat",
+            "chat:child",
+            "chat:child:attempt:2",
+            "traces",
+            "workers",
+            "ext:shell",
+            "ext:browser",
+        ] {
             assert!(is_valid_screen(ok), "{ok}");
         }
-        for bad in ["", "ext:", "configuration", "settings", "http://x"] {
+        for bad in ["", "chat:", "ext:", "configuration", "settings", "http://x"] {
             assert!(!is_valid_screen(bad), "{bad}");
         }
+        assert_eq!(
+            session_id_for_chat_screen("chat:child:attempt:2"),
+            Some("child:attempt:2")
+        );
+        assert_eq!(session_id_for_chat_screen("chat"), None);
+    }
+
+    #[test]
+    fn structured_chat_target_validation() {
+        assert_eq!(
+            validated_screen_target("chat", Some("child:attempt:2")).unwrap(),
+            "chat:child:attempt:2"
+        );
+        assert_eq!(
+            validated_screen_target("chat:child", None).unwrap(),
+            "chat:child"
+        );
+        assert!(validated_screen_target("chat", Some("")).is_err());
+        assert!(validated_screen_target("chat", Some("   ")).is_err());
+        assert!(validated_screen_target("workers", Some("child")).is_err());
     }
 
     #[test]
@@ -822,6 +903,27 @@ mod tests {
             next[1].screens,
             vec![Some("chat".to_string()), Some("ext:shell".to_string())]
         );
+    }
+
+    #[test]
+    fn full_tab_opens_a_session_specific_chat_without_a_generic_chat() {
+        let screens = (0..MAX_COLUMNS)
+            .map(|i| Some(format!("ext:p{i}")))
+            .collect();
+        let full = Tab {
+            id: "a".to_string(),
+            name: None,
+            columns: Some(MAX_COLUMNS as u64),
+            screens,
+            sizes: None,
+            rest: Map::new(),
+        };
+        let opened = open_screen(&[full], "a", "chat:child", fixed_id, fixed_pane_id);
+        assert_eq!(opened.placement, Placement::NewTab);
+        assert_eq!(opened.column, 0);
+        let next = opened.tabs.unwrap();
+        assert_eq!(next[1].columns, Some(1));
+        assert_eq!(next[1].screens, vec![Some("chat:child".to_string())]);
     }
 
     #[test]

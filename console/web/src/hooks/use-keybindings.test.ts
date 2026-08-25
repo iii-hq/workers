@@ -136,6 +136,22 @@ describe('createKeyDispatcher', () => {
     expect(seen).toEqual(['create'])
   })
 
+  it('stands down inside a declared standdown surface', () => {
+    const seen: string[] = []
+    const dispatcher = createKeyDispatcher(
+      () => ({ 'workspace.create': () => seen.push('create') }),
+      'mac',
+    )
+    const editorChild = {
+      tagName: 'DIV',
+      dataset: {},
+      closest: (selector: string) =>
+        selector.includes('data-keybindings-standdown') ? {} : null,
+    } as unknown as EventTarget
+    dispatcher.onKeyDown(key('t', { target: editorChild }))
+    expect(seen).toEqual([])
+  })
+
   it('never arms a chord from a field or a dialog', () => {
     const seen: string[] = []
     const dispatcher = createKeyDispatcher(

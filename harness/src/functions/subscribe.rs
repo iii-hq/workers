@@ -72,11 +72,16 @@ pub struct SubscribeRequest {
     /// directly from a turn and register a wake on what they write.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub function_id: Option<String>,
-    /// Call-binding template: `{ payload?, event_into? }`. `payload` is the
-    /// fixed argument object sent to the target; `event_into` is a JSON
-    /// pointer naming where the fired event is injected into that payload.
-    /// Meaningless for a wake; sub-agent fields (task/model/session_id/
-    /// options) are rejected — spawning is not something a binding does.
+    /// Presentation metadata plus the optional call-binding template:
+    /// `{ action?, payload?, event_into? }`. `action` is a short user-facing
+    /// description of the event shown when this trigger fires (for example,
+    /// "new Explorer message received"); unlike `label`, it describes what
+    /// happened rather than naming the binding. `payload` is the fixed
+    /// argument object sent to a call target; `event_into` is a JSON pointer
+    /// naming where the fired event is injected into that payload. For a
+    /// wake, only `action` has meaning. Sub-agent fields
+    /// (task/model/session_id/options) are rejected — spawning is not
+    /// something a binding does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
     /// Explicit target, the long form of `function_id` + `metadata`:
@@ -584,6 +589,7 @@ async fn handle(
         req.lifecycle.as_ref(),
         crate::types::message::AgentMessage::now_ms(),
     )?;
+    validate_event_action(req.metadata.as_ref())?;
     let once = effective_once(&req);
     // Timer idempotency is based on the caller's relative request. Resolving
     // `in_ms` first would mint a different absolute deadline on every retry.
@@ -865,7 +871,8 @@ async fn authorize_conditions(
     Ok(())
 }
 
-/// A call binding's shorthand `metadata` takes only `{ payload?, event_into? }`.
+/// A call binding's shorthand `metadata` takes only
+/// `{ action?, payload?, event_into? }`.
 /// Reject the rest LOUDLY: sub-agent keys here mean the caller wanted a spawn
 /// binding, and a pointer that cannot be created is a silent per-event no-op at
 /// fire time.
@@ -873,16 +880,37 @@ fn validate_call_template(metadata: &Value) -> Result<(), HarnessError> {
     let Some(map) = metadata.as_object() else {
         return Ok(());
     };
-    const ALLOWED: [&str; 2] = ["payload", "event_into"];
+    const ALLOWED: [&str; 3] = ["action", "payload", "event_into"];
     if let Some(unknown) = map.keys().find(|k| !ALLOWED.contains(&k.as_str())) {
         return Err(HarnessError::InvalidRequest(format!(
             "unknown key `{unknown}` for a call binding: `metadata` takes only \
-             {{ payload?, event_into? }} — the target is the registration's `function_id`. \
+             {{ action?, payload?, event_into? }} — the target is the registration's `function_id`. \
              Sub-agent fields (task/model/session_id/options) are not valid anywhere in a \
              binding: spawn children directly from a turn."
         )));
     }
     validate_event_into(map.get("event_into").and_then(Value::as_str))
+}
+
+/// Validate the one host-interpreted presentation field without constraining
+/// metadata that belongs to an explicit target. The action is plain display
+/// text; it never participates in routing or authorization.
+fn validate_event_action(metadata: Option<&Value>) -> Result<(), HarnessError> {
+    let Some(action) = metadata
+        .and_then(Value::as_object)
+        .and_then(|metadata| metadata.get("action"))
+    else {
+        return Ok(());
+    };
+    if action
+        .as_str()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        return Ok(());
+    }
+    Err(HarnessError::InvalidRequest(
+        "`metadata.action` must be a non-empty string describing the event".into(),
+    ))
 }
 
 fn validate_event_into(pointer: Option<&str>) -> Result<(), HarnessError> {
@@ -1765,7 +1793,8 @@ mod tests {
 
     #[test]
     fn a_call_binding_rejects_sub_agent_keys_and_bad_pointers() {
-        // The shorthand `metadata` for a call target is {payload?, event_into?}.
+        // The shorthand `metadata` for a call target is
+        // {action?, payload?, event_into?}.
         // A `task` here means the caller wanted a spawn binding; saying so beats
         // silently ignoring it and wiring a call that fires with an empty
         // template forever.
@@ -1776,6 +1805,11 @@ mod tests {
         assert!(err.to_string().contains("JSON pointer"));
         // The valid shapes pass, including the empty-pointer whole-payload form.
         assert!(validate_call_template(&json!({ "payload": { "db": "primary" } })).is_ok());
+        assert!(validate_call_template(&json!({
+            "action": "new Explorer message received",
+            "payload": { "db": "primary" }
+        }))
+        .is_ok());
         assert!(validate_call_template(&json!({ "event_into": "/args/event" })).is_ok());
         assert!(validate_call_template(&json!({ "event_into": "" })).is_ok());
         assert!(validate_call_template(&Value::Null).is_ok());
@@ -1786,6 +1820,17 @@ mod tests {
         }))
         .unwrap();
         assert!(validate_event_into(explicit.event_into.as_deref()).is_err());
+    }
+
+    #[test]
+    fn event_action_must_be_non_empty_text() {
+        assert!(validate_event_action(None).is_ok());
+        assert!(validate_event_action(Some(&json!({
+            "action": "new Explorer message received"
+        })))
+        .is_ok());
+        assert!(validate_event_action(Some(&json!({ "action": "  " }))).is_err());
+        assert!(validate_event_action(Some(&json!({ "action": 7 }))).is_err());
     }
 
     #[test]

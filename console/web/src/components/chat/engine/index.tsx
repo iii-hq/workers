@@ -156,6 +156,7 @@ function tryRenderRegisterTriggerDisplay(
   }
   return (
     <TriggerRegisteredDisplay
+      messageId={message.id}
       input={coerceJsonObject(unwrapEnvelope(message.input))}
       output={
         message.output != null

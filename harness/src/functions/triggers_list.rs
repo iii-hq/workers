@@ -6,8 +6,8 @@
 //! agent binding registers as the internal delivery hop with metadata that is
 //! only a `__binding` pointer, so the engine knows neither the owner nor the
 //! shape. The store is the authority — these functions expose it as data:
-//! trigger type, config, delivery target (absent = notify), conditions,
-//! lifecycle, fire count. Nothing here interprets a source type, which is
+//! trigger type, config, delivery target (absent = notify), label/event action,
+//! conditions, lifecycle, fire count. Nothing here interprets a source type, which is
 //! what keeps the console compatible with trigger sources that do not exist
 //! yet.
 //!
@@ -28,9 +28,9 @@ use crate::subscriptions::fired;
 pub const TRIGGERS_LIST_ID: &str = "harness::triggers::list";
 pub const TRIGGERS_LIST_DESC: &str =
     "Read-only: the trigger bindings a session owns (durable records) — subscription id, \
-     trigger type/config, delivery target (absent = notifies the owner), conditions, \
-     lifecycle, and fire count. In-turn agent calls may omit `session_id` (defaults to \
-     the calling session).";
+     trigger type/config, delivery target (absent = notifies the owner), label/event \
+     action, conditions, lifecycle, and fire count. In-turn agent calls may omit \
+     `session_id` (defaults to the calling session).";
 
 pub const TRIGGERS_UNREGISTER_ID: &str = "harness::triggers::unregister";
 pub const TRIGGERS_UNREGISTER_DESC: &str =
@@ -70,6 +70,9 @@ pub struct TriggerRow {
     pub conditions: Vec<ConditionSpec>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// Human-readable event text declared as `metadata.action`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
     pub once: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_fires: Option<u64>,
@@ -126,6 +129,7 @@ fn row_from(binding: &Binding) -> TriggerRow {
         target,
         conditions: binding.conditions.clone(),
         label,
+        action: binding.event_action().map(str::to_string),
         once: binding.lifecycle.once,
         max_fires: binding.lifecycle.max_fires,
         expires_at: binding.lifecycle.expires_at,
@@ -268,6 +272,7 @@ mod tests {
                 "trigger_type": "state",
                 "config": { "scope": "run", "key": "done" },
                 "label": "dedup-label",
+                "metadata": { "action": "run completion received" },
             })),
             fires: 3,
             created_at,
@@ -286,6 +291,7 @@ mod tests {
             "a wake delivers to nobody but the owner"
         );
         assert_eq!(row.label.as_deref(), Some("dedup-label"));
+        assert_eq!(row.action.as_deref(), Some("run completion received"));
         assert!(row.once);
         assert_eq!(row.expires_at, Some(1_800_000_000_000));
         assert_eq!(row.fires, 3);
@@ -301,6 +307,7 @@ mod tests {
         assert!(row.trigger_type.is_none());
         assert!(row.config.is_none());
         assert!(row.label.is_none());
+        assert!(row.action.is_none());
     }
 
     #[test]
@@ -329,6 +336,7 @@ mod tests {
         assert_eq!(record["target"], "state::set");
         assert_eq!(record["trigger_type"], "state");
         assert_eq!(record["config"], json!({ "scope": "run", "key": "done" }));
+        assert_eq!(record["action"], "run completion received");
         assert_eq!(record["fires"], 4);
         assert_eq!(record["outcome"], "unregistered");
         assert_eq!(record["retirement_reason"], "unregistered");

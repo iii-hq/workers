@@ -153,6 +153,16 @@ orchestration surface (`harness::spawn`, `harness::send`, trigger
 registration) unless spawned with `options: { orchestrator: true }`; spawn
 `options.system_prompt` remains the identity escape hatch.
 
+A spawn may also give its child a display-only identity with
+`display: { name, icon?, color? }`. `name` is trimmed, limited to 48 characters,
+and becomes the title of a newly created child session; `icon` and `color` are
+closed semantic tokens recorded with the child linkage in
+`metadata.subagent_display`. These fields never affect routing or execution,
+and reusing an existing `session_id` retains that session's original title and
+metadata. Icons are `agent`, `code`, `search`, `terminal`, `database`, `test`,
+`review`, `docs`, or `design`; colors are `neutral`, `blue`, `purple`, `teal`,
+`green`, `amber`, or `rose`.
+
 No prompt prescribes an orchestration process — identity prompts carry tool
 guidance only, enforced repo-wide by [`tests/prompts.rs`](tests/prompts.rs).
 The opt-in fan-out playbook (parent-owned control plane: pick a medium, arm

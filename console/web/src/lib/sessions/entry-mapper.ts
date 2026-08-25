@@ -114,6 +114,13 @@ export function triggerFiredName(t: TriggerFiredData): string {
   return t.trigger_type ?? 'trigger'
 }
 
+/** The compact timeline copy: an explicit event action, then the binding's
+ * existing display name for historical registrations. */
+export function triggerFiredEventText(t: TriggerFiredData): string {
+  const action = t.action?.trim()
+  return action || triggerFiredName(t)
+}
+
 /**
  * Plain one-liner for the fired notice (also the a11y/fallback content).
  * Generic over the delivery target: a wake reads "notified this chat", any
@@ -122,7 +129,7 @@ export function triggerFiredName(t: TriggerFiredData): string {
  * rendering as they did.
  */
 export function triggerFiredSummary(t: TriggerFiredData): string {
-  const name = triggerFiredName(t)
+  const name = triggerFiredEventText(t)
   const deliveredAction =
     t.target === 'spawn'
       ? `spawned${t.model ? ` ${t.model}` : ''}`

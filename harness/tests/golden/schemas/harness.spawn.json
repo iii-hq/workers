@@ -556,6 +556,67 @@
         ],
         "type": "string"
       },
+      "SubagentColor": {
+        "enum": [
+          "neutral",
+          "blue",
+          "purple",
+          "teal",
+          "green",
+          "amber",
+          "rose"
+        ],
+        "type": "string"
+      },
+      "SubagentDisplay": {
+        "description": "Display-only identity for a spawned child. The name becomes the session title; icon and color are closed semantic tokens consumed by UIs.",
+        "properties": {
+          "color": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/SubagentColor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "icon": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/SubagentIcon"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "description": "Short functional name, such as `Frontend` or `Explorer`. Leading and trailing whitespace is removed; the result must be 1-48 characters.",
+            "maxLength": 48,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "SubagentIcon": {
+        "enum": [
+          "agent",
+          "code",
+          "search",
+          "terminal",
+          "database",
+          "test",
+          "review",
+          "docs",
+          "design"
+        ],
+        "type": "string"
+      },
       "SystemPromptStrategy": {
         "description": "How a caller-supplied system prompt combines with the built-in identity prompt.",
         "oneOf": [
@@ -675,6 +736,17 @@
       }
     },
     "properties": {
+      "display": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/SubagentDisplay"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Optional display-only identity for the child session. This never affects session ids, policy, routing, or execution. On named-session reuse the existing session title and metadata are retained."
+      },
       "model": {
         "type": [
           "string",

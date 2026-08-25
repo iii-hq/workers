@@ -268,6 +268,15 @@ export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
           <div ref={listWrapRef} className="flex min-h-0 flex-1 flex-col">
             <MessageList
               messages={player.messages}
+              spawnContext={
+                player.activeChild
+                  ? {
+                      title: player.activeChild.title,
+                      model: player.activeChild.model,
+                      appearance: player.activeChild.subagentAppearance,
+                    }
+                  : undefined
+              }
               header={<DemoEmptyState />}
               isThinking={player.isThinking}
               thinkingDetail={

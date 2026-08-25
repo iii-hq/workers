@@ -2,7 +2,7 @@
 //! Sub-agents). Fire-and-forget: the caller gets the child's ids immediately
 //! and never its result. Designed to be called by the model through
 //! `agent_trigger`; the dispatch layer records the child linkage on a `Done`
-//! checkpoint (fan-out guard, status, stop cascade).
+//! checkpoint (creation count, status, stop cascade).
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -14,6 +14,46 @@ use crate::prompt::{Mode, SystemPromptStrategy};
 use crate::types::model::ThinkingLevel;
 use crate::types::output::OutputContract;
 use crate::types::turn::FunctionPolicy;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentIcon {
+    Agent,
+    Code,
+    Search,
+    Terminal,
+    Database,
+    Test,
+    Review,
+    Docs,
+    Design,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentColor {
+    Neutral,
+    Blue,
+    Purple,
+    Teal,
+    Green,
+    Amber,
+    Rose,
+}
+
+/// Display-only identity for a spawned child. The name becomes the session
+/// title; icon and color are closed semantic tokens consumed by UIs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SubagentDisplay {
+    /// Short functional name, such as `Frontend` or `Explorer`. Leading and
+    /// trailing whitespace is removed; the result must be 1-48 characters.
+    #[schemars(length(min = 1, max = 48))]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<SubagentIcon>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<SubagentColor>,
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct SpawnOptions {
@@ -79,6 +119,11 @@ pub struct SpawnRequest {
     /// every resolved required selector literally (for example `Use database
     /// db: "primary"`); the child cannot infer resources from the parent.
     pub task: MessageInput,
+    /// Optional display-only identity for the child session. This never affects
+    /// session ids, policy, routing, or execution. On named-session reuse the
+    /// existing session title and metadata are retained.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<SubagentDisplay>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -112,21 +157,6 @@ pub struct SpawnResponse {
     pub reused: bool,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn spawn_skills_option_is_ids_only_on_the_wire() {
-        let value = serde_json::to_value(SpawnOptions {
-            skills: Some(vec!["review".into()]),
-            ..Default::default()
-        })
-        .unwrap();
-        assert_eq!(value["skills"], serde_json::json!(["review"]));
-    }
-}
-
 /// Direct-call entry (a consumer starting a linked child). Dispatched from a
 /// turn, the dispatch layer handles linkage + guards; here we start a child
 /// and return its ids. Parent linkage is injected by the dispatcher, never
@@ -138,4 +168,44 @@ pub async fn handle(deps: &Deps, req: SpawnRequest) -> Result<SpawnResponse, Har
         child_turn_id: ids.turn_id,
         reused: ids.reused,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn spawn_skills_option_is_ids_only_on_the_wire() {
+        let value = serde_json::to_value(SpawnOptions {
+            skills: Some(vec!["review".into()]),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(value["skills"], json!(["review"]));
+    }
+
+    #[test]
+    fn display_tokens_are_closed_on_the_wire() {
+        let request: SpawnRequest = serde_json::from_value(json!({
+            "task": "build the interface",
+            "display": { "name": "Frontend", "icon": "code", "color": "blue" }
+        }))
+        .unwrap();
+        let display = request.display.unwrap();
+        assert_eq!(display.name, "Frontend");
+        assert_eq!(display.icon, Some(SubagentIcon::Code));
+        assert_eq!(display.color, Some(SubagentColor::Blue));
+
+        assert!(serde_json::from_value::<SpawnRequest>(json!({
+            "task": "x",
+            "display": { "name": "Unsafe", "icon": "<svg>" }
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<SpawnRequest>(json!({
+            "task": "x",
+            "display": { "name": "Unsafe", "color": "#ff00ff" }
+        }))
+        .is_err());
+    }
 }

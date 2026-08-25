@@ -329,11 +329,11 @@ older Console versions.
   Mark `metadata.display` only for successful rich artifacts worth keeping
   expanded.
 - `host.triggerRenderers?.register`: match the normalized inner
-  `triggerType`, not `engine::register_trigger`. Render only the
-  source-specific section and return `null` for malformed or unsupported
-  config. The host owns **Trigger fired**, delivery, lifecycle/controls, raw
-  JSON, and fallback. Use one renderer across registration, fired, and
-  retirement kinds; feature-detect for older consoles.
+  `triggerType`, not `engine::register_trigger`. Use `tryRender` for the
+  source section, optional `tryRenderDetails` for the complete expanded
+  Terminal view, optional `tryRenderDisplay` for compact timeline content,
+  and `redactRaw` for raw registration/fire filtering. Every slot falls
+  through on `null`; feature-detect for older consoles.
 - Implement `redactRaw` whenever input/output can contain secrets. Make it a
   pure, non-mutating, total, cycle-safe deep walk over values and keys. A
   render card that hides a secret has not protected the raw JSON tab or copy
@@ -352,6 +352,56 @@ older Console versions.
 - `host.iii`: call worker functions, hydrate state, subscribe to events, and
   unregister handlers on teardown. Prefix per-tab event handler ids with
   `iii::` when they should stay out of the trace feed.
+
+### Design trigger activity at the right ownership level
+
+The trigger renderer contract is complete here so an implementation handoff
+does not depend on a Console source file:
+
+```ts
+interface TriggerActivityRenderer {
+  id: string
+  isMatch(triggerType: string): boolean
+  tryRender(activity: TriggerActivityMessage): React.ReactNode | null
+  tryRenderDetails?(activity: TriggerActivityMessage): React.ReactNode | null
+  tryRenderDisplay?(activity: TriggerActivityMessage): React.ReactNode | null
+  redactRaw?(value: unknown): unknown
+}
+```
+
+`TriggerActivityMessage.kind` is `registration`, `fired`, or `retirement`.
+It carries `triggerType`, opaque `config`, optional `label` and `action`,
+delivery, lifecycle, and optional payload/outcome fields. Match
+`triggerType`, parse unknown data without throwing, and return `null` per slot
+to reach the next renderer or the host fallback.
+
+Use `tryRender` when only source meaning is custom. A `tryRenderDetails`
+override must include relevant delivery/lifecycle facts because it replaces
+the whole readable detail. Keep `tryRenderDisplay` non-interactive,
+single-line, and safe to truncate because the host wraps it in the disclosure
+button. The host always owns accessible expand/collapse behavior, renderer
+isolation, and the Raw JSON tab. Make `redactRaw` pure, non-mutating, total,
+and cycle-safe; a throw fails closed.
+
+For harness bindings, `label` names the subscription while
+`metadata.action` describes the future event:
+
+```json
+{
+  "trigger_type": "on-message",
+  "config": { "scope": "explorer" },
+  "label": "explorer-messages",
+  "metadata": { "action": "new Explorer message received" }
+}
+```
+
+The action is available as binding data before its first fire and is persisted
+as `activity.action`, but registration and active-binding UI use `label`.
+Render action only when `activity.kind === 'fired'`. The default fired row is
+a status mark plus action, falls back through label/state/source, joins the
+same `show all` groups as function calls, and opens the full card already
+expanded when clicked. A once fire and automatic retirement remain one
+activity.
 
 ### Scope every injected style
 
@@ -534,8 +584,10 @@ restart semantics, complex dictionaries/arrays, or worker-specific actions.
 - Fetch each asset, verify a changed build produces a changed hash, and verify
   disconnect/reconnect does not create duplicate registrations.
 - For trigger-activity renderers, verify exact type matching, malformed-config
-  fallthrough, registration/fired/retirement, once-consumed and explicit
-  unbind lifecycle, and generic fallback when the worker UI is absent.
+  fallthrough, every implemented slot and activity kind, action fallback,
+  compact display without nested interaction, complete-detail lifecycle
+  fidelity, redaction fail-closed behavior, and generic fallback when worker
+  UI is absent.
 
 ### Interaction matrix
 

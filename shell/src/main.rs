@@ -22,6 +22,7 @@ mod scode;
 mod target;
 mod telemetry;
 mod triggers;
+mod turn_observe;
 mod turns;
 mod ui;
 

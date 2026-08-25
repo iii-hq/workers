@@ -11,6 +11,10 @@ import {
 import { useEffect, useState } from 'react'
 import { registrationFromCall } from '@/components/trigger-activity/model'
 import {
+  firstRenderedTriggerActivitySlot,
+  useTriggerActivityRenderers,
+} from '@/components/trigger-activity/renderer-registry'
+import {
   TriggerJsonPane,
   TriggerStats,
   TriggerTrace,
@@ -56,6 +60,7 @@ export function RegisterTriggerView({
   output,
   running,
 }: RegisterTriggerViewProps) {
+  const triggerRenderers = useTriggerActivityRenderers()
   const req = safeParseRequest<RegisterTriggerRequest>(
     registerTriggerRequestSchema,
     input,
@@ -83,6 +88,16 @@ export function RegisterTriggerView({
     ...(typeof once === 'boolean' ? { effectiveOnce: once } : {}),
     ...(resp?.note ? { note: resp.note } : {}),
   })
+  const workerDetails = registered
+    ? firstRenderedTriggerActivitySlot(
+        triggerRenderers,
+        registration.activity,
+        (renderer) =>
+          renderer.tryRenderDetails?.(registration.activity) ?? null,
+      )
+    : null
+
+  if (workerDetails) return workerDetails.node
 
   const metadata = objectOf(req.metadata)
   const eventInto =
@@ -90,6 +105,11 @@ export function RegisterTriggerView({
     (typeof metadata?.event_into === 'string' ? metadata.event_into : undefined)
   const callPayload =
     target?.payload !== undefined ? target.payload : metadata?.payload
+  const registrationMetadata = metadata
+    ? Object.fromEntries(
+        Object.entries(metadata).filter(([key]) => key !== 'action'),
+      )
+    : req.metadata
   const stats = [
     {
       label: 'Mode',
@@ -154,10 +174,12 @@ export function RegisterTriggerView({
             label="When"
             title={registration.activity.triggerType}
           >
-            <TriggerSource
-              activity={registration.activity}
-              presentation="compact"
-            />
+            <div className="flex min-w-0 flex-col gap-2">
+              <TriggerSource
+                activity={registration.activity}
+                presentation="compact"
+              />
+            </div>
           </TriggerTraceNode>
         }
         then={
@@ -222,10 +244,10 @@ export function RegisterTriggerView({
           variant="secondary"
         />
       ) : null}
-      {req.metadata !== undefined && !isEmpty(req.metadata) ? (
+      {registrationMetadata !== undefined && !isEmpty(registrationMetadata) ? (
         <TriggerJsonPane
           label="Registration metadata"
-          value={req.metadata}
+          value={registrationMetadata}
           variant="secondary"
         />
       ) : null}
@@ -250,6 +272,7 @@ export function RegisterTriggerView({
 }
 
 interface TriggerRegisteredDisplayProps {
+  messageId?: string
   input: unknown
   output: unknown
   sessionId?: string
@@ -260,12 +283,14 @@ interface TriggerRegisteredDisplayProps {
 /** Compact registration receipt. The full WHEN/IF/THEN model remains in the
  * expanded renderer; this surface makes the new active binding unmistakable. */
 export function TriggerRegisteredDisplay({
+  messageId,
   input,
   output,
   sessionId,
   createdAt,
   now,
 }: TriggerRegisteredDisplayProps) {
+  const triggerRenderers = useTriggerActivityRenderers()
   const req = safeParseRequest<RegisterTriggerRequest>(
     registerTriggerRequestSchema,
     input,
@@ -284,6 +309,21 @@ export function TriggerRegisteredDisplay({
   const currentTime = now ?? clock
 
   if (!req || !registrationId) return null
+  const registration = registrationFromCall({
+    id: messageId ?? `trigger-registration:${registrationId}`,
+    input: req,
+    subscriptionId: registrationId,
+    ...(typeof (resp?.once ?? req.once ?? req.lifecycle?.once) === 'boolean'
+      ? { effectiveOnce: resp?.once ?? req.once ?? req.lifecycle?.once }
+      : {}),
+    ...(resp?.note ? { note: resp.note } : {}),
+  })
+  const workerDisplay = firstRenderedTriggerActivitySlot(
+    triggerRenderers,
+    registration.activity,
+    (renderer) => renderer.tryRenderDisplay?.(registration.activity) ?? null,
+  )
+  if (workerDisplay) return workerDisplay.node
   const label = req.label?.trim() || 'Unlabeled trigger'
   const once = resp?.once ?? req.once ?? req.lifecycle?.once
   const createdAge = formatElapsed(createdAt, currentTime)
@@ -316,7 +356,10 @@ export function TriggerRegisteredDisplay({
           <div className="font-sans text-base font-semibold text-ink sm:text-sm">
             Trigger registered
           </div>
-          <div className="truncate font-sans text-base text-ink-faint sm:text-sm">
+          <div
+            className="truncate font-sans text-base text-ink-faint sm:text-sm"
+            data-trigger-registration-label=""
+          >
             {label}
           </div>
           <div className="truncate font-mono text-base text-ink-ghost sm:text-[0.6875rem]">

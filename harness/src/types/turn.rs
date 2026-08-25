@@ -217,6 +217,11 @@ pub struct CallCheckpoint {
     pub child_session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub child_turn_id: Option<String>,
+    /// Whether this spawn appended work to a session that already existed.
+    /// Defaults to false so checkpoints written before this field existed are
+    /// conservatively treated as session creations by the fan-out guard.
+    #[serde(default)]
+    pub child_session_reused: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub held_by: Option<String>,
     /// The call's arguments as mutated by the hook chain up to the hold, so a
@@ -329,10 +334,10 @@ impl TurnRecord {
             .collect()
     }
 
-    /// Children spawned by this turn, regardless of checkpoint state
-    /// (fire-and-forget spawns settle `Done` instantly). Feeds the per-turn
-    /// fan-out guard, `harness::status` children, and the stop cascade —
-    /// stopping an already-finished child is a harmless no-op.
+    /// Children targeted by this turn, regardless of checkpoint state or
+    /// whether their session was created or reused (fire-and-forget spawns
+    /// settle `Done` instantly). Feeds `harness::status` children and the stop
+    /// cascade — stopping an already-finished child is a harmless no-op.
     pub fn spawned_children(&self) -> Vec<ParentLink> {
         self.calls
             .iter()
@@ -343,6 +348,20 @@ impl TurnRecord {
                 function_call_id: call_id.clone(),
             })
             .collect()
+    }
+
+    /// Number of child SESSIONS this turn actually created. Re-tasking an
+    /// existing session still appears in [`Self::spawned_children`] for status
+    /// and cancellation, but does not consume another fan-out slot.
+    pub fn created_child_session_count(&self) -> usize {
+        self.calls
+            .values()
+            .filter(|checkpoint| {
+                checkpoint.child_session_id.is_some()
+                    && checkpoint.child_turn_id.is_some()
+                    && !checkpoint.child_session_reused
+            })
+            .count()
     }
 }
 
@@ -433,13 +452,14 @@ mod tests {
         assert!(!decoded.eligible);
     }
 
-    fn cp(state: CallState, child: Option<&str>) -> CallCheckpoint {
+    fn cp(state: CallState, child: Option<&str>, reused: bool) -> CallCheckpoint {
         CallCheckpoint {
             state,
             function_id: Some("harness::spawn".into()),
             entry_id: None,
             child_session_id: child.map(|s| s.to_string()),
             child_turn_id: child.map(|_| "t_child".to_string()),
+            child_session_reused: reused,
             held_by: None,
             held_arguments: None,
             pending_timeout_ms: None,
@@ -468,9 +488,11 @@ mod tests {
     #[test]
     fn pending_call_ids_lists_triggered_and_pending() {
         let mut r = record();
-        r.calls.insert("a".into(), cp(CallState::Done, None));
-        r.calls.insert("b".into(), cp(CallState::Pending, None));
-        r.calls.insert("c".into(), cp(CallState::Triggered, None));
+        r.calls.insert("a".into(), cp(CallState::Done, None, false));
+        r.calls
+            .insert("b".into(), cp(CallState::Pending, None, false));
+        r.calls
+            .insert("c".into(), cp(CallState::Triggered, None, false));
         let mut ids = r.pending_call_ids();
         ids.sort();
         assert_eq!(ids, vec!["b", "c"]);
@@ -481,24 +503,57 @@ mod tests {
         let mut r = record();
         // Legacy parked spawn (pre-deploy record).
         r.calls
-            .insert("a".into(), cp(CallState::Pending, Some("s_child")));
-        r.calls.insert("b".into(), cp(CallState::Pending, None)); // hook hold, no child
-                                                                  // Fire-and-forget spawn: Done instantly, still counts.
+            .insert("a".into(), cp(CallState::Pending, Some("s_child"), false));
         r.calls
-            .insert("c".into(), cp(CallState::Done, Some("s_done")));
+            .insert("b".into(), cp(CallState::Pending, None, false)); // hook hold, no child
+                                                                      // Fire-and-forget spawn: Done instantly, still counts.
+        r.calls
+            .insert("c".into(), cp(CallState::Done, Some("s_done"), true));
         let children = r.spawned_children();
         assert_eq!(children.len(), 2);
         assert_eq!(children[0].session_id, "s_child");
         assert_eq!(children[0].function_call_id, "a");
         assert_eq!(children[1].session_id, "s_done");
         assert_eq!(children[1].function_call_id, "c");
+        assert_eq!(r.created_child_session_count(), 1);
+    }
+
+    #[test]
+    fn reused_sessions_do_not_consume_fanout_slots() {
+        let mut r = record();
+        r.calls
+            .insert("fresh".into(), cp(CallState::Done, Some("s_child"), false));
+        for n in 0..8 {
+            r.calls.insert(
+                format!("reuse-{n}"),
+                cp(CallState::Done, Some("s_child"), true),
+            );
+        }
+        assert_eq!(r.spawned_children().len(), 9);
+        assert_eq!(r.created_child_session_count(), 1);
+    }
+
+    #[test]
+    fn legacy_spawn_checkpoint_counts_as_a_session_creation() {
+        let checkpoint: CallCheckpoint = serde_json::from_value(json!({
+            "state": "done",
+            "function_id": "harness::spawn",
+            "child_session_id": "s_child",
+            "child_turn_id": "t_child"
+        }))
+        .unwrap();
+        assert!(!checkpoint.child_session_reused);
+
+        let mut r = record();
+        r.calls.insert("legacy".into(), checkpoint);
+        assert_eq!(r.created_child_session_count(), 1);
     }
 
     #[test]
     fn turn_record_round_trips_through_json() {
         let mut r = record();
         r.calls
-            .insert("a".into(), cp(CallState::Pending, Some("s_child")));
+            .insert("a".into(), cp(CallState::Pending, Some("s_child"), false));
         // Populate the trigger-spawn fields so the round trip exercises them
         // with values, not just their skip-if-none defaults.
         r.display_parent_session_id = Some("s_display_parent".into());
