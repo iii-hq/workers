@@ -452,8 +452,8 @@ the console's.
 The dispatcher already yields to a caret in an `input`, `textarea`, `select`,
 or contentEditable node. Anything else that consumes raw keystrokes — a code
 editor's gutters and widgets, a read-mode diff, a drawing surface — gives the
-dispatcher a plain element as the event target, and a bare binding like `t`
-(new workspace) fires mid-thought. Declare the surface:
+dispatcher a plain element as the event target, and a bare page binding
+(a `t`, a digit) fires mid-thought. Declare the surface:
 
 ```tsx
 <div className="my-editor-body" data-keybindings-standdown="">…</div>
@@ -486,19 +486,22 @@ function Page({ commands }: PageRenderProps) {
 ```
 
 Keys a page may take: anything the console does not already use. The
-console's own keys (`1`–`9`, `t`, `[`, `]`, `Shift+W`, `\`, `,`, `{`, `}`,
-`Mod+K`), the prefix of any go-to chord (`G`) and the chords the browser owns
-(`Mod+W`, `Mod+T`, `Mod+1`…) are refused at registration with a
-`console.warn`; the row stays, without a key. Single letters and chords
-(`Q L`) are fine; the typing guard keeps them out of fields unless the
-command says `firesWhileTyping`, and a field can hand specific commands back
-with `data-keybindings-allow="<pageId>.<id>"`.
+console keeps `Mod+K` and its modifier chords (Ctrl on a Mac, Alt elsewhere:
+`Ctrl+T`, `Ctrl+W`, `Ctrl+[`/`]`, `Ctrl+{`/`}`, `Ctrl+1`-`9`, `Ctrl+\`,
+`Ctrl+,`, and the `Ctrl+G` go-to prefix), and the browser owns its own
+(`Mod+W`, `Mod+T`, `Mod+1`…); those are refused at registration with a
+`console.warn` and the row stays, without a key. Bare single letters, digits
+and chords (`Q L`) are the page's to take; the typing guard keeps them out
+of fields unless the command says `firesWhileTyping`, a
+`data-keybindings-standdown` surface swallows them entirely, and a field can
+hand specific commands back with `data-keybindings-allow="<pageId>.<id>"`.
 
 Focus follows the keyboard: opening a page from `⌘K`, a go-to chord or
 `host.panels.open` moves focus into its pane — the first `[data-autofocus]`
 element inside it, else the pane root — so the next keystroke is already
 the page's. Mark the element a page wants focused on arrival with
-`data-autofocus`. `{` / `}` step focus across panes.
+`data-autofocus`. `Ctrl+{` / `Ctrl+}` (mac; `Alt+` elsewhere) step focus
+across panes.
 
 **`host.palette.registerSource(source)`** — a live source: rows computed per
 query by the worker, the way an editor's quick open lists files as you type.
@@ -524,7 +527,10 @@ host.palette?.registerSource({
 })
 ```
 
-The palette asks every source that fits the mode, debounced, and drops an
+The bare palette is a navigator — no prefix searches only pages,
+workspaces, chats and workers — so a source whose kind is `item` or `file`
+is asked under its prefix or the matching filter chip, never from the bare
+query. The palette asks every source that fits, debounced, and drops an
 answer to a query it has moved past (`signal`). A source that throws
 contributes nothing; the others still answer. Rows open the page with a
 context the page already understands through `panelContext`.

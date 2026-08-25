@@ -110,7 +110,7 @@ const EMPTY_SOURCES: readonly RegisteredPaletteSource[] = []
 function placeholderFor(prefix: string | null): string {
   if (prefix === '#') return 'File name…'
   if (prefix !== null) return 'Command…'
-  return 'Search, or type > for commands, # for files, @ for chats…'
+  return 'Go to a page, workspace or chat — > commands, # files, @ chats…'
 }
 
 function emptyText(
@@ -356,12 +356,14 @@ export function CommandPalette({
     ],
     [localEntries, engineEntries, sourceEntries, parsed],
   )
+  // Recents recall whatever was last chosen — a command included — even
+  // though the bare palette only searches navigation.
   const recentRows = useMemo(
     () =>
       parsed.text === '' && parsed.prefix === null && filter === 'all'
-        ? recentOf(results, recents)
+        ? recentOf([...localEntries, ...engineEntries], recents)
         : [],
-    [results, recents, parsed, filter],
+    [localEntries, engineEntries, recents, parsed, filter],
   )
   const groups = useMemo(
     () => groupEntries(results, recentRows),

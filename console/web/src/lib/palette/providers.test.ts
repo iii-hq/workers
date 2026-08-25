@@ -6,7 +6,7 @@ import {
   searchPaletteSources,
 } from './providers'
 import { loadRecents, recentOf, recordRecent } from './recents'
-import { groupEntries, parseQuery, scoreEntry } from './sources'
+import { DEFAULT_KINDS, groupEntries, parseQuery, scoreEntry } from './sources'
 
 const noop = () => {}
 
@@ -28,10 +28,10 @@ describe('parseQuery', () => {
     expect(parseQuery('@standup', 'all').kinds).toEqual(new Set(['chat']))
   })
 
-  it('otherwise keeps the chip filter', () => {
+  it('otherwise searches navigation, or the chip filter', () => {
     expect(parseQuery(' open file ', 'all')).toEqual({
       prefix: null,
-      kinds: null,
+      kinds: new Set(DEFAULT_KINDS),
       text: 'open file',
     })
     expect(parseQuery('x', 'worker').kinds).toEqual(new Set(['worker']))
@@ -100,6 +100,25 @@ describe('palette sources', () => {
       'src/main.rs',
       'README.md',
     ])
+  })
+
+  it("reaches a source through its own prefix even outside the mode's kinds", async () => {
+    registerPaletteSource('database', {
+      id: 'tables',
+      title: 'Tables',
+      kind: 'item',
+      prefix: '#',
+      search: async () => [{ id: 't', title: 'users', run: () => {} }],
+    })
+    const rows = await searchPaletteSources(getPaletteSources(), {
+      text: 'us',
+      prefix: '#',
+      kinds: new Set(['file']),
+      workingDir: null,
+      conversationId: null,
+      signal: new AbortController().signal,
+    })
+    expect(rows.map((entry) => entry.title)).toEqual(['users'])
   })
 
   it('skips a source outside the mode and one that throws', async () => {
