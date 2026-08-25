@@ -828,3 +828,10 @@
 .iii-details[open] > summary .iii-chev {
   transform: rotate(90deg);
 }
+
+/* Content images in the transcript open in the viewer on click (see
+   MessageList); controls that contain an image keep their own cursor. */
+[data-message-list]
+  img:not(a[href] *, button *, [role='button'], [role='button'] *, [data-image-zoom-exempt] *) {
+  cursor: zoom-in;
+}

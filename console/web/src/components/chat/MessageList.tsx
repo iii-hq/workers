@@ -13,6 +13,7 @@ import {
   type WheelEvent,
 } from 'react'
 import { resultEnvelope } from '@/components/function-trigger/FunctionTriggerCard'
+import { imageZoomTarget } from './image-zoom-target'
 import {
   rawRedactor,
   useFunctionTriggerRenderers,
@@ -30,6 +31,7 @@ import {
   type TriggerRegistration,
 } from '@/components/trigger-activity/model'
 import { Button } from '@/components/ui/Button'
+import { ImageViewer } from '@/components/ui/ImageViewer'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import type { SessionTriggerInfo } from '@/lib/backend/triggers'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
@@ -581,6 +583,13 @@ export function MessageList({
     )
   }
 
+  // Any content image in the transcript opens in the viewer on click,
+  // whichever renderer produced it; controls keep their own behaviour.
+  const [zoomedImage, setZoomedImage] = useState<{
+    src: string
+    alt: string
+  } | null>(null)
+
   const listPad =
     density === 'dock'
       ? 'px-3 py-5 sm:px-4 sm:py-6'
@@ -588,6 +597,14 @@ export function MessageList({
 
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1">
+      <ImageViewer
+        open={zoomedImage !== null}
+        onOpenChange={(next) => {
+          if (!next) setZoomedImage(null)
+        }}
+        src={zoomedImage?.src}
+        alt={zoomedImage?.alt ?? 'image'}
+      />
       <section
         ref={containerRef}
         data-message-list=""
@@ -599,6 +616,11 @@ export function MessageList({
           listPad,
         )}
         onScroll={handleScroll}
+        onClick={(event) => {
+          if (event.defaultPrevented) return
+          const zoom = imageZoomTarget(event.target)
+          if (zoom) setZoomedImage(zoom)
+        }}
         onWheel={handleWheel}
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
