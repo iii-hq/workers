@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.12.0
+
+### Added
+
+- **A PTY session can run one named program** — `shell::pty::open` takes
+  `program`, `args`, and `env`. Without them a session is still the user's
+  login shell. A caller that can open a login shell can already run any
+  program by typing it, so this is reach rather than privilege: it lets a
+  session BE one program, with no shell around it, which is what an agent CLI
+  in a console page needs. Per-session `env` follows the same deny-only rule
+  as `shell::exec`'s per-call env — an exec-hijacking key (`PATH`, `LD_*`,
+  `DYLD_*`, `BASH_ENV`, ...) refuses the whole call.
+- **`shell::pty::sessions`** — live sessions with their program, cwd, status,
+  last sequence number, replayable frames/bytes, and current output target.
+  No credentials. It separates a terminal that shows nothing because nothing
+  was produced from one whose frames the browser dropped.
+
+### Changed
+
+- The output handler a session may deliver to is validated by SHAPE rather
+  than by this worker's own page:
+  `iii::<worker>-ui::pty-output::console-<browser-id>`. A worker that runs its
+  own program in a session serves its own console page and therefore its own
+  handler; a session still cannot be pointed at an arbitrary function.
+- The `shell::pty::*` functions are tagged `trace_hidden`, so the console's
+  traces page no longer opens with one span group per keystroke and redraw.
+  They are one funnel click away (see `docs/sops/trace-hidden-functions.md`).
+
 ## 0.10.3
 
 ### Fixed

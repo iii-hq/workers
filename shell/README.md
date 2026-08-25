@@ -199,6 +199,40 @@ out explicitly below:
 
 No separate install: `iii worker add shell` brings the whole surface.
 
+## Terminal sessions (`shell::pty::*`)
+
+The console's terminal runs on this worker: `shell::pty::open` starts a
+persistent host PTY, `write` sends base64 keystrokes, `resize` follows the
+pane, `attach`/`detach` survive a reload (buffered output replays from a
+sequence number, out of a 2 MiB ring buffer), and `close` terminates the
+session. These are console plumbing — flagged `internal` and `trace_hidden`,
+so their spans stay out of the default trace view; one span per keystroke
+buries the work worth reading.
+
+A session runs the user's login shell by default, or the program a caller
+names:
+
+| Field on `open` | Meaning |
+|---|---|
+| `program` | Program to run instead of the login shell, resolved on PATH. A caller that can open a login shell can already run any program by typing it, so this is reach, not privilege — it is what lets a session BE one program, with no shell around it. |
+| `args` | argv for `program`; ignored without it. |
+| `env` | Extra environment for the session. Deny-only exactly like `shell::exec`'s per-call `env`: an exec-hijacking key (`PATH`, `LD_*`, `DYLD_*`, `BASH_ENV`, ...) refuses the whole call. |
+
+`cwd` resolves through the same jail as `shell::fs::*`, so a session can only
+start inside a configured root.
+
+Output goes to a browser-registered console handler and nowhere else:
+`iii::<worker>-ui::pty-output::console-<browser-id>`. The `<worker>-ui`
+segment is not pinned to this worker's own page — a worker that runs its own
+program in a session serves its own console page, and therefore its own
+handler — but the shape is enforced, so a session can never be pointed at an
+arbitrary function on the bus.
+
+`shell::pty::sessions` lists live sessions with their program, cwd, status,
+last sequence number, replayable frames and bytes, and current output target.
+No credentials: it exists to separate a terminal that shows nothing because
+no output arrived from one whose frames the browser dropped.
+
 ## Two surfaces, one contract
 
 `shell::fs::*` and `coder::*` are two views of the same filesystem, served by

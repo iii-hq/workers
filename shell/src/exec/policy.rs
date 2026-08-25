@@ -92,7 +92,9 @@ pub const DANGEROUS_ENV_KEYS: &[&str] = &[
 /// (PATH/IFS/HOME, glibc lookup paths, interpreter startup keys).
 /// Case-sensitive: env var names are case-sensitive on Unix and the
 /// dangerous names are upper-case.
-fn is_dangerous_env_key(key: &str) -> bool {
+/// Shared with the PTY surface, which applies the same deny-only rule to a
+/// session's per-call env.
+pub fn is_dangerous_env_key(key: &str) -> bool {
     key.starts_with("LD_") || key.starts_with("DYLD_") || DANGEROUS_ENV_KEYS.contains(&key)
 }
 
