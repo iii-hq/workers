@@ -99,9 +99,9 @@ or use the console Workers tab — all three propagate without a redeploy.
 
 ```yaml
 # TOPOLOGY — changing any of these requires a worker restart.
-skills_folder: skills                  # read/write root under III_COMPOSE_DIR
+skills_folder: skills                  # under III_COMPOSE_DIR, or the process cwd standalone
 local_skills_folder: skills/iii        # project-scoped overrides (whole-namespace local-wins)
-agents_skills_folder: .agents/skills   # READ-ONLY agent skills under III_COMPOSE_DIR
+agents_skills_folder: .agents/skills   # READ-ONLY agent skills, with the same relative-path base
 auto_download: true                   # subscribe to worker-add + run the boot reconcile
 
 # TUNABLE — hot-reload live on `configuration:updated`.
@@ -118,8 +118,9 @@ The `skills_folder` is created on first download if it doesn't exist.
 
 ### Zero-config default + seed
 
-With no seed and no stored value the worker uses built-in defaults
-(`skills_folder: <III_COMPOSE_DIR>/skills`, `registry_url: https://api.workers.iii.dev`).
+With no seed and no stored value the worker uses built-in defaults. Relative
+folder paths use `III_COMPOSE_DIR` when set and the process current directory
+otherwise (`skills_folder: skills`, `registry_url: https://api.workers.iii.dev`).
 Pass `--config <path>` to supply a YAML seed: when present and no value is
 stored yet, its contents become `initial_value` on `configuration::register`
 (see [`config.yaml.example`](config.yaml.example)). Engine-managed deployments
@@ -141,9 +142,9 @@ but only when it already exists — the worker never creates (or writes)
 anything under it. Install your first agents skill while the worker is
 running and that root stays unwatched until the next restart: reads still
 serve it, since every read re-scans disk, but the live `external` doorbell
-is missing until then. `local_skills_folder` defaults to
-`<III_COMPOSE_DIR>/skills/iii`, so expect that directory to appear in the
-Compose project. An
+is missing until then. `local_skills_folder` defaults to `skills/iii` under
+`III_COMPOSE_DIR`, or under the process current directory when the worker runs
+standalone. An
 empty local root shadows nothing. Because both are restart-required, the watch
 roots are fixed for the process lifetime.
 
@@ -208,8 +209,8 @@ skills_folder/
     pirate.md
 ```
 
-A second, READ-ONLY root — `agents_skills_folder` (default
-`<III_COMPOSE_DIR>/.agents/skills`) — serves agent skills. It is
+A second, READ-ONLY root — `agents_skills_folder` (default `.agents/skills`
+under the same Compose or standalone base) — serves agent skills. It is
 scanned **shallowly**: only `<skill-dir>/SKILL.md` becomes an entry
 (id `<skill-dir>/index`, displayed as `<skill-dir>`); a skill's
 `reference/`, `scripts/`, or other support payload is never listed. A

@@ -60,7 +60,7 @@ fn databases_schema(gen: &mut schemars::gen::SchemaGenerator) -> Schema {
         );
         obj.metadata().examples = vec![json!({
             "primary": {
-                "url": DEFAULT_SQLITE_URL,
+                "url": default_sqlite_url(),
                 "pool": {
                     "max": 10,
                     "idle_timeout_ms": 30000,
@@ -300,7 +300,7 @@ impl WorkerConfig {
                 json!({
                     "databases": {
                         DEFAULT_DB_NAME: {
-                            "url": DEFAULT_SQLITE_URL,
+                            "url": default_sqlite_url(),
                             "pool": {
                                 "max": default_pool_max(),
                                 "idle_timeout_ms": default_idle_timeout_ms(),
@@ -372,24 +372,28 @@ impl WorkerConfig {
 }
 
 fn resolve_sqlite_url(url: &str) -> String {
-    let Some(path) = url.strip_prefix("sqlite:") else {
+    let Some((scheme, path)) = url.split_once(':') else {
         return url.to_string();
     };
+    if !scheme.eq_ignore_ascii_case("sqlite") {
+        return url.to_string();
+    }
     if path.contains(":memory:") {
         return url.to_string();
     }
 
     let (file_prefix, path) = path
-        .strip_prefix("file:")
-        .map_or(("", path), |path| ("file:", path));
+        .get(..5)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("file:"))
+        .map_or(("", path), |prefix| (prefix, &path[5..]));
     let (path, query) = path
         .split_once('?')
         .map_or((path, ""), |(path, query)| (path, query));
     let resolved = iii_worker_paths::resolve_path(path);
     if query.is_empty() {
-        format!("sqlite:{file_prefix}{}", resolved.display())
+        format!("{scheme}:{file_prefix}{}", resolved.display())
     } else {
-        format!("sqlite:{file_prefix}{}?{query}", resolved.display())
+        format!("{scheme}:{file_prefix}{}?{query}", resolved.display())
     }
 }
 
@@ -614,6 +618,14 @@ mod tests {
         let databases = schema["properties"]["databases"].as_object().unwrap();
         assert!(databases.get("description").is_some());
         assert_eq!(databases["minProperties"], 1);
+        assert_eq!(
+            databases["examples"][0]["primary"]["url"],
+            default_sqlite_url()
+        );
+        assert_eq!(
+            schema["example"]["databases"][DEFAULT_DB_NAME]["url"],
+            default_sqlite_url()
+        );
 
         let db_schema = schema["definitions"]["DatabaseConfig"].as_object().unwrap();
         let url = db_schema["properties"]["url"].as_object().unwrap();
@@ -683,6 +695,17 @@ databases:
         assert_eq!(db.pool.max, 10);
         assert_eq!(db.pool.idle_timeout_ms, 30_000);
         assert_eq!(db.pool.acquire_timeout_ms, 5_000);
+    }
+
+    #[test]
+    fn uppercase_sqlite_scheme_resolves_project_path() {
+        let c = cfg("databases:\n  primary:\n    url: SQLiTE:FiLe:./data/case.db?mode=rwc\n");
+        let expected = format!(
+            "SQLiTE:FiLe:{}?mode=rwc",
+            iii_worker_paths::project_path("data/case.db").display()
+        );
+
+        assert_eq!(c.databases["primary"].url, expected);
     }
 
     #[test]

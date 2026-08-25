@@ -114,7 +114,7 @@ adapter:
 | Field | Default | Description |
 |---|---|---|
 | `adapter.config.store_method` | `file_based` | `in_memory` or `file_based`. |
-| `adapter.config.file_path` | `queue_store_data` | Directory used by `file_based`. |
+| `adapter.config.file_path` | `data/queue` | Directory used by `file_based`. |
 | `adapter.config.save_interval_ms` | `5000` | Accepted for parity; this worker persists on mutation rather than on an interval. |
 
 #### `redis`

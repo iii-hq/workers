@@ -10,7 +10,7 @@
 
 providers:
   # Where the worker persists data for `provider: local`
-  # buckets. Path is resolved relative to the worker's working directory.
+  # buckets. Relative paths use III_COMPOSE_DIR, or the process cwd standalone.
   local:
     data_dir: data/storage
     # Optional direct-transfer server. Port 0 selects a free loopback port;
