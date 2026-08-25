@@ -112,7 +112,7 @@ register(iii, () => holder.current, emit, emitRaw);
 // the console page that opens it.
 registerActivity(iii, emit);
 registerTerminal(iii, () => prepared);
-registerAuth(iii, () => prepared.executable);
+registerAuth(iii, () => prepared);
 registerUi(iii);
 
 console.log(`claude-code worker connected to ${url}`);

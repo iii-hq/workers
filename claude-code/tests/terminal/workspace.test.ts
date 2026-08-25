@@ -23,6 +23,7 @@ function fakeShell(
         case 'shell::exec': {
           const command = String(payload.command ?? '');
           if (command === 'pwd') return { stdout: '/hostroot\n', stderr: '', exit_code: 0 };
+          if (command === 'id -un') return { stdout: 'tony\n', stderr: '', exit_code: 0 };
           if (command === 'command -v claude') {
             return options.whichClaude
               ? { stdout: `${options.whichClaude}\n`, stderr: '', exit_code: 0 }
@@ -74,6 +75,14 @@ describe('preparing the terminal host', () => {
       executable: '/usr/local/bin/claude',
       detail: '',
     });
+
+    // The session carries who the terminal host is: Claude Code reads its
+    // keychain login under the current user, and a worker environment does
+    // not carry one — without this the CLI reports itself signed out.
+    expect(prepared.env.USER).toBe('tony');
+    expect(prepared.env.LOGNAME).toBe('tony');
+    // A dark page wants a light-on-dark palette from whatever runs in it.
+    expect(prepared.env.COLORFGBG).toBe('15;0');
 
     // The workspace is its own npm project, or the skills CLI installs above it.
     expect(files['/hostroot/claude-code/package.json']).toContain('claude-code-workspace');

@@ -15,13 +15,14 @@ export type ExecResult = { stdout: string; stderr: string; exit_code: number };
 export async function exec(
   iii: IIIClient,
   command: string,
-  options: { cwd?: string; timeoutMs?: number } = {},
+  options: { cwd?: string; timeoutMs?: number; env?: Record<string, string> } = {},
 ): Promise<ExecResult> {
   const res = await iii.trigger<unknown, Partial<ExecResult>>({
     function_id: 'shell::exec',
     payload: {
       command,
       ...(options.cwd ? { cwd: options.cwd } : {}),
+      ...(options.env && Object.keys(options.env).length > 0 ? { env: options.env } : {}),
       timeout_ms: options.timeoutMs ?? EXEC_TIMEOUT_MS,
     },
     timeoutMs: (options.timeoutMs ?? EXEC_TIMEOUT_MS) + 30_000,

@@ -611,10 +611,15 @@ function AgentTerminal({
         )}
         {auth && (
           <span className={`agent-terminal-billing agent-terminal-billing-${auth.billing}`} title={auth.detail}>
+            <span className="agent-terminal-field-label">Billing</span>
             {auth.label}
           </span>
         )}
-        <span className="agent-terminal-font" title={`Terminal font size (${MIN_FONT_SIZE}–${MAX_FONT_SIZE} px)`}>
+        <span
+          className="agent-terminal-font"
+          title={`Terminal font size in pixels (${MIN_FONT_SIZE}–${MAX_FONT_SIZE}). Ctrl or ⌘ + scroll does the same.`}
+        >
+          <span className="agent-terminal-field-label">Font</span>
           <button
             type="button"
             onClick={() => setFontSize(stepFontSize(fontSize, -1))}

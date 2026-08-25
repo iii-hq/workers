@@ -44,6 +44,9 @@
  * not expect — a metered key, or no credentials at all — carry a colour.
  */
 .agent-terminal-billing {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   margin-left: auto;
   padding: 1px 8px;
   border: 1px solid var(--color-edge);
@@ -107,4 +110,13 @@
   min-width: 18px;
   text-align: center;
   font-variant-numeric: tabular-nums;
+}
+
+/* Says what the value beside it IS. A status bar of bare numbers and plan
+   names makes the reader guess; two words each removes the guessing. */
+.agent-terminal-field-label {
+  color: var(--color-ink-faint);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }

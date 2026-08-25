@@ -34,9 +34,7 @@ export type Prepared = {
 
 export async function prepareWorkspace(iii: IIIClient, config: Config): Promise<Prepared> {
   const workspace = config.workspace_dir || `${await hostRoot(iii)}/pi-cli`;
-  // Sessions inherit the engine address, so a worker pi writes registers
-  // against the same engine it is talking to.
-  const env = { III_URL: process.env.III_URL ?? 'ws://127.0.0.1:49134' };
+  const env = await sessionEnv(iii);
   const base = { workspace, args: config.args, env, bridge: '' };
   let detail = '';
 
@@ -67,6 +65,40 @@ export async function prepareWorkspace(iii: IIIClient, config: Config): Promise<
   }
 
   return { ...base, executable, detail, bridge };
+}
+
+/**
+ * What a session runs with, beyond what the terminal host already exports.
+ *
+ * `III_URL` is the reason a worker pi writes registers against the engine this
+ * worker is talking to.
+ *
+ * `USER` is the reason a provider login is found at all: credentials live
+ * under the current user, and a worker's environment is NOT the operator's
+ * shell — compose clears it and re-seeds an allowlist from the daemon's own
+ * environment, so a daemon started without `USER` hands every child a blank
+ * one. Asking the terminal host who it is costs one call and removes the
+ * dependency on how the daemon was started.
+ *
+ * `COLORFGBG` says light-on-dark. The page paints a dark terminal and pi
+ * picks its palette from this; without it, parts of its interface arrive in
+ * dark ink on a dark background.
+ */
+async function sessionEnv(iii: IIIClient): Promise<Record<string, string>> {
+  const env: Record<string, string> = {
+    III_URL: process.env.III_URL ?? 'ws://127.0.0.1:49134',
+    COLORFGBG: '15;0',
+  };
+  const user = await probe(iii, 'id -un');
+  if (user) {
+    env.USER = user;
+    env.LOGNAME = user;
+  } else {
+    console.warn(
+      'pi-cli: the terminal host did not name its user; a stored provider login may read as absent',
+    );
+  }
+  return env;
 }
 
 async function resolveExecutable(iii: IIIClient, config: Config): Promise<string> {

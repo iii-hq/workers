@@ -23,6 +23,7 @@ function fakeShell(
         case 'shell::exec': {
           const command = String(payload.command ?? '');
           if (command === 'pwd') return { stdout: '/hostroot\n', stderr: '', exit_code: 0 };
+          if (command === 'id -un') return { stdout: 'tony\n', stderr: '', exit_code: 0 };
           if (command === 'command -v pi') {
             return options.whichPi
               ? { stdout: `${options.whichPi}\n`, stderr: '', exit_code: 0 }
@@ -55,7 +56,9 @@ describe('config', () => {
   it('trusts the workspace by default, and drops keys an older schema wrote', () => {
     // Without `-a` pi asks about project trust every session and never loads
     // the extension that reports what it did.
-    expect(DEFAULTS.args).toEqual(['-a']);
+    // `-a` trusts the workspace; the theme matches the dark terminal the
+    // console page paints.
+    expect(DEFAULTS.args).toEqual(['-a', '--use-theme', 'dark']);
     expect(normalize({ args: [], nonsense: 1 })).toEqual({ ...DEFAULTS, args: [] });
     expect(normalize(null)).toEqual(DEFAULTS);
   });
@@ -69,9 +72,14 @@ describe('preparing the terminal host', () => {
     expect(prepared).toMatchObject({
       workspace: '/hostroot/pi-cli',
       executable: '/usr/local/bin/pi',
-      args: ['-a'],
+      args: ['-a', '--use-theme', 'dark'],
       detail: '',
     });
+
+    // The session carries who the terminal host is: pi finds a stored login
+    // under the current user, and a worker environment does not carry one.
+    expect(prepared.env.USER).toBe('tony');
+    expect(prepared.env.COLORFGBG).toBe('15;0');
 
     expect(files['/hostroot/pi-cli/package.json']).toContain('pi-cli-workspace');
     expect(calls.some((c) => String(c.payload.command ?? '').startsWith('npx -y skills add'))).toBe(

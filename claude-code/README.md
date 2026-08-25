@@ -225,6 +225,16 @@ that the login is signed in but not billed.
 The key is read from the environment of the `shell` worker that runs the
 session, so that is where to set or unset it.
 
+**A subscription login needs `USER` in the session environment.** Claude Code
+keeps subscription credentials in the OS keychain and finds them by the
+current user, and a worker's environment is not the operator's shell — compose
+clears it and re-seeds an allowlist from the daemon's own environment, so a
+daemon started without `USER` hands every child a blank one. The CLI then
+reports `loggedIn: false` beside a keychain that plainly holds the login. This
+worker asks the terminal host who it is (`id -un`) and puts `USER`/`LOGNAME`
+into every session and into the billing probe, so the answer does not depend
+on how the daemon was started.
+
 `claude::auth::status` stays agent-denied in `iii-permissions.yaml`: it carries
 the operator's account and organization. The console page reaches it as a
 user-initiated call, which is not the agent path.

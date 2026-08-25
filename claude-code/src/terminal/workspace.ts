@@ -42,9 +42,7 @@ export type Prepared = {
 
 export async function prepareWorkspace(iii: IIIClient, config: TerminalConfig): Promise<Prepared> {
   const workspace = config.workspace_dir || `${await hostRoot(iii)}/claude-code`;
-  // Sessions inherit the engine address, so a worker Claude writes registers
-  // against the same engine it is talking to.
-  const env = { III_URL: process.env.III_URL ?? 'ws://127.0.0.1:49134' };
+  const env = await sessionEnv(iii);
   const base = { workspace, args: config.args, env, bridge: '' };
   let detail = '';
 
@@ -75,6 +73,42 @@ export async function prepareWorkspace(iii: IIIClient, config: TerminalConfig): 
   }
 
   return { ...base, executable, detail, bridge };
+}
+
+/**
+ * What a session runs with, beyond what the terminal host already exports.
+ *
+ * `III_URL` is the reason a worker Claude writes registers against the engine
+ * this worker is talking to.
+ *
+ * `USER` is the reason it can log in at all. Claude Code keeps its
+ * subscription credentials in the OS keychain and looks them up by the current
+ * user — and a worker's environment is NOT the operator's shell: compose
+ * clears it and re-seeds an allowlist from the daemon's own environment, so a
+ * daemon started without `USER` hands every child a blank one. The symptom is
+ * a CLI that reports `loggedIn: false` beside a keychain that plainly holds
+ * the login. Asking the terminal host who it is costs one call and removes the
+ * dependency on how the daemon was started.
+ *
+ * `COLORFGBG` says light-on-dark. The page paints a dark terminal, an agent
+ * TUI picks its palette from this, and without it half the interface can
+ * arrive in dark ink on a dark background.
+ */
+async function sessionEnv(iii: IIIClient): Promise<Record<string, string>> {
+  const env: Record<string, string> = {
+    III_URL: process.env.III_URL ?? 'ws://127.0.0.1:49134',
+    COLORFGBG: '15;0',
+  };
+  const user = await probe(iii, 'id -un');
+  if (user) {
+    env.USER = user;
+    env.LOGNAME = user;
+  } else {
+    console.warn(
+      'claude-code terminal: the terminal host did not name its user; a keychain login may read as signed out',
+    );
+  }
+  return env;
 }
 
 async function resolveExecutable(iii: IIIClient, config: TerminalConfig): Promise<string> {

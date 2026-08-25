@@ -97,18 +97,19 @@ export function readStatus(raw: string, provider: string): AuthStatus {
 
 export function registerAuth(
   iii: IIIClient,
-  current: () => { executable: string; provider: string },
+  current: () => { executable: string; provider: string; env: Record<string, string> },
 ): void {
   iii.registerFunction(
     'pi-cli::auth::status',
     async () => {
-      const { executable, provider } = current();
+      const { executable, provider, env } = current();
       if (!executable) return unknown(provider);
       // Same host as the session, so the answer is the session's answer.
       // `pi auth check` exits 1 when a provider is not ready and still prints
       // the JSON that says why, so the exit code is not the answer here.
       try {
         const result = await exec(iii, `${executable} auth check --provider ${provider} --json`, {
+          env,
           timeoutMs: 20_000,
         });
         const raw = result.stdout.trim() || result.stderr.trim();

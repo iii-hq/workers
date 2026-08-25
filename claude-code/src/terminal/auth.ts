@@ -13,7 +13,7 @@
  */
 
 import type { IIIClient } from 'iii-sdk';
-import { probe } from './host.js';
+import { exec } from './host.js';
 
 export type Billing = 'subscription' | 'api-key' | 'none' | 'unknown';
 
@@ -115,15 +115,31 @@ export function readStatus(raw: string): AuthStatus {
   };
 }
 
-export function registerAuth(iii: IIIClient, executable: () => string): void {
+export function registerAuth(
+  iii: IIIClient,
+  current: () => { executable: string; env: Record<string, string> },
+): void {
   iii.registerFunction(
     'claude::auth::status',
     async () => {
-      const binary = executable();
-      if (!binary) return UNKNOWN;
-      // Same host as the session, so the answer is the session's answer.
-      const raw = await probe(iii, `${binary} auth status`);
-      return raw ? readStatus(raw) : UNKNOWN;
+      const { executable, env } = current();
+      if (!executable) return UNKNOWN;
+      // Same host AND the same environment as the session, so the answer is
+      // the session's answer: the login lives in the OS keychain, and Claude
+      // Code finds it by the current user, which a worker's environment does
+      // not carry on its own.
+      //
+      // `claude auth status` exits 1 when nobody is signed in and still prints
+      // the JSON that says so, so the exit code is not the answer here —
+      // reading it as failure turns "not signed in" into "billing unknown".
+      try {
+        const result = await exec(iii, `${executable} auth status`, { env, timeoutMs: 20_000 });
+        const raw = result.stdout.trim() || result.stderr.trim();
+        return raw ? readStatus(raw) : UNKNOWN;
+      } catch (err) {
+        console.warn(`claude auth status failed: ${String(err)}`);
+        return UNKNOWN;
+      }
     },
     {
       description:

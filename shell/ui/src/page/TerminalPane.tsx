@@ -39,6 +39,7 @@ function FontSizeControl() {
     ' Ctrl or ⌘ + scroll works too.'
   return (
     <span className="shui-terminal-font" title={label}>
+      <span className="shui-terminal-font-label">Font</span>
       <button
         type="button"
         className="shui-terminal-action"

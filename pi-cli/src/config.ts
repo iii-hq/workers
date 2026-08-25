@@ -32,7 +32,10 @@ export const DEFAULTS: Config = {
   // `-a` trusts the workspace for the run: without it pi asks about project
   // trust at every session and never loads this worker's own extension, which
   // is the thing that reports what pi did.
-  args: ['-a'],
+  // `--use-theme dark` because the console page paints a dark terminal: pi
+  // otherwise picks its own default and renders half its interface in dark
+  // ink on a dark background.
+  args: ['-a', '--use-theme', 'dark'],
   workspace_dir: '',
   auto_install: true,
   setup_workspace: true,

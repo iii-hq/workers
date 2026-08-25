@@ -66,7 +66,7 @@ workspace preparation for the next session.
 
 ```yaml
 executable: ""            # path to `pi` on the terminal host; empty = resolve on PATH
-args: ["-a"]              # extra argv; `-a` trusts the workspace for the run
+args: ["-a", "--use-theme", "dark"]   # `-a` trusts the workspace; the theme matches the page
 workspace_dir: ""         # empty = `pi-cli` under shell's primary root
 auto_install: true        # install pi from https://pi.dev/install.sh when missing
 setup_workspace: true     # keep skills, engine notes, and the activity extension in place
@@ -74,7 +74,7 @@ events_stream: agent::events   # where turns land (read once at boot)
 auth_provider: anthropic  # whose credentials the billing badge reports
 ```
 
-`args: ["-a"]` is the default for a reason: pi loads project-local extensions
+`-a` is in the default args for a reason: pi loads project-local extensions
 only in a trusted directory, and asks about trust otherwise. Without it, every
 session opens with a prompt and never loads the extension that reports what pi
 did. Drop the flag if you would rather answer that question yourself.

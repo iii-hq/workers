@@ -63,7 +63,11 @@ await bindConfigTrigger(iii, reconcile);
 const emit = makeEmitter(iii, config.events_stream);
 registerActivity(iii, emit);
 registerTerminal(iii, () => prepared);
-registerAuth(iii, () => ({ executable: prepared.executable, provider: config.auth_provider }));
+registerAuth(iii, () => ({
+  executable: prepared.executable,
+  provider: config.auth_provider,
+  env: prepared.env,
+}));
 registerUi(iii);
 
 console.log(`pi-cli worker connected to ${url}`);
