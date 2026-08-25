@@ -12,7 +12,7 @@
 //! adapter:
 //!   name: fs
 //!   config:
-//!     data_dir: /data/session-manager
+//!     data_dir: ~/.iii/data/session-manager
 //! ```
 //!
 //! or
@@ -195,7 +195,7 @@ pub struct BootSignature {
 }
 
 pub fn default_data_dir() -> String {
-    "/data/session-manager".to_string()
+    "~/.iii/data/session-manager".to_string()
 }
 
 fn default_bridge_timeout_ms() -> u64 {
@@ -280,7 +280,7 @@ mod tests {
         let StorageAdapter::Fs(fs) = cfg.resolve_adapter() else {
             panic!("expected fs adapter");
         };
-        assert_eq!(fs.data_dir, "/data/session-manager");
+        assert_eq!(fs.data_dir, "~/.iii/data/session-manager");
     }
 
     #[test]
@@ -296,9 +296,7 @@ mod tests {
 
     #[test]
     fn tilde_data_dir_expands_to_home() {
-        let fs = FsBackendConfig {
-            data_dir: "~/.iii/data/session-manager".to_string(),
-        };
+        let fs = FsBackendConfig::default();
         let resolved = fs.resolved_data_dir();
         if let Some(home) = dirs::home_dir() {
             assert!(resolved.starts_with(home));

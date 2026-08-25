@@ -24,7 +24,7 @@
 //! - [`split_frontmatter`]            — minimal `---\n...\n---\n` parser.
 //! - [`scan_skills`]                  — id-keyed listing of all `**/*.md` outside `*/prompts/*`.
 //! - [`scan_agents_skills`]           — shallow `<skill>/SKILL.md` listing of the read-only
-//!   configured agents root.
+//!   agents root (the `~/.agents/skills` convention).
 //! - [`scan_prompts`]                 — name-keyed listing of `*/prompts/*.md`.
 //! - [`read_body`]                    — cap-checked body read with frontmatter stripped.
 //! - [`read_skill_with_frontmatter`]  — same caps as `read_body` plus a
@@ -97,8 +97,8 @@ pub struct SkillFrontmatter {
     /// reader returns this verbatim instead of the first body `# H1`.
     #[serde(default)]
     pub title: Option<String>,
-    /// Optional skill name — the key the agent-skills layout (and most
-    /// repo-bundled `SKILL.md` files) uses instead of `title`.
+    /// Optional skill name — the key the `~/.agents/skills` convention
+    /// (and most repo-bundled SKILL.md files) use instead of `title`.
     /// Used as a title fallback (title → name → body H1).
     #[serde(default)]
     pub name: Option<String>,
@@ -589,8 +589,8 @@ pub fn scan_skills_merged(
     (merged, all_skipped)
 }
 
-/// Shallow scan of a read-only agents skills root (one directory per
-/// installed skill, each containing a
+/// Shallow scan of a read-only agents skills root (the `~/.agents/skills`
+/// convention: one directory per installed skill, each containing a
 /// `SKILL.md` plus arbitrary support payload such as `reference/` and
 /// `scripts/`).
 ///
@@ -642,7 +642,7 @@ pub fn scan_agents_skills(agents_root: &Path) -> (Vec<FsSkill>, Vec<SkipReason>)
 /// Namespaces the agents root ACTUALLY serves: the top segment of every
 /// [`scan_agents_skills`] entry, i.e. only directories carrying a valid
 /// `SKILL.md`. Deliberately narrower than [`top_level_namespaces`] — a
-/// stray skill-less directory under the configured agents root must neither
+/// stray skill-less directory under `~/.agents/skills` must neither
 /// exempt a namespace from `filter_unregistered` nor reserve it against
 /// `directory::skills::create`.
 pub fn agents_namespaces(agents_root: &Path) -> Vec<String> {
@@ -1176,7 +1176,7 @@ mod tests {
 
     #[test]
     fn read_with_frontmatter_extracts_name() {
-        // The agent-skills layout: name + description, no title.
+        // The ~/.agents/skills convention: name + description, no title.
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("SKILL.md");
         std::fs::write(

@@ -84,7 +84,7 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
       <TextField
         field="skills_folder"
         label="Skills folder"
-        placeholder="./skills"
+        placeholder="~/.iii/skills"
         hint="Global root every read scans and downloads write into — absolute, ~-prefixed, or CWD-relative"
         value={asString(value.skills_folder)}
         onChange={setString}
@@ -104,7 +104,7 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
       <TextField
         field="agents_skills_folder"
         label="Agents skills folder"
-        placeholder="./.agents/skills"
+        placeholder="~/.agents/skills"
         hint="Read-only system root scanned shallowly (<skill>/SKILL.md); skills installed by external agent tooling"
         value={asString(value.agents_skills_folder)}
         onChange={setString}

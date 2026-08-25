@@ -325,7 +325,7 @@ integration. On first boot (no stored value) the built-in
 adapter:
   name: fs | bridge
   config:                  # shape depends on the adapter name
-    data_dir: /data/session-manager         # fs (default shown)
+    data_dir: ~/.iii/data/session-manager   # fs (default shown)
     # url: ws://main:49134                  # bridge (required)
     # timeout_ms: 5000                      # bridge (default 5000)
 default_list_limit: 50

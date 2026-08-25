@@ -99,9 +99,9 @@ or use the console Workers tab — all three propagate without a redeploy.
 
 ```yaml
 # TOPOLOGY — changing any of these requires a worker restart.
-skills_folder: ./skills               # read/write root for skills + prompts
+skills_folder: ~/.iii/skills          # read/write root for skills + prompts
 local_skills_folder: ./.iii/skills    # project-scoped overrides (whole-namespace local-wins)
-agents_skills_folder: ./.agents/skills # READ-ONLY system-installed agent skills (shallow <skill>/SKILL.md scan)
+agents_skills_folder: ~/.agents/skills # READ-ONLY system-installed agent skills (shallow <skill>/SKILL.md scan)
 auto_download: true                   # subscribe to worker-add + run the boot reconcile
 
 # TUNABLE — hot-reload live on `configuration:updated`.
@@ -119,7 +119,7 @@ The `skills_folder` is created on first download if it doesn't exist.
 ### Zero-config default + seed
 
 With no seed and no stored value the worker uses built-in defaults
-(`skills_folder: ./skills`, `registry_url: https://api.workers.iii.dev`).
+(`skills_folder: ~/.iii/skills`, `registry_url: https://api.workers.iii.dev`).
 Pass `--config <path>` to supply a YAML seed: when present and no value is
 stored yet, its contents become `initial_value` on `configuration::register`
 (see [`config.yaml.example`](config.yaml.example)). Engine-managed deployments
@@ -209,7 +209,7 @@ skills_folder/
 ```
 
 A second, READ-ONLY root — `agents_skills_folder` (default
-`./.agents/skills`) — serves system-installed agent skills. It is
+`~/.agents/skills`) — serves system-installed agent skills. It is
 scanned **shallowly**: only `<skill-dir>/SKILL.md` becomes an entry
 (id `<skill-dir>/index`, displayed as `<skill-dir>`); a skill's
 `reference/`, `scripts/`, or other support payload is never listed. A

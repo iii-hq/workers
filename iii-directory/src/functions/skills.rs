@@ -1139,8 +1139,8 @@ pub fn extract_title(markdown: &str) -> Option<&str> {
 }
 
 /// Pick the best title for a skill: frontmatter `title:` (when present
-/// and non-empty after trim), then frontmatter `name:` (the convention used
-/// by agent skills and repo-bundled `SKILL.md` files), then the
+/// and non-empty after trim), then frontmatter `name:` (the
+/// `~/.agents/skills` and repo-bundled SKILL.md convention), then the
 /// first body `# H1`, then the bare `id` so the response field is
 /// never empty.
 pub fn resolve_title(fm: &SkillFrontmatter, body: &str, id: &str) -> String {
@@ -1845,7 +1845,7 @@ First paragraph.
 
     #[test]
     fn resolve_title_falls_back_to_frontmatter_name() {
-        // The agent-skills layout: `name:` frontmatter, no
+        // The ~/.agents/skills convention: `name:` frontmatter, no
         // `title:`, and a body without an H1.
         let fm = SkillFrontmatter {
             name: Some("impeccable".into()),

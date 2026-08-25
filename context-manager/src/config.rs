@@ -187,7 +187,7 @@ fn default_summarizer_timeout_ms() -> u64 {
 }
 
 fn default_lease_dir() -> String {
-    "/data/context-manager".to_string()
+    "~/.iii/data/context-manager".to_string()
 }
 
 fn expand_tilde(path: &str) -> PathBuf {
@@ -267,7 +267,7 @@ mod tests {
         assert_eq!(cfg.lease_ttl_secs, 300);
         assert!(cfg.allow_fallback_limits);
         assert_eq!(cfg.summarizer_timeout_ms, 320_000);
-        assert_eq!(cfg.lease_dir, "/data/context-manager");
+        assert_eq!(cfg.lease_dir, "~/.iii/data/context-manager");
     }
 
     #[test]
@@ -294,8 +294,7 @@ mod tests {
 
     #[test]
     fn lease_dir_tilde_expands_to_home() {
-        let mut cfg = WorkerConfig::default();
-        cfg.lease_dir = "~/.iii/data/context-manager".to_string();
+        let cfg = WorkerConfig::default();
         let resolved = cfg.resolved_lease_dir();
         if let Some(home) = dirs::home_dir() {
             assert!(resolved.starts_with(home));

@@ -169,7 +169,7 @@ only the selected adapter's `config` fields (`data_dir`, or `url` /
 adapter:
   name: fs                                   # fs | bridge
   config:
-    data_dir: /data/session-manager          # fs: one <session_id>.jsonl per session
+    data_dir: ~/.iii/data/session-manager    # fs: one <session_id>.jsonl per session
 
 # adapter:
 #   name: bridge
