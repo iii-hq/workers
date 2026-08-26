@@ -69,3 +69,11 @@ harness-node/
 test-session-manager/
 .pnpm-store/
 workers-dev.yaml
+
+# Agent terminal workspaces: the claude-code / pi workers create these on the
+# shell worker's host at runtime (notes, hooks, extension, per-host CLI paths).
+# Runtime state, never source.
+shell/claude-code/
+shell/claude-cli/
+shell/pi/
+shell/pi-cli/
