@@ -2,7 +2,6 @@
 
 Tailscale as an iii worker. It drives the `tailscale` CLI on the Console host and exposes the whole client surface as typed `tailscale::*` functions: connectivity and peers, exit nodes and preferences, publishing local services or the Console to the tailnet with [Serve](https://tailscale.com/kb/1312/serve) or to the internet with [Funnel](https://tailscale.com/kb/1223/funnel), Taildrop file transfer, HTTPS certificates, Taildrive, accounts, tailnet lock, and updates. Every result is structured with keys and secrets stripped, every change to the network is approval-gated, and a **Tailscale** page in the Console puts the everyday actions one click away with QR codes for links.
 
-
 ## Install
 
 ```bash
