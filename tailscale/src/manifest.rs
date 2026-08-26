@@ -15,7 +15,7 @@ pub fn build_manifest() -> ModuleManifest {
     ModuleManifest {
         name: "tailscale".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        description: "Share the local iii Console through Tailscale Serve or explicitly enabled Funnel, with safe typed controls and QR links.".to_string(),
+        description: "Tailscale as an iii worker: connectivity, peers, exit nodes, preferences, Serve and Funnel publishing, Taildrop, certificates, accounts, and updates, plus a Console page.".to_string(),
         default_config: WorkerConfig::default().to_json(),
         supported_targets: vec![env!("TARGET").to_string()],
     }

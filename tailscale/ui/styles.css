@@ -4,20 +4,6 @@
   min-height: 0;
 }
 
-[data-iii-ui='tailscale'] .ts-side-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  min-width: 0;
-  color: var(--color-ink);
-  font-family: var(--font-sans);
-  font-size: 0.8125rem;
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 [data-iii-ui='tailscale'] .ts-side-list {
   padding: 0.5rem;
 }

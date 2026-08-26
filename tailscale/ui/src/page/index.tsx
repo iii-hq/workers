@@ -711,7 +711,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
   const sectionMeta = (id: Section): ReactNode => {
     switch (id) {
       case 'overview':
-        return <Badge variant={online ? 'ok' : 'warn'}>{connectionLabel}</Badge>
+        return status?.exit_node ? <Chip tone="accent">exit node</Chip> : null
       case 'share':
         return status?.routes.length ? <Chip tone="neutral">{status.routes.length}</Chip> : null
       case 'devices':
@@ -731,7 +731,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
     <div className="ts-pref">
       <span className="ts-pref-label">{label}</span>
       <Chip tone={value ? 'success' : 'neutral'}>{value ? 'On' : 'Off'}</Chip>
-      <Button variant="ghost" size="sm" disabled={busy} onClick={() => void setPref({ [key]: !value }, `${label}: ${value ? 'off' : 'on'}.`)}>
+      <Button variant="pill" size="sm" disabled={busy} onClick={() => void setPref({ [key]: !value }, `${label}: ${value ? 'off' : 'on'}.`)}>
         {value ? 'Turn off' : 'Turn on'}
       </Button>
     </div>
@@ -855,12 +855,12 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
                   </Button>
                 )}
                 {loginUrl && (
-                  <Button variant="ghost" onClick={() => window.open(loginUrl, '_blank', 'noopener')}>
+                  <Button variant="pill" onClick={() => window.open(loginUrl, '_blank', 'noopener')}>
                     Open Tailscale sign-in
                   </Button>
                 )}
                 {online && (
-                  <Button variant="ghost" disabled={busy} onClick={() => void disconnect()}>
+                  <Button variant="pill" disabled={busy} onClick={() => void disconnect()}>
                     {busy ? 'Working…' : 'Disconnect from tailnet'}
                   </Button>
                 )}
@@ -930,11 +930,11 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
                       <Button variant="primary" onClick={openLink}>
                         Approve in Tailscale
                       </Button>
-                      <Button variant="ghost" disabled={busy} onClick={() => void createShare(true)}>
+                      <Button variant="pill" disabled={busy} onClick={() => void createShare(true)}>
                         {busy ? 'Checking…' : 'Check again'}
                       </Button>
                       <Button
-                        variant="ghost"
+                        variant="pill"
                         onClick={() => {
                           setShare(null)
                           setMode('serve')
@@ -976,11 +976,11 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
             title="Devices on the tailnet"
             actions={
               <div className="ts-actions">
-                <Button variant="ghost" size="sm" onClick={() => setOnlineOnly((v) => !v)}>
+                <Button variant="pill" size="sm" onClick={() => setOnlineOnly((v) => !v)}>
                   {onlineOnly ? 'Show all' : 'Online only'}
                 </Button>
                 {(hiddenIngress > 0 || includeIngress) && (
-                  <Button variant="ghost" size="sm" onClick={toggleIngress}>
+                  <Button variant="pill" size="sm" onClick={toggleIngress}>
                     {includeIngress ? 'Hide Funnel relays' : `Show ${hiddenIngress} Funnel relays`}
                   </Button>
                 )}
@@ -1089,7 +1089,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
                       <Button variant="primary" disabled={busy || !online || exitChoice === (exitNodes.current ?? '')} onClick={() => void applyExitNode()}>
                         Apply
                       </Button>
-                      <Button variant="ghost" disabled={busy || !online} onClick={() => void suggestExitNode()}>
+                      <Button variant="pill" disabled={busy || !online} onClick={() => void suggestExitNode()}>
                         Suggest
                       </Button>
                     </div>
@@ -1140,7 +1140,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
             <SectionCard
               title="Network check"
               actions={
-                <Button variant="ghost" size="sm" disabled={busy} onClick={() => void runNetcheck()}>
+                <Button variant="pill" size="sm" disabled={busy} onClick={() => void runNetcheck()}>
                   {busy ? 'Running…' : netcheck ? 'Run again' : 'Run'}
                 </Button>
               }
@@ -1346,7 +1346,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
                     {account.selected ? (
                       <Chip tone="success">Active</Chip>
                     ) : (
-                      <Button variant="ghost" size="sm" disabled={busy} onClick={() => void switchAccount(account.id)}>
+                      <Button variant="pill" size="sm" disabled={busy} onClick={() => void switchAccount(account.id)}>
                         Switch
                       </Button>
                     )}
@@ -1354,10 +1354,10 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
                 ))
               )}
               <div className="ts-actions">
-                <Button variant="ghost" disabled={busy} onClick={() => void login()}>
+                <Button variant="pill" disabled={busy} onClick={() => void login()}>
                   Sign in to another account
                 </Button>
-                <Button variant="ghost" disabled={busy || !online} onClick={() => void logout()}>
+                <Button variant="pill" disabled={busy || !online} onClick={() => void logout()}>
                   Log out
                 </Button>
               </div>
@@ -1389,13 +1389,13 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
                 <LoadingRows rows={3} />
               )}
               <div className="ts-actions">
-                <Button variant="ghost" disabled={busy} onClick={() => void updateClient(true)}>
+                <Button variant="pill" disabled={busy} onClick={() => void updateClient(true)}>
                   Check for updates
                 </Button>
-                <Button variant="ghost" disabled={busy} onClick={() => void updateClient(false)}>
+                <Button variant="pill" disabled={busy} onClick={() => void updateClient(false)}>
                   Update now
                 </Button>
-                <Button variant="ghost" disabled={busy} onClick={() => void bugreport()}>
+                <Button variant="pill" disabled={busy} onClick={() => void bugreport()}>
                   Bug report
                 </Button>
               </div>
@@ -1434,12 +1434,6 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
           minWidth={180}
           maxWidth={340}
           narrowBelow={640}
-          header={
-            <span className="ts-side-status">
-              <StatusDot tone={online ? 'accent' : 'warn'} pulse={online} />
-              {connectionLabel}
-            </span>
-          }
         >
           <List className="ts-side-list" aria-label="Tailscale sections">
             {sections.map((item) => {

@@ -5,7 +5,7 @@ name = "tailscale"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Tailscale worker for iii — share the local Console over Tailscale Serve or explicitly enabled Funnel (tailscale::* functions) with an injected Console page and QR links"
+description = "Tailscale worker for iii — the tailscale CLI as tailscale::* functions (connectivity, peers, exit nodes, preferences, Serve and Funnel publishing, Taildrop, certificates, accounts, updates) with an injected Console page"
 
 [lib]
 name = "tailscale"

@@ -11,7 +11,7 @@ use tailscale::{configuration, functions, manifest, ui};
 #[derive(Parser, Debug)]
 #[command(
     name = "tailscale",
-    about = "Share the iii Console over Tailscale Serve or explicitly enabled Funnel."
+    about = "Tailscale as an iii worker: connectivity, peers, exit nodes, preferences, Serve and Funnel publishing, Taildrop, certificates, accounts, and updates."
 )]
 struct Cli {
     /// YAML seed applied only when the `tailscale` configuration entry is first created.
@@ -70,7 +70,7 @@ async fn main() -> Result<()> {
                 name: "tailscale".to_string(),
                 os: std::env::consts::OS.to_string(),
                 description: Some(
-                    "Share the local iii Console through Tailscale with QR links and exact route controls."
+                    "Tailscale as an iii worker: connectivity, peers, exit nodes, preferences, Serve and Funnel publishing, Taildrop, certificates, accounts, and updates."
                         .to_string(),
                 ),
                 pid: Some(std::process::id()),
@@ -108,7 +108,10 @@ async fn main() -> Result<()> {
         .context("registering tailscale configuration trigger")?;
     ui::register(&iii);
 
-    tracing::info!("tailscale worker ready: status, configuration, share, and exact-route stop");
+    tracing::info!(
+        "tailscale worker ready: {} functions registered",
+        tailscale::functions::catalog().len()
+    );
     wait_for_shutdown_signal().await?;
     tracing::info!("tailscale worker shutting down");
     iii.shutdown_async().await;

@@ -5,8 +5,8 @@ deploy: binary
 manifest: Cargo.toml
 license: Apache-2.0
 bin: tailscale
-tags: [tailscale, remote-access, serve, funnel, qr-code, console]
-description: Share the local iii Console over Tailscale Serve, or Tailscale Funnel with explicit opt-in, with typed status and exact route controls plus a Console page that shows the link as a QR code.
+tags: [tailscale, tailnet, vpn, remote-access, serve, funnel, taildrop, exit-node, dns, console]
+description: Tailscale as an iii worker — tailscale::* functions for connectivity and peers, exit nodes and preferences, Serve and Funnel publishing, Taildrop, certificates, Taildrive, accounts, tailnet lock, and updates, plus a Console page with QR links.
 
 dependencies:
   configuration: "0.x"
