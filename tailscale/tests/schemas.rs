@@ -28,10 +28,56 @@ fn catalog_lists_all_functions_in_registration_order() {
             "tailscale::configuration",
             "tailscale::connect",
             "tailscale::disconnect",
+            "tailscale::login",
+            "tailscale::logout",
+            "tailscale::version",
+            "tailscale::ip",
+            "tailscale::netcheck",
+            "tailscale::ping",
+            "tailscale::whois",
+            "tailscale::dns::status",
+            "tailscale::dns::query",
+            "tailscale::peers::list",
+            "tailscale::exit-node::list",
+            "tailscale::exit-node::suggest",
+            "tailscale::exit-node::set",
+            "tailscale::prefs::get",
+            "tailscale::prefs::set",
             "tailscale::share",
             "tailscale::share::stop",
+            "tailscale::serve::list",
+            "tailscale::serve::add",
+            "tailscale::serve::remove",
+            "tailscale::serve::reset",
+            "tailscale::file::targets",
+            "tailscale::file::send",
+            "tailscale::file::receive",
+            "tailscale::cert",
+            "tailscale::drive::list",
+            "tailscale::drive::share",
+            "tailscale::drive::unshare",
+            "tailscale::lock::status",
+            "tailscale::accounts::list",
+            "tailscale::accounts::switch",
+            "tailscale::update",
+            "tailscale::bugreport",
+            "tailscale::metrics",
         ]
     );
+}
+
+#[test]
+fn catalog_ids_are_unique_and_kebab_case() {
+    let ids: Vec<&str> = catalog().iter().map(|s| s.function_id).collect();
+    let mut seen = std::collections::HashSet::new();
+    for id in &ids {
+        assert!(seen.insert(*id), "duplicate function id {id}");
+        assert!(id.starts_with("tailscale::"), "{id} is not namespaced");
+        assert!(
+            !id.contains('_'),
+            "{id} uses snake_case; multi-word segments are kebab-case"
+        );
+    }
 }
 
 #[test]

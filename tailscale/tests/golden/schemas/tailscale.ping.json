@@ -1,0 +1,91 @@
+{
+  "description": "Ping a peer at the Tailscale layer and report whether each reply came over a DERP relay or a direct path.",
+  "function_id": "tailscale::ping",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "count": {
+        "default": 5,
+        "description": "Number of pings to send; defaults to 5.",
+        "format": "uint8",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "target": {
+        "description": "Peer hostname or Tailscale IP.",
+        "type": "string"
+      },
+      "timeout_ms": {
+        "default": 5000,
+        "description": "Per-ping timeout in milliseconds; defaults to 5000.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "target"
+    ],
+    "title": "PingInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "PingReply": {
+        "properties": {
+          "latency_ms": {
+            "description": "Round-trip time in milliseconds.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "line": {
+            "description": "The CLI line for this reply.",
+            "type": "string"
+          },
+          "via": {
+            "description": "`direct` or `derp`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "line",
+          "via"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "direct": {
+        "description": "True when at least one reply arrived over a direct path.",
+        "type": "boolean"
+      },
+      "raw": {
+        "description": "Raw CLI output.",
+        "type": "string"
+      },
+      "replies": {
+        "description": "One entry per reply, in order.",
+        "items": {
+          "$ref": "#/definitions/PingReply"
+        },
+        "type": "array"
+      },
+      "target": {
+        "description": "Target as given.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "direct",
+      "raw",
+      "replies",
+      "target"
+    ],
+    "title": "PingOutput",
+    "type": "object"
+  }
+}

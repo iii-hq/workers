@@ -327,6 +327,23 @@ rules:
   - '!tailscale::ui-content'
   - tailscale::status
   - tailscale::configuration
+  - tailscale::version
+  - tailscale::ip
+  - tailscale::netcheck
+  - tailscale::ping
+  - tailscale::whois
+  - tailscale::dns::status
+  - tailscale::dns::query
+  - tailscale::peers::list
+  - tailscale::exit-node::list
+  - tailscale::exit-node::suggest
+  - tailscale::prefs::get
+  - tailscale::serve::list
+  - tailscale::file::targets
+  - tailscale::drive::list
+  - tailscale::lock::status
+  - tailscale::accounts::list
+  - tailscale::metrics
   # Read-only code surface (coder::*, now served by the shell worker).
   # Mutating ops (create/update/move/delete-file) stay approval-gated.
   - coder::info

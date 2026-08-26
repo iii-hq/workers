@@ -1,10 +1,11 @@
 # Agent permissions for the tailscale worker.
 # Spec: docs/sops/new-worker.md § 7. First-match-wins.
 #
-# status and configuration are read-only and safe to allow. share publishes
-# the Console on a new HTTPS listener (Funnel to the whole internet) and stop
-# tears a person's route down, so both stay at the needs_approval default.
-# The config-reload callback and the Console asset function are bus-internal.
+# Read-only inspection of the node and tailnet is allowed by default. Anything
+# that changes what the network can reach or how this node behaves (connect,
+# login, publishing routes, preferences, exit node, Taildrop, Taildrive, certs,
+# account switch, update) stays at the needs_approval default. The config-reload
+# callback and the Console asset function are bus-internal.
 version: 1
 
 rules:
@@ -12,3 +13,20 @@ rules:
   - '!tailscale::ui-content'
   - tailscale::status
   - tailscale::configuration
+  - tailscale::version
+  - tailscale::ip
+  - tailscale::netcheck
+  - tailscale::ping
+  - tailscale::whois
+  - tailscale::dns::status
+  - tailscale::dns::query
+  - tailscale::peers::list
+  - tailscale::exit-node::list
+  - tailscale::exit-node::suggest
+  - tailscale::prefs::get
+  - tailscale::serve::list
+  - tailscale::file::targets
+  - tailscale::drive::list
+  - tailscale::lock::status
+  - tailscale::accounts::list
+  - tailscale::metrics

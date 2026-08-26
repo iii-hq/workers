@@ -1,0 +1,30 @@
+{
+  "description": "Ask Tailscale for the best available exit node for this node.",
+  "function_id": "tailscale::exit-node::suggest",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "EmptyInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "message": {
+        "description": "The CLI's own wording.",
+        "type": "string"
+      },
+      "suggestion": {
+        "description": "Suggested exit node name, or null when Tailscale has none to offer.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "message"
+    ],
+    "title": "ExitNodeSuggestion",
+    "type": "object"
+  }
+}

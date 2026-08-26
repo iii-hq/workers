@@ -1,0 +1,45 @@
+{
+  "description": "List the tailnet devices that accept Taildrop files from this node.",
+  "function_id": "tailscale::file::targets",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "EmptyInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "FileTarget": {
+        "properties": {
+          "ip": {
+            "description": "Tailscale IP of the device.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Machine name of the device.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ip",
+          "name"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "targets": {
+        "description": "Devices that accept Taildrop files from this node.",
+        "items": {
+          "$ref": "#/definitions/FileTarget"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "targets"
+    ],
+    "title": "FileTargetsOutput",
+    "type": "object"
+  }
+}

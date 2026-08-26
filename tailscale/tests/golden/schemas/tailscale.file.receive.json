@@ -1,0 +1,47 @@
+{
+  "description": "Move files that arrived in this node's Taildrop inbox into a directory (`tailscale file get`).",
+  "function_id": "tailscale::file::receive",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "conflict": {
+        "default": "skip",
+        "description": "What to do when a same-named file exists: `skip` (default), `overwrite`, or `rename`.",
+        "type": "string"
+      },
+      "directory": {
+        "description": "Absolute directory that receives the inbox files.",
+        "type": "string"
+      },
+      "wait": {
+        "default": false,
+        "description": "Wait for at least one file to arrive before returning.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "directory"
+    ],
+    "title": "FileReceiveInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "ok": {
+        "description": "True when the CLI exited successfully.",
+        "type": "boolean"
+      },
+      "output": {
+        "description": "The CLI's own output.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "ok",
+      "output"
+    ],
+    "title": "CommandOutput",
+    "type": "object"
+  }
+}

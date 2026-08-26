@@ -1,6 +1,6 @@
 {
-  "description": "Share the local iii Console. Serve is tailnet-only and the default; Funnel is public and requires allow_funnel in the configuration plus confirm_public in the request.",
-  "function_id": "tailscale::share",
+  "description": "Publish any local service, port, or directory on this node over Tailscale Serve (tailnet only) or Funnel (public; needs allow_funnel and confirm_public).",
+  "function_id": "tailscale::serve::add",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
@@ -15,7 +15,7 @@
     "properties": {
       "confirm_public": {
         "default": false,
-        "description": "Required `true` for Funnel: acknowledges that the Console becomes reachable by anyone with the link.",
+        "description": "Required `true` for Funnel: acknowledges that the target becomes reachable by anyone with the link.",
         "type": "boolean"
       },
       "https_port": {
@@ -38,11 +38,18 @@
       },
       "path": {
         "default": "/",
-        "description": "URL path prefix to serve the Console under; defaults to `/`.",
+        "description": "URL path prefix to publish under; defaults to `/`.",
+        "type": "string"
+      },
+      "target": {
+        "description": "What to publish: a local port (`3000`), a loopback URL (`http://127.0.0.1:3000`, `https+insecure://localhost:8443`), or an absolute file or directory path.",
         "type": "string"
       }
     },
-    "title": "ShareInput",
+    "required": [
+      "target"
+    ],
+    "title": "ServeAddInput",
     "type": "object"
   },
   "response_schema": {

@@ -34,7 +34,7 @@
             "type": "integer"
           },
           "target": {
-            "description": "Local target the route proxies to.",
+            "description": "Local target the route proxies to, or the file path it serves.",
             "type": "string"
           },
           "url": {
@@ -82,6 +82,13 @@
           "null"
         ]
       },
+      "exit_node": {
+        "description": "Exit node this node currently routes through, if any.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "funnel_allowed": {
         "description": "Whether the tailnet policy allows this node to use Funnel.",
         "type": "boolean"
@@ -100,13 +107,38 @@
           "null"
         ]
       },
+      "ingress_node_count": {
+        "description": "Tailscale Funnel ingress relay nodes in the peer list; infrastructure, excluded from the peer counts.",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      },
       "installed": {
         "description": "Whether the Tailscale CLI could be started.",
         "type": "boolean"
       },
+      "magic_dns_suffix": {
+        "description": "MagicDNS suffix of the tailnet.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "online": {
         "description": "True when the client is running and this node is online.",
         "type": "boolean"
+      },
+      "online_peer_count": {
+        "description": "Number of peers currently online.",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "peer_count": {
+        "description": "Number of peers visible on the tailnet.",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
       },
       "routes": {
         "description": "Active Serve and Funnel routes on this node.",
@@ -114,6 +146,13 @@
           "$ref": "#/definitions/Route"
         },
         "type": "array"
+      },
+      "tailnet": {
+        "description": "Name of the tailnet this node belongs to.",
+        "type": [
+          "string",
+          "null"
+        ]
       },
       "tailscale_ips": {
         "description": "Tailscale IPv4 and IPv6 addresses of this node.",
@@ -133,8 +172,11 @@
     "required": [
       "funnel_allowed",
       "health",
+      "ingress_node_count",
       "installed",
       "online",
+      "online_peer_count",
+      "peer_count",
       "routes",
       "tailscale_ips"
     ],
