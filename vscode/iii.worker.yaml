@@ -1,0 +1,14 @@
+iii: v1
+name: vscode
+language: javascript
+deploy: bundle
+manifest: package.json
+license: Apache-2.0
+tags: [vscode, ide, editor, extensions, development, console-ui]
+description: Run the actual Microsoft VS Code Workbench and official VS Code Server as a standalone injectable Console worker.
+
+runtime:
+  kind: javascript
+
+scripts:
+  start: node ./dist/bundle/index.mjs

@@ -313,6 +313,10 @@ rules:
   - editor::git::status
   - editor::git::hunks
   - editor::git::show
+  # vscode: the injectable Console page starts its one loopback-only official
+  # VS Code Server. Stop/delete remain approval-gated lifecycle mutations.
+  - vscode::start
+  - vscode::instances::list
   # Read-only code surface (coder::*, now served by the shell worker).
   # Mutating ops (create/update/move/delete-file) stay approval-gated.
   - coder::info
