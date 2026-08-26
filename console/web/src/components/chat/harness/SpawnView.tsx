@@ -167,7 +167,12 @@ export function SpawnActivityDisplay({
   )
 }
 
-function useLiveSubagentActivity(
+/**
+ * Exported for the generic agent-session card
+ * (`components/chat/agent-session`): a child session started by any worker
+ * gets the same live refinement a spawned harness child gets.
+ */
+export function useLiveSubagentActivity(
   sessionId: string | null,
   status: 'idle' | 'working' | 'done' | 'error' | undefined,
 ): SubagentActivitySignal | null {

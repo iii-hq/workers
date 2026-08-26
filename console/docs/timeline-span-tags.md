@@ -26,6 +26,9 @@ domain. Kinds in use today:
 | `harness.turn` | an agent harness's top-level turn step | none (the default label is already right) |
 | `harness.subagent` | a turn step belonging to a spawned sub-agent | `Sub-agent · <task preview>` |
 | `harness.spawn` | the act of spawning a sub-agent | `Spawn · <task preview>` |
+| `claude.run` | a headless Claude Code turn (the `claude-code` worker) | none (the span name says it) |
+| `claude.terminal.turn` | one prompt typed into a Claude Code terminal on the console | `Claude terminal · <prompt preview>` |
+| `pi.terminal.turn` | one prompt typed into a pi terminal on the console | `pi terminal · <prompt preview>` |
 
 A display name is only worth setting when it is genuinely more informative
 than the default verb-stripped span name — `Workflow: cleanup temp files`
