@@ -27,7 +27,17 @@ const CLI = ${JSON.stringify(cli)};
 // to keep a turn and its tool calls together.
 const SESSION_ID = \`pi-\${process.pid}-\${Date.now().toString(36)}\`;
 
+// pi's SDK loads this file for a HEADLESS turn too, because the worker runs
+// that turn in this workspace and \`createAgentSession\` discovers
+// \`.pi/extensions/\` from its cwd. In that case the worker is already
+// reporting the turn itself, under the iii session id the caller was given —
+// so reporting again from here would put the same run on \`agent::events\`
+// twice, under two different session ids. The worker marks its own process at
+// boot; finding that mark means "not mine to report".
+const IN_WORKER_PROCESS = Boolean((globalThis as { __iiiPiWorker?: boolean }).__iiiPiWorker);
+
 export default function (pi: ExtensionAPI) {
+  if (IN_WORKER_PROCESS) return;
   const post = (event: Record<string, unknown>): void => {
     void pi
       .exec(CLI, [

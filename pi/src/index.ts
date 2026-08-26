@@ -41,6 +41,13 @@ const url = values.url
   : (process.env.III_URL ?? process.env.III_ENGINE_URL ?? seed.engine_url);
 const bootConfig: Config = { ...seed, engine_url: url };
 
+// The activity extension is loaded by pi's SDK for a headless turn as well
+// (it discovers `.pi/extensions/` from the run's cwd, which IS the terminal
+// workspace). This mark tells it so: the worker reports its own headless turns,
+// and a second report from inside the same process would duplicate the run on
+// `agent::events` under a different session id.
+(globalThis as { __iiiPiWorker?: boolean }).__iiiPiWorker = true;
+
 const iii = registerWorker(url, { workerName: 'pi' });
 
 // Best-effort: a configuration-worker hiccup at boot must not stop the worker
