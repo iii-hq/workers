@@ -231,10 +231,12 @@ Explicit `once` always wins, and the response echoes the effective value.
 
 Optional, on either shape:
 
-- `lifecycle: { max_fires: N }` / `{ expires_at: <epoch ms> }` — a delivery budget or a
+- `lifecycle: { max_fires: N }` / `{ expires_in_ms: <ms from now> }` — a delivery budget or a
   deadline. A deadline on a never-fired wake wakes you with an expiry notice instead of
   leaving the session parked forever — ALWAYS set one on any wake your run cannot finish
-  without.
+  without. Use `expires_in_ms`: it is a duration, resolved against the engine's clock. The
+  absolute form `expires_at: <epoch ms>` is still accepted, but you do not know what time it
+  is — a remembered date is in the past and the registration is refused.
 - `conditions: [{ function_id, config? }]` — gates evaluated in order before delivery.
   Each is an ordinary function answering `{ decision: "allow" | "skip", payload?, reason? }`;
   a returned `payload` replaces the event downstream. A condition that errors SKIPS the

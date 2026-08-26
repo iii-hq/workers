@@ -457,7 +457,7 @@ fn standing_binding_advisory(req: &SubscribeRequest, once: bool) -> Option<Strin
              dispatched call). This registration still SUCCEEDED. A deadline wants trigger_type \
              \"timer\" with {{ \"in_ms\": <ms> }} (fires once, exactly on time) — or keep this \
              cron and pass `once: true`; a bounded run sets lifecycle \
-             {{ max_fires | expires_at }}; a deliberate forever-cron must be unregistered by \
+             {{ max_fires | expires_in_ms }}; a deliberate forever-cron must be unregistered by \
              your teardown."
         ));
     }
@@ -465,7 +465,7 @@ fn standing_binding_advisory(req: &SubscribeRequest, once: bool) -> Option<Strin
         "note: this call binding is STANDING — it re-runs its call on EVERY future matching \
          event until unregistered. That is the default for a call target (per-event work is \
          what a call binding means); pass `once: true` for a one-shot, and give a standing \
-         binding a lifecycle bound ({ max_fires | expires_at }) or unregister it in your \
+         binding a lifecycle bound ({ max_fires | expires_in_ms }) or unregister it in your \
          teardown so it cannot fire forever."
             .to_string(),
     )
@@ -1004,7 +1004,7 @@ fn armed_wake_advisory(req: &SubscribeRequest, once: bool) -> Option<String> {
          state::delete) on that exact scope/key fires it — a database table or row with the \
          same name does NOT. Double-check that a task you spawned (worker/finalizer) \
          EXPLICITLY sets that exact scope/key when its condition is met, or this session \
-         sleeps forever and its cleanup never runs. Set lifecycle {{ expires_at: <epoch ms> }} \
+         sleeps forever and its cleanup never runs. Set lifecycle {{ expires_in_ms: <ms> }} \
          to be woken with an expiry notice instead if the write never comes."
     ))
 }
@@ -1415,7 +1415,9 @@ mod tests {
             note.contains("database table or row with the same name does NOT"),
             "the medium sentence is the advisory's whole point: {note}"
         );
-        assert!(note.contains("expires_at"), "got: {note}");
+        // The advisory names the field a caller can get right without a clock.
+        assert!(note.contains("expires_in_ms"), "got: {note}");
+        assert!(!note.contains("expires_at"), "got: {note}");
         assert!(note.contains("expiry notice"), "got: {note}");
         // Standing notifies and non-state types are not wakes.
         assert!(armed_wake_advisory(&mk("state", json!({ "key": "k" })), false).is_none());
