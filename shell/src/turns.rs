@@ -42,6 +42,7 @@ const PRE_HOOK_FN_ID: &str = "shell::turns::on-pre-trigger";
 const POST_HOOK_FN_ID: &str = "shell::turns::on-post-trigger";
 const STARTED_FN_ID: &str = "shell::turns::on-turn-started";
 const COMPLETED_FN_ID: &str = "shell::turns::on-turn-completed";
+const ADOPT_ROOT_FN_ID: &str = "shell::turns::adopt-root";
 // Every shell call is hooked, not only the file verbs: calls that name no
 // paths (`shell::exec`, pty writes) still tell the observer which
 // session, turn and root are live so the workspace watch can start.
@@ -311,6 +312,124 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+fn system_time_ms(value: SystemTime) -> Option<u64> {
+    value
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_millis() as u64)
+}
+
+fn recent_enough(value: Option<u64>, started_at: u64) -> bool {
+    value.is_some_and(|value| value.saturating_add(2_000) >= started_at)
+}
+
+fn adoptable_project_path(root: &Path, path: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(root) else {
+        return false;
+    };
+    let ignored = [
+        ".git",
+        "node_modules",
+        "target",
+        "dist",
+        "build",
+        "out",
+        "vendor",
+        "__pycache__",
+    ];
+    if relative
+        .components()
+        .any(|part| ignored.iter().any(|name| part.as_os_str() == *name))
+    {
+        return false;
+    }
+    !matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some(
+            "o" | "a"
+                | "d"
+                | "rlib"
+                | "rmeta"
+                | "so"
+                | "dylib"
+                | "dll"
+                | "class"
+                | "pyc"
+                | "wasm"
+                | "map"
+                | "log"
+                | "tmp"
+                | "swp"
+                | "part"
+                | "pid"
+                | "sock"
+        )
+    )
+}
+
+fn scan_adopted_project(root: &Path, started_at: u64) -> Vec<(String, String)> {
+    struct Candidate {
+        path: PathBuf,
+        created_at: Option<u64>,
+        modified_at: Option<u64>,
+    }
+
+    let root_created_at = std::fs::metadata(root)
+        .ok()
+        .and_then(|metadata| metadata.created().ok())
+        .and_then(system_time_ms);
+    let mut stack = vec![root.to_path_buf()];
+    let mut candidates = Vec::new();
+    while let Some(directory) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            continue;
+        };
+        let mut entries = entries.flatten().collect::<Vec<_>>();
+        entries.sort_by_key(std::fs::DirEntry::path);
+        for entry in entries {
+            let path = entry.path();
+            if !adoptable_project_path(root, &path) {
+                continue;
+            }
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            if metadata.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !metadata.is_file() || candidates.len() >= MAX_FILES_PER_TURN {
+                continue;
+            }
+            candidates.push(Candidate {
+                path,
+                created_at: metadata.created().ok().and_then(system_time_ms),
+                modified_at: metadata.modified().ok().and_then(system_time_ms),
+            });
+        }
+    }
+    let whole_project_is_new = recent_enough(root_created_at, started_at)
+        || (!candidates.is_empty()
+            && candidates
+                .iter()
+                .all(|candidate| recent_enough(candidate.modified_at, started_at)));
+    candidates
+        .into_iter()
+        .filter(|candidate| whole_project_is_new || recent_enough(candidate.created_at, started_at))
+        .filter_map(|candidate| {
+            std::fs::read(&candidate.path).ok().map(|bytes| {
+                (
+                    candidate.path.to_string_lossy().into_owned(),
+                    content_revision(&bytes),
+                )
+            })
+        })
+        .collect()
 }
 
 struct ReadImage {
@@ -718,6 +837,63 @@ impl TurnLog {
         .await
     }
 
+    pub async fn adopt_root(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        root: &str,
+    ) -> Result<usize, Error> {
+        let root = tokio::fs::canonicalize(root)
+            .await
+            .map_err(|error| Error::Handler(format!("project root is not accessible: {error}")))?;
+        if !root.is_dir() {
+            return Err(Error::Handler("project root is not a directory".into()));
+        }
+        let record = self.load(session_id).await?;
+        let started_at = record
+            .turns
+            .iter()
+            .find(|turn| turn.turn_id == turn_id)
+            .map(|turn| turn.started_at)
+            .ok_or_else(|| Error::Handler("turn is not present in session history".into()))?;
+        let scan_root = root.clone();
+        let files =
+            tokio::task::spawn_blocking(move || scan_adopted_project(&scan_root, started_at))
+                .await
+                .map_err(|error| Error::Handler(format!("project scan failed: {error}")))?;
+        let count = files.len();
+        let root = root.to_string_lossy().into_owned();
+        let at = now_ms();
+        self.update(session_id, |record| {
+            let turn = turn_mut(record, turn_id, at);
+            for (path, after_revision) in files {
+                record_file(
+                    turn,
+                    FileRecord {
+                        path,
+                        root: Some(root.clone()),
+                        kind: "created".into(),
+                        cause: "console::working-directory::propose".into(),
+                        first_seen: at,
+                        last_seen: at,
+                        from: None,
+                        before: Some(PreImage {
+                            revision: None,
+                            content: None,
+                            truncated: false,
+                            stored: false,
+                            missing: true,
+                            binary: false,
+                        }),
+                        after_revision: Some(after_revision),
+                    },
+                );
+            }
+        })
+        .await?;
+        Ok(count)
+    }
+
     pub async fn on_pre_trigger(&self, input: HookInput) {
         let (Some(session_id), Some(turn_id), Some(call)) =
             (input.session_id, input.turn_id, input.call)
@@ -862,6 +1038,18 @@ pub struct GetOutput {
     pub turn: Option<TurnRecord>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AdoptRootInput {
+    pub session_id: String,
+    pub turn_id: String,
+    pub root: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct AdoptRootOutput {
+    pub recorded: usize,
+}
+
 pub fn register(iii: &IIIClient, config: &TurnsConfig) -> Arc<TurnLog> {
     let data_dir = config.resolved_data_dir();
     let log = Arc::new(TurnLog::new(TurnStore::new(
@@ -910,6 +1098,25 @@ pub fn register(iii: &IIIClient, config: &TurnsConfig) -> Arc<TurnLog> {
             .description(
                 "Internal: records a file change made through a shell or coder call into \
                  the session's durable change history. Observes only; always continues.",
+            )
+            .metadata(json!({ "internal": true, "trace_hidden": true })),
+        );
+    }
+    {
+        let log = log.clone();
+        iii.register_function(
+            ADOPT_ROOT_FN_ID,
+            RegisterFunction::new_async(move |input: AdoptRootInput| {
+                let log = log.clone();
+                async move {
+                    let recorded = log
+                        .adopt_root(&input.session_id, &input.turn_id, &input.root)
+                        .await?;
+                    Ok::<AdoptRootOutput, Error>(AdoptRootOutput { recorded })
+                }
+            })
+            .description(
+                "Internal: add a newly created project root to the active Harness turn after a confirmed workspace proposal.",
             )
             .metadata(json!({ "internal": true, "trace_hidden": true })),
         );
@@ -1056,7 +1263,7 @@ pub fn register(iii: &IIIClient, config: &TurnsConfig) -> Arc<TurnLog> {
             ),
         );
     }
-    tracing::info!("registered shell::turns::list, shell::turns::get and the turn-history hooks");
+    tracing::info!("registered shell::turns::list, shell::turns::get, shell::turns::adopt-root and the turn-history hooks");
     log
 }
 
@@ -1395,5 +1602,38 @@ mod tests {
         })
         .await;
         assert!(!dir.path().join("turns").exists());
+    }
+
+    #[tokio::test]
+    async fn adopted_new_project_files_join_the_existing_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        let log = log_in(dir.path());
+        log.on_turn_started("session", "turn").await.unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("test")).unwrap();
+        std::fs::write(root.join("package.json"), "{}\n").unwrap();
+        std::fs::write(root.join("src/index.js"), "export const value = 1\n").unwrap();
+        std::fs::write(root.join("test/index.test.js"), "// test\n").unwrap();
+        std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        std::fs::write(root.join("node_modules/pkg/index.js"), "noise\n").unwrap();
+
+        let recorded = log
+            .adopt_root("session", "turn", root.to_str().unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(recorded, 3);
+        let record = log.load("session").await.unwrap();
+        let files = &record.turns[0].files;
+        assert_eq!(files.len(), 3);
+        assert!(files.iter().all(|file| file.kind == "created"));
+        assert!(files
+            .iter()
+            .all(|file| file.before.as_ref().is_some_and(|before| before.missing)));
+        assert!(files
+            .iter()
+            .all(|file| file.cause == "console::working-directory::propose"));
+        assert!(!files.iter().any(|file| file.path.contains("node_modules")));
     }
 }

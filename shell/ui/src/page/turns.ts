@@ -117,10 +117,19 @@ export interface SessionActivitySummary {
   outsideRoot: string | null
 }
 
+function hasNoDurableChange(file: TurnFileRecord): boolean {
+  if (file.before?.missing && file.kind === 'deleted') return true
+  return (
+    typeof file.before?.revision === 'string' &&
+    file.before.revision === file.after_revision
+  )
+}
+
 export function reviewEntriesFromTurn(turn: SessionTurn, root: string): TurnEntries {
   const entries = new Map<string, ReviewEntry>()
   const outsidePaths: string[] = []
   for (const file of turn.files) {
+    if (hasNoDurableChange(file)) continue
     const rel = relativeToRoot(file.path, root)
     if (rel === null) {
       outsidePaths.push(file.path)
@@ -198,6 +207,7 @@ export function reviewEntriesFromSession(
 
   for (const turn of chronological) {
     for (const file of turn.files) {
+      if (hasNoDurableChange(file)) continue
       if (relativeToRoot(file.path, root) === null) {
         outside.add(file.path)
         continue

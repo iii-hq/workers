@@ -121,6 +121,7 @@ import {
   type ReviewEditDraft,
   type ReviewFileSummary,
   type ReviewOptions,
+  loadReviewContents,
   ReviewPane,
   runReviewTransition,
 } from './ReviewPane'
@@ -131,9 +132,11 @@ import {
   reviewScopeLabel,
 } from './ReviewScopePicker'
 import {
+  canUseGitMetadataForLiveEntry,
   diffForReviewEntry,
   mergeGitReviewEntries,
   mergeReviewEntry,
+  reviewContentsRepresentChange,
   type ReviewEntry,
 } from './review'
 import {
@@ -348,6 +351,29 @@ function reviewEntriesFromGit(
       ] as const
     }),
   )
+}
+
+async function withoutUnreviewableBaselines(
+  host: Host,
+  root: string,
+  entries: ReadonlyMap<string, ReviewEntry>,
+  paths?: ReadonlySet<string>,
+): Promise<ReadonlyMap<string, ReviewEntry>> {
+  const next = new Map(entries)
+  const candidates = [...entries].filter(
+    ([path, entry]) => entry.baseline === null && (!paths || paths.has(path)),
+  )
+  await Promise.all(
+    candidates.map(async ([path, entry]) => {
+      try {
+        const contents = await loadReviewContents(host, root, entry)
+        if (!reviewContentsRepresentChange(entry, contents)) next.delete(path)
+      } catch {
+        return
+      }
+    }),
+  )
+  return next
 }
 
 const SIDEBAR_DEFAULT_WIDTH = 244
@@ -1343,7 +1369,7 @@ export function ShellExplorerPage({
     const completedTurnId = observedReview.turnId
     const completedRoot = root
     void fetchSessionTurn(host, conversationId, completedTurnId)
-      .then((turn) => {
+      .then(async (turn) => {
         if (
           cancelled ||
           turn === null ||
@@ -1353,11 +1379,23 @@ export function ShellExplorerPage({
           return
         }
         const mapped = reviewEntriesFromTurn(turn, completedRoot)
+        const storedEntries = await withoutUnreviewableBaselines(
+          host,
+          completedRoot,
+          mapped.entries,
+        )
+        if (
+          cancelled ||
+          rootRef.current !== completedRoot ||
+          reviewWindowRef.current.turnId !== completedTurnId
+        ) {
+          return
+        }
         setTurnOutside(mapped.outside)
         setTurnOutsideRoot(mapped.outsideRoot)
 
         const merged = new Map(reviewEntriesRef.current)
-        for (const [path, stored] of mapped.entries) {
+        for (const [path, stored] of storedEntries) {
           const live = merged.get(path)
           merged.set(path, {
             ...stored,
@@ -1530,9 +1568,16 @@ export function ShellExplorerPage({
               )
             ).filter((turn): turn is SessionTurn => turn !== null)
             const mapped = reviewEntriesFromSession(turns, root)
+            const entries = await withoutUnreviewableBaselines(
+              host,
+              root,
+              mapped.entries,
+            )
+            if (scopeLoadSeqRef.current !== seq || rootRef.current !== root)
+              return null
             const activity = summarizeSessionActivity(summaries, root)
             return {
-              entries: mapped.entries,
+              entries,
               outside: activity.outside,
               outsideRoot: activity.outsideRoot,
             } satisfies TurnEntries
@@ -1561,14 +1606,20 @@ export function ShellExplorerPage({
           return
         }
         void fetchSessionTurn(host, conversationId, scope.turnId)
-          .then((turn) => {
+          .then(async (turn) => {
             if (scopeLoadSeqRef.current !== seq || rootRef.current !== root)
               return
-            applyMapped(
-              turn
-                ? reviewEntriesFromTurn(turn, root)
-                : { entries: new Map(), outside: 0, outsideRoot: null },
+            const mapped = turn
+              ? reviewEntriesFromTurn(turn, root)
+              : { entries: new Map(), outside: 0, outsideRoot: null }
+            const entries = await withoutUnreviewableBaselines(
+              host,
+              root,
+              mapped.entries,
             )
+            if (scopeLoadSeqRef.current !== seq || rootRef.current !== root)
+              return
+            applyMapped({ ...mapped, entries })
           })
           .catch((error: unknown) => {
             if (scopeLoadSeqRef.current !== seq || rootRef.current !== root)
@@ -1954,7 +2005,7 @@ export function ShellExplorerPage({
             fileEvents.map(({ abs }) => abs),
           ).catch(() => null),
           refreshGit(),
-        ]).then(([results, state]) => {
+        ]).then(async ([results, state]) => {
           if (
             rootGenerationRef.current !== generation ||
             reviewEpochRef.current !== reviewEpoch ||
@@ -2020,7 +2071,13 @@ export function ShellExplorerPage({
               // An added/untracked Git status normally supplies an empty
               // baseline. Do not use that fallback when an incomplete tree
               // may simply have omitted an existing pre-turn file.
-              baselineUnavailable ? undefined : currentGitByPath.get(rel),
+              canUseGitMetadataForLiveEntry(
+                baselineCapturedRef.current,
+                baselineUnavailable,
+                decision.baseline,
+              )
+                ? currentGitByPath.get(rel)
+                : undefined,
             )
           }
           const enriched = mergeGitReviewEntries(
@@ -2028,8 +2085,21 @@ export function ShellExplorerPage({
             currentGitChanges,
             false,
           )
-          reviewEntriesRef.current = enriched
-          setReviewEntries(enriched)
+          const validated = await withoutUnreviewableBaselines(
+            host,
+            currentRoot,
+            enriched,
+            new Set(fileEvents.map(({ rel }) => rel)),
+          )
+          if (
+            rootGenerationRef.current !== generation ||
+            reviewEpochRef.current !== reviewEpoch ||
+            rootRef.current !== currentRoot
+          ) {
+            return
+          }
+          reviewEntriesRef.current = validated
+          setReviewEntries(validated)
 
           const activeScope = reviewScopeRef.current
           if (
@@ -2037,13 +2107,13 @@ export function ShellExplorerPage({
             shouldEnterTurnScope(
               followHarnessTurnsRef.current,
               activeScope,
-              enriched.size,
+              validated.size,
             )
           ) {
             forceReviewScope(LAST_TURN_SCOPE)
             const entry =
-              (follow ? enriched.get(follow.rel) : undefined) ??
-              enriched.values().next().value
+              (follow ? validated.get(follow.rel) : undefined) ??
+              validated.values().next().value
             if (entry) openReviewEntry(entry)
             return
           }
@@ -2057,10 +2127,10 @@ export function ShellExplorerPage({
             diffRequestRef.current === followTicket
           ) {
             const entry =
-              enriched.get(follow.rel) ??
+              validated.get(follow.rel) ??
               [...fileEvents]
                 .reverse()
-                .map(({ rel }) => enriched.get(rel))
+                .map(({ rel }) => validated.get(rel))
                 .find((candidate) => candidate !== undefined)
             if (entry) {
               openReviewEntry(entry)
@@ -2073,8 +2143,9 @@ export function ShellExplorerPage({
             open !== null &&
             changed.has(joinPath(currentRoot, open.change.path))
           ) {
-            const entry = enriched.get(open.change.path)
+            const entry = validated.get(open.change.path)
             if (entry) setDiff(diffForReviewEntry(entry))
+            else setDiff(null)
           }
         })
       })

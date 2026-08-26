@@ -139,6 +139,45 @@ describe('reviewEntriesFromTurn', () => {
       baseline: null,
     })
   })
+
+  it('drops durable rows whose before and after revisions are identical', () => {
+    const unchanged: SessionTurn = {
+      turn_id: 'unchanged',
+      started_at: 1,
+      files: [
+        {
+          path: '/r/config/console.yaml',
+          kind: 'modified',
+          cause: 'shell::fs::write',
+          first_seen: 1,
+          last_seen: 2,
+          before: { revision: 'sha256:same', content: 'same\n' },
+          after_revision: 'sha256:same',
+        },
+      ],
+    }
+
+    expect(reviewEntriesFromTurn(unchanged, '/r').entries.size).toBe(0)
+  })
+
+  it('drops a file created and deleted within one turn', () => {
+    const transient: SessionTurn = {
+      turn_id: 'transient',
+      started_at: 1,
+      files: [
+        {
+          path: '/r/transient.txt',
+          kind: 'deleted',
+          cause: 'shell::fs::rm',
+          first_seen: 1,
+          last_seen: 2,
+          before: { missing: true },
+        },
+      ],
+    }
+
+    expect(reviewEntriesFromTurn(transient, '/r').entries.size).toBe(0)
+  })
 })
 
 describe('turnLabel', () => {

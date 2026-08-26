@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { GitChange } from '../git'
 import {
+  canUseGitMetadataForLiveEntry,
   diffForReviewEntry,
   mergeGitReviewEntries,
   mergeReviewEntry,
+  reviewContentsRepresentChange,
   type ReviewEntry,
   statusForLiveKind,
 } from '../review'
@@ -17,6 +19,61 @@ describe('statusForLiveKind', () => {
 })
 
 describe('review entries', () => {
+  it('does not invent an empty baseline from Git during turn catch-up', () => {
+    expect(canUseGitMetadataForLiveEntry(false, false, undefined)).toBe(false)
+    expect(canUseGitMetadataForLiveEntry(true, true, undefined)).toBe(false)
+    expect(canUseGitMetadataForLiveEntry(true, false, undefined)).toBe(true)
+    expect(canUseGitMetadataForLiveEntry(false, false, '')).toBe(true)
+  })
+
+  it('does not promote an observed path without a usable baseline', () => {
+    const entry: ReviewEntry = {
+      path: 'config/console.yaml',
+      change: {
+        path: 'config/console.yaml',
+        status: 'modified',
+        staged: false,
+      },
+      baseline: null,
+    }
+
+    expect(
+      reviewContentsRepresentChange(entry, {
+        oldContents: '',
+        newContents: '',
+        noBaseline: true,
+      }),
+    ).toBe(false)
+    expect(
+      reviewContentsRepresentChange(entry, {
+        oldContents: 'same\n',
+        newContents: 'same\n',
+      }),
+    ).toBe(false)
+    expect(
+      reviewContentsRepresentChange(entry, {
+        oldContents: 'before\n',
+        newContents: 'after\n',
+      }),
+    ).toBe(true)
+  })
+
+  it('keeps structural changes even when both text sides are empty', () => {
+    for (const status of ['untracked', 'deleted', 'renamed'] as const) {
+      const entry: ReviewEntry = {
+        path: 'empty.txt',
+        change: { path: 'empty.txt', status, staged: false },
+        baseline: '',
+      }
+      expect(
+        reviewContentsRepresentChange(entry, {
+          oldContents: '',
+          newContents: '',
+        }),
+      ).toBe(true)
+    }
+  })
+
   it('preserves the first baseline across repeated writes', () => {
     const first = mergeReviewEntry(new Map(), 'src/app.ts', 'modified', 'before')
     const second = mergeReviewEntry(first, 'src/app.ts', 'modified', 'after first write')
