@@ -10,10 +10,11 @@ description: >-
 # bridge
 
 The `bridge` worker connects this iii engine to another iii instance over
-`iii-sdk` so functions on either side can call across the boundary. It opens a
-single outbound WebSocket to the configured `url`, and stays open for the
-worker's lifetime — bridging is request/response over that long-lived
-connection. There are no trigger types.
+`iii-sdk` so functions on either side can call across the boundary. It keeps a
+local/control WebSocket to this engine, selected by `--url`, `III_URL`, or the
+local default. A separate WebSocket connects to the remote target selected by
+`config.url` and reconnects when that value changes. Both connections stay
+open for the worker's lifetime. There are no trigger types.
 
 The worker is configuration-driven. The primary surface is two list-shaped
 config fields (`forward` and `expose`) that wire stable function ids on both
