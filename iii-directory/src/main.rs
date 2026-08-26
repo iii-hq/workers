@@ -12,7 +12,7 @@
 //!      prompts, agents, registry, and one engine-info wrapper).
 //!   5. (Optional) Subscribe to `worker` trigger for auto-download on
 //!      worker add events and run a boot reconcile for missing skills.
-//!   6. Start the filesystem watch so external edits under the skills
+//!   6. Start the filesystem watch so external edits under the directory
 //!      roots fire the matching `on-change` (best-effort, never fatal).
 //!   7. Sleep on Ctrl+C, then `shutdown_async` cleanly.
 //!
@@ -219,22 +219,41 @@ async fn main() -> Result<()> {
     configuration::register_config_trigger(&iii, state)
         .context("registering configuration change trigger")?;
 
-    // Filesystem watch: external edits under the skills roots fire the
+    // Filesystem watch: external edits under the directory roots fire the
     // matching on-change with { op: "external" }. Failure to start is a
     // degradation (tabs refresh on interaction only), never fatal.
     let cfg_now = cfg_handle.load_full();
-    let mut watch_roots = vec![cfg_now.resolved_skills_folder()];
+    let mut watch_roots = vec![iii_directory::watch::WatchRoot {
+        path: cfg_now.resolved_skills_folder(),
+        kind: iii_directory::watch::WatchRootKind::Directory,
+    }];
     let local_root = cfg_now.local_skills_folder();
-    if local_root != watch_roots[0] {
-        watch_roots.push(local_root);
+    if local_root != watch_roots[0].path {
+        watch_roots.push(iii_directory::watch::WatchRoot {
+            path: local_root,
+            kind: iii_directory::watch::WatchRootKind::Directory,
+        });
     }
-    // The agents root is watched only when it already exists:
-    // spawn_fs_watch create_dir_all's its roots, and this worker must
-    // never materialize (or write) `~/.agents/skills` — it's owned by
-    // external agent tooling.
-    let agents_root = cfg_now.resolved_agents_skills_folder();
-    if agents_root.is_dir() && !watch_roots.contains(&agents_root) {
-        watch_roots.push(agents_root);
+    let profiles_root = cfg_now.resolved_agents_folder();
+    if !watch_roots.iter().any(|root| root.path == profiles_root) {
+        watch_roots.push(iii_directory::watch::WatchRoot {
+            path: profiles_root,
+            kind: iii_directory::watch::WatchRootKind::AgentProfiles,
+        });
+    }
+    // The agent-skills root is watched only when it already exists. This
+    // worker must never materialize (or write) `~/.agents/skills` — it is
+    // owned by external agent tooling.
+    let agent_skills_root = cfg_now.resolved_agents_skills_folder();
+    if agent_skills_root.is_dir()
+        && !watch_roots
+            .iter()
+            .any(|root| root.path == agent_skills_root)
+    {
+        watch_roots.push(iii_directory::watch::WatchRoot {
+            path: agent_skills_root,
+            kind: iii_directory::watch::WatchRootKind::AgentSkills,
+        });
     }
     let watch_iii = iii.clone();
     // Named fields, not a tuple: transposing two positional subscriber sets
@@ -258,7 +277,7 @@ async fn main() -> Result<()> {
         });
     }) {
         Ok(h) => {
-            tracing::info!("fs watch active on skills roots");
+            tracing::info!("fs watch active on directory roots");
             Some(h)
         }
         Err(e) => {
