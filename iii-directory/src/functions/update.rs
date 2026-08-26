@@ -602,6 +602,17 @@ pub fn create_skill_in(
             &[],
         ));
     }
+    if classified == Some(fs_source::SourceKind::Agent) {
+        return Err(invalid_input_message(
+            "D115",
+            &format!(
+                "id {id:?} contains an `agents` path segment, which the scanner \
+                 classifies as an agent — the created file would be invisible to \
+                 directory::skills::list. Use directory::agents::create for agent profiles.",
+            ),
+            &[],
+        ));
+    }
     if classified != Some(fs_source::SourceKind::Skill) {
         unreachable!("non-skill source kinds are handled above");
     }
@@ -1603,6 +1614,30 @@ mod tests {
         );
         assert!(!tmp.path().join("ns").exists());
         assert!(!tmp.path().join("prompts").exists());
+    }
+
+    #[test]
+    fn create_skill_rejects_agent_segment_ids() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_for(tmp.path());
+
+        for id in ["agents/foo", "ns/agents/foo"] {
+            let err = create_skill_in(
+                &cfg,
+                &[],
+                None,
+                &SkillCreateInput {
+                    id: id.into(),
+                    content: "# X\n\nbody\n".into(),
+                },
+            )
+            .unwrap_err();
+            assert!(err.starts_with("D115 invalid_input:"), "id {id}: {err}");
+            assert!(err.contains("directory::agents::create"), "id {id}: {err}");
+        }
+
+        assert!(!tmp.path().join("agents").exists());
+        assert!(!tmp.path().join("ns").exists());
     }
 
     #[test]
