@@ -1,13 +1,9 @@
 /**
- * Pure state for the chat system-prompt picker and the separate skill-ID
- * picker (`SessionAddonsPicker.tsx`). `SystemPromptPicker.tsx`
- * renders it on the new-session screen; the chosen value is stored on
- * `Conversation.systemPrompt` (see `use-conversations`), and `ChatView` maps
- * it onto `ChatStreamOptions.systemPrompt` via `selectionForSend` — the
- * session's FIRST send only. The harness inherits the prior turn's resolved
- * prompt on later sends that omit the prompt fields (see harness README
- * § System prompt), so the selection travels once and is frozen server-side
- * for the whole session.
+ * Pure state for the chat system-prompt and skill pickers. The selected values
+ * are stored on the conversation record, and `ChatView` maps them onto the
+ * first send. The harness inherits the prior turn's resolved prompt on later
+ * sends that omit the prompt fields (see harness README § System prompt), so
+ * the selection travels once and is frozen server-side for the whole session.
  *
  * The `custom` choice is vestigial: no surface renders that row any more —
  * authoring lives in the iii-directory UI's system-prompts tab — but

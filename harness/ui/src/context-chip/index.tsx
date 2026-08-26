@@ -10,7 +10,15 @@
  */
 
 import type { Host } from '@iii-dev/console-ui'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import type { CSSProperties, ReactNode, RefObject } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react'
+import { createPortal } from 'react-dom'
 import { formatCost, formatTokens } from '../lib/format'
 import {
   type ContextSnapshot,
@@ -21,6 +29,7 @@ import { TONE_COLOR, toneFor } from '../lib/tone'
 
 /** Per-tab handler id (host.iii.on namespaces it `::<browserId>`). */
 const STATE_FN = 'iii::harness-ui::ctx-state'
+const MOBILE_CONTEXT_QUERY = '(max-width: 767px)'
 
 export interface SessionChipProps {
   sessionId: string
@@ -36,6 +45,25 @@ interface StateEvent {
   scope?: string
   key?: string
   new_value?: unknown
+}
+
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() =>
+    typeof window === 'undefined' || typeof window.matchMedia !== 'function'
+      ? false
+      : window.matchMedia(query).matches,
+  )
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return
+    const media = window.matchMedia(query)
+    const update = () => setMatches(media.matches)
+    update()
+    media.addEventListener('change', update)
+    return () => media.removeEventListener('change', update)
+  }, [query])
+
+  return matches
 }
 
 const ink = (opacity: number) =>
@@ -287,14 +315,49 @@ function SessionIdRow({ sessionId }: { sessionId: string }) {
   )
 }
 
+function ContextCloseButton({
+  onClose,
+  buttonRef,
+}: {
+  onClose: () => void
+  buttonRef: RefObject<HTMLButtonElement | null>
+}) {
+  return (
+    <button
+      ref={buttonRef}
+      type="button"
+      className="harness-ui-pop-close"
+      onClick={onClose}
+      aria-label="close context breakdown"
+    >
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        aria-hidden
+      >
+        <path d="M18 6 6 18M6 6l12 12" />
+      </svg>
+    </button>
+  )
+}
+
 function ContextPopover({
   snapshot,
   modelId,
   sessionId,
+  modal,
+  onClose,
+  closeButtonRef,
 }: {
   snapshot: ContextSnapshot
   modelId?: string
   sessionId: string
+  modal: boolean
+  onClose: () => void
+  closeButtonRef: RefObject<HTMLButtonElement | null>
 }) {
   const usable = snapshot.usable
   const pct =
@@ -309,14 +372,21 @@ function ContextPopover({
       className="harness-ui-pop"
       role="dialog"
       aria-label="context breakdown"
+      aria-modal={modal || undefined}
     >
       <div className="harness-ui-pop-head">
-        <span className="harness-ui-pop-model">
-          {snapshot.model || modelId || 'model'}
+        <span className="harness-ui-pop-head-copy">
+          <span className="harness-ui-pop-model">
+            {snapshot.model || modelId || 'model'}
+          </span>
+          <span className="harness-ui-pop-usage">
+            {pct}% of {formatTokens(usable)}
+          </span>
         </span>
-        <span className="harness-ui-pop-usage">
-          {pct}% of {formatTokens(usable)}
-        </span>
+        <ContextCloseButton
+          onClose={onClose}
+          buttonRef={closeButtonRef}
+        />
       </div>
       <div className="harness-ui-stack">
         {cats
@@ -397,10 +467,16 @@ function EmptyContextPopover({
   modelId,
   contextWindow,
   sessionId,
+  modal,
+  onClose,
+  closeButtonRef,
 }: {
   modelId?: string
   contextWindow?: number
   sessionId: string
+  modal: boolean
+  onClose: () => void
+  closeButtonRef: RefObject<HTMLButtonElement | null>
 }) {
   const hasWindow = contextWindow !== undefined && contextWindow > 0
   return (
@@ -408,10 +484,17 @@ function EmptyContextPopover({
       className="harness-ui-pop"
       role="dialog"
       aria-label="context breakdown"
+      aria-modal={modal || undefined}
     >
       <div className="harness-ui-pop-head">
-        <span className="harness-ui-pop-model">{modelId || 'model'}</span>
-        <span className="harness-ui-pop-usage">waiting for usage</span>
+        <span className="harness-ui-pop-head-copy">
+          <span className="harness-ui-pop-model">{modelId || 'model'}</span>
+          <span className="harness-ui-pop-usage">waiting for usage</span>
+        </span>
+        <ContextCloseButton
+          onClose={onClose}
+          buttonRef={closeButtonRef}
+        />
       </div>
       {hasWindow ? (
         <>
@@ -456,6 +539,219 @@ function ContextCaret() {
   )
 }
 
+interface ContextSurfaceRenderProps {
+  modal: boolean
+  onClose: () => void
+  closeButtonRef: RefObject<HTMLButtonElement | null>
+}
+
+interface ContextChipSurfaceProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  triggerLabel: string
+  trigger: ReactNode
+  renderPopover: (props: ContextSurfaceRenderProps) => ReactNode
+}
+
+/**
+ * One responsive surface for every context-chip state. The desktop trigger
+ * becomes its popover; mobile keeps the compact trigger in place and portals
+ * the same content into a modal bottom sheet.
+ */
+function ContextChipSurface({
+  open,
+  onOpenChange,
+  triggerLabel,
+  trigger,
+  renderPopover,
+}: ContextChipSurfaceProps) {
+  const mobileSheet = useMediaQuery(MOBILE_CONTEXT_QUERY)
+  const rootRef = useRef<HTMLDivElement | null>(null)
+  const triggerRef = useRef<HTMLButtonElement | null>(null)
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null)
+  const sheetRef = useRef<HTMLDivElement | null>(null)
+  const morphMenuRef = useRef<HTMLDivElement | null>(null)
+  const wasOpenRef = useRef(false)
+  const [morphOpenHeight, setMorphOpenHeight] = useState(280)
+
+  useLayoutEffect(() => {
+    if (mobileSheet) return
+    const panel = morphMenuRef.current?.querySelector<HTMLElement>(
+      '.harness-ui-pop',
+    )
+    if (!panel) return
+    const updateHeight = () =>
+      setMorphOpenHeight(Math.max(120, Math.ceil(panel.scrollHeight)))
+    updateHeight()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(updateHeight)
+    observer.observe(panel)
+    return () => observer.disconnect()
+  }, [mobileSheet])
+
+  useEffect(() => {
+    if (!open) return
+    const onPointerDown = (event: MouseEvent) => {
+      const target = event.target as Node
+      if (
+        !rootRef.current?.contains(target) &&
+        !sheetRef.current?.contains(target)
+      ) {
+        onOpenChange(false)
+      }
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onOpenChange(false)
+        return
+      }
+      if (event.key !== 'Tab' || !mobileSheet || !sheetRef.current) return
+      const focusable = Array.from(
+        sheetRef.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      )
+      if (focusable.length === 0) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('mousedown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [mobileSheet, onOpenChange, open])
+
+  useEffect(() => {
+    let focusFrame: number | undefined
+    if (open) {
+      focusFrame = window.requestAnimationFrame(() => {
+        closeButtonRef.current?.focus({ preventScroll: true })
+      })
+    } else if (wasOpenRef.current) {
+      triggerRef.current?.focus({ preventScroll: true })
+    }
+    wasOpenRef.current = open
+    return () => {
+      if (focusFrame !== undefined) window.cancelAnimationFrame(focusFrame)
+    }
+  }, [mobileSheet, open])
+
+  useEffect(() => {
+    if (!mobileSheet || !open) return
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = previousOverflow
+    }
+  }, [mobileSheet, open])
+
+  const close = useCallback(() => onOpenChange(false), [onOpenChange])
+
+  if (mobileSheet) {
+    return (
+      <div className="harness-ui-chip" ref={rootRef}>
+        <button
+          ref={triggerRef}
+          type="button"
+          className="harness-ui-chip-btn"
+          onClick={() => onOpenChange(!open)}
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          aria-label={triggerLabel}
+        >
+          {trigger}
+        </button>
+        {typeof document !== 'undefined'
+          ? createPortal(
+              <div
+                data-iii-ui="harness"
+                className="harness-ui-context-portal"
+                style={{ display: 'contents' }}
+              >
+                <button
+                  type="button"
+                  className="harness-ui-sheet-backdrop"
+                  data-open={open}
+                  onClick={close}
+                  tabIndex={-1}
+                  aria-hidden="true"
+                />
+                <div
+                  ref={sheetRef}
+                  className="harness-ui-context-sheet t-panel-slide"
+                  data-open={open}
+                  aria-hidden={!open}
+                  inert={!open}
+                >
+                  <div className="harness-ui-sheet-handle" aria-hidden>
+                    <span />
+                  </div>
+                  {renderPopover({
+                    modal: true,
+                    onClose: close,
+                    closeButtonRef,
+                  })}
+                </div>
+              </div>,
+              document.body,
+            )
+          : null}
+      </div>
+    )
+  }
+
+  const morphStyle = {
+    '--morph-open-height': `${morphOpenHeight}px`,
+  } as CSSProperties
+
+  return (
+    <div className="harness-ui-chip" ref={rootRef}>
+      <span className="harness-ui-chip-sizer" aria-hidden="true">
+        {trigger}
+      </span>
+      <div
+        className="harness-ui-context-morph t-morph"
+        data-open={open}
+        style={morphStyle}
+      >
+        <div
+          ref={morphMenuRef}
+          className="harness-ui-morph-menu t-morph-menu"
+          aria-hidden={!open}
+          inert={!open}
+        >
+          {renderPopover({
+            modal: false,
+            onClose: close,
+            closeButtonRef,
+          })}
+        </div>
+        <button
+          ref={triggerRef}
+          type="button"
+          className="harness-ui-chip-btn harness-ui-morph-trigger t-morph-plus"
+          onClick={() => onOpenChange(!open)}
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          aria-label={triggerLabel}
+          tabIndex={open ? -1 : 0}
+        >
+          {trigger}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export function createContextChip(host: Host) {
   return function ContextChip({
     sessionId,
@@ -464,7 +760,6 @@ export function createContextChip(host: Host) {
   }: SessionChipProps) {
     const [snapshot, setSnapshot] = useState<ContextSnapshot | null>(null)
     const [open, setOpen] = useState(false)
-    const rootRef = useRef<HTMLDivElement | null>(null)
 
     // Both the hydration read and the streamed trigger write this state;
     // keep whichever snapshot is newest so a slow state::get can never
@@ -522,79 +817,63 @@ export function createContextChip(host: Host) {
       }
     }, [host, sessionId])
 
-    useEffect(() => {
-      if (!open) return
-      const onPointerDown = (event: MouseEvent) => {
-        const root = rootRef.current
-        if (root && !root.contains(event.target as Node)) setOpen(false)
-      }
-      const onKeyDown = (event: KeyboardEvent) => {
-        if (event.key === 'Escape') setOpen(false)
-      }
-      document.addEventListener('mousedown', onPointerDown)
-      document.addEventListener('keydown', onKeyDown)
-      return () => {
-        document.removeEventListener('mousedown', onPointerDown)
-        document.removeEventListener('keydown', onKeyDown)
-      }
-    }, [open])
-
     if (!snapshot || snapshot.usable <= 0) {
       if (contextWindow && contextWindow > 0) {
         return (
-          <div className="harness-ui-chip" ref={rootRef}>
-            <button
-              type="button"
-              className="harness-ui-chip-btn"
-              onClick={() => setOpen((value) => !value)}
-              aria-haspopup="dialog"
-              aria-expanded={open}
-              aria-label={`context: waiting for usage, ${contextWindow.toLocaleString()} token window — click for the breakdown`}
-            >
-              <span>ctx</span>
-              <span
-                className="harness-ui-chip-bar"
-                role="progressbar"
-                aria-label="context window usage"
-                aria-valuenow={0}
-                aria-valuemin={0}
-                aria-valuemax={100}
-              >
-                <span className="harness-ui-chip-fill" style={{ width: 0 }} />
-              </span>
-              <span className="harness-ui-chip-counts">
-                0/{formatTokens(contextWindow)}
-              </span>
-              <ContextCaret />
-            </button>
-            {open ? (
+          <ContextChipSurface
+            open={open}
+            onOpenChange={setOpen}
+            triggerLabel={`context: waiting for usage, ${contextWindow.toLocaleString()} token window — click for the breakdown`}
+            trigger={
+              <>
+                <span>ctx</span>
+                <span
+                  className="harness-ui-chip-bar"
+                  role="progressbar"
+                  aria-label="context window usage"
+                  aria-valuenow={0}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                >
+                  <span className="harness-ui-chip-fill" style={{ width: 0 }} />
+                </span>
+                <span className="harness-ui-chip-counts">
+                  0/{formatTokens(contextWindow)}
+                </span>
+                <ContextCaret />
+              </>
+            }
+            renderPopover={(surface) => (
               <EmptyContextPopover
+                {...surface}
                 modelId={modelId}
                 contextWindow={contextWindow}
                 sessionId={sessionId}
               />
-            ) : null}
-          </div>
+            )}
+          />
         )
       }
       return (
-        <div className="harness-ui-chip" ref={rootRef}>
-          <button
-            type="button"
-            className="harness-ui-chip-btn"
-            onClick={() => setOpen((value) => !value)}
-            aria-haspopup="dialog"
-            aria-expanded={open}
-            aria-label="context: waiting for usage — click for the breakdown"
-          >
-            <span>ctx</span>
-            <span className="harness-ui-chip-empty">—</span>
-            <ContextCaret />
-          </button>
-          {open ? (
-            <EmptyContextPopover modelId={modelId} sessionId={sessionId} />
-          ) : null}
-        </div>
+        <ContextChipSurface
+          open={open}
+          onOpenChange={setOpen}
+          triggerLabel="context: waiting for usage — click for the breakdown"
+          trigger={
+            <>
+              <span>ctx</span>
+              <span className="harness-ui-chip-empty">—</span>
+              <ContextCaret />
+            </>
+          }
+          renderPopover={(surface) => (
+            <EmptyContextPopover
+              {...surface}
+              modelId={modelId}
+              sessionId={sessionId}
+            />
+          )}
+        />
       )
     }
 
@@ -603,51 +882,50 @@ export function createContextChip(host: Host) {
     const tone = toneFor(ratio)
 
     return (
-      <div className="harness-ui-chip" ref={rootRef}>
-        <button
-          type="button"
-          className="harness-ui-chip-btn"
-          onClick={() => setOpen((value) => !value)}
-          aria-haspopup="dialog"
-          aria-expanded={open}
-          aria-label={`context: ${snapshot.total.toLocaleString()} of ${snapshot.usable.toLocaleString()} tokens (${pct}%) — click for the breakdown`}
-        >
-          <span>ctx</span>
-          <span
-            className="harness-ui-chip-bar"
-            role="progressbar"
-            aria-label="context window usage"
-            aria-valuenow={pct}
-            aria-valuemin={0}
-            aria-valuemax={100}
-          >
+      <ContextChipSurface
+        open={open}
+        onOpenChange={setOpen}
+        triggerLabel={`context: ${snapshot.total.toLocaleString()} of ${snapshot.usable.toLocaleString()} tokens (${pct}%) — click for the breakdown`}
+        trigger={
+          <>
+            <span>ctx</span>
             <span
-              className="harness-ui-chip-fill"
-              style={{ width: `${pct}%`, background: TONE_COLOR[tone] }}
-            />
-          </span>
-          {/* The bar, the percentage and the counts were three encodings of
-              one quantity. The bar carries proportion; the counts carry the
-              number you actually act on. The percentage keeps its job in the
-              tooltip and the popover, and hands its tone to the counts. */}
-          <span
-            className="harness-ui-chip-counts"
-            style={tone === 'ok' ? undefined : { color: TONE_COLOR[tone] }}
-          >
-            {formatTokens(snapshot.total)}/{formatTokens(snapshot.usable)}
-          </span>
-          {/* Says "this opens something": drawn at lucide's `chevron-down`
-              geometry, since an injected bundle has no icon dependency. */}
-          <ContextCaret />
-        </button>
-        {open ? (
+              className="harness-ui-chip-bar"
+              role="progressbar"
+              aria-label="context window usage"
+              aria-valuenow={pct}
+              aria-valuemin={0}
+              aria-valuemax={100}
+            >
+              <span
+                className="harness-ui-chip-fill"
+                style={{ width: `${pct}%`, background: TONE_COLOR[tone] }}
+              />
+            </span>
+            {/* The bar, the percentage and the counts were three encodings of
+                one quantity. The bar carries proportion; the counts carry the
+                number you actually act on. The percentage keeps its job in the
+                tooltip and the popover, and hands its tone to the counts. */}
+            <span
+              className="harness-ui-chip-counts"
+              style={tone === 'ok' ? undefined : { color: TONE_COLOR[tone] }}
+            >
+              {formatTokens(snapshot.total)}/{formatTokens(snapshot.usable)}
+            </span>
+            {/* Says "this opens something": drawn at lucide's `chevron-down`
+                geometry, since an injected bundle has no icon dependency. */}
+            <ContextCaret />
+          </>
+        }
+        renderPopover={(surface) => (
           <ContextPopover
+            {...surface}
             snapshot={snapshot}
             modelId={modelId}
             sessionId={sessionId}
           />
-        ) : null}
-      </div>
+        )}
+      />
     )
   }
 }

@@ -31,7 +31,7 @@ export function DropdownMenuContent({
           sideOffset={sideOffset}
           collisionPadding={8}
           className={cn(
-            'iii-ui-motion-overlay z-50 min-w-[10rem] overflow-hidden rounded-md bg-panel-raised p-1 font-sans text-[12px] text-ink shadow-floating',
+            'iii-ui-motion-dropdown z-50 min-w-[10rem] overflow-hidden rounded-md bg-panel-raised p-1 font-sans text-[12px] text-ink shadow-floating',
             className,
           )}
           {...props}

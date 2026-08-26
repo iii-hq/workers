@@ -200,7 +200,7 @@ export function ChatView({
 }: ChatViewProps) {
   const [isStreaming, setIsStreaming] = useState(false)
   // Pre-content phase of this tab's in-flight send, for the thinking
-  // shimmer's detail line: submit → harness::send ack → turn-started.
+  // waiting indicator detail: submit → harness::send ack → turn-started.
   // Null once content streams (or for turns this tab didn't start).
   const [turnPhase, setTurnPhase] = useState<
     'sending' | 'accepted' | 'merged' | 'started' | null
@@ -218,8 +218,7 @@ export function ChatView({
   )
   /* Lives on the conversation record, not in local state: the interactive
      picker is on the new-session screen, so a reset on a tab switch (ChatPanel
-     keys this view by conversation id) would be invisible — no control is left
-     in the composer to show or restore it. */
+     keys this view by conversation id) would be invisible. */
   const effectiveSystemPrompt =
     conversation.systemPrompt ?? DEFAULT_SYSTEM_PROMPT_STATE
   const abortRef = useRef<AbortController | null>(null)
@@ -912,8 +911,8 @@ export function ChatView({
   ])
 
   // The stack's default folder, resolved once (cached page-wide): pre-fills
-  // fresh drafts below and feeds the picker's pinned "default" row so the
-  // launch folder stays selectable after a chat re-scopes elsewhere.
+  // fresh drafts below and keeps the launch folder selectable after a chat
+  // re-scopes elsewhere.
   const [defaultWorkingDir, setDefaultWorkingDir] = useState<string | null>(
     null,
   )
@@ -1635,7 +1634,7 @@ export function ChatView({
               break
             }
             case 'turn-status': {
-              // `queued` renders in the queued-messages strip, not the shimmer.
+              // `queued` renders in the queued-messages strip, not the waiting indicator.
               setTurnPhase(event.phase === 'queued' ? null : event.phase)
               break
             }
@@ -1684,7 +1683,7 @@ export function ChatView({
         if (!isAbortError(err)) {
           console.warn('[chat] stream errored', err)
           // A dead send must never be silent: without this notice the user
-          // sees only their message and an eternal shimmer.
+          // sees only their message and an eternal waiting indicator.
           const detail = err instanceof Error ? err.message : String(err)
           const noticeContent = `send failed — ${detail}`
           const notice: SystemMessage = {
@@ -1775,7 +1774,7 @@ export function ChatView({
   }, [isStreaming, conversation.status])
 
   // Covers the gap between submit / fcall-end and the next streamed content,
-  // where the assistant/thought shimmer hasn't yet rendered.
+  // where the assistant/thought output hasn't yet rendered.
   const isThinking =
     streamingIndicator &&
     (() => {
@@ -1793,7 +1792,7 @@ export function ChatView({
       return false
     })()
 
-  // Pre-content phase text for the shimmer. Only trusted while the transcript
+  // Pre-content phase text for the waiting indicator. Only trusted while the transcript
   // still ends at the user's message — on the real backend content arrives via
   // session events (not stream events), so once anything streamed the phase is
   // stale and mid-turn gaps fall back to the model line instead.
@@ -2217,6 +2216,15 @@ export function ChatView({
         onManageFilesystemAccess={handleManageFilesystemAccess}
         onConfigureProvider={handleOpenModelPicker}
         workingDir={conversation.workingDir ?? null}
+        onWorkingDirChange={
+          workingDirEnabled ? handleWorkingDirChange : undefined
+        }
+        defaultWorkingDir={defaultWorkingDir}
+        worktreePicker={
+          worktreeEnabled
+            ? { enabled: true, onPick: handlePickWorktree }
+            : undefined
+        }
         triggersById={triggersById}
       />
       <LiveRegion announcement={announcer.announcement} />

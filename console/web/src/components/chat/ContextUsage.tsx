@@ -104,7 +104,7 @@ export function ContextUsage({ messages, contextWindow }: ContextUsageProps) {
         <div
           role="dialog"
           aria-label="context details"
-          className="absolute top-full right-0 z-50 mt-1 w-64 rounded-md border border-rule-2 bg-panel-raised p-3 font-sans text-sm normal-case tracking-normal text-ink shadow-floating"
+          className="absolute top-full right-0 z-50 mt-1 w-64 rounded-md border border-rule-2 bg-panel-raised p-3 font-sans text-sm whitespace-normal normal-case tracking-normal text-ink shadow-floating"
         >
           <div className="flex items-baseline justify-between gap-3">
             <span className="font-medium">Context</span>

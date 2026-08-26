@@ -4,6 +4,7 @@ import type {
   AssistantMessage,
   FunctionTriggerMessage,
   Message,
+  UserMessage,
 } from '@/types/chat'
 import { MessageList } from './MessageList'
 
@@ -86,5 +87,25 @@ describe('MessageList function-trigger groups', () => {
     expect(html).toContain('aria-label="action required for shell::run"')
     expect(html).toContain('tabindex="-1"')
     expect(html).toContain('data-approval-actions=""')
+  })
+
+  it('renders the branded waiting indicator while the model is pending', () => {
+    const user: UserMessage = {
+      id: 'user-1',
+      role: 'user',
+      content: 'Build the feature.',
+      createdAt: 0,
+    }
+    const html = renderToStaticMarkup(
+      <MessageList
+        messages={[user]}
+        isThinking
+        thinkingDetail="dispatching model"
+      />,
+    )
+
+    expect(html).toContain('data-model-waiting=""')
+    expect(html).toContain('aria-label="dispatching model"')
+    expect(html.match(/model-waiting-wordmark-segment/g)).toHaveLength(3)
   })
 })

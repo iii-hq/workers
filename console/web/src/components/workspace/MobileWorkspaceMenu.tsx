@@ -35,7 +35,7 @@ export function MobileWorkspaceMenu({
 }: MobileWorkspaceMenuProps) {
   return (
     <BottomSheet open={open} onOpenChange={onOpenChange}>
-      <BottomSheetContent className="sm:hidden">
+      <BottomSheetContent>
         <SheetPage
           title="Workspace"
           description="Choose a workspace, then swipe between its panels."

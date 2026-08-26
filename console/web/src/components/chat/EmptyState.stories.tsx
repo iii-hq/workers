@@ -1,8 +1,13 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { useState } from 'react'
 import { fn } from 'storybook/test'
 import type { InstallStage } from '@/hooks/use-harness-status'
-import { EmptyState } from './EmptyState'
-import { DEFAULT_SYSTEM_PROMPT_STATE } from './system-prompt-selection'
+import { EmptyState, type EmptyStateProps } from './EmptyState'
+import {
+  DEFAULT_SYSTEM_PROMPT_STATE,
+  type SkillSelection,
+  type SystemPromptState,
+} from './system-prompt-selection'
 
 /** Mid-download progress for the live install console. */
 const installingStages: InstallStage[] = [
@@ -47,24 +52,63 @@ const meta = {
 export default meta
 type Story = StoryObj<typeof meta>
 
+function ConfiguredReadyStory(args: EmptyStateProps) {
+  const [systemPrompt, setSystemPrompt] = useState<SystemPromptState>(
+    args.systemPrompt ?? DEFAULT_SYSTEM_PROMPT_STATE,
+  )
+  const [skills, setSkills] = useState<SkillSelection>(args.skills)
+
+  return (
+    <EmptyState
+      {...args}
+      systemPrompt={systemPrompt}
+      onSystemPromptChange={setSystemPrompt}
+      skills={skills}
+      onSkillsChange={setSkills}
+    />
+  )
+}
+
 export const Ready: Story = {
   name: 'ready (harness + provider)',
   args: {
     variant: 'ready',
+    workingDir: '/Users/sergio/Documents/workspaces/iii/workers',
+    defaultWorkingDir: '/Users/sergio/Documents/workspaces/iii/workers',
+    onWorkingDirChange: fn(),
     systemPrompt: DEFAULT_SYSTEM_PROMPT_STATE,
     onSystemPromptChange: fn(),
+    onSkillsChange: fn(),
   },
 }
 
-export const ReadyWithNamedPrompt: Story = {
-  name: 'ready (agent selected)',
+export const ReadyConfigured: Story = {
+  name: 'ready (prompt + selected skills)',
+  render: (args) => <ConfiguredReadyStory {...args} />,
   args: {
     variant: 'ready',
+    workingDir: '/Users/sergio/Documents/workspaces/iii/workers',
+    defaultWorkingDir: '/Users/sergio/Documents/workspaces/iii/workers',
+    onWorkingDirChange: fn(),
     systemPrompt: {
       ...DEFAULT_SYSTEM_PROMPT_STATE,
-      choice: { named: 'agent:tech-leader' },
+      choice: { named: 'reviewer' },
     },
     onSystemPromptChange: fn(),
+    skills: ['design', 'linear-workflow', 'canonicalize-tailwind'],
+    onSkillsChange: fn(),
+  },
+}
+
+export const ReadyWithoutProject: Story = {
+  name: 'ready (project loading)',
+  args: {
+    variant: 'ready',
+    workingDir: null,
+    onWorkingDirChange: fn(),
+    systemPrompt: DEFAULT_SYSTEM_PROMPT_STATE,
+    onSystemPromptChange: fn(),
+    onSkillsChange: fn(),
   },
 }
 
