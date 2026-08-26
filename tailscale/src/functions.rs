@@ -26,7 +26,7 @@ pub const STOP_ID: &str = "tailscale::share::stop";
 const STATUS_DESC: &str = "Inspect local Tailscale connectivity, node identity, health notices, and the active Serve and Funnel routes. Keys, users, and capability maps are omitted.";
 const CONFIGURATION_DESC: &str = "Return the non-secret worker settings and the current Serve configuration. The CLI path is omitted.";
 const SHARE_DESC: &str = "Share the local iii Console. Serve is tailnet-only and the default; Funnel is public and requires allow_funnel in the configuration plus confirm_public in the request.";
-const STOP_DESC: &str = "Stop one exact Serve or Funnel route by mode, HTTPS port, and path; a Funnel route loses both its public and tailnet listener. Other routes are never reset.";
+const STOP_DESC: &str = "Stop one exact route by mode, HTTPS port, and path. mode=funnel removes public access and keeps the tailnet-only route; mode=serve removes the route entirely. Other routes are never reset.";
 pub const CONNECT_ID: &str = "tailscale::connect";
 pub const DISCONNECT_ID: &str = "tailscale::disconnect";
 const CONNECT_DESC: &str = "Connect this node to the tailnet (`tailscale up`). When the node still needs a sign-in, returns the Tailscale login URL instead of connecting.";
@@ -548,9 +548,20 @@ async fn stop(config: &WorkerConfig, input: StopInput) -> Result<StopOutput, Str
     };
     if input.mode == ShareMode::Funnel {
         off("funnel").await?;
-        if let Err(error) = off("serve").await {
-            tracing::debug!(%error, "serve listener already gone after funnel off");
-        }
+        run(
+            config,
+            &[
+                "serve",
+                "--bg",
+                "--yes",
+                "--https",
+                &port,
+                "--set-path",
+                &path,
+                &config.console_url,
+            ],
+        )
+        .await?;
     } else {
         off("serve").await?;
     }

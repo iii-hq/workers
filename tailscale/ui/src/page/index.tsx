@@ -488,7 +488,7 @@ export function TailscalePage({ host, onRequestClose, commands }: Props) {
                               <TableCell className="ts-mono">{route.target}</TableCell>
                               <TableCell className="ts-row-actions">
                                 <IconButton
-                                  label={`Stop ${route.url}`}
+                                  label={route.mode === 'funnel' ? `Remove public access from ${route.url}` : `Stop ${route.url}`}
                                   variant="ghost"
                                   disabled={stoppingRoute !== null}
                                   aria-busy={stoppingRoute === key}

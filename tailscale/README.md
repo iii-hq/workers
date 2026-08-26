@@ -34,7 +34,7 @@ iii trigger tailscale::share mode=serve https_port=443 path=/
 }
 ```
 
-`tailscale::status` reports connectivity, the MagicDNS name, health notices, whether Funnel is allowed for this node, and every active route with its URL. The page lists those routes with a stop action on each row; `tailscale::share::stop` removes exactly one route by mode, port, and path (a Funnel route loses both its public and tailnet listener), and the worker never runs `serve reset` or `funnel reset`, so routes it did not create stay intact. `tailscale::connect` and `tailscale::disconnect` bring the node on and off the tailnet (`tailscale up` / `tailscale down`); when the node still needs a sign-in, connect returns the Tailscale login URL and the page offers it as a button.
+`tailscale::status` reports connectivity, the MagicDNS name, health notices, whether Funnel is allowed for this node, and every active route with its URL. The page lists those routes with a stop action on each row; `tailscale::share::stop` stops exactly one route by mode, port, and path: `funnel` removes public access and keeps the tailnet-only route, `serve` removes the route entirely. The worker never runs `serve reset` or `funnel reset`, so routes it did not create stay intact. `tailscale::connect` and `tailscale::disconnect` bring the node on and off the tailnet (`tailscale up` / `tailscale down`); when the node still needs a sign-in, connect returns the Tailscale login URL and the page offers it as a button.
 
 ### Public access with Funnel
 

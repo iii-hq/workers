@@ -1,5 +1,5 @@
 {
-  "description": "Stop one exact Serve or Funnel route by mode, HTTPS port, and path; a Funnel route loses both its public and tailnet listener. Other routes are never reset.",
+  "description": "Stop one exact route by mode, HTTPS port, and path. mode=funnel removes public access and keeps the tailnet-only route; mode=serve removes the route entirely. Other routes are never reset.",
   "function_id": "tailscale::share::stop",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
