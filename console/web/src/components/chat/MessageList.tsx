@@ -13,7 +13,6 @@ import {
   type WheelEvent,
 } from 'react'
 import { resultEnvelope } from '@/components/function-trigger/FunctionTriggerCard'
-import { imageZoomTarget } from './image-zoom-target'
 import {
   rawRedactor,
   useFunctionTriggerRenderers,
@@ -45,11 +44,15 @@ import {
 } from '@/lib/sessions/entry-mapper'
 import { cn } from '@/lib/utils'
 import type { Message as MessageType } from '@/types/chat'
+import type { WorktreePickerOptions } from './DirectoryPicker'
 import { EmptyState, type EmptyStateProps } from './EmptyState'
 import { functionTriggerGroups } from './function-trigger-groups'
+import { imageZoomTarget } from './image-zoom-target'
 import { Message, type SpawnTaskContext } from './Message'
+import { ModelWaitingIndicator } from './ModelWaitingIndicator'
 import {
   DEFAULT_SYSTEM_PROMPT_STATE,
+  type SkillSelection,
   type SystemPromptState,
 } from './system-prompt-selection'
 import {
@@ -69,11 +72,11 @@ interface MessageListProps {
    * so opening a chat never glides through a partial history.
    */
   transcriptHydrated?: boolean
-  /** Show "thinking…" shimmer at the bottom while the agent is between
-      visible outputs (after submit, or between fcall-end and the next
-      turn's first token). */
+  /** Show the model-waiting indicator at the bottom while the agent is
+      between visible outputs (after submit, or between fcall-end and the
+      next turn's first token). */
   isThinking?: boolean
-  /** Under-the-hood context shown as the waiting shimmer (e.g. "dispatching
+  /** Under-the-hood context shown in the waiting indicator (e.g. "dispatching
       zai::glm-5.2" or the session's status_reason). Falls back to "thinking…"
       when absent. */
   thinkingDetail?: string
@@ -103,6 +106,10 @@ interface MessageListProps {
   /** Current child-session identity shown by direct spawn seed messages. */
   spawnContext?: SpawnTaskContext
   workingDir?: string | null
+  onWorkingDirChange?: (next: string) => void
+  workingDirError?: string | null
+  defaultWorkingDir?: string | null
+  worktreePicker?: WorktreePickerOptions
   /**
    * Render every function-call card (and group) already expanded. Off in the
    * product, where a turn's calls collapse to one line each; on for showcase
@@ -286,6 +293,10 @@ export function MessageList({
   onConfigureProvider,
   spawnContext,
   workingDir,
+  onWorkingDirChange,
+  workingDirError,
+  defaultWorkingDir,
+  worktreePicker,
   defaultOpenCalls,
   triggersById,
 }: MessageListProps) {
@@ -446,7 +457,7 @@ export function MessageList({
   ])
 
   /* Content height can change without a messages identity change: markdown
-     wraps, images load, results expand, the shimmer mounts, or the pane
+     wraps, images load, results expand, the waiting indicator mounts, or the pane
      resizes. Observe both the content and viewport, coalescing all of it into
      the single follow loop. A paused reader is never moved. */
   useEffect(() => {
@@ -586,7 +597,15 @@ export function MessageList({
 
   if (messages.length === 0 && !header) {
     return (
-      <EmptyState {...resolveEmptyState(ctx, density, onConfigureProvider)} />
+      <EmptyState
+        {...resolveEmptyState(ctx, density, onConfigureProvider, {
+          workingDir,
+          onWorkingDirChange,
+          workingDirError,
+          defaultWorkingDir,
+          worktreePicker,
+        })}
+      />
     )
   }
 
@@ -694,11 +713,7 @@ export function MessageList({
               </div>
             )
           })}
-          {isThinking ? (
-            <div className="font-mono text-[13px] italic thinking-shimmer text-ink-faint">
-              {thinkingDetail ?? 'thinking…'}
-            </div>
-          ) : null}
+          {isThinking ? <ModelWaitingIndicator label={thinkingDetail} /> : null}
         </div>
       </section>
       {tailState === 'paused' ? (
@@ -855,8 +870,16 @@ function resolveEmptyState(
   ctx: ChatCtx,
   density: 'route' | 'dock',
   onConfigureProvider?: () => void,
+  directory?: Pick<
+    EmptyStateProps,
+    | 'workingDir'
+    | 'onWorkingDirChange'
+    | 'workingDirError'
+    | 'defaultWorkingDir'
+    | 'worktreePicker'
+  >,
 ): EmptyStateProps {
-  if (!ctx) return { variant: 'ready', density }
+  if (!ctx) return { variant: 'ready', density, ...directory }
 
   const { harnessStatus, modelOptions, catalogLoading, active } = ctx
   const base: EmptyStateProps = {
@@ -867,13 +890,15 @@ function resolveEmptyState(
     onInstallHarness: harnessStatus.install,
     onRetryInstall: harnessStatus.retry,
     onConfigureProvider,
-    /* The system prompt is chosen here and nowhere else. It persists on the
-       conversation record, so it survives this view being keyed away and
-       back on a chat-tab switch. */
     systemPrompt: active?.systemPrompt ?? DEFAULT_SYSTEM_PROMPT_STATE,
     onSystemPromptChange: active
       ? (next: SystemPromptState) => ctx.setSystemPrompt(active.id, next)
       : undefined,
+    skills: active?.skills,
+    onSkillsChange: active
+      ? (next: SkillSelection) => ctx.setSkills(active.id, next)
+      : undefined,
+    ...directory,
   }
 
   if (harnessStatus.error) return { ...base, variant: 'install-failed' }

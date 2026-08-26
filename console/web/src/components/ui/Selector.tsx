@@ -335,7 +335,7 @@ export function Selector<T extends string>({
               }}
               className={cn(
                 uiClasses.panel,
-                'iii-ui-motion-overlay z-50 flex max-h-[min(28rem,calc(100dvh-1rem))] w-(--radix-popover-trigger-width) max-w-[calc(100vw-1rem)] min-w-[min(18rem,calc(100vw-1rem))] flex-col bg-panel-raised font-sans shadow-floating',
+                'iii-ui-motion-dropdown z-50 flex max-h-[min(28rem,calc(100dvh-1rem))] w-(--radix-popover-trigger-width) max-w-[calc(100vw-1rem)] min-w-[min(18rem,calc(100vw-1rem))] flex-col bg-panel-raised font-sans shadow-floating',
                 contentClassName,
               )}
             >

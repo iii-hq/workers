@@ -128,6 +128,19 @@
   --motion-ease-exit: cubic-bezier(0.4, 0, 1, 1);
   --ease-glide: var(--motion-ease-enter);
 
+  /* transitions.dev motion scale. These semantic tokens are shared by the
+     dropdown, sheet, and in-panel page recipes in ui-recipes.css. */
+  --duration-quick: 150ms;
+  --duration-fast: 250ms;
+  --duration-medium: 350ms;
+  --duration-slow: 400ms;
+  --ease-smooth-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --distance-base: 8px;
+  --scale-medium: 0.97;
+  --scale-tiny: 0.99;
+  --blur-small: 2px;
+  --blur-medium: 3px;
+
   --spacing-gutter: 24px;
   --spacing-section-x: 36px;
   --spacing-section-y: 80px;
@@ -591,6 +604,30 @@
   }
 }
 
+@keyframes model-waiting-wordmark {
+  0%,
+  55%,
+  100% {
+    opacity: 0.14;
+  }
+  18% {
+    opacity: 1;
+  }
+  34% {
+    opacity: 0.42;
+  }
+}
+
+@utility model-waiting-wordmark-segment {
+  opacity: 0.14;
+  animation: model-waiting-wordmark 720ms ease-in-out infinite;
+
+  @media (prefers-reduced-motion: reduce) {
+    opacity: 0.28;
+    animation: none;
+  }
+}
+
 @utility thinking-shimmer {
   background-image: linear-gradient(
     90deg,
@@ -603,6 +640,12 @@
   -webkit-background-clip: text;
   color: transparent;
   animation: thinking-shimmer 2.4s linear infinite;
+
+  @media (prefers-reduced-motion: reduce) {
+    background-image: none;
+    color: var(--color-ink-faint);
+    animation: none;
+  }
 }
 
 /* A quieter shimmer for an in-flight function description. Its resting tone
@@ -832,6 +875,12 @@
 /* Content images in the transcript open in the viewer on click (see
    MessageList); controls that contain an image keep their own cursor. */
 [data-message-list]
-  img:not(a[href] *, button *, [role='button'], [role='button'] *, [data-image-zoom-exempt] *) {
+  img:not(
+    a[href] *,
+    button *,
+    [role="button"],
+    [role="button"] *,
+    [data-image-zoom-exempt] *
+  ) {
   cursor: zoom-in;
 }

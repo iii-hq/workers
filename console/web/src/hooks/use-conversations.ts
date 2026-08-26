@@ -913,10 +913,7 @@ export interface ConversationsApi {
   setThinkingLevel: (id: string, level: ThinkingLevel) => void
   /** Point this chat at a named memory bank (null = worker default). */
   setMemoryBank: (id: string, memoryBank: string | null) => void
-  /**
-   * This chat's system prompt. Written only from the new-session screen —
-   * the composer shows it read-only once the chat has messages.
-   */
+  /** This chat's system prompt, chosen on the new-session screen. */
   setSystemPrompt: (id: string, systemPrompt: SystemPromptState) => void
   setSkills: (id: string, skills: string[] | undefined) => void
   setMode: (id: string, mode: Mode) => void

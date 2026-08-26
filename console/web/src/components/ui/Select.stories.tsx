@@ -1,6 +1,8 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { useState } from 'react'
+import { BottomSheet, BottomSheetContent } from './BottomSheet'
 import { Select } from './Select'
+import { SheetPage } from './SheetNavigation'
 
 type Basic = 'one' | 'two' | 'three'
 type Region = 'us-east-1' | 'us-west-2' | 'eu-central-1' | 'ap-south-1'
@@ -211,6 +213,60 @@ export const UnmatchedValue: Story = {
           the placeholder rather than printing the raw value.
         </Hint>
       </div>
+    )
+  },
+}
+
+export const MobileSheet: Story = {
+  name: 'mobile · opens as sheet',
+  render: () => {
+    const [value, setValue] = useState<Basic>('one')
+    return (
+      <Select<Basic>
+        value={value}
+        onChange={setValue}
+        options={BASIC_OPTIONS}
+        aria-label="Example option"
+        sheetDescription="Choose one of the available options."
+        className="w-full max-w-[280px]"
+      />
+    )
+  },
+}
+
+export const InsideMobileSheet: Story = {
+  name: 'mobile · drills into existing sheet',
+  render: () => {
+    const [open, setOpen] = useState(true)
+    const [value, setValue] = useState<Basic>('one')
+    return (
+      <>
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="rounded-sm bg-surface px-3 py-2 font-sans text-sm text-ink"
+        >
+          Open settings
+        </button>
+        <BottomSheet open={open} onOpenChange={setOpen}>
+          <BottomSheetContent className="h-[min(82dvh,720px)]">
+            <SheetPage
+              title="Settings"
+              description="The select opens as a page within this sheet."
+              contentClassName="px-4 pb-4"
+            >
+              <Select<Basic>
+                value={value}
+                onChange={setValue}
+                options={BASIC_OPTIONS}
+                aria-label="Example option"
+                sheetDescription="Choose one of the available options."
+                className="w-full"
+              />
+            </SheetPage>
+          </BottomSheetContent>
+        </BottomSheet>
+      </>
     )
   },
 }

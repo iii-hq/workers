@@ -8,6 +8,8 @@ import {
   RefreshCw,
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { BottomSheet, BottomSheetContent } from '@/components/ui/BottomSheet'
+import { useMediaQuery } from '@/hooks/use-media-query'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { cn } from '@/lib/utils'
 import { useUnsavedGuard } from '@/pages/Configuration/tabs/WorkersTab/useUnsavedGuard'
@@ -31,6 +33,7 @@ const DEFAULT_EFFORT: ReasoningEffortOption = {
 }
 
 const FILTER_KEYS = ['ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter', 'Escape']
+const MODEL_PICKER_PAGE_TRANSITION_MS = 250
 
 interface ModelPickerProps {
   value: ModelId | null
@@ -49,7 +52,7 @@ interface ModelPickerProps {
 interface PickerSubpageHeaderProps {
   title: string
   description: string
-  onBack: () => void
+  onBack?: () => void
 }
 
 function PickerSubpageHeader({
@@ -59,19 +62,21 @@ function PickerSubpageHeader({
 }: PickerSubpageHeaderProps) {
   return (
     <div className="flex shrink-0 items-start gap-2 px-4 py-3 pr-12">
-      <button
-        type="button"
-        aria-label="back to models"
-        onClick={onBack}
-        className="relative flex size-8 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
-      >
-        <span
-          className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
-          aria-hidden="true"
-        />
-        <ArrowLeft className="size-4 shrink-0" aria-hidden />
-      </button>
-      <div className="min-w-0 flex-1 pt-0.5">
+      {onBack ? (
+        <button
+          type="button"
+          aria-label="back to models"
+          onClick={onBack}
+          className="relative flex size-8 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+        >
+          <span
+            className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+            aria-hidden="true"
+          />
+          <ArrowLeft className="size-4 shrink-0" aria-hidden />
+        </button>
+      ) : null}
+      <div className={cn('min-w-0 flex-1', onBack && 'pt-0.5')}>
         <h2 className="font-sans text-lg font-semibold text-ink">{title}</h2>
         <p className="font-sans text-sm text-pretty text-ink-faint">
           {description}
@@ -133,12 +138,15 @@ export function ModelPicker({
   className,
 }: ModelPickerProps) {
   const ctx = useConversationsCtxOptional()
+  const mobileSheet = useMediaQuery('(max-width: 767px)')
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const consumedOpenRequestRef = useRef(openRequest)
   const [configurationProvider, setConfigurationProvider] = useState<
     string | null
   >(null)
+  const [renderedConfigurationProvider, setRenderedConfigurationProvider] =
+    useState<string | null>(null)
   const [reasoningOpen, setReasoningOpen] = useState(false)
   const configurationGuard = useUnsavedGuard()
 
@@ -175,6 +183,22 @@ export function ModelPicker({
     if (pickerDisabled && open) setOpen(false)
   }, [pickerDisabled, open])
 
+  useEffect(() => {
+    if (configurationProvider !== null) return
+    if (renderedConfigurationProvider === null) return
+    const timeout = window.setTimeout(
+      () => setRenderedConfigurationProvider(null),
+      MODEL_PICKER_PAGE_TRANSITION_MS,
+    )
+    return () => window.clearTimeout(timeout)
+  }, [configurationProvider, renderedConfigurationProvider])
+
+  const activePage = configurationProvider
+    ? 'provider'
+    : reasoningOpen
+      ? 'reasoning'
+      : 'models'
+
   function handleOpenChange(nextOpen: boolean) {
     if (nextOpen) {
       setOpen(true)
@@ -187,117 +211,179 @@ export function ModelPicker({
     })
   }
 
+  const sheetHeading =
+    activePage === 'models'
+      ? 'Model'
+      : activePage === 'reasoning'
+        ? 'Reasoning effort'
+        : renderedConfigurationProvider
+          ? (formatProviderLabel(renderedConfigurationProvider) ??
+            renderedConfigurationProvider)
+          : 'Provider configuration'
+
+  const pickerTrigger = (
+    <button
+      ref={triggerRef}
+      type="button"
+      aria-label={
+        loading
+          ? 'model (loading catalog)'
+          : selected
+            ? `model: ${selected.label}, reasoning effort: ${thinkingLevel}`
+            : 'model'
+      }
+      aria-busy={loading || undefined}
+      aria-haspopup={mobileSheet ? 'dialog' : 'menu'}
+      aria-expanded={open}
+      data-state={open ? 'open' : 'closed'}
+      disabled={pickerDisabled}
+      onClick={mobileSheet ? () => handleOpenChange(!open) : undefined}
+      className={cn(
+        'flex h-12 min-w-0 flex-1 items-center justify-between gap-x-2 rounded-sm border border-transparent bg-transparent px-3 font-sans text-base text-ink-faint hover:bg-surface-hover hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus data-[state=open]:bg-surface data-[state=open]:text-ink sm:h-9 sm:text-[13px]',
+        pickerDisabled && 'pointer-events-none opacity-40',
+      )}
+    >
+      <span className="flex min-w-0 flex-1 items-baseline gap-1.5 overflow-hidden whitespace-nowrap text-left">
+        <span
+          className={cn(
+            'min-w-0 flex-1 truncate',
+            !selected && 'text-ink-faint',
+          )}
+        >
+          {selected?.label ?? (loading ? 'Loading…' : 'No models')}
+        </span>
+        {selectedEfforts.length > 1 && thinkingLevel !== 'default' ? (
+          <span className="shrink-0 text-[11px] text-ink-faint">
+            · {thinkingLevel}
+          </span>
+        ) : null}
+      </span>
+      {open ? (
+        <ChevronUp size={16} aria-hidden />
+      ) : (
+        <ChevronDown size={16} aria-hidden />
+      )}
+    </button>
+  )
+
+  const pickerPages = (
+    <div className="relative min-h-0 flex-1 overflow-hidden">
+      <div
+        data-active={activePage === 'models'}
+        aria-hidden={activePage !== 'models'}
+        inert={activePage !== 'models'}
+        className={cn(
+          'iii-ui-motion-picker-page absolute inset-0 flex min-h-0 flex-col [--picker-page-offset:calc(var(--distance-base)*-1)]',
+          !mobileSheet && 'pt-4',
+        )}
+      >
+        <ModelPickerPanel
+          value={value}
+          options={options}
+          thinkingLevel={thinkingLevel}
+          onChange={onChange}
+          onThinkingLevelChange={onThinkingLevelChange}
+          onConfigureProvider={(providerId) => {
+            setReasoningOpen(false)
+            setRenderedConfigurationProvider(providerId)
+            setConfigurationProvider(providerId)
+          }}
+          onOpenReasoning={() => setReasoningOpen(true)}
+          disabled={disabled}
+          loading={loading}
+          contentClassName="space-y-4 px-3 pb-3"
+          autoFocusFilter={!mobileSheet}
+        />
+      </div>
+
+      <div
+        data-active={activePage === 'reasoning'}
+        aria-hidden={activePage !== 'reasoning'}
+        inert={activePage !== 'reasoning'}
+        className="iii-ui-motion-picker-page absolute inset-0 flex min-h-0 flex-col [--picker-page-offset:var(--distance-base)]"
+      >
+        <PickerSubpageHeader
+          title="Reasoning effort"
+          description="Choose how much reasoning this model should use."
+          onBack={() => setReasoningOpen(false)}
+        />
+        <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
+          <ReasoningEffortPanel
+            model={selected}
+            value={thinkingLevel}
+            onChange={(next) => {
+              onThinkingLevelChange(next)
+              setReasoningOpen(false)
+            }}
+            disabled={disabled}
+          />
+        </div>
+      </div>
+
+      <div
+        data-active={activePage === 'provider'}
+        aria-hidden={activePage !== 'provider'}
+        inert={activePage !== 'provider'}
+        className="iii-ui-motion-picker-page absolute inset-0 flex min-h-0 flex-col [--picker-page-offset:var(--distance-base)]"
+      >
+        {renderedConfigurationProvider ? (
+          <>
+            <PickerSubpageHeader
+              title={
+                formatProviderLabel(renderedConfigurationProvider) ??
+                renderedConfigurationProvider
+              }
+              description="Credentials and provider-specific settings."
+              onBack={() =>
+                configurationGuard.tryNavigate(() =>
+                  setConfigurationProvider(null),
+                )
+              }
+            />
+            <ProviderConfigurationPanel
+              providerId={renderedConfigurationProvider}
+              onDirtyChange={configurationGuard.setDirty}
+            />
+          </>
+        ) : null}
+      </div>
+    </div>
+  )
+
   return (
     <span className={cn('flex min-w-0 items-center gap-1', className)}>
-      <DropdownMenuPrimitive.Root open={open} onOpenChange={handleOpenChange}>
-        <DropdownMenuPrimitive.Trigger asChild disabled={pickerDisabled}>
-          <button
-            ref={triggerRef}
-            type="button"
-            aria-label={
-              loading
-                ? 'model (loading catalog)'
-                : selected
-                  ? `model: ${selected.label}, reasoning effort: ${thinkingLevel}`
-                  : 'model'
-            }
-            aria-busy={loading || undefined}
-            className={cn(
-              'flex h-12 min-w-0 flex-1 items-center justify-between gap-x-2 rounded-sm border border-transparent bg-transparent px-3 font-sans text-base text-ink-faint hover:bg-surface-hover hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus data-[state=open]:bg-surface data-[state=open]:text-ink sm:h-9 sm:text-[13px]',
-              pickerDisabled && 'pointer-events-none opacity-40',
-            )}
-          >
-            <span className="flex min-w-0 flex-1 items-baseline gap-1.5 overflow-hidden whitespace-nowrap text-left">
-              <span
-                className={cn(
-                  'min-w-0 flex-1 truncate',
-                  !selected && 'text-ink-faint',
-                )}
-              >
-                {selected?.label ?? (loading ? 'Loading…' : 'No models')}
-              </span>
-              {selectedEfforts.length > 1 && thinkingLevel !== 'default' ? (
-                <span className="shrink-0 text-[11px] text-ink-faint">
-                  · {thinkingLevel}
-                </span>
-              ) : null}
-            </span>
-            {open ? (
-              <ChevronUp size={16} aria-hidden />
-            ) : (
-              <ChevronDown size={16} aria-hidden />
-            )}
-          </button>
-        </DropdownMenuPrimitive.Trigger>
+      {mobileSheet ? (
+        <>
+          {pickerTrigger}
+          <BottomSheet open={open} onOpenChange={handleOpenChange}>
+            <BottomSheetContent
+              heading={sheetHeading}
+              headerClassName={activePage === 'models' ? undefined : 'sr-only'}
+              closeLabel="Close model picker"
+              className="h-[min(82dvh,720px)]"
+            >
+              {pickerPages}
+            </BottomSheetContent>
+          </BottomSheet>
+        </>
+      ) : (
+        <DropdownMenuPrimitive.Root open={open} onOpenChange={handleOpenChange}>
+          <DropdownMenuPrimitive.Trigger asChild disabled={pickerDisabled}>
+            {pickerTrigger}
+          </DropdownMenuPrimitive.Trigger>
 
-        <DropdownMenuPrimitive.Portal>
-          <DropdownMenuPrimitive.Content
-            sideOffset={4}
-            align="start"
-            collisionPadding={12}
-            className="z-50 flex h-[min(72vh,720px)] w-[min(480px,calc(100vw-24px))] flex-col overflow-hidden rounded-lg border border-edge bg-panel-raised text-ink shadow-floating"
-          >
-            {configurationProvider ? (
-              <div className="flex min-h-0 flex-1 flex-col">
-                <PickerSubpageHeader
-                  title={
-                    formatProviderLabel(configurationProvider) ??
-                    configurationProvider
-                  }
-                  description="Credentials and provider-specific settings."
-                  onBack={() =>
-                    configurationGuard.tryNavigate(() =>
-                      setConfigurationProvider(null),
-                    )
-                  }
-                />
-                <ProviderConfigurationPanel
-                  providerId={configurationProvider}
-                  onDirtyChange={configurationGuard.setDirty}
-                />
-              </div>
-            ) : reasoningOpen ? (
-              <div className="flex min-h-0 flex-1 flex-col">
-                <PickerSubpageHeader
-                  title="Reasoning effort"
-                  description="Choose how much reasoning this model should use."
-                  onBack={() => setReasoningOpen(false)}
-                />
-                <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
-                  <ReasoningEffortPanel
-                    model={selected}
-                    value={thinkingLevel}
-                    onChange={(next) => {
-                      onThinkingLevelChange(next)
-                      setReasoningOpen(false)
-                    }}
-                    disabled={disabled}
-                  />
-                </div>
-              </div>
-            ) : (
-              <div className="flex min-h-0 flex-1 flex-col pt-4">
-                <ModelPickerPanel
-                  value={value}
-                  options={options}
-                  thinkingLevel={thinkingLevel}
-                  onChange={onChange}
-                  onThinkingLevelChange={onThinkingLevelChange}
-                  onConfigureProvider={(providerId) => {
-                    setReasoningOpen(false)
-                    setConfigurationProvider(providerId)
-                  }}
-                  onOpenReasoning={() => setReasoningOpen(true)}
-                  disabled={disabled}
-                  loading={loading}
-                  contentClassName="space-y-4 px-3 pb-3"
-                  autoFocusFilter
-                />
-              </div>
-            )}
-          </DropdownMenuPrimitive.Content>
-        </DropdownMenuPrimitive.Portal>
-      </DropdownMenuPrimitive.Root>
+          <DropdownMenuPrimitive.Portal>
+            <DropdownMenuPrimitive.Content
+              sideOffset={4}
+              align="start"
+              collisionPadding={12}
+              className="iii-ui-motion-dropdown z-50 flex h-[min(72vh,720px)] w-[min(480px,calc(100vw-24px))] flex-col overflow-hidden rounded-lg border border-edge bg-panel-raised text-ink shadow-floating"
+            >
+              {pickerPages}
+            </DropdownMenuPrimitive.Content>
+          </DropdownMenuPrimitive.Portal>
+        </DropdownMenuPrimitive.Root>
+      )}
 
       {ctx && showRefresh ? (
         <button

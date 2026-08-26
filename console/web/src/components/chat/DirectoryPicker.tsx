@@ -1,3 +1,4 @@
+import * as PopoverPrimitive from '@radix-ui/react-popover'
 import {
   AlertCircle,
   ArrowLeft,
@@ -13,17 +14,19 @@ import {
 } from 'lucide-react'
 import {
   type ReactNode,
+  type RefObject,
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from 'react'
-import { createPortal } from 'react-dom'
+import { BottomSheet, BottomSheetContent } from '@/components/ui/BottomSheet'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { getIiiClient } from '@/lib/iii-client'
 import { loadRecentProjects, removeRecentProject } from '@/lib/storage'
+import { PortalScope } from '@/lib/ui-scope'
 import { cn } from '@/lib/utils'
 import {
   errMsg,
@@ -77,15 +80,19 @@ interface DirectoryPickerProps {
    */
   externalError?: string | null
   /**
-   * The stack's default working directory (harness launch folder). Pinned
-   * at the top of the projects view with a "default" tag: unlike recents it
-   * is never forgettable and survives re-scoping away, so the launch folder
-   * stays one click away. Deduped against the recents list.
+   * The stack's default working directory (harness launch folder). Pinned at
+   * the top of the projects view: unlike recents it is never forgettable and
+   * survives re-scoping away, so the launch folder stays one click away.
+   * Deduped against the recents list.
    */
   defaultDir?: string | null
   /** Show the worktrees tab next to directory browsing. */
   worktrees?: WorktreePickerOptions
   className?: string
+  /** Compact text-only trigger used when the picker is part of a sentence. */
+  triggerAppearance?: 'default' | 'inline'
+  /** Trigger copy while no directory has been resolved yet. */
+  emptyLabel?: string
   /** Render only the picker content inside an existing sheet page. */
   presentation?: 'trigger' | 'embedded'
   /** Called after an embedded picker accepts a directory. */
@@ -112,11 +119,6 @@ function basename(p: string): string {
   return parts.length ? parts[parts.length - 1] : p
 }
 
-function parentDisplay(p: string): string {
-  const idx = p.replace(/\/+$/, '').lastIndexOf('/')
-  return idx <= 0 ? '/' : p.slice(0, idx)
-}
-
 function parentOf(p: string): string {
   const trimmed = p.replace(/\/+$/, '')
   const idx = trimmed.lastIndexOf('/')
@@ -141,9 +143,12 @@ export function DirectoryPicker({
   defaultDir,
   worktrees,
   className,
+  triggerAppearance = 'default',
+  emptyLabel = 'Choose directory',
   presentation = 'trigger',
   onSelect,
 }: DirectoryPickerProps) {
+  const embedded = presentation === 'embedded'
   const [open, setOpen] = useState(false)
   const [view, setView] = useState<'projects' | 'browse' | 'worktrees'>(
     'projects',
@@ -162,33 +167,8 @@ export function DirectoryPicker({
   const [wtRows, setWtRows] = useState<WorktreeInfo[]>([])
   const [wtLoading, setWtLoading] = useState(false)
   const [wtError, setWtError] = useState<string | null>(null)
-  const containerRef = useRef<HTMLDivElement>(null)
-  const panelRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
   const mobileSheet = useMediaQuery('(max-width: 767px)')
-  const embedded = presentation === 'embedded'
-
-  // Close on outside click / Escape.
-  useEffect(() => {
-    if (!open || embedded) return
-    const onDocClick = (e: MouseEvent) => {
-      const target = e.target as Node
-      if (
-        !containerRef.current?.contains(target) &&
-        !panelRef.current?.contains(target)
-      ) {
-        setOpen(false)
-      }
-    }
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false)
-    }
-    document.addEventListener('mousedown', onDocClick)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onDocClick)
-      document.removeEventListener('keydown', onKey)
-    }
-  }, [open, embedded])
 
   const openPanel = useCallback(() => {
     setProjects(loadRecentProjects())
@@ -438,7 +418,7 @@ export function DirectoryPicker({
     else if (view === 'browse') void jumpTo(query)
   }
 
-  const label = value ? basename(value) : 'Choose directory'
+  const label = value ? basename(value) : emptyLabel
 
   if (locked && !embedded) {
     return (
@@ -457,7 +437,6 @@ export function DirectoryPicker({
 
   return (
     <div
-      ref={containerRef}
       className={cn(
         embedded
           ? 'flex h-full min-h-0 w-full flex-col'
@@ -467,546 +446,526 @@ export function DirectoryPicker({
     >
       {!embedded ? (
         <button
+          ref={triggerRef}
           type="button"
           disabled={disabled}
-          aria-label="working directory"
+          aria-label={
+            triggerAppearance === 'inline'
+              ? `select project folder, current folder: ${label}`
+              : 'working directory'
+          }
           aria-haspopup="dialog"
           aria-expanded={open}
           title={value ?? 'choose a working directory'}
           onClick={() => (open ? setOpen(false) : openPanel())}
           className={cn(
-            'inline-flex h-12 min-w-0 items-center gap-2 rounded-sm border border-transparent bg-transparent px-3 font-sans text-base text-ink-faint hover:bg-surface-hover hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:h-9 sm:text-[13px]',
+            triggerAppearance === 'inline'
+              ? 'relative inline-flex min-w-0 h-6.5 items-baseline border-dashed border-b border-ink-faint/50 px-0.5 font-sans font-medium text-ink hover:border-ink hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:opacity-50'
+              : 'inline-flex h-12 min-w-0 items-center gap-2 rounded-sm border border-transparent bg-transparent px-3 font-sans text-base text-ink-faint hover:border-ink hover:bg-surface-hover hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:opacity-50 sm:h-9 sm:text-[13px]',
             externalError ? 'text-warn' : value ? 'text-ink' : 'text-ink-faint',
-            'hover:border-ink hover:text-ink disabled:opacity-50',
           )}
         >
-          <Folder aria-hidden className="size-4 shrink-0" />
-          <span className="min-w-0 max-w-[160px] truncate">{label}</span>
+          {triggerAppearance === 'default' ? (
+            <Folder aria-hidden className="size-4 shrink-0" />
+          ) : null}
+          <span className="min-w-0 max-w-[18rem] truncate">{label}</span>
+          {triggerAppearance === 'inline' ? (
+            <span
+              className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+              aria-hidden="true"
+            />
+          ) : null}
         </button>
       ) : null}
 
-      {embedded || open ? (
-        <DirectoryPickerPortal enabled={!embedded && mobileSheet}>
-          {!embedded ? (
+      <DirectoryPickerSurface
+        open={open}
+        embedded={embedded}
+        mobileSheet={mobileSheet}
+        onOpenChange={setOpen}
+        triggerRef={triggerRef}
+        alignToInlineTrigger={triggerAppearance === 'inline'}
+      >
+        {/* section tabs (only with the worktree worker present) */}
+        {worktrees?.enabled ? (
+          <div
+            role="tablist"
+            className="mx-4 mb-3 flex shrink-0 gap-1 rounded-md bg-surface p-1 font-sans text-base md:mx-0 md:mb-1 md:text-[12px]"
+          >
             <button
               type="button"
-              aria-label="close project picker"
-              onClick={() => setOpen(false)}
-              className="fixed inset-0 z-40 bg-black/55 md:hidden"
-            />
-          ) : null}
-          {/* biome-ignore lint/a11y/useAriaPropsSupportedByRole: role is always group or dialog, both support an accessible name. */}
+              role="tab"
+              aria-selected={view !== 'worktrees'}
+              onClick={() => {
+                setView('projects')
+                setProjects(loadRecentProjects())
+                setQuery('')
+                setError(null)
+              }}
+              className={cn(
+                'min-h-12 flex-1 rounded-sm px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-8 md:py-1.5',
+                view !== 'worktrees'
+                  ? 'bg-panel-raised text-ink ring-1 ring-edge'
+                  : 'text-ink-faint hover:bg-surface-hover hover:text-ink',
+              )}
+            >
+              directories
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={view === 'worktrees'}
+              onClick={() => void enterWorktrees()}
+              className={cn(
+                'min-h-12 flex-1 rounded-sm px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-8 md:py-1.5',
+                view === 'worktrees'
+                  ? 'bg-panel-raised text-ink ring-1 ring-edge'
+                  : 'text-ink-faint hover:bg-surface-hover hover:text-ink',
+              )}
+            >
+              worktrees
+            </button>
+          </div>
+        ) : null}
+
+        {/* search */}
+        <div className="mx-4 mb-3 flex min-h-12 shrink-0 items-center gap-2 rounded-md bg-surface px-3 py-2 focus-within:ring-2 focus-within:ring-rule-focus md:mx-0 md:mb-1 md:min-h-8 md:px-2.5 md:py-1">
+          <Search className="size-4 shrink-0 text-ink-ghost" aria-hidden />
+          <input
+            // biome-ignore lint/a11y/noAutofocus: desktop popovers keep keyboard-first filtering; mobile avoids opening the keyboard on entry
+            autoFocus={!mobileSheet}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={onSearchKey}
+            placeholder={
+              view === 'projects'
+                ? 'Search projects or paste a path…'
+                : view === 'worktrees'
+                  ? 'Filter worktrees…'
+                  : 'Filter this folder or paste a path…'
+            }
+            aria-label="search directories"
+            name="directory-search"
+            className="min-w-0 flex-1 bg-transparent text-base text-ink placeholder:text-ink-ghost focus:outline-none md:text-[12px]"
+          />
+        </div>
+
+        {/* validation/error (shown in the projects view; browse has its own) */}
+        {view !== 'browse' && error ? (
+          <div className="mx-4 mb-2 flex items-start gap-2 rounded-md bg-warn-muted px-3 py-2 font-sans text-base text-warn md:mx-0 md:text-[11px]">
+            <AlertCircle className="size-4 shrink-0" aria-hidden />
+            <span>{error}</span>
+          </div>
+        ) : null}
+
+        {/* body */}
+        {view === 'worktrees' ? (
           <div
-            ref={panelRef}
-            role={embedded ? 'group' : 'dialog'}
-            aria-label="select working directory"
             className={cn(
-              embedded
-                ? 'flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent'
-                : 'fixed inset-x-3 bottom-3 z-50 max-h-[calc(100dvh-1.5rem)] overscroll-contain overflow-y-auto rounded-lg border border-edge bg-panel-raised pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-floating md:absolute md:inset-x-auto md:right-0 md:bottom-full md:left-auto md:z-30 md:mb-2 md:max-h-none md:w-[420px] md:overflow-visible md:rounded-lg md:p-2',
+              'space-y-1 overflow-y-auto px-4 pb-2 md:px-0',
+              embedded ? 'min-h-0 flex-1' : 'max-h-[220px]',
             )}
           >
-            {!embedded ? (
-              <div className="sticky top-0 z-10 bg-panel-raised px-4 pb-3 md:hidden">
-                <div
-                  className="flex h-6 items-center justify-center"
+            {wtLoading ? (
+              <div className="rounded-md bg-surface px-3 py-4 font-sans text-base text-ink-faint md:text-[11px]">
+                Loading worktrees…
+              </div>
+            ) : wtError ? (
+              <div className="flex items-start gap-2 rounded-md bg-warn-muted px-3 py-3 font-sans text-base text-warn md:text-[11px]">
+                <AlertCircle className="size-4 shrink-0" aria-hidden />
+                <span>{wtError}</span>
+              </div>
+            ) : filteredWorktrees.length > 0 ? (
+              filteredWorktrees.map((wt) => {
+                const tone = lifecycleTone(wt.lifecycle)
+                const { dirty, ahead } = worktreeIndicators(wt.status)
+                const orphaned = wt.lifecycle === 'orphaned'
+                const landing = wt.lifecycle === 'landing'
+                return (
+                  <button
+                    key={wt.worktree_id}
+                    type="button"
+                    disabled={orphaned || landing}
+                    onClick={() => pickWorktree(wt)}
+                    title={
+                      orphaned
+                        ? `${wt.path} — directory is missing`
+                        : landing
+                          ? `${wt.path} — land in progress; not retargetable`
+                          : `${wt.path} — claim and use this worktree`
+                    }
+                    className="flex min-h-14 w-full items-center gap-3 rounded-md px-3 py-2.5 text-left hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:opacity-50 md:min-h-9 md:gap-2 md:py-1.5"
+                  >
+                    <GitBranch
+                      className="size-4 shrink-0 text-ink-faint"
+                      aria-hidden
+                    />
+                    <span className="flex min-w-0 flex-1 items-center gap-1.5 font-sans text-base md:text-[12px]">
+                      <span className="truncate text-ink">{wt.branch}</span>
+                      <span className="shrink-0 rounded-sm bg-surface px-1.5 py-0.5 font-mono text-[10px] text-ink-ghost tabular-nums">
+                        {shortWorktreeId(wt.worktree_id)}
+                      </span>
+                      {dirty ? (
+                        <span
+                          className="shrink-0 text-warn"
+                          title="uncommitted changes"
+                        >
+                          *
+                        </span>
+                      ) : null}
+                      {ahead > 0 ? (
+                        <span
+                          className="shrink-0 text-[10px] text-ink-faint tabular-nums"
+                          title={`${ahead} commit(s) ahead of base`}
+                        >
+                          +{ahead}
+                        </span>
+                      ) : null}
+                    </span>
+                    <span className="flex shrink-0 items-center gap-1.5 font-sans text-sm md:text-[10px]">
+                      {wt.session_id ? (
+                        <span
+                          className="max-w-[80px] truncate text-ink-ghost"
+                          title={`claimed by ${wt.session_id}`}
+                        >
+                          {wt.session_id}
+                        </span>
+                      ) : null}
+                      {wt.lifecycle !== 'active' ? (
+                        <span
+                          className={cn(
+                            'flex items-center gap-1',
+                            lifecycleToneClass[tone],
+                          )}
+                        >
+                          <StatusDot
+                            tone={tone}
+                            pulse={wt.lifecycle === 'landing'}
+                          />
+                          {wt.lifecycle}
+                        </span>
+                      ) : null}
+                    </span>
+                  </button>
+                )
+              })
+            ) : (
+              <div className="rounded-md bg-surface px-3 py-4 font-sans text-base text-ink-faint md:text-[11px]">
+                {q
+                  ? 'No matching worktrees.'
+                  : 'No managed worktrees yet. Create one with worktree::create.'}
+              </div>
+            )}
+          </div>
+        ) : view === 'projects' ? (
+          <div
+            className={cn(
+              'space-y-1 overflow-y-auto px-4 pb-2 md:px-0',
+              embedded ? 'min-h-0 flex-1' : 'max-h-[220px]',
+            )}
+          >
+            {isAbsPath(query) ? (
+              <button
+                type="button"
+                disabled={validating !== null}
+                onClick={() => void validateAndSelect(query)}
+                className="flex min-h-14 w-full items-center gap-3 rounded-md bg-accent-muted px-3 py-2.5 text-left font-sans text-base text-accent hover:bg-surface-selected focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:opacity-50 md:min-h-9 md:gap-2 md:py-1.5 md:text-[12px]"
+              >
+                <CornerDownLeft className="size-4 shrink-0" aria-hidden />
+                <span className="truncate font-mono">Use {query.trim()}</span>
+              </button>
+            ) : null}
+
+            {showDefaultRow || filteredProjects.length > 0 ? (
+              <p className="px-1 pt-2 pb-1 font-sans text-base font-medium text-ink-faint md:pt-1 md:text-[11px]">
+                Current and recent
+              </p>
+            ) : null}
+
+            {showDefaultRow && defaultDir ? (
+              <button
+                type="button"
+                disabled={validating !== null}
+                onClick={() => void validateAndSelect(defaultDir)}
+                aria-current={defaultDir === value ? 'true' : undefined}
+                className={cn(
+                  'flex min-h-14 w-full items-center gap-3 rounded-md px-3 py-2.5 text-left hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:opacity-50 md:min-h-9 md:gap-2 md:py-1.5',
+                  defaultDir === value && 'bg-surface-selected',
+                )}
+                title={`${defaultDir} — the folder the stack was started from`}
+              >
+                <Folder
+                  className={cn(
+                    'size-4 shrink-0',
+                    defaultDir === value ? 'text-ink' : 'text-ink-faint',
+                  )}
                   aria-hidden
+                />
+                <span className="min-w-0 flex-1 truncate font-sans text-base font-medium text-ink md:text-[12px]">
+                  {basename(defaultDir)}
+                </span>
+                {defaultDir === value ? (
+                  <Check className="size-4 shrink-0 text-ink" aria-hidden />
+                ) : null}
+              </button>
+            ) : null}
+
+            {filteredProjects.map((p) => {
+              const isSelected = p === value
+              return (
+                <div
+                  key={p}
+                  className={cn(
+                    'group flex items-center gap-1 rounded-md pr-1 hover:bg-surface-hover',
+                    isSelected && 'bg-surface-selected',
+                  )}
                 >
-                  <span className="h-1 w-10 rounded-full bg-ink-ghost/60" />
-                </div>
-                <div className="flex min-h-12 items-center justify-between gap-3">
-                  <div>
-                    <h2 className="font-sans text-lg font-semibold text-ink">
-                      Working directory
-                    </h2>
-                    <p className="font-sans text-base text-ink-faint">
-                      {worktrees?.enabled
-                        ? 'Choose a recent project, folder, or managed worktree.'
-                        : 'Choose a recent project or browse folders.'}
-                    </p>
-                  </div>
                   <button
                     type="button"
-                    onClick={() => setOpen(false)}
-                    aria-label="close project picker"
-                    className="flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+                    disabled={validating !== null}
+                    onClick={() => void validateAndSelect(p)}
+                    aria-current={isSelected ? 'true' : undefined}
+                    className="flex min-h-14 min-w-0 flex-1 items-center gap-3 rounded-md px-3 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:opacity-50 md:min-h-9 md:gap-2 md:py-1.5"
+                    title={p}
                   >
-                    <X className="size-5" aria-hidden />
+                    <Folder
+                      className={cn(
+                        'size-4 shrink-0',
+                        isSelected ? 'text-ink' : 'text-ink-faint',
+                      )}
+                      aria-hidden
+                    />
+                    <span className="min-w-0 flex-1 truncate font-sans text-base font-medium text-ink md:text-[12px]">
+                      {basename(p)}
+                    </span>
                   </button>
+                  <button
+                    type="button"
+                    aria-label={`forget ${p}`}
+                    title="forget this project"
+                    onClick={() => forget(p)}
+                    className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-ghost hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:size-8 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100"
+                  >
+                    <span
+                      className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+                      aria-hidden="true"
+                    />
+                    <X className="size-4 shrink-0 md:size-4" aria-hidden />
+                  </button>
+                  {isSelected ? (
+                    <span className="flex size-12 shrink-0 items-center justify-center md:size-8">
+                      <Check className="size-4 shrink-0 text-ink" aria-hidden />
+                    </span>
+                  ) : null}
                 </div>
+              )
+            })}
+
+            {filteredProjects.length === 0 &&
+            !showDefaultRow &&
+            !isAbsPath(query) ? (
+              <div className="rounded-md bg-surface px-3 py-4 font-sans text-base text-ink-faint md:text-[11px]">
+                {projects.length === 0
+                  ? 'No recent projects yet.'
+                  : 'No matching projects.'}{' '}
+                Browse to add one.
               </div>
             ) : null}
 
-            {/* section tabs (only with the worktree worker present) */}
-            {worktrees?.enabled ? (
-              <div
-                role="tablist"
-                className="mx-4 mb-3 flex shrink-0 gap-1 rounded-md bg-surface p-1 font-sans text-base md:mx-0 md:mb-2 md:text-[12px]"
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={() => void enterBrowse()}
+                className="flex min-h-14 w-full items-center gap-3 rounded-md bg-surface px-3 py-2.5 text-left font-sans text-base font-medium text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-9 md:gap-2 md:py-1.5 md:text-[12px]"
               >
+                <FolderPlus className="size-4 shrink-0" aria-hidden />
+                Browse folders
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className={cn(embedded && 'flex min-h-0 flex-1 flex-col')}>
+            {/* browse header */}
+            <div className="mx-4 mb-2 flex min-h-14 shrink-0 items-center justify-between gap-2 rounded-md bg-surface p-1 md:mx-0 md:min-h-10">
+              <div className="flex min-w-0 flex-1 items-center gap-1 font-sans text-base text-ink-faint md:text-[11px]">
                 <button
                   type="button"
-                  role="tab"
-                  aria-selected={view !== 'worktrees'}
+                  aria-label="back to projects"
                   onClick={() => {
                     setView('projects')
                     setProjects(loadRecentProjects())
                     setQuery('')
                     setError(null)
                   }}
-                  className={cn(
-                    'min-h-12 flex-1 rounded-sm px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-8 md:py-1.5',
-                    view !== 'worktrees'
-                      ? 'bg-panel-raised text-ink ring-1 ring-edge'
-                      : 'text-ink-faint hover:bg-surface-hover hover:text-ink',
-                  )}
+                  className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:size-8"
                 >
-                  directories
+                  <ArrowLeft className="size-4 shrink-0" aria-hidden />
                 </button>
+                {path ? (
+                  <button
+                    type="button"
+                    aria-label="up one level"
+                    onClick={goUp}
+                    className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:size-8"
+                  >
+                    <ChevronUp className="size-4 shrink-0" aria-hidden />
+                  </button>
+                ) : null}
+                <span className="truncate font-mono">{path ?? 'roots'}</span>
+              </div>
+              {path ? (
                 <button
                   type="button"
-                  role="tab"
-                  aria-selected={view === 'worktrees'}
-                  onClick={() => void enterWorktrees()}
-                  className={cn(
-                    'min-h-12 flex-1 rounded-sm px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-8 md:py-1.5',
-                    view === 'worktrees'
-                      ? 'bg-panel-raised text-ink ring-1 ring-edge'
-                      : 'text-ink-faint hover:bg-surface-hover hover:text-ink',
-                  )}
+                  disabled={validating !== null}
+                  onClick={() => void validateAndSelect(path)}
+                  className="inline-flex min-h-12 shrink-0 items-center gap-1.5 rounded-sm bg-accent py-2 pr-3 pl-2 font-sans text-base font-medium whitespace-nowrap text-accent-fg hover:bg-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rule-focus disabled:opacity-50 md:min-h-8 md:text-[11px]"
                 >
-                  worktrees
+                  <Check className="size-4 shrink-0" aria-hidden />
+                  Use folder
                 </button>
-              </div>
-            ) : null}
-
-            {/* search */}
-            <div className="mx-4 mb-3 flex min-h-12 shrink-0 items-center gap-2 rounded-md bg-surface px-3 py-2 focus-within:ring-2 focus-within:ring-rule-focus md:mx-0 md:mb-2 md:min-h-9 md:px-2.5 md:py-1.5">
-              <Search className="size-4 shrink-0 text-ink-ghost" aria-hidden />
-              <input
-                // biome-ignore lint/a11y/noAutofocus: desktop popovers keep keyboard-first filtering; mobile avoids opening the keyboard on entry
-                autoFocus={!mobileSheet}
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={onSearchKey}
-                placeholder={
-                  view === 'projects'
-                    ? 'Search projects or paste a path…'
-                    : view === 'worktrees'
-                      ? 'Filter worktrees…'
-                      : 'Filter this folder or paste a path…'
-                }
-                aria-label="search directories"
-                name="directory-search"
-                className="min-w-0 flex-1 bg-transparent text-base text-ink placeholder:text-ink-ghost focus:outline-none md:text-[12px]"
-              />
+              ) : null}
             </div>
 
-            {/* validation/error (shown in the projects view; browse has its own) */}
-            {view !== 'browse' && error ? (
-              <div className="mx-4 mb-2 flex items-start gap-2 rounded-md bg-warn-muted px-3 py-2 font-sans text-base text-warn md:mx-0 md:text-[11px]">
-                <AlertCircle className="size-4 shrink-0" aria-hidden />
-                <span>{error}</span>
-              </div>
-            ) : null}
+            <div
+              className={cn(
+                'space-y-1 overflow-y-auto px-4 pb-2 md:px-0',
+                embedded ? 'min-h-0 flex-1' : 'max-h-[220px]',
+              )}
+            >
+              {isAbsPath(query) ? (
+                <button
+                  type="button"
+                  onClick={() => void jumpTo(query)}
+                  className="flex min-h-14 w-full items-center gap-3 rounded-md bg-accent-muted px-3 py-2.5 text-left font-sans text-base text-accent hover:bg-surface-selected focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-10 md:gap-2 md:py-2 md:text-[12px]"
+                >
+                  <CornerDownLeft className="size-4 shrink-0" aria-hidden />
+                  <span className="truncate font-mono">
+                    Go to {query.trim()}
+                  </span>
+                </button>
+              ) : null}
 
-            {/* body */}
-            {view === 'worktrees' ? (
-              <div
-                className={cn(
-                  'space-y-1 overflow-y-auto px-4 pb-2 md:px-0',
-                  embedded ? 'min-h-0 flex-1' : 'max-h-[280px]',
-                )}
-              >
-                {wtLoading ? (
-                  <div className="rounded-md bg-surface px-3 py-4 font-sans text-base text-ink-faint md:text-[11px]">
-                    Loading worktrees…
-                  </div>
-                ) : wtError ? (
-                  <div className="flex items-start gap-2 rounded-md bg-warn-muted px-3 py-3 font-sans text-base text-warn md:text-[11px]">
-                    <AlertCircle className="size-4 shrink-0" aria-hidden />
-                    <span>{wtError}</span>
-                  </div>
-                ) : filteredWorktrees.length > 0 ? (
-                  filteredWorktrees.map((wt) => {
-                    const tone = lifecycleTone(wt.lifecycle)
-                    const { dirty, ahead } = worktreeIndicators(wt.status)
-                    const orphaned = wt.lifecycle === 'orphaned'
-                    const landing = wt.lifecycle === 'landing'
-                    return (
-                      <button
-                        key={wt.worktree_id}
-                        type="button"
-                        disabled={orphaned || landing}
-                        onClick={() => pickWorktree(wt)}
-                        title={
-                          orphaned
-                            ? `${wt.path} — directory is missing`
-                            : landing
-                              ? `${wt.path} — land in progress; not retargetable`
-                              : `${wt.path} — claim and use this worktree`
-                        }
-                        className="flex min-h-14 w-full items-start gap-3 rounded-md px-3 py-2.5 text-left hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:opacity-50 md:min-h-10 md:gap-2 md:py-2"
-                      >
-                        <GitBranch
-                          className="size-4 shrink-0 text-ink-faint"
-                          aria-hidden
-                        />
-                        <span className="flex min-w-0 flex-1 flex-col">
-                          <span className="flex min-w-0 items-center gap-1.5 font-sans text-base md:text-[12px]">
-                            <span className="truncate text-ink">
-                              {wt.branch}
-                            </span>
-                            <span className="shrink-0 rounded-sm bg-surface px-1.5 py-0.5 font-mono text-[10px] text-ink-ghost tabular-nums">
-                              {shortWorktreeId(wt.worktree_id)}
-                            </span>
-                            {dirty ? (
-                              <span
-                                className="shrink-0 text-warn"
-                                title="uncommitted changes"
-                              >
-                                *
-                              </span>
-                            ) : null}
-                            {ahead > 0 ? (
-                              <span
-                                className="shrink-0 text-[10px] text-ink-faint tabular-nums"
-                                title={`${ahead} commit(s) ahead of base`}
-                              >
-                                +{ahead}
-                              </span>
-                            ) : null}
-                          </span>
-                          <span className="truncate font-mono text-sm text-ink-ghost md:text-[10px]">
-                            {wt.path}
-                          </span>
-                        </span>
-                        <span className="flex shrink-0 items-center gap-1.5 font-sans text-sm md:text-[10px]">
-                          {wt.session_id ? (
-                            <span
-                              className="max-w-[80px] truncate text-ink-ghost"
-                              title={`claimed by ${wt.session_id}`}
-                            >
-                              {wt.session_id}
-                            </span>
-                          ) : null}
-                          {wt.lifecycle !== 'active' ? (
-                            <span
-                              className={cn(
-                                'flex items-center gap-1',
-                                lifecycleToneClass[tone],
-                              )}
-                            >
-                              <StatusDot
-                                tone={tone}
-                                pulse={wt.lifecycle === 'landing'}
-                              />
-                              {wt.lifecycle}
-                            </span>
-                          ) : null}
-                        </span>
-                      </button>
-                    )
-                  })
-                ) : (
-                  <div className="rounded-md bg-surface px-3 py-4 font-sans text-base text-ink-faint md:text-[11px]">
-                    {q
-                      ? 'No matching worktrees.'
-                      : 'No managed worktrees yet. Create one with worktree::create.'}
-                  </div>
-                )}
-              </div>
-            ) : view === 'projects' ? (
-              <div
-                className={cn(
-                  'space-y-1 overflow-y-auto px-4 pb-2 md:px-0',
-                  embedded ? 'min-h-0 flex-1' : 'max-h-[280px]',
-                )}
-              >
-                {isAbsPath(query) ? (
+              {loading ? (
+                <div className="rounded-md bg-surface px-3 py-4 font-sans text-base text-ink-faint md:text-[11px]">
+                  Loading folders…
+                </div>
+              ) : error ? (
+                <div className="flex items-start gap-2 rounded-md bg-warn-muted px-3 py-3 font-sans text-base text-warn md:text-[11px]">
+                  <AlertCircle className="size-4 shrink-0" aria-hidden />
+                  <span>{error}</span>
+                </div>
+              ) : path === null ? (
+                // roots list (only when multiple roots)
+                (roots ?? []).map((r) => (
                   <button
+                    key={r}
                     type="button"
-                    disabled={validating !== null}
-                    onClick={() => void validateAndSelect(query)}
-                    className="flex min-h-14 w-full items-center gap-3 rounded-md bg-accent-muted px-3 py-2.5 text-left font-sans text-base text-accent hover:bg-surface-selected focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:opacity-50 md:min-h-10 md:gap-2 md:py-2 md:text-[12px]"
+                    onClick={() => enterRoot(r)}
+                    className="flex min-h-14 w-full items-center gap-3 rounded-md px-3 py-2.5 text-left font-sans text-base text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-10 md:gap-2 md:py-2 md:text-[12px]"
                   >
-                    <CornerDownLeft className="size-4 shrink-0" aria-hidden />
-                    <span className="truncate font-mono">
-                      Use {query.trim()}
-                    </span>
-                  </button>
-                ) : null}
-
-                {showDefaultRow || filteredProjects.length > 0 ? (
-                  <p className="px-1 pt-2 pb-1 font-sans text-base font-medium text-ink-faint md:text-[11px]">
-                    Current and recent
-                  </p>
-                ) : null}
-
-                {showDefaultRow && defaultDir ? (
-                  <button
-                    type="button"
-                    disabled={validating !== null}
-                    onClick={() => void validateAndSelect(defaultDir)}
-                    aria-current={defaultDir === value ? 'true' : undefined}
-                    className={cn(
-                      'flex min-h-14 w-full items-center gap-3 rounded-md px-3 py-2.5 text-left hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:opacity-50 md:min-h-10 md:gap-2 md:py-2',
-                      defaultDir === value && 'bg-surface-selected',
-                    )}
-                    title={`${defaultDir} — the folder the stack was started from`}
-                  >
-                    <Folder
-                      className={cn(
-                        'size-4 shrink-0',
-                        defaultDir === value ? 'text-ink' : 'text-ink-faint',
-                      )}
+                    <FolderOpen
+                      className="size-4 shrink-0 text-ink-faint"
                       aria-hidden
                     />
-                    <span className="flex min-w-0 flex-1 flex-col">
-                      <span
-                        className={cn(
-                          'truncate font-sans text-base font-medium md:text-[12px]',
-                          'text-ink',
-                        )}
-                      >
-                        {basename(defaultDir)}
-                      </span>
-                      <span className="truncate font-mono text-sm text-ink-ghost md:text-[10px]">
-                        {parentDisplay(defaultDir)}
-                      </span>
-                    </span>
-                    <span className="shrink-0 rounded-sm bg-surface-active px-1.5 py-0.5 font-sans text-sm text-ink-faint md:text-[9px]">
-                      default
-                    </span>
-                    {defaultDir === value ? (
-                      <Check className="size-4 shrink-0 text-ink" aria-hidden />
-                    ) : null}
+                    <span className="truncate font-mono">{r}</span>
                   </button>
-                ) : null}
-
-                {filteredProjects.map((p) => {
-                  const isSelected = p === value
-                  return (
-                    <div
-                      key={p}
-                      className={cn(
-                        'group flex items-center gap-1 rounded-md pr-1 hover:bg-surface-hover',
-                        isSelected && 'bg-surface-selected',
-                      )}
-                    >
-                      <button
-                        type="button"
-                        disabled={validating !== null}
-                        onClick={() => void validateAndSelect(p)}
-                        aria-current={isSelected ? 'true' : undefined}
-                        className="flex min-h-14 min-w-0 flex-1 items-center gap-3 rounded-md px-3 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:opacity-50 md:min-h-10 md:gap-2 md:py-2"
-                        title={p}
-                      >
-                        <Folder
-                          className={cn(
-                            'size-4 shrink-0',
-                            isSelected ? 'text-ink' : 'text-ink-faint',
-                          )}
-                          aria-hidden
-                        />
-                        <span className="flex min-w-0 flex-1 flex-col">
-                          <span
-                            className={cn(
-                              'truncate font-sans text-base font-medium md:text-[12px]',
-                              'text-ink',
-                            )}
-                          >
-                            {basename(p)}
-                          </span>
-                          <span className="truncate font-mono text-sm text-ink-ghost md:text-[10px]">
-                            {parentDisplay(p)}
-                          </span>
-                        </span>
-                        {isSelected ? (
-                          <Check
-                            className="size-4 shrink-0 text-ink"
-                            aria-hidden
-                          />
-                        ) : null}
-                      </button>
-                      <button
-                        type="button"
-                        aria-label={`forget ${p}`}
-                        title="forget this project"
-                        onClick={() => forget(p)}
-                        className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-ghost hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:size-8 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100"
-                      >
-                        <span
-                          className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
-                          aria-hidden="true"
-                        />
-                        <X className="size-4 shrink-0 md:size-4" aria-hidden />
-                      </button>
-                    </div>
-                  )
-                })}
-
-                {filteredProjects.length === 0 &&
-                !showDefaultRow &&
-                !isAbsPath(query) ? (
-                  <div className="rounded-md bg-surface px-3 py-4 font-sans text-base text-ink-faint md:text-[11px]">
-                    {projects.length === 0
-                      ? 'No recent projects yet.'
-                      : 'No matching projects.'}{' '}
-                    Browse to add one.
-                  </div>
-                ) : null}
-
-                <div className="pt-2">
+                ))
+              ) : filteredDirs.length > 0 ? (
+                filteredDirs.map((d) => (
                   <button
+                    key={d}
                     type="button"
-                    onClick={() => void enterBrowse()}
-                    className="flex min-h-14 w-full items-center gap-3 rounded-md bg-surface px-3 py-2.5 text-left font-sans text-base font-medium text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-10 md:gap-2 md:py-2 md:text-[12px]"
+                    onClick={() => enterDir(d)}
+                    className="flex min-h-14 w-full items-center gap-3 rounded-md px-3 py-2.5 text-left font-sans text-base text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-10 md:gap-2 md:py-2 md:text-[12px]"
                   >
-                    <FolderPlus className="size-4 shrink-0" aria-hidden />
-                    Browse folders
+                    <Folder
+                      className="size-4 shrink-0 text-ink-faint"
+                      aria-hidden
+                    />
+                    <span className="truncate font-mono">{basename(d)}</span>
                   </button>
+                ))
+              ) : (
+                <div className="rounded-md bg-surface px-3 py-4 font-sans text-base text-ink-faint md:text-[11px]">
+                  {q
+                    ? 'No matching subfolders.'
+                    : 'No subfolders. You can use this folder.'}
                 </div>
-              </div>
-            ) : (
-              <div className={cn(embedded && 'flex min-h-0 flex-1 flex-col')}>
-                {/* browse header */}
-                <div className="mx-4 mb-2 flex min-h-14 shrink-0 items-center justify-between gap-2 rounded-md bg-surface p-1 md:mx-0 md:min-h-10">
-                  <div className="flex min-w-0 flex-1 items-center gap-1 font-sans text-base text-ink-faint md:text-[11px]">
-                    <button
-                      type="button"
-                      aria-label="back to projects"
-                      onClick={() => {
-                        setView('projects')
-                        setProjects(loadRecentProjects())
-                        setQuery('')
-                        setError(null)
-                      }}
-                      className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:size-8"
-                    >
-                      <ArrowLeft className="size-4 shrink-0" aria-hidden />
-                    </button>
-                    {path ? (
-                      <button
-                        type="button"
-                        aria-label="up one level"
-                        onClick={goUp}
-                        className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:size-8"
-                      >
-                        <ChevronUp className="size-4 shrink-0" aria-hidden />
-                      </button>
-                    ) : null}
-                    <span className="truncate font-mono">
-                      {path ?? 'roots'}
-                    </span>
-                  </div>
-                  {path ? (
-                    <button
-                      type="button"
-                      disabled={validating !== null}
-                      onClick={() => void validateAndSelect(path)}
-                      className="inline-flex min-h-12 shrink-0 items-center gap-1.5 rounded-sm bg-accent py-2 pr-3 pl-2 font-sans text-base font-medium whitespace-nowrap text-accent-fg hover:bg-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rule-focus disabled:opacity-50 md:min-h-8 md:text-[11px]"
-                    >
-                      <Check className="size-4 shrink-0" aria-hidden />
-                      Use folder
-                    </button>
-                  ) : null}
-                </div>
-
-                <div
-                  className={cn(
-                    'space-y-1 overflow-y-auto px-4 pb-2 md:px-0',
-                    embedded ? 'min-h-0 flex-1' : 'max-h-[260px]',
-                  )}
-                >
-                  {isAbsPath(query) ? (
-                    <button
-                      type="button"
-                      onClick={() => void jumpTo(query)}
-                      className="flex min-h-14 w-full items-center gap-3 rounded-md bg-accent-muted px-3 py-2.5 text-left font-sans text-base text-accent hover:bg-surface-selected focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-10 md:gap-2 md:py-2 md:text-[12px]"
-                    >
-                      <CornerDownLeft className="size-4 shrink-0" aria-hidden />
-                      <span className="truncate font-mono">
-                        Go to {query.trim()}
-                      </span>
-                    </button>
-                  ) : null}
-
-                  {loading ? (
-                    <div className="rounded-md bg-surface px-3 py-4 font-sans text-base text-ink-faint md:text-[11px]">
-                      Loading folders…
-                    </div>
-                  ) : error ? (
-                    <div className="flex items-start gap-2 rounded-md bg-warn-muted px-3 py-3 font-sans text-base text-warn md:text-[11px]">
-                      <AlertCircle className="size-4 shrink-0" aria-hidden />
-                      <span>{error}</span>
-                    </div>
-                  ) : path === null ? (
-                    // roots list (only when multiple roots)
-                    (roots ?? []).map((r) => (
-                      <button
-                        key={r}
-                        type="button"
-                        onClick={() => enterRoot(r)}
-                        className="flex min-h-14 w-full items-center gap-3 rounded-md px-3 py-2.5 text-left font-sans text-base text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-10 md:gap-2 md:py-2 md:text-[12px]"
-                      >
-                        <FolderOpen
-                          className="size-4 shrink-0 text-ink-faint"
-                          aria-hidden
-                        />
-                        <span className="truncate font-mono">{r}</span>
-                      </button>
-                    ))
-                  ) : filteredDirs.length > 0 ? (
-                    filteredDirs.map((d) => (
-                      <button
-                        key={d}
-                        type="button"
-                        onClick={() => enterDir(d)}
-                        className="flex min-h-14 w-full items-center gap-3 rounded-md px-3 py-2.5 text-left font-sans text-base text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-10 md:gap-2 md:py-2 md:text-[12px]"
-                      >
-                        <Folder
-                          className="size-4 shrink-0 text-ink-faint"
-                          aria-hidden
-                        />
-                        <span className="truncate font-mono">
-                          {basename(d)}
-                        </span>
-                      </button>
-                    ))
-                  ) : (
-                    <div className="rounded-md bg-surface px-3 py-4 font-sans text-base text-ink-faint md:text-[11px]">
-                      {q
-                        ? 'No matching subfolders.'
-                        : 'No subfolders. You can use this folder.'}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Static discoverability footnote — same line in both views, per
-              the filesystem-access spec §6: sets expectations before the first
-              grant prompt ever fires. */}
-            <div className="shrink-0 px-4 pt-2 md:px-0 md:pt-1">
-              <div className="rounded-md bg-surface px-3 py-2 font-sans text-base text-pretty text-ink-faint md:font-mono md:text-[10px]">
-                The agent can use the chosen folder freely. It asks before
-                accessing anything outside it.
-              </div>
+              )}
             </div>
           </div>
-        </DirectoryPickerPortal>
-      ) : null}
+        )}
+      </DirectoryPickerSurface>
     </div>
   )
 }
 
-function DirectoryPickerPortal({
-  enabled,
+function DirectoryPickerSurface({
+  open,
+  embedded,
+  mobileSheet,
+  onOpenChange,
+  triggerRef,
+  alignToInlineTrigger,
   children,
 }: {
-  enabled: boolean
+  open: boolean
+  embedded: boolean
+  mobileSheet: boolean
+  onOpenChange: (open: boolean) => void
+  triggerRef: RefObject<HTMLButtonElement | null>
+  alignToInlineTrigger: boolean
   children: ReactNode
 }) {
-  if (!enabled || typeof document === 'undefined') return children
-  return createPortal(children, document.body)
+  if (embedded) {
+    return (
+      // biome-ignore lint/a11y/useSemanticElements: this flex surface owns scroll layout and cannot use fieldset's rendering semantics
+      <div
+        role="group"
+        aria-label="select working directory"
+        className="flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent"
+      >
+        {children}
+      </div>
+    )
+  }
+
+  if (mobileSheet) {
+    return (
+      <BottomSheet open={open} onOpenChange={onOpenChange}>
+        <BottomSheetContent
+          heading="Working directory"
+          closeLabel="Close project picker"
+        >
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+            {children}
+          </div>
+        </BottomSheetContent>
+      </BottomSheet>
+    )
+  }
+
+  return (
+    <PopoverPrimitive.Root open={open} onOpenChange={onOpenChange}>
+      <PopoverPrimitive.Anchor
+        virtualRef={triggerRef as RefObject<HTMLButtonElement>}
+      />
+      <PopoverPrimitive.Portal>
+        <PortalScope>
+          <PopoverPrimitive.Content
+            side="top"
+            align={alignToInlineTrigger ? 'center' : 'end'}
+            sideOffset={8}
+            collisionPadding={12}
+            sticky="always"
+            role="dialog"
+            aria-label="select working directory"
+            className="iii-ui-motion-dropdown z-50 max-h-[var(--radix-popover-content-available-height)] w-[min(360px,calc(100vw-24px))] overflow-y-auto overscroll-contain rounded-lg border border-edge bg-panel-raised p-1.5 shadow-floating"
+          >
+            {children}
+          </PopoverPrimitive.Content>
+        </PortalScope>
+      </PopoverPrimitive.Portal>
+    </PopoverPrimitive.Root>
+  )
 }

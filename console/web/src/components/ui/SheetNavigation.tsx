@@ -38,6 +38,10 @@ export function useSheetNavigation<Page extends string>(rootPage: Page) {
 interface SheetPageProps {
   title: ReactNode
   description?: ReactNode
+  titleId?: string
+  descriptionId?: string
+  /** Use plain headings when another Dialog.Title already owns the sheet. */
+  dialogSemantics?: boolean
   onBack?: () => void
   backLabel?: string
   children: ReactNode
@@ -49,6 +53,9 @@ interface SheetPageProps {
 export function SheetPage({
   title,
   description,
+  titleId,
+  descriptionId,
+  dialogSemantics = true,
   onBack,
   backLabel = 'Back',
   children,
@@ -73,9 +80,33 @@ export function SheetPage({
           </button>
         ) : null}
         <div className={cn('min-w-0 flex-1', onBack && 'pt-0.5')}>
-          <BottomSheetTitle>{title}</BottomSheetTitle>
+          {dialogSemantics ? (
+            <BottomSheetTitle {...(titleId ? { id: titleId } : {})}>
+              {title}
+            </BottomSheetTitle>
+          ) : (
+            <h2
+              id={titleId}
+              className="font-sans text-lg font-semibold text-ink"
+            >
+              {title}
+            </h2>
+          )}
           {description ? (
-            <BottomSheetDescription>{description}</BottomSheetDescription>
+            dialogSemantics ? (
+              <BottomSheetDescription
+                {...(descriptionId ? { id: descriptionId } : {})}
+              >
+                {description}
+              </BottomSheetDescription>
+            ) : (
+              <p
+                id={descriptionId}
+                className="font-sans text-base leading-relaxed text-ink-faint"
+              >
+                {description}
+              </p>
+            )
           ) : null}
         </div>
       </div>
