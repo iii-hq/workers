@@ -27,8 +27,6 @@ struct AgentGetWire {
     #[serde(default)]
     skills: Vec<String>,
     #[serde(default)]
-    delegates_to: Option<Vec<String>>,
-    #[serde(default)]
     leaf: bool,
     #[serde(default)]
     model: Option<String>,
@@ -97,10 +95,7 @@ fn normalize(id: &str, wire: AgentGetWire) -> ResolvedAgent {
         wire.name.trim().to_string()
     };
     ResolvedAgent {
-        identity: AgentIdentity {
-            id: id.to_string(),
-            delegates_to: wire.delegates_to,
-        },
+        identity: AgentIdentity { id: id.to_string() },
         prompt: format!("You are {name}.\n\n{}", wire.system_prompt),
         skills: (!wire.skills.is_empty()).then_some(wire.skills),
         model: wire.model,
@@ -142,7 +137,6 @@ mod tests {
                 "name": "Tech Leader",
                 "system_prompt": "Delegate everything.",
                 "skills": [],
-                "delegates_to": ["coder"],
                 "leaf": false,
                 "model": "codex/gpt-5.4",
                 "icon": "agent",
@@ -151,10 +145,6 @@ mod tests {
         assert_eq!(agent.prompt, "You are Tech Leader.\n\nDelegate everything.");
         assert_eq!(agent.skills, None, "empty filter means every skill");
         assert_eq!(agent.identity.id, "tech-leader");
-        assert_eq!(
-            agent.identity.delegates_to.as_deref(),
-            Some(&["coder".to_string()][..])
-        );
         assert_eq!(agent.icon, Some(SubagentIcon::Agent));
         assert_eq!(agent.model.as_deref(), Some("codex/gpt-5.4"));
     }

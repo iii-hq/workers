@@ -88,15 +88,13 @@ pub struct SkillAck {
 /// The agent profile a turn runs as, frozen at resolution time
 /// (`options.agent` on `harness::send`, `agent` on `harness::spawn`). Only
 /// what later turn machinery needs survives here: the id for display and
-/// inheritance, and `delegates_to` to gate which profiles this turn's spawns
-/// may name. Directory edits after resolution never reach a live session.
+/// inheritance. Which agent a spawn may name is the prompt's decision — the
+/// profile body steers it; nothing gates it. Directory edits after
+/// resolution never reach a live session. (Old records carrying the retired
+/// `delegates_to` key still deserialize; the key is ignored.)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AgentIdentity {
     pub id: String,
-    /// Agent ids this turn may spawn with `agent:`; `None` = every agent
-    /// (directory semantics, verbatim). Profile-less spawns are ungated.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delegates_to: Option<Vec<String>>,
 }
 
 /// Per-send options frozen onto the turn record when it is created; they
@@ -613,7 +611,6 @@ mod tests {
             .contains_key("agent"));
         r.options.agent = Some(AgentIdentity {
             id: "tech-leader".into(),
-            delegates_to: Some(vec!["coder".into()]),
         });
         let back: TurnRecord = serde_json::from_value(serde_json::to_value(&r).unwrap()).unwrap();
         assert_eq!(back, r);

@@ -215,10 +215,9 @@ live session — start a new one to pick them up.
 skills/model slot in the same way (model precedence `model` → profile →
 parent, without dragging the parent's provider onto a foreign model), its
 name and icon become the display defaults, and an unset
-`options.orchestrator` defaults to `true` for a non-leaf profile. When the
-SPAWNING turn itself runs as an agent whose `delegates_to` frontmatter names
-specific ids, spawns naming an `agent` outside that list are rejected with
-`harness/delegation_denied`; profile-less spawns are never gated. Spawning
+`options.orchestrator` defaults to `true` for a non-leaf profile. Which
+agent a spawn names is the prompt's decision — the profile body steers it,
+nothing gates it. Spawning
 with `agent` into an already RUNNING session of the caller's own tree merges
 the task like any reuse and does not re-apply the profile.
 

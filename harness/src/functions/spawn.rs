@@ -125,8 +125,7 @@ pub struct SpawnRequest {
     /// child's enrich system prompt (over the sub-agent identity), its skill
     /// filter applies when `options.skills` is omitted, its `model` slots
     /// between an explicit `model` and the parent's, and its name/icon become
-    /// the display defaults. When the SPAWNING turn runs as an agent whose
-    /// `delegates_to` names specific ids, this id must be one of them.
+    /// the display defaults. Which agent to name is the prompt's decision.
     /// Refused combined with `options.system_prompt`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
