@@ -1,33 +1,27 @@
 import * as SelectPrimitive from '@radix-ui/react-select'
 import { Bot, Check, ChevronDown } from 'lucide-react'
 import { useCallback, useState } from 'react'
-import {
-  type AgentEntry,
-  getAgent,
-  listAgents,
-} from '@/lib/backend/directory-prompts'
+import { type AgentEntry, listAgents } from '@/lib/backend/directory-prompts'
 import { getIiiClient } from '@/lib/iii-client'
 import { cn } from '@/lib/utils'
 import { SUBAGENT_ICON_COMPONENTS } from './ActiveSubagentChips'
-import type { SkillSelection, SystemPromptState } from './system-prompt-selection'
+import {
+  AGENT_CHOICE_PREFIX,
+  type SystemPromptState,
+} from './system-prompt-selection'
 import type { SubagentIcon } from '@/types/chat'
 
 /**
  * The new-session agent picker: "Default" (the provider's built-in prompt)
  * or one of the reusable agent profiles the iii-directory worker serves.
  *
- * Picking an agent maps onto the machinery the system-prompt picker
- * already established (`Conversation.systemPrompt`, frozen on the first
- * send): the profile's body becomes the named prompt under the `enrich`
- * strategy with a `You are <name>.` line, and the profile's skill filter
- * becomes the session's skill selection. Until the harness resolves
- * `options.agent` natively (MOT-4485), this is the resolution.
+ * The picker stores only the id (`choice: { named: 'agent:<id>' }`); the
+ * first send carries it as `harness::send` `options.agent` and the harness
+ * resolves the profile server-side (MOT-4485) — prompt, skill filter, and
+ * default model all come from the frozen profile.
  */
 
-/** `agent:` inside the named choice keeps agent selections distinct from
- * fs system prompts (prompt names are `[a-z0-9_-]`, so the prefix is
- * unambiguous). */
-export const AGENT_CHOICE_PREFIX = 'agent:'
+export { AGENT_CHOICE_PREFIX }
 
 function agentIcon(icon: string | null): React.ComponentType<{
   size?: number
@@ -80,13 +74,11 @@ function AgentItem({
 export function AgentPicker({
   value,
   onChange,
-  onSkillsChange,
   disabled,
   className,
 }: {
   value: SystemPromptState
   onChange: (next: SystemPromptState) => void
-  onSkillsChange?: (next: SkillSelection) => void
   disabled?: boolean
   className?: string
 }) {
@@ -116,30 +108,22 @@ export function AgentPicker({
       : null
 
   const handleValueChange = useCallback(
-    async (v: string) => {
+    (v: string) => {
       if (v === 'default') {
         onChange({ ...value, choice: 'default', namedBody: '' })
-        onSkillsChange?.(undefined)
         return
       }
+      /* Store only the id; the harness resolves the profile on the first
+         send (`options.agent`) and freezes it server-side. */
       const id = v.slice(`named:${AGENT_CHOICE_PREFIX}`.length)
-      try {
-        /* Resolve the profile at selection time; the first send freezes it
-           server-side, same contract as the named system prompts. */
-        const agent = await getAgent(await getIiiClient(), id)
-        onChange({
-          ...value,
-          choice: { named: `${AGENT_CHOICE_PREFIX}${id}` },
-          namedBody: `You are ${agent.name || id}.\n\n${agent.system_prompt}`,
-          strategy: 'enrich',
-        })
-        onSkillsChange?.(agent.skills.length ? agent.skills : undefined)
-      } catch {
-        onChange({ ...value, choice: 'default', namedBody: '' })
-        onSkillsChange?.(undefined)
-      }
+      onChange({
+        ...value,
+        choice: { named: `${AGENT_CHOICE_PREFIX}${id}` },
+        namedBody: '',
+        strategy: 'enrich',
+      })
     },
-    [onChange, onSkillsChange, value],
+    [onChange, value],
   )
 
   const selectedEntry = entries?.find((e) => e.id === selectedId)

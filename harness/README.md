@@ -192,6 +192,36 @@ hatch. Because the inherited string is frozen at its original resolution,
 changing `mode` on a later send without prompt fields keeps the old
 operating-mode paragraph — resend the prompt fields to re-resolve.
 
+### Agent profiles
+
+`options.agent` on a session-creating `harness::send` names a directory agent
+profile (`directory::agents::*`, one markdown file per agent). The harness
+resolves it ONCE via `directory::agents::get` and freezes the result onto the
+turn: `"You are <name>."` plus the file body becomes the enrich system prompt
+over the top-level identity, the profile's skill filter becomes the session's
+skill selection (an explicit `options.skills` wins), its `model` is the
+fallback when the send names none, and — when the send also omits
+`options.functions` — the dispatch policy defaults to the configured
+`default_functions` baseline instead of deny-all (an identity picked to DO
+something must be able to dispatch; the ask-mode cap still applies). The
+frozen identity travels with the prompt-stickiness rule: bare later sends
+inherit it, an explicit prompt field sheds it. Refused on an existing
+session, combined with either prompt field, or naming a `leaf: true` profile
+(leaves are spawn targets). Directory edits after resolution never reach a
+live session — start a new one to pick them up.
+
+`harness::spawn` takes the same id as a top-level `agent` field, typically a
+`leaf` specialist: the profile body enriches the sub-agent identity, its
+skills/model slot in the same way (model precedence `model` → profile →
+parent, without dragging the parent's provider onto a foreign model), its
+name and icon become the display defaults, and an unset
+`options.orchestrator` defaults to `true` for a non-leaf profile. When the
+SPAWNING turn itself runs as an agent whose `delegates_to` frontmatter names
+specific ids, spawns naming an `agent` outside that list are rejected with
+`harness/delegation_denied`; profile-less spawns are never gated. Spawning
+with `agent` into an already RUNNING session of the caller's own tree merges
+the task like any reuse and does not re-apply the profile.
+
 New sessions also freeze a names-and-descriptions-only skill index into the
 system-prompt prefix. `options.skills` on `harness::send` or `harness::spawn`
 accepts exact skill ids. For a fresh session, omitted or empty means all

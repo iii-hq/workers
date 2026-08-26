@@ -148,12 +148,6 @@ export interface AgentEntry {
   modified_at: string
 }
 
-export interface AgentProfile extends AgentEntry {
-  system_prompt: string
-  skills: string[]
-  unknown_skills: string[]
-}
-
 export async function listAgents(client: IiiClient): Promise<AgentEntry[]> {
   const res = await client.trigger<{ agents: AgentEntry[] }>(
     'directory::agents::list',
@@ -161,15 +155,4 @@ export async function listAgents(client: IiiClient): Promise<AgentEntry[]> {
     { timeoutMs: FETCH_TIMEOUT_MS },
   )
   return res.agents
-}
-
-export async function getAgent(
-  client: IiiClient,
-  id: string,
-): Promise<AgentProfile> {
-  return client.trigger<AgentProfile>(
-    'directory::agents::get',
-    { id },
-    { timeoutMs: FETCH_TIMEOUT_MS },
-  )
 }

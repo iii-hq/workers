@@ -218,6 +218,12 @@ impl<'a> ScenarioRunner<'a> {
             return Err(self.finish_without_stack(error));
         }
 
+        // Fixture skill files (agent profiles etc.) must be on disk before
+        // the iii-directory worker's startup scan.
+        if let Err(error) = write_skills_files(&paths, &self.fixture.skills_files) {
+            let error = RunError::runner(RunPhase::Allocate, "write fixture skills files", error);
+            return Err(self.finish_without_stack(error));
+        }
         let mut stack = match Stack::boot(self.bins, paths).await {
             Ok(stack) => stack,
             Err(failure) => {
@@ -376,4 +382,17 @@ pub(super) fn combine_teardown(
         return classification.combine(Classification::RunnerError);
     }
     classification
+}
+
+/// Write fixture-declared files under the run's skills dir (validated as
+/// clean relative paths by `ScenarioFixture::validate`).
+fn write_skills_files(paths: &RunLayout, files: &[(String, String)]) -> anyhow::Result<()> {
+    for (relative, content) in files {
+        let path = paths.skills_dir().join(relative);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, content)?;
+    }
+    Ok(())
 }

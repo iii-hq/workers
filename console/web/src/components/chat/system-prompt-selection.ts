@@ -19,6 +19,11 @@ import type { SystemPromptSelection } from '@/lib/backend/harness-send'
 
 export type PromptStrategy = 'enrich' | 'override'
 
+/** `agent:` inside the named choice keeps agent selections distinct from fs
+ * system prompts (prompt names are `[a-z0-9_-]`, so the prefix is
+ * unambiguous). The id resolves server-side via `options.agent` (MOT-4485). */
+export const AGENT_CHOICE_PREFIX = 'agent:'
+
 /** Undefined/empty means every model-invocable skill; otherwise exact IDs. */
 export type SkillSelection = string[] | undefined
 
@@ -89,6 +94,30 @@ export function selectionForSend(
   turnEstablished: boolean,
 ): SystemPromptSelection | null {
   return turnEstablished ? null : toSelection(s)
+}
+
+/**
+ * The agent id for a given send, or undefined. Gated harder than
+ * `selectionForSend`: the harness REFUSES `options.agent` on a session with a
+ * prior turn, and a queued mid-stream send targets exactly such a session —
+ * so queue sends must never carry it (a re-sent prompt field is merely
+ * re-resolved; a re-sent agent is an error).
+ */
+export function agentIdForSend(
+  s: SystemPromptState,
+  state: { turnEstablished: boolean; willQueue: boolean },
+): string | undefined {
+  if (state.turnEstablished || state.willQueue) return undefined
+  if (
+    typeof s.choice === 'object' &&
+    s.choice !== null &&
+    'named' in s.choice &&
+    s.choice.named.startsWith(AGENT_CHOICE_PREFIX)
+  ) {
+    const id = s.choice.named.slice(AGENT_CHOICE_PREFIX.length)
+    return id || undefined
+  }
+  return undefined
 }
 
 export function toggleSkillSelection(

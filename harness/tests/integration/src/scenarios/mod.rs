@@ -1,6 +1,7 @@
 //! The checked-in integration fixtures.
 
 mod adversarial_content_rendering;
+mod agent_identity_delegation;
 mod child_discovery_granted;
 mod condition_failure_notice;
 mod console_streamed_text;
@@ -43,6 +44,7 @@ pub enum ScenarioDriver {
 pub fn all() -> Vec<ScenarioFixture> {
     let mut fixtures = vec![
         adversarial_content_rendering::scenario(),
+        agent_identity_delegation::scenario(),
         child_discovery_granted::scenario(),
         condition_failure_notice::scenario(),
         console_streamed_text::scenario(),
@@ -78,7 +80,7 @@ mod tests {
     #[test]
     fn every_fixture_is_unique_and_valid() {
         let fixtures = all();
-        assert_eq!(fixtures.len(), 27);
+        assert_eq!(fixtures.len(), 28);
         let mut slugs = std::collections::BTreeSet::new();
         let mut ids = std::collections::BTreeSet::new();
         for fixture in fixtures {

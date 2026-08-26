@@ -6,10 +6,7 @@ import type { InstallStage } from '@/hooks/use-harness-status'
 import { normalizeErrorMessage } from '@/lib/providers'
 import { cn } from '@/lib/utils'
 import { AgentPicker } from './AgentPicker'
-import type {
-  SkillSelection,
-  SystemPromptState,
-} from './system-prompt-selection'
+import type { SystemPromptState } from './system-prompt-selection'
 
 /**
  * The chat empty state, as a small set of presentational variants:
@@ -53,8 +50,6 @@ export interface EmptyStateProps {
    */
   systemPrompt?: SystemPromptState
   onSystemPromptChange?: (next: SystemPromptState) => void
-  skills?: SkillSelection
-  onSkillsChange?: (next: SkillSelection) => void
 }
 
 const HARNESS_INSTALL_COMMAND = 'iii worker add harness'
@@ -73,7 +68,6 @@ export function EmptyState({
   onConfigureProvider,
   systemPrompt,
   onSystemPromptChange,
-  onSkillsChange,
 }: EmptyStateProps) {
   const emptyPad = density === 'dock' ? 'px-3 sm:px-4' : 'px-3 sm:px-6 lg:px-9'
   const eyebrow =
@@ -95,7 +89,6 @@ export function EmptyState({
           <ReadyBody
             systemPrompt={systemPrompt}
             onSystemPromptChange={onSystemPromptChange}
-            onSkillsChange={onSkillsChange}
           />
         ) : null}
         {variant === 'no-provider' ? (
@@ -128,11 +121,9 @@ const EXPLORE_FUNCTIONS = [
 function ReadyBody({
   systemPrompt,
   onSystemPromptChange,
-  onSkillsChange,
 }: {
   systemPrompt?: SystemPromptState
   onSystemPromptChange?: (next: SystemPromptState) => void
-  onSkillsChange?: (next: SkillSelection) => void
 }) {
   return (
     <>
@@ -184,7 +175,6 @@ function ReadyBody({
           <AgentPicker
             value={systemPrompt}
             onChange={onSystemPromptChange}
-            onSkillsChange={onSkillsChange}
             className="min-w-0"
           />
           <p className="font-sans text-base/6 text-ink-faint sm:text-sm/5">

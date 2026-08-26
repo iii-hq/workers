@@ -48,6 +48,7 @@ pub async fn spawn_from_turn(
             format!("invalid spawn arguments: {e}"),
         )
     })?;
+    validate_delegation(parent, &req)?;
     // Depth budget.
     if parent.depth + 1 > cfg.max_depth {
         return Err(is_error(
@@ -88,6 +89,32 @@ pub async fn spawn_from_turn(
     )
     .await
     .map_err(|e| is_error(e.code(), e.to_string()))
+}
+
+/// The delegation gate: a turn running as an agent whose frozen
+/// `delegates_to` names specific ids may spawn with `agent:` only those ids.
+/// Profile-less spawns, identity-less parents, and `delegates_to: null`
+/// (= every agent) all pass — the gate narrows profile delegation, it never
+/// forbids plain spawning.
+fn validate_delegation(parent: &TurnRecord, req: &SpawnRequest) -> Result<(), ResultData> {
+    let (Some(child), Some(identity)) = (req.agent.as_deref(), parent.options.agent.as_ref())
+    else {
+        return Ok(());
+    };
+    let Some(allowed) = identity.delegates_to.as_deref() else {
+        return Ok(());
+    };
+    if allowed.iter().any(|id| id == child) {
+        return Ok(());
+    }
+    Err(is_error(
+        "harness/delegation_denied",
+        format!(
+            "agent `{}` may delegate only to {allowed:?}; this spawn named agent `{child}` — \
+             pick a listed agent or spawn without `agent`",
+            identity.id
+        ),
+    ))
 }
 
 /// At-capacity preflight for an explicitly named session. A successful result
@@ -236,11 +263,35 @@ async fn seed_child(
     reuse_only: bool,
 ) -> Result<ChildIds, HarnessError> {
     let session = deps.session().await;
-    let display = normalize_display(req.display.as_ref())?;
+
+    // Resolve the agent profile (if named) before anything else fallible —
+    // an unknown id must not leave a session behind. Leaf profiles are the
+    // POINT here (specialists meant to be spawned), so unlike send there is
+    // no leaf refusal.
+    let agent = match req.agent.as_deref() {
+        Some(id) => {
+            if req
+                .options
+                .as_ref()
+                .is_some_and(|o| o.system_prompt.is_some())
+            {
+                return Err(HarnessError::InvalidRequest(
+                    "spawn `agent` supplies the child's system prompt; drop \
+                     `options.system_prompt` or drop `agent` (with `agent` set, \
+                     `system_prompt_strategy` is ignored and enrich applies)"
+                        .into(),
+                ));
+            }
+            Some(crate::agents::resolve(deps, cfg, id).await?)
+        }
+        None => None,
+    };
+    let display = normalize_display(merged_display(req.display.as_ref(), agent.as_ref()).as_ref())?;
 
     let model = req
         .model
         .clone()
+        .or_else(|| agent.as_ref().and_then(|a| a.model.clone()))
         .or_else(|| parent_record.map(|p| p.options.model.clone()))
         .ok_or_else(|| {
             HarnessError::InvalidRequest(
@@ -250,20 +301,28 @@ async fn seed_child(
                     .into(),
             )
         })?;
-    let provider = child_provider(req, parent_record);
+    let inherits_parent_model =
+        req.model.is_none() && agent.as_ref().is_none_or(|a| a.model.is_none());
+    let provider = child_provider(req, parent_record, inherits_parent_model);
     // Children get the embedded minimal sub-agent identity, never the
     // top-level orchestrator prompt: a child
     // knows its one task, its state destination, and nothing else — by
     // design. Spawn `options.system_prompt` (+ override strategy) is the
-    // escape hatch for a child that genuinely needs a different identity.
+    // escape hatch for a child that genuinely needs a different identity;
+    // an `agent` profile enriches this same identity with its body.
     let identity = prompt::SUBAGENT;
+
+    let orchestrator = child_orchestrator(
+        req.options.as_ref().and_then(|o| o.orchestrator),
+        agent.as_ref(),
+    );
 
     let functions = child_functions(
         cfg,
         parent_record,
         req.options.as_ref().and_then(|o| o.functions.as_ref()),
         req.options.as_ref().and_then(|o| o.mode),
-        req.options.as_ref().is_some_and(|o| o.orchestrator),
+        orchestrator,
     );
 
     let depth = parent_record.map(|p| p.depth + 1).unwrap_or(0);
@@ -288,15 +347,23 @@ async fn seed_child(
     let mut options = TurnOptions {
         model,
         provider,
-        system_prompt: prompt::resolve_system_prompt(
-            req.options.as_ref().and_then(|o| o.system_prompt.clone()),
-            req.options
-                .as_ref()
-                .map(|o| o.system_prompt_strategy)
-                .unwrap_or_default(),
-            req.options.as_ref().and_then(|o| o.mode),
-            identity,
-        ),
+        system_prompt: match agent.as_ref() {
+            Some(a) => prompt::resolve_system_prompt(
+                Some(a.prompt.clone()),
+                crate::prompt::SystemPromptStrategy::Enrich,
+                req.options.as_ref().and_then(|o| o.mode),
+                identity,
+            ),
+            None => prompt::resolve_system_prompt(
+                req.options.as_ref().and_then(|o| o.system_prompt.clone()),
+                req.options
+                    .as_ref()
+                    .map(|o| o.system_prompt_strategy)
+                    .unwrap_or_default(),
+                req.options.as_ref().and_then(|o| o.mode),
+                identity,
+            ),
+        },
         skills_prompt: None,
         skill_context: None,
         mode: req.options.as_ref().and_then(|o| o.mode),
@@ -326,6 +393,9 @@ async fn seed_child(
                 .and_then(|o| o.filesystem_root.as_deref()),
             parent_record,
         )?,
+        // The child's OWN identity (its `delegates_to` gates the child's
+        // spawns), never the parent's.
+        agent: agent.as_ref().map(|a| a.identity.clone()),
         max_validation_retries: req
             .options
             .as_ref()
@@ -404,21 +474,26 @@ async fn seed_child(
     } else {
         None
     };
+    // A profile's skill filter counts as an explicit request: it must survive
+    // terminal-session reuse (the rebase pass otherwise restores the prior
+    // turn's filter), which also means an agent-spawn into an ACTIVE reused
+    // session fails the no-mid-turn-skill-change guard — acceptable.
+    let requested_skills = req
+        .options
+        .as_ref()
+        .and_then(|options| options.skills.as_deref())
+        .or_else(|| agent.as_ref().and_then(|a| a.skills.as_deref()));
     crate::functions::send::validate_active_skill_request(
         previous_child
             .as_ref()
             .is_some_and(|record| !record.status.is_terminal()),
-        req.options
-            .as_ref()
-            .is_some_and(|options| options.skills.is_some()),
+        requested_skills.is_some(),
     )?;
     crate::functions::send::prepare_skill_context(
         deps,
         &mut options,
         child_skill_previous(reused, previous_child.as_ref()),
-        req.options
-            .as_ref()
-            .and_then(|options| options.skills.as_deref()),
+        requested_skills,
     )
     .await?;
 
@@ -458,10 +533,7 @@ async fn seed_child(
                 parent_record,
                 &child_session_id,
             ),
-            skills_explicit: req
-                .options
-                .as_ref()
-                .is_some_and(|options| options.skills.is_some()),
+            skills_explicit: requested_skills.is_some(),
         },
     )
     .await?;
@@ -484,6 +556,40 @@ fn caller_holds_child_session_lock(
     child_session_id: &str,
 ) -> bool {
     parent_record.is_some_and(|parent| parent.session_id == child_session_id)
+}
+
+/// An unset `orchestrator` follows the profile: a non-leaf agent exists to
+/// delegate, so it gets the orchestration surface; a leaf (or no profile)
+/// stays a leaf. An explicit value always wins.
+fn child_orchestrator(
+    explicit: Option<bool>,
+    agent: Option<&crate::agents::ResolvedAgent>,
+) -> bool {
+    explicit.unwrap_or_else(|| agent.is_some_and(|a| !a.leaf))
+}
+
+/// Display defaults from the agent profile: no explicit display → the
+/// profile's name (truncated to the 48-char cap) and icon; an explicit
+/// display keeps its fields and only borrows the profile icon when it names
+/// none. Without a profile the request passes through untouched.
+fn merged_display(
+    display: Option<&SubagentDisplay>,
+    agent: Option<&crate::agents::ResolvedAgent>,
+) -> Option<SubagentDisplay> {
+    let Some(agent) = agent else {
+        return display.cloned();
+    };
+    match display {
+        Some(d) => Some(SubagentDisplay {
+            icon: d.icon.or(agent.icon),
+            ..d.clone()
+        }),
+        None => Some(SubagentDisplay {
+            name: agent.name.chars().take(48).collect(),
+            icon: agent.icon,
+            color: None,
+        }),
+    }
 }
 
 fn normalize_display(
@@ -551,17 +657,21 @@ fn child_session_metadata(
 
 /// The child's provider. An explicit request wins; otherwise the parent's
 /// provider is inherited ONLY when the model is inherited too — model and
-/// provider must stay a coherent pair. A spawn that names its own model must
-/// not carry the parent's provider onto a foreign model (a zai::glm parent
-/// spawning `model=claude-*` would pin the claude model to Z.AI, which
-/// rejects it upstream as an unknown model); leaving it unset lets the
-/// router route the model by catalog.
-fn child_provider(req: &SpawnRequest, parent_record: Option<&TurnRecord>) -> Option<String> {
+/// provider must stay a coherent pair. A spawn that names its own model (or
+/// takes one from an agent profile) must not carry the parent's provider onto
+/// a foreign model (a zai::glm parent spawning `model=claude-*` would pin the
+/// claude model to Z.AI, which rejects it upstream as an unknown model);
+/// leaving it unset lets the router route the model by catalog.
+fn child_provider(
+    req: &SpawnRequest,
+    parent_record: Option<&TurnRecord>,
+    inherits_parent_model: bool,
+) -> Option<String> {
     req.provider.clone().or_else(|| {
-        if req.model.is_some() {
-            None
-        } else {
+        if inherits_parent_model {
             parent_record.and_then(|p| p.options.provider.clone())
+        } else {
+            None
         }
     })
 }
@@ -666,6 +776,7 @@ mod tests {
                 output: OutputContract::Text,
                 functions: None,
                 metadata,
+                agent: None,
                 max_validation_retries: 2,
                 max_transient_resumes: 1,
             },
@@ -701,6 +812,7 @@ mod tests {
     fn spawn_request(model: Option<&str>, provider: Option<&str>) -> SpawnRequest {
         SpawnRequest {
             task: crate::functions::send::MessageInput::Text("t".into()),
+            agent: None,
             display: None,
             model: model.map(str::to_string),
             provider: provider.map(str::to_string),
@@ -783,29 +895,37 @@ mod tests {
         assert_eq!(
             child_provider(
                 &spawn_request(Some("claude-sonnet-4-6"), None),
-                Some(&parent)
+                Some(&parent),
+                false
             ),
             None
         );
         // Neither given: the parent's coherent model+provider pair applies.
         assert_eq!(
-            child_provider(&spawn_request(None, None), Some(&parent)),
+            child_provider(&spawn_request(None, None), Some(&parent), true),
             Some("zai".into())
+        );
+        // A model taken from an agent PROFILE is foreign too: the parent
+        // pair must not split even though the request itself named no model.
+        assert_eq!(
+            child_provider(&spawn_request(None, None), Some(&parent), false),
+            None
         );
         // An explicit provider always wins, with or without an explicit model.
         assert_eq!(
             child_provider(
                 &spawn_request(Some("glm-5.2"), Some("openai")),
-                Some(&parent)
+                Some(&parent),
+                false
             ),
             Some("openai".into())
         );
         assert_eq!(
-            child_provider(&spawn_request(None, Some("openai")), Some(&parent)),
+            child_provider(&spawn_request(None, Some("openai")), Some(&parent), true),
             Some("openai".into())
         );
         // Parentless spawns have nothing to inherit either way.
-        assert_eq!(child_provider(&spawn_request(None, None), None), None);
+        assert_eq!(child_provider(&spawn_request(None, None), None, true), None);
     }
 
     #[test]
@@ -1198,5 +1318,108 @@ mod tests {
         assert!(error.details["message"]
             .as_str()
             .is_some_and(|message| message.contains("8 child sessions created this turn")));
+    }
+
+    fn resolved_agent(
+        name: &str,
+        leaf: bool,
+        icon: Option<SubagentIcon>,
+    ) -> crate::agents::ResolvedAgent {
+        crate::agents::ResolvedAgent {
+            identity: crate::types::turn::AgentIdentity {
+                id: name.to_lowercase(),
+                delegates_to: None,
+            },
+            prompt: format!("You are {name}.\n\nWork."),
+            skills: None,
+            model: None,
+            name: name.to_string(),
+            icon,
+            leaf,
+        }
+    }
+
+    fn spawn_naming_agent(agent: Option<&str>) -> SpawnRequest {
+        SpawnRequest {
+            agent: agent.map(str::to_string),
+            ..spawn_request(None, None)
+        }
+    }
+
+    fn parent_running_as(delegates_to: Option<Vec<String>>) -> TurnRecord {
+        let mut parent = parent_record(None);
+        parent.options.agent = Some(crate::types::turn::AgentIdentity {
+            id: "tech-leader".into(),
+            delegates_to,
+        });
+        parent
+    }
+
+    #[test]
+    fn delegation_gate_matrix() {
+        let listed = parent_running_as(Some(vec!["coder".into(), "tester".into()]));
+        assert!(validate_delegation(&listed, &spawn_naming_agent(Some("coder"))).is_ok());
+        // Unlisted profile → denied with the allowed list in the message.
+        let err = validate_delegation(&listed, &spawn_naming_agent(Some("plumber"))).unwrap_err();
+        assert_eq!(err.details["error"], "harness/delegation_denied");
+        assert!(err.details["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("coder") && m.contains("plumber")));
+        // Profile-less spawns are never gated.
+        assert!(validate_delegation(&listed, &spawn_naming_agent(None)).is_ok());
+        // `delegates_to: null` = every agent.
+        let open = parent_running_as(None);
+        assert!(validate_delegation(&open, &spawn_naming_agent(Some("plumber"))).is_ok());
+        // A parent with no identity is never gated.
+        let plain = parent_record(None);
+        assert!(validate_delegation(&plain, &spawn_naming_agent(Some("plumber"))).is_ok());
+    }
+
+    #[test]
+    fn orchestrator_defaults_follow_the_profile() {
+        let lead = resolved_agent("Lead", false, None);
+        let coder = resolved_agent("Coder", true, None);
+        assert!(child_orchestrator(None, Some(&lead)));
+        assert!(!child_orchestrator(None, Some(&coder)));
+        assert!(!child_orchestrator(None, None));
+        // Explicit always wins, both directions.
+        assert!(!child_orchestrator(Some(false), Some(&lead)));
+        assert!(child_orchestrator(Some(true), Some(&coder)));
+    }
+
+    #[test]
+    fn display_merges_profile_defaults_under_explicit_fields() {
+        let coder = resolved_agent("Coder", true, Some(SubagentIcon::Code));
+        // No explicit display → full profile identity.
+        let display = merged_display(None, Some(&coder)).unwrap();
+        assert_eq!(display.name, "Coder");
+        assert_eq!(display.icon, Some(SubagentIcon::Code));
+        assert_eq!(display.color, None);
+        // Explicit display keeps its fields, borrowing only a missing icon.
+        let explicit = SubagentDisplay {
+            name: "Fixer".into(),
+            icon: None,
+            color: Some(SubagentColor::Blue),
+        };
+        let display = merged_display(Some(&explicit), Some(&coder)).unwrap();
+        assert_eq!(display.name, "Fixer");
+        assert_eq!(display.icon, Some(SubagentIcon::Code));
+        assert_eq!(display.color, Some(SubagentColor::Blue));
+        let iconed = SubagentDisplay {
+            icon: Some(SubagentIcon::Search),
+            ..explicit.clone()
+        };
+        assert_eq!(
+            merged_display(Some(&iconed), Some(&coder)).unwrap().icon,
+            Some(SubagentIcon::Search)
+        );
+        // No profile → request passes through untouched (including None).
+        assert_eq!(merged_display(None, None), None);
+        assert_eq!(merged_display(Some(&explicit), None), Some(explicit));
+        // Long profile names are truncated to the display cap, not rejected.
+        let long = resolved_agent(&"x".repeat(60), false, None);
+        let display = merged_display(None, Some(&long)).unwrap();
+        assert_eq!(display.name.chars().count(), 48);
+        assert!(normalize_display(Some(&display)).is_ok());
     }
 }
