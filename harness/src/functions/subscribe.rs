@@ -111,56 +111,8 @@ pub struct LifecycleRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_fires: Option<u64>,
     /// Wall-clock deadline (epoch ms) after which the binding stops.
-    ///
-    /// You almost certainly want `expires_in_ms` instead: an absolute epoch
-    /// requires knowing what time it is NOW, and an agent does not — it writes
-    /// a remembered date, or seconds where milliseconds were meant, and the
-    /// registration is refused for being in the past.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<i64>,
-    /// How long from now the binding may live, in milliseconds. Resolved
-    /// against the engine's clock, so it needs no clock of your own. Wins over
-    /// `expires_at` when both are given.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expires_in_ms: Option<u64>,
-}
-
-/// The absolute deadline a lifecycle asks for, resolved against `now_ms`.
-///
-/// `expires_in_ms` is a duration and needs no clock. `expires_at` is an
-/// absolute epoch, and a caller without a clock gets it wrong in one of two
-/// ways every time: a date remembered from training, or SECONDS where the
-/// field takes milliseconds. Seconds are recognised and converted — the value
-/// is ~1000x too small, which is unambiguous — and the caller is told, because
-/// silently repairing an argument teaches nothing.
-pub(crate) fn resolve_expires_at(
-    lifecycle: &LifecycleRequest,
-    now_ms: i64,
-) -> (Option<i64>, Option<String>) {
-    if let Some(ttl) = lifecycle.expires_in_ms {
-        return (Some(now_ms.saturating_add(ttl as i64)), None);
-    }
-    let Some(at) = lifecycle.expires_at else {
-        return (None, None);
-    };
-    // The window where a value can only be epoch SECONDS: at or after
-    // 2001-09-09 read as seconds, and below the smallest plausible epoch ms
-    // (1973). Outside it — a tiny test value, a real millisecond epoch — the
-    // number is taken at face value.
-    const SECONDS_FLOOR: i64 = 1_000_000_000;
-    const MS_FLOOR: i64 = 100_000_000_000;
-    if (SECONDS_FLOOR..MS_FLOOR).contains(&at) {
-        let as_ms = at.saturating_mul(1000);
-        if as_ms > now_ms {
-            return (
-                Some(as_ms),
-                Some(format!(
-                    "note: `lifecycle.expires_at` looked like epoch SECONDS ({at}) and was read                      as {as_ms} ms. The field takes milliseconds — or use                      `lifecycle.expires_in_ms`, a duration, which needs no clock."
-                )),
-            );
-        }
-    }
-    (Some(at), None)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -671,10 +623,7 @@ async fn handle(
         lifecycle: Lifecycle {
             once,
             max_fires: req.lifecycle.as_ref().and_then(|l| l.max_fires),
-            expires_at: req
-                .lifecycle
-                .as_ref()
-                .and_then(|l| resolve_expires_at(l, crate::types::message::AgentMessage::now_ms()).0),
+            expires_at: req.lifecycle.as_ref().and_then(|l| l.expires_at),
         },
         // The registrant's policy, frozen: a fired call is checked against
         // what the session could call WHEN IT REGISTERED, never against a
@@ -781,15 +730,13 @@ fn validate_lifecycle(
             "`lifecycle.max_fires` must be at least 1".into(),
         ));
     }
-    if let (Some(expires_at), _) = resolve_expires_at(lifecycle, now_ms) {
-        if expires_at <= now_ms {
-            // Say what NOW is: the caller has no clock, which is how the value
-            // came to be in the past, so an error that only says "in the
-            // future" leaves it guessing a second time.
-            return Err(HarnessError::InvalidRequest(format!(
-                "`lifecycle.expires_at` must be in the future: {expires_at} is not after                  {now_ms} (epoch ms, now). Prefer `lifecycle.expires_in_ms` — a duration from                  now, which needs no clock."
-            )));
-        }
+    if lifecycle
+        .expires_at
+        .is_some_and(|expires_at| expires_at <= now_ms)
+    {
+        return Err(HarnessError::InvalidRequest(
+            "`lifecycle.expires_at` must be in the future".into(),
+        ));
     }
     Ok(())
 }
@@ -1627,63 +1574,6 @@ mod tests {
             "trigger_type": "state",
             "lifecycle": { "once": false },
         }))));
-    }
-
-    #[test]
-    fn a_duration_needs_no_clock() {
-        // The failure this removes: an agent has no clock, so an absolute
-        // epoch is a guess. A duration is not.
-        let ttl = LifecycleRequest {
-            expires_in_ms: Some(60_000),
-            ..Default::default()
-        };
-        assert_eq!(resolve_expires_at(&ttl, 1_000).0, Some(61_000));
-        assert!(validate_lifecycle(Some(&ttl), 1_000).is_ok());
-
-        // It wins over an absolute value, including a hopeless one.
-        let both = LifecycleRequest {
-            expires_at: Some(5),
-            expires_in_ms: Some(60_000),
-            ..Default::default()
-        };
-        assert_eq!(resolve_expires_at(&both, 1_000).0, Some(61_000));
-        assert!(validate_lifecycle(Some(&both), 1_000).is_ok());
-    }
-
-    #[test]
-    fn epoch_seconds_are_recognised_and_reported() {
-        // 2026-08-26 in SECONDS: ~1000x too small for a ms field, which is
-        // unambiguous, and the commonest way this call fails.
-        let now_ms = 1_787_000_000_000_i64;
-        let seconds = LifecycleRequest {
-            expires_at: Some(1_787_100_000),
-            ..Default::default()
-        };
-        let (resolved, note) = resolve_expires_at(&seconds, now_ms);
-        assert_eq!(resolved, Some(1_787_100_000_000));
-        assert!(note.expect("a repaired argument is reported").contains("SECONDS"));
-        assert!(validate_lifecycle(Some(&seconds), now_ms).is_ok());
-
-        // Seconds that are ALSO in the past stay a failure; the rescue only
-        // applies when reading them as ms lands in the future.
-        let stale = LifecycleRequest {
-            expires_at: Some(1_600_000_000),
-            ..Default::default()
-        };
-        assert!(validate_lifecycle(Some(&stale), now_ms).is_err());
-    }
-
-    #[test]
-    fn the_error_says_what_time_it_is() {
-        let past = LifecycleRequest {
-            expires_at: Some(1_787_000_000_000),
-            ..Default::default()
-        };
-        let err = validate_lifecycle(Some(&past), 1_787_000_000_001)
-            .expect_err("a past deadline is refused");
-        let message = err.to_string();
-        assert!(message.contains("1787000000001"), "got: {message}");
-        assert!(message.contains("expires_in_ms"), "got: {message}");
     }
 
     #[test]
