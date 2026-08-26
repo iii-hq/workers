@@ -23,9 +23,10 @@ rules:
   - '!stream::set'
   - '!iii::durable::publish'
   # Provider credentials live in the `llm-router` configuration entry. Agents
-  # must never resolve a secret, self-register a provider, poison the model
-  # catalog, or read/rewrite the configuration value (which carries plaintext
-  # api keys). Direct router spend (chat/complete) bypasses the harness
+  # must never resolve a secret through router internals, self-register a
+  # provider, poison the model catalog, or rewrite the configuration value
+  # (which carries plaintext api keys). Direct router spend (chat/complete)
+  # bypasses the harness
   # loop's accounting; the routing preview is orchestrator-internal. The
   # console edits config as a user-initiated SDK call, which bypasses this gate.
   - '!router::provider::resolve'
@@ -41,7 +42,9 @@ rules:
   # bypass the router's accounting, budgets, and retry policy. The router
   # invokes these worker-to-worker; agents never call them.
   - '!provider::*'
-  - '!configuration::get'
+  # configuration::get can expose stored secrets, so it has no default rule:
+  # no match means needs_approval. list/schema return no stored values and are
+  # safe read-only introspection. Mutations stay denied.
   - '!configuration::set'
   - '!configuration::register'
   - '!directory::pre-generate'
@@ -242,6 +245,8 @@ rules:
   - '!gantry::on-trigger-type-registration'
 
   # Read-only / introspection (extend below for your tools).
+  - configuration::list
+  - configuration::schema
   - state::get
   - state::list
   - router::models::list

@@ -68,7 +68,8 @@ impl EngineClient {
         function_id: &str,
         payload: Value,
     ) -> Result<Value, DispatchError> {
-        let (payload, target_namespace) = self.compose.prepare(function_id, payload);
+        let (payload, prepared_namespace) = self.compose.prepare(function_id, payload);
+        let target_namespace = dispatch_namespace(function_id, prepared_namespace);
         // Capture the epoch immediately before the invocation instead of
         // comparing against process-global state. A global baseline becomes
         // stale when the engine restarts while this worker is idle and would
@@ -208,6 +209,17 @@ impl ComposeScope {
             }
         }
         (payload, self.namespace.as_deref())
+    }
+}
+
+fn dispatch_namespace<'a>(
+    function_id: &str,
+    prepared_namespace: Option<&'a str>,
+) -> Option<&'a str> {
+    if function_id.starts_with("configuration::") {
+        Some("default")
+    } else {
+        prepared_namespace
     }
 }
 
@@ -421,7 +433,7 @@ mod tests {
             namespace: Some("compose-daemon".to_string()),
             file: Some("/srv/app/worker-compose.yaml".to_string()),
         };
-        let (payload, namespace) = scope.prepare(
+        let (payload, prepared_namespace) = scope.prepare(
             "compose::add",
             json!({
                 "worker": "database",
@@ -429,6 +441,7 @@ mod tests {
                 "namespace": "other-daemon"
             }),
         );
+        let namespace = dispatch_namespace("compose::add", prepared_namespace);
 
         assert_eq!(namespace, Some("compose-daemon"));
         assert_eq!(payload["worker"], "database");
@@ -443,10 +456,23 @@ mod tests {
             file: Some("/srv/app/worker-compose.yaml".to_string()),
         };
         let payload = json!({ "path": "." });
-        let (prepared, namespace) = scope.prepare("shell::fs::ls", payload.clone());
+        let (prepared, prepared_namespace) = scope.prepare("shell::fs::ls", payload.clone());
+        let namespace = dispatch_namespace("shell::fs::ls", prepared_namespace);
 
         assert_eq!(prepared, payload);
         assert_eq!(namespace, None);
+    }
+
+    #[test]
+    fn configuration_calls_are_routed_to_default() {
+        for function_id in ["configuration::get", "configuration::list"] {
+            assert_eq!(dispatch_namespace(function_id, None), Some("default"));
+        }
+    }
+
+    #[test]
+    fn configuration_prefix_match_is_exact() {
+        assert_eq!(dispatch_namespace("configuration-extra::get", None), None);
     }
 
     #[test]

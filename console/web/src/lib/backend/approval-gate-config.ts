@@ -52,7 +52,11 @@ export function autoAllowSeedFromRules(rules: JsonValue[]): string[] {
 export function deriveFunctionPolicy(
   rules: JsonValue[],
 ): HarnessFunctionPolicy {
-  const deny = new Set<string>(['approval::*', 'configuration::*'])
+  const deny = new Set<string>([
+    'approval::*',
+    'configuration::register',
+    'configuration::set',
+  ])
   for (const entry of rules) {
     if (typeof entry === 'string') {
       if (entry.startsWith('!')) deny.add(entry.slice(1))

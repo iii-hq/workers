@@ -23,8 +23,33 @@ describe('approval-gate-config', () => {
       ]),
     ).toEqual({
       allow: ['*'],
-      deny: ['approval::*', 'configuration::*', 'shell::run', 'state::set'],
+      deny: [
+        'approval::*',
+        'configuration::register',
+        'configuration::set',
+        'shell::run',
+        'state::set',
+      ],
       expose: 'agent_trigger',
     })
+  })
+
+  it('denies configuration mutations without blocking reads', () => {
+    const deny = deriveFunctionPolicy([]).deny
+
+    expect(deny).toEqual([
+      'approval::*',
+      'configuration::register',
+      'configuration::set',
+    ])
+    expect(deny).not.toContain('configuration::*')
+    expect(deny).not.toContain('configuration::get')
+  })
+
+  it.each([
+    ['shorthand', '!configuration::get'],
+    ['structured', { function: 'configuration::get', action: 'deny' }],
+  ])('preserves an explicit %s deny for configuration::get', (_, rule) => {
+    expect(deriveFunctionPolicy([rule]).deny).toContain('configuration::get')
   })
 })

@@ -77,7 +77,12 @@ interface RunParams {
  */
 export const FALLBACK_FUNCTION_POLICY: HarnessFunctionPolicy = {
   allow: ['*'],
-  deny: ['approval::*', 'configuration::*', 'shell::workspace::*'],
+  deny: [
+    'approval::*',
+    'configuration::register',
+    'configuration::set',
+    'shell::workspace::*',
+  ],
   expose: 'agent_trigger',
 }
 
