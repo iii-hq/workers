@@ -11,6 +11,7 @@
  */
 
 import {
+  Button,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -21,6 +22,7 @@ import {
   PageBody,
   PageHeader,
   PageMain,
+  Panel,
   type PageRenderProps,
   PageShell,
   PageSidebar,
@@ -29,6 +31,7 @@ import {
 import type { GitStatusEntry } from '@pierre/trees'
 import {
   Check,
+  CircleAlert,
   ChevronsDownUp,
   ChevronsUpDown,
   ClipboardCopy,
@@ -36,9 +39,12 @@ import {
   EyeOff,
   FileSearch,
   FileStack,
+  FolderOpen,
+  FolderSymlink,
   FolderTree,
   Image,
   MoreHorizontal,
+  MessageSquare,
   PanelLeft,
   PanelRight,
   RefreshCw,
@@ -121,20 +127,34 @@ import {
   type ReviewEditDraft,
   type ReviewFileSummary,
   type ReviewOptions,
+  loadReviewContents,
   ReviewPane,
   runReviewTransition,
 } from './ReviewPane'
 import {
+  type ReviewScopeCounts,
   ReviewScopePicker,
   type ReviewScopeSelection,
   reviewScopeLabel,
 } from './ReviewScopePicker'
 import {
+  canUseGitMetadataForLiveEntry,
   diffForReviewEntry,
   mergeGitReviewEntries,
   mergeReviewEntry,
+  reviewContentsRepresentChange,
   type ReviewEntry,
 } from './review'
+import {
+  DEFAULT_REVIEW_SCOPE,
+  EMPTY_TURN_FALLBACK_MS,
+  isLiveGitReviewScope,
+  isShellUiStatePath,
+  LAST_TURN_SCOPE,
+  SESSION_SCOPE,
+  shouldFallbackToTurnScope,
+  shouldEnterTurnScope,
+} from './review-scope'
 import { useShellReviewSummaryBridge } from './review-summary-store'
 import { changedParentDirs, withReviewChanges } from './review-tree'
 import { SearchTab } from './SearchTab'
@@ -168,8 +188,13 @@ import {
 import {
   fetchSessionTurn,
   fetchSessionTurns,
+  relativeToRoot,
+  reviewEntriesFromSession,
   reviewEntriesFromTurn,
+  summarizeSessionActivity,
+  type SessionTurn,
   type SessionTurnSummary,
+  type TurnEntries,
   turnLabel,
 } from './turns'
 import { WorkspaceBrowser } from './WorkspaceBrowser'
@@ -195,8 +220,6 @@ import {
 
 type SideTab = 'files' | 'search'
 
-const LAST_TURN_SCOPE: ReviewScopeSelection = { kind: 'last-turn' }
-
 interface DiffSelection {
   /** The change shown — from git status, or synthesized for live
       follows in folders that aren't a repo. */
@@ -216,6 +239,15 @@ interface ReviewEditBackup {
 }
 
 type RootChangeOutcome = RootTargetValidation['outcome'] | 'declined'
+
+type WorkingDirectoryHost = Host & {
+  chat?: {
+    requestWorkingDirectoryChange?(request: {
+      sessionId: string
+      path: string
+    }): boolean
+  }
+}
 
 function ReviewOption({
   label,
@@ -282,11 +314,13 @@ function UnifiedDiffIcon() {
 function ReviewMenuAction({
   label,
   icon,
+  description,
   disabled,
   onSelect,
 }: {
   label: string
   icon: ReactNode
+  description?: string
   disabled?: boolean
   onSelect: () => void
 }) {
@@ -299,7 +333,10 @@ function ReviewMenuAction({
       <span className="menu-icon" aria-hidden>
         {icon}
       </span>
-      <span>{label}</span>
+      <span className="shui-review-option-copy">
+        <span>{label}</span>
+        {description ? <small>{description}</small> : null}
+      </span>
     </DropdownMenuItem>
   )
 }
@@ -328,15 +365,36 @@ function reviewEntriesFromGit(
   )
 }
 
+async function withoutUnreviewableBaselines(
+  host: Host,
+  root: string,
+  entries: ReadonlyMap<string, ReviewEntry>,
+  paths?: ReadonlySet<string>,
+): Promise<ReadonlyMap<string, ReviewEntry>> {
+  const next = new Map(entries)
+  const candidates = [...entries].filter(
+    ([path, entry]) => entry.baseline === null && (!paths || paths.has(path)),
+  )
+  await Promise.all(
+    candidates.map(async ([path, entry]) => {
+      try {
+        const contents = await loadReviewContents(host, root, entry)
+        if (!reviewContentsRepresentChange(entry, contents)) next.delete(path)
+      } catch {
+        return
+      }
+    }),
+  )
+  return next
+}
+
 const SIDEBAR_DEFAULT_WIDTH = 244
 const SIDEBAR_MIN_WIDTH = 180
 const SIDEBAR_MAX_WIDTH = 560
 const TERMINAL_BOTTOM_DEFAULT_SIZE = 280
 const TERMINAL_RIGHT_DEFAULT_SIZE = 420
 function reviewablePath(rel: string): boolean {
-  // This page's own persisted UI state changes on every tab/expand and
-  // must never become part of the user's review set.
-  if (rel.endsWith('shell-ui.yaml')) return false
+  if (isShellUiStatePath(rel)) return false
   const noise = [
     'Library',
     'node_modules',
@@ -507,6 +565,7 @@ export function ShellExplorerPage({
   const copyApplyCommand = async () => {
     if (
       reviewScope.kind === 'last-turn' ||
+      reviewScope.kind === 'session' ||
       reviewScope.kind === 'turn' ||
       copyingPatch ||
       root === null
@@ -525,9 +584,11 @@ export function ShellExplorerPage({
     }
   }
   const [reviewScope, setReviewScope] =
-    useState<ReviewScopeSelection>(LAST_TURN_SCOPE)
+    useState<ReviewScopeSelection>(DEFAULT_REVIEW_SCOPE)
   const reviewScopeRef = useRef(reviewScope)
   reviewScopeRef.current = reviewScope
+  const followHarnessTurnsRef = useRef(true)
+  const emptyTurnFallbackTimerRef = useRef<number | null>(null)
   const [scopeEntries, setScopeEntries] = useState<
     ReadonlyMap<string, ReviewEntry>
   >(new Map())
@@ -542,10 +603,13 @@ export function ShellExplorerPage({
     [],
   )
   const [scopeRefs, setScopeRefs] = useState<readonly GitRefSummary[]>([])
+  const [scopeCounts, setScopeCounts] = useState<ReviewScopeCounts>({})
   const [sessionTurns, setSessionTurns] = useState<
     readonly SessionTurnSummary[]
   >([])
   const [turnOutside, setTurnOutside] = useState(0)
+  const [turnOutsideRoot, setTurnOutsideRoot] = useState<string | null>(null)
+  const sessionTurnsSeqRef = useRef(0)
   const [scopeMetadataLoading, setScopeMetadataLoading] = useState(false)
   const [scopeMetadataError, setScopeMetadataError] = useState<string | null>(
     null,
@@ -697,17 +761,19 @@ export function ShellExplorerPage({
     return () => window.removeEventListener('beforeunload', warn)
   }, [dirtyPaths, reviewDirtyPaths, reviewSavePending])
 
-  const forceLastTurnScope = useCallback(() => {
-    if (!reviewSaveBarrier.canTransition()) return false
-    // Every forced Last Turn transition must retire an in-flight Git scope
-    // request before changing the visible scope. Otherwise its late result can
-    // replace the file selected from the chat summary or live watcher.
-    scopeLoadSeqRef.current += 1
-    setReviewScope(LAST_TURN_SCOPE)
-    setScopeLoading(false)
-    setScopeError(null)
-    return true
-  }, [reviewSaveBarrier])
+  const forceReviewScope = useCallback(
+    (scope: ReviewScopeSelection) => {
+      if (!reviewSaveBarrier.canTransition()) return false
+      // Forced transitions retire in-flight scope requests so a late Git result
+      // cannot replace a file selected from the chat summary or live watcher.
+      scopeLoadSeqRef.current += 1
+      setReviewScope(scope)
+      setScopeLoading(scope.kind !== 'last-turn')
+      setScopeError(null)
+      return true
+    },
+    [reviewSaveBarrier],
+  )
 
   const beginReviewTurn = useCallback(
     (turnId: string) => {
@@ -750,17 +816,17 @@ export function ShellExplorerPage({
       setBaselineCoverage(null)
       reviewEntriesRef.current = new Map()
       setReviewEntries(new Map())
-      scopeEntriesRef.current = new Map()
-      setScopeEntries(new Map())
-      setScopeSummary([])
+      setReviewSummary([])
       setScopeMetadataLoading(false)
       setScopeMetadataError(null)
-      forceLastTurnScope()
-      setReviewSummary([])
-      setDiff(null)
+      setTurnOutside(0)
+      setTurnOutsideRoot(null)
+      if (reviewScopeRef.current.kind === 'last-turn') {
+        setDiff(null)
+      }
       return true
     },
-    [forceLastTurnScope, reviewSaveBarrier],
+    [reviewSaveBarrier],
   )
 
   // This runs inside Harness's awaited pre-turn hook: the snapshot is fully
@@ -830,6 +896,46 @@ export function ShellExplorerPage({
     beginReviewTurn,
     reviewSavingPaths,
     reviewSaveBarrier,
+  ])
+
+  useEffect(() => {
+    if (emptyTurnFallbackTimerRef.current !== null) {
+      window.clearTimeout(emptyTurnFallbackTimerRef.current)
+      emptyTurnFallbackTimerRef.current = null
+    }
+    if (
+      observedReview.turnId === null ||
+      observedReview.active ||
+      observedReview.completedAtMs === null ||
+      reviewScopeRef.current.kind !== 'last-turn' ||
+      !followHarnessTurnsRef.current
+    ) {
+      return
+    }
+    const completedTurnId = observedReview.turnId
+    emptyTurnFallbackTimerRef.current = window.setTimeout(() => {
+      emptyTurnFallbackTimerRef.current = null
+      if (
+        reviewWindowRef.current.turnId !== completedTurnId ||
+        reviewWindowRef.current.active ||
+        reviewScopeRef.current.kind !== 'last-turn' ||
+        reviewEntriesRef.current.size > 0
+      ) {
+        return
+      }
+      forceReviewScope(DEFAULT_REVIEW_SCOPE)
+    }, EMPTY_TURN_FALLBACK_MS)
+    return () => {
+      if (emptyTurnFallbackTimerRef.current !== null) {
+        window.clearTimeout(emptyTurnFallbackTimerRef.current)
+        emptyTurnFallbackTimerRef.current = null
+      }
+    }
+  }, [
+    forceReviewScope,
+    observedReview.active,
+    observedReview.completedAtMs,
+    observedReview.turnId,
   ])
 
   // ── boot: worker info + this workspace tab's persisted state ──
@@ -1034,6 +1140,21 @@ export function ShellExplorerPage({
     !scopeLoading &&
     scopeError === null &&
     scopeEntries.size === 0
+  const currentTurnEmpty =
+    reviewScope.kind === 'last-turn' &&
+    observedReview.active &&
+    reviewEntries.size === 0
+  const sessionActivity = useMemo(
+    () =>
+      root === null
+        ? { inside: 0, outside: 0, outsideRoot: null }
+        : summarizeSessionActivity(sessionTurns, root),
+    [root, sessionTurns],
+  )
+  const canUseSessionOutsideForChat =
+    !!conversationId &&
+    typeof (host as WorkingDirectoryHost).chat?.requestWorkingDirectoryChange ===
+      'function'
 
   // The panel, not the viewport, decides what fits: a shell page shares the
   // console with other panels. Below the same width the stylesheet treats as
@@ -1078,6 +1199,26 @@ export function ShellExplorerPage({
       ),
     [visibleReviewSummary],
   )
+  const reviewScopeCounts = useMemo<ReviewScopeCounts>(() => {
+    const next: ReviewScopeCounts = {
+      ...scopeCounts,
+      'last-turn': reviewEntries.size,
+      session: sessionActivity.inside,
+    }
+    if (isLiveGitReviewScope(reviewScope)) {
+      if (scopeLoading || scopeError !== null) delete next[reviewScope.kind]
+      else next[reviewScope.kind] = orderedReviewEntries.length
+    }
+    return next
+  }, [
+    orderedReviewEntries.length,
+    reviewEntries.size,
+    reviewScope,
+    sessionActivity.inside,
+    scopeCounts,
+    scopeError,
+    scopeLoading,
+  ])
   // The Files tree is also the review navigator. Review-only rows keep
   // deleted files visible even after they disappear from coder::tree.
   const reviewTree = useMemo(
@@ -1226,24 +1367,142 @@ export function ShellExplorerPage({
     [reviewSaveBarrier],
   )
 
+  useEffect(() => {
+    if (
+      !conversationId ||
+      root === null ||
+      observedReview.turnId === null ||
+      observedReview.active ||
+      observedReview.completedAtMs === null
+    ) {
+      return
+    }
+    let cancelled = false
+    const completedTurnId = observedReview.turnId
+    const completedRoot = root
+    void fetchSessionTurn(host, conversationId, completedTurnId)
+      .then(async (turn) => {
+        if (
+          cancelled ||
+          turn === null ||
+          rootRef.current !== completedRoot ||
+          reviewWindowRef.current.turnId !== completedTurnId
+        ) {
+          return
+        }
+        const mapped = reviewEntriesFromTurn(turn, completedRoot)
+        const storedEntries = await withoutUnreviewableBaselines(
+          host,
+          completedRoot,
+          mapped.entries,
+        )
+        if (
+          cancelled ||
+          rootRef.current !== completedRoot ||
+          reviewWindowRef.current.turnId !== completedTurnId
+        ) {
+          return
+        }
+        setTurnOutside(mapped.outside)
+        setTurnOutsideRoot(mapped.outsideRoot)
+
+        const merged = new Map(reviewEntriesRef.current)
+        for (const [path, stored] of storedEntries) {
+          const live = merged.get(path)
+          merged.set(path, {
+            ...stored,
+            ...(live ?? {}),
+            baseline:
+              live?.baseline === undefined || live.baseline === null
+                ? stored.baseline
+                : live.baseline,
+          })
+        }
+        reviewEntriesRef.current = merged
+        setReviewEntries(merged)
+
+        const scope = reviewScopeRef.current
+        if (
+          !shouldEnterTurnScope(
+            followHarnessTurnsRef.current,
+            scope,
+            merged.size,
+          )
+        ) {
+          return
+        }
+        forceReviewScope(LAST_TURN_SCOPE)
+        const activePath = diffRef.current?.change.path
+        const entry =
+          (activePath ? merged.get(activePath) : undefined) ??
+          merged.values().next().value
+        if (entry) openReviewEntry(entry)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [
+    conversationId,
+    forceReviewScope,
+    host,
+    observedReview.active,
+    observedReview.completedAtMs,
+    observedReview.turnId,
+    openReviewEntry,
+    root,
+  ])
+
+  const refreshSessionTurns = useCallback(() => {
+    if (!conversationId) {
+      setSessionTurns([])
+      return
+    }
+    const seq = ++sessionTurnsSeqRef.current
+    void fetchSessionTurns(host, conversationId)
+      .then((turns) => {
+        if (sessionTurnsSeqRef.current === seq) setSessionTurns(turns)
+      })
+      .catch(() => {})
+  }, [conversationId, host])
+
+  useEffect(() => {
+    refreshSessionTurns()
+    if (!observedReview.active) return
+    const timer = window.setInterval(refreshSessionTurns, 1_500)
+    return () => window.clearInterval(timer)
+  }, [
+    observedReview.active,
+    observedReview.completedAtMs,
+    observedReview.turnId,
+    refreshSessionTurns,
+  ])
+
   const loadScopeMetadata = useCallback(() => {
     if (root === null) return
     const seq = ++scopeMetadataSeqRef.current
     setScopeMetadataLoading(true)
     setScopeMetadataError(null)
-    if (conversationId) {
-      void fetchSessionTurns(host, conversationId)
-        .then((turns) => {
-          if (scopeMetadataSeqRef.current === seq) setSessionTurns(turns)
-        })
-        .catch(() => {})
-    }
-    void Promise.all([gitRecentCommits(host, root), gitRefs(host, root)])
-      .then(([commits, refs]) => {
+    refreshSessionTurns()
+    void Promise.all([
+      gitRecentCommits(host, root),
+      gitRefs(host, root),
+      gitComparison(host, root, 'uncommitted'),
+      gitComparison(host, root, 'unstaged'),
+      gitComparison(host, root, 'staged'),
+    ])
+      .then(([commits, refs, uncommitted, unstaged, staged]) => {
         if (scopeMetadataSeqRef.current !== seq || rootRef.current !== root)
           return
         setScopeCommits(commits.kind === 'ready' ? commits.commits : [])
         setScopeRefs(refs.kind === 'ready' ? refs.refs : [])
+        const counts: ReviewScopeCounts = {}
+        if (uncommitted.kind === 'ready')
+          counts.uncommitted = uncommitted.changes.length
+        if (unstaged.kind === 'ready')
+          counts.unstaged = unstaged.changes.length
+        if (staged.kind === 'ready') counts.staged = staged.changes.length
+        setScopeCounts(counts)
         const failure =
           commits.kind === 'error'
             ? commits.message
@@ -1254,18 +1513,104 @@ export function ShellExplorerPage({
                 : null
         setScopeMetadataError(failure)
       })
+      .catch((error: unknown) => {
+        if (scopeMetadataSeqRef.current !== seq || rootRef.current !== root)
+          return
+        setScopeMetadataError(errorMessage(error))
+      })
       .finally(() => {
         if (scopeMetadataSeqRef.current === seq) setScopeMetadataLoading(false)
       })
-  }, [host, root, conversationId])
+  }, [host, refreshSessionTurns, root])
 
   const loadReviewScope = useCallback(
-    (scope: Exclude<ReviewScopeSelection, { kind: 'last-turn' }>) => {
+    (
+      scope: Exclude<ReviewScopeSelection, { kind: 'last-turn' }>,
+      preferredPath?: string | null,
+    ) => {
       if (root === null) return
       const seq = ++scopeLoadSeqRef.current
       setScopeLoading(true)
       setScopeError(null)
       setTurnOutside(0)
+      setTurnOutsideRoot(null)
+      const applyMapped = (mapped: TurnEntries) => {
+        if (scopeLoadSeqRef.current !== seq || rootRef.current !== root)
+          return
+        scopeEntriesRef.current = mapped.entries
+        setScopeEntries(mapped.entries)
+        setTurnOutside(mapped.outside)
+        setTurnOutsideRoot(mapped.outsideRoot)
+        const activePath = diffRef.current?.change.path
+        const entry =
+          (preferredPath
+            ? mapped.entries.get(preferredPath)
+            : undefined) ??
+          (activePath ? mapped.entries.get(activePath) : undefined) ??
+          (preferredPath === undefined
+            ? mapped.entries.values().next().value
+            : undefined)
+        if (entry) openReviewEntry(entry)
+        else {
+          diffRequestRef.current += 1
+          setDiff(null)
+        }
+      }
+      if (scope.kind === 'session') {
+        if (!conversationId) {
+          setScopeLoading(false)
+          setScopeError('no chat session')
+          return
+        }
+        void fetchSessionTurns(host, conversationId)
+          .then(async (summaries) => {
+            if (scopeLoadSeqRef.current !== seq || rootRef.current !== root)
+              return null
+            setSessionTurns(summaries)
+            const relevant = summaries.filter((turn) =>
+              turn.files.some(
+                (file) => relativeToRoot(file.path, root) !== null,
+              ),
+            )
+            const turns = (
+              await Promise.all(
+                relevant.map((turn) =>
+                  fetchSessionTurn(host, conversationId, turn.turn_id),
+                ),
+              )
+            ).filter((turn): turn is SessionTurn => turn !== null)
+            const mapped = reviewEntriesFromSession(turns, root)
+            const entries = await withoutUnreviewableBaselines(
+              host,
+              root,
+              mapped.entries,
+            )
+            if (scopeLoadSeqRef.current !== seq || rootRef.current !== root)
+              return null
+            const activity = summarizeSessionActivity(summaries, root)
+            return {
+              entries,
+              outside: activity.outside,
+              outsideRoot: activity.outsideRoot,
+            } satisfies TurnEntries
+          })
+          .then((mapped) => {
+            if (mapped) applyMapped(mapped)
+          })
+          .catch((error: unknown) => {
+            if (scopeLoadSeqRef.current !== seq || rootRef.current !== root)
+              return
+            scopeEntriesRef.current = new Map()
+            setScopeEntries(new Map())
+            setScopeError(errorMessage(error))
+            diffRequestRef.current += 1
+            setDiff(null)
+          })
+          .finally(() => {
+            if (scopeLoadSeqRef.current === seq) setScopeLoading(false)
+          })
+        return
+      }
       if (scope.kind === 'turn') {
         if (!conversationId) {
           setScopeLoading(false)
@@ -1273,24 +1618,20 @@ export function ShellExplorerPage({
           return
         }
         void fetchSessionTurn(host, conversationId, scope.turnId)
-          .then((turn) => {
+          .then(async (turn) => {
             if (scopeLoadSeqRef.current !== seq || rootRef.current !== root)
               return
             const mapped = turn
               ? reviewEntriesFromTurn(turn, root)
-              : { entries: new Map(), outside: 0 }
-            scopeEntriesRef.current = mapped.entries
-            setScopeEntries(mapped.entries)
-            setTurnOutside(mapped.outside)
-            const activePath = diffRef.current?.change.path
-            const entry =
-              (activePath ? mapped.entries.get(activePath) : undefined) ??
-              mapped.entries.values().next().value
-            if (entry) openReviewEntry(entry)
-            else {
-              diffRequestRef.current += 1
-              setDiff(null)
-            }
+              : { entries: new Map(), outside: 0, outsideRoot: null }
+            const entries = await withoutUnreviewableBaselines(
+              host,
+              root,
+              mapped.entries,
+            )
+            if (scopeLoadSeqRef.current !== seq || rootRef.current !== root)
+              return
+            applyMapped({ ...mapped, entries })
           })
           .catch((error: unknown) => {
             if (scopeLoadSeqRef.current !== seq || rootRef.current !== root)
@@ -1319,6 +1660,29 @@ export function ShellExplorerPage({
           if (scopeLoadSeqRef.current !== seq || rootRef.current !== root)
             return
           if (state.kind !== 'ready') {
+            if (shouldFallbackToTurnScope(scope, state.kind)) {
+              followHarnessTurnsRef.current = true
+              if (conversationId) {
+                forceReviewScope(SESSION_SCOPE)
+                return
+              }
+              forceReviewScope(LAST_TURN_SCOPE)
+              const activePath = diffRef.current?.change.path
+              const entry =
+                (preferredPath
+                  ? reviewEntriesRef.current.get(preferredPath)
+                  : undefined) ??
+                (activePath
+                  ? reviewEntriesRef.current.get(activePath)
+                  : undefined) ??
+                reviewEntriesRef.current.values().next().value
+              if (entry) openReviewEntry(entry)
+              else {
+                diffRequestRef.current += 1
+                setDiff(null)
+              }
+              return
+            }
             const message =
               state.kind === 'error' ? state.message : 'not a git repository'
             scopeEntriesRef.current = new Map()
@@ -1331,10 +1695,19 @@ export function ShellExplorerPage({
           const next = reviewEntriesFromGit(state.changes)
           scopeEntriesRef.current = next
           setScopeEntries(next)
+          if (isLiveGitReviewScope(scope)) {
+            setScopeCounts((previous) => ({
+              ...previous,
+              [scope.kind]: next.size,
+            }))
+          }
           const activePath = diffRef.current?.change.path
           const entry =
+            (preferredPath ? next.get(preferredPath) : undefined) ??
             (activePath ? next.get(activePath) : undefined) ??
-            next.values().next().value
+            (preferredPath === undefined
+              ? next.values().next().value
+              : undefined)
           if (entry) openReviewEntry(entry)
           else {
             diffRequestRef.current += 1
@@ -1354,47 +1727,8 @@ export function ShellExplorerPage({
           if (scopeLoadSeqRef.current === seq) setScopeLoading(false)
         })
     },
-    [host, root, conversationId, openReviewEntry],
+    [host, root, conversationId, forceReviewScope, openReviewEntry],
   )
-
-  // A chat reopened after its work is done has no live turn to follow; its
-  // latest stored turn stands in, loaded from the shell's durable history.
-  const autoTurnSessionRef = useRef<string | null>(null)
-  useEffect(() => {
-    if (!conversationId || root === null) {
-      autoTurnSessionRef.current = null
-      return
-    }
-    if (observedReview.turnId !== null) return
-    if (autoTurnSessionRef.current === conversationId) return
-    autoTurnSessionRef.current = conversationId
-    let cancelled = false
-    void fetchSessionTurns(host, conversationId)
-      .then((turns) => {
-        if (cancelled || rootRef.current !== root) return
-        setSessionTurns(turns)
-        // Only a turn that touched files is worth restoring: landing a
-        // chat-switcher on "0 files at 02:55 PM" reads as a broken pane,
-        // where the plain Last Turn default reads as an empty one.
-        const latest = turns.find((turn) => turn.file_count > 0)
-        if (!latest || observedReviewKeyRef.current !== null) return
-        if (reviewEntriesRef.current.size > 0) return
-        const scope = {
-          kind: 'turn' as const,
-          turnId: latest.turn_id,
-          label: turnLabel(latest),
-        }
-        scopeLoadSeqRef.current += 1
-        setReviewScope(scope)
-        scopeEntriesRef.current = new Map()
-        setScopeEntries(new Map())
-        loadReviewScope(scope)
-      })
-      .catch(() => {})
-    return () => {
-      cancelled = true
-    }
-  }, [host, conversationId, root, observedReview.turnId, loadReviewScope])
 
   const onReviewEditDirtyChange = useCallback(
     (path: string, dirty: boolean) => {
@@ -1535,11 +1869,12 @@ export function ShellExplorerPage({
   const selectReviewScope = useCallback(
     (next: ReviewScopeSelection) => {
       if (!confirmDiscardReviewEdits()) return
+      followHarnessTurnsRef.current = next.kind === 'last-turn'
       setScopeSummary([])
       setScopeError(null)
       setReviewMenuOpen(false)
       if (next.kind === 'last-turn') {
-        forceLastTurnScope()
+        forceReviewScope(LAST_TURN_SCOPE)
         const activePath = diffRef.current?.change.path
         const entry =
           (activePath ? reviewEntriesRef.current.get(activePath) : undefined) ??
@@ -1559,7 +1894,7 @@ export function ShellExplorerPage({
       diffRequestRef.current += 1
       setDiff(null)
     },
-    [confirmDiscardReviewEdits, forceLastTurnScope, openReviewEntry],
+    [confirmDiscardReviewEdits, forceReviewScope, openReviewEntry],
   )
 
   useShellReviewSummaryBridge({
@@ -1571,7 +1906,8 @@ export function ShellExplorerPage({
       if (!confirmDiscardReviewEdits()) return
       const entry = reviewEntriesRef.current.get(path)
       if (entry) {
-        forceLastTurnScope()
+        followHarnessTurnsRef.current = true
+        forceReviewScope(LAST_TURN_SCOPE)
         openReviewEntry(entry)
       }
     },
@@ -1580,6 +1916,7 @@ export function ShellExplorerPage({
   useWorkspaceChanges(host, root, (event) => {
     if (rootTransitionRef.current) return
     if (event.root !== rootRef.current) return
+    if (isShellUiStatePath(event.path)) return
     const eventAbs = joinPath(event.root, event.path)
     changedAbsRef.current.set(eventAbs, event.kind)
     // Directories refresh the tree but must never open as files —
@@ -1680,7 +2017,7 @@ export function ShellExplorerPage({
             fileEvents.map(({ abs }) => abs),
           ).catch(() => null),
           refreshGit(),
-        ]).then(([results, state]) => {
+        ]).then(async ([results, state]) => {
           if (
             rootGenerationRef.current !== generation ||
             reviewEpochRef.current !== reviewEpoch ||
@@ -1746,7 +2083,13 @@ export function ShellExplorerPage({
               // An added/untracked Git status normally supplies an empty
               // baseline. Do not use that fallback when an incomplete tree
               // may simply have omitted an existing pre-turn file.
-              baselineUnavailable ? undefined : currentGitByPath.get(rel),
+              canUseGitMetadataForLiveEntry(
+                baselineCapturedRef.current,
+                baselineUnavailable,
+                decision.baseline,
+              )
+                ? currentGitByPath.get(rel)
+                : undefined,
             )
           }
           const enriched = mergeGitReviewEntries(
@@ -1754,18 +2097,54 @@ export function ShellExplorerPage({
             currentGitChanges,
             false,
           )
-          reviewEntriesRef.current = enriched
-          setReviewEntries(enriched)
+          const validated = await withoutUnreviewableBaselines(
+            host,
+            currentRoot,
+            enriched,
+            new Set(fileEvents.map(({ rel }) => rel)),
+          )
+          if (
+            rootGenerationRef.current !== generation ||
+            reviewEpochRef.current !== reviewEpoch ||
+            rootRef.current !== currentRoot
+          ) {
+            return
+          }
+          reviewEntriesRef.current = validated
+          setReviewEntries(validated)
 
-          if (follow !== null && diffRequestRef.current === followTicket) {
+          const activeScope = reviewScopeRef.current
+          if (
+            activeScope.kind !== 'last-turn' &&
+            shouldEnterTurnScope(
+              followHarnessTurnsRef.current,
+              activeScope,
+              validated.size,
+            )
+          ) {
+            forceReviewScope(LAST_TURN_SCOPE)
             const entry =
-              enriched.get(follow.rel) ??
+              (follow ? validated.get(follow.rel) : undefined) ??
+              validated.values().next().value
+            if (entry) openReviewEntry(entry)
+            return
+          }
+          if (isLiveGitReviewScope(activeScope)) {
+            loadReviewScope(activeScope, follow?.rel ?? null)
+            return
+          }
+          if (
+            activeScope.kind === 'last-turn' &&
+            follow !== null &&
+            diffRequestRef.current === followTicket
+          ) {
+            const entry =
+              validated.get(follow.rel) ??
               [...fileEvents]
                 .reverse()
-                .map(({ rel }) => enriched.get(rel))
+                .map(({ rel }) => validated.get(rel))
                 .find((candidate) => candidate !== undefined)
             if (entry) {
-              forceLastTurnScope()
               openReviewEntry(entry)
             }
             return
@@ -1776,8 +2155,9 @@ export function ShellExplorerPage({
             open !== null &&
             changed.has(joinPath(currentRoot, open.change.path))
           ) {
-            const entry = enriched.get(open.change.path)
+            const entry = validated.get(open.change.path)
             if (entry) setDiff(diffForReviewEntry(entry))
+            else setDiff(null)
           }
         })
       })
@@ -2022,9 +2402,13 @@ export function ShellExplorerPage({
         setScopeSummary([])
         setScopeCommits([])
         setScopeRefs([])
+        setScopeCounts({})
+        setTurnOutside(0)
+        setTurnOutsideRoot(null)
         setScopeMetadataLoading(false)
         setScopeMetadataError(null)
-        forceLastTurnScope()
+        followHarnessTurnsRef.current = true
+        forceReviewScope(DEFAULT_REVIEW_SCOPE)
         setTree(null)
         setGit(null)
         setSubtrees(new Map())
@@ -2045,7 +2429,7 @@ export function ShellExplorerPage({
     },
     [
       confirmDiscardAllEdits,
-      forceLastTurnScope,
+      forceReviewScope,
       host,
       refreshGit,
       refreshTree,
@@ -2623,6 +3007,34 @@ export function ShellExplorerPage({
           },
         },
         {
+          id: 'review-uncommitted',
+          title: 'View uncommitted changes',
+          detail: 'All working tree changes since the last commit',
+          keywords: ['review', 'diff', 'git', 'working tree'],
+          run: () => selectReviewScope(DEFAULT_REVIEW_SCOPE),
+        },
+        {
+          id: 'review-unstaged',
+          title: 'View unstaged changes',
+          detail: 'Working tree changes not added to the index',
+          keywords: ['review', 'diff', 'git', 'working tree'],
+          run: () => selectReviewScope({ kind: 'unstaged' }),
+        },
+        {
+          id: 'review-staged',
+          title: 'View staged changes',
+          detail: 'Changes added to the Git index',
+          keywords: ['review', 'diff', 'git', 'index'],
+          run: () => selectReviewScope({ kind: 'staged' }),
+        },
+        {
+          id: 'review-last-turn',
+          title: 'Follow Harness turn changes',
+          detail: 'Current turn while running, then the completed turn',
+          keywords: ['review', 'diff', 'activity', 'agent', 'turn'],
+          run: () => selectReviewScope(LAST_TURN_SCOPE),
+        },
+        {
           id: 'next-change',
           title: 'Next changed file',
           detail: 'Open the next file in the review',
@@ -2641,7 +3053,15 @@ export function ShellExplorerPage({
           run: () => stepReviewEntry(-1),
         },
       ]),
-    [commands, host, toggleTerminal, onCloseTab, stepReviewEntry, frameEl],
+    [
+      commands,
+      host,
+      toggleTerminal,
+      onCloseTab,
+      selectReviewScope,
+      stepReviewEntry,
+      frameEl,
+    ],
   )
 
   const header = (
@@ -2875,43 +3295,130 @@ export function ShellExplorerPage({
               </div>
             ) : null}
             {workingDirError ? (
-              <div className="shui-review-message warn" role="alert">
-                <span>{workingDirError}</span>
-                <button
-                  type="button"
-                  className="shui-review-inline-action"
-                  onClick={() => {
-                    const next = workingDirRef.current
-                    if (next === null) return
-                    if (workingDirRetryTimerRef.current !== null) {
-                      window.clearTimeout(workingDirRetryTimerRef.current)
-                      workingDirRetryTimerRef.current = null
-                    }
-                    workingDirRetryRef.current = { path: next, failures: 0 }
-                    setWorkingDirError(null)
-                    setWorkingDirRetryEpoch((epoch) => epoch + 1)
-                  }}
-                >
-                  retry
-                </button>
-              </div>
+              <Panel className="shui-review-notice warn" role="alert">
+                <span className="shui-review-notice-icon" aria-hidden="true">
+                  <CircleAlert />
+                </span>
+                <span className="shui-review-notice-copy">
+                  <span className="shui-review-notice-title">
+                    Working directory unavailable
+                  </span>
+                  <span className="shui-review-notice-detail">
+                    {workingDirError}
+                  </span>
+                </span>
+                <span className="shui-review-notice-actions">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      const next = workingDirRef.current
+                      if (next === null) return
+                      if (workingDirRetryTimerRef.current !== null) {
+                        window.clearTimeout(workingDirRetryTimerRef.current)
+                        workingDirRetryTimerRef.current = null
+                      }
+                      workingDirRetryRef.current = { path: next, failures: 0 }
+                      setWorkingDirError(null)
+                      setWorkingDirRetryEpoch((epoch) => epoch + 1)
+                    }}
+                  >
+                    <RefreshCw aria-hidden="true" />
+                    Retry
+                  </Button>
+                </span>
+              </Panel>
             ) : null}
             {pendingOpenError ? (
-              <div className="shui-review-message warn" role="alert">
-                <span>{pendingOpenError}</span>
-                <button
-                  type="button"
-                  className="shui-review-inline-action"
-                  onClick={() => {
-                    pendingOpenRetryRef.current = 0
-                    pendingOpenWaitingForRetryRef.current = false
-                    setPendingOpenError(null)
-                    setOpenBump((bump) => bump + 1)
-                  }}
-                >
-                  retry
-                </button>
-              </div>
+              <Panel className="shui-review-notice warn" role="alert">
+                <span className="shui-review-notice-icon" aria-hidden="true">
+                  <CircleAlert />
+                </span>
+                <span className="shui-review-notice-copy">
+                  <span className="shui-review-notice-title">
+                    File could not be opened
+                  </span>
+                  <span className="shui-review-notice-detail">
+                    {pendingOpenError}
+                  </span>
+                </span>
+                <span className="shui-review-notice-actions">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      pendingOpenRetryRef.current = 0
+                      pendingOpenWaitingForRetryRef.current = false
+                      setPendingOpenError(null)
+                      setOpenBump((bump) => bump + 1)
+                    }}
+                  >
+                    <RefreshCw aria-hidden="true" />
+                    Retry
+                  </Button>
+                </span>
+              </Panel>
+            ) : null}
+            {sessionActivity.outside > 0 ? (
+              <Panel
+                className="shui-review-notice"
+                role="status"
+                aria-label={`${sessionActivity.outside} ${sessionActivity.outside === 1 ? 'change' : 'changes'} outside this folder`}
+              >
+                <span className="shui-review-notice-icon" aria-hidden="true">
+                  <FolderSymlink />
+                </span>
+                <span className="shui-review-notice-copy">
+                  <span className="shui-review-notice-title">
+                    {sessionActivity.outside}{' '}
+                    {sessionActivity.outside === 1 ? 'change' : 'changes'} outside
+                    this folder
+                  </span>
+                  {sessionActivity.outsideRoot ? (
+                    <span
+                      className="shui-review-notice-detail"
+                      title={sessionActivity.outsideRoot}
+                    >
+                      {sessionActivity.outsideRoot}
+                    </span>
+                  ) : null}
+                </span>
+                {sessionActivity.outsideRoot ? (
+                  <span className="shui-review-notice-actions">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() =>
+                        changeManualRoot(sessionActivity.outsideRoot!)
+                      }
+                    >
+                      <FolderOpen aria-hidden="true" />
+                      Open in Shell
+                    </Button>
+                    {canUseSessionOutsideForChat ? (
+                      <Button
+                        type="button"
+                        variant="primary"
+                        size="sm"
+                        onClick={() =>
+                          (host as WorkingDirectoryHost).chat?.requestWorkingDirectoryChange?.(
+                            {
+                              sessionId: conversationId!,
+                              path: sessionActivity.outsideRoot!,
+                            },
+                          )
+                        }
+                      >
+                        <MessageSquare aria-hidden="true" />
+                        Use for chat
+                      </Button>
+                    ) : null}
+                  </span>
+                ) : null}
+              </Panel>
             ) : null}
             {!(terminalOpen && terminalDock === 'editor' && terminalActive) ? (
               <div className="shui-review-toolbar">
@@ -2931,6 +3438,8 @@ export function ShellExplorerPage({
                 <ReviewScopePicker
                   value={reviewScope}
                   commits={scopeCommits}
+                  counts={reviewScopeCounts}
+                  currentTurn={observedReview.active}
                   turns={sessionTurns.map((turn) => ({
                     turnId: turn.turn_id,
                     label: turnLabel(turn),
@@ -2957,10 +3466,13 @@ export function ShellExplorerPage({
                     unavailable
                   </span>
                 ) : null}
-                {reviewScope.kind === 'turn' && turnOutside > 0 ? (
+                {(reviewScope.kind === 'last-turn' ||
+                  reviewScope.kind === 'session' ||
+                  reviewScope.kind === 'turn') &&
+                turnOutside > 0 ? (
                   <span
                     className="shui-review-count"
-                    title="files this turn changed outside the folder you are browsing"
+                    title={`files changed outside the folder you are browsing${turnOutsideRoot ? ` in ${turnOutsideRoot}` : ''}`}
                   >
                     +{turnOutside} outside
                   </span>
@@ -3071,6 +3583,7 @@ export function ShellExplorerPage({
                     <ReviewMenuAction
                       label={
                         reviewScope.kind === 'last-turn' ||
+                        reviewScope.kind === 'session' ||
                         reviewScope.kind === 'turn'
                           ? 'Copy git apply command (git scopes only)'
                           : 'Copy git apply command'
@@ -3078,6 +3591,7 @@ export function ShellExplorerPage({
                       icon={<ClipboardCopy />}
                       disabled={
                         reviewScope.kind === 'last-turn' ||
+                        reviewScope.kind === 'session' ||
                         reviewScope.kind === 'turn' ||
                         copyingPatch
                       }
@@ -3295,7 +3809,14 @@ export function ShellExplorerPage({
             ) : scopeEmpty ? (
               <div className="shui-main-empty">
                 <span className="t-ghost">
-                  No changes in {reviewScopeLabel(reviewScope)}
+                  No changes in{' '}
+                  {reviewScopeLabel(reviewScope, observedReview.active)}
+                </span>
+              </div>
+            ) : currentTurnEmpty ? (
+              <div className="shui-main-empty">
+                <span className="t-ghost">
+                  Changes from this turn will appear here…
                 </span>
               </div>
             ) : tabs.active !== null ? (
@@ -3331,16 +3852,9 @@ export function ShellExplorerPage({
               <ShellLauncher
                 host={host}
                 browserAvailable={browserAvailable}
-                // Changes is the navbar's review scope: the last turn when it
-                // touched anything, otherwise everything the working tree has
-                // that HEAD does not.
-                onOpenChanges={() =>
-                  selectReviewScope(
-                    reviewEntriesRef.current.size > 0
-                      ? LAST_TURN_SCOPE
-                      : { kind: 'uncommitted' },
-                  )
-                }
+                // Changes is cumulative working-tree work since HEAD. Last
+                // Turn remains available as an explicit review scope.
+                onOpenChanges={() => selectReviewScope(DEFAULT_REVIEW_SCOPE)}
                 onOpenTerminal={() => {
                   setTerminalOpen(true)
                   setTerminalActive(true)

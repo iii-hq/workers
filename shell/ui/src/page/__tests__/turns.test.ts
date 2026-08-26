@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
   baselineFor,
+  reviewEntriesFromSession,
   relativeToRoot,
   reviewEntriesFromTurn,
+  summarizeSessionActivity,
   type SessionTurn,
+  type SessionTurnSummary,
   turnLabel,
 } from '../turns'
 
@@ -136,6 +139,45 @@ describe('reviewEntriesFromTurn', () => {
       baseline: null,
     })
   })
+
+  it('drops durable rows whose before and after revisions are identical', () => {
+    const unchanged: SessionTurn = {
+      turn_id: 'unchanged',
+      started_at: 1,
+      files: [
+        {
+          path: '/r/config/console.yaml',
+          kind: 'modified',
+          cause: 'shell::fs::write',
+          first_seen: 1,
+          last_seen: 2,
+          before: { revision: 'sha256:same', content: 'same\n' },
+          after_revision: 'sha256:same',
+        },
+      ],
+    }
+
+    expect(reviewEntriesFromTurn(unchanged, '/r').entries.size).toBe(0)
+  })
+
+  it('drops a file created and deleted within one turn', () => {
+    const transient: SessionTurn = {
+      turn_id: 'transient',
+      started_at: 1,
+      files: [
+        {
+          path: '/r/transient.txt',
+          kind: 'deleted',
+          cause: 'shell::fs::rm',
+          first_seen: 1,
+          last_seen: 2,
+          before: { missing: true },
+        },
+      ],
+    }
+
+    expect(reviewEntriesFromTurn(transient, '/r').entries.size).toBe(0)
+  })
 })
 
 describe('turnLabel', () => {
@@ -143,5 +185,147 @@ describe('turnLabel', () => {
     expect(turnLabel({ started_at: Date.UTC(2026, 7, 20, 12, 0), file_count: 1 })).toMatch(/1 file$/)
     expect(turnLabel({ started_at: Date.UTC(2026, 7, 20, 12, 0), file_count: 3 })).toMatch(/3 files$/)
     expect(turnLabel({ started_at: Number.NaN, file_count: 0 })).toBe('turn · 0 files')
+  })
+})
+
+describe('reviewEntriesFromSession', () => {
+  it('keeps the earliest baseline and latest state for each path', () => {
+    const turns: SessionTurn[] = [
+      {
+        turn_id: 'newer',
+        started_at: 20,
+        ended_at: 21,
+        files: [
+          {
+            path: '/r/src/a.ts',
+            kind: 'modified',
+            cause: 'shell::fs::write',
+            first_seen: 20,
+            last_seen: 20,
+            before: { content: 'middle\n' },
+          },
+          {
+            path: '/r/src/new.ts',
+            kind: 'modified',
+            cause: 'shell::fs::write',
+            first_seen: 20,
+            last_seen: 20,
+            before: { content: 'created\n' },
+          },
+        ],
+      },
+      {
+        turn_id: 'older',
+        started_at: 10,
+        ended_at: 11,
+        files: [
+          {
+            path: '/r/src/a.ts',
+            kind: 'modified',
+            cause: 'shell::fs::write',
+            first_seen: 10,
+            last_seen: 10,
+            before: { content: 'original\n' },
+          },
+          {
+            path: '/r/src/new.ts',
+            kind: 'created',
+            cause: 'coder::create-file',
+            first_seen: 10,
+            last_seen: 10,
+            before: { missing: true },
+          },
+        ],
+      },
+    ]
+
+    const { entries } = reviewEntriesFromSession(turns, '/r')
+    expect(entries.get('src/a.ts')).toMatchObject({
+      change: { status: 'modified' },
+      baseline: 'original\n',
+    })
+    expect(entries.get('src/new.ts')).toMatchObject({
+      change: { status: 'added' },
+      baseline: '',
+    })
+  })
+
+  it('drops a file created and deleted during the session', () => {
+    const turns: SessionTurn[] = [
+      {
+        turn_id: 'delete',
+        started_at: 20,
+        files: [
+          {
+            path: '/r/transient.txt',
+            kind: 'deleted',
+            cause: 'shell::fs::rm',
+            first_seen: 20,
+            last_seen: 20,
+          },
+        ],
+      },
+      {
+        turn_id: 'create',
+        started_at: 10,
+        files: [
+          {
+            path: '/r/transient.txt',
+            kind: 'created',
+            cause: 'shell::fs::write',
+            first_seen: 10,
+            last_seen: 10,
+            before: { missing: true },
+          },
+        ],
+      },
+    ]
+    expect(reviewEntriesFromSession(turns, '/r').entries.size).toBe(0)
+  })
+})
+
+describe('summarizeSessionActivity', () => {
+  const summaries: SessionTurnSummary[] = [
+    {
+      turn_id: 't2',
+      started_at: 20,
+      file_count: 2,
+      files: [
+        { path: '/tmp/workers-vscode/vscode/package.json', kind: 'modified' },
+        { path: '/tmp/workers-vscode/vscode/src/index.ts', kind: 'created' },
+      ],
+    },
+    {
+      turn_id: 't1',
+      started_at: 10,
+      file_count: 2,
+      files: [
+        { path: '/tmp/workers-vscode/vscode/package.json', kind: 'created' },
+        { path: '/chat/config/console.yaml', kind: 'modified' },
+      ],
+    },
+  ]
+
+  it('deduplicates session paths and suggests their shared outside folder', () => {
+    expect(summarizeSessionActivity(summaries, '/chat')).toEqual({
+      inside: 1,
+      outside: 2,
+      outsideRoot: '/tmp/workers-vscode/vscode',
+    })
+  })
+
+  it('does not suggest a filesystem-wide ancestor for unrelated activity', () => {
+    const unrelated: SessionTurnSummary[] = [
+      {
+        turn_id: 't',
+        started_at: 1,
+        file_count: 2,
+        files: [
+          { path: '/tmp/a.txt', kind: 'created' },
+          { path: '/Users/me/b.txt', kind: 'created' },
+        ],
+      },
+    ]
+    expect(summarizeSessionActivity(unrelated, '/chat').outsideRoot).toBeNull()
   })
 })
