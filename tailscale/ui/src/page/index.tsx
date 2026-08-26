@@ -6,16 +6,21 @@ import {
   CardHeader,
   Chip,
   ConfirmDialog,
+  EmptyState,
   type Host,
   IconButton,
   Input,
+  List,
+  ListItem,
   PageBody,
   PageHeader,
   PageMain,
   type PageRenderProps,
   PageShell,
+  PageSidebar,
   SegmentedControl,
   Select,
+  Skeleton,
   StatusDot,
   StatusPanel,
   Table,
@@ -26,13 +31,10 @@ import {
   TableHeader,
   TableRow,
   TableViewport,
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
+  uiClasses,
 } from '@iii-dev/console-ui'
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Activity, Check, Copy, ExternalLink, Globe, QrCode, RefreshCw, Send, Square } from './icons'
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
+import { Activity, Check, Copy, ExternalLink, Globe, Laptop, QrCode, Radio, RefreshCw, Send, Sliders, Square, User } from './icons'
 
 type Props = PageRenderProps & { host: Host }
 
@@ -54,6 +56,7 @@ type Status = {
   funnel_allowed: boolean
   peer_count: number
   online_peer_count: number
+  ingress_node_count: number
   exit_node?: string | null
   routes: Route[]
   error?: string | null
@@ -143,7 +146,17 @@ type LockStatus = { enabled: boolean; node_key?: string | null; node_signed?: bo
 
 type Version = { version: string; long?: string | null; os_variant?: string | null; upstream?: string | null }
 
-type Tab = 'share' | 'devices' | 'network' | 'settings' | 'files' | 'account'
+type Section = 'overview' | 'share' | 'devices' | 'network' | 'settings' | 'files' | 'account'
+
+const sections: { id: Section; label: string; description: string; icon: (props: { className?: string }) => ReactNode }[] = [
+  { id: 'overview', label: 'Overview', description: 'This device on the tailnet', icon: Globe },
+  { id: 'share', label: 'Share', description: 'Links, QR codes, routes', icon: QrCode },
+  { id: 'devices', label: 'Devices', description: 'Peers, ping, paths', icon: Laptop },
+  { id: 'network', label: 'Network', description: 'Exit node, DNS, netcheck', icon: Radio },
+  { id: 'settings', label: 'Settings', description: 'Node preferences', icon: Sliders },
+  { id: 'files', label: 'Files', description: 'Taildrop, certificates', icon: Send },
+  { id: 'account', label: 'Account', description: 'Accounts, client, lock', icon: User },
+]
 
 const modeOptions = [
   { value: 'serve' as const, label: 'Tailnet only', icon: false as const },
@@ -189,24 +202,55 @@ function yesNo(value: boolean | null | undefined) {
   return value ? 'yes' : 'no'
 }
 
-export function TailscalePage({ host, onRequestClose, commands }: Props) {
-  const [tab, setTab] = useState<Tab>('share')
+function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+  return (
+    <label className={uiClasses.field}>
+      <span className={uiClasses.fieldLabel}>{label}</span>
+      {children}
+      {hint ? <span className={uiClasses.fieldDescription}>{hint}</span> : null}
+    </label>
+  )
+}
+
+function SectionCard({ title, actions, children, className }: { title: ReactNode; actions?: ReactNode; children: ReactNode; className?: string }) {
+  return (
+    <Card className={className ? `ts-card ${className}` : 'ts-card'}>
+      <CardHeader className="ts-card-header">
+        <span className="ts-card-title">{title}</span>
+        {actions}
+      </CardHeader>
+      <CardBody className="ts-card-body">{children}</CardBody>
+    </Card>
+  )
+}
+
+function LoadingRows({ rows = 3 }: { rows?: number }) {
+  return (
+    <div className="ts-skeletons" aria-busy="true" aria-label="Loading">
+      {Array.from({ length: rows }, (_, i) => (
+        <Skeleton key={i} className="ts-skeleton" />
+      ))}
+    </div>
+  )
+}
+
+export function TailscalePage({ host, onRequestClose, panelSide, commands }: Props) {
+  const [section, setSection] = useState<Section>('overview')
   const [status, setStatus] = useState<Status | null>(null)
   const [configuration, setConfiguration] = useState<Configuration | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [loginUrl, setLoginUrl] = useState<string | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
+  const [updatedAt, setUpdatedAt] = useState<number | null>(null)
+  const [, setTick] = useState(0)
 
   const trigger = useCallback(
     <T,>(fn: string, payload: Record<string, unknown> = {}, timeoutMs = 60_000) =>
       host.iii.trigger<T>(fn, payload, { timeoutMs }),
     [host],
   )
-
-  const [refreshing, setRefreshing] = useState(false)
-  const [updatedAt, setUpdatedAt] = useState<number | null>(null)
-  const [, setTick] = useState(0)
 
   const refresh = useCallback(async () => {
     setRefreshing(true)
@@ -227,6 +271,10 @@ export function TailscalePage({ host, onRequestClose, commands }: Props) {
   }, [trigger])
 
   useEffect(() => {
+    void refresh()
+  }, [refresh])
+
+  useEffect(() => {
     if (updatedAt === null) return
     const timer = window.setInterval(() => setTick((t) => t + 1), 15_000)
     return () => window.clearInterval(timer)
@@ -239,10 +287,6 @@ export function TailscalePage({ host, onRequestClose, commands }: Props) {
     if (seconds < 60) return `updated ${seconds}s ago`
     return `updated ${Math.round(seconds / 60)} min ago`
   })()
-
-  useEffect(() => {
-    void refresh()
-  }, [refresh])
 
   const act = useCallback(
     async (work: () => Promise<string | null | undefined>) => {
@@ -338,13 +382,13 @@ export function TailscalePage({ host, onRequestClose, commands }: Props) {
         const key = `${route.host}:${route.port}${route.path}`
         setStoppingRoute(key)
         try {
-          const custom = share && share.https_port === route.port && share.path === route.path ? null : route
-          await trigger(custom ? 'tailscale::serve::remove' : 'tailscale::share::stop', {
+          const own = share && share.https_port === route.port && share.path === route.path
+          await trigger(own ? 'tailscale::share::stop' : 'tailscale::serve::remove', {
             mode: route.mode,
             https_port: route.port,
             path: route.path,
           })
-          if (share && share.https_port === route.port && share.path === route.path) setShare(null)
+          if (own) setShare(null)
         } finally {
           setStoppingRoute(null)
         }
@@ -398,8 +442,8 @@ export function TailscalePage({ host, onRequestClose, commands }: Props) {
   }, [includeIngress, loadPeers])
 
   useEffect(() => {
-    if (tab === 'devices' && peers === null) void loadPeers()
-  }, [tab, peers, loadPeers])
+    if (section === 'devices' && peers === null) void loadPeers()
+  }, [section, peers, loadPeers])
 
   const pingPeer = useCallback(
     async (peer: Peer) => {
@@ -435,8 +479,8 @@ export function TailscalePage({ host, onRequestClose, commands }: Props) {
   }, [trigger])
 
   useEffect(() => {
-    if (tab === 'network' && dns === null) void loadNetwork()
-  }, [tab, dns, loadNetwork])
+    if (section === 'network' && dns === null) void loadNetwork()
+  }, [section, dns, loadNetwork])
 
   const runNetcheck = useCallback(
     () =>
@@ -484,8 +528,8 @@ export function TailscalePage({ host, onRequestClose, commands }: Props) {
   }, [trigger])
 
   useEffect(() => {
-    if (tab === 'settings' && prefs === null) void loadPrefs()
-  }, [tab, prefs, loadPrefs])
+    if (section === 'settings' && prefs === null) void loadPrefs()
+  }, [section, prefs, loadPrefs])
 
   const setPref = useCallback(
     (patch: Record<string, unknown>, message: string) =>
@@ -519,8 +563,8 @@ export function TailscalePage({ host, onRequestClose, commands }: Props) {
   }, [trigger, dns, certDomain])
 
   useEffect(() => {
-    if (tab === 'files' && fileTargets === null) void loadFiles()
-  }, [tab, fileTargets, loadFiles])
+    if (section === 'files' && fileTargets === null) void loadFiles()
+  }, [section, fileTargets, loadFiles])
 
   const sendFile = useCallback(
     () =>
@@ -580,8 +624,8 @@ export function TailscalePage({ host, onRequestClose, commands }: Props) {
   }, [trigger])
 
   useEffect(() => {
-    if (tab === 'account' && accounts === null) void loadAccount()
-  }, [tab, accounts, loadAccount])
+    if (section === 'account' && accounts === null) void loadAccount()
+  }, [section, accounts, loadAccount])
 
   const switchAccount = useCallback(
     (id: string) =>
@@ -634,14 +678,17 @@ export function TailscalePage({ host, onRequestClose, commands }: Props) {
     () =>
       commands?.register([
         { id: 'refresh', title: 'Refresh status', shortcut: 'R', run: () => void refresh() },
-        { id: 'create', title: 'Create link', shortcut: 'N', enabled: () => canCreate, run: requestShare },
+        { id: 'create', title: 'Create link', shortcut: 'N', enabled: () => canCreate, run: () => { setSection('share'); requestShare() } },
         { id: 'copy', title: 'Copy link', shortcut: 'C', enabled: () => share !== null, run: () => void copyLink() },
         { id: 'open', title: 'Open link in a browser tab', shortcut: 'O', enabled: () => share !== null, run: openLink },
         { id: 'stop', title: 'Stop route', shortcut: 'X', enabled: () => routeLive && !busy, run: stopShare },
-        { id: 'devices', title: 'Devices', shortcut: 'D', run: () => setTab('devices') },
-        { id: 'network', title: 'Network', shortcut: 'W', run: () => setTab('network') },
-        { id: 'settings', title: 'Settings', shortcut: 'S', run: () => setTab('settings') },
-        { id: 'files', title: 'Files', shortcut: 'F', run: () => setTab('files') },
+        ...sections.map((s, index) => ({
+          id: `section-${s.id}`,
+          title: s.label,
+          detail: s.description,
+          shortcut: String(index + 1),
+          run: () => setSection(s.id),
+        })),
       ]),
     [commands, refresh, requestShare, copyLink, openLink, stopShare, canCreate, share, routeLive, busy],
   )
@@ -661,109 +708,149 @@ export function TailscalePage({ host, onRequestClose, commands }: Props) {
 
   const certOptions = useMemo(() => (dns?.cert_domains ?? []).map((d) => ({ value: d, label: d })), [dns])
 
-  const prefRow = (label: string, value: boolean, key: string, onLabel = 'Turn on', offLabel = 'Turn off') => (
+  const sectionMeta = (id: Section): ReactNode => {
+    switch (id) {
+      case 'overview':
+        return <Badge variant={online ? 'ok' : 'warn'}>{connectionLabel}</Badge>
+      case 'share':
+        return status?.routes.length ? <Chip tone="neutral">{status.routes.length}</Chip> : null
+      case 'devices':
+        return status?.peer_count ? (
+          <Chip tone="neutral">
+            {status.online_peer_count}/{status.peer_count}
+          </Chip>
+        ) : null
+      case 'network':
+        return status?.exit_node ? <Chip tone="accent">exit</Chip> : null
+      default:
+        return null
+    }
+  }
+
+  const prefRow = (label: string, value: boolean, key: string) => (
     <div className="ts-pref">
       <span className="ts-pref-label">{label}</span>
       <Chip tone={value ? 'success' : 'neutral'}>{value ? 'On' : 'Off'}</Chip>
       <Button variant="ghost" size="sm" disabled={busy} onClick={() => void setPref({ [key]: !value }, `${label}: ${value ? 'off' : 'on'}.`)}>
-        {value ? offLabel : onLabel}
+        {value ? 'Turn off' : 'Turn on'}
       </Button>
     </div>
   )
 
-  return (
-    <PageShell className="ts-shell">
-      <PageHeader
-        icon={<Globe />}
-        title="Tailscale"
-        description={
-          status?.dns_name ? (
-            <>
-              <span className="ts-mono">{status.dns_name}</span>
-              {status.tailnet ? ` · ${status.tailnet}` : ''}
-              {status.peer_count > 0 ? ` · ${status.online_peer_count}/${status.peer_count} devices online` : ''}
-            </>
-          ) : (
-            'Your tailnet from the Console'
-          )
-        }
-        actions={
-          <>
-            {updatedLabel && <span className="ts-updated">{refreshing ? 'refreshing…' : updatedLabel}</span>}
-            <IconButton label="Refresh status" variant="ghost" disabled={refreshing} aria-busy={refreshing} onClick={() => void refresh()}>
-              <RefreshCw className={refreshing ? 'ts-spin' : undefined} />
-            </IconButton>
-          </>
-        }
-        onClose={onRequestClose}
-      />
-      <PageBody>
-        <PageMain className="ts-main">
-          {error && <StatusPanel variant="alert" headline="Tailscale request failed" detail={error} />}
-          {notice && !error && <StatusPanel variant="success" headline="Done" detail={notice} />}
-          {status?.error && !error && <StatusPanel variant="warn" headline="Tailscale is not available" detail={status.error} />}
-          {status && status.installed && !status.error && !online && (
-            <StatusPanel
-              variant="warn"
-              headline="Tailscale is not connected"
-              detail={
-                status.health.length
-                  ? status.health.join(' · ')
-                  : `The client reports ${status.backend_state ?? 'no state'}. Connect on this machine, then refresh.`
-              }
-            />
-          )}
+  const routesTable = (
+    <SectionCard title="Active routes" actions={<Chip tone="neutral">{status?.routes.length ?? 0}</Chip>}>
+      {status?.routes.length ? (
+        <TableViewport>
+          <TableFrame>
+            <Table density="compact">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Visibility</TableHead>
+                  <TableHead>URL</TableHead>
+                  <TableHead>Target</TableHead>
+                  <TableHead className="ts-row-actions-head">
+                    <span className="ts-visually-hidden">Actions</span>
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {status.routes.map((route) => {
+                  const key = `${route.host}:${route.port}${route.path}`
+                  return (
+                    <TableRow key={key}>
+                      <TableCell>{route.mode === 'funnel' ? 'Public' : 'Tailnet'}</TableCell>
+                      <TableCell className="ts-mono">{route.url}</TableCell>
+                      <TableCell className="ts-mono">{route.target}</TableCell>
+                      <TableCell className="ts-row-actions">
+                        <IconButton
+                          label={route.mode === 'funnel' ? `Remove public access from ${route.url}` : `Stop ${route.url}`}
+                          variant="ghost"
+                          disabled={stoppingRoute !== null}
+                          onClick={() => void stopRoute(route)}
+                        >
+                          <Square className={stoppingRoute === key ? 'ts-spin' : undefined} />
+                        </IconButton>
+                      </TableCell>
+                    </TableRow>
+                  )
+                })}
+              </TableBody>
+            </Table>
+          </TableFrame>
+        </TableViewport>
+      ) : (
+        <EmptyState icon={QrCode} title="No routes published" description="Create a link above to publish the Console or any local service. Routes the worker did not create are never reset." />
+      )}
+    </SectionCard>
+  )
 
-          <Card className="ts-card">
-            <CardHeader className="ts-card-header">
-              <span className="ts-card-title">
-                <StatusDot tone={online ? 'accent' : 'warn'} pulse={online} />
-                Connection
-              </span>
-              <Badge variant={online ? 'ok' : 'warn'}>{connectionLabel}</Badge>
-            </CardHeader>
-            <CardBody>
-              <dl className="ts-facts ts-facts-grid">
-                <div>
-                  <dt>Device</dt>
-                  <dd>{status?.hostname ?? '–'}</dd>
-                </div>
-                <div>
-                  <dt>MagicDNS</dt>
-                  <dd className="ts-mono">{status?.dns_name ?? '–'}</dd>
-                </div>
-                <div>
-                  <dt>Tailscale IPs</dt>
-                  <dd className="ts-mono">{status?.tailscale_ips.length ? status.tailscale_ips.join(' · ') : '–'}</dd>
-                </div>
-                <div>
-                  <dt>Exit node</dt>
-                  <dd>{status?.exit_node ?? 'none'}</dd>
-                </div>
-                <div>
-                  <dt>Version</dt>
-                  <dd className="ts-mono">{status?.version ?? '–'}</dd>
-                </div>
-                <div>
-                  <dt>Funnel</dt>
-                  <dd>
-                    {status?.funnel_allowed ? 'Enabled for this node' : 'Not enabled for this node'}
-                    {configuration && !configuration.allow_funnel ? ' · locked in the worker configuration' : ''}
-                  </dd>
-                </div>
-                {status?.health.length ? (
-                  <div className="ts-facts-wide">
-                    <dt>Health</dt>
-                    <dd>{status.health.join(' · ')}</dd>
+  const content = (() => {
+    switch (section) {
+      case 'overview':
+        return (
+          <>
+            <SectionCard
+              title={
+                <>
+                  <StatusDot tone={online ? 'accent' : 'warn'} pulse={online} />
+                  Connection
+                </>
+              }
+              actions={<Badge variant={online ? 'ok' : 'warn'}>{connectionLabel}</Badge>}
+            >
+              {status ? (
+                <dl className="ts-facts ts-facts-grid">
+                  <div>
+                    <dt>Device</dt>
+                    <dd>{status.hostname ?? '–'}</dd>
                   </div>
-                ) : null}
-              </dl>
+                  <div>
+                    <dt>Tailnet</dt>
+                    <dd>{status.tailnet ?? '–'}</dd>
+                  </div>
+                  <div>
+                    <dt>MagicDNS</dt>
+                    <dd className="ts-mono">{status.dns_name ?? '–'}</dd>
+                  </div>
+                  <div>
+                    <dt>Tailscale IPs</dt>
+                    <dd className="ts-mono">{status.tailscale_ips.length ? status.tailscale_ips.join(' · ') : '–'}</dd>
+                  </div>
+                  <div>
+                    <dt>Devices</dt>
+                    <dd>{status.peer_count ? `${status.online_peer_count} of ${status.peer_count} online` : 'none'}</dd>
+                  </div>
+                  <div>
+                    <dt>Exit node</dt>
+                    <dd>{status.exit_node ?? 'none'}</dd>
+                  </div>
+                  <div>
+                    <dt>Version</dt>
+                    <dd className="ts-mono">{status.version ?? '–'}</dd>
+                  </div>
+                  <div>
+                    <dt>Funnel</dt>
+                    <dd>
+                      {status.funnel_allowed ? 'Enabled for this node' : 'Not enabled for this node'}
+                      {configuration && !configuration.allow_funnel ? ' · locked in the worker configuration' : ''}
+                    </dd>
+                  </div>
+                  {status.health.length ? (
+                    <div className="ts-facts-wide">
+                      <dt>Health</dt>
+                      <dd>{status.health.join(' · ')}</dd>
+                    </div>
+                  ) : null}
+                </dl>
+              ) : (
+                <LoadingRows rows={4} />
+              )}
               {loginUrl && (
                 <StatusPanel variant="info" headline="This node needs a Tailscale sign-in" detail="Open the sign-in page, finish the login, then connect again." />
               )}
               <div className="ts-actions">
                 {status?.installed && !online && (
-                  <Button variant="primary" disabled={busy} onClick={() => void connect()}>
+                  <Button variant="primary" disabled={busy} data-autofocus="" onClick={() => void connect()}>
                     {busy ? 'Working…' : 'Connect to tailnet'}
                   </Button>
                 )}
@@ -778,621 +865,610 @@ export function TailscalePage({ host, onRequestClose, commands }: Props) {
                   </Button>
                 )}
               </div>
-            </CardBody>
-          </Card>
+            </SectionCard>
+            {routesTable}
+          </>
+        )
+      case 'share':
+        return (
+          <>
+            <div className="ts-columns">
+              <SectionCard title="Publish">
+                <SegmentedControl variant="radio" aria-label="Visibility" value={mode} onChange={setMode} options={modeOptions} />
+                <div className="ts-fields">
+                  <Field label="HTTPS port">
+                    <Input value={port} onChange={setPort} inputMode="numeric" aria-label="HTTPS port" />
+                  </Field>
+                  <Field label="Path">
+                    <Input value={path} onChange={setPath} aria-label="Path" />
+                  </Field>
+                </div>
+                <Field label="What to publish" hint="Empty publishes the Console. Otherwise a local port, a loopback URL, or an absolute directory.">
+                  <Input value={target} onChange={setTarget} placeholder={configuration ? `${configuration.console_url} (the Console)` : 'the Console'} aria-label="Target" />
+                </Field>
+                <p className="ts-note">
+                  {mode === 'serve'
+                    ? 'Opens on any of your devices that are signed into this tailnet (phone or laptop with the Tailscale app), with no extra login. Each request carries Tailscale identity headers.'
+                    : 'For devices that are not on your tailnet. Anyone with the link can open it; Funnel uses port 443, 8443, or 10000 and carries no identity headers.'}
+                </p>
+                {funnelLocked && (
+                  <StatusPanel variant="warn" headline="Funnel is locked" detail="Set allow_funnel to true in the tailscale worker configuration to publish anything publicly." />
+                )}
+                <div className="ts-actions">
+                  <Button variant="primary" disabled={!canCreate} data-autofocus="" onClick={requestShare}>
+                    {busy ? 'Working…' : mode === 'funnel' ? 'Create public link…' : 'Create link'}
+                  </Button>
+                </div>
+              </SectionCard>
 
-          <Tabs value={tab} onValueChange={(next: string) => setTab(next as Tab)}>
-            <TabsList variant="line" aria-label="Tailscale sections">
-              <TabsTrigger value="share">Share</TabsTrigger>
-              <TabsTrigger value="devices">Devices</TabsTrigger>
-              <TabsTrigger value="network">Network</TabsTrigger>
-              <TabsTrigger value="settings">Settings</TabsTrigger>
-              <TabsTrigger value="files">Files</TabsTrigger>
-              <TabsTrigger value="account">Account</TabsTrigger>
-            </TabsList>
-
-            <TabsContent value="share" className="ts-tab">
-              <div className="ts-columns">
-                <Card className="ts-card">
-                  <CardHeader className="ts-card-header">
-                    <span className="ts-card-title">Publish</span>
-                  </CardHeader>
-                  <CardBody className="ts-form">
-                    <SegmentedControl variant="radio" aria-label="Visibility" value={mode} onChange={setMode} options={modeOptions} />
-                    <div className="ts-fields">
-                      <label className="ts-field">
-                        <span>HTTPS port</span>
-                        <Input value={port} onChange={setPort} inputMode="numeric" aria-label="HTTPS port" />
-                      </label>
-                      <label className="ts-field">
-                        <span>Path</span>
-                        <Input value={path} onChange={setPath} aria-label="Path" />
-                      </label>
-                    </div>
-                    <label className="ts-field">
-                      <span>What to publish</span>
-                      <Input
-                        value={target}
-                        onChange={setTarget}
-                        placeholder={configuration ? `${configuration.console_url} (the Console)` : 'the Console'}
-                        aria-label="Target: a local port, loopback URL, or absolute directory; empty publishes the Console"
-                      />
-                    </label>
-                    <p className="ts-note">
-                      {mode === 'serve'
-                        ? 'Opens on any of your devices that are signed into this tailnet (phone or laptop with the Tailscale app), with no extra login. Each request carries Tailscale identity headers.'
-                        : 'For devices that are not on your tailnet. Anyone with the link can open it; Funnel uses port 443, 8443, or 10000 and carries no identity headers.'}
-                      {' '}Leave the target empty to publish the Console, or give a local port, loopback URL, or directory.
-                    </p>
-                    {funnelLocked && (
-                      <StatusPanel variant="warn" headline="Funnel is locked" detail="Set allow_funnel to true in the tailscale worker configuration to publish anything publicly." />
-                    )}
+              <SectionCard
+                className="ts-link-card"
+                title={
+                  <>
+                    <QrCode />
+                    {!share ? 'Link' : authorizationRequired ? 'Public link not available yet' : 'Open on another device'}
+                  </>
+                }
+                actions={
+                  share ? (
+                    <Chip tone={share.public ? 'danger' : authorizationRequired ? 'warning' : 'neutral'}>
+                      {authorizationRequired ? 'Admin step' : share.public ? 'Public' : 'Tailnet'}
+                    </Chip>
+                  ) : null
+                }
+              >
+                {!share ? (
+                  <EmptyState icon={QrCode} title="No link yet" description="Create a link to see it here with a QR code for a phone." />
+                ) : authorizationRequired ? (
+                  <>
+                    <StatusPanel
+                      variant="warn"
+                      headline="Your tailnet does not allow Funnel on this device"
+                      detail="Tailscale requires a tailnet admin to allow it once. Open Tailscale, approve Funnel for this device, then check again. If the link is only for your own devices, use Tailnet only instead; it needs no approval."
+                    />
                     <div className="ts-actions">
-                      <Button variant="primary" disabled={!canCreate} data-autofocus="" onClick={requestShare}>
-                        {busy ? 'Working…' : mode === 'funnel' ? 'Create public link…' : 'Create link'}
+                      <Button variant="primary" onClick={openLink}>
+                        Approve in Tailscale
+                      </Button>
+                      <Button variant="ghost" disabled={busy} onClick={() => void createShare(true)}>
+                        {busy ? 'Checking…' : 'Check again'}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        onClick={() => {
+                          setShare(null)
+                          setMode('serve')
+                        }}
+                      >
+                        Use Tailnet only
                       </Button>
                     </div>
-                  </CardBody>
-                </Card>
-
-                <Card className="ts-card ts-link-card">
-                  <CardHeader className="ts-card-header">
-                    <span className="ts-card-title">
-                      <QrCode />
-                      {!share ? 'Link' : authorizationRequired ? 'Public link not available yet' : 'Open on another device'}
-                    </span>
-                    {share && (
-                      <Chip tone={share.public ? 'danger' : authorizationRequired ? 'warning' : 'neutral'}>
-                        {authorizationRequired ? 'Admin step' : share.public ? 'Public' : 'Tailnet'}
-                      </Chip>
-                    )}
-                  </CardHeader>
-                  <CardBody className="ts-link-body">
-                    {!share ? (
-                      <p className="ts-note">Create a link to see it here with a QR code for a phone.</p>
-                    ) : authorizationRequired ? (
-                      <>
-                        <StatusPanel
-                          variant="warn"
-                          headline="Your tailnet does not allow Funnel on this device"
-                          detail="Tailscale requires a tailnet admin to allow it once. Open Tailscale, approve Funnel for this device, then check again. If the link is only for your own devices, use Tailnet only instead; it needs no approval."
-                        />
-                        <div className="ts-actions">
-                          <Button variant="primary" onClick={openLink}>
-                            Approve in Tailscale
-                          </Button>
-                          <Button variant="ghost" disabled={busy} onClick={() => void createShare(true)}>
-                            {busy ? 'Checking…' : 'Check again'}
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            onClick={() => {
-                              setShare(null)
-                              setMode('serve')
-                            }}
-                          >
-                            Use Tailnet only
-                          </Button>
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <img className="ts-qr" alt={`QR code for ${share.url}`} src={qrDataUrl(share.qr_svg)} />
-                        <code className="ts-url">{share.url}</code>
-                        <p className="ts-note">
-                          {share.public ? 'Opens for anyone with the link.' : 'Opens on any device signed into your tailnet; other devices are refused by Tailscale.'}
-                          {' '}Proxies <span className="ts-mono">{share.target}</span>.
-                        </p>
-                        <div className="ts-actions">
-                          <IconButton label={copied ? 'Copied' : 'Copy link'} variant="ghost" onClick={() => void copyLink()}>
-                            {copied ? <Check /> : <Copy />}
-                          </IconButton>
-                          <IconButton label="Open link in a browser tab" variant="ghost" onClick={openLink}>
-                            <ExternalLink />
-                          </IconButton>
-                          <IconButton label="Stop route" variant="ghost" disabled={busy} onClick={stopShare}>
-                            <Square />
-                          </IconButton>
-                        </div>
-                      </>
-                    )}
-                  </CardBody>
-                </Card>
-              </div>
-
-              <Card className="ts-card">
-                <CardHeader className="ts-card-header">
-                  <span className="ts-card-title">Active routes</span>
-                  <Chip tone="neutral">{status?.routes.length ?? 0}</Chip>
-                </CardHeader>
-                <CardBody>
-                  {status?.routes.length ? (
-                    <TableViewport>
-                      <TableFrame>
-                        <Table density="compact">
-                          <TableHeader>
-                            <TableRow>
-                              <TableHead>Visibility</TableHead>
-                              <TableHead>URL</TableHead>
-                              <TableHead>Target</TableHead>
-                              <TableHead className="ts-row-actions-head">
-                                <span className="ts-visually-hidden">Actions</span>
-                              </TableHead>
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {status.routes.map((route) => {
-                              const key = `${route.host}:${route.port}${route.path}`
-                              return (
-                                <TableRow key={key}>
-                                  <TableCell>{route.mode === 'funnel' ? 'Public' : 'Tailnet'}</TableCell>
-                                  <TableCell className="ts-mono">{route.url}</TableCell>
-                                  <TableCell className="ts-mono">{route.target}</TableCell>
-                                  <TableCell className="ts-row-actions">
-                                    <IconButton
-                                      label={route.mode === 'funnel' ? `Remove public access from ${route.url}` : `Stop ${route.url}`}
-                                      variant="ghost"
-                                      disabled={stoppingRoute !== null}
-                                      aria-busy={stoppingRoute === key}
-                                      onClick={() => void stopRoute(route)}
-                                    >
-                                      <Square />
-                                    </IconButton>
-                                  </TableCell>
-                                </TableRow>
-                              )
-                            })}
-                          </TableBody>
-                        </Table>
-                      </TableFrame>
-                    </TableViewport>
-                  ) : (
-                    <p className="ts-note">No routes are published. Routes the worker did not create are never reset.</p>
-                  )}
-                </CardBody>
-              </Card>
-            </TabsContent>
-
-            <TabsContent value="devices" className="ts-tab">
-              <Card className="ts-card">
-                <CardHeader className="ts-card-header">
-                  <span className="ts-card-title">Devices on the tailnet</span>
-                  <div className="ts-actions">
-                    <Button variant="ghost" size="sm" onClick={() => setOnlineOnly((v) => !v)}>
-                      {onlineOnly ? 'Show all' : 'Online only'}
-                    </Button>
-                    {(hiddenIngress > 0 || includeIngress) && (
-                      <Button variant="ghost" size="sm" onClick={toggleIngress}>
-                        {includeIngress ? 'Hide Funnel relays' : `Show ${hiddenIngress} Funnel relays`}
-                      </Button>
-                    )}
-                    <IconButton label="Reload devices" variant="ghost" onClick={() => void loadPeers()}>
-                      <RefreshCw />
-                    </IconButton>
-                  </div>
-                </CardHeader>
-                <CardBody>
-                  {peers === null ? (
-                    <p className="ts-note">Loading devices…</p>
-                  ) : visiblePeers.length === 0 ? (
+                  </>
+                ) : (
+                  <div className="ts-link-body">
+                    <img className="ts-qr" alt={`QR code for ${share.url}`} src={qrDataUrl(share.qr_svg)} />
+                    <code className="ts-url">{share.url}</code>
                     <p className="ts-note">
-                      No devices to show.
-                      {hiddenIngress > 0 ? ` ${hiddenIngress} Tailscale Funnel relay nodes are hidden; they are infrastructure, not your devices.` : ''}
+                      {share.public ? 'Opens for anyone with the link.' : 'Opens on any device signed into your tailnet; other devices are refused by Tailscale.'} Proxies{' '}
+                      <span className="ts-mono">{share.target}</span>.
                     </p>
-                  ) : (
-                    <TableViewport>
-                      <TableFrame>
-                        <Table density="compact">
-                          <TableHeader>
-                            <TableRow>
-                              <TableHead>Device</TableHead>
-                              <TableHead>Tailscale IP</TableHead>
-                              <TableHead>OS</TableHead>
-                              <TableHead>State</TableHead>
-                              <TableHead>Path</TableHead>
-                              <TableHead>Traffic</TableHead>
-                              <TableHead className="ts-row-actions-head">
-                                <span className="ts-visually-hidden">Actions</span>
-                              </TableHead>
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {visiblePeers.map((peer) => {
-                              const ping = pings[peer.id]
-                              return (
-                                <TableRow key={peer.id}>
-                                  <TableCell>
-                                    <div className="ts-peer-name">
-                                      <StatusDot tone={peer.online ? 'accent' : 'ink'} />
-                                      <span>{peer.hostname}</span>
-                                      {peer.exit_node_option && <Chip tone="neutral">exit node</Chip>}
-                                      {peer.exit_node && <Chip tone="accent">in use</Chip>}
-                                      {peer.tags.map((tag) => (
-                                        <Chip key={tag} tone="neutral">
-                                          {tag}
-                                        </Chip>
-                                      ))}
-                                    </div>
-                                    <div className="ts-mono ts-sub">{peer.dns_name}</div>
-                                  </TableCell>
-                                  <TableCell className="ts-mono">{peer.tailscale_ips[0] ?? '–'}</TableCell>
-                                  <TableCell>{peer.os ?? '–'}</TableCell>
-                                  <TableCell>{peer.online ? (peer.active ? 'Active' : 'Online') : 'Offline'}</TableCell>
-                                  <TableCell>
-                                    {ping === 'pending'
-                                      ? 'Pinging…'
-                                      : typeof ping === 'string'
-                                        ? ping
-                                        : ping
-                                          ? `${ping.direct ? 'Direct' : 'Relay'} · ${ping.replies.map((r) => (r.latency_ms == null ? '?' : `${r.latency_ms.toFixed(0)}ms`)).join(' ')}`
-                                          : peer.relay
-                                            ? `Relay ${peer.relay}`
-                                            : peer.active
-                                              ? 'Direct'
-                                              : '–'}
-                                  </TableCell>
-                                  <TableCell className="ts-mono">
-                                    ↓ {bytes(peer.rx_bytes)} ↑ {bytes(peer.tx_bytes)}
-                                  </TableCell>
-                                  <TableCell className="ts-row-actions">
-                                    <IconButton label={`Ping ${peer.hostname}`} variant="ghost" disabled={!peer.online || ping === 'pending'} onClick={() => void pingPeer(peer)}>
-                                      <Activity />
-                                    </IconButton>
-                                  </TableCell>
-                                </TableRow>
-                              )
-                            })}
-                          </TableBody>
-                        </Table>
-                      </TableFrame>
-                    </TableViewport>
-                  )}
-                </CardBody>
-              </Card>
-            </TabsContent>
-
-            <TabsContent value="network" className="ts-tab">
-              <div className="ts-columns">
-                <Card className="ts-card">
-                  <CardHeader className="ts-card-header">
-                    <span className="ts-card-title">Exit node</span>
-                  </CardHeader>
-                  <CardBody className="ts-form">
-                    <p className="ts-note">Route this device's internet traffic through another device on the tailnet.</p>
+                    <div className="ts-actions">
+                      <IconButton label={copied ? 'Copied' : 'Copy link'} variant="ghost" onClick={() => void copyLink()}>
+                        {copied ? <Check /> : <Copy />}
+                      </IconButton>
+                      <IconButton label="Open link in a browser tab" variant="ghost" onClick={openLink}>
+                        <ExternalLink />
+                      </IconButton>
+                      <IconButton label="Stop route" variant="ghost" disabled={busy} onClick={stopShare}>
+                        <Square />
+                      </IconButton>
+                    </div>
+                  </div>
+                )}
+              </SectionCard>
+            </div>
+            {routesTable}
+          </>
+        )
+      case 'devices':
+        return (
+          <SectionCard
+            title="Devices on the tailnet"
+            actions={
+              <div className="ts-actions">
+                <Button variant="ghost" size="sm" onClick={() => setOnlineOnly((v) => !v)}>
+                  {onlineOnly ? 'Show all' : 'Online only'}
+                </Button>
+                {(hiddenIngress > 0 || includeIngress) && (
+                  <Button variant="ghost" size="sm" onClick={toggleIngress}>
+                    {includeIngress ? 'Hide Funnel relays' : `Show ${hiddenIngress} Funnel relays`}
+                  </Button>
+                )}
+                <IconButton label="Reload devices" variant="ghost" onClick={() => void loadPeers()}>
+                  <RefreshCw />
+                </IconButton>
+              </div>
+            }
+          >
+            {peers === null ? (
+              <LoadingRows rows={4} />
+            ) : visiblePeers.length === 0 ? (
+              <EmptyState
+                icon={Laptop}
+                title={onlineOnly ? 'No devices online' : 'No other devices'}
+                description={
+                  hiddenIngress > 0
+                    ? `${hiddenIngress} Tailscale Funnel relay nodes are hidden; they are infrastructure, not your devices.`
+                    : 'Devices appear here once they join your tailnet.'
+                }
+                action={onlineOnly ? { label: 'Show all', onClick: () => setOnlineOnly(false) } : undefined}
+              />
+            ) : (
+              <TableViewport>
+                <TableFrame>
+                  <Table density="compact">
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Device</TableHead>
+                        <TableHead>Tailscale IP</TableHead>
+                        <TableHead>OS</TableHead>
+                        <TableHead>State</TableHead>
+                        <TableHead>Path</TableHead>
+                        <TableHead>Traffic</TableHead>
+                        <TableHead className="ts-row-actions-head">
+                          <span className="ts-visually-hidden">Actions</span>
+                        </TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {visiblePeers.map((peer) => {
+                        const ping = pings[peer.id]
+                        return (
+                          <TableRow key={peer.id} interactive>
+                            <TableCell>
+                              <div className="ts-peer-name">
+                                <StatusDot tone={peer.online ? 'accent' : 'ink'} />
+                                <span className="ts-strong">{peer.hostname}</span>
+                                {peer.exit_node_option && <Chip tone="neutral">exit node</Chip>}
+                                {peer.exit_node && <Chip tone="accent">in use</Chip>}
+                                {peer.tags.map((tag) => (
+                                  <Chip key={tag} tone="neutral">
+                                    {tag}
+                                  </Chip>
+                                ))}
+                              </div>
+                              {peer.dns_name && <div className="ts-mono ts-sub">{peer.dns_name}</div>}
+                            </TableCell>
+                            <TableCell className="ts-mono">{peer.tailscale_ips[0] ?? '–'}</TableCell>
+                            <TableCell>{peer.os ?? '–'}</TableCell>
+                            <TableCell>{peer.online ? (peer.active ? 'Active' : 'Online') : 'Offline'}</TableCell>
+                            <TableCell>
+                              {ping === 'pending'
+                                ? 'Pinging…'
+                                : typeof ping === 'string'
+                                  ? ping
+                                  : ping
+                                    ? `${ping.direct ? 'Direct' : 'Relay'} · ${ping.replies.map((r) => (r.latency_ms == null ? '?' : `${r.latency_ms.toFixed(0)}ms`)).join(' ')}`
+                                    : peer.relay
+                                      ? `Relay ${peer.relay}`
+                                      : peer.active
+                                        ? 'Direct'
+                                        : '–'}
+                            </TableCell>
+                            <TableCell className="ts-mono">
+                              ↓ {bytes(peer.rx_bytes)} ↑ {bytes(peer.tx_bytes)}
+                            </TableCell>
+                            <TableCell className="ts-row-actions">
+                              <IconButton label={`Ping ${peer.hostname}`} variant="ghost" disabled={!peer.online || ping === 'pending'} onClick={() => void pingPeer(peer)}>
+                                <Activity className={ping === 'pending' ? 'ts-spin' : undefined} />
+                              </IconButton>
+                            </TableCell>
+                          </TableRow>
+                        )
+                      })}
+                    </TableBody>
+                  </Table>
+                </TableFrame>
+              </TableViewport>
+            )}
+          </SectionCard>
+        )
+      case 'network':
+        return (
+          <>
+            <div className="ts-columns">
+              <SectionCard title="Exit node">
+                <p className="ts-note">Route this device's internet traffic through another device on the tailnet.</p>
+                {exitNodes === null ? (
+                  <LoadingRows rows={2} />
+                ) : (
+                  <>
                     <Select aria-label="Exit node" value={exitChoice} options={exitOptions} onChange={setExitChoice} />
                     {suggestion && <p className="ts-note">{suggestion}</p>}
                     <div className="ts-actions">
-                      <Button variant="primary" disabled={busy || !online || exitChoice === (exitNodes?.current ?? '')} onClick={() => void applyExitNode()}>
+                      <Button variant="primary" disabled={busy || !online || exitChoice === (exitNodes.current ?? '')} onClick={() => void applyExitNode()}>
                         Apply
                       </Button>
                       <Button variant="ghost" disabled={busy || !online} onClick={() => void suggestExitNode()}>
                         Suggest
                       </Button>
                     </div>
-                  </CardBody>
-                </Card>
+                  </>
+                )}
+              </SectionCard>
 
-                <Card className="ts-card">
-                  <CardHeader className="ts-card-header">
-                    <span className="ts-card-title">DNS</span>
-                    <IconButton label="Reload DNS status" variant="ghost" onClick={() => void loadNetwork()}>
-                      <RefreshCw />
-                    </IconButton>
-                  </CardHeader>
-                  <CardBody>
-                    {dns ? (
-                      <dl className="ts-facts">
-                        <div>
-                          <dt>MagicDNS</dt>
-                          <dd>
-                            {dns.magic_dns ? 'On' : 'Off'}
-                            {dns.magic_dns_suffix ? <span className="ts-mono"> · {dns.magic_dns_suffix}</span> : null}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt>Resolvers</dt>
-                          <dd className="ts-mono">{dns.resolvers.join(' · ') || 'system'}</dd>
-                        </div>
-                        <div>
-                          <dt>Search domains</dt>
-                          <dd className="ts-mono">{dns.search_domains.join(' · ') || '–'}</dd>
-                        </div>
-                        <div>
-                          <dt>Split DNS</dt>
-                          <dd className="ts-mono">{dns.split_dns_routes.map((r) => `${r.domain} → ${r.resolvers.join(', ')}`).join(' · ') || '–'}</dd>
-                        </div>
-                        <div>
-                          <dt>Certificate domains</dt>
-                          <dd className="ts-mono">{dns.cert_domains.join(' · ') || '–'}</dd>
-                        </div>
-                      </dl>
-                    ) : (
-                      <p className="ts-note">Loading DNS status…</p>
-                    )}
-                  </CardBody>
-                </Card>
-              </div>
-
-              <Card className="ts-card">
-                <CardHeader className="ts-card-header">
-                  <span className="ts-card-title">Network check</span>
-                  <Button variant="ghost" size="sm" disabled={busy} onClick={() => void runNetcheck()}>
-                    {busy ? 'Running…' : netcheck ? 'Run again' : 'Run'}
-                  </Button>
-                </CardHeader>
-                <CardBody>
-                  {netcheck ? (
-                    <dl className="ts-facts ts-facts-grid">
-                      <div>
-                        <dt>UDP</dt>
-                        <dd>{yesNo(netcheck.udp)}</dd>
-                      </div>
-                      <div>
-                        <dt>IPv4 / IPv6</dt>
-                        <dd>
-                          {yesNo(netcheck.ipv4)} / {yesNo(netcheck.ipv6)}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>Hard NAT</dt>
-                        <dd>{yesNo(netcheck.mapping_varies_by_dest_ip)}</dd>
-                      </div>
-                      <div>
-                        <dt>Port mapping</dt>
-                        <dd>
-                          UPnP {yesNo(netcheck.upnp)} · PMP {yesNo(netcheck.pmp)} · PCP {yesNo(netcheck.pcp)}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>Public IP</dt>
-                        <dd className="ts-mono">{netcheck.global_v4 ?? netcheck.global_v6 ?? '–'}</dd>
-                      </div>
-                      <div>
-                        <dt>Preferred relay</dt>
-                        <dd>{netcheck.preferred_derp != null ? `DERP ${netcheck.preferred_derp}` : '–'}</dd>
-                      </div>
-                      <div className="ts-facts-wide">
-                        <dt>Relay latency</dt>
-                        <dd className="ts-mono">
-                          {netcheck.region_latency_ms
-                            .slice(0, 6)
-                            .map((r) => `${r.region}: ${r.latency_ms.toFixed(0)}ms`)
-                            .join(' · ') || '–'}
-                        </dd>
-                      </div>
-                      {netcheck.captive_portal ? (
-                        <div className="ts-facts-wide">
-                          <dt>Captive portal</dt>
-                          <dd>detected</dd>
-                        </div>
-                      ) : null}
-                    </dl>
-                  ) : (
-                    <p className="ts-note">Checks UDP reachability, NAT type, port mapping, and relay latency. Takes a few seconds.</p>
-                  )}
-                </CardBody>
-              </Card>
-            </TabsContent>
-
-            <TabsContent value="settings" className="ts-tab">
-              <Card className="ts-card">
-                <CardHeader className="ts-card-header">
-                  <span className="ts-card-title">Preferences</span>
-                  <IconButton label="Reload preferences" variant="ghost" onClick={() => void loadPrefs()}>
+              <SectionCard
+                title="DNS"
+                actions={
+                  <IconButton label="Reload DNS status" variant="ghost" onClick={() => void loadNetwork()}>
                     <RefreshCw />
                   </IconButton>
-                </CardHeader>
-                <CardBody className="ts-form">
-                  {prefs ? (
-                    <>
-                      {prefRow('Accept subnet routes', prefs.accept_routes, 'accept_routes')}
-                      {prefRow('Accept tailnet DNS', prefs.accept_dns, 'accept_dns')}
-                      {prefRow('Shields up (block incoming connections)', prefs.shields_up, 'shields_up')}
-                      {prefRow('Tailscale SSH server', prefs.ssh, 'ssh')}
-                      {prefRow('Offer this device as an exit node', prefs.advertise_exit_node, 'advertise_exit_node')}
-                      {prefRow('LAN access while using an exit node', prefs.exit_node_allow_lan_access, 'exit_node_allow_lan_access')}
-                      {prefRow('Automatic updates', prefs.auto_update_apply, 'auto_update')}
-                      {prefRow('Web client on port 5252', prefs.webclient, 'webclient')}
-                      <div className="ts-fields">
-                        <label className="ts-field">
-                          <span>Hostname override</span>
-                          <Input value={hostnameDraft} onChange={setHostnameDraft} placeholder="empty = OS name" aria-label="Hostname" />
-                        </label>
-                        <label className="ts-field">
-                          <span>Advertised subnet routes</span>
-                          <Input value={routesDraft} onChange={setRoutesDraft} placeholder="10.0.0.0/8, 192.168.1.0/24" aria-label="Advertised routes" />
-                        </label>
-                      </div>
-                      <div className="ts-actions">
-                        <Button
-                          variant="primary"
-                          disabled={busy}
-                          onClick={() =>
-                            void setPref(
-                              {
-                                hostname: hostnameDraft.trim(),
-                                advertise_routes: routesDraft
-                                  .split(',')
-                                  .map((r) => r.trim())
-                                  .filter(Boolean),
-                              },
-                              'Hostname and routes saved.',
-                            )
-                          }
-                        >
-                          Save
-                        </Button>
-                      </div>
-                    </>
-                  ) : (
-                    <p className="ts-note">Loading preferences…</p>
-                  )}
-                </CardBody>
-              </Card>
-            </TabsContent>
+                }
+              >
+                {dns ? (
+                  <dl className="ts-facts">
+                    <div>
+                      <dt>MagicDNS</dt>
+                      <dd>
+                        {dns.magic_dns ? 'On' : 'Off'}
+                        {dns.magic_dns_suffix ? <span className="ts-mono"> · {dns.magic_dns_suffix}</span> : null}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Resolvers</dt>
+                      <dd className="ts-mono">{dns.resolvers.join(' · ') || 'system'}</dd>
+                    </div>
+                    <div>
+                      <dt>Search domains</dt>
+                      <dd className="ts-mono">{dns.search_domains.join(' · ') || '–'}</dd>
+                    </div>
+                    <div>
+                      <dt>Split DNS</dt>
+                      <dd className="ts-mono">{dns.split_dns_routes.map((r) => `${r.domain} → ${r.resolvers.join(', ')}`).join(' · ') || '–'}</dd>
+                    </div>
+                    <div>
+                      <dt>Certificate domains</dt>
+                      <dd className="ts-mono">{dns.cert_domains.join(' · ') || '–'}</dd>
+                    </div>
+                  </dl>
+                ) : (
+                  <LoadingRows rows={5} />
+                )}
+              </SectionCard>
+            </div>
 
-            <TabsContent value="files" className="ts-tab">
-              <div className="ts-columns">
-                <Card className="ts-card">
-                  <CardHeader className="ts-card-header">
-                    <span className="ts-card-title">
-                      <Send />
-                      Send a file (Taildrop)
+            <SectionCard
+              title="Network check"
+              actions={
+                <Button variant="ghost" size="sm" disabled={busy} onClick={() => void runNetcheck()}>
+                  {busy ? 'Running…' : netcheck ? 'Run again' : 'Run'}
+                </Button>
+              }
+            >
+              {netcheck ? (
+                <dl className="ts-facts ts-facts-grid">
+                  <div>
+                    <dt>UDP</dt>
+                    <dd>{yesNo(netcheck.udp)}</dd>
+                  </div>
+                  <div>
+                    <dt>IPv4 / IPv6</dt>
+                    <dd>
+                      {yesNo(netcheck.ipv4)} / {yesNo(netcheck.ipv6)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Hard NAT</dt>
+                    <dd>{yesNo(netcheck.mapping_varies_by_dest_ip)}</dd>
+                  </div>
+                  <div>
+                    <dt>Port mapping</dt>
+                    <dd>
+                      UPnP {yesNo(netcheck.upnp)} · PMP {yesNo(netcheck.pmp)} · PCP {yesNo(netcheck.pcp)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Public IP</dt>
+                    <dd className="ts-mono">{netcheck.global_v4 ?? netcheck.global_v6 ?? '–'}</dd>
+                  </div>
+                  <div>
+                    <dt>Preferred relay</dt>
+                    <dd>{netcheck.preferred_derp != null ? `DERP ${netcheck.preferred_derp}` : '–'}</dd>
+                  </div>
+                  <div className="ts-facts-wide">
+                    <dt>Relay latency</dt>
+                    <dd className="ts-mono">
+                      {netcheck.region_latency_ms
+                        .slice(0, 6)
+                        .map((r) => `${r.region}: ${r.latency_ms.toFixed(0)}ms`)
+                        .join(' · ') || '–'}
+                    </dd>
+                  </div>
+                  {netcheck.captive_portal ? (
+                    <div className="ts-facts-wide">
+                      <dt>Captive portal</dt>
+                      <dd>detected</dd>
+                    </div>
+                  ) : null}
+                </dl>
+              ) : (
+                <p className="ts-note">Checks UDP reachability, NAT type, port mapping, and relay latency. Takes a few seconds.</p>
+              )}
+            </SectionCard>
+          </>
+        )
+      case 'settings':
+        return (
+          <SectionCard
+            title="Preferences"
+            actions={
+              <IconButton label="Reload preferences" variant="ghost" onClick={() => void loadPrefs()}>
+                <RefreshCw />
+              </IconButton>
+            }
+          >
+            {prefs ? (
+              <>
+                {prefRow('Accept subnet routes', prefs.accept_routes, 'accept_routes')}
+                {prefRow('Accept tailnet DNS', prefs.accept_dns, 'accept_dns')}
+                {prefRow('Shields up (block incoming connections)', prefs.shields_up, 'shields_up')}
+                {prefRow('Tailscale SSH server', prefs.ssh, 'ssh')}
+                {prefRow('Offer this device as an exit node', prefs.advertise_exit_node, 'advertise_exit_node')}
+                {prefRow('LAN access while using an exit node', prefs.exit_node_allow_lan_access, 'exit_node_allow_lan_access')}
+                {prefRow('Automatic updates', prefs.auto_update_apply, 'auto_update')}
+                {prefRow('Web client on port 5252', prefs.webclient, 'webclient')}
+                <div className="ts-fields">
+                  <Field label="Hostname override" hint="Empty uses the OS name.">
+                    <Input value={hostnameDraft} onChange={setHostnameDraft} aria-label="Hostname" />
+                  </Field>
+                  <Field label="Advertised subnet routes" hint="Comma-separated CIDRs.">
+                    <Input value={routesDraft} onChange={setRoutesDraft} placeholder="10.0.0.0/8, 192.168.1.0/24" aria-label="Advertised routes" />
+                  </Field>
+                </div>
+                <div className="ts-actions">
+                  <Button
+                    variant="primary"
+                    disabled={busy}
+                    onClick={() =>
+                      void setPref(
+                        {
+                          hostname: hostnameDraft.trim(),
+                          advertise_routes: routesDraft
+                            .split(',')
+                            .map((r) => r.trim())
+                            .filter(Boolean),
+                        },
+                        'Hostname and routes saved.',
+                      )
+                    }
+                  >
+                    Save
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <LoadingRows rows={6} />
+            )}
+          </SectionCard>
+        )
+      case 'files':
+        return (
+          <>
+            <div className="ts-columns">
+              <SectionCard
+                title={
+                  <>
+                    <Send />
+                    Send a file (Taildrop)
+                  </>
+                }
+                actions={
+                  <IconButton label="Reload targets" variant="ghost" onClick={() => void loadFiles()}>
+                    <RefreshCw />
+                  </IconButton>
+                }
+              >
+                <Field label="File on this machine">
+                  <Input value={sendPath} onChange={setSendPath} placeholder="/Users/you/report.pdf" aria-label="File path" />
+                </Field>
+                <Field label="Send to">
+                  <Select
+                    aria-label="Target device"
+                    value={sendTarget}
+                    options={sendOptions}
+                    onChange={setSendTarget}
+                    placeholder={fileTargets === null ? 'Loading…' : fileTargets.length ? 'Choose a device' : 'No device accepts files'}
+                  />
+                </Field>
+                <div className="ts-actions">
+                  <Button variant="primary" disabled={busy || !sendPath.trim().startsWith('/') || !sendTarget} onClick={() => void sendFile()}>
+                    Send
+                  </Button>
+                </div>
+              </SectionCard>
+
+              <SectionCard title="Receive files">
+                <p className="ts-note">Moves everything in this device's Taildrop inbox into a directory.</p>
+                <Field label="Directory">
+                  <Input value={receiveDir} onChange={setReceiveDir} placeholder="/Users/you/Downloads" aria-label="Receive directory" />
+                </Field>
+                <Field label="If a file already exists">
+                  <Select aria-label="Conflict" value={conflict} options={conflictOptions} onChange={setConflict} />
+                </Field>
+                <div className="ts-actions">
+                  <Button variant="primary" disabled={busy || !receiveDir.trim().startsWith('/')} onClick={() => void receiveFiles()}>
+                    Receive
+                  </Button>
+                </div>
+              </SectionCard>
+            </div>
+
+            <SectionCard title="HTTPS certificate">
+              <p className="ts-note">Fetches a Let's Encrypt certificate and key for one of this device's MagicDNS names.</p>
+              <div className="ts-fields">
+                <Field label="Domain">
+                  <Select aria-label="Domain" value={certDomain} options={certOptions} onChange={setCertDomain} placeholder={certOptions.length ? 'Choose a domain' : 'HTTPS is not enabled for this tailnet'} />
+                </Field>
+                <Field label="Write into directory">
+                  <Input value={certDir} onChange={setCertDir} placeholder="/Users/you/certs" aria-label="Certificate directory" />
+                </Field>
+              </div>
+              <div className="ts-actions">
+                <Button variant="primary" disabled={busy || !certDomain || !certDir.trim().startsWith('/')} onClick={() => void fetchCert()}>
+                  Fetch certificate
+                </Button>
+              </div>
+            </SectionCard>
+          </>
+        )
+      case 'account':
+        return (
+          <div className="ts-columns">
+            <SectionCard
+              title="Accounts"
+              actions={
+                <IconButton label="Reload accounts" variant="ghost" onClick={() => void loadAccount()}>
+                  <RefreshCw />
+                </IconButton>
+              }
+            >
+              {accounts === null ? (
+                <LoadingRows rows={2} />
+              ) : accounts.length === 0 ? (
+                <EmptyState icon={User} title="No account signed in" description="Sign in to add this device to a tailnet." action={{ label: 'Sign in', onClick: () => void login() }} />
+              ) : (
+                accounts.map((account) => (
+                  <div key={account.id} className="ts-pref">
+                    <span className="ts-pref-label">
+                      {account.account}
+                      <span className="ts-mono ts-sub"> {account.tailnet}</span>
                     </span>
-                    <IconButton label="Reload targets" variant="ghost" onClick={() => void loadFiles()}>
-                      <RefreshCw />
-                    </IconButton>
-                  </CardHeader>
-                  <CardBody className="ts-form">
-                    <label className="ts-field">
-                      <span>File on this machine</span>
-                      <Input value={sendPath} onChange={setSendPath} placeholder="/Users/you/report.pdf" aria-label="File path" />
-                    </label>
-                    <label className="ts-field">
-                      <span>Send to</span>
-                      <Select aria-label="Target device" value={sendTarget} options={sendOptions} onChange={setSendTarget} placeholder={fileTargets === null ? 'Loading…' : fileTargets.length ? 'Choose a device' : 'No device accepts files'} />
-                    </label>
-                    <div className="ts-actions">
-                      <Button variant="primary" disabled={busy || !sendPath.trim().startsWith('/') || !sendTarget} onClick={() => void sendFile()}>
-                        Send
-                      </Button>
-                    </div>
-                  </CardBody>
-                </Card>
-
-                <Card className="ts-card">
-                  <CardHeader className="ts-card-header">
-                    <span className="ts-card-title">Receive files</span>
-                  </CardHeader>
-                  <CardBody className="ts-form">
-                    <p className="ts-note">Moves everything in this device's Taildrop inbox into a directory.</p>
-                    <label className="ts-field">
-                      <span>Directory</span>
-                      <Input value={receiveDir} onChange={setReceiveDir} placeholder="/Users/you/Downloads" aria-label="Receive directory" />
-                    </label>
-                    <label className="ts-field">
-                      <span>If a file already exists</span>
-                      <Select aria-label="Conflict" value={conflict} options={conflictOptions} onChange={setConflict} />
-                    </label>
-                    <div className="ts-actions">
-                      <Button variant="primary" disabled={busy || !receiveDir.trim().startsWith('/')} onClick={() => void receiveFiles()}>
-                        Receive
-                      </Button>
-                    </div>
-                  </CardBody>
-                </Card>
-              </div>
-
-              <Card className="ts-card">
-                <CardHeader className="ts-card-header">
-                  <span className="ts-card-title">HTTPS certificate</span>
-                </CardHeader>
-                <CardBody className="ts-form">
-                  <p className="ts-note">Fetches a Let's Encrypt certificate and key for one of this device's MagicDNS names.</p>
-                  <div className="ts-fields">
-                    <label className="ts-field">
-                      <span>Domain</span>
-                      <Select aria-label="Domain" value={certDomain} options={certOptions} onChange={setCertDomain} placeholder={certOptions.length ? 'Choose a domain' : 'HTTPS is not enabled for this tailnet'} />
-                    </label>
-                    <label className="ts-field">
-                      <span>Write into directory</span>
-                      <Input value={certDir} onChange={setCertDir} placeholder="/Users/you/certs" aria-label="Certificate directory" />
-                    </label>
-                  </div>
-                  <div className="ts-actions">
-                    <Button variant="primary" disabled={busy || !certDomain || !certDir.trim().startsWith('/')} onClick={() => void fetchCert()}>
-                      Fetch certificate
-                    </Button>
-                  </div>
-                </CardBody>
-              </Card>
-            </TabsContent>
-
-            <TabsContent value="account" className="ts-tab">
-              <div className="ts-columns">
-                <Card className="ts-card">
-                  <CardHeader className="ts-card-header">
-                    <span className="ts-card-title">Accounts</span>
-                    <IconButton label="Reload accounts" variant="ghost" onClick={() => void loadAccount()}>
-                      <RefreshCw />
-                    </IconButton>
-                  </CardHeader>
-                  <CardBody className="ts-form">
-                    {accounts === null ? (
-                      <p className="ts-note">Loading accounts…</p>
-                    ) : accounts.length === 0 ? (
-                      <p className="ts-note">No account is signed in on this device.</p>
+                    {account.selected ? (
+                      <Chip tone="success">Active</Chip>
                     ) : (
-                      accounts.map((account) => (
-                        <div key={account.id} className="ts-pref">
-                          <span className="ts-pref-label">
-                            {account.account}
-                            <span className="ts-mono ts-sub"> {account.tailnet}</span>
-                          </span>
-                          {account.selected ? (
-                            <Chip tone="success">Active</Chip>
-                          ) : (
-                            <Button variant="ghost" size="sm" disabled={busy} onClick={() => void switchAccount(account.id)}>
-                              Switch
-                            </Button>
-                          )}
-                        </div>
-                      ))
+                      <Button variant="ghost" size="sm" disabled={busy} onClick={() => void switchAccount(account.id)}>
+                        Switch
+                      </Button>
                     )}
-                    <div className="ts-actions">
-                      <Button variant="ghost" disabled={busy} onClick={() => void login()}>
-                        Sign in to another account
-                      </Button>
-                      <Button variant="ghost" disabled={busy || !online} onClick={() => void logout()}>
-                        Log out
-                      </Button>
-                    </div>
-                  </CardBody>
-                </Card>
-
-                <Card className="ts-card">
-                  <CardHeader className="ts-card-header">
-                    <span className="ts-card-title">Client</span>
-                  </CardHeader>
-                  <CardBody className="ts-form">
-                    <dl className="ts-facts">
-                      <div>
-                        <dt>Version</dt>
-                        <dd className="ts-mono">{version?.long ?? status?.version ?? '–'}</dd>
-                      </div>
-                      <div>
-                        <dt>Latest release</dt>
-                        <dd className="ts-mono">{version?.upstream ?? (version ? 'up to date' : '–')}</dd>
-                      </div>
-                      <div>
-                        <dt>Tailnet lock</dt>
-                        <dd>
-                          {lock ? (lock.enabled ? `Enabled${lock.node_signed === false ? ' · this node is not signed' : ''}` : 'Not enabled') : '–'}
-                        </dd>
-                      </div>
-                      {lock?.node_key && (
-                        <div>
-                          <dt>Lock key</dt>
-                          <dd className="ts-mono">{lock.node_key}</dd>
-                        </div>
-                      )}
-                    </dl>
-                    <div className="ts-actions">
-                      <Button variant="ghost" disabled={busy} onClick={() => void updateClient(true)}>
-                        Check for updates
-                      </Button>
-                      <Button variant="ghost" disabled={busy} onClick={() => void updateClient(false)}>
-                        Update now
-                      </Button>
-                      <Button variant="ghost" disabled={busy} onClick={() => void bugreport()}>
-                        Bug report
-                      </Button>
-                    </div>
-                  </CardBody>
-                </Card>
+                  </div>
+                ))
+              )}
+              <div className="ts-actions">
+                <Button variant="ghost" disabled={busy} onClick={() => void login()}>
+                  Sign in to another account
+                </Button>
+                <Button variant="ghost" disabled={busy || !online} onClick={() => void logout()}>
+                  Log out
+                </Button>
               </div>
-            </TabsContent>
-          </Tabs>
+            </SectionCard>
+
+            <SectionCard title="Client">
+              {version || lock ? (
+                <dl className="ts-facts">
+                  <div>
+                    <dt>Version</dt>
+                    <dd className="ts-mono">{version?.long ?? status?.version ?? '–'}</dd>
+                  </div>
+                  <div>
+                    <dt>Latest release</dt>
+                    <dd className="ts-mono">{version?.upstream ?? (version ? 'up to date' : '–')}</dd>
+                  </div>
+                  <div>
+                    <dt>Tailnet lock</dt>
+                    <dd>{lock ? (lock.enabled ? `Enabled${lock.node_signed === false ? ' · this node is not signed' : ''}` : 'Not enabled') : '–'}</dd>
+                  </div>
+                  {lock?.node_key && (
+                    <div>
+                      <dt>Lock key</dt>
+                      <dd className="ts-mono">{lock.node_key}</dd>
+                    </div>
+                  )}
+                </dl>
+              ) : (
+                <LoadingRows rows={3} />
+              )}
+              <div className="ts-actions">
+                <Button variant="ghost" disabled={busy} onClick={() => void updateClient(true)}>
+                  Check for updates
+                </Button>
+                <Button variant="ghost" disabled={busy} onClick={() => void updateClient(false)}>
+                  Update now
+                </Button>
+                <Button variant="ghost" disabled={busy} onClick={() => void bugreport()}>
+                  Bug report
+                </Button>
+              </div>
+            </SectionCard>
+          </div>
+        )
+      default:
+        return null
+    }
+  })()
+
+  return (
+    <PageShell className="ts-shell">
+      <PageHeader
+        icon={<Globe />}
+        title="Tailscale"
+        description={status?.dns_name ? <span className="ts-mono">{status.dns_name}</span> : 'Your tailnet from the Console'}
+        actions={
+          <>
+            {updatedLabel && <span className="ts-updated">{refreshing ? 'refreshing…' : updatedLabel}</span>}
+            <IconButton label="Refresh status" variant="ghost" disabled={refreshing} onClick={() => void refresh()}>
+              <RefreshCw className={refreshing ? 'ts-spin' : undefined} />
+            </IconButton>
+          </>
+        }
+        onClose={onRequestClose}
+      />
+      <PageBody side={panelSide}>
+        <PageSidebar
+          label="sections"
+          side={panelSide}
+          collapsible
+          resizable
+          storageKey="tailscale:sections"
+          defaultWidth={236}
+          minWidth={180}
+          maxWidth={340}
+          narrowBelow={640}
+          header={
+            <span className="ts-side-status">
+              <StatusDot tone={online ? 'accent' : 'warn'} pulse={online} />
+              {connectionLabel}
+            </span>
+          }
+        >
+          <List className="ts-side-list" aria-label="Tailscale sections">
+            {sections.map((item) => {
+              const Icon = item.icon
+              return (
+                <ListItem
+                  key={item.id}
+                  selected={section === item.id}
+                  aria-current={section === item.id ? 'page' : undefined}
+                  leading={<Icon className={uiClasses.icon} />}
+                  label={item.label}
+                  description={item.description}
+                  trailing={sectionMeta(item.id)}
+                  onClick={() => setSection(item.id)}
+                />
+              )
+            })}
+          </List>
+        </PageSidebar>
+        <PageMain className="ts-main">
+          {error && <StatusPanel variant="alert" headline="Tailscale request failed" detail={error} />}
+          {notice && !error && <StatusPanel variant="success" headline="Done" detail={notice} />}
+          {status?.error && !error && <StatusPanel variant="warn" headline="Tailscale is not available" detail={status.error} />}
+          {status && status.installed && !status.error && !online && section !== 'overview' && (
+            <StatusPanel variant="warn" headline="Tailscale is not connected" detail="Connect from the Overview section; most actions need the node online." />
+          )}
+          <div key={section} className="ts-section">
+            {content}
+          </div>
         </PageMain>
       </PageBody>
 
