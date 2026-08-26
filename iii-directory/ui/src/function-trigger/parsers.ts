@@ -121,6 +121,8 @@ export type SkillsDownloadRequest = z.infer<typeof skillsDownloadRequestSchema>
 export const skillsDownloadResponseSchema = z.object({
   namespace: z.string(),
   skills_written: z.array(z.string()),
+  system_prompts_written: z.array(z.string()),
+  agents_written: z.array(z.string()),
   source: z.unknown(),
 })
 export type SkillsDownloadResponse = z.infer<

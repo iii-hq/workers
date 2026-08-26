@@ -88,6 +88,11 @@ export function SkillsDownloadView({ input, output, running }: ViewProps) {
         <span>{describeSource(source)}</span>
       </ActionLine>
       <WrittenList label="skills written" names={resp.skills_written} />
+      <WrittenList
+        label="system prompts written"
+        names={resp.system_prompts_written}
+      />
+      <WrittenList label="agents written" names={resp.agents_written} />
     </Card>
   )
 }
