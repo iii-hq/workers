@@ -93,13 +93,6 @@ describe('preparing the terminal host', () => {
     // A dark page wants a light-on-dark palette from whatever runs in it.
     expect(prepared.env.COLORFGBG).toBe('15;0');
 
-    // The workspace is its own npm project, or the skills CLI installs above it.
-    expect(files['/hostroot/claude-code/package.json']).toContain('claude-code-workspace');
-    expect(calls.some((c) => String(c.payload.command ?? '').startsWith('npx -y skills add'))).toBe(
-      true,
-    );
-    expect(files['/hostroot/claude-code/.iii/skills-installed']).toBeTruthy();
-
     // The notes live in one marked block Claude reads on startup.
     const notes = files['/hostroot/claude-code/CLAUDE.md'];
     expect(notes).toContain('<!-- iii:begin');
@@ -151,7 +144,6 @@ describe('preparing the terminal host', () => {
           hooks: { Notification: [{ hooks: [{ type: 'command', command: 'say hi' }] }] },
         }),
         '/hostroot/claude-code/CLAUDE.md': '# My own notes\n\nkeep me\n',
-        '/hostroot/claude-code/.iii/skills-installed': '2026-01-01',
       },
     });
     await prepareWorkspace(iii, { ...DEFAULTS });
@@ -186,7 +178,6 @@ describe('preparing the terminal host', () => {
             ],
           },
         }),
-        '/hostroot/claude-code/.iii/skills-installed': '2026-01-01',
       },
     });
     await prepareWorkspace(iii, { ...DEFAULTS });

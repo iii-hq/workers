@@ -33,6 +33,7 @@ describe('register', () => {
       'claude::start',
       'claude::status',
       'claude::stop',
+      'claude::task',
       'run::start_and_wait',
     ]);
   });
@@ -85,6 +86,44 @@ describe('register', () => {
         | undefined;
       expect(record?.status).toBe('done');
     });
+  });
+
+  it('claude::task delegates and nests the child session under its parent', async () => {
+    // The sub-agent shape: ids at once, no result to wait for, and a child
+    // session the console can nest — the same link a harness spawn writes.
+    const fake = await registeredWorker();
+    const capture: QueryCapture = { interrupted: false };
+    queryMock.mockImplementation(scriptedQuery(fullTurn, capture) as never);
+
+    const res = (await fake.registered.get('claude::task')?.({
+      task: 'review the diff',
+      parent_session_id: 'parent-1',
+    })) as Record<string, unknown>;
+
+    expect(res.started).toBe(true);
+    await vi.waitFor(() => {
+      const ensure = fake.calls.find((c) => c.function_id === 'session::ensure');
+      expect(ensure?.payload).toMatchObject({
+        session_id: res.session_id,
+        title: 'review the diff',
+        metadata: { parent_session_id: 'parent-1', agent: 'claude-code' },
+      });
+    });
+    await vi.waitFor(() => {
+      const statuses = fake.calls
+        .filter((c) => c.function_id === 'session::set-status')
+        .map((c) => c.payload.status);
+      expect(statuses).toEqual(['working', 'done']);
+    });
+    // The task text is the prompt the agent actually ran.
+    expect(capture.prompt).toBe('review the diff');
+  });
+
+  it('claude::task refuses a task with nothing in it', async () => {
+    const fake = await registeredWorker();
+    await expect(
+      fake.registered.get('claude::task')?.({ parent_session_id: 'p' }),
+    ).rejects.toThrow();
   });
 
   it('marks the session error when a background run throws mid-stream', async () => {

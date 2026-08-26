@@ -12,7 +12,7 @@ import type { IIIClient } from 'iii-sdk';
 import { z } from 'zod';
 import type { Config } from './config.js';
 import type { Emit } from './events.js';
-import { III_CONTEXT_PROMPT } from './iii-prompt.js';
+import { fetchIiiContext } from './iii-context.js';
 import {
   lastAssistant,
   makeAssistantMessage,
@@ -23,6 +23,7 @@ import {
   type ToolCallIndex,
 } from './map.js';
 import { listSessions, loadSession, saveSession } from './state.js';
+import { linkChildSession, setSessionStatus } from './session-link.js';
 import { runTurnSpan } from './trace.js';
 import type { AgentMessage, FunctionResultMessage, SessionRecord } from './types.js';
 
@@ -37,6 +38,12 @@ const RunPayloadSchema = z.object({
     .string()
     .optional()
     .describe('iii session id; reuse to resume the same Claude Code conversation'),
+  parent_session_id: z
+    .string()
+    .optional()
+    .describe(
+      'The session delegating this run. Written to the child session metadata, which is what nests it under its parent in the console — the same link a harness sub-agent carries.',
+    ),
   prompt: z.string().optional().describe('The user prompt for this turn'),
   messages: z
     .array(MessageSchema)
@@ -80,6 +87,20 @@ const RunPayloadSchema = z.object({
 export type RunPayload = z.infer<typeof RunPayloadSchema>;
 export { RunPayloadSchema };
 
+/**
+ * A delegated task. Same shape as a run, except the work is named `task` and
+ * required: an orchestrator firing a trigger has one thing to say, and a
+ * sub-agent with no task is a bug rather than an empty turn.
+ */
+const TaskPayloadSchema = RunPayloadSchema.omit({ prompt: true, messages: true }).extend({
+  task: z
+    .string()
+    .min(1)
+    .describe(
+      "The child's self-contained goal. It cannot see the caller's context, so name every resource it needs.",
+    ),
+});
+
 const SessionIdSchema = z.object({
   session_id: z.string().describe('iii session id returned by claude::run / claude::start'),
 });
@@ -95,6 +116,7 @@ function jsonSchema(schema: z.ZodType): Record<string, unknown> {
 
 const RUN_REQUEST_FORMAT = jsonSchema(RunPayloadSchema);
 const SESSION_ID_FORMAT = jsonSchema(SessionIdSchema);
+const TASK_REQUEST_FORMAT = jsonSchema(TaskPayloadSchema);
 
 const UsageSchema = z.object({
   input_tokens: z.number(),
@@ -216,11 +238,22 @@ export async function executeRun(
   live.set(session_id, handle);
 
   try {
+    // A run that names a parent is a sub-agent: give it a linked session first,
+    // because `parent_session_id` only applies on creation, and that link is
+    // what nests it in the console.
+    const linked = payload.parent_session_id
+      ? await linkChildSession(iii, {
+          sessionId: session_id,
+          parentSessionId: payload.parent_session_id,
+          task: prompt,
+        })
+      : { linked: false, detail: '' };
+    if (linked.linked) await setSessionStatus(iii, session_id, 'working');
     // One turn, one traced scope. The identity keys are the harness's own, so
     // a headless Claude Code turn groups and labels itself in the console's
     // trace views like a native turn — and every call the turn makes inherits
     // them, because baggage propagates across the bus.
-    return await runTurnSpan(
+    const result = await runTurnSpan(
       'claude::run turn',
       {
         sessionId: session_id,
@@ -229,7 +262,12 @@ export async function executeRun(
         message: prompt,
       },
       () => runReserved(iii, cfg, emit, emitRaw, payload, session_id, prompt, handle),
-    );
+    ).catch(async (err) => {
+      if (linked.linked) await setSessionStatus(iii, session_id, 'error', String(err));
+      throw err;
+    });
+    if (linked.linked) await setSessionStatus(iii, session_id, 'done');
+    return result;
   } finally {
     if (live.get(session_id) === handle) live.delete(session_id);
   }
@@ -263,8 +301,11 @@ async function runReserved(
   if (payload.model) record.model = payload.model;
 
   const userAppend = payload.append_system_prompt ?? d.append_system_prompt;
+  // The iii context comes from the `iii-directory` worker, which owns it: this
+  // worker keeps no copy of the prompt or of the skills index.
   const iiiContext = payload.iii_context ?? cfg.iii_context;
-  const append = [iiiContext ? III_CONTEXT_PROMPT : '', userAppend].filter(Boolean).join('\n\n');
+  const context = iiiContext ? await fetchIiiContext(iii) : null;
+  const append = [context?.text ?? '', userAppend].filter(Boolean).join('\n\n');
   const options: Options = {
     ...(record.model ? { model: record.model } : {}),
     ...(record.cwd ? { cwd: record.cwd } : {}),
@@ -440,6 +481,42 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
       description:
         'Start a Claude Code turn and return immediately; watch agent::events (group_id = session_id) for progress and turn_end.',
       request_format: RUN_REQUEST_FORMAT,
+      response_format: START_RESPONSE_FORMAT,
+    },
+  );
+
+  // The sub-agent entrypoint an orchestrator FIRES rather than calls: a trigger
+  // bound to this id delivers a task, the ids come back at once, and the
+  // outcome arrives the way a harness sub-agent's does — on `agent::events`,
+  // in the child session, never as a return value the caller waits for.
+  iii.registerFunction(
+    'claude::task',
+    async (payload: unknown) => {
+      const parsed = TaskPayloadSchema.parse(payload ?? {});
+      const session_id = parsed.session_id ?? randomUUID();
+      if (live.has(session_id)) {
+        return {
+          session_id,
+          started: false,
+          busy: true,
+          reason: 'a run is already active for this session',
+        };
+      }
+      const run: RunPayload = {
+        ...parsed,
+        session_id,
+        prompt: parsed.task,
+      };
+      void executeRun(iii, getCfg(), emit, emitRaw, run).catch(async (err) => {
+        console.error(`claude::task background run failed for ${session_id}: ${String(err)}`);
+        await markSessionError(iii, session_id);
+      });
+      return { session_id, started: true };
+    },
+    {
+      description:
+        'Delegate one task to Claude Code and return its session id immediately — the sub-agent shape: fire it from a trigger, watch agent::events (group_id = session_id) for progress, and read the child session for the outcome. Pass `parent_session_id` to nest it under the session that delegated it.',
+      request_format: TASK_REQUEST_FORMAT,
       response_format: START_RESPONSE_FORMAT,
     },
   );

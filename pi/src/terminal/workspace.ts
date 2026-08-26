@@ -1,7 +1,7 @@
 /**
  * Everything the terminal needs before it opens: pi installed, the workspace
- * equipped with the iii skills and the engine notes, and the extension that
- * reports what pi does. All of it runs on the terminal host through the
+ * equipped with the engine notes (whose iii half comes from `iii-directory`)
+ * and the extension that reports what pi does. All of it runs on the terminal host through the
  * `shell` worker, so this worker never touches a local path.
  */
 
@@ -9,11 +9,10 @@ import type { IIIClient } from 'iii-sdk';
 import type { TerminalConfig } from '../config.js';
 import { EXTENSION_PATH, extensionSource } from './extension.js';
 import { exec, hostRoot, mkdir, probe, readFile, writeFile } from './host.js';
+import { fetchIiiContext } from '../iii-context.js';
 import { NOTES_BEGIN, NOTES_END, engineNotes } from './notes.js';
 
 const INSTALL_CMD = 'curl -fsSL https://pi.dev/install.sh | sh';
-const SKILLS_CMD = 'npx -y skills add iii-hq/iii --all -y';
-const SKILLS_MARKER = '.iii/skills-installed';
 
 export type Prepared = {
   workspace: string;
@@ -57,7 +56,6 @@ export async function prepareWorkspace(iii: IIIClient, config: TerminalConfig): 
     // `AGENTS.md` or an unwritable `.pi/` still leaves a working CLI in a
     // working directory. A failure here is reported, and the terminal opens.
     try {
-      await installSkills(iii, workspace);
       await writeNotes(iii, workspace);
       bridge = await writeExtension(iii, workspace);
       if (!bridge) {
@@ -127,38 +125,19 @@ async function resolveExecutable(iii: IIIClient, config: TerminalConfig): Promis
   return (await probe(iii, 'command -v pi')) || (await probe(iii, 'ls ~/.local/bin/pi'));
 }
 
-/**
- * The iii skills, from the monorepo that publishes them. Best-effort and once
- * per workspace: the terminal must open even when the skills CLI is
- * unreachable. The workspace gets its own `package.json` first, because the
- * skills CLI installs at "project level" — the nearest manifest — and without
- * one the skills land above the workspace.
- */
-async function installSkills(iii: IIIClient, workspace: string): Promise<void> {
-  if ((await readFile(iii, `${workspace}/${SKILLS_MARKER}`)) !== null) return;
-  if ((await readFile(iii, `${workspace}/package.json`)) === null) {
-    await writeFile(
-      iii,
-      `${workspace}/package.json`,
-      `${JSON.stringify({ name: 'pi-workspace', private: true, version: '0.0.0' }, null, 2)}\n`,
-    );
-  }
-  try {
-    const result = await exec(iii, SKILLS_CMD, { cwd: workspace, timeoutMs: 5 * 60_000 });
-    if (result.exit_code !== 0) {
-      console.warn(`iii skills install exited ${result.exit_code}: ${result.stderr.slice(0, 400)}`);
-      return;
-    }
-    await writeFile(iii, `${workspace}/${SKILLS_MARKER}`, `${new Date().toISOString()}\n`);
-  } catch (err) {
-    console.warn(`iii skills install failed: ${String(err)}`);
-  }
-}
-
 /** The worker's block inside AGENTS.md; text outside the markers is the operator's. */
 async function writeNotes(iii: IIIClient, workspace: string): Promise<void> {
   const engineUrl = process.env.III_URL ?? 'ws://127.0.0.1:49134';
-  const block = `${NOTES_BEGIN}\n${engineNotes({ workspace, engineUrl }).trim()}\n${NOTES_END}`;
+  // The iii half of this block belongs to `iii-directory`; this worker only
+  // says where the workspace and the engine are.
+  const context = await fetchIiiContext(iii);
+  const notes = engineNotes({
+    workspace,
+    engineUrl,
+    context: context.text,
+    detail: context.detail,
+  });
+  const block = `${NOTES_BEGIN}\n${notes.trim()}\n${NOTES_END}`;
   const path = `${workspace}/AGENTS.md`;
   const current = (await readFile(iii, path)) ?? '';
   let next: string;

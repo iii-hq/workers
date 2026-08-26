@@ -96,6 +96,7 @@ Long turns: use `claude::start` to return immediately, then watch `agent::events
 | --- | --- |
 | `claude::run` | Run one turn, wait, return the final result |
 | `claude::start` | Fire-and-forget turn; progress arrives on `agent::events` |
+| `claude::task` | Delegate one task as a SUB-AGENT: fire it from a trigger, get the session id back at once, and pass `parent_session_id` to nest it under the session that delegated it |
 | `claude::stop` | Interrupt a live run |
 | `claude::status` | Session state, live flag, usage, cost |
 | `claude::sessions::list` | All sessions this worker has run |
@@ -199,12 +200,15 @@ page went light.
 
 On every boot, when `terminal.setup_workspace` is on:
 
-- The `iii-hq/iii` skills, once per workspace (`npx skills add iii-hq/iii
-  --all`), with a minimal `package.json` first — the skills CLI installs at
-  the nearest manifest, and without one they land above the workspace where
-  Claude does not look.
 - `CLAUDE.md`, inside an `<!-- iii:begin -->` block the worker rewrites.
-  Anything outside the markers is the operator's and survives.
+  Anything outside the markers is the operator's and survives. The iii half of
+  that block — how to work against a live engine, and what skills are installed
+  — is FETCHED from the [`iii-directory`](https://github.com/iii-hq/workers/tree/main/iii-directory)
+  worker (`directory::system-prompts::get name=iii-runtime` plus
+  `directory::skills::index`), which is also what a headless turn is given. One
+  copy, one owner: this worker ships neither the prompt nor a second set of
+  skills on disk. When the directory answers nothing, the block says so and
+  points the agent at `engine::functions::list`.
 - `.claude/settings.json` hooks for `SessionStart`, `SessionEnd`,
   `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, and `Stop`. Each posts its
   payload to `claude::terminal::activity` with the `iii` CLI — the bus, so it

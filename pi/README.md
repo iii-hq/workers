@@ -89,6 +89,7 @@ Long turns: use `pi::start` to return immediately, then watch `agent::events` (g
 | --- | --- |
 | `pi::run` | Run one turn, wait, return the final result |
 | `pi::start` | Fire-and-forget turn; progress arrives on `agent::events` |
+| `pi::task` | Delegate one task as a SUB-AGENT: fire it from a trigger, get the session id back at once, and pass `parent_session_id` to nest it under the session that delegated it |
 | `pi::steer` | Inject a steering instruction into a live run |
 | `pi::follow_up` | Queue a follow-up message for a live run |
 | `pi::stop` | Interrupt a live run |
@@ -188,12 +189,15 @@ what pi did. Drop the flag if you would rather answer that question yourself.
 
 On every boot, when `setup_workspace` is on:
 
-- The `iii-hq/iii` skills, once per workspace (`npx skills add iii-hq/iii
-  --all`), with a minimal `package.json` first — the skills CLI installs at
-  the nearest manifest. pi reads `.agents/skills` from the working directory,
-  which is where they land.
 - `AGENTS.md`, inside an `<!-- iii:begin -->` block the worker rewrites.
-  Anything outside the markers is the operator's and survives.
+  Anything outside the markers is the operator's and survives. The iii half of
+  that block — how to work against a live engine, and what skills are installed
+  — is FETCHED from the [`iii-directory`](https://github.com/iii-hq/workers/tree/main/iii-directory)
+  worker (`directory::system-prompts::get name=iii-runtime` plus
+  `directory::skills::index`), which is also what a headless turn is given. One
+  copy, one owner: this worker ships neither the prompt nor a second set of
+  skills on disk. When the directory answers nothing, the block says so and
+  points the agent at `engine::functions::list`.
 - `.pi/extensions/iii-activity.ts`, which posts pi's lifecycle events
   (`session_start`, `before_agent_start`, `tool_execution_start`/`end`,
   `agent_end`, `session_shutdown`) to `pi::terminal::activity` with the `iii` CLI —

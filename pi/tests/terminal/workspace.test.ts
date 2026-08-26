@@ -96,11 +96,6 @@ describe('preparing the terminal host', () => {
     expect(prepared.env.USER).toBe('tony');
     expect(prepared.env.COLORFGBG).toBe('15;0');
 
-    expect(files['/hostroot/pi/package.json']).toContain('pi-workspace');
-    expect(calls.some((c) => String(c.payload.command ?? '').startsWith('npx -y skills add'))).toBe(
-      true,
-    );
-
     // pi reads AGENTS.md, and the worker owns one marked block in it.
     const notes = files['/hostroot/pi/AGENTS.md'];
     expect(notes).toContain('<!-- iii:begin');
@@ -135,7 +130,6 @@ describe('preparing the terminal host', () => {
       whichPi: '/usr/local/bin/pi',
       files: {
         '/hostroot/pi/AGENTS.md': '# House rules\n\nkeep me\n',
-        '/hostroot/pi/.iii/skills-installed': '2026-01-01',
       },
     });
     await prepareWorkspace(iii, { ...DEFAULTS });

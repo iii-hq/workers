@@ -1,79 +1,52 @@
 /**
- * The workspace memory Claude reads on startup. The worker owns one marked
- * block inside `CLAUDE.md` and rewrites it on every boot; anything the
- * operator adds outside the markers survives.
+ * The workspace memory Claude reads on startup. The worker owns one marked block inside
+ * `CLAUDE.md` and rewrites it on every boot; anything the operator adds
+ * outside the markers survives.
+ *
+ * What the block says about iii is NOT written here. The rules for working
+ * against a live engine, and the index of installed skills, come from the
+ * `iii-directory` worker (see `../iii-context.ts`) — one copy, one owner, and
+ * the same text a headless turn is given. This module contributes only what the
+ * directory cannot know: which workspace this is, which engine it talks to, and
+ * which two workers have to stay up for the terminal to keep existing.
  */
 
 export const NOTES_BEGIN =
   '<!-- iii:begin — written by the claude-code worker on every boot; edits inside are lost -->';
 export const NOTES_END = '<!-- iii:end -->';
 
-export function engineNotes(options: { workspace: string; engineUrl: string }): string {
+export type NotesOptions = {
+  workspace: string;
+  engineUrl: string;
+  /** The iii context from `iii-directory`. Empty when it served nothing. */
+  context: string;
+  /** Why it is missing, when it is — the agent should be told, not left guessing. */
+  detail?: string;
+};
+
+export function engineNotes(options: NotesOptions): string {
+  const context = options.context.trim()
+    ? options.context.trim()
+    : `_The iii context is unavailable: ${
+        options.detail || 'the `iii-directory` worker did not answer'
+      }. Discover everything from the engine itself with \`iii trigger engine::functions::list\`, and tell the operator the directory is missing._`;
+
   return `# You run inside an iii engine
 
-This workspace belongs to the \`claude-code\` iii worker: a terminal page on the
-iii console runs you, and the \`shell\` worker owns the session. You have direct
+This workspace belongs to the \`claude-code\` iii worker: a terminal page on the iii
+console runs you, and the \`shell\` worker owns the session. You have direct
 access to the running engine and can create functions, triggers, and workers
 that outlive this terminal.
 
-## The engine
+- Engine WebSocket address: \`${options.engineUrl}\` (also in \`$III_URL\`).
+- This workspace: \`${options.workspace}\` — the directory this terminal starts in.
+- **Never stop or reconfigure \`claude-code\` or \`shell\`** — the first is this terminal,
+  the second runs it. Restarting either kills the session you are typing in,
+  mid-command.
+- Your work is on the record: \`.pi/extensions/iii-activity.ts\` reports every
+  prompt you answer and every tool you run onto \`agent::events\`, which is how
+  the console shows this terminal's turns. Leave that extension in place.
 
-- WebSocket address: \`${options.engineUrl}\` (also in \`$III_URL\`).
-- \`iii trigger <function_id> key=value\` calls any function; add \`--help\` to a
-  function to read its description and request schema off the running engine.
-- \`iii trigger engine::functions::list\` is the catalogue of what already exists.
-
-## Your workspace
-
-\`${options.workspace}\` — the directory this terminal starts in. The iii skills
-are installed here (\`.agents/skills\`, mirrored to \`.claude/skills\`): read
-\`iii-getting-started\`, \`iii-core-primitives\`, and \`iii-sdk-reference\` before
-you build, and verify what they say against the running engine.
-
-## Creating a function or trigger
-
-Any process with an iii SDK is a worker. Scaffold a directory here, install
-\`iii-sdk\`, and run it:
-
-\`\`\`js
-import { registerWorker } from 'iii-sdk';
-
-const iii = registerWorker(process.env.III_URL ?? 'ws://127.0.0.1:49134', {
-  workerName: 'my-worker',
-});
-
-iii.registerFunction('my-worker::greet', async ({ name }) => ({
-  message: \`Hello, \${name}!\`,
-}));
-
-iii.registerTrigger({
-  type: 'http',
-  function_id: 'my-worker::greet',
-  config: { api_path: '/greet', http_method: 'GET' },
-});
-\`\`\`
-
-Function ids are \`<worker>::<verb>\`, kebab-case for multi-word segments.
-
-## Rules
-
-- **Never take a name that is already in use.** A worker name is the first half
-  of every function id it registers, so a repeat collides with the other
-  worker's ids. Check \`engine::functions::list\` first and pick something
-  specific.
-- **Never stop or reconfigure \`claude-code\` or \`shell\`** — the first is this
-  terminal, the second runs it. Restarting either kills the session you are
-  typing in, mid-command.
-- **Ask how workers are installed here before you install one.** A registry
-  worker is \`iii worker add <name>\` on some engines and a declared container in
-  a compose project on others; the operator knows which, and the wrong one
-  either does nothing or restarts everything.
-
-## Your work is on the record
-
-Every prompt you answer and every tool you run is streamed onto
-\`agent::events\` by this worker's hooks, so the console shows this terminal's
-turns like any other agent's. Tool calls appear under the name of the tool and
-the file or command they touched.
+${context}
 `;
 }

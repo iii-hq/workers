@@ -17,7 +17,7 @@
  * | `iii.session.id` | the session — what the traces view groups by |
  * | `iii.message.id` | one turn; one grouped "message" in that view |
  * | `iii.session.name` | the session's display title |
- * | `iii.tag.kind` | classifies the span: `pi.task` / `pi.terminal.turn` |
+ * | `iii.tag.kind` | classifies the span: `pi.run` / `pi.task` / `pi.terminal.turn` |
  * | `iii.tag.message` | a preview of what was asked |
  * | `iii.tag.display_name` | the label a timeline shows instead of the span name |
  *
@@ -29,7 +29,7 @@
 import { type Context, SpanStatusCode, context, propagation, trace } from '@opentelemetry/api';
 
 /** How a turn reached this worker — the `iii.tag.kind` value it gets. */
-export type TurnKind = 'pi.task' | 'pi.terminal.turn';
+export type TurnKind = 'pi.run' | 'pi.task' | 'pi.terminal.turn';
 
 export type TurnIdentity = {
   /** The iii session id. Group-by key in the traces view. */
