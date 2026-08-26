@@ -45,6 +45,17 @@ export function toolFunctionId(name: string): string {
   return name.includes('__') ? name.replace(/__/g, '::') : `pi::${name}`;
 }
 
+/**
+ * The model that actually answered. pi resolves one per turn — its settings
+ * default when the caller named none — and puts it on the message, so the
+ * configured value ("" for "pi decides") is a fallback, not the answer. Without
+ * this the console renders a nameless agent beside a named one.
+ */
+export function messageModel(message: unknown, fallback: string): string {
+  const named = (message as { model?: unknown } | null)?.model;
+  return typeof named === 'string' && named ? named : fallback;
+}
+
 /** Extract the text/thinking blocks from a Pi assistant message. */
 export function mapMessageContent(message: unknown): ContentBlock[] {
   const content = (message as PiMessage)?.content;

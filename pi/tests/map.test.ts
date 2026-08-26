@@ -6,6 +6,7 @@ import {
   mapMessageContent,
   mapToolResultContent,
   mapUsage,
+  messageModel,
   toolFunctionId,
 } from '../src/map.js';
 import type { AgentMessage } from '../src/types.js';
@@ -26,6 +27,22 @@ describe('toolFunctionId', () => {
     // carry their server without the `mcp__` prefix.
     expect(toolFunctionId('github__create_issue')).toBe('github::create_issue');
     expect(toolFunctionId('')).toBe('pi::tool');
+  });
+});
+
+describe('messageModel', () => {
+  it('prefers the model that actually answered over the configured one', () => {
+    // pi resolves its own model when the caller names none, so the config's
+    // empty string is a fallback — and a nameless agent reads as broken in the
+    // console beside a named one.
+    expect(messageModel({ model: 'gpt-5.5', provider: 'openai' }, '')).toBe('gpt-5.5');
+    expect(messageModel({ model: 'gpt-5.5' }, 'anthropic/claude')).toBe('gpt-5.5');
+  });
+
+  it('falls back when the message names none', () => {
+    expect(messageModel({}, 'openai/gpt-4o-mini')).toBe('openai/gpt-4o-mini');
+    expect(messageModel(null, 'openai/gpt-4o-mini')).toBe('openai/gpt-4o-mini');
+    expect(messageModel({ model: '' }, '')).toBe('');
   });
 });
 

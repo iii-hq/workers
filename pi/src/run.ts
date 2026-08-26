@@ -23,6 +23,7 @@ import {
   makeAssistantMessage,
   makeFunctionResult,
   mapMessageContent,
+  messageModel,
   mapToolResultContent,
   mapUsage,
   toolFunctionId,
@@ -349,6 +350,9 @@ async function runReserved(
       const message = event.message as { role?: string } | undefined;
       if (message?.role !== 'assistant') return;
       const content = mapMessageContent(message);
+      // pi resolves the model per turn; remember which one answered so the
+      // record, the fallback message and `pi::status` all name it.
+      record.model = messageModel(message, record.model);
       const assistant = makeAssistantMessage(content, record.model, record.usage);
       transcript.push(assistant);
       const text = content
