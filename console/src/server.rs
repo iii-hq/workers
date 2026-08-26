@@ -7,6 +7,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use axum::extract::{FromRef, Path, State};
@@ -15,11 +16,52 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use tokio::net::TcpListener;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, Mutex};
+use tokio::task::{AbortHandle, JoinHandle};
 use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::ui_assets::UiRegistry;
 use crate::{assets, proxy};
+
+/// Grace period before a superseded listener is hard-aborted. Graceful
+/// shutdown is the primary path; the abort only bounds how long a stuck
+/// connection can keep the old port occupied after a configuration rebind.
+/// This matches the HTTP worker's listener-rebind strategy.
+const OLD_SERVER_HARD_STOP_GRACE: Duration = Duration::from_secs(2);
+
+/// Control handle for the currently running HTTP listener.
+pub struct ServerControl {
+    pub graceful: oneshot::Sender<()>,
+    pub abort: AbortHandle,
+    pub local_addr: SocketAddr,
+    pub join: JoinHandle<()>,
+}
+
+/// Shared slot holding the current listener. A configuration change replaces
+/// this only after the new port has bound successfully.
+pub type ServerControlCell = Arc<Mutex<Option<ServerControl>>>;
+
+/// Handle returned once the initial listener is bound and serving.
+pub struct ServerHandle {
+    pub local_addr: SocketAddr,
+    pub control: ServerControlCell,
+}
+
+impl ServerHandle {
+    /// The address currently serving Console. This changes after a live port
+    /// rebind and becomes `None` after shutdown.
+    pub async fn current_addr(&self) -> Option<SocketAddr> {
+        self.control.lock().await.as_ref().map(|c| c.local_addr)
+    }
+
+    /// Gracefully stop the current listener and wait for it to finish.
+    pub async fn shutdown(self) {
+        if let Some(control) = self.control.lock().await.take() {
+            let _ = control.graceful.send(());
+            let _ = control.join.await;
+        }
+    }
+}
 
 /// Router state. `ui: None` means injectable UI is disabled (config kill
 /// switch) — the `/ui` and `/vendor` routes are not mounted at all.
@@ -179,30 +221,80 @@ pub async fn serve(
     shutdown: oneshot::Receiver<()>,
     bound: Option<oneshot::Sender<SocketAddr>>,
 ) -> anyhow::Result<()> {
-    let app = router(state);
-
-    let addr: SocketAddr = (std::net::Ipv4Addr::UNSPECIFIED, http_port).into();
-    let listener = TcpListener::bind(addr)
-        .await
-        .with_context(|| format!("binding TCP listener on {addr}"))?;
-    let local = listener
-        .local_addr()
-        .with_context(|| "reading bound listener local_addr")?;
-    tracing::info!(addr = %local, "console http listening");
+    let handle = start(http_port, state).await?;
 
     if let Some(tx) = bound {
-        let _ = tx.send(local);
+        let _ = tx.send(handle.local_addr);
     }
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            let _ = shutdown.await;
-        })
-        .await
-        .context("axum::serve loop exited with error")?;
-
-    tracing::info!("console http stopped");
+    let _ = shutdown.await;
+    handle.shutdown().await;
     Ok(())
+}
+
+/// Bind the initial listener and spawn its server task.
+pub async fn start(http_port: u16, state: AppState) -> anyhow::Result<ServerHandle> {
+    let listener = bind_listener(http_port).await?;
+    let local_addr = listener
+        .local_addr()
+        .with_context(|| "reading bound listener local_addr")?;
+    let control = spawn_server(listener, state);
+    Ok(ServerHandle {
+        local_addr,
+        control: Arc::new(Mutex::new(Some(control))),
+    })
+}
+
+/// Bind `0.0.0.0:<http_port>` without changing any live server state. Rebinds
+/// use this bind-new-before-stop-old step so a failed port change leaves the
+/// existing Console listener untouched.
+pub async fn bind_listener(http_port: u16) -> anyhow::Result<TcpListener> {
+    let addr: SocketAddr = (std::net::Ipv4Addr::UNSPECIFIED, http_port).into();
+    TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("binding TCP listener on {addr}"))
+}
+
+/// Spawn a server over an already-bound listener. The same shared app state is
+/// reused when configuration moves the listener to a different port.
+pub fn spawn_server(listener: TcpListener, state: AppState) -> ServerControl {
+    let local_addr = listener
+        .local_addr()
+        .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)));
+    let (graceful_tx, graceful_rx) = oneshot::channel::<()>();
+    let app = router(state);
+
+    let join = tokio::spawn(async move {
+        tracing::info!(addr = %local_addr, "console http listening");
+        if let Err(error) = axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                let _ = graceful_rx.await;
+            })
+            .await
+        {
+            tracing::error!(%error, "console http server exited with error");
+        }
+        tracing::info!(addr = %local_addr, "console http stopped");
+    });
+
+    let abort = join.abort_handle();
+    ServerControl {
+        graceful: graceful_tx,
+        abort,
+        local_addr,
+        join,
+    }
+}
+
+/// Gracefully drain a superseded listener, with a bounded hard-stop fallback.
+/// The replacement listener is already serving before this is called.
+pub fn stop_old_server(old: ServerControl) {
+    let _ = old.graceful.send(());
+    let abort = old.abort;
+    tokio::spawn(async move {
+        tokio::time::sleep(OLD_SERVER_HARD_STOP_GRACE).await;
+        abort.abort();
+    });
 }
 
 #[cfg(test)]

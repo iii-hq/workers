@@ -1,1 +1,3 @@
+# First-registration seed/fallback. After registration, the `console`
+# configuration worker entry is authoritative and port edits apply live.
 http_port: 3113

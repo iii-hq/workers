@@ -1,6 +1,6 @@
 /**
- * Custom configuration form for the `console` configuration entry — the
- * injectable-UI toggle board.
+ * Custom configuration form for the `console` configuration entry — the live
+ * HTTP port and injectable-UI toggle board.
  *
  * One bordered card per worker that ships injected console UI (or is
  * currently toggled off), showing the worker's title and description with a
@@ -22,7 +22,12 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { ConfigFormProps, Host, JsonValue } from '@iii-dev/console-ui'
+import {
+  Input,
+  type ConfigFormProps,
+  type Host,
+  type JsonValue,
+} from '@iii-dev/console-ui'
 
 type JsonObject = { [key: string]: JsonValue }
 
@@ -65,6 +70,13 @@ function disabledWorkersOf(value: JsonValue): string[] {
   return list.filter((w): w is string => typeof w === 'string')
 }
 
+function httpPortOf(value: JsonValue): string {
+  const port = asObject(value).http_port
+  return typeof port === 'number' || typeof port === 'string'
+    ? String(port)
+    : '3113'
+}
+
 export function InjectableUiConfigForm(
   props: ConfigFormProps & { host: Host },
 ) {
@@ -73,6 +85,7 @@ export function InjectableUiConfigForm(
   const [loadError, setLoadError] = useState<string | null>(null)
 
   const disabled = useMemo(() => disabledWorkersOf(props.value), [props.value])
+  const httpPort = httpPortOf(props.value)
 
   useEffect(() => {
     let cancelled = false
@@ -138,8 +151,14 @@ export function InjectableUiConfigForm(
     })
   }
 
-  // Deep-link focus (`#/workers/configuration/console/injectableUi`): a
-  // custom form honors `focusField` itself.
+  const changeHttpPort = (next: string) => {
+    const value = asObject(props.value)
+    const parsed = /^\d+$/.test(next) ? Number(next) : next
+    props.onChange({ ...value, http_port: parsed })
+  }
+
+  // Deep-link focus (`#/workers/configuration/console/<field>`): a custom
+  // form honors `focusField` itself.
   const rootRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
     const field = props.focusField?.[0]
@@ -155,6 +174,32 @@ export function InjectableUiConfigForm(
       <span className="console-ui-form-caption">
         custom form · shipped by the console worker
       </span>
+
+      <div className="console-ui-form-section" data-field="http_port">
+        <label className="console-ui-form-title" htmlFor="console-http-port">
+          HTTP port
+        </label>
+        <span className="console-ui-form-hint">
+          serves the console UI, injected assets, and /ws proxy. saving a new
+          port starts the replacement listener before gracefully closing the
+          old one — no worker restart required.
+        </span>
+        <Input
+          id="console-http-port"
+          className="console-ui-port-input"
+          type="number"
+          inputMode="numeric"
+          min={0}
+          max={65535}
+          step={1}
+          value={httpPort}
+          onChange={changeHttpPort}
+          aria-describedby="console-http-port-hint"
+        />
+        <span id="console-http-port-hint" className="console-ui-form-field-hint">
+          0 asks the operating system to choose an available ephemeral port.
+        </span>
+      </div>
 
       <div className="console-ui-form-section" data-field="injectableUi">
         <span className="console-ui-form-title">Injectable worker UI</span>
