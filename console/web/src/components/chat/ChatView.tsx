@@ -92,6 +92,7 @@ import { isSessionSubmitBlockedByHydration } from './chat-submit-blocking'
 import { MessageList } from './MessageList'
 import { SessionTriggers } from './SessionTriggers'
 import {
+  agentIdForSend,
   DEFAULT_SYSTEM_PROMPT_STATE,
   selectionForSend,
   skillSelectionForSend,
@@ -1140,14 +1141,23 @@ export function ChatView({
       const turnEstablished = messagesRef.current.some(
         (m) => m.role === 'assistant',
       )
-      const systemPrompt = selectionForSend(
-        effectiveSystemPrompt,
-        turnEstablished,
-      )
-      const skills = skillSelectionForSend(conversation.skills, {
+      // An agent selection resolves server-side (options.agent) and supplies
+      // prompt + skills itself; suppressing the client-side selection also
+      // covers pre-upgrade drafts whose persisted namedBody would otherwise
+      // collide with the agent field.
+      const agentId = agentIdForSend(effectiveSystemPrompt, {
         turnEstablished,
         willQueue,
       })
+      const systemPrompt = agentId
+        ? null
+        : selectionForSend(effectiveSystemPrompt, turnEstablished)
+      const skills = agentId
+        ? undefined
+        : skillSelectionForSend(conversation.skills, {
+            turnEstablished,
+            willQueue,
+          })
 
       if (!willQueue) onAppendMessage(conversationId, userMsg)
 
@@ -1353,6 +1363,7 @@ export function ChatView({
               thinkingLevel,
               systemPrompt,
               skills,
+              ...(agentId ? { agent: agentId } : {}),
               workingDir: conversation.workingDir,
               approvalGateAvailable: approvalEnabled,
               ...(attachedBlocks && attachedBlocks.length > 0
@@ -1403,6 +1414,7 @@ export function ChatView({
             thinkingLevel,
             systemPrompt,
             skills,
+            ...(agentId ? { agent: agentId } : {}),
             workingDir: conversation.workingDir,
             approvalGateAvailable: approvalEnabled,
             approvalSessionMatcher,

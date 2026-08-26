@@ -14,7 +14,11 @@ import type { Host, PaletteSourceRow } from '@iii-dev/console-ui'
 
 const ROWS = 30
 
-export type DirectoryCollection = 'skills' | 'prompts' | 'system-prompts'
+export type DirectoryCollection =
+  | 'skills'
+  | 'prompts'
+  | 'system-prompts'
+  | 'agents'
 
 const COLLECTIONS: {
   id: DirectoryCollection
@@ -28,6 +32,7 @@ const COLLECTIONS: {
     label: 'System prompts',
     listFn: 'directory::system-prompts::list',
   },
+  { id: 'agents', label: 'Agents', listFn: 'directory::agents::list' },
 ]
 
 interface Row {
@@ -47,8 +52,11 @@ async function listCollection(
     payload,
   )
   // Skills answer `{ skills }`; prompts and system prompts both answer
-  // `{ prompts }` (same shape, per PromptRow).
-  const items = (out.skills ?? out.prompts ?? []) as Record<string, unknown>[]
+  // `{ prompts }` (same shape, per PromptRow); agents answer `{ agents }`.
+  const items = (out.skills ??
+    out.prompts ??
+    out.agents ??
+    []) as Record<string, unknown>[]
   return items
     .map((item) => ({
       key: String(item.id ?? item.name ?? ''),
@@ -99,8 +107,8 @@ export function registerDirectoryPalette(host: Host): void {
     {
       id: 'open',
       title: 'Open Directory',
-      detail: 'Filesystem-backed skills, prompts and system prompts',
-      keywords: ['skills', 'prompts', 'system prompts'],
+      detail: 'Filesystem-backed skills, prompts, system prompts and agents',
+      keywords: ['skills', 'prompts', 'system prompts', 'agents'],
       run: () => host.panels?.open({ pageId: 'directory', context: {} }),
     },
   ])

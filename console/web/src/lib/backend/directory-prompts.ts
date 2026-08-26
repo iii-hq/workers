@@ -131,3 +131,28 @@ export async function getSkill(
     { timeoutMs: FETCH_TIMEOUT_MS },
   )
 }
+
+/* ── agent profiles (`directory::agents::*`) — the new-session picker ── */
+
+export interface AgentEntry {
+  id: string
+  name: string
+  description: string
+  logo: string | null
+  icon: string | null
+  model: string | null
+  skill_count: number | null
+  /** true = a specialist meant to be spawned, not to front a session.
+   * Absent on directory workers that predate the field. */
+  leaf?: boolean
+  modified_at: string
+}
+
+export async function listAgents(client: IiiClient): Promise<AgentEntry[]> {
+  const res = await client.trigger<{ agents: AgentEntry[] }>(
+    'directory::agents::list',
+    {},
+    { timeoutMs: FETCH_TIMEOUT_MS },
+  )
+  return res.agents
+}

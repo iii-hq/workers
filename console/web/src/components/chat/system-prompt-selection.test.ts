@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  AGENT_CHOICE_PREFIX,
+  agentIdForSend,
   choiceToValue,
   DEFAULT_SYSTEM_PROMPT_STATE,
   type SystemPromptState,
@@ -178,5 +180,46 @@ describe('skill selection', () => {
         willQueue: true,
       }),
     ).toBeUndefined()
+  })
+})
+
+describe('agentIdForSend', () => {
+  const agentState: SystemPromptState = {
+    ...DEFAULT_SYSTEM_PROMPT_STATE,
+    choice: { named: `${AGENT_CHOICE_PREFIX}tech-leader` },
+  }
+
+  it('returns the id only on a first, non-queued send', () => {
+    expect(
+      agentIdForSend(agentState, { turnEstablished: false, willQueue: false }),
+    ).toBe('tech-leader')
+    // Once a turn exists the harness refuses options.agent.
+    expect(
+      agentIdForSend(agentState, { turnEstablished: true, willQueue: false }),
+    ).toBeUndefined()
+    // A queued mid-stream send targets a session with a prior turn — the
+    // willQueue gate is load-bearing, not symmetry with selectionForSend.
+    expect(
+      agentIdForSend(agentState, { turnEstablished: false, willQueue: true }),
+    ).toBeUndefined()
+  })
+
+  it('ignores non-agent choices', () => {
+    expect(
+      agentIdForSend(DEFAULT_SYSTEM_PROMPT_STATE, {
+        turnEstablished: false,
+        willQueue: false,
+      }),
+    ).toBeUndefined()
+    expect(
+      agentIdForSend(
+        { ...DEFAULT_SYSTEM_PROMPT_STATE, choice: { named: 'pirate' } },
+        { turnEstablished: false, willQueue: false },
+      ),
+    ).toBeUndefined()
+  })
+
+  it('an agent choice with an empty namedBody yields no prompt selection', () => {
+    expect(toSelection(agentState)).toBeNull()
   })
 })

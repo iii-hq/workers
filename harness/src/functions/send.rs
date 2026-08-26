@@ -40,6 +40,15 @@ impl From<String> for MessageInput {
 /// Per-send options frozen onto the turn record (harness.md § `harness::send`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct SendOptions {
+    /// Run the session as a directory agent profile (`directory::agents::*`
+    /// id). Session-creating sends only — the profile's body becomes the
+    /// enrich system prompt, its skill filter the session's skill selection,
+    /// its `model` the fallback when this send names none, and its identity
+    /// sticks like the system prompt (later sends inherit; naming an explicit
+    /// prompt field sheds it). Refused on an existing session, combined with
+    /// either prompt field, or naming a `leaf` profile (a spawn target).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
     /// How `system_prompt` combines with the built-in prompt: `override`
@@ -229,7 +238,17 @@ async fn start_with_delivery_lock(
     )? {
         return Ok(outcome);
     }
-    let (model, provider) = match (req.model.clone(), &prev) {
+    // Resolve the agent profile (if named) BEFORE the model gate and session
+    // creation: the profile's model is a fallback for a session-creating send,
+    // and a failed resolve must leave no session or budget ledger behind.
+    let agent = resolve_send_agent(deps, &cfg, &req, prev.as_ref()).await?;
+
+    let (model, provider) = match (
+        req.model
+            .clone()
+            .or_else(|| agent.as_ref().and_then(|a| a.model.clone())),
+        &prev,
+    ) {
         (Some(m), _) => (m, req.provider.clone()),
         (None, Some(prev)) => (
             prev.options.model.clone(),
@@ -255,11 +274,18 @@ async fn start_with_delivery_lock(
 
     // Freeze the per-send options before moving the message out of `req`.
     let inherits_prompt = prev.is_some() && prompt_fields_omitted(req.options.as_ref());
-    let mut options = build_options(&cfg, &req, model, provider);
+    let mut options = build_options(&cfg, &req, model, provider, agent.as_ref());
     inherit_prior_functions(
         &cfg,
         &mut options,
-        prev.as_ref().and_then(|p| p.options.functions.as_ref()),
+        prev.as_ref()
+            .and_then(|p| p.options.functions.as_ref())
+            // An agent send with no explicit policy gets the configured
+            // default instead of deny-all: an identity picked to DO something
+            // must be able to dispatch. `prev` and `agent` are mutually
+            // exclusive (resolve_send_agent), and the ask-mode clamp inside
+            // still caps the result.
+            .or_else(|| agent.as_ref().and(cfg.default_functions.as_ref())),
     );
     if let (true, Some(prev)) = (inherits_prompt, prev.as_ref()) {
         inherit_prior_system_prompt(&mut options, &prev.options);
@@ -270,7 +296,8 @@ async fn start_with_delivery_lock(
         prev.as_ref().map(|record| &record.options),
         req.options
             .as_ref()
-            .and_then(|options| options.skills.as_deref()),
+            .and_then(|options| options.skills.as_deref())
+            .or_else(|| agent.as_ref().and_then(|a| a.skills.as_deref())),
     )
     .await?;
 
@@ -722,18 +749,30 @@ fn build_options(
     req: &SendRequest,
     model: String,
     provider: Option<String>,
+    agent: Option<&crate::agents::ResolvedAgent>,
 ) -> TurnOptions {
     let opts = req.options.clone().unwrap_or_default();
     let functions = clamp_for_mode(cfg, opts.mode, opts.functions);
     TurnOptions {
         model,
         provider,
-        system_prompt: prompt::resolve_system_prompt(
-            opts.system_prompt,
-            opts.system_prompt_strategy.unwrap_or_default(),
-            opts.mode,
-            prompt::DEFAULT,
-        ),
+        // An agent profile supplies the prompt (validated exclusive with the
+        // explicit prompt fields in resolve_send_agent), always as Enrich
+        // over the top-level identity.
+        system_prompt: match agent {
+            Some(a) => prompt::resolve_system_prompt(
+                Some(a.prompt.clone()),
+                SystemPromptStrategy::Enrich,
+                opts.mode,
+                prompt::DEFAULT,
+            ),
+            None => prompt::resolve_system_prompt(
+                opts.system_prompt,
+                opts.system_prompt_strategy.unwrap_or_default(),
+                opts.mode,
+                prompt::DEFAULT,
+            ),
+        },
         skills_prompt: None,
         skill_context: None,
         mode: opts.mode,
@@ -747,6 +786,7 @@ fn build_options(
         output: opts.output.unwrap_or_default(),
         functions,
         metadata: opts.metadata,
+        agent: agent.map(|a| a.identity.clone()),
         max_validation_retries: opts
             .max_validation_retries
             .unwrap_or(cfg.max_validation_retries),
@@ -891,10 +931,68 @@ fn prompt_fields_omitted(opts: Option<&SendOptions>) -> bool {
 /// system prompt, the same way model/provider/functions are inherited. A
 /// prior `disabled` turn's `None` inherits too — disabled stays disabled.
 /// Any explicit prompt field resolves fresh; a bare `system_prompt_strategy`
-/// is the reset-to-default escape hatch.
+/// is the reset-to-default escape hatch. The frozen agent identity travels
+/// with the prompt: inherited together, shed together (an explicit prompt
+/// field also drops the identity and its `delegates_to` spawn gate).
 fn inherit_prior_system_prompt(options: &mut TurnOptions, prev: &TurnOptions) {
     options.system_prompt = prev.system_prompt.clone();
     options.skills_prompt = prev.skills_prompt.clone();
+    options.agent = prev.agent.clone();
+}
+
+/// Resolve `options.agent` for this send, or `None` when absent. Validation
+/// happens before any session/budget side effects; the fetched profile is
+/// checked by [`validate_resolved_agent`].
+async fn resolve_send_agent(
+    deps: &Deps,
+    cfg: &WorkerConfig,
+    req: &SendRequest,
+    prev: Option<&TurnRecord>,
+) -> Result<Option<crate::agents::ResolvedAgent>, HarnessError> {
+    let Some(id) = agent_send_id(req.options.as_ref(), prev.is_some())? else {
+        return Ok(None);
+    };
+    let agent = crate::agents::resolve(deps, cfg, id).await?;
+    validate_resolved_agent(&agent)?;
+    Ok(Some(agent))
+}
+
+/// The pre-fetch half of agent-send validation: which id (if any) this send
+/// resolves, or why it may not name one.
+fn agent_send_id(
+    options: Option<&SendOptions>,
+    has_prev: bool,
+) -> Result<Option<&str>, HarnessError> {
+    let Some(id) = options.and_then(|o| o.agent.as_deref()) else {
+        return Ok(None);
+    };
+    if has_prev {
+        return Err(HarnessError::InvalidRequest(
+            "`options.agent` applies only when starting a session; later sends inherit the \
+             frozen identity — start a new session to run as a different agent"
+                .into(),
+        ));
+    }
+    if !prompt_fields_omitted(options) {
+        return Err(HarnessError::InvalidRequest(
+            "`options.agent` supplies the system prompt; drop `system_prompt` / \
+             `system_prompt_strategy` or drop `agent`"
+                .into(),
+        ));
+    }
+    Ok(Some(id))
+}
+
+/// The IO-free half of send-side agent validation.
+fn validate_resolved_agent(agent: &crate::agents::ResolvedAgent) -> Result<(), HarnessError> {
+    if agent.leaf {
+        return Err(HarnessError::InvalidRequest(format!(
+            "agent `{}` is `leaf: true` — a spawn target, not a session identity; pass it to \
+             `harness::spawn` as `agent` instead",
+            agent.identity.id
+        )));
+    }
+    Ok(())
 }
 
 /// A send whose metadata does not name the `fs_scope` key inherits the prior
@@ -1396,7 +1494,13 @@ mod tests {
                 ..Default::default()
             }),
         };
-        let opts = build_options(&cfg, &req, "claude-sonnet-4".into(), req.provider.clone());
+        let opts = build_options(
+            &cfg,
+            &req,
+            "claude-sonnet-4".into(),
+            req.provider.clone(),
+            None,
+        );
         let prompt = opts.system_prompt.expect("built-in prompt");
         assert!(prompt.contains("operating in agent mode"));
         assert!(prompt.contains("# System rules"));
@@ -1419,7 +1523,13 @@ mod tests {
                 ..Default::default()
             }),
         };
-        let opts = build_options(&cfg, &req, "claude-sonnet-4".into(), req.provider.clone());
+        let opts = build_options(
+            &cfg,
+            &req,
+            "claude-sonnet-4".into(),
+            req.provider.clone(),
+            None,
+        );
         assert_eq!(opts.system_prompt.as_deref(), Some("custom"));
     }
 
@@ -1441,6 +1551,7 @@ mod tests {
             output: OutputContract::Text,
             functions,
             metadata: None,
+            agent: None,
             max_validation_retries: 2,
             max_transient_resumes: 1,
         }
@@ -1825,7 +1936,7 @@ mod tests {
                 ..Default::default()
             }),
         };
-        let opts = build_options(&cfg, &req, "m".into(), req.provider.clone());
+        let opts = build_options(&cfg, &req, "m".into(), req.provider.clone(), None);
         let compiled = policy::CompiledPolicy::from(opts.functions.as_ref());
         // The wildcard default preserves the requested policy…
         assert!(compiled.allows("state::get"));
@@ -1857,7 +1968,7 @@ mod tests {
                     ..Default::default()
                 }),
             };
-            let opts = build_options(&cfg, &req, "m".into(), None);
+            let opts = build_options(&cfg, &req, "m".into(), None, None);
             let compiled = policy::CompiledPolicy::from(opts.functions.as_ref());
             assert!(
                 compiled.allows("state::set"),
@@ -1882,7 +1993,13 @@ mod tests {
                 ..Default::default()
             }),
         };
-        let opts = build_options(&cfg, &req, "claude-sonnet-4".into(), req.provider.clone());
+        let opts = build_options(
+            &cfg,
+            &req,
+            "claude-sonnet-4".into(),
+            req.provider.clone(),
+            None,
+        );
         let prompt = opts.system_prompt.expect("enriched prompt");
         assert!(prompt.starts_with(crate::prompt::DEFAULT));
         assert!(prompt.ends_with("Speak only in haiku."));
@@ -1901,6 +2018,7 @@ mod tests {
                 options: None,
             },
             "m".into(),
+            None,
             None,
         )
     }
@@ -2016,5 +2134,197 @@ mod tests {
             cfg.resolved_default_filesystem_root(),
             Some("/srv/projects".to_string())
         );
+    }
+
+    fn resolved_agent(leaf: bool, model: Option<&str>) -> crate::agents::ResolvedAgent {
+        crate::agents::ResolvedAgent {
+            identity: crate::types::turn::AgentIdentity {
+                id: "tech-leader".into(),
+                delegates_to: Some(vec!["coder".into()]),
+            },
+            prompt: "You are Tech Leader.\n\nDelegate everything.".into(),
+            skills: Some(vec!["review".into()]),
+            model: model.map(str::to_string),
+            name: "Tech Leader".into(),
+            icon: None,
+            leaf,
+        }
+    }
+
+    fn agent_send_request(options: SendOptions) -> SendRequest {
+        SendRequest {
+            session_id: None,
+            message: MessageInput::Text("hi".into()),
+            model: None,
+            provider: None,
+            idempotency_key: None,
+            session: None,
+            options: Some(options),
+        }
+    }
+
+    #[test]
+    fn agent_send_id_refusal_matrix() {
+        let named = |options: &SendOptions| {
+            agent_send_id(Some(options), false).map(|id| id.map(String::from))
+        };
+        // Plain agent send resolves.
+        assert_eq!(
+            named(&SendOptions {
+                agent: Some("tech-leader".into()),
+                ..Default::default()
+            })
+            .unwrap(),
+            Some("tech-leader".to_string())
+        );
+        // No agent named → no resolution, whatever else is set.
+        assert_eq!(agent_send_id(None, true).unwrap(), None);
+        // Existing session → refused.
+        let err = agent_send_id(
+            Some(&SendOptions {
+                agent: Some("tech-leader".into()),
+                ..Default::default()
+            }),
+            true,
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "harness/invalid_request");
+        assert!(err.to_string().contains("starting a session"));
+        // Combined with either explicit prompt field → refused.
+        for options in [
+            SendOptions {
+                agent: Some("tech-leader".into()),
+                system_prompt: Some("be terse".into()),
+                ..Default::default()
+            },
+            SendOptions {
+                agent: Some("tech-leader".into()),
+                system_prompt_strategy: Some(SystemPromptStrategy::Enrich),
+                ..Default::default()
+            },
+        ] {
+            let err = named(&options).unwrap_err();
+            assert!(err.to_string().contains("drop `system_prompt`"), "{err}");
+        }
+    }
+
+    #[test]
+    fn leaf_agents_are_refused_as_session_identities() {
+        let err = validate_resolved_agent(&resolved_agent(true, None)).unwrap_err();
+        assert!(err.to_string().contains("harness::spawn"), "{err}");
+        assert!(validate_resolved_agent(&resolved_agent(false, None)).is_ok());
+    }
+
+    #[test]
+    fn build_options_applies_agent_prompt_and_identity() {
+        let cfg = WorkerConfig::default();
+        let req = agent_send_request(SendOptions {
+            agent: Some("tech-leader".into()),
+            ..Default::default()
+        });
+        let agent = resolved_agent(false, None);
+        let opts = build_options(&cfg, &req, "m".into(), None, Some(&agent));
+        let prompt = opts.system_prompt.expect("agent prompt");
+        assert!(
+            prompt.starts_with(crate::prompt::DEFAULT),
+            "enrich, not override"
+        );
+        assert!(prompt.ends_with("You are Tech Leader.\n\nDelegate everything."));
+        assert_eq!(opts.agent, Some(agent.identity));
+    }
+
+    #[test]
+    fn agent_send_defaults_functions_to_the_configured_baseline() {
+        let cfg = WorkerConfig::default();
+        let agent = resolved_agent(false, None);
+        let req = agent_send_request(SendOptions {
+            agent: Some("tech-leader".into()),
+            ..Default::default()
+        });
+        // Absent policy + agent → the configured default applies.
+        let mut opts = build_options(&cfg, &req, "m".into(), None, Some(&agent));
+        inherit_prior_functions(
+            &cfg,
+            &mut opts,
+            None.or_else(|| Some(&agent).and(cfg.default_functions.as_ref())),
+        );
+        let compiled = policy::CompiledPolicy::from(opts.functions.as_ref());
+        assert!(compiled.allows("harness::spawn"));
+        assert!(compiled.allows("state::set"));
+        // Explicit policy wins over the agent default.
+        let req = agent_send_request(SendOptions {
+            agent: Some("tech-leader".into()),
+            functions: Some(FunctionPolicy {
+                allow: vec!["state::get".into()],
+                deny: vec![],
+                expose: Default::default(),
+            }),
+            ..Default::default()
+        });
+        let mut opts = build_options(&cfg, &req, "m".into(), None, Some(&agent));
+        inherit_prior_functions(
+            &cfg,
+            &mut opts,
+            None.or_else(|| Some(&agent).and(cfg.default_functions.as_ref())),
+        );
+        let compiled = policy::CompiledPolicy::from(opts.functions.as_ref());
+        assert!(compiled.allows("state::get"));
+        assert!(!compiled.allows("harness::spawn"));
+        // Ask mode still clamps: the shipped wildcard baseline is identity, so
+        // the agent default survives — same as an explicit `allow:["*"]` ask
+        // send. A narrowed operator baseline stays authoritative.
+        let narrow_cfg = WorkerConfig {
+            default_functions: Some(FunctionPolicy {
+                allow: vec!["state::get".into()],
+                deny: vec![],
+                expose: Default::default(),
+            }),
+            ..Default::default()
+        };
+        let req = agent_send_request(SendOptions {
+            agent: Some("tech-leader".into()),
+            mode: Some(Mode::Ask),
+            ..Default::default()
+        });
+        let mut opts = build_options(&narrow_cfg, &req, "m".into(), None, Some(&agent));
+        inherit_prior_functions(
+            &narrow_cfg,
+            &mut opts,
+            None.or_else(|| Some(&agent).and(narrow_cfg.default_functions.as_ref())),
+        );
+        let compiled = policy::CompiledPolicy::from(opts.functions.as_ref());
+        assert!(compiled.allows("state::get"));
+        assert!(!compiled.allows("harness::spawn"), "ask cap holds");
+    }
+
+    #[test]
+    fn agent_identity_inherits_with_the_prompt_and_sheds_with_it() {
+        let cfg = WorkerConfig::default();
+        let agent = resolved_agent(false, None);
+        let req = agent_send_request(SendOptions {
+            agent: Some("tech-leader".into()),
+            ..Default::default()
+        });
+        let prev = build_options(&cfg, &req, "m".into(), None, Some(&agent));
+
+        // A bare steer inherits prompt AND identity.
+        let mut next = bare_options();
+        inherit_prior_system_prompt(&mut next, &prev);
+        assert_eq!(next.system_prompt, prev.system_prompt);
+        assert_eq!(next.agent, prev.agent);
+
+        // An explicit prompt field resolves fresh — no inherit call — and the
+        // freshly built options carry no identity.
+        let explicit = build_options(
+            &cfg,
+            &agent_send_request(SendOptions {
+                system_prompt: Some("be terse".into()),
+                ..Default::default()
+            }),
+            "m".into(),
+            None,
+            None,
+        );
+        assert_eq!(explicit.agent, None);
     }
 }

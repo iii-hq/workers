@@ -53,21 +53,18 @@ export const Ready: Story = {
     variant: 'ready',
     systemPrompt: DEFAULT_SYSTEM_PROMPT_STATE,
     onSystemPromptChange: fn(),
-    onSkillsChange: fn(),
   },
 }
 
 export const ReadyWithNamedPrompt: Story = {
-  name: 'ready (named system prompt)',
+  name: 'ready (agent selected)',
   args: {
     variant: 'ready',
     systemPrompt: {
       ...DEFAULT_SYSTEM_PROMPT_STATE,
-      choice: { named: 'ptbr' },
+      choice: { named: 'agent:tech-leader' },
     },
     onSystemPromptChange: fn(),
-    skills: ['review', 'release'],
-    onSkillsChange: fn(),
   },
 }
 

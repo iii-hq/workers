@@ -43,6 +43,7 @@ use serde_json::Value;
 pub const SKILLS_ON_CHANGE: &str = "directory::skills::on-change";
 pub const PROMPTS_ON_CHANGE: &str = "directory::prompts::on-change";
 pub const SYSTEM_PROMPTS_ON_CHANGE: &str = "directory::system-prompts::on-change";
+pub const AGENTS_ON_CHANGE: &str = "directory::agents::on-change";
 
 /// Thread-safe subscriber registry keyed by trigger-instance id. Cloned
 /// into both the `TriggerHandler` (which mutates on register /
@@ -120,6 +121,7 @@ pub struct RegisteredTriggerTypes {
     pub skills: SubscriberSet,
     pub prompts: SubscriberSet,
     pub system_prompts: SubscriberSet,
+    pub agents: SubscriberSet,
 }
 
 pub fn register_all(iii: &Arc<IIIClient>) -> RegisteredTriggerTypes {
@@ -162,10 +164,23 @@ pub fn register_all(iii: &Arc<IIIClient>) -> RegisteredTriggerTypes {
         "registered trigger type"
     );
 
+    let agents = SubscriberSet::new();
+    let _ = iii.register_trigger_type(RegisterTriggerType::new(
+        AGENTS_ON_CHANGE.to_string(),
+        "Fires after a directory::skills::download that wrote at least one agent profile, \
+         or a directory::agents::update, create, or delete. Also fires with \
+         { op: \"external\" } when a watched agents file changes on disk outside this \
+         worker."
+            .to_string(),
+        SkillsTriggerHandler::new(AGENTS_ON_CHANGE, agents.clone()),
+    ));
+    tracing::info!(trigger_type = AGENTS_ON_CHANGE, "registered trigger type");
+
     RegisteredTriggerTypes {
         skills,
         prompts,
         system_prompts,
+        agents,
     }
 }
 

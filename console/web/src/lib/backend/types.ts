@@ -135,6 +135,13 @@ export interface ChatStreamOptions {
    * (provider default identity prompt). Mock backends ignore this.
    */
   systemPrompt?: import('./harness-send').SystemPromptSelection | null
+  /**
+   * Directory agent profile id, forwarded as `harness::send` `options.agent`
+   * (resolved server-side, MOT-4485). First send of a session only — the
+   * harness refuses it once a turn exists. Mutually exclusive with
+   * `systemPrompt`/`skills`: the profile supplies both.
+   */
+  agent?: string
   /** First-send skill curation. Undefined/empty means all skills. */
   skills?: string[]
   /**
