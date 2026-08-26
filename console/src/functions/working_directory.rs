@@ -18,6 +18,7 @@ use serde_json::{json, Value};
 pub const PROPOSE_ID: &str = "console::working-directory::propose";
 pub const STAMP_SESSION_ID: &str = "console::working-directory::stamp-session";
 pub const GUIDANCE_ID: &str = "console::working-directory::inject-guidance";
+const ADOPT_ROOT_ID: &str = "shell::turns::adopt-root";
 
 const WORKING_DIRECTORY_GUIDANCE: &str = "Working-directory handoff (pre-verified Console capability): when the user explicitly asks you to create or clone a project in another directory and continue there, set it as the working directory, or open it as the chat workspace, call `console::working-directory::propose` after the directory exists with `{ \"path\": \"/absolute/path\", \"reason\": \"...\" }`. This exact function and payload are pre-verified while Console is connected, so call it directly without another discovery search. The function validates and canonicalizes the path; it does not silently move the chat. Console asks the user to confirm, then the chat and paired Shell follow together. Do not call it merely because you inspected or edited a file outside the current workspace.";
 
@@ -31,6 +32,9 @@ pub struct ProposeWorkingDirectoryRequest {
     /// Authoritative Harness context. In-turn calls are stamped before dispatch.
     #[serde(default)]
     pub session_id: Option<String>,
+    /// Authoritative Harness turn. In-turn calls are stamped before dispatch.
+    #[serde(default)]
+    pub turn_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema, PartialEq, Eq)]
@@ -46,6 +50,8 @@ pub struct ProposeWorkingDirectoryResponse {
 pub struct StampSessionEvent {
     #[serde(default)]
     pub session_id: Option<String>,
+    #[serde(default)]
+    pub turn_id: Option<String>,
     #[serde(default)]
     pub call: Option<StampCall>,
 }
@@ -147,6 +153,25 @@ async fn propose(
             "shell returned an invalid working-directory validation response: {error}"
         ))
     })?;
+    if let (Some(session_id), Some(turn_id)) =
+        (request.session_id.as_deref(), request.turn_id.as_deref())
+    {
+        if let Err(error) = iii
+            .trigger(TriggerRequest {
+                function_id: ADOPT_ROOT_ID.into(),
+                payload: json!({
+                    "session_id": session_id,
+                    "turn_id": turn_id,
+                    "root": validated.path,
+                }),
+                action: None,
+                timeout_ms: Some(10_000),
+            })
+            .await
+        {
+            tracing::debug!(%error, "new project could not be added to Shell turn history");
+        }
+    }
     proposal(request, validated.path)
 }
 
@@ -155,6 +180,10 @@ fn stamp_session(event: StampSessionEvent) -> Option<StampSessionResponse> {
     let mut arguments = event.call.map(|call| call.arguments).unwrap_or(Value::Null);
     let object = arguments.as_object_mut()?;
     object.insert("session_id".into(), json!(session_id));
+    object.remove("turn_id");
+    if let Some(turn_id) = event.turn_id.filter(|value| !value.is_empty()) {
+        object.insert("turn_id".into(), json!(turn_id));
+    }
     Some(StampSessionResponse {
         decision: "continue".into(),
         mutations: HookMutations { arguments },
@@ -265,10 +294,12 @@ mod tests {
     fn stamped_session_overwrites_spoofed_context() {
         let event: StampSessionEvent = serde_json::from_value(json!({
             "session_id": "real-session",
+            "turn_id": "real-turn",
             "call": {
                 "arguments": {
                     "path": "/tmp/project",
-                    "session_id": "other-session"
+                    "session_id": "other-session",
+                    "turn_id": "other-turn"
                 }
             }
         }))
@@ -276,6 +307,7 @@ mod tests {
 
         let stamped = stamp_session(event).unwrap();
         assert_eq!(stamped.mutations.arguments["session_id"], "real-session");
+        assert_eq!(stamped.mutations.arguments["turn_id"], "real-turn");
         assert_eq!(stamped.mutations.arguments["path"], "/tmp/project");
     }
 
@@ -286,6 +318,7 @@ mod tests {
                 path: "/tmp/link".into(),
                 reason: Some("  cloned the requested repository  ".into()),
                 session_id: Some("session-1".into()),
+                turn_id: Some("turn-1".into()),
             },
             "/private/tmp/project".into(),
         )
@@ -309,6 +342,7 @@ mod tests {
                 path: "/tmp/project".into(),
                 reason: None,
                 session_id: None,
+                turn_id: None,
             },
             "/private/tmp/project".into(),
         )
