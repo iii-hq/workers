@@ -1,0 +1,13 @@
+iii: v1
+name: tailscale
+language: rust
+deploy: binary
+manifest: Cargo.toml
+license: Apache-2.0
+bin: tailscale
+tags: [tailscale, remote-access, serve, funnel, qr-code, console]
+description: Share the local iii Console over Tailscale Serve, or Tailscale Funnel with explicit opt-in, with typed status and exact route controls plus a Console page that shows the link as a QR code.
+
+dependencies:
+  configuration: "0.x"
+  console: "^1.9.14"

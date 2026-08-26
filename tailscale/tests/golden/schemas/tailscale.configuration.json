@@ -1,0 +1,106 @@
+{
+  "description": "Return the non-secret worker settings and the current Serve configuration. The CLI path is omitted.",
+  "function_id": "tailscale::configuration",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "EmptyInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Route": {
+        "properties": {
+          "host": {
+            "description": "MagicDNS host name the route answers on.",
+            "type": "string"
+          },
+          "mode": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/ShareMode"
+              }
+            ],
+            "description": "`serve` for a tailnet-only route, `funnel` when the same listener is also published to the internet."
+          },
+          "path": {
+            "description": "URL path prefix the route serves.",
+            "type": "string"
+          },
+          "port": {
+            "description": "HTTPS port of the listener.",
+            "format": "uint16",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "target": {
+            "description": "Local target the route proxies to.",
+            "type": "string"
+          },
+          "url": {
+            "description": "Full HTTPS URL a device opens to reach the route.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "host",
+          "mode",
+          "path",
+          "port",
+          "target",
+          "url"
+        ],
+        "type": "object"
+      },
+      "ShareMode": {
+        "enum": [
+          "serve",
+          "funnel"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "allow_funnel": {
+        "description": "Whether public Funnel shares are permitted by the operator.",
+        "type": "boolean"
+      },
+      "command_timeout_ms": {
+        "description": "Per-command timeout for the Tailscale CLI.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "console_url": {
+        "description": "Local Console URL the routes proxy to.",
+        "type": "string"
+      },
+      "default_https_port": {
+        "description": "HTTPS port used when a share request omits one.",
+        "format": "uint16",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "routes": {
+        "description": "Active Serve and Funnel routes on this node.",
+        "items": {
+          "$ref": "#/definitions/Route"
+        },
+        "type": "array"
+      },
+      "serve_config": {
+        "description": "Raw `tailscale serve status --json` output."
+      }
+    },
+    "required": [
+      "allow_funnel",
+      "command_timeout_ms",
+      "console_url",
+      "default_https_port",
+      "routes",
+      "serve_config"
+    ],
+    "title": "ConfigurationOutput",
+    "type": "object"
+  }
+}

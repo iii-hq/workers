@@ -1,0 +1,87 @@
+{
+  "description": "Stop one exact Serve or Funnel route by mode, HTTPS port, and path. Other routes are never reset.",
+  "function_id": "tailscale::share::stop",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ShareMode": {
+        "enum": [
+          "serve",
+          "funnel"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "https_port": {
+        "description": "HTTPS port of the route to stop.",
+        "format": "uint16",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "mode": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/ShareMode"
+          }
+        ],
+        "description": "Mode of the route to stop."
+      },
+      "path": {
+        "default": "/",
+        "description": "URL path prefix of the route to stop; defaults to `/`.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "https_port",
+      "mode"
+    ],
+    "title": "StopInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ShareMode": {
+        "enum": [
+          "serve",
+          "funnel"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "https_port": {
+        "description": "HTTPS port of the stopped route.",
+        "format": "uint16",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "mode": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/ShareMode"
+          }
+        ],
+        "description": "Mode of the stopped route."
+      },
+      "path": {
+        "description": "URL path prefix of the stopped route.",
+        "type": "string"
+      },
+      "stopped": {
+        "description": "True when the route was removed.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "https_port",
+      "mode",
+      "path",
+      "stopped"
+    ],
+    "title": "StopOutput",
+    "type": "object"
+  }
+}

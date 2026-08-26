@@ -320,6 +320,13 @@ rules:
   - '!vscode::ui-content'
   - vscode::start
   - vscode::instances::list
+  # tailscale: read-only status/configuration are safe; share publishes the
+  # Console on a new listener and stop tears a route down, so both stay
+  # approval-gated. Config-reload callback and Console asset are bus-internal.
+  - '!tailscale::on-config-change'
+  - '!tailscale::ui-content'
+  - tailscale::status
+  - tailscale::configuration
   # Read-only code surface (coder::*, now served by the shell worker).
   # Mutating ops (create/update/move/delete-file) stay approval-gated.
   - coder::info

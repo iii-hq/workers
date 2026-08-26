@@ -1,0 +1,14 @@
+# Agent permissions for the tailscale worker.
+# Spec: docs/sops/new-worker.md § 7. First-match-wins.
+#
+# status and configuration are read-only and safe to allow. share publishes
+# the Console on a new HTTPS listener (Funnel to the whole internet) and stop
+# tears a person's route down, so both stay at the needs_approval default.
+# The config-reload callback and the Console asset function are bus-internal.
+version: 1
+
+rules:
+  - '!tailscale::on-config-change'
+  - '!tailscale::ui-content'
+  - tailscale::status
+  - tailscale::configuration
