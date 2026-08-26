@@ -1,5 +1,7 @@
 import { Bot, ChevronDown, ChevronRight, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
+import { SUBAGENT_ICON_COMPONENTS } from '@/components/chat/ActiveSubagentChips'
+import '@/components/chat/ActiveSubagentChips.css'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { TriggerIcon } from '@/components/ui/TriggerIcon'
 import { cn } from '@/lib/utils'
@@ -138,15 +140,22 @@ export function ConversationRow({
           />
         )
       ) : null}
-      {/* Sub-agent origin: ⚡ a trigger reaction spawned it, 🤖 an agent's
-          direct harness::spawn did. Absent on roots and pre-stamp sessions. */}
+      {/* Sub-agent origin: ⚡ a trigger reaction spawned it, otherwise the
+          spawn's declared display identity (subagent_display icon + color)
+          when present, falling back to the generic 🤖. Absent on roots and
+          pre-stamp sessions. */}
       {depth > 0 && conversation.spawnedBy ? (
         <span
-          className="flex items-center shrink-0 text-ink-ghost"
+          className="subagent-tree-icon flex items-center shrink-0 text-ink-ghost"
+          data-color={
+            conversation.spawnedBy === 'agent'
+              ? conversation.subagentAppearance?.color
+              : undefined
+          }
           title={
             conversation.spawnedBy === 'trigger'
               ? 'spawned by a trigger'
-              : 'spawned by an agent'
+              : (conversation.subagentAppearance?.name ?? 'spawned by an agent')
           }
         >
           {conversation.spawnedBy === 'trigger' ? (
@@ -155,7 +164,19 @@ export function ConversationRow({
               className="size-4 shrink-0 fill-ink-ghost"
             />
           ) : (
-            <Bot aria-label="spawned by an agent" className="size-4 shrink-0" />
+            (() => {
+              const icon = conversation.subagentAppearance?.icon
+              const Icon = (icon && SUBAGENT_ICON_COMPONENTS[icon]) || Bot
+              return (
+                <Icon
+                  aria-label={
+                    conversation.subagentAppearance?.name ??
+                    'spawned by an agent'
+                  }
+                  className="size-4 shrink-0"
+                />
+              )
+            })()
           )}
         </span>
       ) : null}

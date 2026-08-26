@@ -44,6 +44,10 @@ export type HarnessSendMode = 'ask' | 'agent'
 
 /** Per-send options frozen onto the turn record. */
 export interface HarnessSendOptions {
+  /** Directory agent profile id the session runs as, resolved server-side
+   * (MOT-4485). Session-creating sends only — the harness REFUSES it on a
+   * session with a prior turn, and combined with either prompt field. */
+  agent?: string
   /** Sticky per session: a send that omits BOTH prompt fields inherits the
    * prior turn's resolved prompt; naming either field resolves fresh (a bare
    * strategy is the harness's reset-to-default escape hatch). */

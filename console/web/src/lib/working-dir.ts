@@ -40,9 +40,38 @@ export function errMsg(err: unknown): string {
   return matches[matches.length - 1][1].replace(/\\(.)/g, '$1')
 }
 
+function errCode(err: unknown): string | undefined {
+  if (err && typeof err === 'object' && 'code' in err) {
+    const code = String((err as { code: unknown }).code)
+    if (/^[A-Z]\d{3}$/.test(code)) return code
+  }
+  const raw =
+    err instanceof Error
+      ? err.message
+      : err && typeof err === 'object' && 'message' in err
+        ? String((err as { message: unknown }).message)
+        : String(err)
+  const nested = [...raw.matchAll(/"code"\s*:\s*"([A-Z]\d{3})"/g)]
+  return nested.at(-1)?.[1] ?? raw.match(/\b([A-Z]\d{3})\b/)?.[1]
+}
+
 export type WorkspaceValidation =
   | { ok: true; path: string }
-  | { ok: false; error: string }
+  | { ok: false; error: string; code?: string }
+
+export type WorkingDirActivation =
+  | { status: 'valid'; path: string }
+  | { status: 'recovered'; path: string | null }
+  | { status: 'unavailable'; path: string }
+
+export function workingDirRecoveryNotice(
+  savedDir: string,
+  nextDir: string | null,
+): string {
+  return nextDir === null
+    ? `working directory ${savedDir} is no longer available; this session is now unscoped — applies to the messages that follow`
+    : `working directory changed to ${nextDir} because ${savedDir} is no longer available — applies to the messages that follow`
+}
 
 /**
  * Validate a directory against the LIVE shell worker. On success the result
@@ -60,7 +89,12 @@ export async function validateWorkspaceDir(
     )
     return { ok: true, path: res?.path ?? dir }
   } catch (err) {
-    return { ok: false, error: errMsg(err) }
+    const code = errCode(err)
+    return {
+      ok: false,
+      error: errMsg(err),
+      ...(code ? { code } : {}),
+    }
   }
 }
 
@@ -82,6 +116,15 @@ export function fetchDefaultWorkingDir(): Promise<string | null> {
 }
 
 async function resolveDefaultWorkingDir(): Promise<string | null> {
+  const result = await resolveLiveDefaultWorkingDir()
+  return result.status === 'resolved' ? result.path : null
+}
+
+type DefaultWorkingDirResolution =
+  | { status: 'resolved'; path: string | null }
+  | { status: 'unavailable' }
+
+async function resolveLiveDefaultWorkingDir(): Promise<DefaultWorkingDirResolution> {
   try {
     const client = await getIiiClient()
     const info = await client.trigger<HarnessFilesystemInfoResult>(
@@ -89,12 +132,54 @@ async function resolveDefaultWorkingDir(): Promise<string | null> {
       {},
     )
     const root = info?.default_root
-    if (typeof root !== 'string' || root.length === 0) return null
+    if (typeof root !== 'string' || root.length === 0) {
+      return { status: 'resolved', path: null }
+    }
     const validated = await validateWorkspaceDir(root)
-    return validated.ok ? validated.path : null
+    if (validated.ok) return { status: 'resolved', path: validated.path }
+    return isInvalidWorkspace(validated)
+      ? { status: 'resolved', path: null }
+      : { status: 'unavailable' }
   } catch {
-    return null
+    return { status: 'unavailable' }
   }
+}
+
+function isInvalidWorkspace(
+  result: Extract<WorkspaceValidation, { ok: false }>,
+): boolean {
+  if (
+    result.code === 'S210' ||
+    result.code === 'S211' ||
+    result.code === 'S212'
+  ) {
+    return true
+  }
+  return /not found or not accessible|not a directory/i.test(result.error)
+}
+
+/**
+ * Reconcile persisted session scope with the live filesystem. A missing saved
+ * path is normal for temporary Harness projects, so recover to the current
+ * Harness default instead of turning it into a blocking picker error. Resolve
+ * the default live here rather than trusting the page cache: the filesystem
+ * may have changed since the picker was first rendered.
+ */
+export async function activateWorkingDir(
+  savedDir: string,
+): Promise<WorkingDirActivation> {
+  const saved = await validateWorkspaceDir(savedDir)
+  if (saved.ok) return { status: 'valid', path: saved.path }
+  if (!isInvalidWorkspace(saved)) {
+    return { status: 'unavailable', path: savedDir }
+  }
+
+  const fallback = await resolveLiveDefaultWorkingDir()
+  if (fallback.status === 'unavailable') {
+    return { status: 'unavailable', path: savedDir }
+  }
+  defaultWorkingDirPromise = Promise.resolve(fallback.path)
+  return { status: 'recovered', path: fallback.path }
 }
 
 /** Test hook: drop the page-lifetime cache. */

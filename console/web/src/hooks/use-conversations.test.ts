@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_SYSTEM_PROMPT_STATE,
   skillSelectionForSend,
+  toSelection,
 } from '@/components/chat/system-prompt-selection'
 import { transcriptToMessages } from '@/lib/sessions/entry-mapper'
 import type {
@@ -156,6 +157,18 @@ describe('mergeConversationMeta', () => {
         sessionMeta({ metadata: { mode: 'ask' } }),
       ).mode,
     ).toBe('ask')
+  })
+
+  it('restores the session thinking level and defaults older sessions', () => {
+    expect(
+      mergeConversationMeta(
+        undefined,
+        sessionMeta({ metadata: { thinking_level: 'xhigh' } }),
+      ).thinkingLevel,
+    ).toBe('xhigh')
+    expect(
+      mergeConversationMeta(undefined, sessionMeta({})).thinkingLevel,
+    ).toBe('default')
   })
 
   it('repairs a stale idle row from authoritative session metadata', () => {
@@ -546,6 +559,7 @@ describe('metadataFor', () => {
           spawned_by: 'agent',
           skills: ['stale'],
           fs_scope: { root: '/stale' },
+          thinking_level: 'low',
           subagent_display: {
             name: 'Frontend',
             icon: 'code',
@@ -570,6 +584,20 @@ describe('metadataFor', () => {
         color: 'blue',
       },
     })
+  })
+
+  it('persists a non-default thinking level and clears a stale one at default', () => {
+    expect(
+      metadataFor(conversation({ thinkingLevel: 'high' })).thinking_level,
+    ).toBe('high')
+    expect(
+      metadataFor(
+        conversation({
+          thinkingLevel: 'default',
+          sessionMetadata: { thinking_level: 'low' },
+        }),
+      ),
+    ).not.toHaveProperty('thinking_level')
   })
 })
 
@@ -929,6 +957,26 @@ describe('mergeConversationMeta / system_prompt', () => {
     expect(next.systemPrompt).toEqual(DEFAULT_SYSTEM_PROMPT_STATE)
   })
 
+  it('ignores legacy prompt add-ons', () => {
+    const next = mergeConversationMeta(
+      undefined,
+      sessionMeta({
+        metadata: {
+          system_prompt: {
+            choice: 'default',
+            strategy: 'enrich',
+            addons: [{ kind: 'prompt', name: 'tone', body: 'Be concise.' }],
+          },
+        },
+      }),
+    )
+
+    expect(next.systemPrompt).toEqual(DEFAULT_SYSTEM_PROMPT_STATE)
+    expect(
+      toSelection(next.systemPrompt ?? DEFAULT_SYSTEM_PROMPT_STATE),
+    ).toBeNull()
+  })
+
   it('keeps a zero-count legacy selection intact until hydration proves it empty', () => {
     const next = mergeConversationMeta(
       undefined,
@@ -951,7 +999,6 @@ describe('mergeConversationMeta / system_prompt', () => {
     expect(next.started).toBe(false)
     expect(next.systemPrompt?.addons).toEqual([
       { kind: 'skill', name: 'review', body: 'legacy body' },
-      { kind: 'prompt', name: 'tone', body: 'Be concise.' },
     ])
     expect(preSendMetaUpdate(next)).toBeNull()
   })
@@ -1166,7 +1213,7 @@ describe('mergeConversationMeta / system_prompt', () => {
           strategy: 'override',
           namedBody: 'Arr.',
           customText: '',
-          addons: [{ kind: 'prompt', name: 'tone', body: 'Be brief.' }],
+          addons: [],
         },
         skills: ['release'],
       },
@@ -1211,7 +1258,6 @@ describe('mergeConversationMeta / system_prompt', () => {
           choice: { named: 'pirate' },
           strategy: 'override',
           named_body: 'Arr.',
-          addons: [{ kind: 'prompt', name: 'tone', body: 'Be brief.' }],
         },
         skills: ['release'],
       },

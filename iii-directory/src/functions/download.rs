@@ -4,8 +4,7 @@
 //!
 //! The function is the only write path in the worker. It validates the
 //! incoming arguments, dispatches to the matching source module under
-//! [`crate::sources`], and fires the `directory::skills::on-change` /
-//! `directory::prompts::on-change` triggers on success so that
+//! [`crate::sources`], and fires the matching on-change triggers on success so that
 //! subscribers (the `mcp` worker today) can forward MCP
 //! `notifications/*_list_changed` to their clients.
 
@@ -19,7 +18,7 @@ use serde_json::{json, Value};
 
 use crate::config::{SharedConfig, SkillsConfig};
 use crate::sources::{self, registry::VersionSpec, DownloadResult};
-use crate::trigger_types::{self, SubscriberSet};
+use crate::trigger_types;
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct DownloadInput {
@@ -85,8 +84,8 @@ pub struct RepoDownloadInput {
 struct DownloadOutput {
     namespace: String,
     skills_written: Vec<String>,
-    prompts_written: Vec<String>,
     system_prompts_written: Vec<String>,
+    agents_written: Vec<String>,
     source: Value,
 }
 
@@ -121,24 +120,14 @@ pub fn register(iii: &Arc<IIIClient>, cfg: &SharedConfig, subscribers: &super::S
 async fn run_and_fan_out(
     iii: &IIIClient,
     cfg: &SkillsConfig,
-    skills_subs: &SubscriberSet,
-    prompts_subs: &SubscriberSet,
-    system_prompts_subs: &SubscriberSet,
+    subs: &super::Subscribers,
     input: DownloadInput,
 ) -> Result<DownloadOutput, Error> {
     let classified = classify_input(input).map_err(Error::Handler)?;
     let result = run_download(cfg, &classified)
         .await
         .map_err(Error::Handler)?;
-    fan_out(
-        iii,
-        skills_subs,
-        prompts_subs,
-        system_prompts_subs,
-        &classified,
-        &result,
-    )
-    .await;
+    fan_out(iii, subs, &classified, &result).await;
     Ok(build_output(&classified, result))
 }
 
@@ -149,31 +138,17 @@ async fn run_and_fan_out(
 fn register_download(iii: &Arc<IIIClient>, cfg: &SharedConfig, subscribers: &super::Subscribers) {
     let iii_inner = iii.clone();
     let cfg_inner = cfg.clone();
-    let skills_subs = subscribers.skills.clone();
-    let prompts_subs = subscribers.prompts.clone();
-    let system_prompts_subs = subscribers.system_prompts.clone();
+    let subs_outer = subscribers.clone();
     iii.register_function(
         "directory::skills::download",
         RegisterFunction::new_async(move |req: DownloadInput| {
             let iii = iii_inner.clone();
             let cfg = cfg_inner.load_full();
-            let skills_subs = skills_subs.clone();
-            let prompts_subs = prompts_subs.clone();
-            let system_prompts_subs = system_prompts_subs.clone();
-            async move {
-                run_and_fan_out(
-                    &iii,
-                    &cfg,
-                    &skills_subs,
-                    &prompts_subs,
-                    &system_prompts_subs,
-                    req,
-                )
-                .await
-            }
+            let subs = subs_outer.clone();
+            async move { run_and_fan_out(&iii, &cfg, &subs, req).await }
         })
         .description(
-            "Download skills + prompts into skills_folder from EITHER source. Prefer the \
+            "Download skills into skills_folder from EITHER source. Prefer the \
              explicit directory::skills::download_from_registry / \
              directory::skills::download_from_repo, whose schemas can't be mixed up. \
              Pass {repo, skill, branch?} to clone one skill folder from a GitHub repo \
@@ -195,17 +170,13 @@ fn register_download_from_registry(
 ) {
     let iii_inner = iii.clone();
     let cfg_inner = cfg.clone();
-    let skills_subs = subscribers.skills.clone();
-    let prompts_subs = subscribers.prompts.clone();
-    let system_prompts_subs = subscribers.system_prompts.clone();
+    let subs_outer = subscribers.clone();
     iii.register_function(
         "directory::skills::download_from_registry",
         RegisterFunction::new_async(move |req: RegistryDownloadInput| {
             let iii = iii_inner.clone();
             let cfg = cfg_inner.load_full();
-            let skills_subs = skills_subs.clone();
-            let prompts_subs = prompts_subs.clone();
-            let system_prompts_subs = system_prompts_subs.clone();
+            let subs = subs_outer.clone();
             async move {
                 let input = DownloadInput {
                     worker: Some(req.worker),
@@ -213,19 +184,11 @@ fn register_download_from_registry(
                     tag: req.tag,
                     ..Default::default()
                 };
-                run_and_fan_out(
-                    &iii,
-                    &cfg,
-                    &skills_subs,
-                    &prompts_subs,
-                    &system_prompts_subs,
-                    input,
-                )
-                .await
+                run_and_fan_out(&iii, &cfg, &subs, input).await
             }
         })
         .description(
-            "Download one worker's skills + prompts from the workers registry into \
+            "Download one worker's directory bundle from the workers registry into \
              skills_folder. `worker` is required; pass either `version` (exact semver) \
              OR `tag` (e.g. \"latest\", the default when both are omitted), not both. \
              Files in the destination namespace are overwritten file-by-file. A missing \
@@ -246,17 +209,13 @@ fn register_download_from_repo(
 ) {
     let iii_inner = iii.clone();
     let cfg_inner = cfg.clone();
-    let skills_subs = subscribers.skills.clone();
-    let prompts_subs = subscribers.prompts.clone();
-    let system_prompts_subs = subscribers.system_prompts.clone();
+    let subs_outer = subscribers.clone();
     iii.register_function(
         "directory::skills::download_from_repo",
         RegisterFunction::new_async(move |req: RepoDownloadInput| {
             let iii = iii_inner.clone();
             let cfg = cfg_inner.load_full();
-            let skills_subs = skills_subs.clone();
-            let prompts_subs = prompts_subs.clone();
-            let system_prompts_subs = system_prompts_subs.clone();
+            let subs = subs_outer.clone();
             async move {
                 let input = DownloadInput {
                     repo: Some(req.repo),
@@ -264,15 +223,7 @@ fn register_download_from_repo(
                     branch: req.branch,
                     ..Default::default()
                 };
-                run_and_fan_out(
-                    &iii,
-                    &cfg,
-                    &skills_subs,
-                    &prompts_subs,
-                    &system_prompts_subs,
-                    input,
-                )
-                .await
+                run_and_fan_out(&iii, &cfg, &subs, input).await
             }
         })
         .description(
@@ -352,6 +303,7 @@ pub(crate) async fn run_download(
     classified: &ClassifiedInput,
 ) -> Result<DownloadResult, String> {
     let folder = cfg.resolved_skills_folder();
+    let agents_folder = cfg.resolved_agents_folder();
     std::fs::create_dir_all(&folder)
         .map_err(|e| format!("create_dir_all {}: {e}", folder.display()))?;
 
@@ -367,6 +319,7 @@ pub(crate) async fn run_download(
                 worker,
                 spec,
                 &folder,
+                &agents_folder,
                 cfg.download_timeout_ms,
             )
             .await
@@ -402,21 +355,19 @@ fn build_output(classified: &ClassifiedInput, result: DownloadResult) -> Downloa
     DownloadOutput {
         namespace: result.namespace,
         skills_written: result.skills_written,
-        prompts_written: result.prompts_written,
         system_prompts_written: result.system_prompts_written,
+        agents_written: result.agents_written,
         source,
     }
 }
 
 /// Fan out to subscribers. We fire `skills::on-change` only when at
-/// least one skill was written (and likewise for prompts / system
-/// prompts) so noisy no-op downloads don't churn MCP
+/// least one skill was written (and likewise for system prompts / agents)
+/// so noisy no-op downloads don't churn MCP
 /// `notifications/list_changed`.
 async fn fan_out(
     iii: &IIIClient,
-    skills_subs: &SubscriberSet,
-    prompts_subs: &SubscriberSet,
-    system_prompts_subs: &SubscriberSet,
+    subs: &super::Subscribers,
     classified: &ClassifiedInput,
     result: &DownloadResult,
 ) {
@@ -429,13 +380,13 @@ async fn fan_out(
         },
     });
     if !result.skills_written.is_empty() {
-        trigger_types::dispatch(iii, skills_subs, payload.clone()).await;
-    }
-    if !result.prompts_written.is_empty() {
-        trigger_types::dispatch(iii, prompts_subs, payload.clone()).await;
+        trigger_types::dispatch(iii, &subs.skills, payload.clone()).await;
     }
     if !result.system_prompts_written.is_empty() {
-        trigger_types::dispatch(iii, system_prompts_subs, payload).await;
+        trigger_types::dispatch(iii, &subs.system_prompts, payload.clone()).await;
+    }
+    if !result.agents_written.is_empty() {
+        trigger_types::dispatch(iii, &subs.agents, payload).await;
     }
 }
 
@@ -517,6 +468,7 @@ pub async fn download_worker_skills(
     registry::validate_worker_name(worker)?;
 
     let folder = cfg.resolved_skills_folder();
+    let agents_folder = cfg.resolved_agents_folder();
     std::fs::create_dir_all(&folder)
         .map_err(|e| format!("create_dir_all {}: {e}", folder.display()))?;
 
@@ -525,6 +477,7 @@ pub async fn download_worker_skills(
         worker,
         spec,
         &folder,
+        &agents_folder,
         cfg.download_timeout_ms,
     )
     .await?
@@ -533,8 +486,8 @@ pub async fn download_worker_skills(
             tracing::info!(
                 worker,
                 skills = result.skills_written.len(),
-                prompts = result.prompts_written.len(),
                 system_prompts = result.system_prompts_written.len(),
+                agents = result.agents_written.len(),
                 "auto-downloaded worker skills"
             );
             write_completion_marker(&folder, worker, spec)?;

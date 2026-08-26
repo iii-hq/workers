@@ -18,6 +18,42 @@ export interface ReviewDiff {
   gitDir?: string
 }
 
+export interface ReviewContentsSnapshot {
+  oldContents: string
+  newContents: string
+  noBaseline?: true
+  image?: string | null
+  imageUnavailable?: true
+}
+
+export function reviewContentsRepresentChange(
+  entry: ReviewEntry,
+  contents: ReviewContentsSnapshot,
+): boolean {
+  if (contents.noBaseline) return false
+  if (contents.image !== undefined || contents.imageUnavailable) return true
+  if (
+    entry.change.status === 'added' ||
+    entry.change.status === 'untracked' ||
+    entry.change.status === 'deleted' ||
+    entry.change.status === 'renamed'
+  ) {
+    return true
+  }
+  return contents.oldContents !== contents.newContents
+}
+
+export function canUseGitMetadataForLiveEntry(
+  baselineCaptured: boolean,
+  baselineUnavailable: boolean,
+  baseline: string | null | undefined,
+): boolean {
+  return (
+    !baselineUnavailable &&
+    (baselineCaptured || baseline !== undefined)
+  )
+}
+
 /** Each activation gets a fresh change identity so ReviewPane re-reads the
     working copy even when the same selected row is clicked again. */
 export function diffForReviewEntry(entry: ReviewEntry): ReviewDiff {

@@ -5,29 +5,27 @@
 //!   2. Connect to the iii engine over WebSocket.
 //!   3. Register the custom trigger types
 //!      `directory::skills::on-change` /
-//!      `directory::prompts::on-change` /
-//!      `directory::system-prompts::on-change` (fan-out targets for
-//!      `directory::skills::download`).
+//!      `directory::system-prompts::on-change` /
+//!      `directory::agents::on-change`.
 //!   4. Register every public function against the engine — every
-//!      registration sits under `directory::*` (skills, prompts,
-//!      registry HTTP proxy).
+//!      registration sits under `directory::*` (search, skills, system
+//!      prompts, agents, registry, and one engine-info wrapper).
 //!   5. (Optional) Subscribe to `worker` trigger for auto-download on
 //!      worker add events and run a boot reconcile for missing skills.
-//!   6. Start the filesystem watch so external edits under the skills
+//!   6. Start the filesystem watch so external edits under the directory
 //!      roots fire the matching `on-change` (best-effort, never fatal).
 //!   7. Sleep on Ctrl+C, then `shutdown_async` cleanly.
 //!
 //! Write paths are `directory::skills::download*` (bulk materialization)
 //! and `directory::skills::{update,create,delete}` /
-//! `directory::prompts::{update,create,delete}` /
-//! `directory::system-prompts::{update,create,delete}` (single-file edits). Read-side
-//! surfaces (`directory::skills::list`,
-//! `directory::skills::get`, `directory::prompts::*`,
-//! `directory::registry::*`) source from the configured `skills_folder`
+//! `directory::system-prompts::{update,create,delete}` /
+//! `directory::agents::{update,create,delete}` (single-file edits). Read-side
+//! surfaces include search, skills, system prompts, agents, and registry.
+//! Filesystem content comes from the configured `skills_folder`
 //! on disk (plus the read-only `agents_skills_folder` for system-installed
-//! agent skills) or proxy to the public registry over HTTP. Engine introspection is handled by the engine natively —
-//! call `engine::functions::list`, `engine::triggers::list`, etc.,
-//! directly.
+//! agent skills); registry calls proxy the public registry over HTTP. Engine
+//! introspection is native, with `directory::engine::functions::info` retained
+//! as a narrow wrapper for restricted callers.
 
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
@@ -54,7 +52,7 @@ use iii_directory::{configuration, functions, manifest, trigger_types};
 #[derive(Parser, Debug)]
 #[command(
     name = "iii-directory",
-    about = "Engine introspection (functions / triggers / workers), workers registry proxy, and filesystem-backed skill + prompt reader."
+    about = "Engine introspection, workers registry proxy, filesystem-backed skills, system prompts, and agent profiles, plus lexical function search with a conditional pre-generate hint."
 )]
 struct Cli {
     /// Optional YAML seed used to populate `initial_value` on the first
@@ -139,6 +137,7 @@ async fn main() -> Result<()> {
     tracing::info!(
         skills_folder = %cfg.resolved_skills_folder().display(),
         local_skills_folder = %cfg.local_skills_folder().display(),
+        agents_folder = %cfg.resolved_agents_folder().display(),
         registry_url = %cfg.registry_base(),
         filter_unregistered = cfg.filter_unregistered,
         auto_download = cfg.auto_download,
@@ -190,7 +189,7 @@ async fn main() -> Result<()> {
     let hint_binding = iii_directory::hook::HintBindingState::default();
     iii_directory::hook::apply(&iii, &hint_binding, cfg_handle.load().inject_hint);
 
-    // Injectable console UI: the skills & prompts editor page, the
+    // Injectable console UI: the directory editor page, the
     // directory::* function-trigger renderer, and the configuration form.
     iii_directory::ui::register(&iii);
 
@@ -220,38 +219,57 @@ async fn main() -> Result<()> {
     configuration::register_config_trigger(&iii, state)
         .context("registering configuration change trigger")?;
 
-    // Filesystem watch: external edits under the skills roots fire the
+    // Filesystem watch: external edits under the directory roots fire the
     // matching on-change with { op: "external" }. Failure to start is a
     // degradation (tabs refresh on interaction only), never fatal.
     let cfg_now = cfg_handle.load_full();
-    let mut watch_roots = vec![cfg_now.resolved_skills_folder()];
+    let mut watch_roots = vec![iii_directory::watch::WatchRoot {
+        path: cfg_now.resolved_skills_folder(),
+        kind: iii_directory::watch::WatchRootKind::Directory,
+    }];
     let local_root = cfg_now.local_skills_folder();
-    if local_root != watch_roots[0] {
-        watch_roots.push(local_root);
+    if local_root != watch_roots[0].path {
+        watch_roots.push(iii_directory::watch::WatchRoot {
+            path: local_root,
+            kind: iii_directory::watch::WatchRootKind::Directory,
+        });
     }
-    // The agents root is watched only when it already exists:
-    // spawn_fs_watch create_dir_all's its roots, and this worker must
-    // never materialize (or write) `~/.agents/skills` — it's owned by
-    // external agent tooling.
-    let agents_root = cfg_now.resolved_agents_skills_folder();
-    if agents_root.is_dir() && !watch_roots.contains(&agents_root) {
-        watch_roots.push(agents_root);
+    let profiles_root = cfg_now.resolved_agents_folder();
+    if !watch_roots.iter().any(|root| root.path == profiles_root) {
+        watch_roots.push(iii_directory::watch::WatchRoot {
+            path: profiles_root,
+            kind: iii_directory::watch::WatchRootKind::AgentProfiles,
+        });
+    }
+    // The agent-skills root is watched only when it already exists. This
+    // worker must never materialize (or write) `~/.agents/skills` — it is
+    // owned by external agent tooling.
+    let agent_skills_root = cfg_now.resolved_agents_skills_folder();
+    if agent_skills_root.is_dir()
+        && !watch_roots
+            .iter()
+            .any(|root| root.path == agent_skills_root)
+    {
+        watch_roots.push(iii_directory::watch::WatchRoot {
+            path: agent_skills_root,
+            kind: iii_directory::watch::WatchRootKind::AgentSkills,
+        });
     }
     let watch_iii = iii.clone();
     // Named fields, not a tuple: transposing two positional subscriber sets
-    // would compile, pass every test, and route pasted system prompts to
-    // command-prompt subscribers.
+    // would compile, pass every test, and route pasted system prompts to the
+    // wrong subscribers.
     let watch_sets = trigger_types::RegisteredTriggerTypes {
         skills: registered.skills.clone(),
-        prompts: registered.prompts.clone(),
         system_prompts: registered.system_prompts.clone(),
+        agents: registered.agents.clone(),
     };
     let rt = tokio::runtime::Handle::current();
     let _fs_watch = match iii_directory::watch::spawn_fs_watch(watch_roots, move |kind| {
         let set = match kind {
             iii_directory::fs_source::SourceKind::Skill => watch_sets.skills.clone(),
-            iii_directory::fs_source::SourceKind::Prompt => watch_sets.prompts.clone(),
             iii_directory::fs_source::SourceKind::SystemPrompt => watch_sets.system_prompts.clone(),
+            iii_directory::fs_source::SourceKind::Agent => watch_sets.agents.clone(),
         };
         let iii = watch_iii.clone();
         rt.spawn(async move {
@@ -259,7 +277,7 @@ async fn main() -> Result<()> {
         });
     }) {
         Ok(h) => {
-            tracing::info!("fs watch active on skills roots");
+            tracing::info!("fs watch active on directory roots");
             Some(h)
         }
         Err(e) => {
@@ -268,21 +286,7 @@ async fn main() -> Result<()> {
         }
     };
 
-    // 27 unconditional: 3 skills reads (list/get/index) + 6 skills writes
-    // (update/create/delete + download/download_from_registry/download_from_repo)
-    // + 5 prompts (get/list/create/update/delete) + 5 system-prompts
-    // (get/list/create/update/delete) + 2 registry proxy + 1
-    // engine-functions-info + 1 configuration-change handler (registered
-    // above, outside functions::register_all_with_cache) + 4 for the
-    // search surface (search_functions + pre-generate + on-functions-change
-    // + hint-preview).
-    // +1 when auto_download also registers directory::__on_worker_added.
-    let fn_count = if auto_download { 28 } else { 27 };
-    tracing::info!(
-        "iii-directory ready: {} directory::* functions + 3 custom trigger types + \
-         function search + pre-generate hint + configuration hot-reload",
-        fn_count
-    );
+    tracing::info!("iii-directory ready");
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("iii-directory shutting down");

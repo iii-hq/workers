@@ -1,6 +1,8 @@
-//! Worker configuration — field parity with the builtin's BridgeClientConfig
-//! (engine/src/workers/bridge_client/mod.rs:22-48), plus the same URL
-//! fallback chain (config.url -> III_URL env -> ws://0.0.0.0:49134).
+//! Worker configuration for the remote target connection. It keeps field
+//! parity with the builtin's BridgeClientConfig
+//! (engine/src/workers/bridge_client/mod.rs:22-48). The `III_URL` fallback is
+//! legacy public behavior; supervised deployments must set `config.url`
+//! because `III_URL` selects the worker's local/control engine.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -11,7 +13,8 @@ pub const DEFAULT_REMOTE_URL: &str = "ws://0.0.0.0:49134";
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BridgeConfig {
-    /// Remote engine WebSocket URL. Fallback: `III_URL` env var, then ws://0.0.0.0:49134.
+    /// Remote target WebSocket URL. A missing value uses the legacy `III_URL`
+    /// fallback, then ws://0.0.0.0:49134.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     /// Local functions registered ON the remote engine (remote -> local calls).
@@ -54,7 +57,8 @@ impl BridgeConfig {
         self.effective_url_with(std::env::var("III_URL").ok())
     }
 
-    /// Pure variant for tests — `env_url` stands in for `III_URL`.
+    /// Pure variant for tests — `env_url` stands in for the legacy remote
+    /// `III_URL` fallback, not the local/control CLI argument.
     pub fn effective_url_with(&self, env_url: Option<String>) -> String {
         self.url
             .clone()

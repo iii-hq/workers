@@ -218,6 +218,11 @@ impl<'a> ScenarioRunner<'a> {
             return Err(self.finish_without_stack(error));
         }
 
+        // Directory-owned files must be on disk before its startup scan.
+        if let Err(error) = write_fixture_files(&paths.agents_dir(), &self.fixture.agent_files) {
+            let error = RunError::runner(RunPhase::Allocate, "write fixture agent files", error);
+            return Err(self.finish_without_stack(error));
+        }
         let mut stack = match Stack::boot(self.bins, paths).await {
             Ok(stack) => stack,
             Err(failure) => {
@@ -376,4 +381,17 @@ pub(super) fn combine_teardown(
         return classification.combine(Classification::RunnerError);
     }
     classification
+}
+
+/// Write fixture-declared files under their run directory (validated as clean
+/// relative paths by `ScenarioFixture::validate`).
+fn write_fixture_files(root: &Path, files: &[(String, String)]) -> anyhow::Result<()> {
+    for (relative, content) in files {
+        let path = root.join(relative);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, content)?;
+    }
+    Ok(())
 }

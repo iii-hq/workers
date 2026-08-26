@@ -257,6 +257,27 @@ def test_registry_publish_keeps_stdio_workers_alive_for_interface_collection() -
     assert "signal.signal(signal.SIGTERM" in body
 
 
+def test_registry_publication_builds_every_payload_before_commit_last_writes() -> None:
+    path = WORKFLOWS / "_publish-registry.yml"
+    body = path.read_text()
+    steps = workflow(path)["jobs"]["publish"]["steps"]
+    names = [step.get("name") for step in steps]
+
+    build_payload = names.index("Build payload")
+    build_skills = names.index("Build skills payload")
+    publish_version = names.index("Publish and verify immutable Registry version")
+    publish_skills = names.index("Publish and verify exact Registry skills")
+    commit_channel = names.index("Commit and verify Registry channel with exact CAS")
+
+    assert build_payload < publish_version
+    assert build_skills < publish_version < publish_skills < commit_channel
+    assert steps[commit_channel]["if"] == "inputs.registry_tag != 'none'"
+    assert body.count("registry_publication.py") == 3
+    assert '-X POST "$API_URL/publish"' not in body
+    assert '-X POST "$API_URL/w/$WORKER/skills"' not in body
+    assert '-X PUT "$API_URL/w/$WORKER/tags/$REGISTRY_TAG"' not in body
+
+
 def test_rust_binary_cache_is_keyed_by_frontend_bundle_digest() -> None:
     jobs = workflow(WORKFLOWS / "_rust-binary.yml")["jobs"]
     web_build = jobs["web-build"]

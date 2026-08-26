@@ -45,12 +45,17 @@ function fieldRange(lines: string[], key: string): [number, number] | null {
   const start = lines.findIndex((line) => header.test(line))
   if (start === -1) return null
 
-  const raw = header.exec(lines[start])?.[1].trimStart() ?? ''
+  // Indented (or blank) continuation lines belong to the field whatever
+  // its style — block scalar, block list, nested map — so removing or
+  // replacing a field never orphans its item lines.
   let end = start + 1
-  if (/^[>|]/.test(raw)) {
-    while (end < lines.length && (lines[end].trim() === '' || /^[ \t]/.test(lines[end]))) {
-      end += 1
-    }
+  while (end < lines.length && (lines[end].trim() === '' || /^[ \t]/.test(lines[end]))) {
+    end += 1
+  }
+  // Trailing blank lines between this field and the next belong to
+  // neither; leave them in place.
+  while (end > start + 1 && lines[end - 1].trim() === '') {
+    end -= 1
   }
   return [start, end]
 }
@@ -168,6 +173,72 @@ export function restoreFrontmatterFields(source: string, fields: readonly Frontm
 
 export function frontmatterBody(content: string): string {
   return splitFrontmatter(content).body
+}
+
+/** Decode one list item scalar (bare, quoted, or ~/null). */
+function decodeItem(raw: string): string {
+  return decodeScalar(raw, [])
+}
+
+/** Read a top-level string-list field: flow style (`skills: [a, b]`) or
+ * block style (`skills:` + `  - a` lines). A scalar value yields a
+ * single-item list; `[]`, `~`, or an empty value yield `[]`. */
+export function readFrontmatterStringList(
+  content: string,
+  key: string,
+): { values: string[]; present: boolean } {
+  const { yaml } = splitFrontmatter(content)
+  const lines = yaml ? yaml.split(/\r?\n/) : []
+  const range = fieldRange(lines, key)
+  if (!range) return { values: [], present: false }
+  const [start, end] = range
+  const raw = lines[start].slice(lines[start].indexOf(':') + 1).trim()
+
+  if (raw.startsWith('[')) {
+    const inner = raw.replace(/^\[/, '').replace(/\]\s*$/, '')
+    const values = inner
+      .split(',')
+      .map((item) => decodeItem(item.trim()))
+      .filter((item) => item !== '')
+    return { values, present: true }
+  }
+  if (raw === '' || raw === '~' || raw === 'null') {
+    const values = lines
+      .slice(start + 1, end)
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith('-'))
+      .map((line) => decodeItem(line.slice(1).trim()))
+      .filter((item) => item !== '')
+    return { values, present: true }
+  }
+  // Scalar where a list was expected — treat as one item.
+  return { values: [decodeItem(raw)].filter((item) => item !== ''), present: true }
+}
+
+/** Write a top-level string-list field in flow style
+ * (`skills: [a, b]`); an empty list removes the field entirely. */
+export function setFrontmatterStringList(
+  content: string,
+  key: string,
+  values: readonly string[],
+): string {
+  if (values.length === 0) return withoutFrontmatterFields(content, [key])
+  const encoded = values
+    .map((value) =>
+      /^[a-zA-Z0-9_/.-]+$/.test(value) ? value : JSON.stringify(value),
+    )
+    .join(', ')
+  const parts = splitFrontmatter(content)
+  const lines = parts.yaml ? parts.yaml.split(/\r?\n/) : []
+  const range = fieldRange(lines, key)
+  const replacement = `${key}: [${encoded}]`
+  if (range) lines.splice(range[0], range[1] - range[0], replacement)
+  else lines.push(replacement)
+  return joinFrontmatter({
+    ...parts,
+    hasFrontmatter: true,
+    yaml: lines.join(parts.eol),
+  })
 }
 
 /** Whether a top-level field is absent or a directly editable boolean. */

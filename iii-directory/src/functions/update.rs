@@ -1,16 +1,15 @@
-//! Single-file write paths for skills and prompts.
+//! Single-file write paths for skills and system prompts.
 //!
 //! Public API (reachable by any worker over `iii.trigger`):
 //!
 //!   * `directory::skills::{update,create,delete}` — overwrite one
 //!     EXISTING skill markdown file, author a NEW one under the global
 //!     `skills_folder`, or permanently remove one.
-//!   * `directory::prompts::{update,create,delete}` and
-//!     `directory::system-prompts::{update,create,delete}` — the same
-//!     trio for both prompt kinds.
+//!   * `directory::system-prompts::{update,create,delete}` — the same
+//!     trio for system prompts.
 //!
 //! Updates take the FULL raw file (frontmatter block included) — the same
-//! string `directory::skills::get { raw: true }` / `directory::prompts::get
+//! string `directory::skills::get { raw: true }` / `directory::system-prompts::get
 //! { raw: true }` return — so an editor round-trips the exact on-disk
 //! bytes. Update never creates files — `create` is the explicit authoring
 //! path; update only mutates what a read can already see. Resolution
@@ -26,12 +25,12 @@
 //!
 //!   * both: size cap ([`SKILL_BODY_MAX_BYTES`] on the raw file), body
 //!     non-empty after frontmatter strip;
-//!   * prompts additionally: required YAML frontmatter with a non-empty
+//!   * system prompts additionally: required YAML frontmatter with a non-empty
 //!     `description`, and a valid `name` when the frontmatter declares
 //!     one (the scanner would otherwise skip the file on next scan).
 //!
 //! Writes are atomic (tmp + rename, same as download) and fan out the
-//! same `directory::skills::on-change` / `directory::prompts::on-change`
+//! same `directory::skills::on-change` / `directory::system-prompts::on-change`
 //! triggers with `{ op: "update", ... }` payloads.
 
 use std::collections::HashSet;
@@ -72,23 +71,11 @@ const SKILL_CREATE_CONFLICT_NEXT: &[NextAction] = &[
     NextAction::new("directory::skills::list", "browse skill ids"),
 ];
 
-/// Recovery pointer for a missed prompt update target.
-const PROMPT_UPDATE_NOT_FOUND_NEXT: &[NextAction] = &[NextAction::new(
-    "directory::prompts::list",
-    "browse prompt names",
-)];
-
 /// Recovery pointer for a missed system-prompt update target.
 const SYSTEM_PROMPT_UPDATE_NOT_FOUND_NEXT: &[NextAction] = &[NextAction::new(
     "directory::system-prompts::list",
     "browse system prompt names",
 )];
-
-/// Recovery pointers for a create that hit an existing name/path.
-const PROMPT_CREATE_CONFLICT_NEXT: &[NextAction] = &[
-    NextAction::new("directory::prompts::update", "edit the existing prompt"),
-    NextAction::new("directory::prompts::list", "browse prompt names"),
-];
 
 /// Recovery pointers for a system-prompt create that hit an existing name/path.
 const SYSTEM_PROMPT_CREATE_CONFLICT_NEXT: &[NextAction] = &[
@@ -101,24 +88,6 @@ const SYSTEM_PROMPT_CREATE_CONFLICT_NEXT: &[NextAction] = &[
         "browse system prompt names",
     ),
 ];
-
-/// Select the in-family "browse" recovery pointer for a missed update
-/// target, so a command-prompt miss never points an agent at the system
-/// family's `list` (or vice versa).
-fn update_not_found_next(kind: fs_source::PromptKind) -> &'static [NextAction] {
-    match kind {
-        fs_source::PromptKind::Command => PROMPT_UPDATE_NOT_FOUND_NEXT,
-        fs_source::PromptKind::System => SYSTEM_PROMPT_UPDATE_NOT_FOUND_NEXT,
-    }
-}
-
-/// Select the in-family recovery pointers for a create-time conflict.
-fn create_conflict_next(kind: fs_source::PromptKind) -> &'static [NextAction] {
-    match kind {
-        fs_source::PromptKind::Command => PROMPT_CREATE_CONFLICT_NEXT,
-        fs_source::PromptKind::System => SYSTEM_PROMPT_CREATE_CONFLICT_NEXT,
-    }
-}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SkillUpdateInput {
@@ -196,23 +165,22 @@ pub struct SkillDeleteOutput {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct PromptUpdateInput {
-    /// Prompt name to overwrite, as returned by the matching list for
-    /// this kind (`directory::prompts::list` for command templates,
-    /// `directory::system-prompts::list` for system prompts). The
+pub struct SystemPromptUpdateInput {
+    /// System prompt name to overwrite, as returned by
+    /// `directory::system-prompts::list`. The
     /// target file must already exist.
     pub name: String,
     /// FULL new file content, frontmatter block included. The
-    /// frontmatter must keep a non-empty `description` — a prompt
+    /// frontmatter must keep a non-empty `description` — a system prompt
     /// without one would be skipped by the next scan.
     pub content: String,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
-pub struct PromptUpdateOutput {
-    /// The prompt's EFFECTIVE name after the write: the new
+pub struct SystemPromptUpdateOutput {
+    /// The system prompt's EFFECTIVE name after the write: the new
     /// frontmatter `name:` when declared, otherwise the file stem.
-    /// Differs from the input name when the update renames the prompt.
+    /// Differs from the input name when the update renames the system prompt.
     pub name: String,
     /// Description parsed from the new frontmatter.
     pub description: String,
@@ -223,24 +191,21 @@ pub struct PromptUpdateOutput {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct PromptCreateInput {
-    /// New prompt name — becomes the file stem
-    /// (`<skills_folder>/prompts/<name>.md` for command templates,
-    /// `<skills_folder>/system-prompts/<name>.md` for system prompts).
-    /// Same charset rules as list/get names; must not collide with an
-    /// existing prompt of the SAME kind (a command prompt and a system
-    /// prompt may share a name).
+pub struct SystemPromptCreateInput {
+    /// New system prompt name — becomes the file stem
+    /// `<skills_folder>/system-prompts/<name>.md`. Same charset rules as
+    /// list/get names; must not collide with an existing system prompt.
     pub name: String,
     /// FULL file content, frontmatter block included — the same form
-    /// `directory::prompts::update` takes. Frontmatter must carry a
+    /// `directory::system-prompts::update` takes. Frontmatter must carry a
     /// non-empty `description`; a declared `name` must match the
     /// requested name.
     pub content: String,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
-pub struct PromptCreateOutput {
-    /// The created prompt's name (as requested).
+pub struct SystemPromptCreateOutput {
+    /// The created system prompt's name (as requested).
     pub name: String,
     /// Description parsed from the frontmatter.
     pub description: String,
@@ -251,15 +216,15 @@ pub struct PromptCreateOutput {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct PromptDeleteInput {
-    /// Existing prompt name, as returned by the matching list function for
-    /// this kind (`directory::prompts::list` / `directory::system-prompts::list`).
+pub struct SystemPromptDeleteInput {
+    /// Existing system prompt name, as returned by
+    /// `directory::system-prompts::list`.
     pub name: String,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
-pub struct PromptDeleteOutput {
-    /// Name of the prompt whose file was removed.
+pub struct SystemPromptDeleteOutput {
+    /// Name of the system prompt whose file was removed.
     pub name: String,
 }
 
@@ -272,48 +237,9 @@ pub fn register(
     register_update_skill(iii, cfg, &subscribers.skills, cache);
     register_create_skill(iii, cfg, &subscribers.skills, cache);
     register_delete_skill(iii, cfg, &subscribers.skills, cache);
-    register_update_prompt(
-        iii,
-        cfg,
-        &subscribers.prompts,
-        fs_source::PromptKind::Command,
-        "directory::prompts::update",
-    );
-    register_update_prompt(
-        iii,
-        cfg,
-        &subscribers.system_prompts,
-        fs_source::PromptKind::System,
-        "directory::system-prompts::update",
-    );
-    register_create_prompt(
-        iii,
-        cfg,
-        &subscribers.prompts,
-        fs_source::PromptKind::Command,
-        "directory::prompts::create",
-    );
-    register_create_prompt(
-        iii,
-        cfg,
-        &subscribers.system_prompts,
-        fs_source::PromptKind::System,
-        "directory::system-prompts::create",
-    );
-    register_delete_prompt(
-        iii,
-        cfg,
-        &subscribers.prompts,
-        fs_source::PromptKind::Command,
-        "directory::prompts::delete",
-    );
-    register_delete_prompt(
-        iii,
-        cfg,
-        &subscribers.system_prompts,
-        fs_source::PromptKind::System,
-        "directory::system-prompts::delete",
-    );
+    register_update_system_prompt(iii, cfg, &subscribers.system_prompts);
+    register_create_system_prompt(iii, cfg, &subscribers.system_prompts);
+    register_delete_system_prompt(iii, cfg, &subscribers.system_prompts);
 }
 
 fn register_update_skill(
@@ -459,29 +385,28 @@ fn register_delete_skill(
     );
 }
 
-fn register_update_prompt(
+fn register_update_system_prompt(
     iii: &Arc<IIIClient>,
     cfg: &SharedConfig,
     subs: &trigger_types::SubscriberSet,
-    kind: fs_source::PromptKind,
-    function_id: &str,
 ) {
     let cfg_inner = cfg.clone();
     let iii_inner = iii.clone();
     let subs_inner = subs.clone();
-    let (description, label): (&str, &str) = match kind {
-        fs_source::PromptKind::Command => (
-            "Overwrite one EXISTING filesystem-backed prompt with new full-file markdown \
-             content. The frontmatter must keep a non-empty `description` (and a valid \
-             `name` when it declares one) — the same rules the scanner enforces, so an \
-             update can never produce a file the next directory::prompts::list would \
-             skip. The write is atomic and fans out directory::prompts::on-change with \
-             { op: \"update\" }. Returns the prompt's effective name after the write \
-             (frontmatter `name:` wins over the file stem). Command templates only — \
-             system prompts have their own directory::system-prompts::* family.",
-            "Update prompt",
-        ),
-        fs_source::PromptKind::System => (
+    iii.register_function(
+        "directory::system-prompts::update",
+        RegisterFunction::new_async(move |req: SystemPromptUpdateInput| {
+            let cfg = cfg_inner.load_full();
+            let iii = iii_inner.clone();
+            let subs = subs_inner.clone();
+            async move {
+                let out = update_system_prompt(&cfg, &req).map_err(Error::Handler)?;
+                trigger_types::dispatch(&iii, &subs, json!({ "op": "update", "name": out.name }))
+                    .await;
+                Ok::<_, Error>(out)
+            }
+        })
+        .description(
             "Overwrite one EXISTING filesystem-backed system prompt with new full-file \
              markdown content. The frontmatter must keep a non-empty `description` (and \
              a valid `name` when it declares one) — the same rules the scanner enforces, \
@@ -489,52 +414,34 @@ fn register_update_prompt(
              directory::system-prompts::list would skip. The write is atomic and fans \
              out directory::system-prompts::on-change with { op: \"update\" }. Returns \
              the system prompt's effective name after the write (frontmatter `name:` \
-             wins over the file stem). System prompts only — command templates have \
-             their own directory::prompts::* family.",
-            "Update system prompt",
-        ),
-    };
-    iii.register_function(
-        function_id,
-        RegisterFunction::new_async(move |req: PromptUpdateInput| {
-            let cfg = cfg_inner.load_full();
-            let iii = iii_inner.clone();
-            let subs = subs_inner.clone();
-            async move {
-                let out = update_prompt(&cfg, &req, kind).map_err(Error::Handler)?;
-                trigger_types::dispatch(&iii, &subs, json!({ "op": "update", "name": out.name }))
-                    .await;
-                Ok::<_, Error>(out)
-            }
-        })
-        .description(description)
-        .metadata(json!({"tool": {"label": label}})),
+             wins over the file stem).",
+        )
+        .metadata(json!({"tool": {"label": "Update system prompt"}})),
     );
 }
 
-fn register_create_prompt(
+fn register_create_system_prompt(
     iii: &Arc<IIIClient>,
     cfg: &SharedConfig,
     subs: &trigger_types::SubscriberSet,
-    kind: fs_source::PromptKind,
-    function_id: &str,
 ) {
     let cfg_inner = cfg.clone();
     let iii_inner = iii.clone();
     let subs_inner = subs.clone();
-    let (description, label): (&str, &str) = match kind {
-        fs_source::PromptKind::Command => (
-            "Create a NEW command-template prompt at <skills_folder>/prompts/<name>.md \
-             from full-file markdown content (frontmatter block included; a non-empty \
-             `description` is required, and a declared frontmatter `name` must match the \
-             requested name). Rejects names that already exist anywhere in the merged \
-             command-prompt scan, or a target path that already exists on disk (even one \
-             the scanner would skip). The write is atomic and fans out \
-             directory::prompts::on-change with { op: \"create\" }. Use \
-             directory::prompts::update to edit existing prompts.",
-            "Create prompt",
-        ),
-        fs_source::PromptKind::System => (
+    iii.register_function(
+        "directory::system-prompts::create",
+        RegisterFunction::new_async(move |req: SystemPromptCreateInput| {
+            let cfg = cfg_inner.load_full();
+            let iii = iii_inner.clone();
+            let subs = subs_inner.clone();
+            async move {
+                let out = create_system_prompt(&cfg, &req).map_err(Error::Handler)?;
+                trigger_types::dispatch(&iii, &subs, json!({ "op": "create", "name": out.name }))
+                    .await;
+                Ok::<_, Error>(out)
+            }
+        })
+        .description(
             "Create a NEW system prompt at <skills_folder>/system-prompts/<name>.md from \
              full-file markdown content (frontmatter block included; a non-empty \
              `description` is required, and a declared frontmatter `name` must match the \
@@ -543,68 +450,39 @@ fn register_create_prompt(
              the scanner would skip). The write is atomic and fans out \
              directory::system-prompts::on-change with { op: \"create\" }. Use \
              directory::system-prompts::update to edit existing system prompts.",
-            "Create system prompt",
-        ),
-    };
-    iii.register_function(
-        function_id,
-        RegisterFunction::new_async(move |req: PromptCreateInput| {
-            let cfg = cfg_inner.load_full();
-            let iii = iii_inner.clone();
-            let subs = subs_inner.clone();
-            async move {
-                let out = create_prompt(&cfg, &req, kind).map_err(Error::Handler)?;
-                trigger_types::dispatch(&iii, &subs, json!({ "op": "create", "name": out.name }))
-                    .await;
-                Ok::<_, Error>(out)
-            }
-        })
-        .description(description)
-        .metadata(json!({"tool": {"label": label}})),
+        )
+        .metadata(json!({"tool": {"label": "Create system prompt"}})),
     );
 }
 
-fn register_delete_prompt(
+fn register_delete_system_prompt(
     iii: &Arc<IIIClient>,
     cfg: &SharedConfig,
     subs: &trigger_types::SubscriberSet,
-    kind: fs_source::PromptKind,
-    function_id: &str,
 ) {
     let cfg_inner = cfg.clone();
     let iii_inner = iii.clone();
     let subs_inner = subs.clone();
-    let (description, label): (&str, &str) = match kind {
-        fs_source::PromptKind::Command => (
-            "Permanently delete one EXISTING filesystem-backed command-template prompt \
-             by name. Resolves against the same merged scan as \
-             directory::prompts::list, removes only that prompt's markdown file, and \
-             fans out directory::prompts::on-change with { op: \"delete\" }.",
-            "Delete prompt",
-        ),
-        fs_source::PromptKind::System => (
-            "Permanently delete one EXISTING filesystem-backed system prompt by name. \
-             Resolves against the same merged scan as directory::system-prompts::list, \
-             removes only that prompt's markdown file, and fans out \
-             directory::system-prompts::on-change with { op: \"delete\" }.",
-            "Delete system prompt",
-        ),
-    };
     iii.register_function(
-        function_id,
-        RegisterFunction::new_async(move |req: PromptDeleteInput| {
+        "directory::system-prompts::delete",
+        RegisterFunction::new_async(move |req: SystemPromptDeleteInput| {
             let cfg = cfg_inner.load_full();
             let iii = iii_inner.clone();
             let subs = subs_inner.clone();
             async move {
-                let out = delete_prompt(&cfg, &req, kind).map_err(Error::Handler)?;
+                let out = delete_system_prompt(&cfg, &req).map_err(Error::Handler)?;
                 trigger_types::dispatch(&iii, &subs, json!({ "op": "delete", "name": out.name }))
                     .await;
                 Ok::<_, Error>(out)
             }
         })
-        .description(description)
-        .metadata(json!({"tool": {"label": label}})),
+        .description(
+            "Permanently delete one EXISTING filesystem-backed system prompt by name. \
+             Resolves against the same merged scan as directory::system-prompts::list, \
+             removes only that prompt's markdown file, and fans out \
+             directory::system-prompts::on-change with { op: \"delete\" }.",
+        )
+        .metadata(json!({"tool": {"label": "Delete system prompt"}})),
     );
 }
 
@@ -674,7 +552,7 @@ pub fn update_skill_in(
 }
 
 /// Create a NEW skill file at `<skills_folder>/<id>.md`. Mirrors
-/// [`create_prompt`]'s two-layer conflict check — the id must not resolve
+/// [`create_system_prompt`]'s two-layer conflict check — the id must not resolve
 /// in the visible set (the `<id>` → `<id>/index` alias catches a bare id
 /// colliding with an existing overview doc, agents skills included), and
 /// the target path must not exist on disk even when the scanner skips it.
@@ -698,25 +576,45 @@ pub fn create_skill_in(
     let id = normalize_get_id(&req.id)?;
     reject_function_id_shaped(&id)?;
     validate_id(&id)?;
-    // A `prompts` / `system-prompts` segment would make the written file a
-    // PROMPT to the shared classifier — invisible to every skills scan —
-    // breaking the module invariant that an accepted write is a servable
-    // read. Route the caller to the matching prompt family instead.
+    // A `prompts` / `system-prompts` segment would make the written file
+    // invisible to every skills scan, breaking the module invariant that an
+    // accepted write is a servable read.
     let classified = fs_source::classify_rel_path(Path::new(&format!("{id}.md")));
-    if classified != fs_source::SourceKind::Skill {
-        let (family, create_fn) = match classified {
-            fs_source::SourceKind::Prompt => ("prompts", "directory::prompts::create"),
-            _ => ("system-prompts", "directory::system-prompts::create"),
-        };
+    if classified.is_none() {
         return Err(invalid_input_message(
             "D115",
             &format!(
-                "id {id:?} contains a `{family}` path segment, which the scanner \
-                 classifies as a prompt — the created file would be invisible to \
-                 directory::skills::list. Use {create_fn} for prompt files.",
+                "id {id:?} contains the reserved `prompts` path segment; rename that \
+                 segment before creating the skill.",
             ),
             &[],
         ));
+    }
+    if classified == Some(fs_source::SourceKind::SystemPrompt) {
+        return Err(invalid_input_message(
+            "D115",
+            &format!(
+                "id {id:?} contains a `system-prompts` path segment, which the scanner \
+                 classifies as a prompt — the created file would be invisible to \
+                 directory::skills::list. Use directory::system-prompts::create for \
+                 prompt files.",
+            ),
+            &[],
+        ));
+    }
+    if classified == Some(fs_source::SourceKind::Agent) {
+        return Err(invalid_input_message(
+            "D115",
+            &format!(
+                "id {id:?} contains an `agents` path segment, which the scanner \
+                 classifies as an agent — the created file would be invisible to \
+                 directory::skills::list. Use directory::agents::create for agent profiles.",
+            ),
+            &[],
+        ));
+    }
+    if classified != Some(fs_source::SourceKind::Skill) {
+        unreachable!("non-skill source kinds are handled above");
     }
 
     let agents_root = cfg.resolved_agents_skills_folder();
@@ -851,36 +749,33 @@ fn remove_empty_parents(path: &Path, roots: &[&Path]) {
     }
 }
 
-/// Prompt update against the merged (global + local) prompt view for
-/// `kind` — the same view `directory::prompts::list` /
-/// `directory::system-prompts::list` serves.
-pub fn update_prompt(
+/// Update against the merged (global + local) system-prompt view served by
+/// `directory::system-prompts::list`.
+pub fn update_system_prompt(
     cfg: &SkillsConfig,
-    req: &PromptUpdateInput,
-    kind: fs_source::PromptKind,
-) -> Result<PromptUpdateOutput, String> {
+    req: &SystemPromptUpdateInput,
+) -> Result<SystemPromptUpdateOutput, String> {
     validate_name(&req.name)?;
-    let (prompts, _skipped) = fs_source::scan_prompts_merged(
+    let (prompts, _skipped) = fs_source::scan_system_prompts_merged(
         &cfg.resolved_skills_folder(),
         &cfg.local_skills_folder(),
-        kind,
     );
     let Some(fs) = prompts.iter().find(|p| p.name == req.name) else {
         let names: Vec<String> = prompts.iter().map(|p| p.name.clone()).collect();
         let candidates = closest_ids(&names, &req.name, 3);
         return Err(not_found_message(
             "D210",
-            kind.noun(),
+            "system prompt",
             &req.name,
             &candidates,
-            update_not_found_next(kind),
+            SYSTEM_PROMPT_UPDATE_NOT_FOUND_NEXT,
         ));
     };
     let (effective_name, description) = validate_prompt_content(fs, &req.content)?;
 
     write_file_atomic(&fs.abs_path, req.content.as_bytes())?;
 
-    Ok(PromptUpdateOutput {
+    Ok(SystemPromptUpdateOutput {
         name: effective_name,
         description,
         bytes: req.content.len(),
@@ -888,35 +783,29 @@ pub fn update_prompt(
     })
 }
 
-/// Create a NEW prompt file under `<skills_folder>/<kind.segment()>/<name>.md`
-/// (`prompts/` for command templates, `system-prompts/` for system
-/// prompts). Rejects names already visible in the merged (global +
-/// local) scan for THIS kind — prompt names are a flat space per kind
-/// (the same name may exist as both a command prompt and a system
-/// prompt) and `get` resolves by name within a kind only — and target
-/// paths that already exist on disk even when the scanner skips them,
-/// so create can never clobber a file.
-pub fn create_prompt(
+/// Create a NEW system prompt under `<skills_folder>/system-prompts/<name>.md`.
+/// Rejects names already visible in the merged (global + local) scan and target
+/// paths that already exist on disk even when the scanner skips them, so create
+/// can never clobber a file.
+pub fn create_system_prompt(
     cfg: &SkillsConfig,
-    req: &PromptCreateInput,
-    kind: fs_source::PromptKind,
-) -> Result<PromptCreateOutput, String> {
+    req: &SystemPromptCreateInput,
+) -> Result<SystemPromptCreateOutput, String> {
     validate_name(&req.name)?;
-    let (prompts, _skipped) = fs_source::scan_prompts_merged(
+    let (prompts, _skipped) = fs_source::scan_system_prompts_merged(
         &cfg.resolved_skills_folder(),
         &cfg.local_skills_folder(),
-        kind,
     );
     if prompts.iter().any(|p| p.name == req.name) {
         return Err(invalid_input_message(
             "D214",
-            &format!("{} {:?} already exists.", kind.noun(), req.name),
-            create_conflict_next(kind),
+            &format!("system prompt {:?} already exists.", req.name),
+            SYSTEM_PROMPT_CREATE_CONFLICT_NEXT,
         ));
     }
     let dest = cfg
         .resolved_skills_folder()
-        .join(kind.segment())
+        .join("system-prompts")
         .join(format!("{}.md", req.name));
     if dest.exists() {
         return Err(invalid_input_message(
@@ -926,14 +815,14 @@ pub fn create_prompt(
                  remove it on disk.",
                 dest.display()
             ),
-            create_conflict_next(kind),
+            SYSTEM_PROMPT_CREATE_CONFLICT_NEXT,
         ));
     }
-    let description = validate_new_prompt_content(&req.name, &req.content, kind)?;
+    let description = validate_new_prompt_content(&req.name, &req.content)?;
 
     write_file_atomic(&dest, req.content.as_bytes())?;
 
-    Ok(PromptCreateOutput {
+    Ok(SystemPromptCreateOutput {
         name: req.name.clone(),
         description,
         bytes: req.content.len(),
@@ -941,27 +830,25 @@ pub fn create_prompt(
     })
 }
 
-/// Delete one prompt resolved through the same merged view as list/get.
-pub fn delete_prompt(
+/// Delete one system prompt resolved through the same merged view as list/get.
+pub fn delete_system_prompt(
     cfg: &SkillsConfig,
-    req: &PromptDeleteInput,
-    kind: fs_source::PromptKind,
-) -> Result<PromptDeleteOutput, String> {
+    req: &SystemPromptDeleteInput,
+) -> Result<SystemPromptDeleteOutput, String> {
     validate_name(&req.name)?;
-    let (prompts, _skipped) = fs_source::scan_prompts_merged(
+    let (prompts, _skipped) = fs_source::scan_system_prompts_merged(
         &cfg.resolved_skills_folder(),
         &cfg.local_skills_folder(),
-        kind,
     );
     let Some(fs) = prompts.iter().find(|prompt| prompt.name == req.name) else {
         let names: Vec<String> = prompts.iter().map(|prompt| prompt.name.clone()).collect();
         let candidates = closest_ids(&names, &req.name, 3);
         return Err(not_found_message(
             "D210",
-            kind.noun(),
+            "system prompt",
             &req.name,
             &candidates,
-            update_not_found_next(kind),
+            SYSTEM_PROMPT_UPDATE_NOT_FOUND_NEXT,
         ));
     };
 
@@ -970,7 +857,7 @@ pub fn delete_prompt(
     mark_self_write(&fs.abs_path);
     std::fs::remove_file(&fs.abs_path)
         .map_err(|error| format!("delete {}: {error}", fs.abs_path.display()))?;
-    Ok(PromptDeleteOutput {
+    Ok(SystemPromptDeleteOutput {
         name: req.name.clone(),
     })
 }
@@ -979,20 +866,15 @@ pub fn delete_prompt(
 /// the stem IS the requested name — and a declared frontmatter `name`
 /// must equal it, so create can never materialise a file `get(name)`
 /// would not find. Returns the description.
-fn validate_new_prompt_content(
-    name: &str,
-    content: &str,
-    kind: fs_source::PromptKind,
-) -> Result<String, String> {
+fn validate_new_prompt_content(name: &str, content: &str) -> Result<String, String> {
     let (fm, description) = validate_prompt_frontmatter(content)?;
     if let Some(declared) = fm.name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         if declared != name {
             return Err(invalid_input_message(
                 "D213",
                 &format!(
-                    "frontmatter `name` ({declared:?}) must match the requested {} name \
-                     ({name:?}).",
-                    kind.noun()
+                    "frontmatter `name` ({declared:?}) must match the requested system prompt name \
+                     ({name:?})."
                 ),
                 &[],
             ));
@@ -1026,7 +908,7 @@ fn validate_skill_content(content: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Shared prefix for both prompt-content validators: the raw content rules
+/// Shared prefix for the system-prompt content validators: the raw content rules
 /// via [`validate_skill_content`], then the REQUIRED frontmatter parse with
 /// its non-empty `description`. Returns the parsed frontmatter (so callers
 /// can layer their own name handling on top — `update` resolves an
@@ -1052,7 +934,7 @@ fn validate_prompt_frontmatter(
     Ok((fm, description))
 }
 
-/// Prompt-specific content rules on top of [`validate_skill_content`]:
+/// System-prompt content rules on top of [`validate_skill_content`]:
 /// the frontmatter the scanner requires must survive the write. Returns
 /// the effective `(name, description)` the next scan will report.
 fn validate_prompt_content(fs: &FsPrompt, content: &str) -> Result<(String, String), String> {
@@ -1083,7 +965,7 @@ fn validate_prompt_content(fs: &FsPrompt, content: &str) -> Result<(String, Stri
 }
 
 /// Closest candidates for a missed update target, by lowercased
-/// Levenshtein distance (same ranker the prompt reader uses).
+/// Levenshtein distance (same ranker the system-prompt reader uses).
 fn closest_ids(ids: &[String], missed: &str, limit: usize) -> Vec<String> {
     let missed_lc = missed.to_lowercase();
     let mut scored: Vec<(usize, &String)> = ids
@@ -1271,37 +1153,37 @@ mod tests {
     // ── prompts ──────────────────────────────────────────────────────
 
     #[test]
-    fn update_prompt_overwrites_and_returns_effective_name() {
+    fn update_system_prompt_overwrites_and_returns_effective_name() {
         let tmp = tempfile::tempdir().unwrap();
         write_fixture(
             tmp.path(),
-            "ns/prompts/open-pr.md",
+            "ns/system-prompts/open-pr.md",
             "---\ndescription: Old.\n---\nOld body.\n",
         );
         let cfg = cfg_for(tmp.path());
 
         let new_content = "---\nname: open-pr-v2\ndescription: New.\n---\nNew body.\n";
-        let out = update_prompt(
+        let out = update_system_prompt(
             &cfg,
-            &PromptUpdateInput {
+            &SystemPromptUpdateInput {
                 name: "open-pr".into(),
                 content: new_content.into(),
             },
-            fs_source::PromptKind::Command,
         )
         .unwrap();
         assert_eq!(out.name, "open-pr-v2", "frontmatter name wins");
         assert_eq!(out.description, "New.");
-        let on_disk = std::fs::read_to_string(tmp.path().join("ns/prompts/open-pr.md")).unwrap();
+        let on_disk =
+            std::fs::read_to_string(tmp.path().join("ns/system-prompts/open-pr.md")).unwrap();
         assert_eq!(on_disk, new_content);
     }
 
     #[test]
-    fn update_prompt_rejects_content_the_scanner_would_skip() {
+    fn update_system_prompt_rejects_content_the_scanner_would_skip() {
         let tmp = tempfile::tempdir().unwrap();
         write_fixture(
             tmp.path(),
-            "ns/prompts/keep.md",
+            "ns/system-prompts/keep.md",
             "---\ndescription: Fine.\n---\nBody.\n",
         );
         let cfg = cfg_for(tmp.path());
@@ -1311,38 +1193,37 @@ mod tests {
             "---\nname: keep\n---\nno description\n",
             "---\nname: Bad Name\ndescription: x\n---\nbody\n",
         ] {
-            let err = update_prompt(
+            let err = update_system_prompt(
                 &cfg,
-                &PromptUpdateInput {
+                &SystemPromptUpdateInput {
                     name: "keep".into(),
                     content: bad.into(),
                 },
-                fs_source::PromptKind::Command,
             )
             .unwrap_err();
             assert!(err.starts_with("D213 invalid_input:"), "got: {err}");
         }
         // Original untouched.
-        let on_disk = std::fs::read_to_string(tmp.path().join("ns/prompts/keep.md")).unwrap();
+        let on_disk =
+            std::fs::read_to_string(tmp.path().join("ns/system-prompts/keep.md")).unwrap();
         assert_eq!(on_disk, "---\ndescription: Fine.\n---\nBody.\n");
     }
 
     #[test]
-    fn update_prompt_missing_target_is_not_found() {
+    fn update_system_prompt_missing_target_is_not_found() {
         let tmp = tempfile::tempdir().unwrap();
         write_fixture(
             tmp.path(),
-            "ns/prompts/real.md",
+            "ns/system-prompts/real.md",
             "---\ndescription: x\n---\nBody.\n",
         );
         let cfg = cfg_for(tmp.path());
-        let err = update_prompt(
+        let err = update_system_prompt(
             &cfg,
-            &PromptUpdateInput {
+            &SystemPromptUpdateInput {
                 name: "reel".into(),
                 content: "---\ndescription: y\n---\nBody.\n".into(),
             },
-            fs_source::PromptKind::Command,
         )
         .unwrap_err();
         assert!(err.starts_with("D210 not_found:"), "got: {err}");
@@ -1352,18 +1233,17 @@ mod tests {
     // ── prompt create ────────────────────────────────────────────────
 
     #[test]
-    fn create_prompt_writes_file_visible_to_next_scan() {
+    fn create_system_prompt_writes_file_visible_to_next_scan() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = cfg_for(tmp.path());
 
         let content = "---\ndescription: Pirate identity.\n---\nTalk like a pirate.\n";
-        let out = create_prompt(
+        let out = create_system_prompt(
             &cfg,
-            &PromptCreateInput {
+            &SystemPromptCreateInput {
                 name: "pirate".into(),
                 content: content.into(),
             },
-            fs_source::PromptKind::System,
         )
         .unwrap();
         assert_eq!(out.name, "pirate");
@@ -1375,17 +1255,16 @@ mod tests {
         assert_eq!(on_disk, content);
 
         // The next merged scan (what list/get serve) sees it.
-        let (prompts, skipped) = fs_source::scan_prompts_merged(
+        let (prompts, skipped) = fs_source::scan_system_prompts_merged(
             &cfg.resolved_skills_folder(),
             &cfg.local_skills_folder(),
-            fs_source::PromptKind::System,
         );
         assert!(skipped.is_empty(), "unexpected skips: {skipped:?}");
         assert!(prompts.iter().any(|p| p.name == "pirate"));
     }
 
     #[test]
-    fn create_prompt_rejects_existing_name_anywhere_in_merged_scan() {
+    fn create_system_prompt_rejects_existing_name_anywhere_in_merged_scan() {
         let tmp = tempfile::tempdir().unwrap();
         // Same name in a DIFFERENT namespace, SAME kind — names are flat
         // within a kind.
@@ -1396,13 +1275,12 @@ mod tests {
         );
         let cfg = cfg_for(tmp.path());
 
-        let err = create_prompt(
+        let err = create_system_prompt(
             &cfg,
-            &PromptCreateInput {
+            &SystemPromptCreateInput {
                 name: "taken".into(),
                 content: "---\ndescription: y\n---\nB.\n".into(),
             },
-            fs_source::PromptKind::System,
         )
         .unwrap_err();
         assert!(err.starts_with("D214 invalid_input:"), "got: {err}");
@@ -1410,20 +1288,19 @@ mod tests {
     }
 
     #[test]
-    fn create_prompt_rejects_scanner_skipped_file_at_target_path() {
+    fn create_system_prompt_rejects_scanner_skipped_file_at_target_path() {
         let tmp = tempfile::tempdir().unwrap();
         // Present on disk but invisible to the scan (no frontmatter):
         // create must refuse rather than clobber it.
         write_fixture(tmp.path(), "system-prompts/ghost.md", "no frontmatter\n");
         let cfg = cfg_for(tmp.path());
 
-        let err = create_prompt(
+        let err = create_system_prompt(
             &cfg,
-            &PromptCreateInput {
+            &SystemPromptCreateInput {
                 name: "ghost".into(),
                 content: "---\ndescription: y\n---\nB.\n".into(),
             },
-            fs_source::PromptKind::System,
         )
         .unwrap_err();
         assert!(err.starts_with("D214 invalid_input:"), "got: {err}");
@@ -1432,7 +1309,7 @@ mod tests {
     }
 
     #[test]
-    fn create_prompt_rejects_invalid_content_and_mismatched_name() {
+    fn create_system_prompt_rejects_invalid_content_and_mismatched_name() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = cfg_for(tmp.path());
 
@@ -1442,70 +1319,53 @@ mod tests {
             // Declared frontmatter name must match the requested name.
             "---\nname: other-name\ndescription: x\n---\nbody\n",
         ] {
-            let err = create_prompt(
+            let err = create_system_prompt(
                 &cfg,
-                &PromptCreateInput {
+                &SystemPromptCreateInput {
                     name: "pirate".into(),
                     content: bad.into(),
                 },
-                fs_source::PromptKind::System,
             )
             .unwrap_err();
             assert!(err.starts_with("D213 invalid_input:"), "got: {err}");
         }
 
         // Bad requested name never reaches the filesystem.
-        assert!(create_prompt(
+        assert!(create_system_prompt(
             &cfg,
-            &PromptCreateInput {
+            &SystemPromptCreateInput {
                 name: "Bad Name".into(),
                 content: "---\ndescription: x\n---\nbody\n".into(),
             },
-            fs_source::PromptKind::System,
         )
         .is_err());
         assert!(!tmp.path().join("system-prompts/pirate.md").exists());
     }
 
     #[test]
-    fn create_prompt_kind_selects_target_dir_and_scope() {
+    fn create_system_prompt_kind_selects_target_dir_and_scope() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = cfg_for(tmp.path());
         let content = "---\ndescription: X.\n---\nBody.\n";
 
-        let sys = create_prompt(
+        let sys = create_system_prompt(
             &cfg,
-            &PromptCreateInput {
+            &SystemPromptCreateInput {
                 name: "dual".into(),
                 content: content.into(),
             },
-            fs_source::PromptKind::System,
         )
         .unwrap();
         assert_eq!(sys.name, "dual");
         assert!(tmp.path().join("system-prompts/dual.md").exists());
 
-        // Same name as a COMMAND prompt: legal, lands in prompts/.
-        let cmd = create_prompt(
+        // A second create is a conflict.
+        let err = create_system_prompt(
             &cfg,
-            &PromptCreateInput {
+            &SystemPromptCreateInput {
                 name: "dual".into(),
                 content: content.into(),
             },
-            fs_source::PromptKind::Command,
-        )
-        .unwrap();
-        assert_eq!(cmd.name, "dual");
-        assert!(tmp.path().join("prompts/dual.md").exists());
-
-        // But a second create of the same kind is a conflict.
-        let err = create_prompt(
-            &cfg,
-            &PromptCreateInput {
-                name: "dual".into(),
-                content: content.into(),
-            },
-            fs_source::PromptKind::System,
         )
         .unwrap_err();
         assert!(err.starts_with("D214 invalid_input:"), "got: {err}");
@@ -1517,7 +1377,7 @@ mod tests {
     }
 
     #[test]
-    fn update_prompt_is_kind_scoped() {
+    fn update_system_prompt_is_kind_scoped() {
         let tmp = tempfile::tempdir().unwrap();
         write_fixture(
             tmp.path(),
@@ -1525,64 +1385,44 @@ mod tests {
             "---\ndescription: old\n---\nOld.\n",
         );
         let cfg = cfg_for(tmp.path());
-        // The command family cannot see (or update) a system prompt.
-        let err = update_prompt(
-            &cfg,
-            &PromptUpdateInput {
-                name: "solo".into(),
-                content: "---\ndescription: new\n---\nNew.\n".into(),
-            },
-            fs_source::PromptKind::Command,
-        )
-        .unwrap_err();
-        assert!(err.starts_with("D210 not_found: prompt"), "got: {err}");
         // The system family updates it.
-        let out = update_prompt(
+        let out = update_system_prompt(
             &cfg,
-            &PromptUpdateInput {
+            &SystemPromptUpdateInput {
                 name: "solo".into(),
                 content: "---\ndescription: new\n---\nNew.\n".into(),
             },
-            fs_source::PromptKind::System,
         )
         .unwrap();
         assert_eq!(out.description, "new");
     }
 
     #[test]
-    fn delete_prompt_removes_only_the_resolved_kind() {
+    fn delete_system_prompt_removes_only_the_resolved_kind() {
         let tmp = tempfile::tempdir().unwrap();
         write_fixture(
             tmp.path(),
             "system-prompts/on-disk.md",
             "---\nname: dual\ndescription: system\n---\nSystem.\n",
         );
-        write_fixture(
-            tmp.path(),
-            "prompts/dual.md",
-            "---\ndescription: command\n---\nCommand.\n",
-        );
         let cfg = cfg_for(tmp.path());
 
-        let out = delete_prompt(
+        let out = delete_system_prompt(
             &cfg,
-            &PromptDeleteInput {
+            &SystemPromptDeleteInput {
                 name: "dual".into(),
             },
-            fs_source::PromptKind::System,
         )
         .unwrap();
 
         assert_eq!(out.name, "dual");
         assert!(!tmp.path().join("system-prompts/on-disk.md").exists());
-        assert!(tmp.path().join("prompts/dual.md").exists());
 
-        let err = delete_prompt(
+        let err = delete_system_prompt(
             &cfg,
-            &PromptDeleteInput {
+            &SystemPromptDeleteInput {
                 name: "dual".into(),
             },
-            fs_source::PromptKind::System,
         )
         .unwrap_err();
         assert!(
@@ -1738,11 +1578,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = cfg_for(tmp.path());
 
-        for (id, family) in [
-            ("ns/prompts/foo", "directory::prompts::create"),
-            ("ns/system-prompts/foo", "directory::system-prompts::create"),
-            ("prompts/foo", "directory::prompts::create"),
-        ] {
+        for id in ["ns/prompts/foo", "prompts/foo"] {
             let err = create_skill_in(
                 &cfg,
                 &[],
@@ -1755,12 +1591,53 @@ mod tests {
             .unwrap_err();
             assert!(err.starts_with("D115 invalid_input:"), "id {id}: {err}");
             assert!(
-                err.contains(family),
-                "id {id} should route to {family}: {err}"
+                err.contains("reserved `prompts` path segment; rename that segment"),
+                "id {id} should direct the caller to rename the reserved segment: {err}"
             );
+            assert!(!err.contains("classified as a prompt"), "id {id}: {err}");
+            assert!(!err.contains("directory::prompts::"), "id {id}: {err}");
         }
+
+        let err = create_skill_in(
+            &cfg,
+            &[],
+            None,
+            &SkillCreateInput {
+                id: "ns/system-prompts/foo".into(),
+                content: "# X\n\nbody\n".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("directory::system-prompts::create"),
+            "system prompt ids should keep their create guidance: {err}"
+        );
         assert!(!tmp.path().join("ns").exists());
         assert!(!tmp.path().join("prompts").exists());
+    }
+
+    #[test]
+    fn create_skill_rejects_agent_segment_ids() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_for(tmp.path());
+
+        for id in ["agents/foo", "ns/agents/foo"] {
+            let err = create_skill_in(
+                &cfg,
+                &[],
+                None,
+                &SkillCreateInput {
+                    id: id.into(),
+                    content: "# X\n\nbody\n".into(),
+                },
+            )
+            .unwrap_err();
+            assert!(err.starts_with("D115 invalid_input:"), "id {id}: {err}");
+            assert!(err.contains("directory::agents::create"), "id {id}: {err}");
+        }
+
+        assert!(!tmp.path().join("agents").exists());
+        assert!(!tmp.path().join("ns").exists());
     }
 
     #[test]

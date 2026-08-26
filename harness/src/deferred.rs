@@ -628,7 +628,7 @@ mod tests {
 
         let (second, updates) =
             crate::trigger::prepare_info_result("held-2", &arguments, &data, &ledger, true);
-        assert_eq!(second.content, data.content, "a sibling result stays full");
+        assert_eq!(second.content, first.content, "a sibling result stays full");
         apply_deferred_contract_updates_after_append(&mut ledger, "held-2", updates);
 
         crate::trigger::retain_visible_contract_sources(
@@ -655,7 +655,19 @@ mod tests {
             )]
         );
         assert!(updates.is_empty());
-        assert_eq!(first.content, data.content);
+        assert_eq!(
+            first.content,
+            crate::trigger::prepare_info_result(
+                "probe",
+                &arguments,
+                &data,
+                &Default::default(),
+                true
+            )
+            .0
+            .content,
+            "the first result is the full (response-schema-stripped) rendering"
+        );
     }
 
     #[test]

@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 """Build the POST /w/<slug>/skills payload from a worker directory.
 
-Walks the optional ``<worker>/skills/SKILL.md`` entrypoint plus every other
-``<worker>/skills/**/*.md`` document and produces the JSON body expected by
-the workers-registry endpoint. Skill paths map to keys as:
+Walks the optional ``<worker>/skills/SKILL.md`` entrypoint, every other
+``<worker>/skills/**/*.md`` document, and direct ``<worker>/agents/*.md``
+profiles. It produces the JSON body expected by the workers-registry endpoint.
+Paths map to keys as:
 
     <worker>/skills/SKILL.md      -> "SKILL.md"
     <worker>/skills/<rel>.md      -> "skills/<rel>.md"  (except SKILL.md)
+    <worker>/agents/<id>.md       -> "agents/<id>.md"
 
-If no non-empty markdown is found the script writes ``skip=true`` to
-``$GITHUB_OUTPUT`` (so the calling workflow can gate the POST step off) and
-exits cleanly; the API rejects payloads that omit both ``skills`` and
-``prompts``, and ``skills: {}`` would be a destructive "clear all" call which is
-wrong on a fresh publish.
+The payload always carries the complete skills snapshot, including
+``skills: {}`` when no non-empty markdown exists. Publishing that explicit
+empty snapshot is idempotent and lets retries prove that the exact version has
+no attached skills before a mutable Registry channel is assigned.
 """
 import argparse
 import json
-import os
 import pathlib
 import re
 import sys
@@ -44,7 +44,20 @@ def collect_skills(worker_root: pathlib.Path) -> dict[str, str]:
 
     leaves_dir = worker_root / "skills"
     skills_skill = leaves_dir / "SKILL.md"
-    markdown = sorted(leaves_dir.rglob("*.md")) if leaves_dir.is_dir() else []
+    skill_markdown = (
+        [
+            path
+            for path in leaves_dir.rglob("*.md")
+            if not {"prompts", "agents"}.intersection(
+                path.relative_to(leaves_dir).parts
+            )
+        ]
+        if leaves_dir.is_dir()
+        else []
+    )
+    agents_dir = worker_root / "agents"
+    agent_markdown = list(agents_dir.glob("*.md")) if agents_dir.is_dir() else []
+    markdown = sorted([*skill_markdown, *agent_markdown])
 
     top_body = _read_nonempty(skills_skill) if skills_skill.is_file() else None
     if top_body is not None:
@@ -66,14 +79,6 @@ def collect_skills(worker_root: pathlib.Path) -> dict[str, str]:
             skills[rel] = body
 
     return skills
-
-
-def _signal_skip(worker: str) -> None:
-    gha_out = os.environ.get("GITHUB_OUTPUT")
-    if gha_out:
-        with open(gha_out, "a", encoding="utf-8") as f:
-            f.write("skip=true\n")
-    print(f"::notice::no skills found for {worker}; skipping POST /w/.../skills")
 
 
 def main() -> int:
@@ -99,13 +104,8 @@ def main() -> int:
         print(f"::error::{exc}", file=sys.stderr)
         return 1
 
-    out_path = pathlib.Path(args.out)
-    if not skills:
-        out_path.write_text("{}\n", encoding="utf-8")
-        _signal_skip(args.worker)
-        return 0
-
     payload = {"version": args.version, "skills": skills}
+    out_path = pathlib.Path(args.out)
     out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     print(f"::notice::collected {len(skills)} skill file(s) for {args.worker}")
     return 0

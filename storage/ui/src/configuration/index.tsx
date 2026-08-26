@@ -402,7 +402,7 @@ function LocalEditor({
             path="providers/local/data_dir"
             label="Data directory"
             value={asString(local.data_dir)}
-            placeholder="./data/storage"
+            placeholder="data/storage"
             hint="Relative paths resolve from the worker process directory. Existing RustFS data is not imported automatically."
             error={fieldError(errors, 'providers', 'local', 'data_dir')}
             onChange={(next) => setLocalString('data_dir', next)}

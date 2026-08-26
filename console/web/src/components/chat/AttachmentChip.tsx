@@ -1,4 +1,4 @@
-import { Blocks, File, Image as ImageIcon, SquareSlash, X } from 'lucide-react'
+import { Blocks, File, Image as ImageIcon, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import {
   ImageThumbnailButton,
@@ -8,10 +8,7 @@ import {
 import { cn } from '@/lib/utils'
 import type { Attachment } from '@/types/chat'
 
-/* Same icons as the composer's slash palette sources: a collapsed
- * `<command>` block reads as the command it came from, not as a file. */
 function chipIcon(type: string) {
-  if (type === 'text/x-slash-command') return SquareSlash
   if (type === 'text/x-skill') return Blocks
   return File
 }

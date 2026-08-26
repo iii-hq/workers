@@ -10,10 +10,11 @@ description: >-
 # bridge
 
 The `bridge` worker connects this iii engine to another iii instance over
-`iii-sdk` so functions on either side can call across the boundary. It opens a
-single outbound WebSocket to the configured `url`, and stays open for the
-worker's lifetime — bridging is request/response over that long-lived
-connection. There are no trigger types.
+`iii-sdk` so functions on either side can call across the boundary. It keeps a
+local/control WebSocket to this engine, selected by `--url`, `III_URL`, or the
+local default. A separate WebSocket connects to the remote target selected by
+`config.url` and reconnects when that value changes. Both connections stay
+open for the worker's lifetime. There are no trigger types.
 
 The worker is configuration-driven. The primary surface is two list-shaped
 config fields (`forward` and `expose`) that wire stable function ids on both
@@ -75,9 +76,12 @@ malformed input, `bridge_error` otherwise).
 Configuration lives in the `configuration` worker's `bridge` entry (hot-reload
 — no restart needed for most changes):
 
-- `url` — WebSocket URL of the remote iii instance. Fallback chain:
-  `config.url` → `III_URL` env var → `ws://0.0.0.0:49134`. Changing it
-  reconnects to the new remote.
+- The local/control engine connection uses `--url`, then `III_URL`, then
+  `ws://127.0.0.1:49134`. This is where the worker registers and receives
+  local invocations.
+- `url` — WebSocket URL of the remote target. Set it explicitly when
+  `III_URL` selects a non-default local/control engine. Changing it reconnects
+  to the new remote.
 - `expose: [{ local_function, remote_function? }]` — functions on this engine
   the remote may call; `remote_function` is the name registered on the remote
   (defaults to `local_function`). Newly added entries register live on the
@@ -91,3 +95,8 @@ Configuration lives in the `configuration` worker's `bridge` entry (hot-reload
 Removing a `forward`/`expose` entry does not un-register its handler (the SDK
 has no unregister): the function id stays callable but returns a
 `bridge_error` until the worker restarts.
+
+For backward compatibility, a missing remote `config.url` still falls back to
+`III_URL`, then `ws://0.0.0.0:49134`. In Compose or another supervised setup,
+always set `config.url` so this legacy fallback cannot point the remote target
+back at the local/control engine.

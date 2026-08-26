@@ -10,14 +10,12 @@
  * "no page". Owning the hook means the mount initializer reads the live
  * hash synchronously, so the id is correct from the first render.
  *
- * If the page a user is looking at disappears (hot reload gone bad, worker
- * disconnect, explicit unregister), the router falls back to the default
- * view. A deep-link hit *before* the script loads renders a lightweight
- * notice instead of bouncing — assets typically arrive within a second of
- * the tab's `console:assets` sync.
+ * If the page a user is looking at disappears during a worker reload or
+ * disconnect, its pane stays put and renders a lightweight waiting notice.
+ * Assets typically return within a second of the tab's `console:assets` sync;
+ * keeping the route stable prevents that transient gap from opening Traces.
  */
 
-import { useEffect, useRef } from 'react'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { PageHeader, PageShell } from '@/components/ui/PageChrome'
 import { useExtPageRoute } from '@/hooks/use-hash-route'
@@ -26,7 +24,6 @@ import { useExtPages } from '@/lib/ui-slots'
 import type { PageCommandsApi, PanelSide } from '@/types/injectable-ui'
 
 interface ExtPageProps {
-  onMissing: () => void
   /**
    * Render this specific page instead of the hash-derived one. Workspace
    * tabs pin a screen to a page id, so a two-column tab can show an
@@ -62,7 +59,6 @@ interface ExtPageProps {
 }
 
 export function ExtPage({
-  onMissing,
   pageId: pageIdProp,
   panelSide = 'left',
   tabId = '',
@@ -79,28 +75,6 @@ export function ExtPage({
   const page = pageId
     ? [...pages].reverse().find((p) => p.id === pageId)
     : undefined
-
-  // Fall back to the default view ONLY when the page id this component
-  // already rendered loses its registration (hot reload gone bad, worker
-  // disconnect, unregister). Never on a not-loaded-yet id (renders the
-  // notice below), never when the route is leaving `#/ext/*` (pageId goes
-  // null a commit before the view flips — bouncing there would hijack the
-  // outgoing navigation), and never when switching between ext pages.
-  const seenIdRef = useRef<string | null>(null)
-  useEffect(() => {
-    if (page && pageId) {
-      seenIdRef.current = pageId
-      return
-    }
-    if (!pageId) {
-      seenIdRef.current = null
-      return
-    }
-    if (seenIdRef.current === pageId) {
-      seenIdRef.current = null
-      onMissing()
-    }
-  }, [page, pageId, onMissing])
 
   if (!page) {
     return (

@@ -62,12 +62,38 @@ const NARROW_BELOW = 850
 export interface BrowserRow {
   /** Stable key + the id/name passed to load/save. */
   key: string
+  /** Optional leading glyph (agents: the tree-icon token). */
+  icon?: ReactNode
   title: string
   description: string
   /** Fine-print line (size · modified). */
   fine: string
   /** Built-in entries can be viewed and copied but not changed. */
   readOnly?: boolean
+}
+
+/** What an adapter's `extraFields` renderer gets to work with: the full
+ * draft document plus the same guarded editor the built-in fields use. */
+export interface ExtraFieldsContext {
+  host: Host
+  draft: string
+  editDraft: (next: string) => void
+  readOnly: boolean
+  fieldId: string
+  /** The opened entry's key; null while creating a new one. */
+  entryKey: string | null
+}
+
+/** Context for a full custom form (`adapter.customForm`), which replaces
+ * the built-in name/description grid entirely. Name and description stay
+ * managed frontmatter fields — the setters here write them the same way
+ * the built-in inputs would. */
+export interface FormContext extends ExtraFieldsContext {
+  nameValue: string
+  descriptionValue: string
+  setName: (next: string) => void
+  setDescription: (next: string) => void
+  creating: boolean
 }
 
 export interface BrowserAdapter {
@@ -90,6 +116,26 @@ export interface BrowserAdapter {
   nameHint?: string
   /** Prompt scanners reject an empty description; skills keep it optional. */
   descriptionRequired?: boolean
+  /** The entry's key is a slug SEPARATE from its free-text display name
+      (agents: the id is the file stem, frontmatter `name` is display
+      only). The name field stays free text; the id is derived from it
+      (slugified) at create time and shown as a hint, never typed. */
+  separateId?: { pattern: RegExp; hint: string }
+  /** The scanner rejects an empty display name (agents). */
+  nameRequired?: boolean
+  /** Starter document for a new entry (defaults to name+description). */
+  newTemplate?: string
+  /** Extra frontmatter keys managed by `extraFields` — hidden from the
+      content editor and restored verbatim on save, like name/description. */
+  extraManagedKeys?: readonly string[]
+  /** Adapter-specific form controls rendered under the built-in fields. */
+  extraFields?: (ctx: ExtraFieldsContext) => ReactNode
+  /** Full replacement for the built-in fields block (agents: the
+      sectioned Identity / Behavior / Execution form). Wins over
+      `extraFields`. */
+  customForm?: (ctx: FormContext) => ReactNode
+  /** Label for the source editor header (default "Content"). */
+  sourceLabel?: string
   /** Show the skill's model-invocation control. */
   modelInvocationOption?: boolean
   /** Workspace empty-state copy. */
@@ -113,6 +159,15 @@ export interface BrowserAdapter {
  *  a `description`, so scaffold both required keys rather than a blank page. */
 const NEW_TEMPLATE = '---\nname: \ndescription: ""\n---\n\n'
 const SLUG_NAME = /^[a-z0-9_-]+$/
+
+/** Derive a slug id from a free-text display name ("Release Captain" →
+ * "release-captain"), used to prefill the id field while creating. */
+export function slugify(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+}
 
 type EditorMode = 'edit' | 'split' | 'preview'
 
@@ -220,7 +275,7 @@ export function CollectionBrowser({
 }: {
   host: Host
   adapter: BrowserAdapter
-  /** Sidebar top slot — the skills/prompts switcher lives here. */
+  /** Sidebar top slot — the collection switcher lives here. */
   nav?: ReactNode
   panelSide?: 'left' | 'right'
   /** localStorage namespace for per-tab+collection UI state. */
@@ -426,13 +481,13 @@ export function CollectionBrowser({
       setCreating(true)
       setSelected(null)
       setLoaded({ key: '', content: '' })
-      setDraft(NEW_TEMPLATE)
+      setDraft(adapter.newTemplate ?? NEW_TEMPLATE)
       setLoadError(null)
       setSaveError(null)
       setDeleteError(null)
       setStaleOnDisk(false)
     })
-  }, [storageKey, guardDirty])
+  }, [storageKey, guardDirty, adapter])
 
   // External change (download / update from anywhere): refresh the list;
   // reload the open entry only when the editor has no unsaved edits.
@@ -467,22 +522,37 @@ export function CollectionBrowser({
       adapter.nameKeys ?? ['name'],
       adapter.defaultNameKey,
     ).value.trim()
-    const effectiveName = name || (!creating ? loaded.key : '')
-    // namePattern governs the CREATE id only: on update the frontmatter
-    // name/title is a display field for skills (the id is the key), so a
-    // human-readable title must not block saving. Prompt updates keep the
-    // slug gate — there the frontmatter name IS a rename.
-    const pattern = creating
-      ? (adapter.namePattern ?? (adapter.slugName ? SLUG_NAME : null))
-      : adapter.slugName
-        ? SLUG_NAME
-        : null
-    if (pattern && !pattern.test(effectiveName)) {
-      setSaveError(
-        adapter.nameHint ??
-          'enter a name using lowercase letters, numbers, hyphens or underscores',
-      )
+    if (adapter.nameRequired && !name) {
+      setSaveError(`enter a display name for this ${adapter.noun}`)
       return
+    }
+    let effectiveName = name || (!creating ? loaded.key : '')
+    if (adapter.separateId) {
+      // The name is free-text display copy; the key is the slug id —
+      // derived from the name at create time, fixed to the file stem
+      // afterwards. A collision surfaces as the server's conflict error.
+      effectiveName = creating ? slugify(name) : loaded.key
+      if (creating && !adapter.separateId.pattern.test(effectiveName)) {
+        setSaveError(adapter.separateId.hint)
+        return
+      }
+    } else {
+      // namePattern governs the CREATE id only: on update the frontmatter
+      // name/title is a display field for skills (the id is the key), so a
+      // human-readable title must not block saving. Prompt updates keep the
+      // slug gate — there the frontmatter name IS a rename.
+      const pattern = creating
+        ? (adapter.namePattern ?? (adapter.slugName ? SLUG_NAME : null))
+        : adapter.slugName
+          ? SLUG_NAME
+          : null
+      if (pattern && !pattern.test(effectiveName)) {
+        setSaveError(
+          adapter.nameHint ??
+            'enter a name using lowercase letters, numbers, hyphens or underscores',
+        )
+        return
+      }
     }
     const description = readFrontmatterField(draft, ['description']).value
     if (adapter.descriptionRequired && !description.trim()) {
@@ -746,6 +816,11 @@ export function CollectionBrowser({
     ...(adapter.modelInvocationOption && modelInvocationSimple
       ? [{ ...modelInvocationField, bare: true }]
       : []),
+    // Extra keys an adapter's custom controls own (agents: logo, skills):
+    // hidden from the content editor, restored verbatim from `raw` on save.
+    ...(adapter.extraManagedKeys ?? []).map((key) =>
+      readFrontmatterField(draft, [key]),
+    ),
   ]
   const editorSource = withoutFrontmatterFields(
     draft,
@@ -922,6 +997,9 @@ export function CollectionBrowser({
                         onClick={() => open(r.key)}
                       >
                         <span className={`name${isTitled ? '' : ' mono'}`}>
+                          {r.icon ? (
+                            <span className="dir-ui-nav-ico">{r.icon}</span>
+                          ) : null}
                           {isTitled ? r.title : r.key}
                         </span>
                         {isTitled ? <span className="id">{r.key}</span> : null}
@@ -1126,6 +1204,36 @@ export function CollectionBrowser({
                         effMode === 'split' ? { flexGrow: split } : undefined
                       }
                     >
+                      {adapter.customForm ? (
+                        adapter.customForm({
+                          host,
+                          draft,
+                          editDraft,
+                          readOnly,
+                          fieldId,
+                          entryKey: creating ? null : (loaded?.key ?? selected),
+                          nameValue,
+                          descriptionValue,
+                          setName: (next) =>
+                            editDraft(
+                              setFrontmatterField(
+                                draft,
+                                nameField.key,
+                                adapter.slugName ? next.toLowerCase() : next,
+                                adapter.slugName,
+                              ),
+                            ),
+                          setDescription: (next) =>
+                            editDraft(
+                              setFrontmatterField(
+                                draft,
+                                descriptionField.key,
+                                next,
+                              ),
+                            ),
+                          creating,
+                        })
+                      ) : (
                       <div className="dir-ui-edit-fields">
                         <label
                           className="dir-ui-edit-field"
@@ -1136,6 +1244,12 @@ export function CollectionBrowser({
                             {adapter.slugName ? (
                               <span className="dir-ui-edit-hint">
                                 a–z · 0–9 · - · _
+                              </span>
+                            ) : adapter.separateId && creating ? (
+                              <span className="dir-ui-edit-hint">
+                                {slugify(nameValue)
+                                  ? `→ ${slugify(nameValue)}.md`
+                                  : 'the id derives from the name'}
                               </span>
                             ) : null}
                           </span>
@@ -1154,7 +1268,7 @@ export function CollectionBrowser({
                             }
                             placeholder={`${adapter.noun} name`}
                             preserveCase={!adapter.slugName}
-                            required={adapter.slugName}
+                            required={adapter.slugName || adapter.nameRequired}
                             pattern={
                               adapter.slugName ? '[a-z0-9_-]+' : undefined
                             }
@@ -1233,9 +1347,18 @@ export function CollectionBrowser({
                             </div>
                           )
                         ) : null}
+                        {adapter.extraFields?.({
+                          host,
+                          draft,
+                          editDraft,
+                          readOnly,
+                          fieldId,
+                          entryKey: creating ? null : (loaded?.key ?? selected),
+                        })}
                       </div>
+                      )}
                       <div className="dir-ui-source-head" aria-hidden>
-                        <span>Content</span>
+                        <span>{adapter.sourceLabel ?? 'Content'}</span>
                         <span>Markdown</span>
                       </div>
                       <CodeEditor

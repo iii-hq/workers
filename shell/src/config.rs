@@ -116,8 +116,8 @@ pub struct ShellConfig {
 /// and sessions, pruned oldest-first once `max_blob_bytes` is exceeded.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct TurnsConfig {
-    /// Directory for `sessions/<id>.json` and `objects/<sha>`. A leading `~/`
-    /// expands to `$HOME`. Default `~/.iii/data/shell/turns`.
+    /// Directory for `sessions/<id>.json` and `objects/<sha>`. Relative paths
+    /// resolve against `III_COMPOSE_DIR` when available.
     #[serde(default = "default_turns_data_dir")]
     pub data_dir: String,
     /// Cap on the blob store in bytes. Default 256 MiB.
@@ -135,19 +135,14 @@ impl Default for TurnsConfig {
 }
 
 impl TurnsConfig {
-    /// `data_dir` with a leading `~/` expanded to `$HOME`.
+    /// `data_dir` resolved against the Compose project directory.
     pub fn resolved_data_dir(&self) -> PathBuf {
-        if let Some(rest) = self.data_dir.strip_prefix("~/") {
-            if let Some(home) = std::env::var_os("HOME") {
-                return PathBuf::from(home).join(rest);
-            }
-        }
-        PathBuf::from(&self.data_dir)
+        iii_worker_paths::resolve_path(&self.data_dir)
     }
 }
 
 fn default_turns_data_dir() -> String {
-    "~/.iii/data/shell/turns".to_string()
+    iii_worker_paths::default_path("data/shell/turns")
 }
 
 fn default_turns_max_blob_bytes() -> u64 {

@@ -41,7 +41,7 @@ or the selection/motion rules change.
 
 ## Injectable worker sweep
 
-All 23 checked-in injectable UI packages were inspected. “Domain adapter”
+All 24 checked-in injectable UI packages were inspected. “Domain adapter”
 means a local component still adds information architecture or semantics; it
 must compose shared controls/tokens and is not permission to fork base hover,
 selection, tooltip, or selector behavior.
@@ -69,6 +69,7 @@ selection, tooltip, or selector behavior.
 | `shell` | Local tooltip geometry replaced by a shared-tooltip facade; neutral editor/terminal tabs; shared motion tokens | Terminal, filesystem, and job result adapters |
 | `state` | Neutral hierarchy navigation; shared motion tokens | Progressive scope/key/value browser |
 | `storage` | Neutral object/config navigation; shared motion tokens | Bucket/object browser |
+| `tailscale` | Shared page chrome with `PageSidebar` section navigation, `ListItem` rows, `IconButton` header and row actions, shared `Input`/`Select`/`SegmentedControl`, `Table` family, `Badge`/`Chip`/`StatusDot`, `EmptyState`/`Skeleton`, `ConfirmDialog` for public publishing; neutral selection; shared motion tokens | Tailnet device table with ping paths, QR link card, netcheck and DNS facts, preference rows |
 | `web` | Minimal shared renderer audited; no selectable navigation | HTTP response payload |
 | `worktree` | Neutral graph node/edge selection; shared motion tokens | Worktree ownership and graph semantics |
 
@@ -105,13 +106,14 @@ owns; the registry refuses those at registration. See the injectable-UI SOP,
 | state | save; setup: open | `Mod+S` | keys (`state::list_groups` + `state::list_keys`) |
 | storage | upload, refresh; setup: open | `U`, `R` | objects (`storage::listObjects`) |
 | memory | reload, new bank; setup: open | `R`, `N` | banks (`memory::bank::list`), memories (`memory::list`) |
-| iii-directory | new entry, filter, save; setup: open | `N`, `/`, `Mod+S` | entries (`directory::skills::list`, `prompts::list`, `system-prompts::list`) |
+| iii-directory | new entry, filter, save; setup: open | `N`, `/`, `Mod+S` | entries (`directory::skills::list`, `directory::system-prompts::list`, `directory::agents::list`) |
 | canvas | new, save, delete; setup: open | `N`, `Mod+S`, `X` | canvases (`canvas::list`) |
 | a2ui | new from template, undo, pin, export React; setup: open | `N`, `Z`, `P`, `E` | surfaces (`a2ui::surface::list`, per conversation) |
 | browser | new session, stop, address bar, ⋮ menu (find in page, zoom, screenshot, print to PDF, device toolbar, import / copy cookies, clear browsing data, diagnostics), device toolbar (viewport presets), responsive live view (tracks the pane), read-only badge, handoff banner (confirm a paused session), Console / Network / Downloads / History panes, annotate (pin / box / arrow tools, colours, undo; pins carry the element under them), send / save / download / clear annotations, saved-sets dialog; setup: open | `N`, `X`, `L`, `Mod+F`, `Mod+=`/`Mod+-`/`Mod+0`, `C`, `Mod+Enter` | sessions, downloads (`browser::downloads::list`), history (`browser::history::list`), cookies (`browser::cookies::list`), diagnostics (`browser::doctor`), saved annotation sets (state scope `annotations`) |
 | sandbox-code-runner | new, run code, refresh; setup: open | `N`, `C`, `R` | sandboxes (`sandbox::list`) |
 | computer | start, stop; setup: open | `N`, `X` | sessions (`computer::sessions::list`) |
 | worktree | refresh, close detail; setup: open | `R`, `Escape` | worktrees (`worktree::list`) |
+| tailscale | refresh, create link, copy link, open link, stop route, sections 1-7; setup: open | `R`, `N`, `C`, `O`, `X`, `1`-`7` | |
 | console catalog (functions, triggers) | search, toggle internal, refresh, run function; setup: open | `/`, `I`, `R`, `Mod+Enter` | functions (built in) |
 | eval | new evaluation, refresh history; setup: open, new evaluation… | `N`, `R` | evaluations (`api.list`) |
 | github | toggle live, refresh, close detail; setup: open | `L`, `R`, `Escape` | (PR / issue data not wired in the UI yet) |

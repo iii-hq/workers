@@ -203,33 +203,32 @@ jtrue "index returns a body + worker count"                      "$out" '(.worke
 has   "index includes dive-deeper URLs"                          "$out" "Dive deeper: https://workers.iii.dev/workers/"
 has   "index reflects the LOCAL shell override title"            "$out" "shell (LOCAL override)"
 
-# ── 4. prompts (the real workers ship none, so lay down our own fixtures) ────
-echo "==> prompts"
-# a valid prompt (frontmatter `description`) + one WITHOUT (must be silently skipped)
-mkdir -p "$GLOBAL/promptns/prompts"
-printf -- '---\ndescription: A test greeting prompt.\n---\nHello {{name}}!\n' > "$GLOBAL/promptns/prompts/greeting.md"
-printf -- 'Hello, but this prompt has no frontmatter description.\n'          > "$GLOBAL/promptns/prompts/nodesc.md"
-out=$(trig directory::prompts::list --json '{}')
-jtrue "prompts::list returns a prompts array"                    "$out" '.prompts | type == "array"'
-jtrue "prompts::list includes the described fixture prompt"      "$out" '[.prompts[].name] | index("greeting") != null'
-jtrue "prompts::list SKIPS the no-description prompt"            "$out" '[.prompts[].name] | index("nodesc") == null'
-out=$(trig directory::prompts::get name=greeting)
-jtrue "prompts::get greeting -> name + body + description"       "$out" '.name == "greeting" and (.body | contains("Hello")) and (.description == "A test greeting prompt.")'
-out=$(trig directory::prompts::get --json '{"name":"nodesc"}')
-iserr "prompts::get nodesc (silently skipped) -> not_found"     "$out"
+# ── 4. system prompts (the real workers ship none, so lay down fixtures) ────
+echo "==> system prompts"
+# A valid system prompt (frontmatter `description`) plus one without it.
+mkdir -p "$GLOBAL/promptns/system-prompts"
+printf -- '---\ndescription: A test greeting system prompt.\n---\nHello {{name}}!\n' > "$GLOBAL/promptns/system-prompts/greeting.md"
+printf -- 'Hello, but this system prompt has no frontmatter description.\n'          > "$GLOBAL/promptns/system-prompts/nodesc.md"
+out=$(trig directory::system-prompts::list --json '{}')
+jtrue "system-prompts::list returns a prompts array"                    "$out" '.prompts | type == "array"'
+jtrue "system-prompts::list includes the described fixture"             "$out" '[.prompts[].name] | index("greeting") != null'
+jtrue "system-prompts::list skips the no-description fixture"           "$out" '[.prompts[].name] | index("nodesc") == null'
+out=$(trig directory::system-prompts::get name=greeting)
+jtrue "system-prompts::get greeting -> name + body + description"       "$out" '.name == "greeting" and (.body | contains("Hello")) and (.description == "A test greeting system prompt.")'
+out=$(trig directory::system-prompts::get --json '{"name":"nodesc"}')
+iserr "system-prompts::get nodesc (silently skipped) -> not_found"     "$out"
 has   "  └ D210 not_found"                                      "$out" "D210"
-# local prompt override (prompts now honour local_skills_folder like skills):
-# a LOCAL namespace shadows the same-named global namespace's prompts.
-mkdir -p "$GLOBAL/overridens/prompts" "$LOCAL/overridens/prompts"
-printf -- '---\ndescription: GLOBAL prompt (shadowed)\n---\nglobal body\n' > "$GLOBAL/overridens/prompts/g.md"
-printf -- '---\ndescription: LOCAL override prompt\n---\nlocal body\n'      > "$LOCAL/overridens/prompts/l.md"
-out=$(trig directory::prompts::list --json '{}')
-jtrue "prompts::list includes the LOCAL override prompt"        "$out" '[.prompts[].name] | index("l") != null'
-jtrue "prompts::list shadows the global prompt in an overridden ns" "$out" '[.prompts[].name] | index("g") == null'
-out=$(trig directory::prompts::get name=l)
-jtrue "prompts::get l -> LOCAL override body"                   "$out" '(.body | contains("local body")) and (.description == "LOCAL override prompt")'
-out=$(trig directory::prompts::get --json '{"name":"g"}')
-iserr "prompts::get g (shadowed global) -> not_found"          "$out"
+# Local system-prompt override mirrors skill precedence.
+mkdir -p "$GLOBAL/overridens/system-prompts" "$LOCAL/overridens/system-prompts"
+printf -- '---\ndescription: GLOBAL system prompt (shadowed)\n---\nglobal body\n' > "$GLOBAL/overridens/system-prompts/g.md"
+printf -- '---\ndescription: LOCAL override system prompt\n---\nlocal body\n'      > "$LOCAL/overridens/system-prompts/l.md"
+out=$(trig directory::system-prompts::list --json '{}')
+jtrue "system-prompts::list includes the local override"        "$out" '[.prompts[].name] | index("l") != null'
+jtrue "system-prompts::list shadows the global prompt"          "$out" '[.prompts[].name] | index("g") == null'
+out=$(trig directory::system-prompts::get name=l)
+jtrue "system-prompts::get l -> local override body"            "$out" '(.body | contains("local body")) and (.description == "LOCAL override system prompt")'
+out=$(trig directory::system-prompts::get --json '{"name":"g"}')
+iserr "system-prompts::get g (shadowed global) -> not_found"    "$out"
 
 # ── 5. engine introspection proxy (re-added WITHOUT how_guide) ──────────────
 echo "==> engine::functions::info (no how_guide)"
@@ -316,11 +315,11 @@ out=$(trig directory::skills::download worker=zzz-nonexistent-worker-zzz)
 iserr "download nonexistent worker -> error"                    "$out"
 hasnt "  └ download miss: no internal registry URL leak"        "$out" "api.workers.iii.dev"
 
-# prompts::get miss -> friendly D210 not_found + next action (was a bare string)
-out=$(trig directory::prompts::get --json '{"name":"does-not-exist"}')
-iserr "prompts::get nonexistent -> error"                       "$out"
+# system-prompts::get miss -> friendly D210 not_found + next action
+out=$(trig directory::system-prompts::get --json '{"name":"does-not-exist"}')
+iserr "system-prompts::get nonexistent -> error"                "$out"
 has   "  └ D210 not_found"                                      "$out" "D210"
-has   "  └ next action (directory::prompts::list)"              "$out" "directory::prompts::list"
+has   "  └ next action (directory::system-prompts::list)"       "$out" "directory::system-prompts::list"
 
 # engine::functions::info for a nonexistent function id
 out=$(trig directory::engine::functions::info function_id=zzz::nope::nonexistent)
@@ -482,13 +481,13 @@ iserr "dumb: natural-language id (spaces) -> rejected"         "$out"
 out=$(trig directory::skills::get --json '{"id":"How do I run SQL?"}')
 iserr "dumb: a question as the id -> rejected"                 "$out"
 
-# (h) prompts vs skills confusion
-out=$(trig directory::prompts::get name=shell)
-iserr "dumb: asked a SKILL ('shell') via prompts::get -> error" "$out"
+# (h) system prompts vs skills confusion
+out=$(trig directory::system-prompts::get name=shell)
+iserr "dumb: asked a SKILL ('shell') via system-prompts::get -> error" "$out"
 has   "  └ D210 not_found"                                     "$out" "D210"
-out=$(trig directory::prompts::get --json '{"name":"database/index"}')
-iserr "dumb: skill id as a prompt name (has '/') -> rejected"  "$out"
-out=$(trig directory::prompts::get --json '{"prompt":"x"}')
+out=$(trig directory::system-prompts::get --json '{"name":"database/index"}')
+iserr "dumb: skill id as a system prompt name (has '/') -> rejected" "$out"
+out=$(trig directory::system-prompts::get --json '{"prompt":"x"}')
 iserr "dumb: wrong param 'prompt' (name missing) -> error"     "$out"
 
 # (i) download confusion
@@ -580,17 +579,17 @@ iserr "get emptyskill/index (empty body) -> rejected"           "$out"
 mkdir -p "$GLOBAL/dupid"
 printf -- '---\ntype: index\n---\n# A\nbody a\n' > "$GLOBAL/dupid/index.md"
 printf -- '---\ntype: index\n---\n# B\nbody b\n' > "$GLOBAL/dupid/SKILLS.md"
-# unreadable prompt (perm 000) -> scan_prompts records a read SkipReason
-mkdir -p "$GLOBAL/permns/prompts"
-printf -- '---\ndescription: x\n---\nbody\n' > "$GLOBAL/permns/prompts/p.md"; chmod 000 "$GLOBAL/permns/prompts/p.md"
-# list + index + prompts::list force a full scan over all of the above (skip arms)
+# unreadable system prompt (perm 000) -> scan records a read SkipReason
+mkdir -p "$GLOBAL/permns/system-prompts"
+printf -- '---\ndescription: x\n---\nbody\n' > "$GLOBAL/permns/system-prompts/p.md"; chmod 000 "$GLOBAL/permns/system-prompts/p.md"
+# list + index + system-prompts::list force a full scan over all fixtures
 out=$(trig directory::skills::list --json '{}')
 jtrue "skills::list healthy with fault fixtures (scan skips the bad ones)" "$out" '.skills | length > 0'
 out=$(trig directory::skills::index --json '{}')
 jtrue "skills::index still renders with fault fixtures present"  "$out" '.body | length > 0'
-out=$(trig directory::prompts::list --json '{}')
-jtrue "prompts::list healthy with an unreadable prompt present"  "$out" '.prompts | type == "array"'
-chmod 644 "$GLOBAL/permns/prompts/p.md" 2>/dev/null || true     # restore so teardown can clean
+out=$(trig directory::system-prompts::list --json '{}')
+jtrue "system-prompts::list healthy with an unreadable prompt present"  "$out" '.prompts | type == "array"'
+chmod 644 "$GLOBAL/permns/system-prompts/p.md" 2>/dev/null || true # restore so teardown can clean
 # unreadable skill file (perm 000) -> the body read fails on get (read-error arm)
 mkdir -p "$GLOBAL/permskill"
 printf -- '---\ntype: index\n---\n# P\nbody\n' > "$GLOBAL/permskill/index.md"; chmod 000 "$GLOBAL/permskill/index.md"

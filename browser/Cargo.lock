@@ -227,6 +227,7 @@ dependencies = [
  "iii-config-client",
  "iii-console-ui",
  "iii-sdk",
+ "iii-worker-paths",
  "image",
  "ipnet",
  "jpeg-encoder",
@@ -1142,6 +1143,10 @@ dependencies = [
  "tracing",
  "uuid",
 ]
+
+[[package]]
+name = "iii-worker-paths"
+version = "0.1.0"
 
 [[package]]
 name = "image"

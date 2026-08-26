@@ -65,6 +65,8 @@ pub(super) struct Scenario {
     await_target_calls: Option<usize>,
     traces_override: Option<usize>,
     intervention: Option<ScenarioIntervention>,
+    agent_files: Vec<(String, String)>,
+    match_any: bool,
 }
 
 impl Scenario {
@@ -94,6 +96,8 @@ impl Scenario {
             await_target_calls: None,
             traces_override: None,
             intervention: None,
+            agent_files: Vec::new(),
+            match_any: false,
         }
     }
 
@@ -279,6 +283,22 @@ impl Scenario {
         self
     }
 
+    /// Dispatch generations by expectation match instead of strict ordinal.
+    /// For scenarios whose concurrent turns race (a spawned child's opening
+    /// step vs the parent's next step) — every generation must then be
+    /// uniquely matchable (distinct step/prompt/messages).
+    pub(super) fn match_any_dispatch(mut self) -> Self {
+        self.match_any = true;
+        self
+    }
+
+    /// Write an agent profile under the run's agents dir before stack boot.
+    pub(super) fn agent_file(mut self, path: &str, content: &str) -> Self {
+        self.agent_files
+            .push((path.to_string(), content.to_string()));
+        self
+    }
+
     pub(super) fn build(self) -> ScenarioFixture {
         let send = self.send.expect("scenario send is required");
         let allowed_functions = send.allowed_functions.clone();
@@ -311,7 +331,7 @@ impl Scenario {
                 schema_version: SchemaVersion1::V1,
                 scenario_id: self.id,
                 model: self.model,
-                dispatch: if self.intervention.is_some() {
+                dispatch: if self.intervention.is_some() || self.match_any {
                     RouterDispatchV1::MatchAny
                 } else {
                     RouterDispatchV1::Ordinal
@@ -325,6 +345,7 @@ impl Scenario {
             await_target_calls: self.await_target_calls,
             traces_override: self.traces_override,
             intervention: self.intervention,
+            agent_files: self.agent_files,
         }
     }
 }
@@ -333,6 +354,8 @@ pub(super) struct Send {
     message: String,
     idempotency_key: Option<String>,
     allowed_functions: Vec<String>,
+    omit_functions: bool,
+    agent: Option<String>,
     expose: CompiledFunctionExposureV1,
 }
 
@@ -342,6 +365,8 @@ impl Send {
             message: message.to_string(),
             idempotency_key: None,
             allowed_functions: Vec::new(),
+            omit_functions: false,
+            agent: None,
             expose: CompiledFunctionExposureV1::Native,
         }
     }
@@ -351,7 +376,28 @@ impl Send {
         self
     }
 
+    /// Documentation-only: the send still carries an explicit empty policy
+    /// (deny-all), which also keeps the sha-matched system prompt identical
+    /// to every other policy-less scenario. To leave the field off the wire
+    /// entirely, use [`Send::omit_functions`].
     pub(super) fn without_functions(self) -> Self {
+        self
+    }
+
+    /// Omit `options.functions` from the wire request entirely, exercising
+    /// the harness's own defaulting (deny-all; the configured baseline on an
+    /// agent send) instead of an explicit empty policy. The rendered system
+    /// prompt differs from the empty-policy template — match prompts by
+    /// regex in scenarios using this.
+    pub(super) fn omit_functions(mut self) -> Self {
+        self.omit_functions = true;
+        self
+    }
+
+    /// Run the session as a directory agent profile (`options.agent`),
+    /// resolved server-side from the run's `skills/agents/*.md` fixtures.
+    pub(super) fn agent(mut self, id: &str) -> Self {
+        self.agent = Some(id.to_string());
         self
     }
 
@@ -394,11 +440,12 @@ impl Send {
                 .idempotency_key
                 .unwrap_or_else(|| format!("{{{{run_id}}}}:{}", scenario_id.to_ascii_lowercase())),
             options: CompiledSendOptionsV1 {
-                functions: CompiledFunctionPolicyV1 {
+                functions: (!self.omit_functions).then_some(CompiledFunctionPolicyV1 {
                     allow: self.allowed_functions,
                     deny: Vec::new(),
                     expose: self.expose,
-                },
+                }),
+                agent: self.agent,
             },
         }
     }

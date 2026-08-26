@@ -2,6 +2,8 @@
 
 use serde::Serialize;
 
+use crate::config::WorkerConfig;
+
 #[derive(Serialize)]
 pub struct ModuleManifest {
     pub name: String,
@@ -18,18 +20,7 @@ pub fn build_manifest() -> ModuleManifest {
         description:
             "Durable, reactive, branching store of typed conversation entries with six emitted trigger types."
                 .to_string(),
-        // Mirrors config::WorkerConfig::default() field-for-field,
-        // with the adapter spelled out in its resolved fs shape.
-        default_config: serde_json::json!({
-            "adapter": {
-                "name": "fs",
-                "config": {
-                    "data_dir": "~/.iii/data/session-manager",
-                },
-            },
-            "default_list_limit": 50,
-            "max_list_limit": 500,
-        }),
+        default_config: WorkerConfig::default().to_json(),
         supported_targets: vec![env!("TARGET").to_string()],
     }
 }
@@ -37,8 +28,6 @@ pub fn build_manifest() -> ModuleManifest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::WorkerConfig;
-
     #[test]
     fn json_roundtrip_has_required_fields() {
         let m = build_manifest();

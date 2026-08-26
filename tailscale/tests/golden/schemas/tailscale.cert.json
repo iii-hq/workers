@@ -1,0 +1,57 @@
+{
+  "description": "Fetch a Let's Encrypt certificate and key for one of this node's MagicDNS domains (`tailscale cert`). Requires HTTPS enabled for the tailnet.",
+  "function_id": "tailscale::cert",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "cert_file": {
+        "description": "Absolute path to write the certificate to.",
+        "type": "string"
+      },
+      "domain": {
+        "description": "One of this node's certificate domains, as reported by dns::status `cert_domains`.",
+        "type": "string"
+      },
+      "key_file": {
+        "description": "Absolute path to write the private key to.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "cert_file",
+      "domain",
+      "key_file"
+    ],
+    "title": "CertInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "cert_file": {
+        "description": "Path of the written certificate.",
+        "type": "string"
+      },
+      "domain": {
+        "description": "Domain the certificate was issued for.",
+        "type": "string"
+      },
+      "key_file": {
+        "description": "Path of the written private key.",
+        "type": "string"
+      },
+      "output": {
+        "description": "The CLI's own output.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "cert_file",
+      "domain",
+      "key_file",
+      "output"
+    ],
+    "title": "CertOutput",
+    "type": "object"
+  }
+}

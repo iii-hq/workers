@@ -2,8 +2,6 @@
  * Thin READ client over the iii-directory worker for the chat:
  *
  *  - `directory::system-prompts::*` — the new-session identity picker.
- *  - `directory::prompts::*` — command templates, offered as session addons
- *    on the welcome screen and as `/name` slash commands in the composer.
  *  - `directory::skills::*` — listed by the session ID filter and offered as
  *    `/skill:<id>` slash commands (only the manual command resolves a body).
  *
@@ -90,28 +88,6 @@ export async function getPrompt(
   )
 }
 
-export async function listCommandPrompts(
-  client: IiiClient,
-): Promise<PromptEntry[]> {
-  const res = await client.trigger<{ prompts: PromptEntry[] }>(
-    'directory::prompts::list',
-    {},
-    { timeoutMs: FETCH_TIMEOUT_MS },
-  )
-  return res.prompts
-}
-
-export async function getCommandPrompt(
-  client: IiiClient,
-  name: string,
-): Promise<PromptBody> {
-  return client.trigger<PromptBody>(
-    'directory::prompts::get',
-    { name },
-    { timeoutMs: FETCH_TIMEOUT_MS },
-  )
-}
-
 export async function listSkills(client: IiiClient): Promise<SkillEntry[]> {
   const res = await client.trigger<{ skills: SkillEntry[] }>(
     'directory::skills::list',
@@ -130,4 +106,29 @@ export async function getSkill(
     { id },
     { timeoutMs: FETCH_TIMEOUT_MS },
   )
+}
+
+/* ── agent profiles (`directory::agents::*`) — the new-session picker ── */
+
+export interface AgentEntry {
+  id: string
+  name: string
+  description: string
+  logo: string | null
+  icon: string | null
+  model: string | null
+  skill_count: number | null
+  /** true = a specialist meant to be spawned, not to front a session.
+   * Absent on directory workers that predate the field. */
+  leaf?: boolean
+  modified_at: string
+}
+
+export async function listAgents(client: IiiClient): Promise<AgentEntry[]> {
+  const res = await client.trigger<{ agents: AgentEntry[] }>(
+    'directory::agents::list',
+    {},
+    { timeoutMs: FETCH_TIMEOUT_MS },
+  )
+  return res.agents
 }

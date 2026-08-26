@@ -1,0 +1,46 @@
+{
+  "description": "Resolve a name through the Tailscale DNS forwarder (100.100.100.100).",
+  "function_id": "tailscale::dns::query",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "name": {
+        "description": "Name to resolve.",
+        "type": "string"
+      },
+      "record_type": {
+        "default": "A",
+        "description": "Record type such as A, AAAA, CNAME, TXT; defaults to A.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "name"
+    ],
+    "title": "DnsQueryInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "answers": {
+        "description": "Answer records as the forwarder returned them."
+      },
+      "name": {
+        "description": "Name that was resolved.",
+        "type": "string"
+      },
+      "record_type": {
+        "description": "Record type that was queried.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "answers",
+      "name",
+      "record_type"
+    ],
+    "title": "DnsQueryOutput",
+    "type": "object"
+  }
+}

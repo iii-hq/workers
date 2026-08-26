@@ -316,6 +316,7 @@ export interface ConversationMetadataEdits {
   title?: string
   titleManual?: boolean
   model?: ModelId | null
+  thinkingLevel?: ThinkingLevel
   mode?: Mode
   workingDir?: string | null
   memoryBank?: string | null
@@ -366,6 +367,11 @@ export interface Conversation {
   /** flips to true after the user explicitly renames; otherwise auto-derived */
   titleManual?: boolean
   model: ModelId | null
+  /**
+   * Per-session reasoning effort, persisted as session metadata. Drafts seed
+   * it from the most recently chosen effort, just like `model`.
+   */
+  thinkingLevel?: ThinkingLevel
   mode: Mode
   /**
    * Per-session filesystem scope root. Confines this chat's shell/coder

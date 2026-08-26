@@ -1,0 +1,150 @@
+{
+  "description": "List the devices on the tailnet as this node sees them: names, Tailscale IPs, OS, online state, tags, exit-node offers, and traffic counters. Keys are omitted.",
+  "function_id": "tailscale::peers::list",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "include_ingress": {
+        "default": false,
+        "description": "Include Tailscale's Funnel ingress relay nodes (`funnel-ingress-node`, tag `tag:ingress`), which are infrastructure rather than devices.",
+        "type": "boolean"
+      },
+      "online_only": {
+        "default": false,
+        "description": "Only peers that are online right now.",
+        "type": "boolean"
+      }
+    },
+    "title": "PeersInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Peer": {
+        "properties": {
+          "active": {
+            "description": "Whether this node currently exchanges traffic with the peer.",
+            "type": "boolean"
+          },
+          "dns_name": {
+            "description": "MagicDNS name without the trailing dot.",
+            "type": "string"
+          },
+          "exit_node": {
+            "description": "Whether this node routes internet traffic through the peer.",
+            "type": "boolean"
+          },
+          "exit_node_option": {
+            "description": "Whether the peer offers to be an exit node.",
+            "type": "boolean"
+          },
+          "hostname": {
+            "description": "Machine name.",
+            "type": "string"
+          },
+          "id": {
+            "description": "Stable node id.",
+            "type": "string"
+          },
+          "ingress": {
+            "description": "True for Tailscale's Funnel ingress relay nodes, which are infrastructure rather than devices.",
+            "type": "boolean"
+          },
+          "last_seen": {
+            "description": "When the peer was last seen, RFC 3339.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "online": {
+            "description": "Whether the peer is online.",
+            "type": "boolean"
+          },
+          "os": {
+            "description": "Operating system reported by the peer.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "relay": {
+            "description": "DERP relay the connection currently uses, empty when direct.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rx_bytes": {
+            "description": "Bytes received from the peer.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "tags": {
+            "description": "ACL tags on the peer.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "taildrop_target": {
+            "description": "Whether the peer accepts Taildrop files from this node.",
+            "type": "boolean"
+          },
+          "tailscale_ips": {
+            "description": "Tailscale IPv4 and IPv6 addresses.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "tx_bytes": {
+            "description": "Bytes sent to the peer.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "active",
+          "dns_name",
+          "exit_node",
+          "exit_node_option",
+          "hostname",
+          "id",
+          "ingress",
+          "online",
+          "rx_bytes",
+          "tags",
+          "taildrop_target",
+          "tailscale_ips",
+          "tx_bytes"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "hidden_ingress_count": {
+        "description": "Funnel ingress relay nodes left out because `include_ingress` was false.",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "peers": {
+        "description": "Peers in name order.",
+        "items": {
+          "$ref": "#/definitions/Peer"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "hidden_ingress_count",
+      "peers"
+    ],
+    "title": "PeersOutput",
+    "type": "object"
+  }
+}

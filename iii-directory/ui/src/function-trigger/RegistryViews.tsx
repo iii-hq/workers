@@ -249,37 +249,17 @@ function renderRefList(
 
 function SkillsTreeSection({ tree }: { tree: SkillsTreeShape }) {
   const skills = tree.skills ?? []
-  const prompts = tree.prompts ?? []
-  if (skills.length === 0 && prompts.length === 0) return null
+  if (skills.length === 0) return null
   return (
     <div className="dir-ui-section">
-      <SectionHead>
-        skills tree · {skills.length} skills · {prompts.length} prompts
-      </SectionHead>
-      {skills.length > 0 ? (
-        <ul className="dir-ui-list">
-          {skills.map((s) => (
-            <li key={s.path} className="dir-ui-item">
-              {s.path}
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      {prompts.length > 0 ? (
-        <div>
-          <SubHead>Prompts</SubHead>
-          <ul className="dir-ui-list">
-            {prompts.map((p) => (
-              <li key={p.name} className="dir-ui-row tight">
-                <span className="dir-ui-id sm">{p.name}</span>
-                {p.description ? (
-                  <span className="dir-ui-desc">{p.description}</span>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
+      <SectionHead>skills tree · {skills.length} skills</SectionHead>
+      <ul className="dir-ui-list">
+        {skills.map((s) => (
+          <li key={s.path} className="dir-ui-item">
+            {s.path}
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }

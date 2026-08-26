@@ -46,7 +46,7 @@ impl QueueConfig {
                 name: DEFAULT_ADAPTER.to_string(),
                 config: Some(serde_json::json!({
                     "store_method": "file_based",
-                    "file_path": "./data/queue",
+                    "file_path": iii_worker_paths::default_path("data/queue"),
                     "save_interval_ms": 5000
                 })),
             }),

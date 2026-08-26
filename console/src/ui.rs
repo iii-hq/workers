@@ -14,6 +14,8 @@
 //!   `engine::registered-triggers::list`. They are engine-level views no
 //!   single worker owns, and they ship injected so the console SPA carries
 //!   no per-view code.
+//! - a renderer for validated working-directory proposals. It presents the
+//!   operator confirmation that applies a proposal to the matching chat.
 //!
 //! Registration machinery comes from the shared `iii-console-ui` crate
 //! (workers/crates/console-ui); this module only names the assets and embeds
@@ -31,6 +33,7 @@ use iii_sdk::IIIClient;
 
 pub const CONFIG_FORM_PATH: &str = "console/config-form.js";
 pub const CATALOG_PAGE_PATH: &str = "console/catalog-page.js";
+pub const WORKSPACE_PROPOSAL_PATH: &str = "console/workspace-proposal.js";
 pub const STYLES_PATH: &str = "console/styles.css";
 
 /// Built by `build.rs` (esbuild over `ui/`).
@@ -42,12 +45,17 @@ const CATALOG_PAGE_JS: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/ui/dist/catalog-page.js"
 ));
+const WORKSPACE_PROPOSAL_JS: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/ui/dist/workspace-proposal.js"
+));
 const STYLES_CSS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/dist/styles.css"));
 
 fn console_ui() -> ConsoleUi {
     ConsoleUi::new("console")
         .script(CONFIG_FORM_PATH, CONFIG_FORM_JS)
         .script(CATALOG_PAGE_PATH, CATALOG_PAGE_JS)
+        .script(WORKSPACE_PROPOSAL_PATH, WORKSPACE_PROPOSAL_JS)
         .style(STYLES_PATH, STYLES_CSS)
 }
 
@@ -80,6 +88,14 @@ mod tests {
         assert!(
             CATALOG_PAGE_JS.contains("export"),
             "built catalog-page.js looks wrong"
+        );
+    }
+
+    #[test]
+    fn embedded_workspace_proposal_is_nonempty_esm() {
+        assert!(
+            WORKSPACE_PROPOSAL_JS.contains("console::working-directory::propose"),
+            "built workspace-proposal.js looks wrong"
         );
     }
 

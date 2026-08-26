@@ -1247,6 +1247,7 @@ dependencies = [
  "iii-helpers",
  "iii-queue",
  "iii-sdk",
+ "iii-worker-paths",
  "lapin",
  "redis",
  "schemars",
@@ -1281,6 +1282,10 @@ dependencies = [
  "tracing",
  "uuid",
 ]
+
+[[package]]
+name = "iii-worker-paths"
+version = "0.1.0"
 
 [[package]]
 name = "indexmap"

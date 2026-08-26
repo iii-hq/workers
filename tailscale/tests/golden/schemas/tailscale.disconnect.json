@@ -1,0 +1,30 @@
+{
+  "description": "Disconnect this node from the tailnet (`tailscale down`). Shared routes stop answering until the node connects again.",
+  "function_id": "tailscale::disconnect",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "EmptyInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "backend_state": {
+        "description": "Backend state reported by the client after the call, normally `Stopped` or `NeedsLogin`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "connected": {
+        "description": "False once the node has left the tailnet.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "connected"
+    ],
+    "title": "DisconnectOutput",
+    "type": "object"
+  }
+}

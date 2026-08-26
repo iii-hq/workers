@@ -8,8 +8,8 @@ import {
   StatusPill,
 } from '../lib/widgets'
 import {
-  promptsUpdateRequestSchema,
-  promptsUpdateResponseSchema,
+  systemPromptsUpdateRequestSchema,
+  systemPromptsUpdateResponseSchema,
   safeParseRequest,
   safeParseResponse,
   skillsUpdateRequestSchema,
@@ -65,15 +65,15 @@ export function SkillsUpdateView({
   )
 }
 
-/* ---------------- directory::prompts::update ---------------- */
+/* ---------------- directory::system-prompts::update ---------------- */
 
-export function PromptsUpdateView({
+export function SystemPromptsUpdateView({
   input,
   output,
   running,
   verb = 'updated',
 }: ViewProps & { verb?: string }) {
-  const req = safeParseRequest(promptsUpdateRequestSchema, input)
+  const req = safeParseRequest(systemPromptsUpdateRequestSchema, input)
 
   if (running) {
     return (
@@ -82,12 +82,12 @@ export function PromptsUpdateView({
           <StatusPill label="saving…" variant="default" />
           {req ? <KvChip label="name">{req.name}</KvChip> : null}
         </MetaRow>
-        <PulseLine label="writing prompt…" />
+        <PulseLine label="writing system prompt…" />
       </Card>
     )
   }
 
-  const resp = safeParseResponse(promptsUpdateResponseSchema, output)
+  const resp = safeParseResponse(systemPromptsUpdateResponseSchema, output)
   if (!resp) return null
 
   const renamed = req && req.name !== resp.name

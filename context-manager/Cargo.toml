@@ -16,6 +16,7 @@ path = "src/lib.rs"
 
 [dependencies]
 iii-sdk = "=0.23.0-rc.2"
+iii-worker-paths = { path = "../crates/worker-paths" }
 iii-console-ui = { path = "../crates/console-ui" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
 serde = { version = "1", features = ["derive"] }

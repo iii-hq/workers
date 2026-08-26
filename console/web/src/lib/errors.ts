@@ -11,8 +11,8 @@
  * The envelope also nests: the transport says `invocation_failed` and buries
  * the useful part inside `message` as `handler error: {"code":…,"message":…}`.
  * Unwrap to the innermost message and prefix the handler's own code, so a
- * duplicate prompt reads `D214: prompt "test" already exists.` rather than the
- * transport's generic failure.
+ * duplicate system prompt reads `D214: system prompt "test" already exists.`
+ * rather than the transport's generic failure.
  *
  * Not every handler error is JSON, though — iii-directory's are plain prose
  * strings like `D214 invalid_input: …`, so there is no `{` for the unwrap to

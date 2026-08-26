@@ -1,0 +1,50 @@
+{
+  "description": "List the directories this node shares with the tailnet through Taildrive. The macOS GUI app manages Taildrive in its own settings and rejects the CLI.",
+  "function_id": "tailscale::drive::list",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "EmptyInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "DriveShare": {
+        "properties": {
+          "name": {
+            "description": "Share name.",
+            "type": "string"
+          },
+          "path": {
+            "description": "Directory shared.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "path"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "output": {
+        "description": "The CLI's own output.",
+        "type": "string"
+      },
+      "shares": {
+        "description": "Taildrive shares as `name  path` lines from the CLI.",
+        "items": {
+          "$ref": "#/definitions/DriveShare"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "output",
+      "shares"
+    ],
+    "title": "DriveListOutput",
+    "type": "object"
+  }
+}

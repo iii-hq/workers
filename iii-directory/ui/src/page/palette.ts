@@ -1,7 +1,7 @@
 /**
  * The directory worker in the command palette, before its page is even
  * open. One combined source answers a query across all three collections
- * (skills, prompts, system prompts) — the worker has no unified search
+ * (skills, system prompts, agents) — the worker has no unified search
  * function, so this fetches each collection's list and filters
  * client-side, the same as the in-page filter does. Rows open the page on
  * that collection with the entry selected (see the page's panelContext
@@ -14,7 +14,10 @@ import type { Host, PaletteSourceRow } from '@iii-dev/console-ui'
 
 const ROWS = 30
 
-export type DirectoryCollection = 'skills' | 'prompts' | 'system-prompts'
+export type DirectoryCollection =
+  | 'skills'
+  | 'system-prompts'
+  | 'agents'
 
 const COLLECTIONS: {
   id: DirectoryCollection
@@ -22,12 +25,12 @@ const COLLECTIONS: {
   listFn: string
 }[] = [
   { id: 'skills', label: 'Skills', listFn: 'directory::skills::list' },
-  { id: 'prompts', label: 'Prompts', listFn: 'directory::prompts::list' },
   {
     id: 'system-prompts',
     label: 'System prompts',
     listFn: 'directory::system-prompts::list',
   },
+  { id: 'agents', label: 'Agents', listFn: 'directory::agents::list' },
 ]
 
 interface Row {
@@ -46,9 +49,12 @@ async function listCollection(
     collection.listFn,
     payload,
   )
-  // Skills answer `{ skills }`; prompts and system prompts both answer
-  // `{ prompts }` (same shape, per PromptRow).
-  const items = (out.skills ?? out.prompts ?? []) as Record<string, unknown>[]
+  // Skills answer `{ skills }`, system prompts answer `{ prompts }`, and
+  // agents answer `{ agents }`.
+  const items = (out.skills ??
+    out.prompts ??
+    out.agents ??
+    []) as Record<string, unknown>[]
   return items
     .map((item) => ({
       key: String(item.id ?? item.name ?? ''),
@@ -99,8 +105,8 @@ export function registerDirectoryPalette(host: Host): void {
     {
       id: 'open',
       title: 'Open Directory',
-      detail: 'Filesystem-backed skills, prompts and system prompts',
-      keywords: ['skills', 'prompts', 'system prompts'],
+      detail: 'Filesystem-backed skills, system prompts and agents',
+      keywords: ['skills', 'system prompts', 'agents'],
       run: () => host.panels?.open({ pageId: 'directory', context: {} }),
     },
   ])

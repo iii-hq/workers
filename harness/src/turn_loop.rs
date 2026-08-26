@@ -356,10 +356,40 @@ async fn sync_skills(
 }
 
 /// Run one durable loop step.
+enum PreparedStep {
+    Finished(TurnStepResult),
+    Generated(Box<GeneratedStep>),
+}
+
+struct GeneratedStep {
+    payload: TurnStepPayload,
+    cfg: std::sync::Arc<crate::config::WorkerConfig>,
+    session: SessionClient,
+    record: TurnRecord,
+    strategy: crate::contract::OutputStrategy,
+    outcome: crate::clients::router::ChatOutcome,
+    durable_abort: bool,
+    guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
 pub async fn run_step(
     deps: &Deps,
     payload: TurnStepPayload,
 ) -> Result<TurnStepResult, HarnessError> {
+    // Keep each phase future behind a pointer. Inlining either future into
+    // this dispatcher would merge their async states back into one large
+    // executor stack frame.
+    let generated = match Box::pin(generate_step(deps, payload)).await? {
+        PreparedStep::Finished(result) => return Ok(result),
+        PreparedStep::Generated(generated) => generated,
+    };
+    Box::pin(finish_step(deps, generated)).await
+}
+
+async fn generate_step(
+    deps: &Deps,
+    payload: TurnStepPayload,
+) -> Result<PreparedStep, HarnessError> {
     // Serialize against off-queue resolves/sweeps on the same session.
     let _guard = deps.locks.guard(&payload.session_id).await;
     let cfg = deps.cfg().await;
@@ -373,20 +403,22 @@ pub async fn run_step(
             // transcript alone cannot recover budgets, parent linkage, output
             // contracts, or dispatch policy safely, so an absent record stays
             // a stale delivery and is acknowledged without fabricating state.
-            None => return Ok(skipped(&payload.session_id)),
+            None => return Ok(PreparedStep::Finished(skipped(&payload.session_id))),
         };
 
     // Stale guards: wrong turn or any non-current step is acked and dropped.
     if !turn_step_matches(&record.turn_id, record.step, &payload.turn_id, payload.step) {
-        return Ok(skipped(&payload.session_id));
+        return Ok(PreparedStep::Finished(skipped(&payload.session_id)));
     }
     if record.status.is_terminal() {
-        return Ok(skipped(&payload.session_id));
+        return Ok(PreparedStep::Finished(skipped(&payload.session_id)));
     }
 
     // Cooperative cancellation observed between steps.
     if record.abort {
-        return finalize_cancelled(deps, &session, &mut record, "cancelled").await;
+        return finalize_cancelled(deps, &session, &mut record, "cancelled")
+            .await
+            .map(PreparedStep::Finished);
     }
 
     // Deliver messages queued while the previous step streamed: append them in
@@ -425,7 +457,8 @@ pub async fn run_step(
                     model: None,
                 },
             )
-            .await;
+            .await
+            .map(PreparedStep::Finished);
         }
     }
 
@@ -451,7 +484,7 @@ pub async fn run_step(
         // validated (live-caught by the validation_chain e2e: a turn that
         // burned its steps mid-loop finalized "completed" with the goal
         // unmet).
-        return match deps.hooks.run_post_turn(&record, record.step, &text).await {
+        return (match deps.hooks.run_post_turn(&record, record.step, &text).await {
             Ok(()) => finalize_completed(deps, &session, &mut record, Some(text)).await,
             Err(deny) => {
                 record.result = Some(text);
@@ -475,7 +508,8 @@ pub async fn run_step(
                 )
                 .await
             }
-        };
+        })
+        .map(PreparedStep::Finished);
     }
 
     let functions = deps.functions().await;
@@ -497,16 +531,15 @@ pub async fn run_step(
     // Build every deterministic model-facing input before context assembly.
     // Registry-change notice: if the function registry changed since this
     // session last acknowledged its generation, tell the model its cached
-    // contracts may be stale. First sighting stamps silently.
+    // contracts may be stale. First sighting stamps silently. The notice rides
+    // as a tail message, never a system-prompt mutation: the system prompt is
+    // the provider's first input item, and a one-shot append-then-remove there
+    // invalidates the whole prompt-cache prefix twice per event.
     let current_generation = functions.generation;
-    let mut assembly_system_prompt =
+    let assembly_system_prompt =
         with_runtime_context(record.options.system_prompt.clone(), &record);
-    if let Some(notice) = registry_notice(record.functions_generation, current_generation) {
-        assembly_system_prompt = Some(match assembly_system_prompt.take() {
-            Some(prompt) if !prompt.is_empty() => format!("{prompt}\n\n{notice}"),
-            _ => notice,
-        });
-    }
+    let registry_notice_message =
+        registry_notice(record.functions_generation, current_generation).map(notice_message);
     record.functions_generation = Some(current_generation);
 
     // Resolve the output-contract strategy and build the invocation surface:
@@ -589,7 +622,8 @@ pub async fn run_step(
                     &reason,
                     CONTEXT_OVERFLOW_FAILURE,
                 )
-                .await;
+                .await
+                .map(PreparedStep::Finished);
             }
             Err(error) => return Err(error),
         };
@@ -629,11 +663,16 @@ pub async fn run_step(
                         model: None,
                     },
                 )
-                .await;
+                .await
+                .map(PreparedStep::Finished);
             }
         };
-        let hook_appended = !appended.is_empty();
+        // The notice lands after the hooks ran (they must not read it as the
+        // newest user message) and before their appends (hook messages stay
+        // last, closest to the decision point).
+        let hook_appended = !appended.is_empty() || registry_notice_message.is_some();
         let mut gen_messages = assembled.messages.clone();
+        gen_messages.extend(registry_notice_message.iter().cloned());
         gen_messages.extend(appended);
 
         // Post-assembly invariant guard: providers reject a context where an
@@ -671,7 +710,8 @@ pub async fn run_step(
                     model: None,
                 },
             )
-            .await;
+            .await
+            .map(PreparedStep::Finished);
         }
 
         // Hooks and orphan repair can change the assembled request. When nothing
@@ -742,7 +782,8 @@ pub async fn run_step(
                 &reason,
                 CONTEXT_OVERFLOW_FAILURE,
             )
-            .await;
+            .await
+            .map(PreparedStep::Finished);
         }
         // One-shot recovery: fold the measured post-assembly additions (plus
         // margin for hook variance on the retry — hooks re-run against the
@@ -768,7 +809,9 @@ pub async fn run_step(
     // session lock. Do not reserve budget for a call that will never start.
     if deps.cancels.is_fired(&record.turn_id) {
         record.abort = true;
-        return finalize_cancelled(deps, &session, &mut record, "cancelled").await;
+        return finalize_cancelled(deps, &session, &mut record, "cancelled")
+            .await
+            .map(PreparedStep::Finished);
     }
 
     let budget_reservation = match crate::budget::reserve(
@@ -786,7 +829,9 @@ pub async fn run_step(
                 crate::budget::BudgetRejection::Exceeded(_) => BUDGET_EXCEEDED_FAILURE,
                 crate::budget::BudgetRejection::Unavailable(_) => BUDGET_UNAVAILABLE_FAILURE,
             };
-            return finalize_failed(deps, &session, &mut record, rejection.reason(), failure).await;
+            return finalize_failed(deps, &session, &mut record, rejection.reason(), failure)
+                .await
+                .map(PreparedStep::Finished);
         }
     };
 
@@ -867,7 +912,9 @@ pub async fn run_step(
             crate::budget::release(deps, reservation).await?;
         }
         record.abort = true;
-        return finalize_cancelled(deps, &session, &mut record, "cancelled").await;
+        return finalize_cancelled(deps, &session, &mut record, "cancelled")
+            .await
+            .map(PreparedStep::Finished);
     }
 
     // Release the per-session lock across the generation RPC. The loop writes no
@@ -1022,6 +1069,37 @@ pub async fn run_step(
             .and_then(|record| record.options.skill_context.as_ref()),
     );
 
+    Ok(PreparedStep::Generated(Box::new(GeneratedStep {
+        payload,
+        cfg,
+        session,
+        record,
+        strategy,
+        outcome,
+        durable_abort,
+        guard: _guard,
+    })))
+}
+
+/// Finish a generated step while the caller holds the session lock.
+///
+/// This phase is separate from context assembly and provider generation so
+/// the executor does not poll one monolithic future with every turn-loop
+/// state in the same stack frame.
+async fn finish_step(
+    deps: &Deps,
+    generated: Box<GeneratedStep>,
+) -> Result<TurnStepResult, HarnessError> {
+    let GeneratedStep {
+        payload,
+        cfg,
+        session,
+        mut record,
+        strategy,
+        outcome,
+        durable_abort,
+        guard: _guard,
+    } = *generated;
     record.turn_count += 1;
 
     // Cancellation during generation finalises the partial as cancelled.
@@ -3016,9 +3094,20 @@ fn patch_orphaned_calls(messages: &mut Vec<Value>) -> usize {
     patched
 }
 
-/// The single-line notice appended to the system prompt when the registry
+/// The single-line notice delivered as a tail message when the registry
 /// changed under a session that had already acknowledged an earlier generation.
 const REGISTRY_CHANGED_NOTICE: &str = "NOTE: the function registry changed during this conversation. Function contracts fetched earlier may be stale — re-fetch the contracts you rely on (engine::functions::info) before calling those functions again.";
+
+/// Wrap the notice as an ephemeral tail user message for the generate request.
+/// `timestamp` is mandatory — the router's message types have no serde default
+/// for it — and never reaches the provider wire.
+fn notice_message(text: String) -> Value {
+    json!({
+        "role": "user",
+        "content": [{ "type": "text", "text": text }],
+        "timestamp": AgentMessage::now_ms(),
+    })
+}
 
 /// Decide the registry-change notice for a step. `None` when the record already
 /// matches the live generation, or is being stamped for the first time; `Some`
@@ -3277,7 +3366,7 @@ mod tests {
 
         let (second, updates) =
             crate::trigger::prepare_info_result("call-2", &arguments, &data, &ledger, true);
-        assert_eq!(second.content, data.content, "a sibling result stays full");
+        assert_eq!(second.content, first.content, "a sibling result stays full");
         crate::trigger::apply_contract_updates_after_append(&mut ledger, "call-2", updates);
 
         crate::trigger::retain_visible_contract_sources(
@@ -3304,7 +3393,19 @@ mod tests {
             )]
         );
         assert!(updates.is_empty());
-        assert_eq!(first.content, data.content);
+        assert_eq!(
+            first.content,
+            crate::trigger::prepare_info_result(
+                "probe",
+                &arguments,
+                &data,
+                &Default::default(),
+                true
+            )
+            .0
+            .content,
+            "the first result is the full (response-schema-stripped) rendering"
+        );
     }
 
     #[test]
@@ -3646,6 +3747,17 @@ mod tests {
         assert!(super::registry_notice(Some(7), 7).is_none());
         // Registry moved on: notice fires.
         assert!(super::registry_notice(Some(6), 7).is_some());
+    }
+
+    #[test]
+    fn notice_message_is_a_timestamped_tail_user_message() {
+        let msg = super::notice_message(super::REGISTRY_CHANGED_NOTICE.to_string());
+        assert_eq!(msg["role"], "user");
+        assert_eq!(msg["content"][0]["type"], "text");
+        assert_eq!(msg["content"][0]["text"], super::REGISTRY_CHANGED_NOTICE);
+        // The router's message types have no serde default for `timestamp`;
+        // omitting it fails deserialization at the router boundary.
+        assert!(msg["timestamp"].is_i64());
     }
 
     #[test]

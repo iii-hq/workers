@@ -3,17 +3,15 @@ import { errText } from './errors'
 
 describe('errText', () => {
   it('renders the wire error object a rejected trigger throws', () => {
-    /* The exact payload `directory::prompts::create` returns on a stack whose
-       iii-directory predates the function — reproduced with
-       `iii trigger directory::prompts::create`. `String(err)` gives
-       "[object Object]" here, which is the bug this exists to stop. */
+    /* `String(err)` gives "[object Object]" here, which is the bug this
+       exists to stop. */
     const wire = {
       code: 'function_not_found',
-      message: 'Function directory::prompts::create not found',
+      message: 'Function directory::skills::create not found',
       stacktrace: null,
     }
     expect(errText(wire)).toBe(
-      'function_not_found: Function directory::prompts::create not found',
+      'function_not_found: Function directory::skills::create not found',
     )
     expect(errText(wire)).not.toContain('[object Object]')
   })
@@ -23,9 +21,9 @@ describe('errText', () => {
       errText({
         code: 'invocation_failed',
         message:
-          'handler error: {"code":"D214","message":"prompt \\"test\\" already exists."}',
+          'handler error: {"code":"D214","message":"system prompt \\"test\\" already exists."}',
       }),
-    ).toBe('D214: prompt "test" already exists.')
+    ).toBe('D214: system prompt "test" already exists.')
   })
 
   it('drops transport-only codes that say nothing', () => {

@@ -72,7 +72,7 @@ Runtime settings live in the `configuration` worker under id `worktree` and
 hot-reload on change (a `prune_schedule` change re-binds the cron live).
 
 ```yaml
-worktree_root: "~/.iii/worktrees"   # where managed worktrees are created
+worktree_root: "worktrees"          # relative to III_COMPOSE_DIR
 branch_prefix: "iii/"               # auto-minted branch names
 branch_naming: "id"                 # or "codename" for <adjective>-<noun>-<4hex> names
 prune_schedule: "0 0 * * * *"       # six-field cron for the reconcile sweep

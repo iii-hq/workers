@@ -207,14 +207,15 @@ impl KvStore {
             );
         }
 
-        let file_path = config
+        let configured_path = config
             .clone()
             .and_then(|cfg| {
                 cfg.get("file_path")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
             })
-            .unwrap_or_else(|| "./data/state".to_string());
+            .unwrap_or_else(|| iii_worker_paths::default_path("data/state"));
+        let file_path = iii_worker_paths::resolve_path(configured_path);
 
         let interval = config
             .clone()
@@ -225,7 +226,7 @@ impl KvStore {
 
         let file_store_dir = match store_method.as_str() {
             "file_based" => {
-                let dir = PathBuf::from(&file_path);
+                let dir = file_path;
                 if let Err(err) = std::fs::create_dir_all(&dir) {
                     tracing::error!(error = ?err, path = %dir.display(), "failed to create storage directory");
                 }

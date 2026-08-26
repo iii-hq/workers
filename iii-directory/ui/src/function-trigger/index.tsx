@@ -15,15 +15,19 @@ import type {
   FunctionTriggerRenderer,
 } from '@iii-dev/console-ui'
 import { isErrorOutput, unwrapEnvelope } from '../lib/envelope'
+import { AgentsGetView, AgentsListView, AgentsUpdateView } from './AgentsViews'
 import { SkillsDownloadView } from './DownloadView'
 import { isDirectoryFunction } from './parsers'
-import { PromptsGetView, PromptsListView } from './PromptsViews'
+import {
+  SystemPromptsGetView,
+  SystemPromptsListView,
+} from './SystemPromptsViews'
 import {
   RegistryWorkerInfoView,
   RegistryWorkersListView,
 } from './RegistryViews'
 import { SkillsGetView, SkillsIndexView, SkillsListView } from './SkillsViews'
-import { PromptsUpdateView, SkillsUpdateView } from './UpdateViews'
+import { SkillsUpdateView, SystemPromptsUpdateView } from './UpdateViews'
 
 function FunctionIdLabel({ functionId }: { functionId: string }) {
   if (!functionId.startsWith('directory::')) {
@@ -83,23 +87,50 @@ function render(
           verb="created"
         />
       )
-    case 'directory::prompts::list':
     case 'directory::system-prompts::list':
-      return <PromptsListView input={input} output={output} running={running} />
-    case 'directory::prompts::get':
+      return (
+        <SystemPromptsListView
+          input={input}
+          output={output}
+          running={running}
+        />
+      )
     case 'directory::system-prompts::get':
-      return <PromptsGetView input={input} output={output} running={running} />
-    case 'directory::prompts::update':
+      return (
+        <SystemPromptsGetView input={input} output={output} running={running} />
+      )
     case 'directory::system-prompts::update':
       return (
-        <PromptsUpdateView input={input} output={output} running={running} />
+        <SystemPromptsUpdateView
+          input={input}
+          output={output}
+          running={running}
+        />
       )
     /* create's wire shapes ({name, content} → {name, description, bytes,
        modified_at}) are identical to update's, so the update view fits. */
-    case 'directory::prompts::create':
     case 'directory::system-prompts::create':
       return (
-        <PromptsUpdateView
+        <SystemPromptsUpdateView
+          input={input}
+          output={output}
+          running={running}
+          verb="created"
+        />
+      )
+    case 'directory::agents::list':
+      return <AgentsListView input={input} output={output} running={running} />
+    case 'directory::agents::get':
+      return <AgentsGetView input={input} output={output} running={running} />
+    case 'directory::agents::update':
+      return (
+        <AgentsUpdateView input={input} output={output} running={running} />
+      )
+    /* create's wire shapes ({id, content} → {id, name, description, logo,
+       bytes, modified_at}) are identical to update's, so the update view fits. */
+    case 'directory::agents::create':
+      return (
+        <AgentsUpdateView
           input={input}
           output={output}
           running={running}

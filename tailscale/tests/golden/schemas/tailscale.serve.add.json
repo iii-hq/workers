@@ -1,0 +1,137 @@
+{
+  "description": "Publish any local service, port, or directory on this node over Tailscale Serve (tailnet only) or Funnel (public; needs allow_funnel and confirm_public).",
+  "function_id": "tailscale::serve::add",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ShareMode": {
+        "enum": [
+          "serve",
+          "funnel"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "confirm_public": {
+        "default": false,
+        "description": "Required `true` for Funnel: acknowledges that the target becomes reachable by anyone with the link.",
+        "type": "boolean"
+      },
+      "https_port": {
+        "description": "HTTPS port for the listener; defaults to the configured port. Funnel accepts 443, 8443, and 10000.",
+        "format": "uint16",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "mode": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/ShareMode"
+          }
+        ],
+        "default": "serve",
+        "description": "`serve` (tailnet only, default) or `funnel` (public internet)."
+      },
+      "path": {
+        "default": "/",
+        "description": "URL path prefix to publish under; defaults to `/`.",
+        "type": "string"
+      },
+      "target": {
+        "description": "What to publish: a local port (`3000`), a loopback URL (`http://127.0.0.1:3000`, `https+insecure://localhost:8443`), or an absolute file or directory path.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "target"
+    ],
+    "title": "ServeAddInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ShareMode": {
+        "enum": [
+          "serve",
+          "funnel"
+        ],
+        "type": "string"
+      },
+      "ShareStage": {
+        "enum": [
+          "authorization_required",
+          "ready"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "authorization_url": {
+        "description": "Tailscale page that enables Funnel for this node, present only when authorization is required.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "https_port": {
+        "description": "HTTPS port of the listener.",
+        "format": "uint16",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "mode": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/ShareMode"
+          }
+        ],
+        "description": "Mode that was requested."
+      },
+      "path": {
+        "description": "URL path prefix the route serves.",
+        "type": "string"
+      },
+      "public": {
+        "description": "True when the route is reachable from the public internet.",
+        "type": "boolean"
+      },
+      "qr_svg": {
+        "description": "QR code for `url` as inline SVG markup.",
+        "type": "string"
+      },
+      "stage": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/ShareStage"
+          }
+        ],
+        "description": "`ready` when the route is live; `authorization_required` when Funnel must first be enabled for this node."
+      },
+      "target": {
+        "description": "Local target the route proxies to.",
+        "type": "string"
+      },
+      "url": {
+        "description": "URL to open: the published route, or the Tailscale authorization page when `stage` is `authorization_required`.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "https_port",
+      "mode",
+      "path",
+      "public",
+      "qr_svg",
+      "stage",
+      "target",
+      "url"
+    ],
+    "title": "ShareOutput",
+    "type": "object"
+  }
+}

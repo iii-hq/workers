@@ -6,6 +6,7 @@
 
 const ACTIVE_KEY = 'iii-chat-active'
 const LAST_MODEL_KEY = 'iii-chat-last-model'
+const LAST_THINKING_LEVEL_KEY = 'iii-chat-last-thinking-level'
 const DEFAULT_PERMISSION_MODE_KEY = 'iii-default-permission-mode'
 
 export type PermissionMode = 'manual' | 'auto' | 'full'
@@ -94,6 +95,23 @@ export function saveLastModel(id: string | null): void {
   try {
     if (id) localStorage.setItem(LAST_MODEL_KEY, id)
     else localStorage.removeItem(LAST_MODEL_KEY)
+  } catch {
+    /* best-effort */
+  }
+}
+
+export function loadLastThinkingLevel(): string | null {
+  try {
+    const level = localStorage.getItem(LAST_THINKING_LEVEL_KEY)
+    return level && level.length > 0 ? level : null
+  } catch {
+    return null
+  }
+}
+
+export function saveLastThinkingLevel(level: string): void {
+  try {
+    localStorage.setItem(LAST_THINKING_LEVEL_KEY, level)
   } catch {
     /* best-effort */
   }

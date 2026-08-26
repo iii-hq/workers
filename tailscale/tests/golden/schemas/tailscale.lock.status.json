@@ -1,0 +1,42 @@
+{
+  "description": "Report whether tailnet lock is enabled and this node's tailnet-lock public key.",
+  "function_id": "tailscale::lock::status",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "EmptyInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "enabled": {
+        "description": "Whether tailnet lock is enabled for the tailnet.",
+        "type": "boolean"
+      },
+      "node_key": {
+        "description": "This node's tailnet-lock public key (`tlpub:…`), safe to share with admins.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "node_signed": {
+        "description": "Whether this node is signed under tailnet lock, when enabled.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "output": {
+        "description": "The CLI's own output.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "enabled",
+      "output"
+    ],
+    "title": "LockStatusOutput",
+    "type": "object"
+  }
+}

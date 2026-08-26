@@ -1475,7 +1475,7 @@ fn build_browser_config(
         (dir.clone(), Some(dir))
     } else {
         (
-            std::path::PathBuf::from(&cfg.user_data_dir).join(format!("session-{slot}")),
+            iii_worker_paths::resolve_path(&cfg.user_data_dir).join(format!("session-{slot}")),
             None,
         )
     };

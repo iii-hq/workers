@@ -298,12 +298,6 @@ export function App({
     [],
   )
 
-  // An active extension page that disappears (hot-reload failure, worker
-  // disconnect, unregister) falls back to the default view.
-  const onExtMissing = useCallback(() => {
-    setView('traces')
-  }, [setView])
-
   // ── Hash → tabs ──
   // A hash navigation (deep link, in-app `window.location.hash = …`) must
   // land on a tab showing that screen: the active tab if it already does,
@@ -515,7 +509,6 @@ export function App({
           mobilePanelIndex={mobilePanelIndex}
           onMobilePanelIndexChange={setMobilePanelIndex}
           onRequestClosePane={requestClosePane}
-          onExtMissing={onExtMissing}
         />
         <ConfirmDialog
           open={discardPrompt !== null}
@@ -560,7 +553,6 @@ interface WorkspacePanesProps {
   onMobilePanelIndexChange: (index: number) => void
   /** Close a pane after the dirty-work guard has had its say. */
   onRequestClosePane: (tabId: string, paneId: string, close: () => void) => void
-  onExtMissing: () => void
 }
 
 interface PanelPresence {
@@ -602,7 +594,6 @@ function WorkspacePanes({
   mobilePanelIndex,
   onMobilePanelIndexChange,
   onRequestClosePane,
-  onExtMissing,
 }: WorkspacePanesProps) {
   const { screenOptions } = useScreenOptions()
   const { activeTab } = workspace
@@ -1392,7 +1383,6 @@ function WorkspacePanes({
                   tabId={activeTab.id}
                   paneId={paneId}
                   onClose={closePane}
-                  onExtMissing={onExtMissing}
                 />
               )}
             </div>
@@ -1490,7 +1480,6 @@ interface ScreenBodyProps {
   paneId: string
   /** Close this pane — the standard PageHeader ✕ on screens that carry it. */
   onClose: () => void
-  onExtMissing: () => void
 }
 
 /** One workspace-tab column: the page (or chat view) the screen names.
@@ -1501,7 +1490,6 @@ function ScreenBody({
   tabId,
   paneId,
   onClose,
-  onExtMissing,
 }: ScreenBodyProps) {
   // The active conversation's working dir, forwarded live so ext pages
   // (e.g. the shell explorer) can follow the chat's folder in a split.
@@ -1544,7 +1532,6 @@ function ScreenBody({
         onRequestClose={onClose}
         setDirty={setDirty}
         commands={commands}
-        onMissing={onExtMissing}
         workingDir={active?.workingDir ?? null}
         conversationId={active?.id ?? null}
       />

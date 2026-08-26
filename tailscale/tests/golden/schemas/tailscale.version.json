@@ -1,0 +1,51 @@
+{
+  "description": "Tailscale client version, and optionally the latest upstream release for the current track.",
+  "function_id": "tailscale::version",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "check_upstream": {
+        "default": false,
+        "description": "Also fetch the latest upstream release for the current track.",
+        "type": "boolean"
+      }
+    },
+    "title": "VersionInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "long": {
+        "description": "Full version string with commit hashes.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "os_variant": {
+        "description": "Client variant, e.g. `macsys`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "upstream": {
+        "description": "Latest upstream release when `check_upstream` was set.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "version": {
+        "description": "Installed client version, e.g. `1.98.8`.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "version"
+    ],
+    "title": "VersionOutput",
+    "type": "object"
+  }
+}

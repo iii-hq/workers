@@ -196,8 +196,23 @@ pub(crate) fn prepare_info_result(
         }
     }
 
+    // Response-side schemas carry no calling contract — the model reads
+    // results, it never constructs them — and they are ~40% of a typical
+    // contract's bytes. Strip them from the model-visible copy only; the raw
+    // contract stays in `details`, and the ledger digest is taken over the
+    // raw contract, so unchanged-detection is unaffected.
+    let mut stripped = false;
+    match display.get_mut("functions").and_then(Value::as_array_mut) {
+        Some(items) => {
+            for item in items {
+                stripped |= strip_response_schemas(item);
+            }
+        }
+        None => stripped |= strip_response_schemas(&mut display),
+    }
+
     let mut prepared = data.clone();
-    if compacted {
+    if compacted || stripped {
         prepared.content = normalize(&display).0;
     }
     let Some(source_content_digest) = digest_content(&prepared.content) else {
@@ -218,6 +233,19 @@ pub(crate) fn prepare_info_result(
         })
         .collect();
     (prepared, updates)
+}
+
+/// Drop the response-side schema keys from one model-visible contract item.
+/// A dedupe marker or error item has none of these — the call is a no-op.
+fn strip_response_schemas(item: &mut Value) -> bool {
+    let Some(object) = item.as_object_mut() else {
+        return false;
+    };
+    let mut stripped = false;
+    for key in ["response_schema", "response_format"] {
+        stripped |= object.remove(key).is_some();
+    }
+    stripped
 }
 
 fn valid_contract_id(value: &Value) -> Option<&str> {
@@ -596,6 +624,79 @@ mod tests {
         assert!(!arguments_degraded(&json!({ "path": "/tmp" })));
     }
 
+    /// The model-visible rendering of a full contract result: `details`
+    /// minus the response-side schema keys prepare_info_result strips.
+    fn stripped_content(details: &Value) -> Vec<ContentBlock> {
+        let mut display = details.clone();
+        match display.get_mut("functions").and_then(Value::as_array_mut) {
+            Some(items) => {
+                for item in items {
+                    strip_response_schemas(item);
+                }
+            }
+            None => {
+                strip_response_schemas(&mut display);
+            }
+        }
+        normalize(&display).0
+    }
+
+    #[test]
+    fn response_schemas_are_stripped_from_the_model_visible_copy_only() {
+        let details = json!({ "functions": [{
+            "function_id": "worker::function",
+            "description": "Does work",
+            "request_schema": { "type": "object" },
+            "response_schema": { "type": "object" },
+            "response_format": { "type": "object" }
+        }]});
+        let data = ResultData {
+            content: normalize(&details).0,
+            is_error: false,
+            details: details.clone(),
+        };
+        let (prepared, updates) = prepare_info_result(
+            "call_1",
+            &json!({ "function_ids": ["worker::function"] }),
+            &data,
+            &BTreeMap::new(),
+            true,
+        );
+        let rendered: Value =
+            serde_json::from_str(&ContentBlock::join_text(&prepared.content)).unwrap();
+        assert!(rendered["functions"][0].get("response_schema").is_none());
+        assert!(rendered["functions"][0].get("response_format").is_none());
+        assert_eq!(
+            rendered["functions"][0]["request_schema"],
+            json!({ "type": "object" })
+        );
+        assert_eq!(prepared.details, details, "raw contract stays in details");
+        // The ledger digest is over the RAW contract, so a repeat fetch of the
+        // same contract still dedupes to a marker — the stripped transcript
+        // copy is what the visibility check digests.
+        let mut ledger: BTreeMap<_, _> = updates.into_iter().collect();
+        let source = json!({
+            "role": "function_result",
+            "function_call_id": "call_1",
+            "function_id": "engine::functions::info",
+            "content": serde_json::to_value(&prepared.content).unwrap()
+        });
+        retain_visible_contract_sources(&mut ledger, &[source]);
+        let (second, _) = prepare_info_result(
+            "call_2",
+            &json!({ "function_ids": ["worker::function"] }),
+            &data,
+            &ledger,
+            true,
+        );
+        let rendered: Value =
+            serde_json::from_str(&ContentBlock::join_text(&second.content)).unwrap();
+        assert_eq!(
+            rendered["functions"][0]["contract_status"],
+            "unchanged_in_context"
+        );
+    }
+
     #[test]
     fn unchanged_info_contract_reuses_an_exact_model_visible_source() {
         let details = json!({
@@ -619,8 +720,9 @@ mod tests {
             true,
         );
         assert_eq!(
-            first.content, data.content,
-            "the first full result is retained"
+            first.content,
+            stripped_content(&data.details),
+            "the first result keeps everything but response schemas"
         );
         ledger.extend(updates);
 
@@ -734,13 +836,13 @@ mod tests {
         assert!(ledger.is_empty(), "the exact last result must match");
 
         let (without_source, updates) = prepare_info_result("repeat", &args, &data, &ledger, true);
-        assert_eq!(without_source.content, data.content);
+        assert_eq!(without_source.content, stripped_content(&data.details));
         assert_eq!(updates.len(), 1, "the new full result becomes the source");
 
         let same_call_ledger: BTreeMap<_, _> = updates.into_iter().collect();
         let (same_call, updates) =
             prepare_info_result("repeat", &args, &data, &same_call_ledger, true);
-        assert_eq!(same_call.content, data.content);
+        assert_eq!(same_call.content, stripped_content(&data.details));
         assert!(updates.is_empty(), "a call id cannot source itself");
 
         let (hook_mutated, updates) =
@@ -760,7 +862,8 @@ mod tests {
         };
         let (prepared, updates) =
             prepare_info_result("changed", &args, &changed, &same_call_ledger, true);
-        assert_eq!(prepared, changed);
+        assert_eq!(prepared.content, stripped_content(&changed.details));
+        assert_eq!(prepared.details, changed.details);
         assert_eq!(updates.len(), 1, "a changed contract stays full");
 
         let error = ResultData {
@@ -803,7 +906,8 @@ mod tests {
             true,
         );
 
-        assert_eq!(prepared, data);
+        assert_eq!(prepared.content, stripped_content(&data.details));
+        assert_eq!(prepared.details, data.details);
         assert!(updates.is_empty());
     }
 
@@ -857,7 +961,14 @@ mod tests {
         let rendered: Value = serde_json::from_str(&ContentBlock::join_text(&prepared.content))
             .expect("prepared batch content is JSON");
 
-        assert_eq!(rendered["functions"][0], details["functions"][0]);
+        assert_eq!(
+            rendered["functions"][0],
+            json!({
+                "function_id": "worker::bad",
+                "request_schema": { "type": 42 }
+            }),
+            "malformed entry stays full, minus the stripped response schema"
+        );
         assert_eq!(
             rendered["functions"][1],
             json!({
@@ -907,7 +1018,8 @@ mod tests {
             true,
         );
 
-        assert_eq!(prepared, data);
+        assert_eq!(prepared.content, stripped_content(&data.details));
+        assert_eq!(prepared.details, data.details);
         assert!(updates.is_empty());
     }
 
@@ -1098,7 +1210,8 @@ mod tests {
             &BTreeMap::new(),
             true,
         );
-        assert_eq!(prepared, data);
+        assert_eq!(prepared.content, stripped_content(&data.details));
+        assert_eq!(prepared.details, data.details);
         assert!(updates.is_empty());
     }
 

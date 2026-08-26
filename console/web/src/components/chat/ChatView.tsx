@@ -47,9 +47,18 @@ import { syncEditorWorkspace } from '@/lib/editor-sync'
 import { expandFileMentions, parseFileMentions } from '@/lib/file-mentions'
 import { formatStopReason } from '@/lib/format-stop-reason'
 import { newMessageId } from '@/lib/session-id'
-import { expandSlashInvocation, slashChip } from '@/lib/slash-commands'
+import {
+  expandSlashInvocation,
+  loadedSkillIds,
+  slashChip,
+} from '@/lib/slash-commands'
 import { useExtSessionChips, useExtSessionTurnSummaries } from '@/lib/ui-slots'
-import { fetchDefaultWorkingDir, validateWorkspaceDir } from '@/lib/working-dir'
+import {
+  activateWorkingDir,
+  fetchDefaultWorkingDir,
+  workingDirRecoveryNotice,
+} from '@/lib/working-dir'
+import { onWorkingDirectoryChangeRequest } from '@/lib/working-directory-request'
 import {
   consoleClaimFor,
   recordConsoleClaim,
@@ -88,16 +97,11 @@ import { isSessionSubmitBlockedByHydration } from './chat-submit-blocking'
 import { MessageList } from './MessageList'
 import { SessionTriggers } from './SessionTriggers'
 import {
+  agentIdForSend,
   DEFAULT_SYSTEM_PROMPT_STATE,
   selectionForSend,
   skillSelectionForSend,
 } from './system-prompt-selection'
-
-/**
- * Saved dirs already re-validated this page load, keyed sessionId + dir —
- * one live check per activation, not one per render or per send.
- */
-const validatedWorkingDirs = new Set<string>()
 
 /**
  * Order the header's injected chips deterministically. The registry appends
@@ -168,8 +172,9 @@ interface ChatViewProps {
    */
   onBack?: () => void
   onUpdateModel: (id: string, model: ModelId) => void
+  onUpdateThinkingLevel: (id: string, level: ThinkingLevel) => void
   onUpdateMode: (id: string, mode: Mode) => void
-  onUpdateWorkingDir: (id: string, dir: string) => void
+  onUpdateWorkingDir: (id: string, dir: string | null) => void
   onAppendMessage: (id: string, message: Message) => void
   onPatchMessage: (id: string, messageId: string, patch: MessagePatch) => void
   onCompactConversation: (id: string, marker: Message) => void
@@ -186,6 +191,7 @@ export function ChatView({
   commands,
   onBack,
   onUpdateModel,
+  onUpdateThinkingLevel,
   onUpdateMode,
   onUpdateWorkingDir,
   onAppendMessage,
@@ -199,15 +205,17 @@ export function ChatView({
   const [turnPhase, setTurnPhase] = useState<
     'sending' | 'accepted' | 'merged' | 'started' | null
   >(null)
-  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>(
-    DEFAULT_THINKING_LEVEL,
-  )
+  const thinkingLevel = conversation.thinkingLevel ?? DEFAULT_THINKING_LEVEL
   const [modelPickerOpenRequest, setModelPickerOpenRequest] = useState<
     number | undefined
   >(undefined)
   const handleOpenModelPicker = useCallback(() => {
     setModelPickerOpenRequest((current) => (current ?? 0) + 1)
   }, [])
+  const handleThinkingLevelChange = useCallback(
+    (next: ThinkingLevel) => onUpdateThinkingLevel(conversation.id, next),
+    [conversation.id, onUpdateThinkingLevel],
+  )
   /* Lives on the conversation record, not in local state: the interactive
      picker is on the new-session screen, so a reset on a tab switch (ChatPanel
      keys this view by conversation id) would be invisible — no control is left
@@ -217,6 +225,17 @@ export function ChatView({
   const abortRef = useRef<AbortController | null>(null)
   const { functionEntries } = useFunctionsCatalog(backend.id)
   const conversationsCtx = useConversationsCtxOptional()
+  const workingDirEnabled =
+    backend.id === 'real' &&
+    (conversationsCtx ? conversationsCtx.shellAvailable : false)
+  const workingDirRef = useRef(conversation.workingDir ?? null)
+  workingDirRef.current = conversation.workingDir ?? null
+  const workingDirActivationRef = useRef<{
+    path: string
+    token: symbol
+    promise: Promise<string | null>
+  } | null>(null)
+  const [workingDirResolving, setWorkingDirResolving] = useState(false)
   const harnessBlocked = conversationsCtx
     ? isChatBlockedByHarness(conversationsCtx.harnessStatus)
     : false
@@ -228,7 +247,8 @@ export function ChatView({
     draft: conversation.draft,
     hydrated: conversation.hydrated,
   })
-  const submitBlocked = harnessBlocked || sessionHydrating
+  const submitBlocked =
+    harnessBlocked || sessionHydrating || workingDirResolving
   const submitBlockedRef = useRef(submitBlocked)
   submitBlockedRef.current = submitBlocked
   // This view is keyed by conversation, so mounting IS opening a session:
@@ -615,12 +635,15 @@ export function ChatView({
           }
         }
         // Same expansion as the live send path: an edited queued message
-        // keeps its `/name` / `/skill:<id>` block instead of silently
+        // keeps its `/skill:<id>` block instead of silently
         // dropping it. Staying silent on a failed re-resolution would strip
         // the body the queued message already carried with no explanation.
         const slashExpansion =
           backend.id === 'real'
-            ? await expandSlashInvocation(payload.text.trim())
+            ? await expandSlashInvocation(
+                payload.text.trim(),
+                loadedSkillIds(messagesRef.current),
+              )
             : null
         if (slashExpansion?.status === 'attached') {
           attachedBlocks = [...(attachedBlocks ?? []), slashExpansion.block]
@@ -888,14 +911,6 @@ export function ChatView({
     sessionId,
   ])
 
-  // The working-directory picker + banner only make sense with the `shell`
-  // worker connected: the picker browses via shell-served `coder::*` functions
-  // and the chosen dir scopes shell exec/file calls. Hide both when shell is
-  // absent so we never render controls that call functions that don't exist.
-  const workingDirEnabled =
-    backend.id === 'real' &&
-    (conversationsCtx ? conversationsCtx.shellAvailable : false)
-
   // The stack's default folder, resolved once (cached page-wide): pre-fills
   // fresh drafts below and feeds the picker's pinned "default" row so the
   // launch folder stays selectable after a chat re-scopes elsewhere.
@@ -937,42 +952,62 @@ export function ChatView({
     conversation.id,
   ])
 
-  // A saved working dir can be gone by the next visit (deleted, unmounted,
-  // denylisted). Re-validate once per activation against the live shell; on
-  // failure surface the error through the picker (auto-opens) instead of
-  // letting the chat silently operate against a dead folder.
-  const [workingDirError, setWorkingDirError] = useState<string | null>(null)
+  const reconcileWorkingDir = useCallback(
+    (dir: string): Promise<string | null> => {
+      const active = workingDirActivationRef.current
+      if (active?.path === dir) return active.promise
+
+      const token = Symbol(dir)
+      setWorkingDirResolving(true)
+      const promise = activateWorkingDir(dir)
+        .then((result) => {
+          if (workingDirRef.current !== dir) return workingDirRef.current
+
+          const next = result.path
+          if (result.status === 'unavailable') return next
+          if (result.status === 'recovered') setDefaultWorkingDir(next)
+          if (next !== null) void syncEditorWorkspace(next)
+          if (result.status === 'recovered' || next !== dir) {
+            workingDirRef.current = next
+            onUpdateWorkingDir(conversation.id, next)
+            if (
+              result.status === 'recovered' &&
+              !conversation.draft &&
+              next !== dir
+            ) {
+              onAppendMessage(
+                conversation.id,
+                makeSystemNotice(workingDirRecoveryNotice(dir, next)),
+              )
+            }
+          }
+          return next
+        })
+        .finally(() => {
+          if (workingDirActivationRef.current?.token !== token) return
+          workingDirActivationRef.current = null
+          setWorkingDirResolving(false)
+        })
+      workingDirActivationRef.current = { path: dir, token, promise }
+      return promise
+    },
+    [conversation.draft, conversation.id, onAppendMessage, onUpdateWorkingDir],
+  )
+
+  // Temporary Harness projects can disappear between turns. Reconcile only
+  // the conversation's current scope; per-turn filesystem metadata remains
+  // bound to the original path for historical review.
   useEffect(() => {
-    if (!workingDirEnabled || conversation.draft) return
+    if (!workingDirEnabled || conversation.draft || streamingIndicator) return
     const dir = conversation.workingDir
     if (!dir) return
-    // Switching to a conversation brings its working directory with it: the
-    // editor page follows the active chat, not the last folder ever opened.
-    // Best-effort with its own consecutive-root dedupe, so re-activations
-    // and already-validated dirs stay cheap.
-    void syncEditorWorkspace(dir)
-    const key = `${conversation.id}:${dir}`
-    if (validatedWorkingDirs.has(key)) return
-    let cancelled = false
-    void validateWorkspaceDir(dir).then((res) => {
-      if (cancelled) return
-      if (res.ok) {
-        validatedWorkingDirs.add(key)
-        setWorkingDirError(null)
-      } else {
-        setWorkingDirError(
-          `working directory ${dir} is not usable — ${res.error}. choose another folder.`,
-        )
-      }
-    })
-    return () => {
-      cancelled = true
-    }
+    void reconcileWorkingDir(dir)
   }, [
     workingDirEnabled,
     conversation.draft,
     conversation.workingDir,
-    conversation.id,
+    streamingIndicator,
+    reconcileWorkingDir,
   ])
 
   // The worktrees tab, claim/release, and the landed / land-blocked live
@@ -1095,6 +1130,11 @@ export function ChatView({
         }
       }
 
+      let workingDirForSend = conversation.workingDir
+      if (workingDirEnabled && workingDirForSend) {
+        workingDirForSend = await reconcileWorkingDir(workingDirForSend)
+      }
+
       // `harness::send` carries `idempotency_key: messageId`, so the harness
       // appends the user message with the deterministic entry id
       // `e_idem_<messageId>`; using the same id here lets the
@@ -1129,14 +1169,23 @@ export function ChatView({
       const turnEstablished = messagesRef.current.some(
         (m) => m.role === 'assistant',
       )
-      const systemPrompt = selectionForSend(
-        effectiveSystemPrompt,
-        turnEstablished,
-      )
-      const skills = skillSelectionForSend(conversation.skills, {
+      // An agent selection resolves server-side (options.agent) and supplies
+      // prompt + skills itself; suppressing the client-side selection also
+      // covers pre-upgrade drafts whose persisted namedBody would otherwise
+      // collide with the agent field.
+      const agentId = agentIdForSend(effectiveSystemPrompt, {
         turnEstablished,
         willQueue,
       })
+      const systemPrompt = agentId
+        ? null
+        : selectionForSend(effectiveSystemPrompt, turnEstablished)
+      const skills = agentId
+        ? undefined
+        : skillSelectionForSend(conversation.skills, {
+            turnEstablished,
+            willQueue,
+          })
 
       if (!willQueue) onAppendMessage(conversationId, userMsg)
 
@@ -1207,7 +1256,7 @@ export function ChatView({
       // with a working dir only). Failures never block the send — a failed
       // mention becomes a placeholder block plus a warn notice.
       let attachedBlocks: string[] | undefined
-      const workingDir = conversation.workingDir
+      const workingDir = workingDirForSend
       const mentionPaths =
         backend.id === 'real' && workingDir
           ? parseFileMentions(payload.text)
@@ -1290,13 +1339,17 @@ export function ChatView({
         }
       }
 
-      // A leading `/name` (directory prompt) or `/skill:<id>` the palette
-      // offered expands here: the resolved body rides as another attachment
+      // A leading `/skill:<id>` the palette offered expands here: the resolved body rides as another attachment
       // block while the typed text (command + args) stays the user message.
       // Prose that merely starts with a slash never resolves (the expander
       // is gated on the palette's fetched entries).
       const slashExpansion =
-        backend.id === 'real' ? await expandSlashInvocation(trimmed) : null
+        backend.id === 'real'
+          ? await expandSlashInvocation(
+              trimmed,
+              loadedSkillIds(messagesRef.current),
+            )
+          : null
       if (slashExpansion?.status === 'attached') {
         attachedBlocks = [...(attachedBlocks ?? []), slashExpansion.block]
         // The body travels as a block, never as visible text — show the same
@@ -1337,7 +1390,8 @@ export function ChatView({
               thinkingLevel,
               systemPrompt,
               skills,
-              workingDir: conversation.workingDir,
+              ...(agentId ? { agent: agentId } : {}),
+              workingDir: workingDirForSend,
               approvalGateAvailable: approvalEnabled,
               ...(attachedBlocks && attachedBlocks.length > 0
                 ? { attachedBlocks }
@@ -1387,7 +1441,8 @@ export function ChatView({
             thinkingLevel,
             systemPrompt,
             skills,
-            workingDir: conversation.workingDir,
+            ...(agentId ? { agent: agentId } : {}),
+            workingDir: workingDirForSend,
             approvalGateAvailable: approvalEnabled,
             approvalSessionMatcher,
             approvalEventsExternallyManaged: true,
@@ -1687,6 +1742,8 @@ export function ChatView({
       onAppendMessage,
       onPatchMessage,
       onCompactConversation,
+      reconcileWorkingDir,
+      workingDirEnabled,
     ],
   )
 
@@ -1817,10 +1874,7 @@ export function ChatView({
     (next: string) => {
       const id = conversation.id
       const prev = conversation.workingDir ?? null
-      // Every picker selection is freshly shell-validated; replacing a stale
-      // dir resolves the invalid-folder state.
-      setWorkingDirError(null)
-      validatedWorkingDirs.add(`${id}:${next}`)
+      workingDirRef.current = next
       onUpdateWorkingDir(id, next)
       // The editor follows the chat: picking a folder here repoints the
       // shared editor workspace so the editor page shows this project.
@@ -1841,6 +1895,16 @@ export function ChatView({
       onUpdateWorkingDir,
       onAppendMessage,
     ],
+  )
+
+  useEffect(
+    () =>
+      onWorkingDirectoryChangeRequest(({ sessionId, path }) => {
+        if (!workingDirEnabled || sessionId !== conversation.id) return false
+        handleWorkingDirChange(path)
+        return true
+      }),
+    [conversation.id, handleWorkingDirChange, workingDirEnabled],
   )
 
   // Picking a worktree claims it for this session; the working dir itself
@@ -2228,7 +2292,7 @@ export function ChatView({
             permissionModeLoading={!approvalSettings.loaded}
             showPermissionMode={approvalEnabled}
             thinkingLevel={thinkingLevel}
-            onThinkingLevelChange={setThinkingLevel}
+            onThinkingLevelChange={handleThinkingLevelChange}
             onModeChange={(next) => onUpdateMode(conversation.id, next)}
             onModelChange={(next) => onUpdateModel(conversation.id, next)}
             showWorkingDir={workingDirEnabled}
@@ -2242,7 +2306,6 @@ export function ChatView({
               conversationsCtx?.setMemoryBank(conversation.id, next)
             }
             workingDirLocked={false}
-            workingDirError={workingDirError}
             defaultWorkingDir={defaultWorkingDir}
             onWorkingDirChange={handleWorkingDirChange}
             worktreePicker={

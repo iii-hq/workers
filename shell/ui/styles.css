@@ -540,21 +540,34 @@
   gap: 2px;
   overflow: visible;
 }
-[data-iii-ui="shell"] .shui-header-root-select {
+[data-iii-ui="shell"] .shui-header-root-wrap {
   display: block;
   max-width: min(220px, 24vw);
-  padding: 0 16px 0 0;
+}
+[data-iii-ui="shell"] .shui-header-root-select {
+  display: block;
+  max-width: 100%;
+}
+[data-iii-ui="shell"] .shui-header-root-select > button {
+  width: auto;
+  max-width: 100%;
+  height: 24px;
+  min-height: 24px;
+  padding: 0 4px;
   border: 0;
   outline: 0;
   color: var(--color-ink-ghost);
   background: transparent;
   font: inherit;
-  text-overflow: ellipsis;
 }
-[data-iii-ui="shell"] .shui-header-root-select:focus-visible {
+[data-iii-ui="shell"] .shui-header-root-select > button:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-header-root-select > button:focus-visible {
   color: var(--color-ink);
   outline: 1px solid var(--color-rule-focus);
-  outline-offset: 3px;
+  outline-offset: 1px;
 }
 
 [data-iii-ui="shell"] .shui-collapse-btn {
@@ -1191,7 +1204,10 @@
 [data-iii-ui="shell"] .shui-review-scope-menu button:hover {
   background: var(--color-surface-hover);
 }
-[data-iii-ui="shell"] .shui-review-scope-menu button > span:not(.menu-icon-gap) {
+[data-iii-ui="shell"]
+  .shui-review-scope-menu
+  button
+  > span:not(.menu-icon-gap, .scope-selected) {
   min-width: 0;
   flex: 1;
 }
@@ -1206,6 +1222,37 @@
 }
 [data-iii-ui="shell"] .shui-review-scope-menu .submenu-back {
   font-weight: 500;
+}
+[data-iii-ui="shell"] .shui-review-menu-label {
+  padding: 8px 9px 3px;
+  color: var(--color-ink-ghost);
+  font: 500 10px / 14px var(--font-mono, ui-monospace, monospace);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+[data-iii-ui="shell"] .shui-review-scope-menu .scope-menu-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+[data-iii-ui="shell"] .shui-review-scope-menu .scope-menu-main small {
+  flex: none;
+  color: var(--color-ink-ghost);
+  font: 400 11px / 14px var(--font-mono, ui-monospace, monospace);
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="shell"] .shui-review-scope-menu .scope-selected {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+}
+[data-iii-ui="shell"] .shui-review-scope-menu .scope-selected svg {
+  width: 16px;
+  height: 16px;
 }
 [data-iii-ui="shell"] .shui-review-menu-separator {
   height: 1px;
@@ -1346,6 +1393,17 @@
 [data-iii-ui="shell"] .shui-review-option .check svg {
   width: 16px;
   height: 16px;
+}
+[data-iii-ui="shell"] .shui-review-option-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+}
+[data-iii-ui="shell"] .shui-review-option-copy small {
+  color: var(--color-ink-ghost);
+  font-size: 11px;
+  line-height: 15px;
 }
 [data-iii-ui="shell"] .shui-review-body {
   flex: 1;
@@ -1626,25 +1684,61 @@
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
-[data-iii-ui="shell"] .shui-review-message {
-  display: flex;
+[data-iii-ui="shell"] .shui-review-notice {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 8px;
-  padding: 14px 16px;
-  color: var(--color-ink-ghost);
-  font: 400 12px / 18px var(--font-mono, ui-monospace, monospace);
+  gap: 12px;
+  margin: 8px 10px 0;
+  padding: 10px 12px;
+  box-shadow: none;
+  font-family: var(--font-sans);
 }
-[data-iii-ui="shell"] .shui-review-message.warn {
+[data-iii-ui="shell"] .shui-review-notice-icon {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-review-notice-icon > svg {
+  width: 18px;
+  height: 18px;
+}
+[data-iii-ui="shell"] .shui-review-notice.warn .shui-review-notice-icon {
   color: var(--color-warn);
 }
-[data-iii-ui="shell"] .shui-review-inline-action {
-  padding: 0;
-  border: 0;
-  border-bottom: 1px solid currentColor;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
+[data-iii-ui="shell"] .shui-review-notice-copy {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+[data-iii-ui="shell"] .shui-review-notice-title {
+  overflow: hidden;
+  color: var(--color-ink);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] .shui-review-notice-detail {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-ink-faint);
+  font: 400 11px / 16px var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] .shui-review-notice-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
 }
 [data-iii-ui="shell"] .shui-review-diff {
   display: block;
@@ -2788,6 +2882,16 @@
 /* Narrow panels — phones, and desktop panels split small ------------------- */
 
 @container shui-page (max-width: 720px) {
+  [data-iii-ui='shell'] .shui-review-notice {
+    grid-template-columns: 32px minmax(0, 1fr);
+  }
+
+  [data-iii-ui='shell'] .shui-review-notice-actions {
+    grid-column: 2;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
   [data-iii-ui='shell'] .shui-sidebar {
     position: absolute;
     top: 0;

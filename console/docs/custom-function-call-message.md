@@ -15,7 +15,7 @@ This is the end-to-end authoring guide: architecture, the message contract, the 
 |--------|--------|-----------|---------|
 | `sandbox::*` | [`../web/src/components/chat/sandbox/`](../web/src/components/chat/sandbox) | `isSandboxFunction` | 15 tools, terminal + raw-json tabs, approval previews, shared error handling |
 | `engine::*::list` | [`../web/src/components/chat/engine/`](../web/src/components/chat/engine) | `isEngineListFunction` | read-only list/info views, no preview |
-| `directory::*` | [`../web/src/components/chat/directory/`](../web/src/components/chat/directory) | `isDirectoryFunction` | skills / prompts / registry views |
+| `directory::*` | [`../web/src/components/chat/directory/`](../web/src/components/chat/directory) | `isDirectoryFunction` | skills / system prompts / agents / registry views |
 | `web::fetch` | [`../web/src/components/chat/web/`](../web/src/components/chat/web) | `isWebFunction` | single tool — smallest end-to-end example |
 | `worker::*` | [`../web/src/components/chat/worker/`](../web/src/components/chat/worker) | `isWorkerFunction` | lifecycle ops, request JSON used as preview |
 

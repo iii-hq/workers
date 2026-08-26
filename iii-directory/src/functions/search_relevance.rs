@@ -1,5 +1,5 @@
 //! Deterministic relevance tests for `reflex::discover` over a frozen
-//! snapshot of the live catalog (250 functions with their real
+//! snapshot of the live catalog (241 functions with their real
 //! descriptions and request schemas, captured 2026-08-18 via
 //! `engine::functions::info`). bm25 — the shipped
 //! default — is purely lexical, so no engine, no model, and no judge are
@@ -35,8 +35,35 @@ fn fixture_catalog() -> Vec<ToolSchema> {
             parameters: entry["parameters"].clone(),
         })
         .collect();
-    assert!(catalog.len() >= 200, "fixture lost its catalog");
+    assert_eq!(catalog.len(), 241, "fixture catalog count changed");
     catalog
+}
+
+#[test]
+fn system_prompt_write_catalog_keeps_full_discovery_guidance() {
+    let catalog = fixture_catalog();
+    for (id, expected) in [
+        (
+            "directory::system-prompts::create",
+            "Create a NEW system prompt at <skills_folder>/system-prompts/<name>.md from full-file markdown content (frontmatter block included; a non-empty `description` is required, and a declared frontmatter `name` must match the requested name). Rejects names that already exist anywhere in the merged system-prompt scan, or a target path that already exists on disk (even one the scanner would skip). The write is atomic and fans out directory::system-prompts::on-change with { op: \"create\" }. Use directory::system-prompts::update to edit existing system prompts.",
+        ),
+        (
+            "directory::system-prompts::update",
+            "Overwrite one EXISTING filesystem-backed system prompt with new full-file markdown content. The frontmatter must keep a non-empty `description` (and a valid `name` when it declares one) — the same rules the scanner enforces, so an update can never produce a file the next directory::system-prompts::list would skip. The write is atomic and fans out directory::system-prompts::on-change with { op: \"update\" }. Returns the system prompt's effective name after the write (frontmatter `name:` wins over the file stem).",
+        ),
+        (
+            "directory::system-prompts::delete",
+            "Permanently delete one EXISTING filesystem-backed system prompt by name. Resolves against the same merged scan as directory::system-prompts::list, removes only that prompt's markdown file, and fans out directory::system-prompts::on-change with { op: \"delete\" }.",
+        ),
+    ] {
+        let description = catalog
+            .iter()
+            .find(|entry| entry.name == id)
+            .unwrap_or_else(|| panic!("missing {id}"))
+            .description
+            .as_str();
+        assert_eq!(description, expected, "stale discovery guidance for {id}");
+    }
 }
 
 fn fixture_deps() -> Deps {

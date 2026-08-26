@@ -405,9 +405,9 @@ function textOf(blocks: ContentBlock[]): string {
  * `<attached-file …>` blocks are console-authored `#file(...)` mention and
  * document expansions — rendering their full content in the user bubble would
  * dump whole files into the chat, so they collapse to chips instead (failure
- * placeholders keep the error visible in the chip name). `<command>` /
- * `<skill>` blocks are `/name` slash expansions and collapse the same way —
- * the typed command stays the visible text, the body becomes a chip.
+ * placeholders keep the error visible in the chip name). `<skill>` blocks
+ * are slash expansions and collapse the same way — the typed command stays
+ * the visible text, the body becomes a chip.
  *
  * An image block is the picture itself, sent to a vision model. It becomes a
  * chip carrying its own thumbnail: without this a conversation reloaded from

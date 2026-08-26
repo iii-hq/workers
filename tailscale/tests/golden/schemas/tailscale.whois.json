@@ -1,0 +1,78 @@
+{
+  "description": "Identify the machine and user behind a Tailscale IP. Keys and endpoints are omitted.",
+  "function_id": "tailscale::whois",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "ip": {
+        "description": "Tailscale IPv4 or IPv6 address, optionally with `:port`.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "ip"
+    ],
+    "title": "WhoisInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "addresses": {
+        "description": "Tailscale addresses of the node.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "node_id": {
+        "description": "Stable node id.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "node_name": {
+        "description": "MagicDNS name of the node.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "os": {
+        "description": "Operating system reported by the node.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "tags": {
+        "description": "ACL tags on the node.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "user_display_name": {
+        "description": "Display name of the user who owns the node.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "user_login": {
+        "description": "Login name of the user who owns the node.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "addresses",
+      "tags"
+    ],
+    "title": "WhoisOutput",
+    "type": "object"
+  }
+}

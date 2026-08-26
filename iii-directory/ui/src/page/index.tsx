@@ -1,12 +1,12 @@
 /**
  * The directory page (#/ext/directory): a full-height application shell —
- * slim product top bar, a navigation sidebar carrying the skills/prompts
+ * slim product top bar, a navigation sidebar carrying the directory
  * switcher, and a document workspace that opens one entry in the shared
  * CodeEditor/MarkdownPreview pair, saving through the worker's update
  * functions.
  *
- * Both collections stay MOUNTED (the inactive one is display:none) so an
- * unsaved draft survives switching between skills and prompts.
+ * All collections stay MOUNTED (the inactive ones are display:none) so an
+ * unsaved draft survives switching between them.
  */
 
 import {
@@ -19,6 +19,8 @@ import {
 import { useEffect, useRef, useState } from 'react'
 import { formatBytes, formatRelativeTime } from '../lib/format'
 import { MarkdownFileIcon } from '../lib/widgets'
+import { AgentForm } from './agent-fields'
+import { TokenIcon } from './token-icons'
 import { type BrowserAdapter, CollectionBrowser } from './browser'
 
 interface SkillRow {
@@ -29,9 +31,18 @@ interface SkillRow {
   modified_at: string
 }
 
-interface PromptRow {
+interface SystemPromptRow {
   name: string
   description: string
+  modified_at: string
+}
+
+interface AgentRow {
+  id: string
+  name: string
+  description: string
+  logo: string | null
+  icon: string | null
   modified_at: string
 }
 
@@ -96,56 +107,6 @@ const skillsAdapter: BrowserAdapter = {
   },
 }
 
-const promptsAdapter: BrowserAdapter = {
-  noun: 'prompt',
-  crumbRoot: 'prompts',
-  slugName: true,
-  descriptionRequired: true,
-  onChangeType: 'directory::prompts::on-change',
-  emptyTitle: 'Select a prompt',
-  emptyBody:
-    'Choose a prompt from the sidebar to view and edit its markdown. Prompts are filesystem-backed — files added to the prompts folders appear here automatically.',
-  async list(host) {
-    const out = await host.iii.trigger<{ prompts: PromptRow[] }>(
-      'directory::prompts::list',
-    )
-    return (out.prompts ?? []).map((p) => ({
-      key: p.name,
-      title: '',
-      description: p.description,
-      fine: formatRelativeTime(p.modified_at),
-    }))
-  },
-  async load(host, name) {
-    const out = await host.iii.trigger<{ body: string; raw?: string | null }>(
-      'directory::prompts::get',
-      {
-        name,
-        raw: true,
-      },
-    )
-    return out.raw ?? out.body
-  },
-  async save(host, name, content) {
-    // The effective name after the write follows a frontmatter rename.
-    const out = await host.iii.trigger<{ name: string }>(
-      'directory::prompts::update',
-      { name, content },
-    )
-    return out.name ?? name
-  },
-  async create(host, name, content) {
-    const out = await host.iii.trigger<{ name: string }>(
-      'directory::prompts::create',
-      { name, content },
-    )
-    return out.name ?? name
-  },
-  async remove(host, name) {
-    await host.iii.trigger('directory::prompts::delete', { name })
-  },
-}
-
 export const HARNESS_DEFAULT_SYSTEM_PROMPT_KEY = 'harness/default'
 
 export const systemPromptsAdapter: BrowserAdapter = {
@@ -158,7 +119,7 @@ export const systemPromptsAdapter: BrowserAdapter = {
   emptyBody:
     'Choose a system prompt from the sidebar to view and edit its markdown. These are what the chat picker offers as an identity prompt — filesystem-backed, so files added to the system-prompts folders appear here automatically.',
   async list(host) {
-    const out = await host.iii.trigger<{ prompts: PromptRow[] }>(
+    const out = await host.iii.trigger<{ prompts: SystemPromptRow[] }>(
       'directory::system-prompts::list',
     )
     return [
@@ -216,18 +177,77 @@ export const systemPromptsAdapter: BrowserAdapter = {
   },
 }
 
-type Collection = 'skills' | 'prompts' | 'system-prompts'
+export const agentsAdapter: BrowserAdapter = {
+  noun: 'agent',
+  crumbRoot: 'agents',
+  // The id (file stem) and the display name are different things for an
+  // agent: "Release Captain" lives in frontmatter `name`, the file is
+  // `release-captain.md`.
+  separateId: {
+    pattern: /^[a-z0-9_-]+$/,
+    hint: 'enter a name containing at least one letter or number — it becomes the file name',
+  },
+  nameRequired: true,
+  newTemplate: '---\nname: \ndescription: ""\n---\n\n',
+  extraManagedKeys: ['logo', 'skills', 'delegates_to', 'leaf', 'model', 'icon'],
+  customForm: (ctx) => <AgentForm {...ctx} />,
+  sourceLabel: 'Instructions · system prompt',
+  onChangeType: 'directory::agents::on-change',
+  emptyTitle: 'Select an agent',
+  emptyBody:
+    'Choose an agent from the sidebar to view and edit its profile. The content below the fields is the system prompt the session runs as; name, logo and skill selection live in the fields above it.',
+  async list(host) {
+    const out = await host.iii.trigger<{ agents: AgentRow[] }>(
+      'directory::agents::list',
+    )
+    return (out.agents ?? []).map((a) => ({
+      key: a.id,
+      // The row glyph is the SAME token glyph the avatar picker and the
+      // console session tree render — one identity, one pictogram.
+      icon: a.icon ? <TokenIcon token={a.icon} size={14} /> : undefined,
+      title: a.name,
+      description: a.description,
+      fine: formatRelativeTime(a.modified_at),
+    }))
+  },
+  async load(host, id) {
+    const out = await host.iii.trigger<{
+      system_prompt: string
+      raw?: string | null
+    }>('directory::agents::get', { id, raw: true })
+    return out.raw ?? out.system_prompt
+  },
+  async save(host, id, content) {
+    const out = await host.iii.trigger<{ id: string }>(
+      'directory::agents::update',
+      { id, content },
+    )
+    return out.id ?? id
+  },
+  async create(host, id, content) {
+    const out = await host.iii.trigger<{ id: string }>(
+      'directory::agents::create',
+      { id, content },
+    )
+    return out.id ?? id
+  },
+  async remove(host, id) {
+    await host.iii.trigger('directory::agents::delete', { id })
+  },
+}
+
+type Collection = 'skills' | 'system-prompts' | 'agents'
 
 const COLLECTIONS: { value: Collection; label: string }[] = [
   { value: 'skills', label: 'Skills' },
-  { value: 'prompts', label: 'Prompts' },
   { value: 'system-prompts', label: 'System Prompts' },
+  { value: 'agents', label: 'Agents' },
 ]
 
 const ADAPTERS: Record<Collection, BrowserAdapter> = {
   skills: skillsAdapter,
-  prompts: promptsAdapter,
   'system-prompts': systemPromptsAdapter,
+  agents: agentsAdapter,
 }
 
 export function DirectoryPage({
@@ -280,7 +300,7 @@ export function DirectoryPage({
       onChange={setCollection}
       options={COLLECTIONS}
       className="dir-ui-collection-tabs"
-      aria-label="Browse skills, prompts or system prompts"
+      aria-label="Browse skills, system prompts or agents"
     />
   )
 
@@ -289,7 +309,7 @@ export function DirectoryPage({
       <PageHeader
         icon={<MarkdownFileIcon />}
         title="Directory"
-        description="Filesystem-backed skills, prompts and system prompts"
+        description="Filesystem-backed skills, system prompts and agents"
         onClose={onRequestClose}
       />
       {COLLECTIONS.map((c) => (

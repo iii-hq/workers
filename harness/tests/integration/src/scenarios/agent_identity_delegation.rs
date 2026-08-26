@@ -1,0 +1,202 @@
+//! INT-026 — agent-profile identity, end to end (MOT-4485): a send naming
+//! `options.agent` (and OMITTING `options.functions`) runs as the directory
+//! profile, and the frozen identity gates delegation:
+//!   * the parent's prompt is the top-level identity ENRICHED with
+//!     `You are Lead.` + the profile body, resolved server-side from the
+//!     run's `agents/lead.md` — no prompt fields on the send;
+//!   * the omitted policy defaults to the configured baseline (`allow: *`),
+//!     which is what lets the spawn dispatch at all;
+//!   * a spawn naming an agent OUTSIDE the lead's `delegates_to` comes back
+//!     as a `harness/delegation_denied` error result — the turn survives;
+//!   * the corrected spawn (`agent: coder`) seeds a child whose prompt is
+//!     the sub-agent identity enriched with `You are Coder.` — the leaf
+//!     profile applied spawn-side, no `options.system_prompt` anywhere.
+//!
+//! The child runs in its own session (untracked by the floor); its generation
+//! being consumed with the profile-enriched prompt is the evidence the
+//! spawn-side resolution ran.
+
+use serde_json::json;
+
+use super::dsl::{Generation, Message, Model, Request, Response, Scenario, Send};
+use super::ScenarioDriver;
+use crate::fixtures::ScenarioFixture;
+
+const SPAWN: &str = "harness::spawn";
+
+const LEAD_PROFILE: &str = "---
+name: Lead
+description: Orchestrator test profile.
+delegates_to:
+  - coder
+---
+You are the integration lead. Delegate the task to your coder and report.
+";
+
+const CODER_PROFILE: &str = "---
+name: Coder
+description: Implementation leaf test profile.
+icon: code
+leaf: true
+---
+Do the one task you are given, then stop.
+";
+
+pub(super) fn scenario() -> ScenarioFixture {
+    const ID: &str = "INT-026";
+    const MESSAGE: &str = "Have the coder say hello.";
+
+    let model = Model::scripted("fixture-model");
+
+    // Unlisted profile: `tester` is not in the lead's delegates_to.
+    let denied_args = json!({
+        "task": "Say hello.",
+        "agent": "tester",
+        "session_id": "{{run_id}}-denied"
+    });
+    let coder_args = json!({
+        "task": "Say hello, then stop.",
+        "agent": "coder",
+        "session_id": "{{run_id}}-coder"
+    });
+
+    Scenario::new(
+        ID,
+        "agent-identity-delegation",
+        "A send running as a directory agent profile (no functions policy on the wire) \
+         delegates through harness::spawn: an unlisted agent id is denied, the listed leaf \
+         profile seeds the child with its own enriched identity.",
+        ScenarioDriver::Direct,
+        model.clone(),
+    )
+    .send(
+        Send::message(MESSAGE)
+            .idempotency_key("{{run_id}}:integration-026")
+            .agent("lead")
+            .omit_functions(),
+    )
+    .agent_file("lead.md", LEAD_PROFILE)
+    .agent_file("coder.md", CODER_PROFILE)
+    // The child's opening step races the parent's post-spawn step — every
+    // generation here is uniquely matchable (step + prompt), so dispatch by
+    // match instead of arrival order.
+    .match_any_dispatch()
+    .generation(
+        Generation::new(1)
+            .expect(
+                Request::new()
+                    .turn_request_step(0)
+                    // DEFAULT identity enriched with the resolved profile.
+                    .system_prompt_regex("(?s)# System rules.*You are Lead\\.")
+                    .messages_exact([Message::user(MESSAGE)])
+                    .tools_subset([]),
+            )
+            .respond(Response::function_call_raw(
+                "call-denied",
+                SPAWN,
+                denied_args,
+                8,
+                4,
+            )),
+    )
+    .generation(
+        Generation::new(2)
+            .expect(
+                Request::new()
+                    .turn_request_step(1)
+                    .system_prompt_regex("You are Lead\\.")
+                    .messages_subset([
+                        json!({ "role": "user" }),
+                        json!({ "role": "assistant", "content": [
+                            { "type": "function_call", "id": "call-denied", "function_id": SPAWN }
+                        ] }),
+                        json!({ "role": "function_result", "function_call_id": "call-denied",
+                                "is_error": true }),
+                    ])
+                    .tools_subset([]),
+            )
+            .respond(Response::function_call_raw(
+                "call-coder",
+                SPAWN,
+                coder_args,
+                8,
+                4,
+            )),
+    )
+    .generation(
+        Generation::new(3)
+            .expect(
+                Request::new()
+                    .turn_request_step(0)
+                    // Sub-agent identity enriched with the LEAF profile.
+                    .system_prompt_regex("(?s)You are an iii sub-agent.*You are Coder\\.")
+                    .messages_subset([json!({ "role": "user" })])
+                    .tools_subset([]),
+            )
+            .respond(Response::text("hello from the coder", 10, 2)),
+    )
+    .generation(
+        Generation::new(4)
+            .expect(
+                Request::new()
+                    .turn_request_step(2)
+                    .system_prompt_regex("You are Lead\\.")
+                    .messages_subset([
+                        json!({ "role": "user" }),
+                        json!({ "role": "assistant", "content": [
+                            { "type": "function_call", "id": "call-denied", "function_id": SPAWN }
+                        ] }),
+                        json!({ "role": "function_result", "function_call_id": "call-denied",
+                                "is_error": true }),
+                        json!({ "role": "assistant", "content": [
+                            { "type": "function_call", "id": "call-coder", "function_id": SPAWN }
+                        ] }),
+                        json!({ "role": "function_result", "function_call_id": "call-coder",
+                                "is_error": false }),
+                    ])
+                    .tools_subset([]),
+            )
+            .respond(Response::text("delegated to the coder", 10, 2)),
+    )
+    .verify(|run| {
+        run.expect_assistant_texts(["delegated to the coder"])?;
+
+        // The denial named the gate and the allowed list, as an error RESULT
+        // (the turn survived it — generation 4 ran).
+        let denial: String = run
+            .transcript
+            .iter()
+            .map(|item| serde_json::to_string(item).unwrap_or_default())
+            .filter(|text| text.contains("harness/delegation_denied"))
+            .collect();
+        anyhow::ensure!(
+            denial.contains("tester") && denial.contains("coder"),
+            "the delegation denial must name the refused id and the allowed list: {denial}"
+        );
+        run.expect_no_duplicate_messages()
+    })
+    .build()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fixture_declares_the_profile_files_and_the_child_generation() {
+        let fixture = scenario();
+        fixture.validate().unwrap();
+        // One primary terminal turn; the coder's turn runs in its own session
+        // and chains into the send's trace (spawned from inside the turn).
+        assert_eq!(fixture.expected_turn_statuses, ["completed"]);
+        assert_eq!(fixture.expected_traces(), 1);
+        // Four generations: three parent (denied spawn, corrected spawn,
+        // final), one child.
+        assert_eq!(fixture.script.generations.len(), 4);
+        assert_eq!(fixture.agent_files.len(), 2);
+        // The send carries the agent id and NO functions policy — the
+        // harness-side default is part of what this scenario pins.
+        assert_eq!(fixture.scenario.send.options.agent.as_deref(), Some("lead"));
+        assert!(fixture.scenario.send.options.functions.is_none());
+    }
+}

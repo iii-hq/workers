@@ -130,16 +130,20 @@ pub(super) fn scenario() -> ScenarioFixture {
             .respond(Response::text("armed and parked", 10, 2)),
     )
     // The expiry-woken turn: a fresh externally initiated turn carrying the
-    // wake-lost notification as its user message. Its prompt is NOT the arm
-    // turn's — the sweep's engine-side unregister is a registry change, so
-    // the staleness notice deterministically joins the prompt; pin the notice
-    // instead of the sha (same drift INT-008 handles).
+    // wake-lost notification as its user message. The sweep's engine-side
+    // unregister is a registry change; the staleness notice now rides as an
+    // ephemeral TAIL user message (never a system-prompt mutation — that
+    // invalidated the provider's prompt-cache prefix), so the prompt keeps
+    // the stable sha. Advisory tail messages are invisible to matchers (the
+    // scripted router strips them — their timing is stack noise elsewhere),
+    // so the notice delivery is asserted over the raw router evidence in
+    // verify instead of a message gate here.
     .generation(
         Generation::new(3)
             .expect(
                 Request::new()
                     .turn_request_step(0)
-                    .system_prompt_regex("registry changed during this conversation")
+                    .system_prompt_sha256("{{system_prompt_sha256}}")
                     .messages_subset([
                         json!({ "role": "user" }),
                         json!({ "role": "assistant" }),
@@ -153,6 +157,31 @@ pub(super) fn scenario() -> ScenarioFixture {
     )
     .verify(|run| {
         run.expect_assistant_texts(["armed and parked", "expiry noted"])?;
+
+        // The registry-changed notice reached the provider on the woken turn
+        // as a raw tail user message (matchers never see advisories; the raw
+        // router evidence keeps them).
+        let notice_delivered = run
+            .router_evidence
+            .get("calls")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|call| call.get("request")?.get("messages")?.as_array())
+            .flatten()
+            .any(|message| {
+                message
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .and_then(|blocks| blocks.first())
+                    .and_then(|block| block.get("text"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| text.starts_with("NOTE: the function registry changed"))
+            });
+        anyhow::ensure!(
+            notice_delivered,
+            "the registry-changed notice must reach the provider as a tail message"
+        );
 
         // Exactly one notification, and it must carry everything the woken
         // session needs to act without a lookup: the watch, the zero-fire

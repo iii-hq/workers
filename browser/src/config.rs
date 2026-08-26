@@ -85,7 +85,9 @@ impl ScraplingConfig {
         ScraplingStartupConfig {
             max_sessions: self.max_sessions,
             session_idle_timeout_s: self.session_idle_timeout_s,
-            adaptive_storage_path: self.adaptive_storage_path.clone(),
+            adaptive_storage_path: iii_worker_paths::resolve_path(&self.adaptive_storage_path)
+                .to_string_lossy()
+                .into_owned(),
         }
     }
 

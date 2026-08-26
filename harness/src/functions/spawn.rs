@@ -98,9 +98,10 @@ pub struct SpawnOptions {
     /// and `engine::registered-triggers::*`, so it performs its assignment and
     /// updates shared state without spawning, messaging sessions, or touching
     /// trigger registrations. `true` skips those denies; the child still never
-    /// exceeds its parent's policy.
-    #[serde(default)]
-    pub orchestrator: bool,
+    /// exceeds its parent's policy. When the spawn names an `agent` profile
+    /// and this field is omitted, a non-leaf profile defaults it to `true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orchestrator: Option<bool>,
     /// Fan-out guard for the child's own spawns.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_children: Option<u32>,
@@ -119,6 +120,16 @@ pub struct SpawnRequest {
     /// every resolved required selector literally (for example `Use database
     /// db: "primary"`); the child cannot infer resources from the parent.
     pub task: MessageInput,
+    /// Run the child as a directory agent profile (`directory::agents::*`
+    /// id) — typically a `leaf` specialist. The profile's body becomes the
+    /// child's enrich system prompt (over the sub-agent identity), its skill
+    /// filter applies when `options.skills` is omitted, its `model` slots
+    /// between an explicit `model` and the parent's, and its name/icon become
+    /// the display defaults. When the SPAWNING turn runs as an agent whose
+    /// `delegates_to` names specific ids, this id must be one of them.
+    /// Refused combined with `options.system_prompt`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
     /// Optional display-only identity for the child session. This never affects
     /// session ids, policy, routing, or execution. On named-session reuse the
     /// existing session title and metadata are retained.
@@ -183,6 +194,22 @@ mod tests {
         })
         .unwrap();
         assert_eq!(value["skills"], json!(["review"]));
+    }
+
+    #[test]
+    fn orchestrator_round_trips_unset_and_both_values() {
+        let unset: SpawnOptions = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(unset.orchestrator, None);
+        assert!(!serde_json::to_value(&unset)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("orchestrator"));
+        for value in [true, false] {
+            let opts: SpawnOptions =
+                serde_json::from_value(json!({ "orchestrator": value })).unwrap();
+            assert_eq!(opts.orchestrator, Some(value));
+        }
     }
 
     #[test]
