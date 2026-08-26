@@ -49,8 +49,18 @@ function resolveView(workspace: string | null, phase: Phase, instance: Instance 
   return phase;
 }
 
-function describe(cause: unknown) {
-  return cause instanceof Error ? cause.message : String(cause);
+function describe(cause: unknown): string {
+  if (cause instanceof Error) return cause.message;
+  if (cause && typeof cause === 'object') {
+    const message = (cause as { message?: unknown }).message;
+    if (typeof message === 'string') return message;
+    try {
+      return JSON.stringify(cause);
+    } catch {
+      return String(cause);
+    }
+  }
+  return String(cause);
 }
 
 export function VscodePage({ host, onRequestClose, workingDir, panelContext, commands }: Props) {
