@@ -139,6 +139,14 @@ pub async fn get_turn(
 
 /// Persist the turn record (whole-record write; the loop holds the only
 /// writer per session via the per-session lock).
+///
+/// A timed-out write is retried ONCE: the record is the loop's source of
+/// truth and the write is idempotent, so propagating a transient timeout
+/// aborts a whole live turn over nothing. The one observed loss
+/// (verify-wake-fix-4 postmortem) was an engine-wide ~10s stall that ended
+/// moments after the first wait expired — the retry lands where the
+/// propagated error killed the turn. Only timeouts retry; every other
+/// failure means the write was REJECTED and must surface.
 pub async fn put_turn(
     iii: &IIIClient,
     record: &TurnRecord,
@@ -146,7 +154,33 @@ pub async fn put_turn(
 ) -> Result<(), HarnessError> {
     let value = serde_json::to_value(record)
         .map_err(|e| HarnessError::State(format!("turn record serialize: {e}")))?;
-    state_set(iii, TURN_SCOPE, &record.session_id, value, timeout_ms).await
+    match state_set(
+        iii,
+        TURN_SCOPE,
+        &record.session_id,
+        value.clone(),
+        timeout_ms,
+    )
+    .await
+    {
+        Err(e) if is_timeout(&e) => {
+            tracing::warn!(
+                session_id = %record.session_id,
+                error = %e,
+                "turn record persist timed out; retrying once"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            state_set(iii, TURN_SCOPE, &record.session_id, value, timeout_ms).await
+        }
+        other => other,
+    }
+}
+
+/// Whether a state error is the caller-side invocation timeout (the SDK's
+/// wording, carried through [`state_set`]'s error mapping). String-matched
+/// because `HarnessError::State` flattens the SDK error to text.
+fn is_timeout(error: &HarnessError) -> bool {
+    error.to_string().contains("timed out")
 }
 
 pub async fn delete_turn(
@@ -481,6 +515,21 @@ mod tests {
         let as_map = json!({ "s_1": rec });
         assert_eq!(parse_list::<TurnRecord>(&as_map).len(), 1);
         assert_eq!(parse_list::<TurnRecord>(&json!(null)).len(), 0);
+    }
+
+    /// Only the caller-side invocation timeout retries; rejections (schema,
+    /// size, permissions) must surface on the first failure.
+    #[test]
+    fn only_invocation_timeouts_are_retryable() {
+        assert!(is_timeout(&HarnessError::State(
+            "state::set harness_turn/s1: invocation timed out".into()
+        )));
+        assert!(!is_timeout(&HarnessError::State(
+            "state::set harness_turn/s1: FORBIDDEN: nope".into()
+        )));
+        assert!(!is_timeout(&HarnessError::State(
+            "turn record serialize: oops".into()
+        )));
     }
 
     #[test]

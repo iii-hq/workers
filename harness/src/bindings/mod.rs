@@ -22,12 +22,50 @@ pub use store::{
     AttachOutcome, BindingStore, ClaimOutcome, ReserveOutcome, MAX_BINDINGS_PER_SESSION,
 };
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::deps::Deps;
 use crate::types::turn::FunctionPolicy;
+
+/// Live SDK handles for delivery triggers registered over the worker channel,
+/// keyed by the synthetic trigger id stored on the binding
+/// (`sdk:<binding-id>`). The SDK never exposes the engine-side row id, only an
+/// unregister closure — and unregistering must go THROUGH the SDK so its
+/// reconnect replay list forgets the trigger too; an engine-side delete alone
+/// would be resurrected on the next reconnect.
+#[derive(Clone, Default)]
+pub struct TriggerHandles(Arc<Mutex<HashMap<String, iii_sdk::trigger::Trigger>>>);
+
+impl TriggerHandles {
+    pub fn insert(&self, trigger_id: String, handle: iii_sdk::trigger::Trigger) {
+        self.0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(trigger_id, handle);
+    }
+
+    /// Remove and unregister. `false` when this process holds no handle for
+    /// the id (a record from before the last restart, or a legacy engine id).
+    pub fn unregister(&self, trigger_id: &str) -> bool {
+        let handle = self
+            .0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(trigger_id);
+        match handle {
+            Some(handle) => {
+                handle.unregister();
+                true
+            }
+            None => false,
+        }
+    }
+}
 
 /// An armed wake: a one-shot self-delivery binding that has not fired and is
 /// not past its lifecycle. An EXPIRED one does not count — the expiry sweep

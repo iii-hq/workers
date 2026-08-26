@@ -43,7 +43,10 @@ pub fn should_gc(state: OwnerState) -> bool {
 
 /// Startup sweep: drop bindings whose owner is provably gone, loudly retire
 /// records that still target `harness::spawn`, unregister delivery triggers
-/// whose record disappeared, and remove bindings aimed at old handlers.
+/// whose record disappeared, remove bindings aimed at old handlers — then
+/// re-arm every surviving binding's engine trigger from the durable record
+/// and deliver one-shot state wakes whose key was written while no trigger
+/// existed for it.
 pub async fn run(deps: &Deps) {
     let store = deps.bindings().await;
     let bindings = match store.list().await {
@@ -58,6 +61,7 @@ pub async fn run(deps: &Deps) {
 
     let mut dropped = 0usize;
     let mut stale_spawn = 0usize;
+    let mut survivors: Vec<crate::bindings::Binding> = Vec::new();
     for binding in bindings {
         let owner_gone = should_gc(owner_state(deps, &binding.owner.session_id).await);
         if owner_gone {
@@ -72,18 +76,146 @@ pub async fn run(deps: &Deps) {
         if binding.target.function_id == crate::functions::SPAWN_ID {
             retire_stale_spawn_binding(deps, &binding).await;
             stale_spawn += 1;
+            continue;
         }
+        survivors.push(binding);
     }
 
     let legacy = retire_legacy(deps).await + retire_engine_spawn_triggers(deps).await;
-    if dropped > 0 || stale_spawn > 0 || legacy > 0 || orphans > 0 {
+    let (rearmed, caught_up) = replay_delivery_triggers(deps, survivors).await;
+    if dropped > 0 || stale_spawn > 0 || legacy > 0 || orphans > 0 || rearmed > 0 || caught_up > 0 {
         tracing::info!(
             owner_gone = dropped,
             stale_spawn = stale_spawn,
             legacy = legacy,
             orphan_engine = orphans,
+            rearmed = rearmed,
+            caught_up = caught_up,
             "swept trigger bindings at startup"
         );
+    }
+}
+
+/// Re-register the engine trigger for every surviving binding.
+///
+/// The engine's trigger registry is in-memory and channel registrations are
+/// connection-scoped: an engine restart or a harness restart loses the
+/// engine-side row while the durable record stays armed — before this replay
+/// the owner then waited forever on a trigger that no longer existed
+/// (console-04e02cb7 postmortem). The store is the authority; the engine row
+/// is re-derived at every boot, and reconnects within one process are covered
+/// by the SDK's own registration replay.
+async fn replay_delivery_triggers(
+    deps: &Deps,
+    bindings: Vec<crate::bindings::Binding>,
+) -> (usize, usize) {
+    let store = deps.bindings().await;
+    let now_ms = crate::subscriptions::fired::now_ms();
+    let mut rearmed = 0usize;
+    let mut caught_up = 0usize;
+    for binding in bindings {
+        if binding.is_exhausted(now_ms) {
+            // The expiry sweep owns retirement and its owner notice.
+            continue;
+        }
+        let Some((trigger_type, config)) = binding.trigger_watch() else {
+            // Pre-dedup-key record: nothing to re-register from.
+            continue;
+        };
+        let (trigger_type, config) = (trigger_type.to_string(), config.clone());
+        // A non-`sdk:` id is a row from the retired function-path
+        // registration; it may still exist engine-side (typically parked in
+        // `default`). Clear it so nothing can double-deliver.
+        if let Some(old) = binding.trigger_id.as_deref() {
+            if !old.starts_with(crate::functions::subscribe::SDK_TRIGGER_ID_PREFIX) {
+                crate::functions::subscribe::unregister_engine_trigger(deps, old).await;
+            }
+        }
+        let trigger_id = match crate::functions::subscribe::register_delivery_trigger(
+            deps,
+            &trigger_type,
+            &config,
+            &binding.id,
+        ) {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::warn!(binding = %binding.id, error = %e, "delivery trigger replay failed");
+                continue;
+            }
+        };
+        match store.rearm_trigger_id(&binding, &trigger_id).await {
+            Ok(crate::bindings::AttachOutcome::Attached(_)) => rearmed += 1,
+            Ok(crate::bindings::AttachOutcome::Gone) => {
+                crate::functions::subscribe::unregister_engine_trigger(deps, &trigger_id).await;
+                continue;
+            }
+            Err(e) => {
+                tracing::warn!(binding = %binding.id, error = %e, "trigger id re-arm failed");
+                // The registration itself is live and delivers by binding id;
+                // only the recorded id is stale. Keep going.
+            }
+        }
+        caught_up += usize::from(catch_up_state_wake(deps, &binding).await);
+    }
+    (rearmed, caught_up)
+}
+
+/// A one-shot state wake that has never fired watches exactly one key; that
+/// key may have been written while no engine trigger existed for it. When
+/// this binding qualifies for the replay catch-up read, name the watched
+/// `(scope, key)`.
+fn state_wake_catchup(binding: &crate::bindings::Binding) -> Option<(String, String)> {
+    if binding.fires != 0 || !binding.lifecycle.once {
+        return None;
+    }
+    let (trigger_type, config) = binding.trigger_watch()?;
+    if trigger_type != "state" {
+        return None;
+    }
+    let scope = config.get("scope")?.as_str()?;
+    let key = config.get("key")?.as_str()?;
+    Some((scope.to_string(), key.to_string()))
+}
+
+/// Deliver the wake a dead trigger missed: the watched key already holds a
+/// value, so the value read NOW stands in for the missed event. Biased
+/// deliberately toward firing — a spurious wake costs one extra turn once,
+/// a lost one strands the owner forever — and the delivery claim keeps it
+/// exactly-once against a racing live fire.
+async fn catch_up_state_wake(deps: &Deps, binding: &crate::bindings::Binding) -> bool {
+    let Some((scope, key)) = state_wake_catchup(binding) else {
+        return false;
+    };
+    let timeout_ms = deps.cfg().await.session_timeout_ms;
+    let value = match crate::state::state_get(&deps.iii, &scope, &key, timeout_ms).await {
+        Ok(v) if !v.is_null() => v,
+        _ => return false,
+    };
+    let event = json!({
+        "type": "state",
+        "event_type": "state:updated",
+        "scope": scope,
+        "key": key,
+        "old_value": null,
+        "new_value": value,
+        "replayed": true,
+    });
+    let metadata = json!({ "__binding": binding.id });
+    match crate::functions::trigger_deliver::handle(deps, event, Some(metadata)).await {
+        Ok(result) => {
+            tracing::info!(
+                binding = %binding.id,
+                scope = %scope,
+                key = %key,
+                result = ?result,
+                "replayed missed state wake"
+            );
+            result.delivered
+        }
+        Err(e) => {
+            tracing::warn!(binding = %binding.id, error = %e, "state wake catch-up failed");
+            false
+        }
     }
 }
 
@@ -210,6 +342,12 @@ pub async fn reconcile_orphan_delivery_triggers(
                 Ok(Some(_)) | Err(_) => continue,
                 Ok(None) => {}
             }
+            // A channel-registered row also lives in the SDK replay list under
+            // its synthetic id; purge it or a reconnect resurrects the row.
+            deps.trigger_handles.unregister(&format!(
+                "{}{binding_id}",
+                crate::functions::subscribe::SDK_TRIGGER_ID_PREFIX
+            ));
         }
         if crate::functions::subscribe::unregister_engine_trigger(deps, &id).await {
             retired += 1;
@@ -333,5 +471,79 @@ mod tests {
         assert!(!is_orphan(Some("sub_live"), &stored));
         assert!(is_orphan(Some("sub_missing"), &stored));
         assert!(is_orphan(None, &stored));
+    }
+
+    fn wake_binding(dedup: Value) -> crate::bindings::Binding {
+        crate::bindings::Binding {
+            id: "sub_r".into(),
+            trigger_id: Some("old-engine-uuid".into()),
+            owner: crate::bindings::OwnerScope {
+                session_id: "s1".into(),
+                root_session_id: None,
+            },
+            target: crate::bindings::BindingTarget::new(crate::functions::SEND_ID),
+            conditions: Vec::new(),
+            lifecycle: crate::bindings::Lifecycle {
+                once: true,
+                max_fires: None,
+                expires_at: None,
+            },
+            capability: None,
+            causation: Default::default(),
+            dedup_key: Some(dedup),
+            fires: 0,
+            created_at: 0,
+        }
+    }
+
+    /// The replay catch-up reads exactly the console-04e02cb7 shape: a
+    /// one-shot `state` wake on a scope/key, never fired.
+    #[test]
+    fn catchup_names_the_watched_key_for_unfired_one_shot_state_wakes() {
+        let b = wake_binding(json!({
+            "trigger_type": "state",
+            "config": { "scope": "calc-delivery", "key": "plan" },
+        }));
+        assert_eq!(
+            state_wake_catchup(&b),
+            Some(("calc-delivery".to_string(), "plan".to_string()))
+        );
+    }
+
+    #[test]
+    fn catchup_skips_fired_standing_keyless_and_non_state_bindings() {
+        let fired = crate::bindings::Binding {
+            fires: 1,
+            ..wake_binding(json!({
+                "trigger_type": "state",
+                "config": { "scope": "s", "key": "k" },
+            }))
+        };
+        assert_eq!(state_wake_catchup(&fired), None);
+
+        let standing = crate::bindings::Binding {
+            lifecycle: crate::bindings::Lifecycle {
+                once: false,
+                max_fires: None,
+                expires_at: None,
+            },
+            ..wake_binding(json!({
+                "trigger_type": "state",
+                "config": { "scope": "s", "key": "k" },
+            }))
+        };
+        assert_eq!(state_wake_catchup(&standing), None);
+
+        let keyless = wake_binding(json!({
+            "trigger_type": "state",
+            "config": { "scope": "s" },
+        }));
+        assert_eq!(state_wake_catchup(&keyless), None);
+
+        let cron = wake_binding(json!({
+            "trigger_type": "cron",
+            "config": { "expression": "0 * * * * *" },
+        }));
+        assert_eq!(state_wake_catchup(&cron), None);
     }
 }
