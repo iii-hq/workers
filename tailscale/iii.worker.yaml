@@ -10,4 +10,4 @@ description: Tailscale as an iii worker — tailscale::* functions for connectiv
 
 dependencies:
   configuration: "0.x"
-  console: "^1.9.14"
+  console: "^1.9.11"
