@@ -730,7 +730,10 @@ mod tests {
             ("no frontmatter\n", "missing YAML frontmatter"),
             ("---\ndescription: x\n---\nbody\n", "non-empty `name`"),
             ("---\nname: X\nlogo: ./x.png\n---\nbody\n", "emoji only"),
-            ("---\nname: X\nicon: rocket\n---\nbody\n", "`icon` must be one of"),
+            (
+                "---\nname: X\nicon: rocket\n---\nbody\n",
+                "`icon` must be one of",
+            ),
             ("---\nname: X\ndescription: y\n---\n", "non-empty"),
         ] {
             let err = create_agent(
