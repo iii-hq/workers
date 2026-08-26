@@ -378,85 +378,7 @@ jobs:
             --image-tag "$IMAGE_TAG" \
             --out payload.json
 
-      - name: POST /publish
-        env:
-          API_URL: https://api.workers.iii.dev
-          API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
-          WORKER: ${{ inputs.worker }}
-          VERSION: ${{ inputs.version }}
-          REGISTRY_TAG: ${{ inputs.registry_tag }}
-        run: |
-          set -euo pipefail
-          if [[ -z "$API_KEY" ]]; then
-            echo "::error::WORKERS_REGISTRY_API_KEY secret is not set"
-            exit 1
-          fi
-          http=$(curl -sS -o response.json -w '%{http_code}' \
-            -H "X-API-Key: $API_KEY" \
-            -H "Content-Type: application/json" \
-            -X POST "$API_URL/publish" \
-            --data-binary @payload.json)
-          echo "HTTP $http"
-          cat response.json
-          if [[ "$http" == "409" ]]; then
-            resolve_http=$(curl -sS -o resolve-response.json -w '%{http_code}' \
-              -H "Content-Type: application/json" \
-              -X POST "$API_URL/resolve" \
-              --data "$(jq -cn --arg worker "$WORKER" --arg version "$VERSION" \
-                '{worker: $worker, version: $version}')")
-            resolved=$(jq -r '.root.version // empty' resolve-response.json)
-            if [[ "$resolve_http" == "200" && "$resolved" == "$VERSION" ]]; then
-              echo "::notice::$WORKER@$VERSION already exists; continuing idempotently"
-            else
-              echo "::error::duplicate publish is not a safe retry: $WORKER@$VERSION resolved ${resolved:-nothing} (HTTP $resolve_http), expected $VERSION"
-              cat resolve-response.json
-              exit 1
-            fi
-          elif [[ "$http" != "200" ]]; then
-            echo "::error::publish failed with HTTP $http"
-            exit 1
-          fi
-
-      - name: Assign Registry tag with existing CAS
-        if: inputs.registry_tag != 'none'
-        env:
-          API_URL: https://api.workers.iii.dev
-          API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
-          WORKER: ${{ inputs.worker }}
-          VERSION: ${{ inputs.version }}
-          REGISTRY_TAG: ${{ inputs.registry_tag }}
-          EXPECTED_CURRENT_VERSION: ${{ inputs.expected_current_version }}
-        run: |
-          set -euo pipefail
-          if [[ -z "$API_KEY" ]]; then
-            echo "::error::WORKERS_REGISTRY_API_KEY secret is not set"
-            exit 1
-          fi
-          if [[ "$EXPECTED_CURRENT_VERSION" == "none" ]]; then
-            payload=$(jq -cn --arg version "$VERSION" \
-              '{version:$version,expected_current_version:null}')
-          elif [[ -n "$EXPECTED_CURRENT_VERSION" ]]; then
-            payload=$(jq -cn --arg version "$VERSION" --arg expected "$EXPECTED_CURRENT_VERSION" \
-              '{version:$version,expected_current_version:$expected}')
-          else
-            payload=$(jq -cn --arg version "$VERSION" '{version:$version}')
-          fi
-          http=$(curl -sS -o tag-response.json -w '%{http_code}' \
-            -H "X-API-Key: $API_KEY" \
-            -H "Content-Type: application/json" \
-            -X PUT "$API_URL/w/$WORKER/tags/$REGISTRY_TAG" \
-            --data "$payload")
-          echo "HTTP $http"
-          cat tag-response.json
-          if [[ "$http" != "200" ]]; then
-            echo "::error::Registry tag assignment failed with HTTP $http"
-            exit 1
-          fi
-          assigned=$(jq -r '.tag.version // empty' tag-response.json)
-          test "$assigned" = "$VERSION"
-
       - name: Build skills payload
-        id: skills_payload
         env:
           WORKER: ${{ inputs.worker }}
           VERSION: ${{ inputs.version }}
@@ -466,29 +388,54 @@ jobs:
             --version "$VERSION" \
             --out skills-payload.json
 
-      - name: POST /w/<worker>/skills
-        if: steps.skills_payload.outputs.skip != 'true'
+      - name: Publish and verify immutable Registry version
         env:
           API_URL: https://api.workers.iii.dev
-          API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
+          WORKERS_REGISTRY_API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
           WORKER: ${{ inputs.worker }}
+          VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          if [[ -z "$API_KEY" ]]; then
-            echo "::error::WORKERS_REGISTRY_API_KEY secret is not set"
-            exit 1
-          fi
-          http=$(curl -sS -o skills-response.json -w '%{http_code}' \
-            -H "X-API-Key: $API_KEY" \
-            -H "Content-Type: application/json" \
-            -X POST "$API_URL/w/$WORKER/skills" \
-            --data-binary @skills-payload.json)
-          echo "HTTP $http"
-          cat skills-response.json
-          if [[ "$http" != "200" ]]; then
-            echo "::error::publish skills failed with HTTP $http"
-            exit 1
-          fi
+          python3 .github/scripts/registry_publication.py publish-version \
+            --api-url "$API_URL" \
+            --worker "$WORKER" \
+            --version "$VERSION" \
+            --payload payload.json \
+            --out registry-version.json
+
+      - name: Publish and verify exact Registry skills
+        env:
+          API_URL: https://api.workers.iii.dev
+          WORKERS_REGISTRY_API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
+          WORKER: ${{ inputs.worker }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/registry_publication.py publish-skills \
+            --api-url "$API_URL" \
+            --worker "$WORKER" \
+            --version "$VERSION" \
+            --payload skills-payload.json \
+            --out registry-skills.json
+
+      - name: Commit and verify Registry channel with exact CAS
+        if: inputs.registry_tag != 'none'
+        env:
+          API_URL: https://api.workers.iii.dev
+          WORKERS_REGISTRY_API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
+          WORKER: ${{ inputs.worker }}
+          VERSION: ${{ inputs.version }}
+          REGISTRY_TAG: ${{ inputs.registry_tag }}
+          EXPECTED_CURRENT_VERSION: ${{ inputs.expected_current_version }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/registry_publication.py assign-channel \
+            --api-url "$API_URL" \
+            --worker "$WORKER" \
+            --version "$VERSION" \
+            --registry-tag "$REGISTRY_TAG" \
+            --expected-current-version "$EXPECTED_CURRENT_VERSION" \
+            --out registry-channel.json
 
       - name: Dump III logs
         if: failure()
