@@ -4,8 +4,8 @@ language: javascript
 deploy: bundle
 manifest: package.json
 license: Apache-2.0
-tags: [vscode, ide, editor, extensions, development, console-ui]
-description: Run the actual Microsoft VS Code Workbench and official VS Code Server as a standalone injectable Console worker.
+tags: [vscode, ide, editor, workbench, development]
+description: VS Code as an iii worker — vscode::* functions run the VS Code Server through the code CLI per workspace, and a Console page embeds the Workbench for the working directory.
 
 runtime:
   kind: javascript
