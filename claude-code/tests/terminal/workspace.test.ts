@@ -14,6 +14,8 @@ function fakeShell(
     files?: Record<string, string>;
     whichClaude?: string;
     noIiiCli?: boolean;
+    /** No `iii-directory` on the bus: the context cannot be fetched. */
+    noDirectory?: boolean;
     /** A read failure that is NOT "missing": a timeout, a read budget. */
     readError?: Error;
   } = {},
@@ -42,6 +44,16 @@ function fakeShell(
           }
           return { stdout: '', stderr: '', exit_code: 0 };
         }
+        // The iii context lives in `iii-directory`; the worker fetches it
+        // rather than carrying a copy, so the fake serves it.
+        case 'directory::system-prompts::get':
+          return options.noDirectory
+            ? Promise.reject(new Error('function_not_found'))
+            : { name: payload.name, body: '# iii runtime\n\nAsk the engine.' };
+        case 'directory::skills::index':
+          return options.noDirectory
+            ? Promise.reject(new Error('function_not_found'))
+            : { body: '# Skills index\n\n## shell', workers_count: 1 };
         case 'shell::fs::write':
           files[String(payload.path)] = String(payload.content);
           return { bytes_written: String(payload.content).length };
@@ -99,10 +111,14 @@ describe('preparing the terminal host', () => {
     expect(notes).toContain('<!-- iii:end -->');
     expect(notes).toContain('/hostroot/claude-code');
 
-    // Every hook posts the payload to this worker over the bus, exactly once
-    // expanded — a prompt containing shell syntax stays data.
-    const settings = JSON.parse(files['/hostroot/claude-code/.claude/settings.json']);
-    expect(Object.keys(settings.hooks).sort()).toEqual([
+    // The hooks and the iii skill ride in ONE plugin directory, which is what
+    // a session loads — the same directory a headless turn is given.
+    const manifest = JSON.parse(
+      files['/hostroot/claude-code/.iii-plugin/.claude-plugin/plugin.json'],
+    );
+    expect(manifest.name).toBe('iii');
+    const hooks = JSON.parse(files['/hostroot/claude-code/.iii-plugin/hooks/hooks.json']).hooks;
+    expect(Object.keys(hooks).sort()).toEqual([
       'PostToolUse',
       'PreToolUse',
       'SessionEnd',
@@ -110,10 +126,27 @@ describe('preparing the terminal host', () => {
       'Stop',
       'UserPromptSubmit',
     ]);
-    const command = settings.hooks.PreToolUse[0].hooks[0].command;
-    // The CLI path is quoted: a `command -v` answer can carry a space.
+    const command = hooks.PreToolUse[0].hooks[0].command;
+    // The CLI path is quoted: a `command -v` answer can carry a space, and the
+    // payload expands exactly once so a prompt full of shell syntax stays data.
     expect(command).toContain(`'/usr/bin/iii' trigger claude::terminal::activity --json "$(cat)"`);
-    expect(settings.hooks.PreToolUse[0].matcher).toBe('*');
+    expect(hooks.PreToolUse[0].matcher).toBe('*');
+
+    // The iii runtime text arrives as a SKILL, from iii-directory.
+    expect(files['/hostroot/claude-code/.iii-plugin/skills/iii-runtime/SKILL.md']).toContain(
+      'name: iii-runtime',
+    );
+
+    // And the session is told to load it.
+    expect(prepared.args).toEqual([
+      ...DEFAULTS.args,
+      '--plugin-dir',
+      '/hostroot/claude-code/.iii-plugin',
+    ]);
+    expect(prepared.plugin).toBe('/hostroot/claude-code/.iii-plugin');
+
+    // `.claude/settings.json` is the operator's file and is never written.
+    expect(files['/hostroot/claude-code/.claude/settings.json']).toBeUndefined();
   });
 
   it('installs the CLI when it is missing, and says so when it cannot', async () => {
@@ -135,13 +168,20 @@ describe('preparing the terminal host', () => {
     expect(second.detail).toContain('auto_install is off');
   });
 
-  it('keeps the operator half of settings.json and their own notes', async () => {
+  it("leaves the operator's settings.json alone and keeps their notes", async () => {
+    // The hooks used to be merged into this file on every boot, which meant
+    // reasoning about whatever else lived in it. They are the plugin's now, so
+    // the file is simply not this worker's business.
     const { iii, files } = fakeShell({
       whichClaude: '/usr/local/bin/claude',
       files: {
         '/hostroot/claude-code/.claude/settings.json': JSON.stringify({
           model: 'opus',
-          hooks: { Notification: [{ hooks: [{ type: 'command', command: 'say hi' }] }] },
+          hooks: {
+            PostToolUse: [
+              { matcher: 'Edit', hooks: [{ type: 'command', command: 'biome check' }] },
+            ],
+          },
         }),
         '/hostroot/claude-code/CLAUDE.md': '# My own notes\n\nkeep me\n',
       },
@@ -149,48 +189,17 @@ describe('preparing the terminal host', () => {
     await prepareWorkspace(iii, { ...DEFAULTS });
 
     const settings = JSON.parse(files['/hostroot/claude-code/.claude/settings.json']);
-    expect(settings.model).toBe('opus');
-    expect(settings.hooks.Notification[0].hooks[0].command).toBe('say hi');
-    expect(settings.hooks.PreToolUse).toBeDefined();
+    expect(settings).toEqual({
+      model: 'opus',
+      hooks: {
+        PostToolUse: [{ matcher: 'Edit', hooks: [{ type: 'command', command: 'biome check' }] }],
+      },
+    });
 
     const notes = files['/hostroot/claude-code/CLAUDE.md'];
     expect(notes).toContain('# My own notes');
     expect(notes).toContain('keep me');
     expect(notes.indexOf('<!-- iii:begin')).toBeLessThan(notes.indexOf('# My own notes'));
-  });
-
-  it('keeps an operator hook on an event it also writes', async () => {
-    // A formatter on PostToolUse is the operator's, and it is registered on an
-    // event this worker also hooks. Replacing the event's array deleted it on
-    // the next boot; the worker's own entry is the only one it may rewrite.
-    const { iii, files } = fakeShell({
-      whichClaude: '/usr/local/bin/claude',
-      files: {
-        '/hostroot/claude-code/.claude/settings.json': JSON.stringify({
-          hooks: {
-            PostToolUse: [
-              { matcher: 'Edit', hooks: [{ type: 'command', command: 'biome check' }] },
-            ],
-            SessionStart: [
-              {
-                hooks: [{ type: 'command', command: 'old-iii trigger claude::terminal::activity' }],
-              },
-            ],
-          },
-        }),
-      },
-    });
-    await prepareWorkspace(iii, { ...DEFAULTS });
-
-    const settings = JSON.parse(files['/hostroot/claude-code/.claude/settings.json']);
-    const post = settings.hooks.PostToolUse;
-    expect(post).toHaveLength(2);
-    expect(post[0].hooks[0].command).toBe('biome check');
-    expect(post[1].hooks[0].command).toContain('claude::terminal::activity');
-    // Its own entry from an earlier boot is replaced, not kept beside the new
-    // one — the `iii` path it was baked with can move.
-    expect(settings.hooks.SessionStart).toHaveLength(1);
-    expect(settings.hooks.SessionStart[0].hooks[0].command).toContain("'/usr/bin/iii'");
   });
 
   it('keeps CLAUDE.md and the terminal when a read fails for another reason', async () => {
@@ -226,7 +235,7 @@ describe('preparing the terminal host', () => {
     expect(prepared.bridge).toBe('');
     expect(prepared.detail).toContain('cannot reach the bus');
     // Written anyway: a CLI installed later starts working with no rewrite.
-    expect(files['/hostroot/claude-code/.claude/settings.json']).toContain(
+    expect(files['/hostroot/claude-code/.iii-plugin/hooks/hooks.json']).toContain(
       'claude::terminal::activity',
     );
   });

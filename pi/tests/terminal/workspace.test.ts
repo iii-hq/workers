@@ -14,6 +14,8 @@ function fakeShell(
     files?: Record<string, string>;
     whichPi?: string;
     noIiiCli?: boolean;
+    /** No `iii-directory` on the bus: the context cannot be fetched. */
+    noDirectory?: boolean;
     /** A read failure that is NOT "missing": a timeout, a read budget. */
     readError?: Error;
   } = {},
@@ -42,6 +44,16 @@ function fakeShell(
           }
           return { stdout: '', stderr: '', exit_code: 0 };
         }
+        // The iii context lives in `iii-directory`; the worker fetches it
+        // rather than carrying a copy, so the fake serves it.
+        case 'directory::system-prompts::get':
+          return options.noDirectory
+            ? Promise.reject(new Error('function_not_found'))
+            : { name: payload.name, body: '# iii runtime\n\nAsk the engine.' };
+        case 'directory::skills::index':
+          return options.noDirectory
+            ? Promise.reject(new Error('function_not_found'))
+            : { body: '# Skills index\n\n## shell', workers_count: 1 };
         case 'shell::fs::write':
           files[String(payload.path)] = String(payload.content);
           return { bytes_written: String(payload.content).length };

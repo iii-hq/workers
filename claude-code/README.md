@@ -209,11 +209,22 @@ On every boot, when `terminal.setup_workspace` is on:
   copy, one owner: this worker ships neither the prompt nor a second set of
   skills on disk. When the directory answers nothing, the block says so and
   points the agent at `engine::functions::list`.
-- `.claude/settings.json` hooks for `SessionStart`, `SessionEnd`,
-  `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, and `Stop`. Each posts its
-  payload to `claude::terminal::activity` with the `iii` CLI — the bus, so it
-  works whether or not the terminal host is this worker's host. Only these
-  keys are rewritten; the rest of the file is left alone.
+- `.iii-plugin/`, a Claude Code **plugin** the session loads with
+  `--plugin-dir`. It carries the hooks for `SessionStart`, `SessionEnd`,
+  `UserPromptSubmit`, `PreToolUse`, `PostToolUse` and `Stop` — each posting its
+  payload to `claude::terminal::activity` with the `iii` CLI, so it works
+  whether or not the terminal host is this worker's host — and the
+  `iii-runtime` skill fetched from `iii-directory`.
+
+  The same plugin serves the headless half: the Agent SDK turns
+  `plugins: [{ type: 'local', path }]` into that same `--plugin-dir` flag, so a
+  typed turn and a `claude::run` turn get identical hooks and the identical
+  skill from one definition (`src/plugin.ts`). `claude plugin validate` accepts
+  the generated directory.
+
+  `.claude/settings.json` is no longer written at all. It is the operator's
+  file; the plugin directory is this worker's, so it is written whole instead of
+  merged into.
 
 ## Billing: which plan a session spends
 

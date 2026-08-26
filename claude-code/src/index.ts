@@ -75,6 +75,7 @@ let prepared: Prepared = {
   env: {},
   detail: 'the terminal host has not been prepared yet',
   bridge: '',
+  plugin: '',
 };
 let preparing: Promise<void> = Promise.resolve();
 const reconcileTerminal = () => {

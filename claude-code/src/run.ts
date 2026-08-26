@@ -13,6 +13,7 @@ import { z } from 'zod';
 import type { Config } from './config.js';
 import type { Emit } from './events.js';
 import { fetchIiiContext } from './iii-context.js';
+import { localPluginDir } from './local-plugin.js';
 import {
   lastAssistant,
   makeAssistantMessage,
@@ -306,7 +307,12 @@ async function runReserved(
   const iiiContext = payload.iii_context ?? cfg.iii_context;
   const context = iiiContext ? await fetchIiiContext(iii) : null;
   const append = [context?.text ?? '', userAppend].filter(Boolean).join('\n\n');
+  // The same plugin the terminal half loads: the SDK turns a local plugin into
+  // the CLI's own `--plugin-dir`, so a headless turn gets the identical hooks
+  // and the identical iii skill.
+  const plugin = iiiContext ? await localPluginDir(iii) : { dir: '', detail: '' };
   const options: Options = {
+    ...(plugin.dir ? { plugins: [{ type: 'local' as const, path: plugin.dir }] } : {}),
     ...(record.model ? { model: record.model } : {}),
     ...(record.cwd ? { cwd: record.cwd } : {}),
     ...(prior?.claude_session_id ? { resume: prior.claude_session_id } : {}),
