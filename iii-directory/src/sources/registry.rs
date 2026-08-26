@@ -1,7 +1,7 @@
 //! Workers registry source: HTTP GET to
 //! `{registry_url}/w/{worker}/skills?version=… | ?tag=…`, parses the
-//! response shape documented below, and writes accepted skill-tree entries
-//! into `<skills_folder>/<worker>/`.
+//! response shape documented below, and writes accepted skills into
+//! `<skills_folder>/<worker>/` and agent profiles into `agents_folder`.
 //!
 //! Response shape (from the workers registry):
 //!
@@ -16,12 +16,15 @@
 //! }
 //! ```
 //!
-//! Skills are written verbatim under the worker namespace. A structured
-//! registry `prompts` field is ignored.
+//! Skills are written verbatim under the worker namespace. Exact
+//! `agents/<id>.md` entries are routed to the agent profile root. A
+//! structured registry `prompts` field is ignored.
 
 use std::path::Path;
 
 use serde::Deserialize;
+
+use crate::functions::prompts::validate_name;
 
 use super::{build_http_client, validate_relative_path, write_file_atomic, DownloadResult};
 
@@ -102,17 +105,27 @@ pub enum RegistryDownloadOutcome {
     NotFound,
 }
 
-/// HTTP GET the worker's skills bundle, parse the response, and write
-/// every entry under `<skills_folder>/<worker>/`. The HTTP request and
-/// the file writes are bounded by `timeout_ms` collectively.
+/// HTTP GET the worker's directory bundle, parse the response, and route
+/// skills and agent profiles to their configured roots. The HTTP request
+/// and file writes are bounded by `timeout_ms` collectively.
 pub async fn download(
     registry_base: &str,
     worker: &str,
     spec: &VersionSpec,
     skills_folder: &Path,
+    agents_folder: &Path,
     timeout_ms: u64,
 ) -> Result<DownloadResult, String> {
-    match download_typed(registry_base, worker, spec, skills_folder, timeout_ms).await? {
+    match download_typed(
+        registry_base,
+        worker,
+        spec,
+        skills_folder,
+        agents_folder,
+        timeout_ms,
+    )
+    .await?
+    {
         RegistryDownloadOutcome::Ok(result) => Ok(result),
         RegistryDownloadOutcome::NotFound => Err(format!(
             "D310 not_found: registry worker {worker:?} has no published skills bundle. \
@@ -129,6 +142,7 @@ pub async fn download_typed(
     worker: &str,
     spec: &VersionSpec,
     skills_folder: &Path,
+    agents_folder: &Path,
     timeout_ms: u64,
 ) -> Result<RegistryDownloadOutcome, String> {
     validate_worker_name(worker)?;
@@ -179,7 +193,7 @@ pub async fn download_typed(
         }
     }
 
-    let result = write_response(worker, parsed, skills_folder)?;
+    let result = write_response(worker, parsed, skills_folder, agents_folder)?;
     Ok(RegistryDownloadOutcome::Ok(result))
 }
 
@@ -209,6 +223,7 @@ fn write_response(
     worker: &str,
     mut response: WorkerSkillsResponse,
     skills_folder: &Path,
+    agents_folder: &Path,
 ) -> Result<DownloadResult, String> {
     let dest_root = skills_folder.join(worker);
     std::fs::create_dir_all(&dest_root)
@@ -224,16 +239,30 @@ fn write_response(
         let normalized = strip_leading_skills_segment(&skill.path);
         let rel = validate_relative_path(normalized)
             .map_err(|e| format!("invalid skill path {:?}: {e}", skill.path))?;
+        if let Some(id) = bundle_agent_id(&rel) {
+            if validate_name(id).is_err() {
+                continue;
+            }
+            write_file_atomic(
+                &agents_folder.join(format!("{id}.md")),
+                skill.content.as_bytes(),
+            )?;
+            result.agents_written.push(id.to_string());
+            continue;
+        }
         let Some(kind) = crate::fs_source::classify_rel_path(&rel) else {
             continue;
         };
+        if kind == crate::fs_source::SourceKind::Agent {
+            continue;
+        }
         let dest = dest_root.join(&rel);
         write_file_atomic(&dest, skill.content.as_bytes())?;
 
         // The registry calls every entry in `skills[]` a "skill", but the shared
-        // classifier rejects `prompts/` paths and reports system prompts and agents
-        // to their own on-change buckets. Those buckets use the bare file stem;
-        // the skills bucket keeps the path.
+        // classifier rejects `prompts/` paths and reports system prompts to their
+        // own on-change bucket. That bucket uses the bare file stem; the skills
+        // bucket keeps the path.
         match kind {
             crate::fs_source::SourceKind::SystemPrompt
                 if rel.extension().is_some_and(|e| e == "md") =>
@@ -242,15 +271,6 @@ fn write_response(
                     result.system_prompts_written.push(stem);
                 }
             }
-            crate::fs_source::SourceKind::Agent if rel.extension().is_some_and(|e| e == "md") => {
-                if let Some(stem) = super::git::stem_of(&rel) {
-                    result.agents_written.push(stem);
-                }
-            }
-            // Non-md support files under an agents/ dir are written but
-            // not reported — they'd fire the wrong on-change and pollute
-            // the skills bucket.
-            crate::fs_source::SourceKind::Agent => {}
             _ => result
                 .skills_written
                 .push(rel.to_string_lossy().replace('\\', "/")),
@@ -258,6 +278,13 @@ fn write_response(
     }
 
     Ok(result)
+}
+
+fn bundle_agent_id(rel: &Path) -> Option<&str> {
+    if rel.parent()? != Path::new(crate::fs_source::AGENTS_SEGMENT) || rel.extension()? != "md" {
+        return None;
+    }
+    rel.file_stem()?.to_str().filter(|id| !id.is_empty())
 }
 
 #[cfg(test)]
@@ -306,7 +333,7 @@ mod tests {
             }"##,
         )
         .unwrap();
-        let result = write_response("resend", response, tmp.path()).unwrap();
+        let result = write_response("resend", response, tmp.path(), tmp.path()).unwrap();
         assert_eq!(result.namespace, "resend");
         assert_eq!(result.skills_written.len(), 2);
         assert!(!tmp.path().join("resend/prompts/send-email.md").exists());
@@ -338,7 +365,7 @@ mod tests {
                 },
             ],
         };
-        let result = write_response("resend", response, tmp.path()).unwrap();
+        let result = write_response("resend", response, tmp.path(), tmp.path()).unwrap();
         assert_eq!(result.skills_written, vec!["index.md".to_string()]);
         assert_eq!(result.system_prompts_written, vec!["reviewer".to_string()]);
 
@@ -347,6 +374,68 @@ mod tests {
         let sys =
             std::fs::read_to_string(tmp.path().join("resend/system-prompts/reviewer.md")).unwrap();
         assert!(sys.contains("Body."));
+    }
+
+    #[test]
+    fn write_response_routes_agent_to_dedicated_root() {
+        let skills = tempfile::tempdir().unwrap();
+        let agents = tempfile::tempdir().unwrap();
+        let response = WorkerSkillsResponse {
+            name: Some("harness".into()),
+            version: Some("1.2.3".into()),
+            skills: vec![SkillEntry {
+                path: "agents/reviewer.md".into(),
+                content: "---\nname: Reviewer\n---\nReview changes.\n".into(),
+            }],
+        };
+
+        let result = write_response("harness", response, skills.path(), agents.path()).unwrap();
+
+        assert_eq!(result.agents_written, vec!["reviewer"]);
+        assert!(agents.path().join("reviewer.md").is_file());
+        assert!(!skills.path().join("harness/agents/reviewer.md").exists());
+    }
+
+    #[test]
+    fn write_response_ignores_invalid_agent_id() {
+        let skills = tempfile::tempdir().unwrap();
+        let agents = tempfile::tempdir().unwrap();
+        let response = WorkerSkillsResponse {
+            name: Some("harness".into()),
+            version: None,
+            skills: vec![SkillEntry {
+                path: "agents/Bad-Id.md".into(),
+                content: "---\nname: Bad\n---\nBody.\n".into(),
+            }],
+        };
+
+        let result = write_response("harness", response, skills.path(), agents.path()).unwrap();
+
+        assert!(result.agents_written.is_empty());
+        assert!(!agents.path().join("Bad-Id.md").exists());
+    }
+
+    #[test]
+    fn write_response_ignores_nested_agent_path() {
+        let skills = tempfile::tempdir().unwrap();
+        let agents = tempfile::tempdir().unwrap();
+        let response = WorkerSkillsResponse {
+            name: Some("harness".into()),
+            version: None,
+            skills: vec![SkillEntry {
+                path: "agents/review/reviewer.md".into(),
+                content: "---\nname: Reviewer\n---\nBody.\n".into(),
+            }],
+        };
+
+        let result = write_response("harness", response, skills.path(), agents.path()).unwrap();
+
+        assert_eq!(result.total_files(), 0);
+        assert!(!agents.path().join("review/reviewer.md").exists());
+        assert!(!skills
+            .path()
+            .join("harness/agents/review/reviewer.md")
+            .exists());
     }
 
     #[test]
@@ -379,7 +468,7 @@ mod tests {
                 content: "# skill\n".into(),
             }],
         };
-        let result = write_response("iii", response, tmp.path()).unwrap();
+        let result = write_response("iii", response, tmp.path(), tmp.path()).unwrap();
         // Lands at iii/SKILL.md, NOT iii/skills/SKILL.md.
         assert!(tmp.path().join("iii/SKILL.md").is_file());
         assert!(!tmp.path().join("iii/skills/SKILL.md").exists());
@@ -404,7 +493,7 @@ mod tests {
                 },
             ],
         };
-        let result = write_response("iii-directory", response, tmp.path()).unwrap();
+        let result = write_response("iii-directory", response, tmp.path(), tmp.path()).unwrap();
         assert!(tmp.path().join("iii-directory/SKILL.md").is_file());
         assert!(!tmp.path().join("iii-directory/index.md").exists());
         assert_eq!(
@@ -425,7 +514,7 @@ mod tests {
                 content: "x".into(),
             }],
         };
-        let err = write_response("resend", response, tmp.path()).unwrap_err();
+        let err = write_response("resend", response, tmp.path(), tmp.path()).unwrap_err();
         assert!(err.contains("invalid skill path"), "got: {err}");
     }
 }

@@ -44,6 +44,15 @@ class CollectSkillsTests(unittest.TestCase):
                 },
             )
 
+    def test_direct_agent_profiles_are_published_outside_skills(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "agent-worker"
+            (root / "agents").mkdir(parents=True)
+            profile = "---\nname: Reviewer\n---\nReview changes.\n"
+            (root / "agents" / "reviewer.md").write_text(profile, encoding="utf-8")
+
+            self.assertEqual(collect_skills(root), {"agents/reviewer.md": profile})
+
     def test_empty_skill_md_skipped(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp) / "empty-worker"

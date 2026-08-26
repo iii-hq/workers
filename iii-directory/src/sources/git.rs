@@ -170,11 +170,11 @@ async fn run_git_clone(
 /// was written into the [`DownloadResult`].
 ///
 /// Each file's relative path is classified via
-/// [`crate::fs_source::classify_rel_path`] (the same three-way rule the
-/// scanner and fs watcher use). Markdown files under `system-prompts/`
-/// are recorded in `system_prompts_written` (by file stem) so the caller can fire
-/// the matching `on-change` trigger selectively. All other files are
-/// recorded as `skills_written` (by relative path under the namespace).
+/// [`crate::fs_source::classify_rel_path`]. Markdown files under
+/// `system-prompts/` are recorded in `system_prompts_written` (by file
+/// stem) so the caller can fire the matching `on-change` trigger selectively.
+/// Agent-profile paths are ignored; all other files are recorded as
+/// `skills_written` (by relative path under the namespace).
 fn copy_recursive(
     src: &Path,
     dest_root: &Path,
@@ -211,6 +211,9 @@ fn copy_recursive(
             let Some(kind) = crate::fs_source::classify_rel_path(&next_rel) else {
                 continue;
             };
+            if kind == crate::fs_source::SourceKind::Agent {
+                continue;
+            }
             let bytes = std::fs::read(entry.path())
                 .map_err(|e| format!("read {}: {e}", entry.path().display()))?;
             write_file_atomic(&dest, &bytes)?;
@@ -228,17 +231,6 @@ fn copy_recursive(
                         result.system_prompts_written.push(stem);
                     }
                 }
-                crate::fs_source::SourceKind::Agent
-                    if next_rel.extension().is_some_and(|e| e == "md") =>
-                {
-                    if let Some(stem) = stem_of(&next_rel) {
-                        result.agents_written.push(stem);
-                    }
-                }
-                // Non-md support files under an agents/ dir must not be
-                // reported as written skills — they'd fire the wrong
-                // on-change and pollute the skills bucket.
-                crate::fs_source::SourceKind::Agent => {}
                 _ => result.skills_written.push(rel_str),
             }
         }
@@ -249,11 +241,8 @@ fn copy_recursive(
 /// File stem (filename without extension) as an owned `String`, or
 /// `None` if the path has no stem or the stem is empty. `pub(crate)`
 /// because both download sources need it: this module's
-/// `copy_recursive` and `registry::write_response` classify a
-/// `skills[]`/tree entry into `skills_written` vs. `system_prompts_written`
-/// the same way, and a written path always reports its bare stem in the latter
-/// bucket. One implementation
-/// instead of two keeps that in lockstep.
+/// `copy_recursive` and `registry::write_response` report system prompt
+/// paths by their bare stem. One implementation keeps that in lockstep.
 pub(crate) fn stem_of(p: &Path) -> Option<String> {
     p.file_stem()
         .and_then(|s| s.to_str())
@@ -312,6 +301,30 @@ mod tests {
         assert_eq!(result.system_prompts_written, vec!["sys".to_string()]);
         assert!(!dest.path().join("ns/prompts/cmd.md").exists());
         assert_eq!(result.total_files(), 2);
+    }
+
+    #[test]
+    fn bundle_copy_ignores_agent_profiles() {
+        let src = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(src.path().join("agents")).unwrap();
+        std::fs::write(
+            src.path().join("agents/reviewer.md"),
+            "---\nname: Reviewer\n---\nReview.\n",
+        )
+        .unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let mut result = DownloadResult::new("ns");
+
+        copy_recursive(
+            src.path(),
+            &dest.path().join("ns"),
+            &mut result,
+            std::path::Path::new(""),
+        )
+        .unwrap();
+
+        assert!(result.agents_written.is_empty());
+        assert!(!dest.path().join("ns/agents/reviewer.md").exists());
     }
 
     // ── validate_repo_url ─────────────────────────────────────────────

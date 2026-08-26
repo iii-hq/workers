@@ -303,6 +303,7 @@ pub(crate) async fn run_download(
     classified: &ClassifiedInput,
 ) -> Result<DownloadResult, String> {
     let folder = cfg.resolved_skills_folder();
+    let agents_folder = cfg.resolved_agents_folder();
     std::fs::create_dir_all(&folder)
         .map_err(|e| format!("create_dir_all {}: {e}", folder.display()))?;
 
@@ -318,6 +319,7 @@ pub(crate) async fn run_download(
                 worker,
                 spec,
                 &folder,
+                &agents_folder,
                 cfg.download_timeout_ms,
             )
             .await
@@ -466,6 +468,7 @@ pub async fn download_worker_skills(
     registry::validate_worker_name(worker)?;
 
     let folder = cfg.resolved_skills_folder();
+    let agents_folder = cfg.resolved_agents_folder();
     std::fs::create_dir_all(&folder)
         .map_err(|e| format!("create_dir_all {}: {e}", folder.display()))?;
 
@@ -474,6 +477,7 @@ pub async fn download_worker_skills(
         worker,
         spec,
         &folder,
+        &agents_folder,
         cfg.download_timeout_ms,
     )
     .await?
@@ -483,6 +487,7 @@ pub async fn download_worker_skills(
                 worker,
                 skills = result.skills_written.len(),
                 system_prompts = result.system_prompts_written.len(),
+                agents = result.agents_written.len(),
                 "auto-downloaded worker skills"
             );
             write_completion_marker(&folder, worker, spec)?;

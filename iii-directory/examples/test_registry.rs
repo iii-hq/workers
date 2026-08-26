@@ -9,13 +9,23 @@ async fn main() -> Result<(), String> {
     let tag = std::env::var("TAG").unwrap_or_else(|_| "latest".to_string());
 
     let tmp = tempfile::tempdir().unwrap();
-    let skills_folder = tmp.path();
+    let skills_folder = tmp.path().join("skills");
+    let agents_folder = tmp.path().join("agents");
 
     println!("→ Downloading {worker} (tag={tag}) from {registry}");
     println!("  skills_folder = {}", skills_folder.display());
+    println!("  agents_folder = {}", agents_folder.display());
 
     let spec = VersionSpec::Tag(tag);
-    let result = download(&registry, &worker, &spec, skills_folder, 30_000).await?;
+    let result = download(
+        &registry,
+        &worker,
+        &spec,
+        &skills_folder,
+        &agents_folder,
+        30_000,
+    )
+    .await?;
 
     println!("\n[download result]");
     println!("  namespace        = {}", result.namespace);
@@ -25,8 +35,8 @@ async fn main() -> Result<(), String> {
         result.system_prompts_written
     );
 
-    let (skills, skill_skipped) = scan_skills(skills_folder);
-    let (system_prompts, prompt_skipped) = scan_system_prompts(skills_folder);
+    let (skills, skill_skipped) = scan_skills(&skills_folder);
+    let (system_prompts, prompt_skipped) = scan_system_prompts(&skills_folder);
 
     println!("\n[scan_skills]");
     for s in &skills {
