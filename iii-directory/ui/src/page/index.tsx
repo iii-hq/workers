@@ -189,7 +189,7 @@ export const agentsAdapter: BrowserAdapter = {
   },
   nameRequired: true,
   newTemplate: '---\nname: \ndescription: ""\n---\n\n',
-  extraManagedKeys: ['logo', 'skills', 'delegates_to', 'leaf', 'model', 'icon'],
+  extraManagedKeys: ['logo', 'skills', 'leaf', 'model', 'icon'],
   customForm: (ctx) => <AgentForm {...ctx} />,
   sourceLabel: 'Instructions · system prompt',
   onChangeType: 'directory::agents::on-change',

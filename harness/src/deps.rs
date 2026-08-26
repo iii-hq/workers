@@ -26,6 +26,9 @@ pub struct Deps {
     pub hooks: HookRegistry,
     pub locks: SessionLocks,
     pub cancels: TurnCancels,
+    /// SDK handles for the delivery triggers this process registered; see
+    /// [`crate::bindings::TriggerHandles`].
+    pub trigger_handles: crate::bindings::TriggerHandles,
 }
 
 impl Deps {
@@ -46,6 +49,7 @@ impl Deps {
             hooks,
             locks: SessionLocks::new(),
             cancels: TurnCancels::new(),
+            trigger_handles: crate::bindings::TriggerHandles::default(),
         }
     }
 

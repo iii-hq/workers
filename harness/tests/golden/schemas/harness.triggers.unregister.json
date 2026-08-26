@@ -12,6 +12,7 @@
         ]
       },
       "subscription_id": {
+        "description": "`id` accepted as an alias: the sibling teardown contract (`engine::unregister_trigger`) calls this field `id`, and models carry that name over — verify-wake-fix-1 postmortem: the first unregister of the run failed on a raw serde \"missing field\" for exactly this.",
         "type": "string"
       }
     },

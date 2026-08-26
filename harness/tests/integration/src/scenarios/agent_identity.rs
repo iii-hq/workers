@@ -1,16 +1,14 @@
 //! INT-026 — agent-profile identity, end to end (MOT-4485): a send naming
 //! `options.agent` (and OMITTING `options.functions`) runs as the directory
-//! profile, and the frozen identity gates delegation:
+//! profile, and delegation resolves spawn-side:
 //!   * the parent's prompt is the top-level identity ENRICHED with
 //!     `You are Lead.` + the profile body, resolved server-side from the
 //!     run's `agents/lead.md` — no prompt fields on the send;
 //!   * the omitted policy defaults to the configured baseline (`allow: *`),
 //!     which is what lets the spawn dispatch at all;
-//!   * a spawn naming an agent OUTSIDE the lead's `delegates_to` comes back
-//!     as a `harness/delegation_denied` error result — the turn survives;
-//!   * the corrected spawn (`agent: coder`) seeds a child whose prompt is
-//!     the sub-agent identity enriched with `You are Coder.` — the leaf
-//!     profile applied spawn-side, no `options.system_prompt` anywhere.
+//!   * the spawn (`agent: coder`) seeds a child whose prompt is the
+//!     sub-agent identity enriched with `You are Coder.` — the leaf profile
+//!     applied spawn-side, no `options.system_prompt` anywhere.
 //!
 //! The child runs in its own session (untracked by the floor); its generation
 //! being consumed with the profile-enriched prompt is the evidence the
@@ -27,8 +25,6 @@ const SPAWN: &str = "harness::spawn";
 const LEAD_PROFILE: &str = "---
 name: Lead
 description: Orchestrator test profile.
-delegates_to:
-  - coder
 ---
 You are the integration lead. Delegate the task to your coder and report.
 ";
@@ -48,12 +44,6 @@ pub(super) fn scenario() -> ScenarioFixture {
 
     let model = Model::scripted("fixture-model");
 
-    // Unlisted profile: `tester` is not in the lead's delegates_to.
-    let denied_args = json!({
-        "task": "Say hello.",
-        "agent": "tester",
-        "session_id": "{{run_id}}-denied"
-    });
     let coder_args = json!({
         "task": "Say hello, then stop.",
         "agent": "coder",
@@ -62,10 +52,10 @@ pub(super) fn scenario() -> ScenarioFixture {
 
     Scenario::new(
         ID,
-        "agent-identity-delegation",
+        "agent-identity",
         "A send running as a directory agent profile (no functions policy on the wire) \
-         delegates through harness::spawn: an unlisted agent id is denied, the listed leaf \
-         profile seeds the child with its own enriched identity.",
+         delegates through harness::spawn: the leaf profile seeds the child with its own \
+         enriched identity.",
         ScenarioDriver::Direct,
         model.clone(),
     )
@@ -92,30 +82,6 @@ pub(super) fn scenario() -> ScenarioFixture {
                     .tools_subset([]),
             )
             .respond(Response::function_call_raw(
-                "call-denied",
-                SPAWN,
-                denied_args,
-                8,
-                4,
-            )),
-    )
-    .generation(
-        Generation::new(2)
-            .expect(
-                Request::new()
-                    .turn_request_step(1)
-                    .system_prompt_regex("You are Lead\\.")
-                    .messages_subset([
-                        json!({ "role": "user" }),
-                        json!({ "role": "assistant", "content": [
-                            { "type": "function_call", "id": "call-denied", "function_id": SPAWN }
-                        ] }),
-                        json!({ "role": "function_result", "function_call_id": "call-denied",
-                                "is_error": true }),
-                    ])
-                    .tools_subset([]),
-            )
-            .respond(Response::function_call_raw(
                 "call-coder",
                 SPAWN,
                 coder_args,
@@ -124,7 +90,7 @@ pub(super) fn scenario() -> ScenarioFixture {
             )),
     )
     .generation(
-        Generation::new(3)
+        Generation::new(2)
             .expect(
                 Request::new()
                     .turn_request_step(0)
@@ -136,18 +102,13 @@ pub(super) fn scenario() -> ScenarioFixture {
             .respond(Response::text("hello from the coder", 10, 2)),
     )
     .generation(
-        Generation::new(4)
+        Generation::new(3)
             .expect(
                 Request::new()
-                    .turn_request_step(2)
+                    .turn_request_step(1)
                     .system_prompt_regex("You are Lead\\.")
                     .messages_subset([
                         json!({ "role": "user" }),
-                        json!({ "role": "assistant", "content": [
-                            { "type": "function_call", "id": "call-denied", "function_id": SPAWN }
-                        ] }),
-                        json!({ "role": "function_result", "function_call_id": "call-denied",
-                                "is_error": true }),
                         json!({ "role": "assistant", "content": [
                             { "type": "function_call", "id": "call-coder", "function_id": SPAWN }
                         ] }),
@@ -160,19 +121,6 @@ pub(super) fn scenario() -> ScenarioFixture {
     )
     .verify(|run| {
         run.expect_assistant_texts(["delegated to the coder"])?;
-
-        // The denial named the gate and the allowed list, as an error RESULT
-        // (the turn survived it — generation 4 ran).
-        let denial: String = run
-            .transcript
-            .iter()
-            .map(|item| serde_json::to_string(item).unwrap_or_default())
-            .filter(|text| text.contains("harness/delegation_denied"))
-            .collect();
-        anyhow::ensure!(
-            denial.contains("tester") && denial.contains("coder"),
-            "the delegation denial must name the refused id and the allowed list: {denial}"
-        );
         run.expect_no_duplicate_messages()
     })
     .build()
@@ -190,9 +138,8 @@ mod tests {
         // and chains into the send's trace (spawned from inside the turn).
         assert_eq!(fixture.expected_turn_statuses, ["completed"]);
         assert_eq!(fixture.expected_traces(), 1);
-        // Four generations: three parent (denied spawn, corrected spawn,
-        // final), one child.
-        assert_eq!(fixture.script.generations.len(), 4);
+        // Three generations: two parent (spawn, final), one child.
+        assert_eq!(fixture.script.generations.len(), 3);
         assert_eq!(fixture.agent_files.len(), 2);
         // The send carries the agent id and NO functions policy — the
         // harness-side default is part of what this scenario pins.

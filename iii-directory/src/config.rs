@@ -33,8 +33,17 @@ pub const DEFAULT_LOCAL_SKILLS_FOLDER: &str = "skills/iii";
 /// Project-relative destination for reusable agent profiles.
 pub const DEFAULT_AGENTS_FOLDER: &str = "agents";
 
+/// User-global root for reusable agent profiles, shared by every project on
+/// the machine. Profiles here are edited in place; the worker never creates
+/// the directory itself.
+pub const DEFAULT_GLOBAL_AGENTS_FOLDER: &str = "~/.iii/agents";
+
 /// Project-relative root for agent skills. Read-only; never written by this worker.
 pub const DEFAULT_AGENTS_SKILLS_FOLDER: &str = ".agents/skills";
+
+/// User-global root for agent skills (the home-directory side of the
+/// `~/.agents/skills` convention). Read-only; never written by this worker.
+pub const DEFAULT_GLOBAL_AGENTS_SKILLS_FOLDER: &str = "~/.agents/skills";
 
 fn default_skills_folder() -> String {
     iii_worker_paths::default_path(DEFAULT_SKILLS_FOLDER)
@@ -48,8 +57,20 @@ fn default_agents_folder() -> String {
     iii_worker_paths::default_path(DEFAULT_AGENTS_FOLDER)
 }
 
+fn default_global_agents_folder() -> String {
+    // Kept `~`-prefixed (not pre-resolved): resolve_path expands it at use
+    // time, so the default follows the user's home, never the compose dir.
+    DEFAULT_GLOBAL_AGENTS_FOLDER.to_string()
+}
+
 fn default_agents_skills_folder() -> String {
     iii_worker_paths::default_path(DEFAULT_AGENTS_SKILLS_FOLDER)
+}
+
+fn default_global_agents_skills_folder() -> String {
+    // Kept `~`-prefixed (not pre-resolved): resolve_path expands it at use
+    // time, so the default follows the user's home, never the compose dir.
+    DEFAULT_GLOBAL_AGENTS_SKILLS_FOLDER.to_string()
 }
 
 fn default_registry_url() -> String {
@@ -96,6 +117,17 @@ pub struct SkillsConfig {
     #[serde(default = "default_agents_folder")]
     pub agents_folder: String,
 
+    /// USER-GLOBAL root for reusable agent profiles (`~/.iii/agents`),
+    /// shared by every project on the machine. Same direct `<id>.md` scan as
+    /// `agents_folder`; an id present under `agents_folder` shadows the same
+    /// id here. Profiles resolved here are updated and deleted IN PLACE
+    /// (this is iii's own directory, unlike the external-tooling skills
+    /// roots); `create` still writes `agents_folder` only. A missing
+    /// directory is silently treated as empty and never materialized.
+    /// Supports the same three resolution forms as `skills_folder`.
+    #[serde(default = "default_global_agents_folder")]
+    pub global_agents_folder: String,
+
     /// Read-only root for system-installed agent skills (the
     /// `~/.agents/skills` convention: one directory per skill, each
     /// containing a `SKILL.md`). Scanned shallowly — only
@@ -107,6 +139,15 @@ pub struct SkillsConfig {
     /// as `skills_folder`.
     #[serde(default = "default_agents_skills_folder")]
     pub agents_skills_folder: String,
+
+    /// Read-only root for USER-GLOBAL agent skills — the home-directory side
+    /// of the `~/.agents/skills` convention, shared by every project on the
+    /// machine. Same shallow `<skill>/SKILL.md` scan and read-only contract
+    /// as `agents_skills_folder`; a namespace present there (or under
+    /// `skills_folder` / `local_skills_folder`) shadows the same namespace
+    /// here. Supports the same three resolution forms as `skills_folder`.
+    #[serde(default = "default_global_agents_skills_folder")]
+    pub global_agents_skills_folder: String,
 
     /// Workers registry base URL — used by `directory::skills::download`
     /// and the `directory::registry::*` proxies when a `worker=` source
@@ -183,7 +224,9 @@ impl Default for SkillsConfig {
             skills_folder: default_skills_folder(),
             local_skills_folder: default_local_skills_folder(),
             agents_folder: default_agents_folder(),
+            global_agents_folder: default_global_agents_folder(),
             agents_skills_folder: default_agents_skills_folder(),
+            global_agents_skills_folder: default_global_agents_skills_folder(),
             registry_url: default_registry_url(),
             download_timeout_ms: default_download_timeout_ms(),
             registry_cache_ttl_ms: default_registry_cache_ttl_ms(),
@@ -219,9 +262,37 @@ impl SkillsConfig {
         iii_worker_paths::resolve_path(&self.agents_folder)
     }
 
+    /// Every agent-profile root, precedence order: the read-write project
+    /// root first, the read-only user-global (`~/.iii/agents`) root second —
+    /// an id served by the project root shadows the same id in the global
+    /// one. Deduplicated so pointing both settings at one directory never
+    /// double-scans it.
+    pub fn resolved_agents_roots(&self) -> Vec<PathBuf> {
+        let mut roots = vec![
+            self.resolved_agents_folder(),
+            iii_worker_paths::resolve_path(&self.global_agents_folder),
+        ];
+        roots.dedup();
+        roots
+    }
+
     /// Absolute path to the configured (read-only) agents skills folder.
     pub fn resolved_agents_skills_folder(&self) -> PathBuf {
         iii_worker_paths::resolve_path(&self.agents_skills_folder)
+    }
+
+    /// Every read-only agents skills root, precedence order: the project
+    /// root first, the user-global (`~/.agents/skills`) root second — a
+    /// namespace served by the project root shadows the same namespace in
+    /// the global one. Deduplicated so pointing both settings at one
+    /// directory never double-scans it.
+    pub fn resolved_agents_skills_roots(&self) -> Vec<PathBuf> {
+        let mut roots = vec![
+            self.resolved_agents_skills_folder(),
+            iii_worker_paths::resolve_path(&self.global_agents_skills_folder),
+        ];
+        roots.dedup();
+        roots
     }
 
     /// Registry base URL with any trailing slash trimmed so callers can
@@ -436,6 +507,48 @@ auto_download: false
                 home.join(".agents/skills")
             );
         }
+    }
+
+    /// The default global agents root follows the user's HOME (the
+    /// `~/.agents/skills` convention), never the compose/project dir, and
+    /// the roots list keeps project-before-global precedence — deduped when
+    /// both settings point at one directory.
+    #[test]
+    fn agents_skills_roots_default_project_then_home() {
+        let cfg = SkillsConfig::default();
+        let roots = cfg.resolved_agents_skills_roots();
+        assert_eq!(roots.len(), 2);
+        assert_eq!(roots[0], cfg.resolved_agents_skills_folder());
+        if let Some(home) = dirs::home_dir() {
+            assert_eq!(roots[1], home.join(".agents/skills"));
+        }
+
+        let aligned = SkillsConfig {
+            agents_skills_folder: "~/.agents/skills".into(),
+            ..SkillsConfig::default()
+        };
+        assert_eq!(aligned.resolved_agents_skills_roots().len(), 1);
+    }
+
+    /// The default global agent-profile root follows the user's HOME
+    /// (`~/.iii/agents`), never the compose dir, and the roots list keeps
+    /// project-before-global precedence — deduped when both settings point
+    /// at one directory.
+    #[test]
+    fn agents_roots_default_project_then_home() {
+        let cfg = SkillsConfig::default();
+        let roots = cfg.resolved_agents_roots();
+        assert_eq!(roots.len(), 2);
+        assert_eq!(roots[0], cfg.resolved_agents_folder());
+        if let Some(home) = dirs::home_dir() {
+            assert_eq!(roots[1], home.join(".iii/agents"));
+        }
+
+        let aligned = SkillsConfig {
+            agents_folder: "~/.iii/agents".into(),
+            ..SkillsConfig::default()
+        };
+        assert_eq!(aligned.resolved_agents_roots().len(), 1);
     }
 
     #[test]

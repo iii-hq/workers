@@ -20,9 +20,11 @@ workers:
       skills_folder: __E2E_DIR__/skills-home
       local_skills_folder: __E2E_DIR__/.iii/skills
       agents_folder: __E2E_DIR__/agents
+      global_agents_folder: __E2E_DIR__/global-agents
       # Pinned inside the e2e dir so the developer's real ~/.agents/skills
       # can't leak machine-dependent skills into assertions.
       agents_skills_folder: __E2E_DIR__/agents-skills
+      global_agents_skills_folder: __E2E_DIR__/global-agents-skills
       registry_url: https://api.workers.iii.dev
       download_timeout_ms: 60000
       registry_cache_ttl_ms: 60000

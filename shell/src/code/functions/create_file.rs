@@ -18,14 +18,25 @@ use crate::code::error::{err_to_string, CoderError, WireError};
 use crate::code::path::PathResolver;
 
 // examples are wire-contract; goldens pin them.
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, JsonSchema)]
 #[schemars(example = "example_create_file_input")]
 pub struct CreateFileInput {
     pub files: Vec<CreateFileSpec>,
     /// Internal harness filesystem scope; omitted from published schema.
-    #[serde(default)]
     #[schemars(skip)]
     pub fs_scope: Option<crate::fs::FsScope>,
+}
+
+/// Hand-rolled (not `#[serde(try_from)]`, which would swap the published
+/// schema for the raw type): accepts the canonical batch AND a flat single
+/// `{ path, content }` — see [`super::files_batch_or_single`].
+impl<'de> Deserialize<'de> for CreateFileInput {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let (files, fs_scope) = super::files_batch_or_single(value, "coder::create-file")
+            .map_err(serde::de::Error::custom)?;
+        Ok(Self { files, fs_scope })
+    }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -481,6 +492,35 @@ fn atomic_write(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    /// The canonical batch, a flat single `{ path, content }`, and garbage:
+    /// the first two deserialize to the same request; the third names the
+    /// contract instead of a raw serde "missing field `files`"
+    /// (verify-wake-fix-3 postmortem).
+    #[test]
+    fn input_accepts_flat_single_file_and_names_the_contract_on_garbage() {
+        let batch: CreateFileInput = serde_json::from_value(serde_json::json!({
+            "files": [{ "path": "a.txt", "content": "hi" }]
+        }))
+        .unwrap();
+        assert_eq!(batch.files.len(), 1);
+
+        let flat: CreateFileInput = serde_json::from_value(serde_json::json!({
+            "path": "a.txt", "content": "hi", "overwrite": true
+        }))
+        .unwrap();
+        assert_eq!(flat.files.len(), 1);
+        assert_eq!(flat.files[0].path, "a.txt");
+        assert!(flat.files[0].overwrite);
+
+        let err = serde_json::from_value::<CreateFileInput>(serde_json::json!({
+            "file": "a.txt"
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("coder::create-file takes"), "got: {err}");
+        assert!(err.contains("\"files\""), "got: {err}");
+    }
 
     fn setup() -> (tempfile::TempDir, Arc<PathResolver>, Arc<CoderConfig>) {
         let tmp = tempdir().unwrap();

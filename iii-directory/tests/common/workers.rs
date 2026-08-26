@@ -65,10 +65,19 @@ pub async fn register_all(iii: &Arc<IIIClient>) -> Result<Arc<Shared>> {
             .join("agent-profiles-empty")
             .to_string_lossy()
             .into_owned(),
-        // Pin the agent-skills root inside the tempdir: the default resolves to
-        // the developer's REAL ~/.agents/skills, which would leak
-        // machine-dependent skills into list/index assertions.
+        global_agents_folder: root
+            .join("global-agent-profiles-empty")
+            .to_string_lossy()
+            .into_owned(),
+        // Pin BOTH agent-skills roots inside the tempdir: their defaults
+        // resolve to the developer's REAL project/.agents/skills and
+        // ~/.agents/skills, which would leak machine-dependent skills into
+        // list/index assertions.
         agents_skills_folder: root.join("agents-empty").to_string_lossy().into_owned(),
+        global_agents_skills_folder: root
+            .join("global-agents-empty")
+            .to_string_lossy()
+            .into_owned(),
         registry_url: mock_server.uri(),
         ..SkillsConfig::default()
     });

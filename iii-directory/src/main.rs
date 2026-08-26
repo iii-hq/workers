@@ -234,26 +234,36 @@ async fn main() -> Result<()> {
             kind: iii_directory::watch::WatchRootKind::Directory,
         });
     }
-    let profiles_root = cfg_now.resolved_agents_folder();
-    if !watch_roots.iter().any(|root| root.path == profiles_root) {
-        watch_roots.push(iii_directory::watch::WatchRoot {
-            path: profiles_root,
-            kind: iii_directory::watch::WatchRootKind::AgentProfiles,
-        });
+    // Profile roots: the read-write project root is always watched; the
+    // user-global `~/.iii/agents` root only when it already exists — this
+    // worker edits profiles there in place but never materializes the
+    // directory itself.
+    for (i, profiles_root) in cfg_now.resolved_agents_roots().into_iter().enumerate() {
+        if i > 0 && !profiles_root.is_dir() {
+            continue;
+        }
+        if !watch_roots.iter().any(|root| root.path == profiles_root) {
+            watch_roots.push(iii_directory::watch::WatchRoot {
+                path: profiles_root,
+                kind: iii_directory::watch::WatchRootKind::AgentProfiles,
+            });
+        }
     }
-    // The agent-skills root is watched only when it already exists. This
-    // worker must never materialize (or write) `~/.agents/skills` — it is
-    // owned by external agent tooling.
-    let agent_skills_root = cfg_now.resolved_agents_skills_folder();
-    if agent_skills_root.is_dir()
-        && !watch_roots
-            .iter()
-            .any(|root| root.path == agent_skills_root)
-    {
-        watch_roots.push(iii_directory::watch::WatchRoot {
-            path: agent_skills_root,
-            kind: iii_directory::watch::WatchRootKind::AgentSkills,
-        });
+    // The agent-skills roots (project + user-global) are watched only when
+    // they already exist. This worker must never materialize (or write)
+    // `.agents/skills` / `~/.agents/skills` — they are owned by external
+    // agent tooling.
+    for agent_skills_root in cfg_now.resolved_agents_skills_roots() {
+        if agent_skills_root.is_dir()
+            && !watch_roots
+                .iter()
+                .any(|root| root.path == agent_skills_root)
+        {
+            watch_roots.push(iii_directory::watch::WatchRoot {
+                path: agent_skills_root,
+                kind: iii_directory::watch::WatchRootKind::AgentSkills,
+            });
+        }
     }
     let watch_iii = iii.clone();
     // Named fields, not a tuple: transposing two positional subscriber sets
