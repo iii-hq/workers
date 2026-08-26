@@ -7,8 +7,9 @@
 //!    `pnpm install --frozen-lockfile && pnpm build` inside `web/`
 //!    before the rest of the crate compiles.
 //! 3. Ensures the console's *own* injected UI assets exist: `src/ui.rs`
-//!    embeds `ui/dist/config-form.js`, `ui/dist/catalog-page.js`, and
-//!    `ui/dist/styles.css` via `include_str!` (the state worker precedent).
+//!    embeds `ui/dist/config-form.js`, `ui/dist/catalog-page.js`,
+//!    `ui/dist/workspace-proposal.js`, and `ui/dist/styles.css` via
+//!    `include_str!` (the state worker precedent).
 //!    Set `SKIP_UI_BUILD=1` to use the existing `ui/dist/` outputs as-is.
 
 use std::path::{Path, PathBuf};
@@ -100,6 +101,7 @@ fn ensure_web_bundle() {
 fn ensure_ui_assets() {
     println!("cargo:rerun-if-changed=ui/config-form.tsx");
     println!("cargo:rerun-if-changed=ui/catalog-page.tsx");
+    println!("cargo:rerun-if-changed=ui/workspace-proposal.tsx");
     println!("cargo:rerun-if-changed=ui/styles.css");
     println!("cargo:rerun-if-changed=ui/src");
     println!("cargo:rerun-if-changed=ui/build.mjs");
@@ -114,6 +116,7 @@ fn ensure_ui_assets() {
     let dist_assets = [
         ui_dir.join("dist").join("config-form.js"),
         ui_dir.join("dist").join("catalog-page.js"),
+        ui_dir.join("dist").join("workspace-proposal.js"),
         ui_dir.join("dist").join("styles.css"),
     ];
 
@@ -177,6 +180,7 @@ fn ui_dist_is_fresh(dist_asset: &Path, ui_dir: &Path) -> bool {
     let watched_files = [
         ui_dir.join("config-form.tsx"),
         ui_dir.join("catalog-page.tsx"),
+        ui_dir.join("workspace-proposal.tsx"),
         ui_dir.join("styles.css"),
         ui_dir.join("build.mjs"),
         ui_dir.join("package.json"),

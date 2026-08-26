@@ -33,6 +33,7 @@ import {
   registerExtTriggerActivityRenderer,
   setUiAssetsStatus,
 } from '@/lib/ui-slots'
+import { requestWorkingDirectoryChange } from '@/lib/working-directory-request'
 import type {
   ConfigFormProps,
   ConsoleApi,
@@ -263,6 +264,9 @@ function makeHost(
       },
       selectConversation(sessionId) {
         conversationAdapter.selectConversation(sessionId)
+      },
+      requestWorkingDirectoryChange(request) {
+        return requestWorkingDirectoryChange(request)
       },
       composerModel(conversationId) {
         return conversationAdapter.composerModel(conversationId)

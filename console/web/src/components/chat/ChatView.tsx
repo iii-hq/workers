@@ -58,6 +58,7 @@ import {
   fetchDefaultWorkingDir,
   workingDirRecoveryNotice,
 } from '@/lib/working-dir'
+import { onWorkingDirectoryChangeRequest } from '@/lib/working-directory-request'
 import {
   consoleClaimFor,
   recordConsoleClaim,
@@ -1883,6 +1884,16 @@ export function ChatView({
       onUpdateWorkingDir,
       onAppendMessage,
     ],
+  )
+
+  useEffect(
+    () =>
+      onWorkingDirectoryChangeRequest(({ sessionId, path }) => {
+        if (!workingDirEnabled || sessionId !== conversation.id) return false
+        handleWorkingDirChange(path)
+        return true
+      }),
+    [conversation.id, handleWorkingDirChange, workingDirEnabled],
   )
 
   // Picking a worktree claims it for this session; the working dir itself

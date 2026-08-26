@@ -8,6 +8,7 @@
 //! screen to the human.
 
 pub mod status;
+pub mod working_directory;
 pub mod workspace;
 
 use std::sync::Arc;
@@ -33,9 +34,13 @@ pub fn register_all(
 ) {
     register_status(iii, config, engine_url);
     register_ui_manifest(iii, ui);
+    working_directory::register(iii);
+    if let Err(error) = working_directory::bind(iii) {
+        tracing::warn!(%error, "failed to bind Harness working-directory proposal context");
+    }
     workspace::register(iii);
     tracing::info!(
-        "registered console::status, console::ui-manifest, console::workspace::{{list,open,close}}"
+        "registered console::status, console::ui-manifest, console::working-directory::propose, console::workspace::{{list,open,close}}"
     );
 }
 

@@ -174,6 +174,10 @@ import {
 } from './turns'
 import { WorkspaceBrowser } from './WorkspaceBrowser'
 import {
+  workingDirectoryScopeMessage,
+  workingDirectoryScopeMismatch,
+} from './working-dir-scope'
+import {
   acknowledgeUnavailableWorkingDirectory,
   acknowledgeValidatedWorkingDirectory,
   deepLinkRootTarget,
@@ -2781,6 +2785,13 @@ export function ShellExplorerPage({
     )
   }
 
+  const rootIsOutsideChatScope = workingDirectoryScopeMismatch(
+    root,
+    workingDir,
+    conversationId,
+    !!host.chat?.requestWorkingDirectoryChange,
+  )
+
   return (
     <PageShell>
       {header}
@@ -2845,6 +2856,24 @@ export function ShellExplorerPage({
           </PageSidebar>
 
           <PageMain>
+            {rootIsOutsideChatScope ? (
+              <div className="shui-review-message warn" role="status">
+                <span>{workingDirectoryScopeMessage(root, workingDir)}</span>
+                <button
+                  type="button"
+                  className="shui-review-inline-action"
+                  onClick={() => {
+                    if (!conversationId) return
+                    host.chat?.requestWorkingDirectoryChange?.({
+                      sessionId: conversationId,
+                      path: root,
+                    })
+                  }}
+                >
+                  use for chat
+                </button>
+              </div>
+            ) : null}
             {workingDirError ? (
               <div className="shui-review-message warn" role="alert">
                 <span>{workingDirError}</span>
