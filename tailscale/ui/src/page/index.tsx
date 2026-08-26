@@ -5,7 +5,6 @@ import {
   CardBody,
   CardHeader,
   Chip,
-  CodeHighlight,
   ConfirmDialog,
   type Host,
   IconButton,
@@ -377,8 +376,8 @@ export function TailscalePage({ host, onRequestClose, commands }: Props) {
                 </div>
                 <p className="ts-note">
                   {mode === 'serve'
-                    ? 'Only devices your tailnet policy admits can open the link. Each request carries Tailscale identity headers.'
-                    : 'Anyone with the link can open the Console. Funnel uses port 443, 8443, or 10000 and carries no identity headers.'}
+                    ? 'Opens on any of your devices that are signed into this tailnet (phone or laptop with the Tailscale app), with no extra login. Each request carries Tailscale identity headers.'
+                    : 'For devices that are not on your tailnet. Anyone with the link can open the Console; Funnel uses port 443, 8443, or 10000 and carries no identity headers.'}
                 </p>
                 {funnelLocked && (
                   <StatusPanel
@@ -401,36 +400,36 @@ export function TailscalePage({ host, onRequestClose, commands }: Props) {
               <CardHeader className="ts-card-header">
                 <span className="ts-card-title">
                   <QrCode />
-                  {authorizationRequired ? 'Authorize Funnel for this node' : 'Open on another device'}
+                  {authorizationRequired ? 'Public link not available yet' : 'Open on another device'}
                 </span>
                 <Chip tone={share.public ? 'danger' : authorizationRequired ? 'warning' : 'neutral'}>
-                  {authorizationRequired ? 'One-time approval' : share.public ? 'Public' : 'Tailnet'}
+                  {authorizationRequired ? 'Admin step' : share.public ? 'Public' : 'Tailnet'}
                 </Chip>
               </CardHeader>
               <CardBody className="ts-link-body">
                 {authorizationRequired ? (
                   <>
                     <StatusPanel
-                      variant="info"
-                      headline="Funnel is not enabled for this node yet"
-                      detail="A tailnet admin approves it once; the page below signs you into Tailscale and adds the funnel attribute to the policy. The public link itself never asks for a login."
-                    />
-                    <CodeHighlight
-                      className="ts-policy"
-                      language="json"
-                      wrap
-                      code={'"nodeAttrs": [{ "target": ["autogroup:member"], "attr": ["funnel"] }]'}
+                      variant="warn"
+                      headline="Your tailnet does not allow Funnel on this device"
+                      detail="Tailscale requires a tailnet admin to allow it once. Open Tailscale, approve Funnel for this device, then check again. If the link is only for your own devices, use Tailnet only instead; it needs no approval."
                     />
                     <div className="ts-actions">
                       <Button variant="primary" onClick={openLink}>
-                        Enable Funnel in Tailscale
+                        Approve in Tailscale
                       </Button>
                       <Button variant="ghost" disabled={busy} onClick={() => void createShare(true)}>
                         {busy ? 'Checking…' : 'Check again'}
                       </Button>
-                      <IconButton label={copied ? 'Copied' : 'Copy approval link'} variant="ghost" onClick={() => void copyLink()}>
-                        {copied ? <Check /> : <Copy />}
-                      </IconButton>
+                      <Button
+                        variant="ghost"
+                        onClick={() => {
+                          setShare(null)
+                          setMode('serve')
+                        }}
+                      >
+                        Use Tailnet only
+                      </Button>
                     </div>
                   </>
                 ) : (
