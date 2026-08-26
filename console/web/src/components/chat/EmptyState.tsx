@@ -5,12 +5,8 @@ import { Button } from '@/components/ui/Button'
 import type { InstallStage } from '@/hooks/use-harness-status'
 import { normalizeErrorMessage } from '@/lib/providers'
 import { cn } from '@/lib/utils'
-import { SessionAddonsPicker } from './SessionAddonsPicker'
-import { StrategyToggle, SystemPromptPicker } from './SystemPromptPicker'
-import type {
-  SkillSelection,
-  SystemPromptState,
-} from './system-prompt-selection'
+import { AgentPicker } from './AgentPicker'
+import type { SystemPromptState } from './system-prompt-selection'
 
 /**
  * The chat empty state, as a small set of presentational variants:
@@ -54,8 +50,6 @@ export interface EmptyStateProps {
    */
   systemPrompt?: SystemPromptState
   onSystemPromptChange?: (next: SystemPromptState) => void
-  skills?: SkillSelection
-  onSkillsChange?: (next: SkillSelection) => void
 }
 
 const HARNESS_INSTALL_COMMAND = 'iii worker add harness'
@@ -74,8 +68,6 @@ export function EmptyState({
   onConfigureProvider,
   systemPrompt,
   onSystemPromptChange,
-  skills,
-  onSkillsChange,
 }: EmptyStateProps) {
   const emptyPad = density === 'dock' ? 'px-3 sm:px-4' : 'px-3 sm:px-6 lg:px-9'
   const eyebrow =
@@ -97,8 +89,6 @@ export function EmptyState({
           <ReadyBody
             systemPrompt={systemPrompt}
             onSystemPromptChange={onSystemPromptChange}
-            skills={skills}
-            onSkillsChange={onSkillsChange}
           />
         ) : null}
         {variant === 'no-provider' ? (
@@ -131,13 +121,9 @@ const EXPLORE_FUNCTIONS = [
 function ReadyBody({
   systemPrompt,
   onSystemPromptChange,
-  skills,
-  onSkillsChange,
 }: {
   systemPrompt?: SystemPromptState
   onSystemPromptChange?: (next: SystemPromptState) => void
-  skills?: SkillSelection
-  onSkillsChange?: (next: SkillSelection) => void
 }) {
   return (
     <>
@@ -172,50 +158,29 @@ function ReadyBody({
           composer that starts and locks the session. */}
       {systemPrompt && onSystemPromptChange ? (
         <section
-          aria-labelledby="session-system-prompt"
+          aria-labelledby="session-agent"
           className="rounded-sm bg-surface p-4 flex flex-col gap-3"
         >
           <div className="flex flex-col gap-1">
             <h2
-              id="session-system-prompt"
+              id="session-agent"
               className="font-sans text-base font-semibold text-ink sm:text-sm"
             >
-              System prompt
+              Agent
             </h2>
             <p className="font-sans text-base/6 text-ink-faint sm:text-sm/6">
-              Choose the instructions the agent follows in this session.
+              Choose who the agent is in this session.
             </p>
           </div>
-          <div className="flex items-start gap-2">
-            <SystemPromptPicker
-              value={systemPrompt}
-              onChange={onSystemPromptChange}
-              allowCustom={false}
-              className="min-w-0 flex-1"
-            />
-            <StrategyToggle
-              value={systemPrompt}
-              onChange={onSystemPromptChange}
-            />
-          </div>
-          {onSkillsChange ? (
-            <div className="flex flex-col gap-1.5">
-              <p className="font-sans text-base/6 text-ink-faint sm:text-sm/5">
-                Choose which skills the agent can discover:
-              </p>
-              <SessionAddonsPicker
-                value={skills}
-                onChange={onSkillsChange}
-                className="min-w-0"
-              />
-            </div>
-          ) : null}
+          <AgentPicker
+            value={systemPrompt}
+            onChange={onSystemPromptChange}
+            className="min-w-0"
+          />
           <p className="font-sans text-base/6 text-ink-faint sm:text-sm/5">
             {systemPrompt.choice === 'default'
               ? "Default uses the provider's built-in prompt"
-              : systemPrompt.strategy === 'enrich'
-                ? 'Enrich adds this prompt to the built-in prompt'
-                : 'Replace uses this prompt instead of the built-in prompt'}
+              : "The agent's instructions and skill selection apply to this session"}
             {' · Locked after your first message'}
           </p>
         </section>

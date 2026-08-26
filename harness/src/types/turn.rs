@@ -85,6 +85,20 @@ pub struct SkillAck {
     pub fingerprint: Option<String>,
 }
 
+/// The agent profile a turn runs as, frozen at resolution time
+/// (`options.agent` on `harness::send`, `agent` on `harness::spawn`). Only
+/// what later turn machinery needs survives here: the id for display and
+/// inheritance, and `delegates_to` to gate which profiles this turn's spawns
+/// may name. Directory edits after resolution never reach a live session.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentIdentity {
+    pub id: String,
+    /// Agent ids this turn may spawn with `agent:`; `None` = every agent
+    /// (directory semantics, verbatim). Profile-less spawns are ungated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegates_to: Option<Vec<String>>,
+}
+
 /// Per-send options frozen onto the turn record when it is created; they
 /// apply unchanged until the turn ends (a merged send never changes them).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -130,6 +144,11 @@ pub struct TurnOptions {
     pub functions: Option<FunctionPolicy>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    /// The agent profile this turn runs as, resolved once and frozen. Sticky
+    /// like the system prompt: a send naming neither prompt field inherits it;
+    /// naming an explicit prompt field sheds it (the escape hatch).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentIdentity>,
     /// Cap on output-contract validation retries before finalising with a
     /// best-effort result (harness.md § Output contract).
     #[serde(default = "default_max_validation_retries")]
@@ -408,6 +427,7 @@ mod tests {
                 output: OutputContract::Text,
                 functions: None,
                 metadata: None,
+                agent: None,
                 max_validation_retries: 2,
                 max_transient_resumes: 1,
             },
@@ -580,6 +600,23 @@ mod tests {
         assert_eq!(r.options.skill_context, None);
         assert_eq!(r.skill_ack, None);
         assert!(!r.skills_started);
+        assert_eq!(r.options.agent, None);
+    }
+
+    #[test]
+    fn agent_identity_round_trips_and_stays_off_the_wire_when_absent() {
+        let mut r = record();
+        assert!(!serde_json::to_value(&r.options)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("agent"));
+        r.options.agent = Some(AgentIdentity {
+            id: "tech-leader".into(),
+            delegates_to: Some(vec!["coder".into()]),
+        });
+        let back: TurnRecord = serde_json::from_value(serde_json::to_value(&r).unwrap()).unwrap();
+        assert_eq!(back, r);
     }
 
     #[test]

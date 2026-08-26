@@ -210,6 +210,7 @@ async function buildSendRequest(
     options: {
       mode,
       functions: functionPolicy,
+      ...(opts?.agent ? { agent: opts.agent } : {}),
       ...toSystemPromptOptions(opts?.systemPrompt),
       ...toSkillOptions(opts?.skills),
       ...(thinkingLevel ? { thinking_level: thinkingLevel } : {}),

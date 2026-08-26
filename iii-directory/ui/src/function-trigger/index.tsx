@@ -15,6 +15,7 @@ import type {
   FunctionTriggerRenderer,
 } from '@iii-dev/console-ui'
 import { isErrorOutput, unwrapEnvelope } from '../lib/envelope'
+import { AgentsGetView, AgentsListView, AgentsUpdateView } from './AgentsViews'
 import { SkillsDownloadView } from './DownloadView'
 import { isDirectoryFunction } from './parsers'
 import { PromptsGetView, PromptsListView } from './PromptsViews'
@@ -100,6 +101,25 @@ function render(
     case 'directory::system-prompts::create':
       return (
         <PromptsUpdateView
+          input={input}
+          output={output}
+          running={running}
+          verb="created"
+        />
+      )
+    case 'directory::agents::list':
+      return <AgentsListView input={input} output={output} running={running} />
+    case 'directory::agents::get':
+      return <AgentsGetView input={input} output={output} running={running} />
+    case 'directory::agents::update':
+      return (
+        <AgentsUpdateView input={input} output={output} running={running} />
+      )
+    /* create's wire shapes ({id, content} → {id, name, description, logo,
+       bytes, modified_at}) are identical to update's, so the update view fits. */
+    case 'directory::agents::create':
+      return (
+        <AgentsUpdateView
           input={input}
           output={output}
           running={running}

@@ -1,0 +1,24 @@
+engine_url: ws://127.0.0.1:49134
+
+# Path to the VS Code CLI. Empty = `code` on PATH. Point it at a standalone
+# CLI download when VS Code itself is not installed on the host.
+code_executable: ""
+
+# Per-workspace VS Code Server data (`--server-data-dir`) and CLI data
+# (`--cli-data-dir`) live under this directory, one subfolder per workspace.
+data_dir: ~/.iii/vscode
+
+# Loopback address the VS Code Server listens on. The worker refuses anything
+# but 127.0.0.1, localhost, or ::1 because the server runs cookie-free.
+bind_host: 127.0.0.1
+
+# Port range, one port per running workspace.
+port_min: 18080
+port_max: 18180
+
+# How long a start waits for the server to answer. The first start of a
+# workspace downloads the matching VS Code Server build.
+start_timeout_ms: 180000
+
+# Grace period between SIGTERM and SIGKILL when stopping a server.
+stop_grace_ms: 5000

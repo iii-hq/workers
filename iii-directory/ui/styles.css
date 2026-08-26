@@ -1680,3 +1680,421 @@
   line-height: 1.55;
   overflow-wrap: anywhere;
 }
+
+/* ── agent profile fields: emoji logo + skill selection ─────────────────
+   Rendered by AgentExtraFields inside .dir-ui-edit-fields, so the grid,
+   label, and input styles above already apply; this only adds what the
+   picker needs — a full-width row, a bounded scrolling list, and the
+   missing-skill marker the ticket calls for. */
+[data-iii-ui="iii-directory"] .dir-ui-agent-logo {
+  max-width: 120px;
+  font-size: 16px;
+}
+[data-iii-ui="iii-directory"] .dir-ui-agent-skills {
+  grid-column: 1 / -1;
+}
+[data-iii-ui="iii-directory"] .dir-ui-agent-skill-list {
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  max-height: 168px;
+  overflow-y: auto;
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  background: var(--color-surface);
+  display: flex;
+  flex-direction: column;
+}
+[data-iii-ui="iii-directory"] .dir-ui-agent-skill-row {
+  padding: 5px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  min-width: 0;
+}
+[data-iii-ui="iii-directory"] .dir-ui-agent-skill-row:hover {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="iii-directory"] .dir-ui-agent-skill-row:has(input:disabled) {
+  cursor: default;
+}
+[data-iii-ui="iii-directory"] .dir-ui-agent-skill-name {
+  font-size: 12.5px;
+  color: var(--color-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-iii-ui="iii-directory"] .dir-ui-agent-skill-id {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--color-ink-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-iii-ui="iii-directory"] .dir-ui-agent-skill-empty {
+  font-size: 12px;
+  color: var(--color-ink-faint);
+  padding: 6px 8px;
+}
+[data-iii-ui="iii-directory"] .dir-ui-agent-skill-missing {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+[data-iii-ui="iii-directory"] .dir-ui-agent-missing-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--color-ink);
+}
+[data-iii-ui="iii-directory"] .dir-ui-agent-missing-row .mono {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+}
+[data-iii-ui="iii-directory"] .dir-ui-agent-missing-badge {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 9.5px;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-warning, #b58900);
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 3px 7px;
+}
+[data-iii-ui="iii-directory"] .dir-ui-agent-leaf {
+  padding: 2px 0 4px;
+  font-size: 12.5px;
+  color: var(--color-ink);
+  cursor: pointer;
+}
+[data-iii-ui="iii-directory"] .dir-ui-agent-leaf:has(input:disabled) {
+  cursor: default;
+}
+[data-iii-ui="iii-directory"] .dir-ui-agent-model {
+  appearance: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  padding: 0 12px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+[data-iii-ui="iii-directory"] .dir-ui-agent-model:hover {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="iii-directory"] .dir-ui-agent-model:focus {
+  outline: none;
+  border-color: var(--color-rule-focus);
+  box-shadow: 0 0 0 3px var(--color-accent-muted);
+}
+[data-iii-ui="iii-directory"] .dir-ui-agent-model:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+[data-iii-ui="iii-directory"] .dir-ui-agent-logo-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+[data-iii-ui="iii-directory"] .dir-ui-agent-logo-preset {
+  appearance: none;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  background: var(--color-surface);
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    border-color var(--motion-duration-control) var(--motion-ease-standard),
+    background-color var(--motion-duration-control) var(--motion-ease-standard);
+}
+[data-iii-ui="iii-directory"] .dir-ui-agent-logo-preset:hover {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="iii-directory"] .dir-ui-agent-logo-preset.active {
+  border-color: var(--color-rule-focus);
+  box-shadow: 0 0 0 3px var(--color-accent-muted);
+}
+[data-iii-ui="iii-directory"] .dir-ui-agent-logo-preset:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* ── agent form: sectioned settings layout (Identity / Behavior /
+   Execution / Delegation), the reference pattern. Sits where the flat
+   edit-fields grid sits for other collections, scrolling on its own so
+   the system-prompt editor below keeps its room. */
+[data-iii-ui="iii-directory"] .dir-ui-af {
+  flex-shrink: 0;
+  max-height: 55%;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  background: var(--color-panel-raised);
+  border-bottom: 1px solid var(--color-edge);
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-ink);
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-hint {
+  margin: 0 0 6px;
+  font-size: 11.5px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-card {
+  border: 1px solid var(--color-edge);
+  border-radius: 8px;
+  background: var(--color-surface);
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 150px) 1fr;
+  gap: 12px;
+  align-items: start;
+  padding: 12px 14px;
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-row + .dir-ui-af-row {
+  border-top: 1px solid var(--color-edge);
+}
+[data-iii-ui="iii-directory"] .dir-ui-browser.narrow .dir-ui-af-row {
+  grid-template-columns: minmax(0, 1fr);
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-label {
+  padding-top: 8px;
+  font-size: 12.5px;
+  color: var(--color-ink);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-label-hint {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-control {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* avatar + popover */
+[data-iii-ui="iii-directory"] .dir-ui-af-avatar-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-avatar {
+  appearance: none;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--color-edge);
+  border-radius: 10px;
+  background: var(--color-panel-raised);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-avatar:hover {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-avatar-empty {
+  opacity: 0.35;
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-avatar-note {
+  font-size: 11.5px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-pop-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-pop {
+  position: absolute;
+  top: 50px;
+  left: 0;
+  z-index: 41;
+  width: max-content;
+  max-width: 320px;
+  padding: 10px;
+  border: 1px solid var(--color-edge);
+  border-radius: 10px;
+  background: var(--color-panel-raised);
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-pop-head {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-pop-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 32px);
+  gap: 4px;
+  justify-content: start;
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-pop-grid .dir-ui-agent-logo-preset {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+  font-family: 'Noto Color Emoji', 'Apple Color Emoji', 'Segoe UI Emoji', sans-serif;
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-pop-free {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* collapsed picker row + expanded panel */
+[data-iii-ui="iii-directory"] .dir-ui-af-collapsed {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  background: var(--color-panel-raised);
+  color: var(--color-ink-faint);
+  font-size: 12.5px;
+  cursor: pointer;
+  text-align: left;
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-collapsed:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-plus {
+  font-size: 13px;
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-chev {
+  margin-left: auto;
+  opacity: 0.6;
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-picker-count {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="iii-directory"] .dir-ui-agent-skill-list.tall {
+  max-height: 240px;
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-pick-row {
+  align-items: flex-start;
+  padding: 7px 8px;
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-pick-row input {
+  margin-top: 2px;
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-pick-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-pick-name {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--color-ink);
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-pick-desc {
+  font-size: 11.5px;
+  color: var(--color-ink-faint);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* Tree-icon tiles: the exact lucide glyphs the console tree renders,
+   one per SubagentIcon token. Same tile chrome as the emoji presets. */
+[data-iii-ui="iii-directory"] .dir-ui-af-icon-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-icon-tile {
+  appearance: none;
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  background: var(--color-panel-raised);
+  color: var(--color-ink-faint);
+  cursor: pointer;
+  transition:
+    border-color var(--motion-duration-control) var(--motion-ease-standard),
+    color var(--motion-duration-control) var(--motion-ease-standard),
+    background-color var(--motion-duration-control) var(--motion-ease-standard);
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-icon-tile:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-icon-tile.active {
+  border-color: var(--color-rule-focus);
+  color: var(--color-ink);
+  box-shadow: 0 0 0 3px var(--color-accent-muted);
+}
+[data-iii-ui="iii-directory"] .dir-ui-af-icon-tile:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+[data-iii-ui="iii-directory"] .dir-ui-nav-ico {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: -2px;
+  margin-right: 6px;
+  color: var(--color-ink-faint);
+}

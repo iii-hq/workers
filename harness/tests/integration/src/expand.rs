@@ -41,7 +41,13 @@ pub(crate) fn expand_compiled_fixture(
     base.expand_value(&mut scenario)?;
     let scenario: CompiledScenarioV1 = serde_json::from_value(scenario)?;
 
-    let mut allowed_functions = scenario.send.options.functions.allow.clone();
+    let mut allowed_functions = scenario
+        .send
+        .options
+        .functions
+        .as_ref()
+        .map(|policy| policy.allow.clone())
+        .unwrap_or_default();
     allowed_functions.sort_unstable();
     allowed_functions.dedup();
     let system_prompt = base

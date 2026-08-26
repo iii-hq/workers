@@ -1,0 +1,40 @@
+{
+  "name": "vscode",
+  "version": "0.1.0",
+  "private": true,
+  "description": "VS Code Workbench served by the VS Code Server CLI as an injectable iii Console page.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.18.2",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  },
+  "scripts": {
+    "build": "pnpm --dir ui build && node scripts/build-bundle.mjs",
+    "build:bundle": "node scripts/build-bundle.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit && pnpm --dir ui typecheck",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "test": "vitest run",
+    "start": "node dist/bundle/index.mjs",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "iii-sdk": "0.23.0-rc.2",
+    "yaml": "^2.6.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.10",
+    "@types/node": "^22.10.0",
+    "esbuild": "^0.25.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.9.2",
+    "vitest": "^3.0.0"
+  }
+}

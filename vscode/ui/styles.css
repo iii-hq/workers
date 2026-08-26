@@ -1,0 +1,51 @@
+[data-iii-ui="vscode"] {
+  min-height: 0;
+}
+
+[data-iii-ui="vscode"] .vscode-main {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+[data-iii-ui="vscode"] .vscode-frame {
+  display: block;
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  background: var(--color-panel);
+}
+
+[data-iii-ui="vscode"] .vscode-state {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  min-height: 0;
+  padding: 2rem 1.5rem;
+  overflow: auto;
+}
+
+[data-iii-ui="vscode"] .vscode-state > * {
+  width: 100%;
+  max-width: 36rem;
+}
+
+[data-iii-ui="vscode"] .vscode-folders {
+  text-align: left;
+}
+
+[data-iii-ui="vscode"] .vscode-path {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}

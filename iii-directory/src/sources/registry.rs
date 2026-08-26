@@ -270,6 +270,15 @@ fn write_response(
                     result.prompts_written.push(stem);
                 }
             }
+            crate::fs_source::SourceKind::Agent if rel.extension().is_some_and(|e| e == "md") => {
+                if let Some(stem) = super::git::stem_of(&rel) {
+                    result.agents_written.push(stem);
+                }
+            }
+            // Non-md support files under an agents/ dir are written but
+            // not reported — they'd fire the wrong on-change and pollute
+            // the skills bucket.
+            crate::fs_source::SourceKind::Agent => {}
             _ => result
                 .skills_written
                 .push(rel.to_string_lossy().replace('\\', "/")),

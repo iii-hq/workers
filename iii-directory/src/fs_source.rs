@@ -69,6 +69,7 @@ pub enum SourceKind {
     Skill,
     Prompt,
     SystemPrompt,
+    Agent,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -190,17 +191,27 @@ impl PromptKind {
     }
 }
 
+/// Path component that marks the agents family in the walk (also the
+/// top-level folder `directory::agents::create` writes into). Unrelated
+/// to the `agents_skills_folder` config root (`~/.agents/skills`), which
+/// is an external-tool *skills* convention.
+pub const AGENTS_SEGMENT: &str = "agents";
+
 /// Classify one path (relative to a scan root) by its segments — the
 /// single discriminator the scanner, the download classifier, and the
-/// fs watcher all share. `system-prompts` wins over `prompts` regardless
-/// of component order, so a path carrying both classifies as exactly one
-/// kind.
+/// fs watcher all share. NOT an exhaustive match: a kind missing an arm
+/// here silently falls through to `Skill`, so every new family must add
+/// one. Precedence when a path carries several marker segments:
+/// `system-prompts` > `prompts` > `agents`, so any path classifies as
+/// exactly one kind regardless of component order.
 pub fn classify_rel_path(rel: &Path) -> SourceKind {
     let has = |seg: &str| rel.components().any(|c| c.as_os_str() == seg);
     if has(PromptKind::System.segment()) {
         SourceKind::SystemPrompt
     } else if has(PromptKind::Command.segment()) {
         SourceKind::Prompt
+    } else if has(AGENTS_SEGMENT) {
+        SourceKind::Agent
     } else {
         SourceKind::Skill
     }
@@ -451,6 +462,266 @@ pub fn scan_prompts(skills_folder: &Path, kind: PromptKind) -> (Vec<FsPrompt>, V
 
     prompts.sort_by(|a, b| a.name.cmp(&b.name));
     (prompts, skipped)
+}
+
+// ───────────────────────── agents family ─────────────────────────────
+
+/// One filesystem-backed agent profile entry. Everything a `list` row
+/// or a delegation catalog needs is parsed at scan time; only the body
+/// (the system prompt) is re-read on `get`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FsAgent {
+    /// Flat id: the file stem, validated like a prompt name.
+    pub name: String,
+    /// Frontmatter `name` — the display name ("Release Captain").
+    pub display_name: String,
+    pub description: String,
+    /// Emoji logo, verbatim from frontmatter. v1 is emoji-only.
+    pub logo: Option<String>,
+    /// Skill-id filter. Empty = every skill.
+    pub skills: Vec<String>,
+    /// Delegation catalog filter. `None` = every agent.
+    pub delegates_to: Option<Vec<String>>,
+    /// `true` = this agent may not delegate at all.
+    pub leaf: bool,
+    /// Default model id for sessions running as this agent (a router
+    /// model id, e.g. `codex/gpt-5.4-mini`). `None` = the send decides.
+    /// Stored verbatim — whether the id resolves is checked where it is
+    /// used (the harness / the UI's model catalog), not at scan time,
+    /// so an agent never fails to load over a retired model.
+    pub model: Option<String>,
+    /// Harness subagent icon token (one of [`AGENT_ICON_TOKENS`]) for
+    /// spawn display identities. `None` = caller picks.
+    pub icon: Option<String>,
+    pub abs_path: PathBuf,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct AgentFrontmatter {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub logo: Option<String>,
+    #[serde(default)]
+    pub skills: Vec<String>,
+    #[serde(default)]
+    pub delegates_to: Option<Vec<String>>,
+    #[serde(default)]
+    pub leaf: bool,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub icon: Option<String>,
+}
+
+/// The harness `SubagentIcon` closed token set — `harness::spawn`
+/// rejects anything else, so writes validate against this list rather
+/// than letting a typo fail every future spawn.
+pub const AGENT_ICON_TOKENS: &[&str] = &[
+    "agent", "code", "search", "terminal", "database", "test", "review", "docs", "design",
+];
+
+/// Max byte length for an emoji logo (a couple of emoji with modifiers).
+pub const AGENT_LOGO_MAX_BYTES: usize = 16;
+
+/// Parse and validate the REQUIRED agent frontmatter block. Shared by
+/// [`scan_agents`] (scan-time) and `directory::agents::create` /
+/// `::update` (write-time) so the two can't drift: a write this rejects
+/// is exactly a file the next scan would skip.
+///
+/// Hard rules: frontmatter present and valid YAML, non-empty `name`,
+/// valid emoji `logo` when present. `description` missing is an empty
+/// string; `skills` / `delegates_to` entries are NOT shape-checked here —
+/// an id that matches nothing surfaces as `unknown_*` on `get`, a
+/// warning rather than a load failure.
+pub fn parse_agent_frontmatter(content: &str) -> Result<AgentFrontmatter, String> {
+    let (fm_text, _) = split_frontmatter(content);
+    let Some(fm_text) = fm_text else {
+        return Err("missing YAML frontmatter (expected --- ... --- block at file start)".into());
+    };
+    let fm: AgentFrontmatter =
+        serde_yaml::from_str(fm_text).map_err(|e| format!("invalid frontmatter YAML: {e}"))?;
+    if fm.name.as_deref().map(str::trim).unwrap_or("").is_empty() {
+        return Err("frontmatter missing non-empty `name`".into());
+    }
+    if let Some(logo) = fm.logo.as_deref() {
+        validate_agent_logo(logo)?;
+    }
+    if let Some(icon) = fm.icon.as_deref().map(str::trim).filter(|i| !i.is_empty()) {
+        if !AGENT_ICON_TOKENS.contains(&icon) {
+            return Err(format!(
+                "`icon` must be one of {} (got {icon:?})",
+                AGENT_ICON_TOKENS.join(", ")
+            ));
+        }
+    }
+    Ok(fm)
+}
+
+/// v1 logos are emoji only: short, no path characters, no whitespace.
+pub fn validate_agent_logo(logo: &str) -> Result<(), String> {
+    let logo = logo.trim();
+    if logo.is_empty() {
+        return Err("`logo` must be non-empty when present (emoji only)".into());
+    }
+    if logo.len() > AGENT_LOGO_MAX_BYTES {
+        return Err(format!(
+            "`logo` too long ({} bytes; max {AGENT_LOGO_MAX_BYTES}) — emoji only",
+            logo.len()
+        ));
+    }
+    if logo
+        .chars()
+        .any(|c| c == '/' || c == '\\' || c.is_whitespace())
+    {
+        return Err("`logo` may not contain path separators or whitespace — emoji only".into());
+    }
+    Ok(())
+}
+
+/// Scan agent profiles (`agents/` path segment) under `root`. Mirrors
+/// [`scan_prompts`]: required frontmatter, stem-derived flat id
+/// validated by [`validate_name`], first-wins dedupe with a
+/// [`SkipReason`] for the loser.
+pub fn scan_agents(root: &Path) -> (Vec<FsAgent>, Vec<SkipReason>) {
+    let mut agents: Vec<FsAgent> = Vec::new();
+    let mut skipped: Vec<SkipReason> = Vec::new();
+
+    let entries = match walk_markdown(root) {
+        Ok(v) => v,
+        Err(e) => {
+            skipped.push(SkipReason {
+                kind: SourceKind::Agent,
+                path: root.to_path_buf(),
+                reason: e,
+            });
+            return (agents, skipped);
+        }
+    };
+
+    for (abs, rel) in entries {
+        if classify_rel_path(&rel) != SourceKind::Agent {
+            continue;
+        }
+        let mut skip = |reason: String| {
+            skipped.push(SkipReason {
+                kind: SourceKind::Agent,
+                path: abs.clone(),
+                reason,
+            });
+        };
+        let content = match std::fs::read_to_string(&abs) {
+            Ok(c) => c,
+            Err(e) => {
+                skip(format!("read: {e}"));
+                continue;
+            }
+        };
+        let fm = match parse_agent_frontmatter(&content) {
+            Ok(f) => f,
+            Err(reason) => {
+                skip(reason);
+                continue;
+            }
+        };
+        let name = abs
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        if let Err(e) = validate_name(&name) {
+            skip(format!("invalid agent id {name:?}: {e}"));
+            continue;
+        }
+        if let Some(existing) = agents.iter().find(|a| a.name == name) {
+            if existing.abs_path != abs {
+                let reason = format!(
+                    "duplicate id {name:?} also produced by {}",
+                    existing.abs_path.display()
+                );
+                skip(reason);
+            }
+            continue;
+        }
+        agents.push(FsAgent {
+            name,
+            display_name: fm.name.as_deref().unwrap_or("").trim().to_string(),
+            description: fm
+                .description
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or("")
+                .to_string(),
+            logo: fm.logo.map(|l| l.trim().to_string()),
+            skills: fm.skills,
+            delegates_to: fm.delegates_to,
+            leaf: fm.leaf,
+            model: fm
+                .model
+                .as_deref()
+                .map(str::trim)
+                .filter(|m| !m.is_empty())
+                .map(str::to_string),
+            icon: fm
+                .icon
+                .as_deref()
+                .map(str::trim)
+                .filter(|i| !i.is_empty())
+                .map(str::to_string),
+            abs_path: abs,
+        });
+    }
+
+    agents.sort_by(|a, b| a.name.cmp(&b.name));
+    (agents, skipped)
+}
+
+/// Merged scan of agents from a global root and a local root — same
+/// whole-namespace override semantics as [`scan_prompts_merged`].
+pub fn scan_agents_merged(
+    global_root: &Path,
+    local_root: &Path,
+) -> (Vec<FsAgent>, Vec<SkipReason>) {
+    let local_ns = top_level_namespaces(local_root);
+
+    let (global_agents, mut global_skipped) = scan_agents(global_root);
+    let global_filtered: Vec<FsAgent> = global_agents
+        .into_iter()
+        .filter(|a| {
+            let top_seg = a
+                .abs_path
+                .strip_prefix(global_root)
+                .ok()
+                .and_then(|r| r.components().next())
+                .and_then(|c| c.as_os_str().to_str())
+                .unwrap_or("");
+            !local_ns.contains(&top_seg.to_string())
+        })
+        .collect();
+
+    global_skipped.retain(|s| {
+        let rel = s
+            .path
+            .strip_prefix(global_root)
+            .ok()
+            .and_then(|p| p.components().next())
+            .and_then(|c| c.as_os_str().to_str())
+            .unwrap_or("");
+        !local_ns.contains(&rel.to_string())
+    });
+
+    let (local_agents, local_skipped) = scan_agents(local_root);
+
+    let mut merged = local_agents;
+    merged.extend(global_filtered);
+    merged.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let mut all_skipped = global_skipped;
+    all_skipped.extend(local_skipped);
+
+    (merged, all_skipped)
 }
 
 /// Read a fs entry's body fresh from disk, strip any leading
@@ -1477,6 +1748,157 @@ mod tests {
         assert_eq!(sys.len(), 1);
         assert_eq!(cmd[0].description, "c");
         assert_eq!(sys[0].description, "s");
+    }
+
+    // ── fourth kind: agents ──────────────────────────────────────────
+
+    #[test]
+    fn classify_rel_path_agents_kind_and_precedence() {
+        assert_eq!(
+            classify_rel_path(Path::new("agents/captain.md")),
+            SourceKind::Agent
+        );
+        assert_eq!(
+            classify_rel_path(Path::new("ns/agents/captain.md")),
+            SourceKind::Agent
+        );
+        // Prompt-ish segments win over agents regardless of order.
+        assert_eq!(
+            classify_rel_path(Path::new("ns/agents/prompts/a.md")),
+            SourceKind::Prompt
+        );
+        assert_eq!(
+            classify_rel_path(Path::new("system-prompts/agents/a.md")),
+            SourceKind::SystemPrompt
+        );
+        // Component-boundary near-misses stay skills.
+        assert_eq!(
+            classify_rel_path(Path::new("agentsx/a.md")),
+            SourceKind::Skill
+        );
+        assert_eq!(
+            classify_rel_path(Path::new("ns/agents-extra/a.md")),
+            SourceKind::Skill
+        );
+    }
+
+    #[test]
+    fn scan_agents_parses_full_frontmatter() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture(
+            tmp.path(),
+            "agents/captain.md",
+            "---\nname: Release Captain\ndescription: Cuts releases.\nlogo: \"🚢\"\nskills:\n  - iii-sandbox\ndelegates_to: [frontend]\nleaf: true\nmodel: codex/gpt-5.4-mini\n---\nYou are the captain.\n",
+        );
+        let (agents, skipped) = scan_agents(tmp.path());
+        assert!(skipped.is_empty(), "unexpected skips: {skipped:?}");
+        assert_eq!(agents.len(), 1);
+        let a = &agents[0];
+        assert_eq!(a.name, "captain");
+        assert_eq!(a.display_name, "Release Captain");
+        assert_eq!(a.description, "Cuts releases.");
+        assert_eq!(a.logo.as_deref(), Some("🚢"));
+        assert_eq!(a.skills, vec!["iii-sandbox".to_string()]);
+        assert_eq!(
+            a.delegates_to.as_deref(),
+            Some(&["frontend".to_string()][..])
+        );
+        assert!(a.leaf);
+        assert_eq!(a.model.as_deref(), Some("codex/gpt-5.4-mini"));
+    }
+
+    #[test]
+    fn scan_agents_empty_description_and_absent_optionals_ok() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture(tmp.path(), "agents/min.md", "---\nname: Min\n---\nBody.\n");
+        let (agents, skipped) = scan_agents(tmp.path());
+        assert!(skipped.is_empty(), "unexpected skips: {skipped:?}");
+        let a = &agents[0];
+        assert_eq!(a.description, "");
+        assert!(a.logo.is_none());
+        assert!(a.skills.is_empty());
+        assert!(a.delegates_to.is_none());
+        assert!(!a.leaf);
+        assert!(a.model.is_none());
+    }
+
+    #[test]
+    fn scan_agents_skips_invalid_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture(tmp.path(), "agents/no-fm.md", "no frontmatter\n");
+        write_fixture(
+            tmp.path(),
+            "agents/no-name.md",
+            "---\ndescription: x\n---\nB\n",
+        );
+        write_fixture(
+            tmp.path(),
+            "agents/bad-logo.md",
+            "---\nname: X\nlogo: ./logo.png\n---\nB\n",
+        );
+        write_fixture(tmp.path(), "agents/Bad-Stem.md", "---\nname: X\n---\nB\n");
+        write_fixture(tmp.path(), "agents/good.md", "---\nname: Good\n---\nB\n");
+        let (agents, skipped) = scan_agents(tmp.path());
+        let ids: Vec<&str> = agents.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(ids, vec!["good"]);
+        assert_eq!(skipped.len(), 4, "{skipped:?}");
+        for s in &skipped {
+            assert_eq!(s.kind, SourceKind::Agent);
+        }
+        let reasons = skipped
+            .iter()
+            .map(|s| s.reason.as_str())
+            .collect::<Vec<_>>();
+        assert!(reasons
+            .iter()
+            .any(|r| r.contains("missing YAML frontmatter")));
+        assert!(reasons.iter().any(|r| r.contains("non-empty `name`")));
+        assert!(reasons.iter().any(|r| r.contains("emoji only")));
+        assert!(reasons.iter().any(|r| r.contains("invalid agent id")));
+    }
+
+    #[test]
+    fn scan_agents_duplicate_stem_first_wins() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture(tmp.path(), "agents/shared.md", "---\nname: Top\n---\nA\n");
+        write_fixture(tmp.path(), "ns/agents/shared.md", "---\nname: Ns\n---\nB\n");
+        let (agents, skipped) = scan_agents(tmp.path());
+        assert_eq!(agents.len(), 1);
+        assert_eq!(skipped.len(), 1);
+        assert!(skipped[0].reason.contains("duplicate id \"shared\""));
+    }
+
+    #[test]
+    fn scan_skills_excludes_agents_segment() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture(tmp.path(), "ns/skill.md", "# Skill\n");
+        write_fixture(tmp.path(), "ns/agents/a.md", "---\nname: A\n---\nB\n");
+        let (skills, skipped) = scan_skills(tmp.path());
+        assert!(skipped.is_empty(), "{skipped:?}");
+        let ids: Vec<_> = skills.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["ns/skill"]);
+    }
+
+    #[test]
+    fn scan_agents_merged_local_namespace_shadows_global() {
+        let global = tempfile::tempdir().unwrap();
+        let local = tempfile::tempdir().unwrap();
+        write_fixture(global.path(), "agents/a.md", "---\nname: GA\n---\nG\n");
+        write_fixture(local.path(), "agents/b.md", "---\nname: LB\n---\nL\n");
+        // Local top-level `agents/` dir shadows the global one wholesale.
+        let (merged, _) = scan_agents_merged(global.path(), local.path());
+        let ids: Vec<&str> = merged.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(ids, vec!["b"]);
+    }
+
+    #[test]
+    fn validate_agent_logo_rules() {
+        assert!(validate_agent_logo("🚢").is_ok());
+        assert!(validate_agent_logo("⚡🔥").is_ok());
+        assert!(validate_agent_logo("").is_err());
+        assert!(validate_agent_logo("./x.png").is_err());
+        assert!(validate_agent_logo("a b").is_err());
+        assert!(validate_agent_logo("🚢🚢🚢🚢🚢").is_err(), "over byte cap");
     }
 
     #[test]

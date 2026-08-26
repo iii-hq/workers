@@ -313,6 +313,13 @@ rules:
   - editor::git::status
   - editor::git::hunks
   - editor::git::show
+  # vscode: the Console page starts a loopback-only VS Code Server per folder.
+  # Stop/delete remain approval-gated; the config-reload callback and the
+  # Console asset function are bus-internal.
+  - '!vscode::on-config-change'
+  - '!vscode::ui-content'
+  - vscode::start
+  - vscode::instances::list
   # Read-only code surface (coder::*, now served by the shell worker).
   # Mutating ops (create/update/move/delete-file) stay approval-gated.
   - coder::info

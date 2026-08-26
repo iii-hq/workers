@@ -37,6 +37,10 @@ export const DIRECTORY_FUNCTION_IDS = [
   'directory::system-prompts::get',
   'directory::system-prompts::update',
   'directory::system-prompts::create',
+  'directory::agents::list',
+  'directory::agents::get',
+  'directory::agents::update',
+  'directory::agents::create',
   'directory::registry::workers::list',
   'directory::registry::workers::info',
 ] as const
@@ -197,6 +201,70 @@ export const promptsUpdateResponseSchema = z.object({
   modified_at: z.string(),
 })
 export type PromptsUpdateResponse = z.infer<typeof promptsUpdateResponseSchema>
+
+/* ---------------- agents::list ---------------- */
+
+export const agentEntrySchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string(),
+  logo: z.string().nullable().optional(),
+  skill_count: z.number().nullable().optional(),
+  model: z.string().nullable().optional(),
+  icon: z.string().nullable().optional(),
+  leaf: z.boolean().optional(),
+  modified_at: z.string(),
+})
+export type AgentEntry = z.infer<typeof agentEntrySchema>
+
+export const agentsListResponseSchema = z.object({
+  agents: z.array(agentEntrySchema),
+})
+export type AgentsListResponse = z.infer<typeof agentsListResponseSchema>
+
+/* ---------------- agents::get ---------------- */
+
+export const agentsGetRequestSchema = z.object({
+  id: z.string(),
+  raw: z.boolean().optional(),
+})
+export type AgentsGetRequest = z.infer<typeof agentsGetRequestSchema>
+
+export const agentsGetResponseSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string(),
+  logo: z.string().nullable().optional(),
+  system_prompt: z.string(),
+  skills: z.array(z.string()),
+  unknown_skills: z.array(z.string()),
+  delegates_to: z.array(z.string()).nullable().optional(),
+  leaf: z.boolean().optional(),
+  unknown_delegates: z.array(z.string()).optional(),
+  model: z.string().nullable().optional(),
+  icon: z.string().nullable().optional(),
+  raw: z.string().nullable().optional(),
+  modified_at: z.string(),
+})
+export type AgentsGetResponse = z.infer<typeof agentsGetResponseSchema>
+
+/* ---------------- agents::update / create ---------------- */
+
+export const agentsUpdateRequestSchema = z.object({
+  id: z.string(),
+  content: z.string(),
+})
+export type AgentsUpdateRequest = z.infer<typeof agentsUpdateRequestSchema>
+
+export const agentsUpdateResponseSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string(),
+  logo: z.string().nullable().optional(),
+  bytes: z.number(),
+  modified_at: z.string(),
+})
+export type AgentsUpdateResponse = z.infer<typeof agentsUpdateResponseSchema>
 
 /* ---------------- registry::workers::list ---------------- */
 

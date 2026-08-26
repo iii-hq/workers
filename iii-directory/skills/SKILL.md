@@ -10,10 +10,12 @@ description: >-
 # iii-directory
 
 The directory worker is how an agent finds its way around the engine. It does
-four things: serves the markdown docs installed workers ship (`directory::skills::*`),
+five things: serves the markdown docs installed workers ship (`directory::skills::*`),
 serves the slash-command prompt templates a human runs (`directory::prompts::*`),
 serves the system prompts the chat picker offers as an identity override
-(`directory::system-prompts::*`), and proxies the public worker catalogue at
+(`directory::system-prompts::*`), serves reusable agent profiles — session
+identities whose file body is the system prompt (`directory::agents::*`), and
+proxies the public worker catalogue at
 `api.workers.iii.dev` (`directory::registry::*`). A download pulls a bundle
 onto disk, and each filesystem-backed family also takes direct `create` /
 `update` / `delete` calls — those are this worker's only writes. Everything
@@ -47,6 +49,7 @@ never appear in `index` and `update`/`delete` refuse them.
 - You need to find a skill across the repo with filters — `directory::skills::list`.
 - You need the slash-command prompt templates a worker ships — `directory::prompts::list` / `get`.
 - You need the system prompts the chat picker offers as an identity override — `directory::system-prompts::list` / `get`.
+- You need a reusable agent profile (display name, emoji logo, skill selection, and its system prompt) — `directory::agents::list` / `get`.
 - You are about to build against a worker you have **not** installed — `directory::registry::workers::info` returns the same schema shape you would get after install.
 - You need to install a published worker's skills — `directory::skills::download_from_registry`.
 - You can only reach the `directory::` namespace but need one engine function's exact schema — `directory::engine::functions::info`.
@@ -59,7 +62,8 @@ never appear in `index` and `update`/`delete` refuse them.
 - Not the live-connection view. `directory::*` reflects what is on disk or in the registry, not what is connected right now. For that, call the engine directly (`engine::functions::list`, `engine::workers::list`, …); daemon-managed providers (`http`, `cron`, `state`) open no WebSocket, so merge `worker::list` by `name`.
 - Do not put a skill id (`/`) in `agent_trigger`'s `function:` field, and do not pass a function id (`::`) to `directory::skills::get`.
 - Prompt files without a `description:` in frontmatter are silently skipped by `directory::prompts::list` and `directory::system-prompts::list` alike.
-- The two prompt families are split by path segment, not by frontmatter: a `system-prompts/` path component makes a file a system prompt, a `prompts/` component makes it a command template, and `system-prompts/` wins if a path carries both. Names are per-family, so the same name can exist as both kinds.
+- The filesystem families are split by path segment, not by frontmatter: a `system-prompts/` path component makes a file a system prompt, a `prompts/` component makes it a command template, an `agents/` component makes it an agent profile (prompt-ish segments win over `agents/` if a path carries several). Names are per-family, so the same name can exist as more than one kind.
+- An agent's `skills:` list is curation, not enforcement: it narrows what a skill index shows, grants no access, and unknown ids are reported by `get` as `unknown_skills` warnings rather than errors. `agents/` profiles are unrelated to the read-only `agents_skills_folder` (`~/.agents/skills`), which holds external tools' skills.
 - Registry answers (`registry::workers::list` / `info`) are cached ~60 s per unique input by default (`registry_cache_ttl_ms`) — change a parameter to refresh.
 
 ## Functions
@@ -83,17 +87,22 @@ never appear in `index` and `update`/`delete` refuse them.
 - `directory::system-prompts::create` — create a NEW system prompt at `<skills_folder>/system-prompts/<name>.md`; same rules and refusals as `prompts::create`, scoped to the system scan.
 - `directory::system-prompts::update` — overwrite one EXISTING system prompt; same rules as `prompts::update`.
 - `directory::system-prompts::delete` — permanently remove one EXISTING system prompt by name.
+- `directory::agents::list` — list agent profiles (id, display name, description, emoji logo, `skill_count` where null means every skill).
+- `directory::agents::get` — read one agent by id: its system prompt (the file body), skill filter + `unknown_skills`, `delegates_to`/`leaf` + `unknown_delegates`, and `model` (the agent's default model id — use it when spawning/sending as this agent; `null` = caller decides); `raw: true` as above.
+- `directory::agents::create` — create a NEW agent at `<skills_folder>/agents/<id>.md` from full-file content; frontmatter needs a non-empty `name`, `logo` is emoji-only.
+- `directory::agents::update` — overwrite one EXISTING agent (same scanner rules; the id stays the file stem, frontmatter `name` is display-only).
+- `directory::agents::delete` — permanently remove one EXISTING agent by id; running sessions are unaffected.
 - `directory::registry::workers::list` — page through published workers in the public registry (`pagination.next_cursor` feeds the next page's `cursor`).
 - `directory::registry::workers::info` — full registry detail for one worker, including ones not installed: `api_reference` (functions + triggers with schemas) and `skills_tree`.
 - `directory::engine::functions::info` — thin proxy to the engine's `engine::functions::info`; returns request/response schema, metadata, and registered triggers for one function id.
 
-A failed call returns one plain sentence carrying a `Did you mean:` suggestion and a `Next:` function to call (codes `D110`/`D112`/`D210`/`D310`/`D311`, `D320` when the registry is unreachable, and on the write paths `D213` for content the next scan would skip, `D214`/`D114` for a create whose name/id or target path is already taken, `D115` for a skill id the visibility filter or an agents namespace reserves, and `D116` for a write to a read-only system-installed skill) — follow it instead of retrying the same input. Both prompt families share those codes; the message names which kind it means ("prompt" vs "system prompt") and its `Next:` stays inside that family. Downloads overwrite file-by-file, so hand-edited extra files survive a re-pull.
+A failed call returns one plain sentence carrying a `Did you mean:` suggestion and a `Next:` function to call (codes `D110`/`D112`/`D210`/`D310`/`D311`, `D410` for a missing agent, `D320` when the registry is unreachable, and on the write paths `D213` for content the next scan would skip, `D214`/`D114`/`D414` for a create whose name/id or target path is already taken, `D115` for a skill id the visibility filter or an agents namespace reserves, and `D116` for a write to a read-only system-installed skill) — follow it instead of retrying the same input. Both prompt families share those codes; the message names which kind it means ("prompt" vs "system prompt") and its `Next:` stays inside that family. Downloads overwrite file-by-file, so hand-edited extra files survive a re-pull.
 
 ## Reactive triggers
 
-The worker publishes three custom trigger types, one per kind —
-`directory::skills::on-change`, `directory::prompts::on-change`, and
-`directory::system-prompts::on-change`. Each fires for its own kind only, on any
+The worker publishes four custom trigger types, one per kind —
+`directory::skills::on-change`, `directory::prompts::on-change`,
+`directory::system-prompts::on-change`, and `directory::agents::on-change`. Each fires for its own kind only, on any
 of: a download that wrote at least one file of that kind (`op: "download"`), that
 family's `update`, `create`, or `delete` (`op: "update"` / `"create"` /
 `"delete"`), or a change made to
@@ -109,7 +118,7 @@ Reach for it when:
 
 Do not bind when:
 
-- You ran the download yourself — its return payload already lists `skills_written` / `prompts_written` / `system_prompts_written`.
+- You ran the download yourself — its return payload already lists `skills_written` / `prompts_written` / `system_prompts_written` / `agents_written`.
 - Your own reaction writes `.md` files under `skills_folder` through some path OTHER than this worker's `update` / `create` (a shell or coder worker, say). Writes made through this worker are suppressed, but outside writes are not: your handler would re-trigger itself.
 
 ### How to bind

@@ -40,6 +40,7 @@ pub struct DownloadResult {
     pub skills_written: Vec<String>,
     pub prompts_written: Vec<String>,
     pub system_prompts_written: Vec<String>,
+    pub agents_written: Vec<String>,
 }
 
 impl DownloadResult {
@@ -49,11 +50,15 @@ impl DownloadResult {
             skills_written: Vec::new(),
             prompts_written: Vec::new(),
             system_prompts_written: Vec::new(),
+            agents_written: Vec::new(),
         }
     }
 
     pub fn total_files(&self) -> usize {
-        self.skills_written.len() + self.prompts_written.len() + self.system_prompts_written.len()
+        self.skills_written.len()
+            + self.prompts_written.len()
+            + self.system_prompts_written.len()
+            + self.agents_written.len()
     }
 }
 
