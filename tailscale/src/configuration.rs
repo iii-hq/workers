@@ -68,16 +68,18 @@ pub fn register_config_trigger(iii: &IIIClient, config: SharedConfig) -> Result<
             let shared = shared.clone();
             let engine = engine.clone();
             async move {
-                match fetch_config(&engine).await {
+                let ok = match fetch_config(&engine).await {
                     Ok(next) => {
                         shared.store(std::sync::Arc::new(next));
                         tracing::info!("tailscale configuration reloaded");
+                        true
                     }
                     Err(error) => {
-                        tracing::error!(%error, "keeping the previous tailscale configuration")
+                        tracing::error!(%error, "keeping the previous tailscale configuration");
+                        false
                     }
-                }
-                Ok::<_, Error>(OnConfigChangeOutput { ok: true })
+                };
+                Ok::<_, Error>(OnConfigChangeOutput { ok })
             }
         })
         .description("Internal: reload Tailscale settings after a configuration update.")

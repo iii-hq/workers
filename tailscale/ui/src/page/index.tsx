@@ -405,7 +405,12 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
 
   const copyLink = useCallback(async () => {
     if (!share) return
-    await navigator.clipboard.writeText(share.url)
+    try {
+      await navigator.clipboard.writeText(share.url)
+    } catch (cause) {
+      setError(describe(cause))
+      return
+    }
     setCopied(true)
     window.setTimeout(() => setCopied(false), 1600)
   }, [share])

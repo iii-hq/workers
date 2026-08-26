@@ -10,6 +10,7 @@ fn main() {
     for path in [
         "ui/page.tsx",
         "ui/styles.css",
+        "ui/src",
         "ui/build.mjs",
         "ui/package.json",
         "ui/tsconfig.json",
@@ -66,7 +67,7 @@ fn dist_is_fresh(output: &Path, ui_dir: &Path) -> bool {
     let Ok(output_mtime) = output.metadata().and_then(|metadata| metadata.modified()) else {
         return false;
     };
-    let inputs = [
+    let mut inputs = vec![
         ui_dir.join("page.tsx"),
         ui_dir.join("styles.css"),
         ui_dir.join("build.mjs"),
@@ -74,11 +75,26 @@ fn dist_is_fresh(output: &Path, ui_dir: &Path) -> bool {
         ui_dir.join("tsconfig.json"),
         ui_dir.join("../../pnpm-lock.yaml"),
     ];
+    collect_files(&ui_dir.join("src"), &mut inputs);
     inputs.into_iter().filter(|path| path.exists()).all(|path| {
         path.metadata()
             .and_then(|metadata| metadata.modified())
             .is_ok_and(|mtime| mtime <= output_mtime)
     })
+}
+
+fn collect_files(dir: &Path, into: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files(&path, into);
+        } else {
+            into.push(path);
+        }
+    }
 }
 
 fn locate_pnpm() -> PathBuf {

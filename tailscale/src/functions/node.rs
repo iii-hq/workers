@@ -60,9 +60,9 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<EmptyInput, StatusOutput>(STATUS_ID, STATUS_DESC),
         spec::<EmptyInput, ConfigurationOutput>(CONFIGURATION_ID, CONFIGURATION_DESC),
         spec::<EmptyInput, ConnectOutput>(CONNECT_ID, CONNECT_DESC),
-        spec::<EmptyInput, ConnectOutput>(DISCONNECT_ID, DISCONNECT_DESC),
+        spec::<EmptyInput, DisconnectOutput>(DISCONNECT_ID, DISCONNECT_DESC),
         spec::<EmptyInput, ConnectOutput>(LOGIN_ID, LOGIN_DESC),
-        spec::<EmptyInput, ConnectOutput>(LOGOUT_ID, LOGOUT_DESC),
+        spec::<EmptyInput, DisconnectOutput>(LOGOUT_ID, LOGOUT_DESC),
         spec::<VersionInput, VersionOutput>(VERSION_ID, VERSION_DESC),
         spec::<IpInput, IpOutput>(IP_ID, IP_DESC),
         spec::<EmptyInput, NetcheckOutput>(NETCHECK_ID, NETCHECK_DESC),
@@ -186,6 +186,14 @@ pub struct ConnectOutput {
     pub backend_state: Option<String>,
     /// Tailscale sign-in page when the node still needs a login; open it, then call connect again.
     pub authorization_url: Option<String>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct DisconnectOutput {
+    /// False once the node has left the tailnet.
+    pub connected: bool,
+    /// Backend state reported by the client after the call, normally `Stopped` or `NeedsLogin`.
+    pub backend_state: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -503,13 +511,16 @@ async fn connect(config: &WorkerConfig, _: EmptyInput) -> Result<ConnectOutput, 
     connect_output(config, authorization_url).await
 }
 
-async fn disconnect(config: &WorkerConfig, _: EmptyInput) -> Result<ConnectOutput, String> {
+async fn disconnect(config: &WorkerConfig, _: EmptyInput) -> Result<DisconnectOutput, String> {
     run(config, &["down"]).await?;
+    disconnect_output(config).await
+}
+
+async fn disconnect_output(config: &WorkerConfig) -> Result<DisconnectOutput, String> {
     let state = status_json(config).await?;
-    Ok(ConnectOutput {
-        connected: false,
+    Ok(DisconnectOutput {
+        connected: is_running(&state),
         backend_state: string_at(&state, "/BackendState"),
-        authorization_url: None,
     })
 }
 
@@ -518,14 +529,9 @@ async fn login(config: &WorkerConfig, _: EmptyInput) -> Result<ConnectOutput, St
     connect_output(config, authorization_url).await
 }
 
-async fn logout(config: &WorkerConfig, _: EmptyInput) -> Result<ConnectOutput, String> {
+async fn logout(config: &WorkerConfig, _: EmptyInput) -> Result<DisconnectOutput, String> {
     run(config, &["logout"]).await?;
-    let state = status_json(config).await?;
-    Ok(ConnectOutput {
-        connected: false,
-        backend_state: string_at(&state, "/BackendState"),
-        authorization_url: None,
-    })
+    disconnect_output(config).await
 }
 
 async fn run_with_login_watch(

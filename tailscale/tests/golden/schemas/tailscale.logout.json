@@ -9,29 +9,22 @@
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {
-      "authorization_url": {
-        "description": "Tailscale sign-in page when the node still needs a login; open it, then call connect again.",
-        "type": [
-          "string",
-          "null"
-        ]
-      },
       "backend_state": {
-        "description": "Backend state reported by the client after the call.",
+        "description": "Backend state reported by the client after the call, normally `Stopped` or `NeedsLogin`.",
         "type": [
           "string",
           "null"
         ]
       },
       "connected": {
-        "description": "True when the node is connected to the tailnet after the call.",
+        "description": "False once the node has left the tailnet.",
         "type": "boolean"
       }
     },
     "required": [
       "connected"
     ],
-    "title": "ConnectOutput",
+    "title": "DisconnectOutput",
     "type": "object"
   }
 }

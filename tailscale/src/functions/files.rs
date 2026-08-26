@@ -107,6 +107,7 @@ pub struct FileTargetsOutput {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct FileSendInput {
     /// Absolute paths of the files to send.
+    #[schemars(length(min = 1))]
     pub paths: Vec<String>,
     /// Receiving device by machine name or Tailscale IP.
     pub target: String,
@@ -118,16 +119,31 @@ pub struct FileSendInput {
 pub struct FileReceiveInput {
     /// Absolute directory that receives the inbox files.
     pub directory: String,
-    /// What to do when a same-named file exists: `skip` (default), `overwrite`, or `rename`.
-    #[serde(default = "default_conflict")]
-    pub conflict: String,
+    /// What to do when a same-named file exists; defaults to `skip`.
+    #[serde(default)]
+    pub conflict: Conflict,
     /// Wait for at least one file to arrive before returning.
     #[serde(default)]
     pub wait: bool,
 }
 
-fn default_conflict() -> String {
-    "skip".to_string()
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Conflict {
+    #[default]
+    Skip,
+    Overwrite,
+    Rename,
+}
+
+impl Conflict {
+    fn as_str(self) -> &'static str {
+        match self {
+            Conflict::Skip => "skip",
+            Conflict::Overwrite => "overwrite",
+            Conflict::Rename => "rename",
+        }
+    }
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -261,11 +277,7 @@ async fn file_receive(
     if !Path::new(input.directory.trim()).is_dir() {
         return Err("directory must exist on this host".to_string());
     }
-    let conflict = input.conflict.trim().to_ascii_lowercase();
-    if !matches!(conflict.as_str(), "skip" | "overwrite" | "rename") {
-        return Err("conflict must be skip, overwrite, or rename".to_string());
-    }
-    let conflict_arg = format!("--conflict={conflict}");
+    let conflict_arg = format!("--conflict={}", input.conflict.as_str());
     let mut args = vec!["file", "get", &conflict_arg];
     if input.wait {
         args.push("--wait");

@@ -87,7 +87,8 @@ pub(crate) async fn run_output(config: &WorkerConfig, args: &[&str]) -> Result<V
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
     let child = command
         .spawn()
         .map_err(|error| format!("could not start Tailscale CLI: {error}"))?;

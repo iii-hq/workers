@@ -480,8 +480,10 @@ pub fn validate_target(raw: &str) -> Result<String, String> {
         return Err("target must be a port, a loopback URL, or an absolute path".to_string());
     };
     let rest = &lower[scheme.len()..];
-    let host = rest.split(['/', ':']).next().unwrap_or_default();
-    let host = host.trim_matches(|c| c == '[' || c == ']');
+    let host = match rest.strip_prefix('[') {
+        Some(bracketed) => bracketed.split(']').next().unwrap_or_default(),
+        None => rest.split(['/', ':']).next().unwrap_or_default(),
+    };
     if !matches!(host, "127.0.0.1" | "localhost" | "::1") {
         return Err("target URL must point at 127.0.0.1, localhost, or ::1".to_string());
     }
@@ -594,7 +596,12 @@ mod tests {
             "https+insecure://localhost:8443"
         );
         assert_eq!(validate_target("/srv/site").unwrap(), "/srv/site");
+        assert_eq!(
+            validate_target("http://[::1]:3000").unwrap(),
+            "http://[::1]:3000"
+        );
         assert!(validate_target("http://example.com").is_err());
+        assert!(validate_target("http://[2001:db8::1]:3000").is_err());
         assert!(validate_target("70000").is_err());
         assert!(validate_target("--bg").is_err());
         assert!(validate_target("relative/path").is_err());
