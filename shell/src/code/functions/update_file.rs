@@ -33,14 +33,25 @@ use crate::code::error::{err_to_string, CoderError, WireError};
 use crate::code::path::PathResolver;
 
 // examples are wire-contract; goldens pin them.
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, JsonSchema)]
 #[schemars(example = "example_update_file_input")]
 pub struct UpdateFileInput {
     pub files: Vec<UpdateFileSpec>,
     /// Internal harness filesystem scope; omitted from published schema.
-    #[serde(default)]
     #[schemars(skip)]
     pub fs_scope: Option<crate::fs::FsScope>,
+}
+
+/// Hand-rolled (not `#[serde(try_from)]`, which would swap the published
+/// schema for the raw type): accepts the canonical batch AND a flat single
+/// `{ path, content }` — see [`super::files_batch_or_single`].
+impl<'de> Deserialize<'de> for UpdateFileInput {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let (files, fs_scope) = super::files_batch_or_single(value, "coder::update-file")
+            .map_err(serde::de::Error::custom)?;
+        Ok(Self { files, fs_scope })
+    }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]

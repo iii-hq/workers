@@ -140,7 +140,16 @@ pub async fn run_to_completion(
 ) -> Result<ExecOutcome, String> {
     let started = std::time::Instant::now();
     let mut cmd = build_command(argv, cfg, overrides)?;
-    let mut child = cmd.spawn().map_err(|e| format!("spawn: {}", e))?;
+    let mut child = cmd.spawn().map_err(|e| {
+        // Name the program: a bare "spawn: No such file or directory" hides
+        // WHAT was missing (verify-wake-fix-3: a reviewer probing `python`).
+        let program = argv.first().map(String::as_str).unwrap_or("<empty argv>");
+        if e.kind() == std::io::ErrorKind::NotFound {
+            format!("spawn {program:?}: {e} — program not found; is it installed and on PATH?")
+        } else {
+            format!("spawn {program:?}: {e}")
+        }
+    })?;
     pump_stdin(&mut child, &overrides.stdin);
 
     let mut stdout_reader = child.stdout.take().ok_or("no stdout pipe")?;
