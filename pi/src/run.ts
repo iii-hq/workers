@@ -28,7 +28,12 @@ import {
   toolFunctionId,
   type ToolCallIndex,
 } from './map.js';
-import { linkChildSession, recordTaskOutcome, setSessionStatus } from './session-link.js';
+import {
+  appendTranscript,
+  linkChildSession,
+  recordTaskOutcome,
+  setSessionStatus,
+} from './session-link.js';
 import { runTurnSpan } from './trace.js';
 import { buildSession } from './session.js';
 import { listSessions, loadSession, saveSession } from './state.js';
@@ -505,8 +510,22 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
       // to state under `agent_tasks/<session id>`, which is what an
       // orchestrator binds a `state` trigger to and gets woken by — the same
       // shape a harness sub-agent uses, with no polling and no blocking call.
-      void executeRun(iii, getCfg(), emit, emitRaw, run)
+      // The turn is persisted as well as streamed. `agent::events` is a live
+      // tape — a console window opened after the run has nothing to replay
+      // from it, which is why a finished sub-agent rendered blank with
+      // `message_count: 0`. The session manager is the durable side, so the
+      // transcript is written there when the turn ends.
+      const transcript: unknown[] = [];
+      const record: Emit = async (sid, event) => {
+        await emit(sid, event);
+        if ((event as { type?: string }).type === 'agent_end') {
+          const messages = (event as { messages?: unknown[] }).messages ?? [];
+          transcript.push(...messages);
+        }
+      };
+      void executeRun(iii, getCfg(), record, emitRaw, run)
         .then(async (result) => {
+          await appendTranscript(iii, session_id, parsed.task, transcript);
           await recordTaskOutcome(iii, {
             session_id,
             parent_session_id: parsed.parent_session_id,

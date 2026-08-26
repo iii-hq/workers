@@ -113,3 +113,52 @@ export async function recordTaskOutcome(iii: IIIClient, outcome: TaskOutcome): P
     );
   }
 }
+
+/**
+ * Persist one message into the child session's transcript.
+ *
+ * `agent::events` is a live tape: a console window opened after the run has
+ * nothing to replay from it, which is why a finished sub-agent used to render
+ * blank with `message_count: 0`. The session manager is the durable side, and
+ * the console reads it with `session::messages`. Best-effort, like the rest of
+ * this module: a missing session manager costs the replay, not the run.
+ */
+export async function appendMessage(
+  iii: IIIClient,
+  sessionId: string,
+  message: unknown,
+): Promise<boolean> {
+  try {
+    await iii.trigger({
+      function_id: 'session::append',
+      payload: { session_id: sessionId, message },
+      timeoutMs: TIMEOUT_MS,
+    });
+    return true;
+  } catch (err) {
+    console.warn(`claude-code: session::append failed for ${sessionId}: ${String(err)}`);
+    return false;
+  }
+}
+
+/**
+ * Write a finished turn into the child session: what was asked, then every
+ * message the turn produced, in order. Called once, when the run ends — the
+ * live view is the stream, this is what a window opened later replays.
+ */
+export async function appendTranscript(
+  iii: IIIClient,
+  sessionId: string,
+  task: string,
+  messages: unknown[],
+): Promise<void> {
+  const asked = {
+    role: 'user',
+    content: [{ type: 'text', text: task }],
+    timestamp: Date.now(),
+  };
+  if (!(await appendMessage(iii, sessionId, asked))) return;
+  for (const message of messages) {
+    if (!(await appendMessage(iii, sessionId, message))) return;
+  }
+}

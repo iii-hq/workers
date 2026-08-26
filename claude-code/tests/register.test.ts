@@ -118,6 +118,19 @@ describe('register', () => {
     // The task text is the prompt the agent actually ran.
     expect(capture.prompt).toBe('review the diff');
 
+    // The turn is PERSISTED, not only streamed: a window opened after the run
+    // replays `session::messages`, and a sub-agent with an empty transcript
+    // renders blank.
+    await vi.waitFor(() => {
+      const appended = fake.calls
+        .filter((c) => c.function_id === 'session::append')
+        .map((c) => c.payload.message as { role?: string; content?: unknown });
+      expect(appended.length).toBeGreaterThanOrEqual(2);
+      expect(appended[0]).toMatchObject({ role: 'user' });
+      expect(JSON.stringify(appended[0].content)).toContain('review the diff');
+      expect(appended.some((m) => m.role === 'assistant')).toBe(true);
+    });
+
     // And the outcome is PUBLISHED, so an orchestrator can bind a `state`
     // trigger on it and be woken instead of holding a call open.
     await vi.waitFor(() => {
