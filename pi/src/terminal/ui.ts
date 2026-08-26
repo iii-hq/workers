@@ -12,9 +12,9 @@
  */
 
 import type { IIIClient } from 'iii-sdk';
-import { PAGE_JS, STYLES_CSS } from './ui-assets.generated.js';
+import { PAGE_JS, STYLES_CSS } from '../ui-assets.generated.js';
 
-const WORKER = 'pi-cli';
+const WORKER = 'pi';
 
 export function registerUi(iii: IIIClient): void {
   const files: Record<string, { content: string; content_type: string }> = {

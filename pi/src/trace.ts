@@ -99,7 +99,7 @@ export async function runTurnSpan<T>(
     return work();
   }
   return context.with(scope, async () => {
-    const span = trace.getTracer('pi-cli').startSpan(name);
+    const span = trace.getTracer('pi').startSpan(name);
     return context.with(trace.setSpan(context.active(), span), async () => {
       try {
         const result = await work();

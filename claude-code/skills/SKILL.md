@@ -91,7 +91,7 @@ workspace with the iii skills and engine notes, and opens Claude in a
 `agent::events` with the same frames a `claude::run` turn produces, so both
 halves render alike. Use it when an operator wants to talk to Claude Code
 interactively — with login handled in the terminal — or wants an agent that
-can scaffold and register new iii workers from inside the engine. `pi-cli`
+can scaffold and register new iii workers from inside the engine. `pi`
 is the same terminal shape with the pi agent.
 
 Boundaries:

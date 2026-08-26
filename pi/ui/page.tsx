@@ -6,7 +6,7 @@
 import { createAgentTerminalPage } from '@iii-workers/agent-terminal-ui';
 
 export default createAgentTerminalPage({
-  worker: 'pi-cli',
+  worker: 'pi',
   title: 'pi',
   description: 'The pi coding agent on this engine',
 });

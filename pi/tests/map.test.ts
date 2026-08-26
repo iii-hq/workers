@@ -20,6 +20,13 @@ describe('toolFunctionId', () => {
     expect(toolFunctionId('mcp__github__create_issue')).toBe('github::create_issue');
     expect(toolFunctionId('mcp__filesystem__read_file')).toBe('filesystem::read_file');
   });
+
+  it('keeps the server of a namespaced extension tool, and names an unnamed one', () => {
+    // A terminal session reports tool names the extension read off pi, which
+    // carry their server without the `mcp__` prefix.
+    expect(toolFunctionId('github__create_issue')).toBe('github::create_issue');
+    expect(toolFunctionId('')).toBe('pi::tool');
+  });
 });
 
 describe('mapMessageContent', () => {

@@ -2250,7 +2250,7 @@ mod tests {
         let foreign = harness
             .manager
             .adopt(request(format!(
-                "iii::pi-cli-ui::pty-output::console-{}",
+                "iii::pi-ui::pty-output::console-{}",
                 Uuid::new_v4()
             )))
             .await;
@@ -2424,7 +2424,7 @@ mod tests {
         ))
         .is_ok());
         assert!(validate_output_function_id(&format!(
-            "iii::pi-cli-ui::pty-output::console-{browser}"
+            "iii::pi-ui::pty-output::console-{browser}"
         ))
         .is_ok());
         // Still a console UI handler and nothing else.

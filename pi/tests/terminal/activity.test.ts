@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { ActivityTracker, toolFunctionId } from '../src/activity.js';
-import type { AgentEvent } from '../src/types.js';
+import { ActivityTracker } from '../../src/terminal/activity.js';
+import type { AgentEvent } from '../../src/types.js';
 
 function tracker() {
   const emitted: { session: string; event: AgentEvent }[] = [];
@@ -9,14 +9,6 @@ function tracker() {
   };
   return { emitted, tracker: new ActivityTracker(emit) };
 }
-
-describe('tool naming', () => {
-  it("claims pi's built-in tools and leaves a namespaced one alone", () => {
-    expect(toolFunctionId('bash')).toBe('pi-cli::bash');
-    expect(toolFunctionId('github__create_issue')).toBe('github::create_issue');
-    expect(toolFunctionId('')).toBe('pi-cli::tool');
-  });
-});
 
 describe('a pi run becomes AgentEvent frames', () => {
   it('maps the prompt, a tool call, and the end of the run', async () => {
@@ -52,7 +44,7 @@ describe('a pi run becomes AgentEvent frames', () => {
 
     const start = emitted[2].event;
     if (start.type !== 'function_execution_start') throw new Error('expected a call start');
-    expect(start).toMatchObject({ function_call_id: 'call-1', function_id: 'pi-cli::edit' });
+    expect(start).toMatchObject({ function_call_id: 'call-1', function_id: 'pi::edit' });
 
     const end = emitted[3].event;
     if (end.type !== 'function_execution_end') throw new Error('expected a call end');
@@ -88,7 +80,7 @@ describe('a pi run becomes AgentEvent frames', () => {
     if (end?.type !== 'function_execution_end') throw new Error('expected a call end');
     // Same id on both halves, or the console shows a call that never ends.
     expect(end.function_call_id).toBe(start.function_call_id);
-    expect(end.function_id).toBe('pi-cli::bash');
+    expect(end.function_id).toBe('pi::bash');
 
     // A second call to the same tool is a second call, not the first one again.
     await subject.handle({ event: 'tool_start', session_id: 's', tool: 'bash' });

@@ -87,3 +87,20 @@ export type SessionRecord = {
   usage: Usage | null;
   updated_at_ms: number;
 };
+
+/**
+ * What the pi extension posts to `pi::terminal::activity`. pi has extensions
+ * where Claude Code has shell hooks, so the names are pi's own event names and
+ * the payload is flat.
+ */
+export type PiEvent = {
+  event?: string;
+  session_id?: string;
+  cwd?: string;
+  prompt?: string;
+  tool?: string;
+  call_id?: string;
+  args?: Record<string, unknown>;
+  result?: unknown;
+  is_error?: boolean;
+};

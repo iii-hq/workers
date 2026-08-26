@@ -14,15 +14,16 @@
 
 import { randomUUID } from 'node:crypto';
 import type { IIIClient } from 'iii-sdk';
-import type { Emit } from './events.js';
-import { runTurnSpan } from './trace.js';
+import type { Emit } from '../events.js';
+import { toolFunctionId } from '../map.js';
+import { runTurnSpan } from '../trace.js';
 import type {
   AgentMessage,
   AssistantMessage,
   ContentBlock,
   FunctionResultMessage,
   PiEvent,
-} from './types.js';
+} from '../types.js';
 
 const IDLE_MS = 60 * 60_000;
 
@@ -54,12 +55,6 @@ type SessionState = {
   nextId: number;
 };
 
-/** pi's built-in tools are this worker's; an MCP-style name keeps its server. */
-export function toolFunctionId(name: string): string {
-  if (!name) return 'pi-cli::tool';
-  return name.includes('__') ? name.replace(/__/g, '::') : `pi-cli::${name}`;
-}
-
 /** The id for a `tool_start` that named none, remembered for its `tool_end`. */
 function startGeneratedId(state: SessionState, tool: string): string {
   const id = `${tool}-${state.nextId}`;
@@ -88,7 +83,7 @@ function assistant(content: ContentBlock[], stop_reason = 'tool_use'): Assistant
     error_message: null,
     usage: null,
     model: 'pi',
-    provider: 'pi-cli',
+    provider: 'pi',
     timestamp: Date.now(),
   };
 }
@@ -156,7 +151,7 @@ export class ActivityTracker {
    */
   async handle(event: PiEvent): Promise<{ ok: true; event: string }> {
     const name = event.event ?? 'unknown';
-    const sessionId = event.session_id || 'pi-cli';
+    const sessionId = event.session_id || 'pi';
     const state = this.state(sessionId);
     if (name === 'agent_start') {
       state.turnId = randomUUID();
@@ -266,7 +261,7 @@ export class ActivityTracker {
 
 export function registerActivity(iii: IIIClient, emit: Emit): ActivityTracker {
   const tracker = new ActivityTracker(emit);
-  iii.registerFunction('pi-cli::activity', (input: PiEvent) => tracker.handle(input ?? {}), {
+  iii.registerFunction('pi::terminal::activity', (input: PiEvent) => tracker.handle(input ?? {}), {
     description:
       'A pi lifecycle event from a terminal session (session_start, agent_start, tool_start, tool_end, agent_end, session_end), posted by the workspace extension. Translated into AgentEvent frames on the events stream.',
     request_format: {

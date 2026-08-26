@@ -26,11 +26,14 @@ const entry = join(root, 'dist', 'index.js');
 // whoever edited the source: rebuilding on every boot would add a minute to
 // each restart of an already-built worker.
 if (!existsSync(entry)) {
-  for (const args of [['ci'], ['run', 'build']]) {
-    const step = spawnSync('npm', args, { cwd: root, stdio: 'inherit' });
+  for (const args of [
+    ['install', '--frozen-lockfile'],
+    ['run', 'build'],
+  ]) {
+    const step = spawnSync('pnpm', args, { cwd: root, stdio: 'inherit' });
     if (step.error || step.status !== 0) {
       console.error(
-        `pi-cli: \`npm ${args.join(' ')}\` failed (${step.error?.message ?? `exit ${step.status}`}); build it by hand and start again`,
+        `pi: \`pnpm ${args.join(' ')}\` failed (${step.error?.message ?? `exit ${step.status}`}); build it by hand and start again`,
       );
       process.exit(step.status ?? 1);
     }

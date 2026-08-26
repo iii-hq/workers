@@ -12,5 +12,12 @@ version: 1
 rules:
   # internal config-reload callback — bus-internal, never agent-callable
   - '!pi::on-config-change'
+  # The console terminal is opened by a person: describe/activity/ui-content are
+  # plumbing, `activity` writes to the events stream on a session's behalf, and
+  # `auth::status` carries the operator's account and billing mode. The console
+  # reaches all of it as user-initiated calls, not this path.
+  - '!pi::terminal::*'
+  - '!pi::auth::status'
+  - '!pi::ui-content'
   - pi::status
   - pi::sessions::list

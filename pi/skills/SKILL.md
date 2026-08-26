@@ -1,9 +1,9 @@
 ---
 name: pi
 description: >-
-  Run headless Pi coding-agent turns over the iii bus — file edits, shell, and
-  search against any host directory — with verbatim event streaming, session
-  resume, and live steering.
+  Run pi coding-agent turns over the iii bus — headless with `pi::run`, or as
+  a terminal page on the console a person types into — with verbatim event
+  streaming, session resume, and live steering.
 ---
 
 # pi
@@ -20,6 +20,12 @@ Pi runs the loop in-process (no CLI subprocess), so it needs model credentials
 in the worker environment (e.g. `ANTHROPIC_API_KEY`) or an existing Pi login.
 When a turn needs a capability beyond Pi itself, add another iii worker to the
 bus instead of bolting anything onto this one.
+
+The same worker also runs pi as a terminal on the console: `pi::terminal::*`
+installs the CLI on the terminal host, equips a workspace (iii skills, engine
+notes, the iii activity extension), and opens pi in a `shell::pty` session —
+always pi, never a shell. A typed turn lands on `agent::events` in the same
+shape a headless one does. `claude-code` is the same shape for Claude Code.
 
 ## When to Use
 
@@ -72,3 +78,21 @@ bus instead of bolting anything onto this one.
 - `pi::sessions::list` — every session this worker has run.
 - `run::start_and_wait` — alias for `pi::run` under the entrypoint the console
   and acp worker drive, so both run Pi with no changes.
+
+### The terminal half
+
+Every function here is console plumbing, flagged internal — do not call them. A
+terminal is opened by a person, from the console page.
+
+- `pi::terminal::describe` — the program, argv, cwd and env a session runs;
+  the page hands it straight to `shell::pty::open`.
+- `pi::terminal::activity` — one pi extension event in, AgentEvent frames out.
+- `pi::auth::status` — which provider logins a terminal session can spend, and
+  of which kind. Agent-denied: the page reads it as a user-initiated call.
+- `pi::ui-content` — the page's assets.
+
+Two boundaries worth knowing: the terminal command is fixed to pi (use the
+`shell` worker for anything else, including `shell::pty::sessions` to see what a
+terminal is doing), and sessions run with `-a` because pi loads its
+project-local extension only in a trusted directory — removing that flag costs
+a trust prompt every session and the activity stream with it.

@@ -6,7 +6,7 @@
  */
 
 import type { IIIClient } from 'iii-sdk';
-import type { Config } from './config.js';
+import type { TerminalConfig } from '../config.js';
 import { EXTENSION_PATH, extensionSource } from './extension.js';
 import { exec, hostRoot, mkdir, probe, readFile, writeFile } from './host.js';
 import { NOTES_BEGIN, NOTES_END, engineNotes } from './notes.js';
@@ -32,8 +32,8 @@ export type Prepared = {
   bridge: string;
 };
 
-export async function prepareWorkspace(iii: IIIClient, config: Config): Promise<Prepared> {
-  const workspace = config.workspace_dir || `${await hostRoot(iii)}/pi-cli`;
+export async function prepareWorkspace(iii: IIIClient, config: TerminalConfig): Promise<Prepared> {
+  const workspace = config.workspace_dir || `${await hostRoot(iii)}/pi`;
   const env = await sessionEnv(iii);
   const base = { workspace, args: config.args, env, bridge: '' };
   let detail = '';
@@ -63,12 +63,12 @@ export async function prepareWorkspace(iii: IIIClient, config: Config): Promise<
       if (!bridge) {
         const mute =
           'the `iii` CLI is not on the terminal host, so the activity extension cannot reach the bus: the terminal works, but no run will reach agent::events';
-        console.warn(`pi-cli: ${mute}`);
+        console.warn(`pi terminal: ${mute}`);
         detail = detail ? `${detail}; ${mute}` : mute;
       }
     } catch (err) {
       const failed = `the workspace could not be equipped (${String(err)}); the terminal opens without the iii notes or the activity extension`;
-      console.warn(`pi-cli: ${failed}`);
+      console.warn(`pi terminal: ${failed}`);
       detail = detail ? `${detail}; ${failed}` : failed;
     }
   }
@@ -104,13 +104,13 @@ async function sessionEnv(iii: IIIClient): Promise<Record<string, string>> {
     env.LOGNAME = user;
   } else {
     console.warn(
-      'pi-cli: the terminal host did not name its user; a stored provider login may read as absent',
+      'pi terminal: the terminal host did not name its user; a stored provider login may read as absent',
     );
   }
   return env;
 }
 
-async function resolveExecutable(iii: IIIClient, config: Config): Promise<string> {
+async function resolveExecutable(iii: IIIClient, config: TerminalConfig): Promise<string> {
   if (config.executable) return config.executable;
   const found = await probe(iii, 'command -v pi');
   if (found) return found;
@@ -140,7 +140,7 @@ async function installSkills(iii: IIIClient, workspace: string): Promise<void> {
     await writeFile(
       iii,
       `${workspace}/package.json`,
-      `${JSON.stringify({ name: 'pi-cli-workspace', private: true, version: '0.0.0' }, null, 2)}\n`,
+      `${JSON.stringify({ name: 'pi-workspace', private: true, version: '0.0.0' }, null, 2)}\n`,
     );
   }
   try {

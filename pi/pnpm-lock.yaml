@@ -11,6 +11,9 @@ importers:
       '@earendil-works/pi-coding-agent':
         specifier: ^0.79.0
         version: 0.79.10(ws@8.21.0)(zod@4.4.3)
+      '@opentelemetry/api':
+        specifier: ^1.9.1
+        version: 1.9.1
       iii-sdk:
         specifier: 0.23.0-rc.2
         version: 0.23.0-rc.2

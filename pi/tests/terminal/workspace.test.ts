@@ -1,7 +1,7 @@
 import type { IIIClient } from 'iii-sdk';
 import { describe, expect, it } from 'vitest';
-import { DEFAULTS, normalize } from '../src/config.js';
-import { prepareWorkspace } from '../src/workspace.js';
+import { TerminalConfigSchema } from '../../src/config.js';
+import { prepareWorkspace } from '../../src/terminal/workspace.js';
 
 type Call = { function_id: string; payload: Record<string, unknown> };
 
@@ -61,6 +61,9 @@ function fakeShell(
   return { iii, calls, files };
 }
 
+/** A stored value an older schema wrote must not reach a session. */
+const DEFAULTS = TerminalConfigSchema.parse({});
+
 describe('config', () => {
   it('trusts the workspace by default, and drops keys an older schema wrote', () => {
     // Without `-a` pi asks about project trust every session and never loads
@@ -68,8 +71,11 @@ describe('config', () => {
     // `-a` trusts the workspace; the theme matches the dark terminal the
     // console page paints.
     expect(DEFAULTS.args).toEqual(['-a', '--use-theme', 'dark']);
-    expect(normalize({ args: [], nonsense: 1 })).toEqual({ ...DEFAULTS, args: [] });
-    expect(normalize(null)).toEqual(DEFAULTS);
+    expect(TerminalConfigSchema.parse({ args: [], nonsense: 1 })).toEqual({
+      ...DEFAULTS,
+      args: [],
+    });
+    expect(TerminalConfigSchema.parse({})).toEqual(DEFAULTS);
   });
 });
 
@@ -79,7 +85,7 @@ describe('preparing the terminal host', () => {
     const prepared = await prepareWorkspace(iii, { ...DEFAULTS });
 
     expect(prepared).toMatchObject({
-      workspace: '/hostroot/pi-cli',
+      workspace: '/hostroot/pi',
       executable: '/usr/local/bin/pi',
       args: ['-a', '--use-theme', 'dark'],
       detail: '',
@@ -90,20 +96,20 @@ describe('preparing the terminal host', () => {
     expect(prepared.env.USER).toBe('tony');
     expect(prepared.env.COLORFGBG).toBe('15;0');
 
-    expect(files['/hostroot/pi-cli/package.json']).toContain('pi-cli-workspace');
+    expect(files['/hostroot/pi/package.json']).toContain('pi-workspace');
     expect(calls.some((c) => String(c.payload.command ?? '').startsWith('npx -y skills add'))).toBe(
       true,
     );
 
     // pi reads AGENTS.md, and the worker owns one marked block in it.
-    const notes = files['/hostroot/pi-cli/AGENTS.md'];
+    const notes = files['/hostroot/pi/AGENTS.md'];
     expect(notes).toContain('<!-- iii:begin');
-    expect(notes).toContain('/hostroot/pi-cli');
+    expect(notes).toContain('/hostroot/pi');
 
     // The extension is discovered from the workspace, so a session started by
     // hand in the same directory reports its turns too.
-    const extension = files['/hostroot/pi-cli/.pi/extensions/iii-activity.ts'];
-    expect(extension).toContain('pi-cli::activity');
+    const extension = files['/hostroot/pi/.pi/extensions/iii-activity.ts'];
+    expect(extension).toContain('pi::terminal::activity');
     expect(extension).toContain('"/usr/bin/iii"');
     expect(extension).toContain('tool_execution_end');
   });
@@ -128,12 +134,12 @@ describe('preparing the terminal host', () => {
     const { iii, files } = fakeShell({
       whichPi: '/usr/local/bin/pi',
       files: {
-        '/hostroot/pi-cli/AGENTS.md': '# House rules\n\nkeep me\n',
-        '/hostroot/pi-cli/.iii/skills-installed': '2026-01-01',
+        '/hostroot/pi/AGENTS.md': '# House rules\n\nkeep me\n',
+        '/hostroot/pi/.iii/skills-installed': '2026-01-01',
       },
     });
     await prepareWorkspace(iii, { ...DEFAULTS });
-    const notes = files['/hostroot/pi-cli/AGENTS.md'];
+    const notes = files['/hostroot/pi/AGENTS.md'];
     expect(notes).toContain('# House rules');
     expect(notes).toContain('keep me');
   });
@@ -147,7 +153,9 @@ describe('preparing the terminal host', () => {
 
     expect(prepared.bridge).toBe('');
     expect(prepared.detail).toContain('cannot reach the bus');
-    expect(files['/hostroot/pi-cli/.pi/extensions/iii-activity.ts']).toContain('pi-cli::activity');
+    expect(files['/hostroot/pi/.pi/extensions/iii-activity.ts']).toContain(
+      'pi::terminal::activity',
+    );
   });
 
   it('keeps AGENTS.md and the terminal when a read fails for another reason', async () => {
@@ -157,14 +165,14 @@ describe('preparing the terminal host', () => {
     // not be equipped is still a workspace pi runs in.
     const { iii, files } = fakeShell({
       whichPi: '/usr/local/bin/pi',
-      files: { '/hostroot/pi-cli/AGENTS.md': '# House rules\n' },
+      files: { '/hostroot/pi/AGENTS.md': '# House rules\n' },
       readError: new Error('error[S303]: read timed out'),
     });
     const prepared = await prepareWorkspace(iii, { ...DEFAULTS });
 
     expect(prepared.executable).toBe('/usr/local/bin/pi');
     expect(prepared.detail).toContain('could not be equipped');
-    expect(files['/hostroot/pi-cli/AGENTS.md']).toBe('# House rules\n');
+    expect(files['/hostroot/pi/AGENTS.md']).toBe('# House rules\n');
   });
 
   it('leaves the workspace alone when setup is off', async () => {

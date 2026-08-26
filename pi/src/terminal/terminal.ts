@@ -9,7 +9,7 @@ import type { Prepared } from './workspace.js';
 
 export function registerTerminal(iii: IIIClient, current: () => Prepared): void {
   iii.registerFunction(
-    'pi-cli::terminal::describe',
+    'pi::terminal::describe',
     async () => {
       const prepared = current();
       if (!prepared.executable) {

@@ -32,8 +32,17 @@ type PiMessage = { role?: string; content?: unknown };
 
 export type ToolCallIndex = Map<string, { function_id: string; started_at: number }>;
 
+/**
+ * pi's built-in tools are this worker's; a namespaced name keeps its server.
+ *
+ * One function for both halves. A headless turn and a terminal turn have to
+ * name the same tool the same way, or the console shows one agent calling
+ * `pi::bash` beside another calling something else for the same work.
+ */
 export function toolFunctionId(name: string): string {
-  return name.startsWith('mcp__') ? name.replace(/^mcp__/, '').replace(/__/g, '::') : `pi::${name}`;
+  if (!name) return 'pi::tool';
+  if (name.startsWith('mcp__')) return name.replace(/^mcp__/, '').replace(/__/g, '::');
+  return name.includes('__') ? name.replace(/__/g, '::') : `pi::${name}`;
 }
 
 /** Extract the text/thinking blocks from a Pi assistant message. */

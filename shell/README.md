@@ -255,7 +255,7 @@ the way back, under two rules that keep it from being a way in:
   taken from them; only one nobody holds.
 - **The new output handler must name the same console page as the old one.**
   The browser id may differ — that is the point — but `iii::claude-ui::…`
-  cannot adopt a session whose output went to `iii::pi-cli-ui::…`.
+  cannot adopt a session whose output went to `iii::pi-ui::…`.
 
 Credentials rotate on adoption, so whatever the previous owner still held
 stops working, and an in-flight retry of the old attach cannot resurrect it.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readProvider, summarize } from '../src/auth.js';
+import { readProvider, summarize } from '../../src/terminal/auth.js';
 
 describe('reading one provider', () => {
   it('reads an OAuth credential as a subscription login', () => {

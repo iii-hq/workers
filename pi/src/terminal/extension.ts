@@ -3,7 +3,7 @@
  *
  * pi has extensions where Claude Code has shell hooks, so this is pi's half
  * of the same contract: one flat event per lifecycle callback, posted to
- * `pi-cli::activity` with the `iii` CLI. The bus is the transport because the
+ * `pi::terminal::activity` with the `iii` CLI. The bus is the transport because the
  * terminal host is not necessarily this worker's host, and `pi.exec` keeps the
  * payload an argument rather than a shell string.
  *
@@ -15,10 +15,10 @@
 export const EXTENSION_PATH = '.pi/extensions/iii-activity.ts';
 
 export function extensionSource(cli: string): string {
-  return `// Written by the pi-cli iii worker on every boot; edits are lost.
+  return `// Written by the pi iii worker on every boot; edits are lost.
 //
 // Reports this session's turns and tool calls to the iii engine, where the
-// pi-cli worker turns them into AgentEvent frames on agent::events — the same
+// pi worker turns them into AgentEvent frames on agent::events — the same
 // shape every other agent worker on the bus emits.
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -32,7 +32,7 @@ export default function (pi: ExtensionAPI) {
     void pi
       .exec(CLI, [
         "trigger",
-        "pi-cli::activity",
+        "pi::terminal::activity",
         "--json",
         JSON.stringify({ session_id: SESSION_ID, ...event }),
         "--timeout-ms",

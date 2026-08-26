@@ -169,7 +169,7 @@ export function registerAuth(
   current: () => { executable: string; provider: string; env: Record<string, string> },
 ): void {
   iii.registerFunction(
-    'pi-cli::auth::status',
+    'pi::auth::status',
     async () => {
       const { executable, provider, env } = current();
       if (!executable) return unknown(provider);
