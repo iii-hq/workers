@@ -23,6 +23,7 @@ import {
   type ToolCallIndex,
 } from './map.js';
 import { listSessions, loadSession, saveSession } from './state.js';
+import { runTurnSpan } from './trace.js';
 import type { AgentMessage, FunctionResultMessage, SessionRecord } from './types.js';
 
 const ContentBlockSchema = z.object({ type: z.string() }).passthrough();
@@ -215,7 +216,20 @@ export async function executeRun(
   live.set(session_id, handle);
 
   try {
-    return await runReserved(iii, cfg, emit, emitRaw, payload, session_id, prompt, handle);
+    // One turn, one traced scope. The identity keys are the harness's own, so
+    // a headless Claude Code turn groups and labels itself in the console's
+    // trace views like a native turn — and every call the turn makes inherits
+    // them, because baggage propagates across the bus.
+    return await runTurnSpan(
+      'claude::run turn',
+      {
+        sessionId: session_id,
+        turnId: randomUUID(),
+        kind: 'claude.run',
+        message: prompt,
+      },
+      () => runReserved(iii, cfg, emit, emitRaw, payload, session_id, prompt, handle),
+    );
   } finally {
     if (live.get(session_id) === handle) live.delete(session_id);
   }
@@ -277,8 +291,13 @@ async function runReserved(
   };
 
   const q = query({ prompt, options });
-  // promote the placeholder to the real interrupt now that the query exists
-  handle.interrupt = () => q.interrupt();
+  // promote the placeholder to the real interrupt now that the query exists.
+  // Its answer is discarded on purpose: a caller of `claude::stop` learns
+  // whether a run WAS live from the stop response, and the SDK's control
+  // reply adds nothing a caller can act on.
+  handle.interrupt = async () => {
+    await q.interrupt();
+  };
 
   // persist `working` only once the query + live handle exist, so a throw
   // during setup never leaves the record stuck in `working`

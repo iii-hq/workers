@@ -337,6 +337,25 @@ Every `claude::run` is an ordinary traced invocation on the engine: the trace ca
 
 ![claude::run invocations in the iii console trace explorer, with input and output payloads](https://raw.githubusercontent.com/iii-hq/workers/main/claude-code/assets/console-traces.png)
 
+### Turns group like a harness turn
+
+Both halves stamp the identity keys an agent harness stamps, so the trace views
+group and label this worker's turns with no knowledge of Claude Code
+(`console/docs/timeline-span-tags.md`):
+
+| Key | Value here |
+| --- | --- |
+| `iii.session.id` | the iii session — what "group by session" groups on |
+| `iii.message.id` | one turn: one headless `claude::run`, or one terminal prompt |
+| `iii.tag.kind` | `claude.run` for a headless turn, `claude.terminal.turn` for a typed one |
+| `iii.tag.message` | a preview of the prompt |
+| `iii.tag.display_name` | `Claude terminal · <prompt>` on the terminal half |
+
+The transport is W3C baggage, so every call a turn makes — and every span those
+calls produce in other workers — carries the same keys. A terminal turn reaches
+this worker as several separate calls (one per hook), so its identity lives in
+those keys rather than in one covering span; a headless turn gets both.
+
 ## How it maps
 
 | Claude Code | iii |

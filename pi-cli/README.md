@@ -175,3 +175,21 @@ won.
 
 Nothing here is an agent tool: a terminal is opened by a person, from the
 console.
+
+## Turns group like a harness turn
+
+Every extension event carries the identity keys an agent harness stamps, so the
+console's trace views group and label a pi session with no knowledge of pi
+(`console/docs/timeline-span-tags.md`):
+
+| Key | Value here |
+| --- | --- |
+| `iii.session.id` | the terminal session — what "group by session" groups on |
+| `iii.message.id` | one pi run: the prompt and every tool call it makes |
+| `iii.tag.kind` | `pi.terminal.turn` |
+| `iii.tag.message` | a preview of the prompt |
+| `iii.tag.display_name` | `pi terminal · <prompt>` |
+
+The transport is W3C baggage, so the calls a run makes carry the same keys. One
+run reaches this worker as several separate calls (one per extension event), so
+its identity lives in those keys rather than in one covering span.

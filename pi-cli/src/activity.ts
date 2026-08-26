@@ -12,8 +12,10 @@
  * `trace_hidden`: the signal is the stream, not the delivery.
  */
 
+import { randomUUID } from 'node:crypto';
 import type { IIIClient } from 'iii-sdk';
 import type { Emit } from './events.js';
+import { runTurnSpan } from './trace.js';
 import type {
   AgentMessage,
   AssistantMessage,
@@ -31,6 +33,14 @@ type SessionState = {
   calls: Map<string, ToolCall>;
   results: FunctionResultMessage[];
   touched: number;
+  /**
+   * The run every event of this prompt belongs to, and what the prompt said.
+   * One pi run arrives as several separate calls — one per extension event —
+   * so the turn identity cannot come from the call; it is opened at
+   * `agent_start` and reused until the next one.
+   */
+  turnId: string;
+  prompt: string;
   /**
    * Ids this worker invented, by tool name. pi's `call_id` is optional, and
    * both halves of a call have to carry the SAME id — otherwise the console
@@ -118,6 +128,8 @@ export class ActivityTracker {
         calls: new Map(),
         results: [],
         touched: Date.now(),
+        turnId: randomUUID(),
+        prompt: '',
         generated: new Map(),
         nextId: 0,
       };
@@ -136,11 +148,39 @@ export class ActivityTracker {
     }
   }
 
+  /**
+   * One extension event, traced as part of its run. The identity is the same
+   * set of keys a harness turn stamps, so a pi session's spans group and label
+   * themselves in the console's trace views without the console knowing what a
+   * pi extension event is.
+   */
   async handle(event: PiEvent): Promise<{ ok: true; event: string }> {
     const name = event.event ?? 'unknown';
     const sessionId = event.session_id || 'pi-cli';
     const state = this.state(sessionId);
+    if (name === 'agent_start') {
+      state.turnId = randomUUID();
+      state.prompt = event.prompt ?? '';
+    }
+    return runTurnSpan(
+      `pi ${name}`,
+      {
+        sessionId,
+        turnId: state.turnId,
+        kind: 'pi.terminal.turn',
+        message: state.prompt,
+        displayName: state.prompt ? `pi terminal · ${state.prompt}` : 'pi terminal',
+      },
+      () => this.apply(name, event, sessionId, state),
+    );
+  }
 
+  private async apply(
+    name: string,
+    event: PiEvent,
+    sessionId: string,
+    state: SessionState,
+  ): Promise<{ ok: true; event: string }> {
     switch (name) {
       case 'agent_start': {
         const message: AgentMessage = {

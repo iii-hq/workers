@@ -13,8 +13,10 @@
  * `trace_hidden`: the signal is the stream, not the delivery.
  */
 
+import { randomUUID } from 'node:crypto';
 import type { IIIClient } from 'iii-sdk';
 import type { Emit } from '../events.js';
+import { runTurnSpan } from '../trace.js';
 import type {
   AgentMessage,
   AssistantMessage,
@@ -32,6 +34,14 @@ type SessionState = {
   calls: Map<string, ToolCall>;
   results: FunctionResultMessage[];
   touched: number;
+  /**
+   * The turn every hook of this prompt belongs to, and what the prompt said.
+   * A terminal turn arrives as several separate calls — one per hook — so the
+   * turn identity cannot come from the call; it is opened at
+   * `UserPromptSubmit` and reused until the next one.
+   */
+  turnId: string;
+  prompt: string;
 };
 
 /** `mcp__server__tool` is that server's function; everything else is ours. */
@@ -87,7 +97,14 @@ export class ActivityTracker {
   private state(sessionId: string): SessionState {
     let state = this.sessions.get(sessionId);
     if (!state) {
-      state = { transcript: [], calls: new Map(), results: [], touched: Date.now() };
+      state = {
+        transcript: [],
+        calls: new Map(),
+        results: [],
+        touched: Date.now(),
+        turnId: randomUUID(),
+        prompt: '',
+      };
       this.sessions.set(sessionId, state);
     }
     state.touched = Date.now();
@@ -103,11 +120,39 @@ export class ActivityTracker {
     }
   }
 
+  /**
+   * One hook, traced as part of its turn. The identity is the same set of
+   * keys a harness turn stamps, so a terminal session's spans group and label
+   * themselves in the console's trace views without the console knowing what
+   * a Claude Code hook is.
+   */
   async handle(event: HookEvent): Promise<{ ok: true; event: string }> {
     const name = event.hook_event_name ?? 'unknown';
     const sessionId = event.session_id || 'claude-code';
     const state = this.state(sessionId);
+    if (name === 'UserPromptSubmit') {
+      state.turnId = randomUUID();
+      state.prompt = event.prompt ?? '';
+    }
+    return runTurnSpan(
+      `claude terminal ${name}`,
+      {
+        sessionId,
+        turnId: state.turnId,
+        kind: 'claude.terminal.turn',
+        message: state.prompt,
+        displayName: state.prompt ? `Claude terminal · ${state.prompt}` : 'Claude terminal',
+      },
+      () => this.apply(name, event, sessionId, state),
+    );
+  }
 
+  private async apply(
+    name: string,
+    event: HookEvent,
+    sessionId: string,
+    state: SessionState,
+  ): Promise<{ ok: true; event: string }> {
     switch (name) {
       case 'UserPromptSubmit': {
         const message: AgentMessage = {

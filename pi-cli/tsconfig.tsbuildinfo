@@ -1,1 +1,1 @@
-{"root":["./src/activity.ts","./src/auth.ts","./src/config.ts","./src/events.ts","./src/extension.ts","./src/host.ts","./src/index.ts","./src/notes.ts","./src/terminal.ts","./src/types.ts","./src/ui-assets.generated.ts","./src/ui.ts","./src/workspace.ts"],"version":"5.9.3"}
+{"root":["./src/activity.ts","./src/auth.ts","./src/config.ts","./src/events.ts","./src/extension.ts","./src/host.ts","./src/index.ts","./src/notes.ts","./src/terminal.ts","./src/trace.ts","./src/types.ts","./src/ui-assets.generated.ts","./src/ui.ts","./src/workspace.ts"],"version":"5.9.3"}

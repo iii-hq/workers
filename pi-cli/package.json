@@ -21,6 +21,7 @@
     "dev": "tsx src/index.ts"
   },
   "dependencies": {
+    "@opentelemetry/api": "^1.9.1",
     "iii-sdk": "0.23.0-rc.2"
   },
   "devDependencies": {
