@@ -72,17 +72,13 @@ interface RunParams {
 
 /**
  * The chat composer is a general-purpose agent surface: expose the whole bus
- * via `agent_trigger`. The approval-gate rules supply the structural floor;
- * the gate hook remains the human decision surface.
+ * via `agent_trigger`. When approval-gate configuration is unavailable, this
+ * fallback keeps registration and other control-plane functions hidden while
+ * allowing updates to already-registered configuration entries.
  */
 export const FALLBACK_FUNCTION_POLICY: HarnessFunctionPolicy = {
   allow: ['*'],
-  deny: [
-    'approval::*',
-    'configuration::register',
-    'configuration::set',
-    'shell::workspace::*',
-  ],
+  deny: ['approval::*', 'configuration::register', 'shell::workspace::*'],
   expose: 'agent_trigger',
 }
 

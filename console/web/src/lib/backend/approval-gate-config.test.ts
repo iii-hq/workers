@@ -26,7 +26,6 @@ describe('approval-gate-config', () => {
       deny: [
         'approval::*',
         'configuration::register',
-        'configuration::set',
         'shell::run',
         'state::set',
       ],
@@ -34,16 +33,13 @@ describe('approval-gate-config', () => {
     })
   })
 
-  it('denies configuration mutations without blocking reads', () => {
+  it('keeps configuration registration structurally denied', () => {
     const deny = deriveFunctionPolicy([]).deny
 
-    expect(deny).toEqual([
-      'approval::*',
-      'configuration::register',
-      'configuration::set',
-    ])
+    expect(deny).toEqual(['approval::*', 'configuration::register'])
     expect(deny).not.toContain('configuration::*')
     expect(deny).not.toContain('configuration::get')
+    expect(deny).not.toContain('configuration::set')
   })
 
   it.each([
@@ -51,5 +47,12 @@ describe('approval-gate-config', () => {
     ['structured', { function: 'configuration::get', action: 'deny' }],
   ])('preserves an explicit %s deny for configuration::get', (_, rule) => {
     expect(deriveFunctionPolicy([rule]).deny).toContain('configuration::get')
+  })
+
+  it.each([
+    ['shorthand', '!configuration::set'],
+    ['structured', { function: 'configuration::set', action: 'deny' }],
+  ])('preserves an explicit %s deny for configuration::set', (_, rule) => {
+    expect(deriveFunctionPolicy([rule]).deny).toContain('configuration::set')
   })
 })

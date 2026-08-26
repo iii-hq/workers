@@ -31,12 +31,11 @@ describe('fallback function policy', () => {
     expect(FALLBACK_FUNCTION_POLICY.deny).toContain('shell::workspace::*')
   })
 
-  it('denies configuration mutations without blocking reads', () => {
-    expect(FALLBACK_FUNCTION_POLICY.deny).toEqual(
-      expect.arrayContaining(['configuration::register', 'configuration::set']),
-    )
+  it('allows configuration updates without exposing registration', () => {
+    expect(FALLBACK_FUNCTION_POLICY.deny).toContain('configuration::register')
     expect(FALLBACK_FUNCTION_POLICY.deny).not.toContain('configuration::*')
     expect(FALLBACK_FUNCTION_POLICY.deny).not.toContain('configuration::get')
+    expect(FALLBACK_FUNCTION_POLICY.deny).not.toContain('configuration::set')
   })
 })
 
