@@ -11,4 +11,7 @@ runtime:
   kind: javascript
 
 scripts:
-  start: node ./dist/bundle/index.mjs
+  start: node ./index.mjs
+
+dependencies:
+  configuration: "0.x"

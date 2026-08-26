@@ -1,16 +1,16 @@
 import { execFile, spawn } from 'node:child_process';
 import { watch } from 'node:fs';
 import { mkdir, readFile, rm, stat } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
+import { parseArgs, promisify } from 'node:util';
 import { registerWorker } from 'iii-sdk';
 import { uiPage, uiStyles } from 'virtual:vscode-ui';
+import { type Config, expandHome, loadConfig } from './config.js';
+import { bindConfigTrigger, fetchRuntime, registerVscodeConfig } from './configuration.js';
 import {
   type Instance,
   instanceIdFor,
-  isLoopback,
   publicInstance,
   schema,
   serverArgs,
@@ -19,28 +19,31 @@ import {
 } from './core.js';
 import { findFreePort, processExited, stopProcess, waitForHttp } from './lifecycle.js';
 
-const iii = registerWorker(process.env.III_URL ?? 'ws://127.0.0.1:49134', {
+const { values } = parseArgs({
+  options: {
+    config: { type: 'string', default: './config.yaml' },
+    url: { type: 'string' },
+  },
+  strict: false,
+});
+
+const seed = await loadConfig(String(values.config));
+const url =
+  (values.url ? String(values.url) : undefined) ??
+  process.env.III_URL ??
+  process.env.III_ENGINE_URL ??
+  seed.engine_url;
+const holder: { current: Config } = { current: { ...seed, engine_url: url } };
+
+const iii = registerWorker(url, {
   workerName: 'vscode',
   workerDescription:
     'VS Code Workbench served by the VS Code Server CLI and presented as a Console page.',
 });
 
-const binary = process.env.VSCODE_SERVER_BIN ?? 'code';
-const dataDir = process.env.VSCODE_DATA_DIR ?? join(homedir(), '.iii', 'vscode');
-const bindHost = process.env.VSCODE_BIND_HOST ?? '127.0.0.1';
-const portMin = Number(process.env.VSCODE_PORT_MIN ?? 18080);
-const portMax = Number(process.env.VSCODE_PORT_MAX ?? 18180);
-const startTimeoutMs = Number(process.env.VSCODE_START_TIMEOUT_MS ?? 180_000);
-const stopGraceMs = 5_000;
-
-if (!isLoopback(bindHost)) {
-  console.error(`VSCODE_BIND_HOST must be a loopback address, got ${bindHost}`);
-  process.exit(1);
-}
-
 const instances = new Map<string, Instance>();
 const run = promisify(execFile);
-let cliChecked = false;
+let checkedCli: string | null = null;
 
 const instanceFields = {
   id: { type: 'string' },
@@ -54,25 +57,32 @@ const instanceFields = {
   exit_code: { type: ['integer', 'null'] },
 };
 
+function codeExecutable() {
+  return holder.current.code_executable.trim() || 'code';
+}
+
 async function ensureCli() {
-  if (cliChecked) return;
+  const binary = codeExecutable();
+  if (checkedCli === binary) return binary;
   try {
     await run(binary, ['--version']);
   } catch {
     throw new Error(`VS Code CLI not available: ${binary}`);
   }
-  cliChecked = true;
+  checkedCli = binary;
+  return binary;
 }
 
 async function stop(instance: Instance) {
-  await stopProcess(instance.process, { graceMs: stopGraceMs });
+  await stopProcess(instance.process, { graceMs: holder.current.stop_grace_ms });
   instance.status = 'stopped';
 }
 
 async function waitUntilReady(instance: Instance) {
+  const timeoutMs = holder.current.start_timeout_ms;
   const outcome = await waitForHttp({
     url: instance.url,
-    timeoutMs: startTimeoutMs,
+    timeoutMs,
     exited: () => processExited(instance.process),
   });
   if (outcome === 'ready') {
@@ -84,7 +94,7 @@ async function waitUntilReady(instance: Instance) {
     throw new Error(`VS Code Server exited before becoming ready (code ${instance.exit_code})`);
   }
   await stop(instance);
-  throw new Error(`VS Code Server did not become ready within ${startTimeoutMs}ms`);
+  throw new Error(`VS Code Server did not become ready within ${timeoutMs}ms`);
 }
 
 function get(id: string) {
@@ -110,15 +120,17 @@ async function start(input: { id?: string; name?: string; workspace: string }) {
     return publicInstance(existing);
   }
   if (existing) await stop(existing);
-  await ensureCli();
 
+  const config = holder.current;
+  const binary = await ensureCli();
+  const bindHost = config.bind_host;
   const port = await findFreePort({
-    min: portMin,
-    max: portMax,
+    min: config.port_min,
+    max: config.port_max,
     host: bindHost,
     taken: livePorts(),
   });
-  const root = join(dataDir, id);
+  const root = join(expandHome(config.data_dir), id);
   const serverData = join(root, 'server-data');
   const cliData = join(root, 'cli-data');
   await Promise.all([mkdir(serverData, { recursive: true }), mkdir(cliData, { recursive: true })]);
@@ -191,7 +203,12 @@ iii.registerFunction(
     const instance = get(input.id);
     await stop(instance);
     instances.delete(input.id);
-    if (input.delete_profile) await rm(join(dataDir, input.id), { recursive: true, force: true });
+    if (input.delete_profile) {
+      await rm(join(expandHome(holder.current.data_dir), input.id), {
+        recursive: true,
+        force: true,
+      });
+    }
     return { deleted: true };
   },
   {
@@ -276,6 +293,17 @@ if (uiWatchEnabled) {
   });
   console.error(`[vscode] serving ui assets from ${uiWatchDir}`);
 }
+
+try {
+  await registerVscodeConfig(iii, holder.current);
+} catch (err) {
+  console.warn(`configuration::register failed; continuing with the seed: ${String(err)}`);
+}
+
+await bindConfigTrigger(iii, async () => {
+  const runtime = await fetchRuntime(iii);
+  if (runtime) holder.current = { engine_url: url, ...runtime };
+});
 
 async function shutdown() {
   await Promise.all([...instances.values()].map(stop));

@@ -1,6 +1,8 @@
 # vscode
 
-VS Code as an iii worker. The worker runs the VS Code Server through the `code` CLI (`code serve-web`), owns each process and its isolated profile, and ships a **VS Code** Console page that embeds the Workbench for the chat's working directory. Nothing is re-implemented: the Console page is the same web Workbench the CLI serves, with the same extensions, settings sync, and terminals.
+VS Code as an iii worker. The worker runs the VS Code Server through the `code` CLI, one loopback process per workspace directory with its own isolated profile, and ships a **VS Code** page for the Console that embeds the Workbench for the chat's working directory. Nothing is re-implemented: it is the same web Workbench the CLI serves, with your extensions, settings sync, and terminals, beside the conversation.
+
+![The VS Code Workbench open beside a chat in the iii Console](https://raw.githubusercontent.com/iii-hq/workers/main/vscode/assets/vscode-console.png)
 
 ## Install
 
@@ -8,64 +10,66 @@ VS Code as an iii worker. The worker runs the VS Code Server through the `code` 
 iii worker add vscode
 ```
 
-Requires the VS Code CLI (`code`) on the host. Install VS Code and enable the shell command, or download the standalone CLI and point `VSCODE_SERVER_BIN` at it. The first start of a workspace downloads the matching VS Code Server build into the worker's data directory; starting the worker accepts the [VS Code Server license terms](https://aka.ms/vscode-server-license).
+`iii worker add` fetches the bundle, writes a config block into `~/.iii/config.yaml`, and the engine starts the worker the next time it boots. The host needs the VS Code CLI: install VS Code and enable the `code` shell command, or download the [standalone CLI](https://code.visualstudio.com/docs/remote/vscode-server) and point `code_executable` at it. The first start of a workspace downloads the matching VS Code Server build; starting the worker accepts the [VS Code Server license terms](https://aka.ms/vscode-server-license).
+
+## Quickstart
+
+Open **VS Code** from the Console navigation, or press `⌘K` and run `Open VS Code`. The page starts a server for the chat's working directory and shows the Workbench; with no working directory it lists the Console's recent folders. Page commands: `R` reloads the Workbench, `O` opens it in a browser tab, `X` stops the server.
+
+The same lifecycle is one function call away:
+
+```bash
+iii trigger vscode::start workspace=/absolute/path/to/project
+```
+
+```json
+{
+  "id": "ide-19edab41331d",
+  "name": "VS Code",
+  "workspace": "/absolute/path/to/project",
+  "host": "127.0.0.1",
+  "port": 18080,
+  "pid": 21709,
+  "started_at": "2026-08-26T15:28:58.711Z",
+  "status": "running",
+  "exit_code": null
+}
+```
+
+Calling `vscode::start` again for the same folder returns the running server. `vscode::instances::list` shows every server the worker owns, `vscode::stop` stops one, and `vscode::delete` also removes its data directory with `delete_profile: true`. Another worker opens a specific folder in the page with `host.panels.open({ pageId: 'vscode', context: { workspace: '/path' } })`.
 
 ## Configuration
 
-Environment variables, all optional:
+`config.yaml` seeds the `configuration` worker on first boot; after that the live value under the id `vscode` is authoritative and hot-reloads, so the Console's configuration panel is the place to change it.
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `VSCODE_SERVER_BIN` | `code` | Path to the VS Code CLI |
-| `VSCODE_DATA_DIR` | `~/.iii/vscode` | Per-workspace server and CLI data directories |
-| `VSCODE_BIND_HOST` | `127.0.0.1` | Loopback address the server listens on |
-| `VSCODE_PORT_MIN` / `VSCODE_PORT_MAX` | `18080` / `18180` | Port range, one port per running workspace |
-| `VSCODE_START_TIMEOUT_MS` | `180000` | How long a start waits for the server to answer |
-| `III_URL` | `ws://127.0.0.1:49134` | Engine address |
-
-Each workspace runs as:
-
-```text
-code --cli-data-dir <data>/<id>/cli-data serve-web \
-  --host 127.0.0.1 --port <free port> \
-  --without-connection-token \
-  --accept-server-license-terms \
-  --server-data-dir <data>/<id>/server-data \
-  --default-folder <workspace> \
-  --disable-telemetry
+```yaml
+code_executable: ""          # path to the VS Code CLI; empty = `code` on PATH
+data_dir: ~/.iii/vscode      # one server-data + cli-data folder per workspace
+bind_host: 127.0.0.1         # loopback only: 127.0.0.1, localhost, or ::1
+port_min: 18080              # one port per running workspace
+port_max: 18180
+start_timeout_ms: 180000     # first start downloads the server build
+stop_grace_ms: 5000          # SIGTERM to SIGKILL
 ```
 
-## Console
+`engine_url` (or `--url` / `III_URL`) is bootstrap and never hot-reloads.
 
-Open **VS Code** from the Console navigation or the command palette (`Open VS Code`). The page follows the chat's working directory and starts a Workbench for it; when no directory is set it offers the Console's recent folders. Page commands: `R` reload the Workbench, `O` open it in a browser tab, `X` stop the server. Another worker can open a specific folder with `host.panels.open({ pageId: 'vscode', context: { workspace: '/path' } })`.
+## Run from source with compose
 
-The Workbench renders inside an iframe because VS Code Web is a complete application with its own service worker and origin, not a React component. Keys typed inside the Workbench stay with VS Code; the Console's page commands answer while focus is on the page chrome.
+Workers in this repository run locally through [`iii compose`](https://github.com/iii-hq/workers/blob/main/harness/DEVELOPMENT.md). Add a container to the compose file next to the workers it should join:
 
-## Functions
+```yaml
+containers:
+  vscode:
+    worker: path://../vscode
+    scripts:
+      run: pnpm install --ignore-workspace && pnpm build:bundle && node dist/bundle/index.mjs
+```
 
-| Function | Purpose |
-| --- | --- |
-| `vscode::start` | Start a Workbench for an absolute `workspace` directory, or return the running one. `id` defaults to a stable hash of the path; `name` is a label. |
-| `vscode::instances::list` | Every process the worker owns, with `host`, `port`, `pid`, `status`, and `exit_code`. |
-| `vscode::stop` | Stop a process group by `id`. |
-| `vscode::delete` | Stop a process and forget it; `delete_profile: true` also removes its data directory. |
-
-`vscode::start` and `vscode::instances::list` are pre-approved in `iii-permissions.yaml`; `stop` and `delete` remain approval-gated.
+Compose supplies the engine URL and the project namespace to the process, so the page shows up in the Console served by the same compose file. A worker started by hand instead needs `III_NAMESPACE=<compose namespace>` in its environment, or the Console never sees its page. `III_VSCODE_UI_WATCH=1` serves the page from `ui/dist` and hot-reloads it into open Console tabs while `pnpm --dir ui watch` runs.
 
 ## Security
 
-Browsers drop the VS Code Server connection-token cookie inside a cross-origin Console iframe, so the worker runs the server in cookie-free mode and refuses to bind anywhere but loopback (`127.0.0.1`, `localhost`, `::1`). The worker exits at boot if `VSCODE_BIND_HOST` is set to anything else.
+Browsers drop the VS Code Server connection-token cookie inside a cross-origin Console iframe, so the worker runs the server in cookie-free mode and refuses to bind anywhere but loopback. The server exposes the host filesystem to the local browser; `vscode::start` and `vscode::instances::list` are allowed for agents by default, `vscode::stop` and `vscode::delete` need approval.
 
 The server is meant for a local single-user Console. Remote or multi-user deployments need a same-origin authenticated proxy in front of it before relaxing this.
-
-## Development
-
-```bash
-pnpm install          # in the repository root, for the ui workspace
-cd vscode && pnpm install
-pnpm build            # ui bundle + single-file worker bundle
-pnpm test
-pnpm lint
-```
-
-Set `III_VSCODE_UI_WATCH=1` to serve the page from `ui/dist` and hot-reload it into open Console tabs while `pnpm --dir ui watch` runs.

@@ -25,7 +25,9 @@
     "dev": "tsx src/index.ts"
   },
   "dependencies": {
-    "iii-sdk": "0.23.0-rc.2"
+    "iii-sdk": "0.23.0-rc.2",
+    "yaml": "^2.6.0",
+    "zod": "^4.0.0"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.10",
