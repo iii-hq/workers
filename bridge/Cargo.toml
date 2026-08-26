@@ -2,7 +2,7 @@
 
 [package]
 name = "iii-bridge"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 description = "Bridge worker for iii — connects to a remote iii instance to expose and forward functions"
 license = "Apache-2.0"
@@ -27,7 +27,7 @@ serde_yaml = "0.9"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 schemars = "0.8"
 
 [dev-dependencies]
