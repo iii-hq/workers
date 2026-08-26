@@ -6,8 +6,9 @@
 //! until Ctrl+C. The optional `--config` YAML file is a **seed only**: it is
 //! used to populate the configuration entry the first time, after which the
 //! configuration worker is the source of truth. The REMOTE engine URL comes
-//! from the configuration value (`url` field / `III_URL` env / built-in
-//! default), never from `--url`.
+//! from the configuration value. A legacy `III_URL` fallback remains when
+//! that value is absent; supervised deployments must set `config.url` so the
+//! remote target stays separate from the local/control `III_URL`.
 
 use std::sync::Arc;
 
@@ -27,7 +28,8 @@ struct Cli {
     /// authoritative source and `--config` is ignored for the stored value.
     #[arg(long)]
     config: Option<String>,
-    #[arg(long, default_value = "ws://127.0.0.1:49134")]
+    /// Local/control engine URL used to register this worker.
+    #[arg(long, env = "III_URL", default_value = "ws://127.0.0.1:49134")]
     url: String,
     #[arg(long)]
     manifest: bool,
@@ -118,4 +120,81 @@ async fn main() -> Result<()> {
     boot.shutdown().await;
     iii.shutdown_async().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::process::Command;
+
+    use super::*;
+
+    const CHILD_MODE_ENV: &str = "BRIDGE_CLI_URL_TEST_CHILD";
+    const EXPLICIT_URL_ENV: &str = "BRIDGE_CLI_URL_TEST_EXPLICIT";
+    const OUTPUT_PREFIX: &str = "bridge-cli-url=";
+
+    fn parse_url_in_subprocess(explicit_url: Option<&str>, env_url: Option<&str>) -> String {
+        let mut command = Command::new(std::env::current_exe().expect("resolve test executable"));
+        command
+            .args(["--exact", "tests::print_cli_url_for_parent", "--nocapture"])
+            .env(CHILD_MODE_ENV, "1")
+            .env_remove(EXPLICIT_URL_ENV)
+            .env_remove("III_URL");
+
+        if let Some(url) = explicit_url {
+            command.env(EXPLICIT_URL_ENV, url);
+        }
+        if let Some(url) = env_url {
+            command.env("III_URL", url);
+        }
+
+        let output = command.output().expect("run CLI parser subprocess");
+        assert!(
+            output.status.success(),
+            "CLI parser subprocess failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .expect("CLI parser output is UTF-8")
+            .lines()
+            .find_map(|line| line.strip_prefix(OUTPUT_PREFIX))
+            .map(str::to_owned)
+            .expect("CLI parser subprocess printed the selected URL")
+    }
+
+    #[test]
+    fn explicit_url_overrides_iii_url() {
+        let url =
+            parse_url_in_subprocess(Some("ws://127.0.0.1:49311"), Some("ws://127.0.0.1:49312"));
+
+        assert_eq!(url, "ws://127.0.0.1:49311");
+    }
+
+    #[test]
+    fn iii_url_is_used_without_explicit_url() {
+        let url = parse_url_in_subprocess(None, Some("ws://127.0.0.1:49312"));
+
+        assert_eq!(url, "ws://127.0.0.1:49312");
+    }
+
+    #[test]
+    fn default_url_is_used_without_overrides() {
+        let url = parse_url_in_subprocess(None, None);
+
+        assert_eq!(url, "ws://127.0.0.1:49134");
+    }
+
+    #[test]
+    fn print_cli_url_for_parent() {
+        if std::env::var(CHILD_MODE_ENV).ok().as_deref() != Some("1") {
+            return;
+        }
+
+        let mut args = vec!["bridge".to_string()];
+        if let Ok(url) = std::env::var(EXPLICIT_URL_ENV) {
+            args.extend(["--url".to_string(), url]);
+        }
+        let cli = Cli::parse_from(args);
+
+        println!("{OUTPUT_PREFIX}{}", cli.url);
+    }
 }
