@@ -382,7 +382,7 @@ fn parse_worker_names(val: &serde_json::Value) -> HashSet<String> {
 //     │  (+ agents-ns exempt)    │
 //     └──────────┬───────────────┘
 //                ▼
-//     merge_agents_root(…, agents root)
+//     merge_agents_roots(…, [project agents root, ~/.agents/skills])
 //        append non-shadowed <skill>/SKILL.md
 //                 │
 //                 ▼
@@ -409,7 +409,7 @@ pub async fn resolve_visible_skills(
 ) -> Vec<FsSkill> {
     let global_root = cfg.resolved_skills_folder();
     let local_root = cfg.local_skills_folder();
-    let agents_root = cfg.resolved_agents_skills_folder();
+    let agents_roots = cfg.resolved_agents_skills_roots();
     let (merged, _skipped) = fs_source::scan_skills_merged(&global_root, &local_root);
 
     let filtered = if !cfg.filter_unregistered {
@@ -426,7 +426,10 @@ pub async fn resolve_visible_skills(
 
         match registered {
             Some(registered) => {
-                let agents_ns = fs_source::agents_namespaces(&agents_root);
+                let agents_ns: Vec<String> = agents_roots
+                    .iter()
+                    .flat_map(|root| fs_source::agents_namespaces(root))
+                    .collect();
                 filter_to_registered(merged, &registered, &agents_ns)
             }
             None => {
@@ -439,7 +442,7 @@ pub async fn resolve_visible_skills(
         }
     };
 
-    fs_source::merge_agents_root(filtered, &global_root, &local_root, &agents_root).0
+    fs_source::merge_agents_roots(filtered, &global_root, &local_root, &agents_roots).0
 }
 
 /// The engine's own skill namespace. The iii engine is not a worker, so
@@ -653,13 +656,17 @@ fn register_index_skills(
                 // would render as fake worker blocks and inflate
                 // `workers_count` in this token-light per-WORKER surface, so
                 // drop them here; `directory::skills::list` still serves them.
-                // Filter by PROVENANCE (abs_path under the agents root), not
+                // Filter by PROVENANCE (abs_path under an agents root), not
                 // by namespace name — an installed worker that happens to
                 // share a name with an agents dir must keep its index block.
-                let agents_root = cfg.resolved_agents_skills_folder();
+                let agents_roots = cfg.resolved_agents_skills_roots();
                 let rows: Vec<SkillEntry> = entries
                     .into_iter()
-                    .filter(|fs| !fs.abs_path.starts_with(&agents_root))
+                    .filter(|fs| {
+                        !agents_roots
+                            .iter()
+                            .any(|root| fs.abs_path.starts_with(root))
+                    })
                     .map(|fs| skill_entry_from_fs(fs, &siblings))
                     .collect();
                 let body = render_index_markdown(&rows);

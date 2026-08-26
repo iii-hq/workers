@@ -34,10 +34,14 @@ The existing `agents_skills_folder` setting remains `.agents/skills`. It is a
 read-only source of skills installed by agent tooling and is unrelated to the
 read-write agent profile root.
 
-Only one catalog root is configured. Automatic vendor-directory discovery and
-global/workspace overlay semantics are out of scope; an operator can point
-`agents_folder` at an absolute or home-relative root when a global catalog is
-desired.
+A second catalog root exists: `global_agents_folder` (default
+`~/.iii/agents`), the user-global side shared by every project on the
+machine. It uses the same direct `<id>.md` scan; an id present under
+`agents_folder` shadows the same id there, and a missing directory is
+treated as empty (the worker never creates the directory itself). Unlike the
+skills roots — external tooling's territory, kept read-only — this is iii's
+own directory: profiles resolved here are updated and deleted in place.
+Automatic vendor-directory discovery stays out of scope.
 
 ## Discovery and identity
 
@@ -49,11 +53,13 @@ The current required frontmatter and non-empty body validation stays in
 place. Unknown frontmatter keys remain harmless, so fields that iii does not
 consume do not prevent a profile from loading.
 
-Agent list/get/create/update/delete operations use only `agents_folder`:
+Agent list/get/update/delete resolve against the merged project +
+user-global scan; only create is anchored to the project root:
 
-- create writes `<agents_folder>/<id>.md`;
-- update replaces that file atomically;
-- delete removes that file;
+- create writes `<agents_folder>/<id>.md`, and refuses an id already served
+  by either root (a global collision names the global file);
+- update replaces the resolved file atomically, in whichever root it lives;
+- delete removes the resolved file, in whichever root it lives;
 - list and get do not fall back to profiles under a skills root.
 
 There is no automatic migration or compatibility read for the old

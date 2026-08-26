@@ -83,7 +83,7 @@ never appear in `index` and `update`/`delete` refuse them.
 - `directory::system-prompts::update` — overwrite one EXISTING system prompt; the frontmatter must keep a non-empty `description` (a declared `name` renames it).
 - `directory::system-prompts::delete` — permanently remove one EXISTING system prompt by name.
 - `directory::agents::list` — list agent profiles (id, display name, description, emoji logo, `skill_count` where null means every skill).
-- `directory::agents::get` — read one agent by id: its system prompt (the file body), skill filter + `unknown_skills`, `delegates_to`/`leaf` + `unknown_delegates`, and `model` (the agent's default model id — use it when spawning/sending as this agent; `null` = caller decides); `raw: true` as above.
+- `directory::agents::get` — read one agent by id: its system prompt (the file body), skill filter + `unknown_skills`, `leaf`, and `model` (the agent's default model id — use it when spawning/sending as this agent; `null` = caller decides); `raw: true` as above.
 - `directory::agents::create` — create a NEW agent at `<agents_folder>/<id>.md` from full-file content; frontmatter needs a non-empty `name`, `logo` is emoji-only.
 - `directory::agents::update` — overwrite one EXISTING agent (same scanner rules; the id stays the file stem, frontmatter `name` is display-only).
 - `directory::agents::delete` — permanently remove one EXISTING agent by id; running sessions are unaffected.

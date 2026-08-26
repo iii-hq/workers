@@ -97,9 +97,15 @@ pub fn log_fs_health(cfg: &SkillsConfig) {
     let (skills, skill_skipped) = fs_source::scan_skills(&folder);
     let (system_prompts, system_prompt_skipped) = fs_source::scan_system_prompts(&folder);
     let agents_folder = cfg.resolved_agents_folder();
-    let (agent_profiles, agent_skipped) = fs_source::scan_agents(&agents_folder);
-    let (agents_skills, agents_skipped) =
-        fs_source::scan_agents_skills(&cfg.resolved_agents_skills_folder());
+    let (agent_profiles, agent_skipped) =
+        fs_source::scan_agents_merged(&cfg.resolved_agents_roots());
+    let mut agents_skills = Vec::new();
+    let mut agents_skipped = Vec::new();
+    for root in cfg.resolved_agents_skills_roots() {
+        let (skills, skipped) = fs_source::scan_agents_skills(&root);
+        agents_skills.extend(skills);
+        agents_skipped.extend(skipped);
+    }
 
     for s in &skills {
         tracing::info!(
