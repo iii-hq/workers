@@ -11,6 +11,7 @@
  */
 
 import {
+  Button,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -21,6 +22,7 @@ import {
   PageBody,
   PageHeader,
   PageMain,
+  Panel,
   type PageRenderProps,
   PageShell,
   PageSidebar,
@@ -29,6 +31,7 @@ import {
 import type { GitStatusEntry } from '@pierre/trees'
 import {
   Check,
+  CircleAlert,
   ChevronsDownUp,
   ChevronsUpDown,
   ClipboardCopy,
@@ -36,9 +39,12 @@ import {
   EyeOff,
   FileSearch,
   FileStack,
+  FolderOpen,
+  FolderSymlink,
   FolderTree,
   Image,
   MoreHorizontal,
+  MessageSquare,
   PanelLeft,
   PanelRight,
   RefreshCw,
@@ -3244,69 +3250,114 @@ export function ShellExplorerPage({
 
           <PageMain>
             {workingDirError ? (
-              <div className="shui-review-message warn" role="alert">
-                <span>{workingDirError}</span>
-                <button
-                  type="button"
-                  className="shui-review-inline-action"
-                  onClick={() => {
-                    const next = workingDirRef.current
-                    if (next === null) return
-                    if (workingDirRetryTimerRef.current !== null) {
-                      window.clearTimeout(workingDirRetryTimerRef.current)
-                      workingDirRetryTimerRef.current = null
-                    }
-                    workingDirRetryRef.current = { path: next, failures: 0 }
-                    setWorkingDirError(null)
-                    setWorkingDirRetryEpoch((epoch) => epoch + 1)
-                  }}
-                >
-                  retry
-                </button>
-              </div>
+              <Panel className="shui-review-notice warn" role="alert">
+                <span className="shui-review-notice-icon" aria-hidden="true">
+                  <CircleAlert />
+                </span>
+                <span className="shui-review-notice-copy">
+                  <span className="shui-review-notice-title">
+                    Working directory unavailable
+                  </span>
+                  <span className="shui-review-notice-detail">
+                    {workingDirError}
+                  </span>
+                </span>
+                <span className="shui-review-notice-actions">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      const next = workingDirRef.current
+                      if (next === null) return
+                      if (workingDirRetryTimerRef.current !== null) {
+                        window.clearTimeout(workingDirRetryTimerRef.current)
+                        workingDirRetryTimerRef.current = null
+                      }
+                      workingDirRetryRef.current = { path: next, failures: 0 }
+                      setWorkingDirError(null)
+                      setWorkingDirRetryEpoch((epoch) => epoch + 1)
+                    }}
+                  >
+                    <RefreshCw aria-hidden="true" />
+                    Retry
+                  </Button>
+                </span>
+              </Panel>
             ) : null}
             {pendingOpenError ? (
-              <div className="shui-review-message warn" role="alert">
-                <span>{pendingOpenError}</span>
-                <button
-                  type="button"
-                  className="shui-review-inline-action"
-                  onClick={() => {
-                    pendingOpenRetryRef.current = 0
-                    pendingOpenWaitingForRetryRef.current = false
-                    setPendingOpenError(null)
-                    setOpenBump((bump) => bump + 1)
-                  }}
-                >
-                  retry
-                </button>
-              </div>
+              <Panel className="shui-review-notice warn" role="alert">
+                <span className="shui-review-notice-icon" aria-hidden="true">
+                  <CircleAlert />
+                </span>
+                <span className="shui-review-notice-copy">
+                  <span className="shui-review-notice-title">
+                    File could not be opened
+                  </span>
+                  <span className="shui-review-notice-detail">
+                    {pendingOpenError}
+                  </span>
+                </span>
+                <span className="shui-review-notice-actions">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      pendingOpenRetryRef.current = 0
+                      pendingOpenWaitingForRetryRef.current = false
+                      setPendingOpenError(null)
+                      setOpenBump((bump) => bump + 1)
+                    }}
+                  >
+                    <RefreshCw aria-hidden="true" />
+                    Retry
+                  </Button>
+                </span>
+              </Panel>
             ) : null}
             {sessionActivity.outside > 0 ? (
-              <div className="shui-review-message" role="status">
-                <span>
-                  {sessionActivity.outside}{' '}
-                  {sessionActivity.outside === 1 ? 'file changed' : 'files changed'}
-                  {' '}outside this folder
-                  {sessionActivity.outsideRoot
-                    ? ` in ${sessionActivity.outsideRoot}`
-                    : ''}
+              <Panel
+                className="shui-review-notice"
+                role="status"
+                aria-label={`${sessionActivity.outside} ${sessionActivity.outside === 1 ? 'change' : 'changes'} outside this folder`}
+              >
+                <span className="shui-review-notice-icon" aria-hidden="true">
+                  <FolderSymlink />
+                </span>
+                <span className="shui-review-notice-copy">
+                  <span className="shui-review-notice-title">
+                    {sessionActivity.outside}{' '}
+                    {sessionActivity.outside === 1 ? 'change' : 'changes'} outside
+                    this folder
+                  </span>
+                  {sessionActivity.outsideRoot ? (
+                    <span
+                      className="shui-review-notice-detail"
+                      title={sessionActivity.outsideRoot}
+                    >
+                      {sessionActivity.outsideRoot}
+                    </span>
+                  ) : null}
                 </span>
                 {sessionActivity.outsideRoot ? (
-                  <>
-                    <button
+                  <span className="shui-review-notice-actions">
+                    <Button
                       type="button"
-                      className="shui-review-inline-action"
+                      variant="ghost"
+                      size="sm"
                       onClick={() =>
                         changeManualRoot(sessionActivity.outsideRoot!)
                       }
                     >
-                      open in Shell
-                    </button>
+                      <FolderOpen aria-hidden="true" />
+                      Open in Shell
+                    </Button>
                     {canUseSessionOutsideForChat ? (
-                      <button
+                      <Button
                         type="button"
-                        className="shui-review-inline-action"
+                        variant="primary"
+                        size="sm"
                         onClick={() =>
                           (host as WorkingDirectoryHost).chat?.requestWorkingDirectoryChange?.(
                             {
@@ -3316,12 +3367,13 @@ export function ShellExplorerPage({
                           )
                         }
                       >
-                        use for chat
-                      </button>
+                        <MessageSquare aria-hidden="true" />
+                        Use for chat
+                      </Button>
                     ) : null}
-                  </>
+                  </span>
                 ) : null}
-              </div>
+              </Panel>
             ) : null}
             {!(terminalOpen && terminalDock === 'editor' && terminalActive) ? (
               <div className="shui-review-toolbar">
