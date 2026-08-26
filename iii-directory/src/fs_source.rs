@@ -1,7 +1,8 @@
 //! Filesystem-backed sources for skills, system prompts, and agent profiles.
 //!
-//! Everything is anchored at the configured `skills_folder` from
-//! [`crate::config::SkillsConfig`]. Layout:
+//! Skills and system prompts are anchored at `skills_folder`; agent profiles
+//! use the separate `agents_folder` from [`crate::config::SkillsConfig`].
+//! Layout:
 //!
 //! ```text
 //! <skills_folder>/
@@ -12,8 +13,8 @@
 //!     deep/path.md              # → iii://<ns>/deep/path
 //!     system-prompts/           # ← system prompts (YAML frontmatter required)
 //!       reviewer.md
-//!     agents/                   # ← reusable agent profiles
-//!       release-captain.md
+//! <agents_folder>/
+//!   release-captain.md          # ← reusable agent profile
 //! ```
 //!
 //! Files matched as skills become entries whose body is re-read from
@@ -27,6 +28,7 @@
 //! - [`scan_agents_skills`]           — shallow `<skill>/SKILL.md` listing of the read-only
 //!   agents root (the `~/.agents/skills` convention).
 //! - [`scan_system_prompts`]          — name-keyed listing of `*/system-prompts/*.md`.
+//! - [`scan_agents`]                  — direct `<id>.md` listing of agent profiles.
 //! - [`read_body`]                    — cap-checked body read with frontmatter stripped.
 //! - [`read_skill_with_frontmatter`]  — same caps as `read_body` plus a
 //!   parsed `SkillFrontmatter` (title + type) so the skills reader can
@@ -156,10 +158,10 @@ pub fn split_frontmatter(content: &str) -> (Option<&str>, &str) {
 pub const SYSTEM_PROMPTS_SEGMENT: &str = "system-prompts";
 pub const PROMPTS_SEGMENT: &str = "prompts";
 
-/// Path component that marks the agents family in the walk (also the
-/// top-level folder `directory::agents::create` writes into). Unrelated
-/// to the `agents_skills_folder` config root (`~/.agents/skills`), which
-/// is an external-tool *skills* convention.
+/// Reserved path component used to classify agent entries in downloaded
+/// bundles. Canonical profiles are scanned directly from `agents_folder`.
+/// Unrelated to `agents_skills_folder` (`~/.agents/skills`), which is an
+/// external-tool *skills* convention.
 pub const AGENTS_SEGMENT: &str = "agents";
 
 /// Classify one path (relative to a scan root) by its segments — the

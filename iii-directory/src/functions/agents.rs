@@ -2,8 +2,8 @@
 //!
 //! An agent is a reusable identity a session runs as: a system prompt
 //! (the file body), a display name, a description, an emoji logo, and a
-//! skill filter — one markdown file with required YAML frontmatter under
-//! an `agents/` path segment (see `harness/architecture/agents.md`).
+//! skill filter — one direct `<agents_folder>/<id>.md` file with required
+//! YAML frontmatter (see `docs/architecture/agent-profile-storage.md`).
 //! Five filesystem-backed verbs:
 //!
 //!   * `directory::agents::list`   — metadata-only listing.
@@ -15,7 +15,7 @@
 //!
 //! Not to be confused with the read-only `agents_skills_folder` config
 //! root (`~/.agents/skills`) — that is an external tool's *skills*
-//! convention; agent profiles live under the ordinary skills roots.
+//! convention; agent profiles live in the dedicated `agents_folder`.
 
 use std::sync::Arc;
 
@@ -129,7 +129,7 @@ pub struct AgentGetOutput {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AgentCreateInput {
     /// New agent id — becomes the file stem
-    /// (`<skills_folder>/agents/<id>.md`). Lowercase ASCII, digits,
+    /// (`<agents_folder>/<id>.md`). Lowercase ASCII, digits,
     /// `-` and `_` only. Must not collide with an existing agent or an
     /// on-disk file at the target path.
     pub id: String,
@@ -197,8 +197,8 @@ fn register_list(iii: &Arc<IIIClient>, cfg: &SharedConfig) {
         })
         .description(
             "List filesystem-backed agent profiles (id, display name, description, emoji \
-             logo, skill_count, modified_at) from the merged skills roots (`agents/` path \
-             segment). An agent is a reusable session identity: its file body is the \
+             logo, skill_count, modified_at) from the configured agents folder. An agent \
+             is a reusable session identity: its file body is the \
              system prompt. skill_count null = the agent uses every skill.",
         ),
     );
@@ -248,11 +248,11 @@ fn register_create(iii: &Arc<IIIClient>, cfg: &SharedConfig, subs: &trigger_type
             }
         })
         .description(
-            "Create a NEW agent profile at <skills_folder>/agents/<id>.md from full-file \
+            "Create a NEW agent profile at <agents_folder>/<id>.md from full-file \
              markdown content (frontmatter block included; a non-empty `name` is \
              required, `logo` is emoji-only, and the body — the system prompt — must be \
-             non-empty). Rejects ids that already exist anywhere in the merged agents \
-             scan, or a target path that already exists on disk. The write is atomic and \
+             non-empty). Rejects ids that already exist in the configured agents folder, \
+             or a target path that already exists on disk. The write is atomic and \
              fans out directory::agents::on-change with { op: \"create\" }.",
         )
         .metadata(json!({"tool": {"label": "Create agent"}})),

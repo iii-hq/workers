@@ -61,8 +61,8 @@ never appear in `index` and `update`/`delete` refuse them.
 - Not the live-connection view. `directory::*` reflects what is on disk or in the registry, not what is connected right now. For that, call the engine directly (`engine::functions::list`, `engine::workers::list`, …); daemon-managed providers (`http`, `cron`, `state`) open no WebSocket, so merge `worker::list` by `name`.
 - Do not put a skill id (`/`) in `agent_trigger`'s `function:` field, and do not pass a function id (`::`) to `directory::skills::get`.
 - System prompt files without a `description:` in frontmatter are silently skipped by `directory::system-prompts::list`.
-- The filesystem families are split by path segment, not by frontmatter: a `system-prompts/` path component makes a file a system prompt, and an `agents/` component makes it an agent profile. Other `prompts/` paths are ignored; all remaining markdown files are skills.
-- An agent's `skills:` list is curation, not enforcement: it narrows what a skill index shows, grants no access, and unknown ids are reported by `get` as `unknown_skills` warnings rather than errors. `agents/` profiles are unrelated to the read-only `agents_skills_folder` (`~/.agents/skills`), which holds external tools' skills.
+- Skills and system prompts share `skills_folder`; a `system-prompts/` path component selects the prompt family, other `prompts/` paths are ignored, and `agents/` is reserved. Agent profiles are direct `<agents_folder>/<id>.md` files.
+- An agent's `skills:` list is curation, not enforcement: it narrows what a skill index shows, grants no access, and unknown ids are reported by `get` as `unknown_skills` warnings rather than errors. `agents_folder` profiles are unrelated to the read-only `agents_skills_folder` (`~/.agents/skills`), which holds external tools' skills.
 - Registry answers (`registry::workers::list` / `info`) are cached ~60 s per unique input by default (`registry_cache_ttl_ms`) — change a parameter to refresh.
 
 ## Functions
@@ -84,7 +84,7 @@ never appear in `index` and `update`/`delete` refuse them.
 - `directory::system-prompts::delete` — permanently remove one EXISTING system prompt by name.
 - `directory::agents::list` — list agent profiles (id, display name, description, emoji logo, `skill_count` where null means every skill).
 - `directory::agents::get` — read one agent by id: its system prompt (the file body), skill filter + `unknown_skills`, `delegates_to`/`leaf` + `unknown_delegates`, and `model` (the agent's default model id — use it when spawning/sending as this agent; `null` = caller decides); `raw: true` as above.
-- `directory::agents::create` — create a NEW agent at `<skills_folder>/agents/<id>.md` from full-file content; frontmatter needs a non-empty `name`, `logo` is emoji-only.
+- `directory::agents::create` — create a NEW agent at `<agents_folder>/<id>.md` from full-file content; frontmatter needs a non-empty `name`, `logo` is emoji-only.
 - `directory::agents::update` — overwrite one EXISTING agent (same scanner rules; the id stays the file stem, frontmatter `name` is display-only).
 - `directory::agents::delete` — permanently remove one EXISTING agent by id; running sessions are unaffected.
 - `directory::registry::workers::list` — page through published workers in the public registry (`pagination.next_cursor` feeds the next page's `cursor`).

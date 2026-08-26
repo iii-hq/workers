@@ -21,10 +21,10 @@
 //!   * **System prompts** (`directory::system-prompts::*`): filesystem-backed
 //!     prompts loaded from `system-prompts/` path segments with YAML frontmatter.
 //!   * **Agents** (`directory::agents::*`): filesystem-backed agent
-//!     profiles under an `agents/` path segment — reusable session
+//!     profiles stored directly under `agents_folder` — reusable session
 //!     identities whose file body is the system prompt, with display
 //!     name / emoji logo / skill filter / delegation fields in required
-//!     YAML frontmatter (see `harness/architecture/agents.md`).
+//!     YAML frontmatter (see `docs/architecture/agent-profile-storage.md`).
 //!   * **Registry** (`directory::registry::*`): HTTP proxy over
 //!     `api.workers.iii.dev` with the same `workers::{list,info}` shape
 //!     as the engine's `engine::workers::*` so callers learn one
@@ -37,8 +37,9 @@
 //! Write paths: `directory::skills::download*` pulls markdown either
 //! from the workers registry (`worker=NAME version=X.Y.Z|tag=latest`;
 //! defaults to `tag=latest`) or from a GitHub repo (`repo=URL
-//! skill=NAME branch?=main`) and writes the contents into
-//! `<skills_folder>/<namespace>/...`; `directory::skills::update` /
+//! skill=NAME branch?=main`) and writes skills/prompts into
+//! `<skills_folder>/<namespace>/...`; registry agent entries are routed to
+//! `agents_folder`. `directory::skills::update` /
 //! `directory::system-prompts::update` /
 //! `directory::agents::update` overwrite one existing file with edited
 //! full-file content; `directory::skills::{create,delete}`,

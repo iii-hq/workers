@@ -13,7 +13,8 @@
 #
 # Tunable fields hot-reload on change (registry_url, download_timeout_ms,
 # registry_cache_ttl_ms, filter_unregistered). Topology fields require a
-# worker restart (skills_folder, local_skills_folder, agents_skills_folder,
+# worker restart (skills_folder, local_skills_folder, agents_folder,
+# agents_skills_folder,
 # auto_download).
 #
 # When omitted entirely, the worker seeds the built-in defaults
@@ -26,6 +27,10 @@
 # running outside Compose); absolute paths are
 # used as-is.
 skills_folder: ./skills
+
+# Read-write root for reusable agent profiles. Each agent is one direct
+# `<id>.md` file. Relative paths resolve like skills_folder.
+agents_folder: ./agents
 
 # Read-only root for system-installed agent skills (one directory per
 # skill, each containing a SKILL.md). Scanned shallowly; a missing
