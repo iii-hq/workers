@@ -61,7 +61,13 @@ describe('a terminal turn becomes AgentEvent frames', () => {
       'turn_end',
       'agent_end',
     ]);
-    expect(emitted.every((e) => e.session === session_id)).toBe(true);
+    // One session, one group — and the group is READABLE: a bare UUID in a
+    // trace group says nothing, so the events carry `claude-<short id>-<time>`,
+    // the shape pi's extension already uses.
+    const group = emitted[0].session;
+    expect(group).toMatch(/^claude-[a-z0-9]{1,8}-[a-z0-9]+$/);
+    expect(group).toContain(session_id.replace(/-/g, '').slice(0, 8));
+    expect(emitted.every((e) => e.session === group)).toBe(true);
 
     const prompt = emitted[0].event;
     if (prompt.type !== 'message_complete') throw new Error('expected the prompt first');

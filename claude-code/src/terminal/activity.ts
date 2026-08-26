@@ -29,6 +29,21 @@ const IDLE_MS = 60 * 60_000;
 
 type ToolCall = { function_id: string; started_at: number };
 
+/**
+ * A readable name for one terminal session, in the shape pi's extension already
+ * uses (`pi-<pid>-<base36 time>`): a bare UUID in a trace group tells a reader
+ * nothing, while `claude-1c51db64-mtaevw6b` says which agent it is at a glance
+ * and still carries Claude Code's own session id in the middle, so a transcript
+ * on disk can be found from it.
+ *
+ * Minted once per session and reused, because it IS the group id: every event
+ * of a session has to land in the same group.
+ */
+function groupName(claudeSessionId: string): string {
+  const short = claudeSessionId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) || 'session';
+  return `claude-${short}-${Date.now().toString(36)}`;
+}
+
 type SessionState = {
   transcript: AgentMessage[];
   calls: Map<string, ToolCall>;
@@ -42,6 +57,8 @@ type SessionState = {
    */
   turnId: string;
   prompt: string;
+  /** What this session is called on the events stream and in a trace. */
+  group: string;
 };
 
 /** `mcp__server__tool` is that server's function; everything else is ours. */
@@ -104,6 +121,7 @@ export class ActivityTracker {
         touched: Date.now(),
         turnId: randomUUID(),
         prompt: '',
+        group: groupName(sessionId),
       };
       this.sessions.set(sessionId, state);
     }
@@ -137,7 +155,7 @@ export class ActivityTracker {
     return runTurnSpan(
       `claude terminal ${name}`,
       {
-        sessionId,
+        sessionId: state.group,
         turnId: state.turnId,
         kind: 'claude.terminal.turn',
         message: state.prompt,
@@ -153,6 +171,9 @@ export class ActivityTracker {
     sessionId: string,
     state: SessionState,
   ): Promise<{ ok: true; event: string }> {
+    // Events go out under the readable name; `sessionId` stays Claude Code's
+    // own id because it is the key `SessionEnd` forgets.
+    const group = state.group;
     switch (name) {
       case 'UserPromptSubmit': {
         const message: AgentMessage = {
@@ -162,7 +183,7 @@ export class ActivityTracker {
         };
         state.transcript.push(message);
         state.results = [];
-        await this.emit(sessionId, { type: 'message_complete', message });
+        await this.emit(group, { type: 'message_complete', message });
         break;
       }
 
@@ -174,8 +195,8 @@ export class ActivityTracker {
           { type: 'function_call', id, function_id, arguments: event.tool_input ?? {} },
         ]);
         state.transcript.push(message);
-        await this.emit(sessionId, { type: 'message_complete', message });
-        await this.emit(sessionId, {
+        await this.emit(group, { type: 'message_complete', message });
+        await this.emit(group, {
           type: 'function_execution_start',
           function_call_id: id,
           function_id,
@@ -202,7 +223,7 @@ export class ActivityTracker {
         };
         state.transcript.push(result);
         state.results.push(result);
-        await this.emit(sessionId, {
+        await this.emit(group, {
           type: 'function_execution_end',
           function_call_id: id,
           function_id,
@@ -216,12 +237,12 @@ export class ActivityTracker {
       case 'Stop': {
         const message = assistant([], 'end');
         state.transcript.push(message);
-        await this.emit(sessionId, {
+        await this.emit(group, {
           type: 'turn_end',
           message,
           function_results: state.results,
         });
-        await this.emit(sessionId, { type: 'agent_end', messages: state.transcript });
+        await this.emit(group, { type: 'agent_end', messages: state.transcript });
         state.results = [];
         break;
       }
