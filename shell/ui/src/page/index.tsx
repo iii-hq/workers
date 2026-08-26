@@ -125,6 +125,7 @@ import {
   runReviewTransition,
 } from './ReviewPane'
 import {
+  type ReviewScopeCounts,
   ReviewScopePicker,
   type ReviewScopeSelection,
   reviewScopeLabel,
@@ -135,6 +136,15 @@ import {
   mergeReviewEntry,
   type ReviewEntry,
 } from './review'
+import {
+  DEFAULT_REVIEW_SCOPE,
+  EMPTY_TURN_FALLBACK_MS,
+  isLiveGitReviewScope,
+  isShellUiStatePath,
+  LAST_TURN_SCOPE,
+  shouldFallbackToTurnScope,
+  shouldFollowHarnessTurn,
+} from './review-scope'
 import { useShellReviewSummaryBridge } from './review-summary-store'
 import { changedParentDirs, withReviewChanges } from './review-tree'
 import { SearchTab } from './SearchTab'
@@ -188,8 +198,6 @@ import {
 } from './working-dir-sync'
 
 type SideTab = 'files' | 'search'
-
-const LAST_TURN_SCOPE: ReviewScopeSelection = { kind: 'last-turn' }
 
 interface DiffSelection {
   /** The change shown — from git status, or synthesized for live
@@ -276,11 +284,13 @@ function UnifiedDiffIcon() {
 function ReviewMenuAction({
   label,
   icon,
+  description,
   disabled,
   onSelect,
 }: {
   label: string
   icon: ReactNode
+  description?: string
   disabled?: boolean
   onSelect: () => void
 }) {
@@ -293,7 +303,10 @@ function ReviewMenuAction({
       <span className="menu-icon" aria-hidden>
         {icon}
       </span>
-      <span>{label}</span>
+      <span className="shui-review-option-copy">
+        <span>{label}</span>
+        {description ? <small>{description}</small> : null}
+      </span>
     </DropdownMenuItem>
   )
 }
@@ -328,9 +341,7 @@ const SIDEBAR_MAX_WIDTH = 560
 const TERMINAL_BOTTOM_DEFAULT_SIZE = 280
 const TERMINAL_RIGHT_DEFAULT_SIZE = 420
 function reviewablePath(rel: string): boolean {
-  // This page's own persisted UI state changes on every tab/expand and
-  // must never become part of the user's review set.
-  if (rel.endsWith('shell-ui.yaml')) return false
+  if (isShellUiStatePath(rel)) return false
   const noise = [
     'Library',
     'node_modules',
@@ -519,9 +530,11 @@ export function ShellExplorerPage({
     }
   }
   const [reviewScope, setReviewScope] =
-    useState<ReviewScopeSelection>(LAST_TURN_SCOPE)
+    useState<ReviewScopeSelection>(DEFAULT_REVIEW_SCOPE)
   const reviewScopeRef = useRef(reviewScope)
   reviewScopeRef.current = reviewScope
+  const followHarnessTurnsRef = useRef(true)
+  const emptyTurnFallbackTimerRef = useRef<number | null>(null)
   const [scopeEntries, setScopeEntries] = useState<
     ReadonlyMap<string, ReviewEntry>
   >(new Map())
@@ -536,6 +549,7 @@ export function ShellExplorerPage({
     [],
   )
   const [scopeRefs, setScopeRefs] = useState<readonly GitRefSummary[]>([])
+  const [scopeCounts, setScopeCounts] = useState<ReviewScopeCounts>({})
   const [sessionTurns, setSessionTurns] = useState<
     readonly SessionTurnSummary[]
   >([])
@@ -691,17 +705,19 @@ export function ShellExplorerPage({
     return () => window.removeEventListener('beforeunload', warn)
   }, [dirtyPaths, reviewDirtyPaths, reviewSavePending])
 
-  const forceLastTurnScope = useCallback(() => {
-    if (!reviewSaveBarrier.canTransition()) return false
-    // Every forced Last Turn transition must retire an in-flight Git scope
-    // request before changing the visible scope. Otherwise its late result can
-    // replace the file selected from the chat summary or live watcher.
-    scopeLoadSeqRef.current += 1
-    setReviewScope(LAST_TURN_SCOPE)
-    setScopeLoading(false)
-    setScopeError(null)
-    return true
-  }, [reviewSaveBarrier])
+  const forceReviewScope = useCallback(
+    (scope: ReviewScopeSelection) => {
+      if (!reviewSaveBarrier.canTransition()) return false
+      // Forced transitions retire in-flight scope requests so a late Git result
+      // cannot replace a file selected from the chat summary or live watcher.
+      scopeLoadSeqRef.current += 1
+      setReviewScope(scope)
+      setScopeLoading(scope.kind !== 'last-turn')
+      setScopeError(null)
+      return true
+    },
+    [reviewSaveBarrier],
+  )
 
   const beginReviewTurn = useCallback(
     (turnId: string) => {
@@ -744,17 +760,21 @@ export function ShellExplorerPage({
       setBaselineCoverage(null)
       reviewEntriesRef.current = new Map()
       setReviewEntries(new Map())
-      scopeEntriesRef.current = new Map()
-      setScopeEntries(new Map())
-      setScopeSummary([])
+      setReviewSummary([])
       setScopeMetadataLoading(false)
       setScopeMetadataError(null)
-      forceLastTurnScope()
-      setReviewSummary([])
-      setDiff(null)
+      if (
+        shouldFollowHarnessTurn(
+          followHarnessTurnsRef.current,
+          reviewScopeRef.current,
+        )
+      ) {
+        setDiff(null)
+        forceReviewScope(LAST_TURN_SCOPE)
+      }
       return true
     },
-    [forceLastTurnScope, reviewSaveBarrier],
+    [forceReviewScope, reviewSaveBarrier],
   )
 
   // This runs inside Harness's awaited pre-turn hook: the snapshot is fully
@@ -824,6 +844,46 @@ export function ShellExplorerPage({
     beginReviewTurn,
     reviewSavingPaths,
     reviewSaveBarrier,
+  ])
+
+  useEffect(() => {
+    if (emptyTurnFallbackTimerRef.current !== null) {
+      window.clearTimeout(emptyTurnFallbackTimerRef.current)
+      emptyTurnFallbackTimerRef.current = null
+    }
+    if (
+      observedReview.turnId === null ||
+      observedReview.active ||
+      observedReview.completedAtMs === null ||
+      reviewScopeRef.current.kind !== 'last-turn' ||
+      !followHarnessTurnsRef.current
+    ) {
+      return
+    }
+    const completedTurnId = observedReview.turnId
+    emptyTurnFallbackTimerRef.current = window.setTimeout(() => {
+      emptyTurnFallbackTimerRef.current = null
+      if (
+        reviewWindowRef.current.turnId !== completedTurnId ||
+        reviewWindowRef.current.active ||
+        reviewScopeRef.current.kind !== 'last-turn' ||
+        reviewEntriesRef.current.size > 0
+      ) {
+        return
+      }
+      forceReviewScope(DEFAULT_REVIEW_SCOPE)
+    }, EMPTY_TURN_FALLBACK_MS)
+    return () => {
+      if (emptyTurnFallbackTimerRef.current !== null) {
+        window.clearTimeout(emptyTurnFallbackTimerRef.current)
+        emptyTurnFallbackTimerRef.current = null
+      }
+    }
+  }, [
+    forceReviewScope,
+    observedReview.active,
+    observedReview.completedAtMs,
+    observedReview.turnId,
   ])
 
   // ── boot: worker info + this workspace tab's persisted state ──
@@ -1028,6 +1088,10 @@ export function ShellExplorerPage({
     !scopeLoading &&
     scopeError === null &&
     scopeEntries.size === 0
+  const currentTurnEmpty =
+    reviewScope.kind === 'last-turn' &&
+    observedReview.active &&
+    reviewEntries.size === 0
 
   // The panel, not the viewport, decides what fits: a shell page shares the
   // console with other panels. Below the same width the stylesheet treats as
@@ -1072,6 +1136,24 @@ export function ShellExplorerPage({
       ),
     [visibleReviewSummary],
   )
+  const reviewScopeCounts = useMemo<ReviewScopeCounts>(() => {
+    const next: ReviewScopeCounts = {
+      ...scopeCounts,
+      'last-turn': reviewEntries.size,
+    }
+    if (isLiveGitReviewScope(reviewScope)) {
+      if (scopeLoading || scopeError !== null) delete next[reviewScope.kind]
+      else next[reviewScope.kind] = orderedReviewEntries.length
+    }
+    return next
+  }, [
+    orderedReviewEntries.length,
+    reviewEntries.size,
+    reviewScope,
+    scopeCounts,
+    scopeError,
+    scopeLoading,
+  ])
   // The Files tree is also the review navigator. Review-only rows keep
   // deleted files visible even after they disappear from coder::tree.
   const reviewTree = useMemo(
@@ -1232,12 +1314,25 @@ export function ShellExplorerPage({
         })
         .catch(() => {})
     }
-    void Promise.all([gitRecentCommits(host, root), gitRefs(host, root)])
-      .then(([commits, refs]) => {
+    void Promise.all([
+      gitRecentCommits(host, root),
+      gitRefs(host, root),
+      gitComparison(host, root, 'uncommitted'),
+      gitComparison(host, root, 'unstaged'),
+      gitComparison(host, root, 'staged'),
+    ])
+      .then(([commits, refs, uncommitted, unstaged, staged]) => {
         if (scopeMetadataSeqRef.current !== seq || rootRef.current !== root)
           return
         setScopeCommits(commits.kind === 'ready' ? commits.commits : [])
         setScopeRefs(refs.kind === 'ready' ? refs.refs : [])
+        const counts: ReviewScopeCounts = {}
+        if (uncommitted.kind === 'ready')
+          counts.uncommitted = uncommitted.changes.length
+        if (unstaged.kind === 'ready')
+          counts.unstaged = unstaged.changes.length
+        if (staged.kind === 'ready') counts.staged = staged.changes.length
+        setScopeCounts(counts)
         const failure =
           commits.kind === 'error'
             ? commits.message
@@ -1248,13 +1343,21 @@ export function ShellExplorerPage({
                 : null
         setScopeMetadataError(failure)
       })
+      .catch((error: unknown) => {
+        if (scopeMetadataSeqRef.current !== seq || rootRef.current !== root)
+          return
+        setScopeMetadataError(errorMessage(error))
+      })
       .finally(() => {
         if (scopeMetadataSeqRef.current === seq) setScopeMetadataLoading(false)
       })
   }, [host, root, conversationId])
 
   const loadReviewScope = useCallback(
-    (scope: Exclude<ReviewScopeSelection, { kind: 'last-turn' }>) => {
+    (
+      scope: Exclude<ReviewScopeSelection, { kind: 'last-turn' }>,
+      preferredPath?: string | null,
+    ) => {
       if (root === null) return
       const seq = ++scopeLoadSeqRef.current
       setScopeLoading(true)
@@ -1278,8 +1381,13 @@ export function ShellExplorerPage({
             setTurnOutside(mapped.outside)
             const activePath = diffRef.current?.change.path
             const entry =
+              (preferredPath
+                ? mapped.entries.get(preferredPath)
+                : undefined) ??
               (activePath ? mapped.entries.get(activePath) : undefined) ??
-              mapped.entries.values().next().value
+              (preferredPath === undefined
+                ? mapped.entries.values().next().value
+                : undefined)
             if (entry) openReviewEntry(entry)
             else {
               diffRequestRef.current += 1
@@ -1313,6 +1421,25 @@ export function ShellExplorerPage({
           if (scopeLoadSeqRef.current !== seq || rootRef.current !== root)
             return
           if (state.kind !== 'ready') {
+            if (shouldFallbackToTurnScope(scope, state.kind)) {
+              followHarnessTurnsRef.current = true
+              forceReviewScope(LAST_TURN_SCOPE)
+              const activePath = diffRef.current?.change.path
+              const entry =
+                (preferredPath
+                  ? reviewEntriesRef.current.get(preferredPath)
+                  : undefined) ??
+                (activePath
+                  ? reviewEntriesRef.current.get(activePath)
+                  : undefined) ??
+                reviewEntriesRef.current.values().next().value
+              if (entry) openReviewEntry(entry)
+              else {
+                diffRequestRef.current += 1
+                setDiff(null)
+              }
+              return
+            }
             const message =
               state.kind === 'error' ? state.message : 'not a git repository'
             scopeEntriesRef.current = new Map()
@@ -1325,10 +1452,19 @@ export function ShellExplorerPage({
           const next = reviewEntriesFromGit(state.changes)
           scopeEntriesRef.current = next
           setScopeEntries(next)
+          if (isLiveGitReviewScope(scope)) {
+            setScopeCounts((previous) => ({
+              ...previous,
+              [scope.kind]: next.size,
+            }))
+          }
           const activePath = diffRef.current?.change.path
           const entry =
+            (preferredPath ? next.get(preferredPath) : undefined) ??
             (activePath ? next.get(activePath) : undefined) ??
-            next.values().next().value
+            (preferredPath === undefined
+              ? next.values().next().value
+              : undefined)
           if (entry) openReviewEntry(entry)
           else {
             diffRequestRef.current += 1
@@ -1348,47 +1484,8 @@ export function ShellExplorerPage({
           if (scopeLoadSeqRef.current === seq) setScopeLoading(false)
         })
     },
-    [host, root, conversationId, openReviewEntry],
+    [host, root, conversationId, forceReviewScope, openReviewEntry],
   )
-
-  // A chat reopened after its work is done has no live turn to follow; its
-  // latest stored turn stands in, loaded from the shell's durable history.
-  const autoTurnSessionRef = useRef<string | null>(null)
-  useEffect(() => {
-    if (!conversationId || root === null) {
-      autoTurnSessionRef.current = null
-      return
-    }
-    if (observedReview.turnId !== null) return
-    if (autoTurnSessionRef.current === conversationId) return
-    autoTurnSessionRef.current = conversationId
-    let cancelled = false
-    void fetchSessionTurns(host, conversationId)
-      .then((turns) => {
-        if (cancelled || rootRef.current !== root) return
-        setSessionTurns(turns)
-        // Only a turn that touched files is worth restoring: landing a
-        // chat-switcher on "0 files at 02:55 PM" reads as a broken pane,
-        // where the plain Last Turn default reads as an empty one.
-        const latest = turns.find((turn) => turn.file_count > 0)
-        if (!latest || observedReviewKeyRef.current !== null) return
-        if (reviewEntriesRef.current.size > 0) return
-        const scope = {
-          kind: 'turn' as const,
-          turnId: latest.turn_id,
-          label: turnLabel(latest),
-        }
-        scopeLoadSeqRef.current += 1
-        setReviewScope(scope)
-        scopeEntriesRef.current = new Map()
-        setScopeEntries(new Map())
-        loadReviewScope(scope)
-      })
-      .catch(() => {})
-    return () => {
-      cancelled = true
-    }
-  }, [host, conversationId, root, observedReview.turnId, loadReviewScope])
 
   const onReviewEditDirtyChange = useCallback(
     (path: string, dirty: boolean) => {
@@ -1529,11 +1626,12 @@ export function ShellExplorerPage({
   const selectReviewScope = useCallback(
     (next: ReviewScopeSelection) => {
       if (!confirmDiscardReviewEdits()) return
+      followHarnessTurnsRef.current = next.kind === 'last-turn'
       setScopeSummary([])
       setScopeError(null)
       setReviewMenuOpen(false)
       if (next.kind === 'last-turn') {
-        forceLastTurnScope()
+        forceReviewScope(LAST_TURN_SCOPE)
         const activePath = diffRef.current?.change.path
         const entry =
           (activePath ? reviewEntriesRef.current.get(activePath) : undefined) ??
@@ -1553,7 +1651,7 @@ export function ShellExplorerPage({
       diffRequestRef.current += 1
       setDiff(null)
     },
-    [confirmDiscardReviewEdits, forceLastTurnScope, openReviewEntry],
+    [confirmDiscardReviewEdits, forceReviewScope, openReviewEntry],
   )
 
   useShellReviewSummaryBridge({
@@ -1565,7 +1663,8 @@ export function ShellExplorerPage({
       if (!confirmDiscardReviewEdits()) return
       const entry = reviewEntriesRef.current.get(path)
       if (entry) {
-        forceLastTurnScope()
+        followHarnessTurnsRef.current = true
+        forceReviewScope(LAST_TURN_SCOPE)
         openReviewEntry(entry)
       }
     },
@@ -1574,6 +1673,7 @@ export function ShellExplorerPage({
   useWorkspaceChanges(host, root, (event) => {
     if (rootTransitionRef.current) return
     if (event.root !== rootRef.current) return
+    if (isShellUiStatePath(event.path)) return
     const eventAbs = joinPath(event.root, event.path)
     changedAbsRef.current.set(eventAbs, event.kind)
     // Directories refresh the tree but must never open as files —
@@ -1751,7 +1851,16 @@ export function ShellExplorerPage({
           reviewEntriesRef.current = enriched
           setReviewEntries(enriched)
 
-          if (follow !== null && diffRequestRef.current === followTicket) {
+          const activeScope = reviewScopeRef.current
+          if (isLiveGitReviewScope(activeScope)) {
+            loadReviewScope(activeScope, follow?.rel ?? null)
+            return
+          }
+          if (
+            activeScope.kind === 'last-turn' &&
+            follow !== null &&
+            diffRequestRef.current === followTicket
+          ) {
             const entry =
               enriched.get(follow.rel) ??
               [...fileEvents]
@@ -1759,7 +1868,6 @@ export function ShellExplorerPage({
                 .map(({ rel }) => enriched.get(rel))
                 .find((candidate) => candidate !== undefined)
             if (entry) {
-              forceLastTurnScope()
               openReviewEntry(entry)
             }
             return
@@ -2008,9 +2116,11 @@ export function ShellExplorerPage({
         setScopeSummary([])
         setScopeCommits([])
         setScopeRefs([])
+        setScopeCounts({})
         setScopeMetadataLoading(false)
         setScopeMetadataError(null)
-        forceLastTurnScope()
+        followHarnessTurnsRef.current = true
+        forceReviewScope(DEFAULT_REVIEW_SCOPE)
         setTree(null)
         setGit(null)
         setSubtrees(new Map())
@@ -2031,7 +2141,7 @@ export function ShellExplorerPage({
     },
     [
       confirmDiscardAllEdits,
-      forceLastTurnScope,
+      forceReviewScope,
       host,
       refreshGit,
       refreshTree,
@@ -2603,6 +2713,34 @@ export function ShellExplorerPage({
           },
         },
         {
+          id: 'review-uncommitted',
+          title: 'View uncommitted changes',
+          detail: 'All working tree changes since the last commit',
+          keywords: ['review', 'diff', 'git', 'working tree'],
+          run: () => selectReviewScope(DEFAULT_REVIEW_SCOPE),
+        },
+        {
+          id: 'review-unstaged',
+          title: 'View unstaged changes',
+          detail: 'Working tree changes not added to the index',
+          keywords: ['review', 'diff', 'git', 'working tree'],
+          run: () => selectReviewScope({ kind: 'unstaged' }),
+        },
+        {
+          id: 'review-staged',
+          title: 'View staged changes',
+          detail: 'Changes added to the Git index',
+          keywords: ['review', 'diff', 'git', 'index'],
+          run: () => selectReviewScope({ kind: 'staged' }),
+        },
+        {
+          id: 'review-last-turn',
+          title: 'Follow Harness turn changes',
+          detail: 'Current turn while running, then the completed turn',
+          keywords: ['review', 'diff', 'activity', 'agent', 'turn'],
+          run: () => selectReviewScope(LAST_TURN_SCOPE),
+        },
+        {
           id: 'next-change',
           title: 'Next changed file',
           detail: 'Open the next file in the review',
@@ -2621,7 +2759,15 @@ export function ShellExplorerPage({
           run: () => stepReviewEntry(-1),
         },
       ]),
-    [commands, host, toggleTerminal, onCloseTab, stepReviewEntry, frameEl],
+    [
+      commands,
+      host,
+      toggleTerminal,
+      onCloseTab,
+      selectReviewScope,
+      stepReviewEntry,
+      frameEl,
+    ],
   )
 
   const header = (
@@ -2886,6 +3032,8 @@ export function ShellExplorerPage({
                 <ReviewScopePicker
                   value={reviewScope}
                   commits={scopeCommits}
+                  counts={reviewScopeCounts}
+                  currentTurn={observedReview.active}
                   turns={sessionTurns.map((turn) => ({
                     turnId: turn.turn_id,
                     label: turnLabel(turn),
@@ -3250,7 +3398,14 @@ export function ShellExplorerPage({
             ) : scopeEmpty ? (
               <div className="shui-main-empty">
                 <span className="t-ghost">
-                  No changes in {reviewScopeLabel(reviewScope)}
+                  No changes in{' '}
+                  {reviewScopeLabel(reviewScope, observedReview.active)}
+                </span>
+              </div>
+            ) : currentTurnEmpty ? (
+              <div className="shui-main-empty">
+                <span className="t-ghost">
+                  Changes from this turn will appear here…
                 </span>
               </div>
             ) : tabs.active !== null ? (
@@ -3286,16 +3441,9 @@ export function ShellExplorerPage({
               <ShellLauncher
                 host={host}
                 browserAvailable={browserAvailable}
-                // Changes is the navbar's review scope: the last turn when it
-                // touched anything, otherwise everything the working tree has
-                // that HEAD does not.
-                onOpenChanges={() =>
-                  selectReviewScope(
-                    reviewEntriesRef.current.size > 0
-                      ? LAST_TURN_SCOPE
-                      : { kind: 'uncommitted' },
-                  )
-                }
+                // Changes is cumulative working-tree work since HEAD. Last
+                // Turn remains available as an explicit review scope.
+                onOpenChanges={() => selectReviewScope(DEFAULT_REVIEW_SCOPE)}
                 onOpenTerminal={() => {
                   setTerminalOpen(true)
                   setTerminalActive(true)
