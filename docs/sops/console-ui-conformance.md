@@ -41,7 +41,7 @@ or the selection/motion rules change.
 
 ## Injectable worker sweep
 
-All 23 checked-in injectable UI packages were inspected. “Domain adapter”
+All 24 checked-in injectable UI packages were inspected. “Domain adapter”
 means a local component still adds information architecture or semantics; it
 must compose shared controls/tokens and is not permission to fork base hover,
 selection, tooltip, or selector behavior.

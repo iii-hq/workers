@@ -37,9 +37,10 @@
 //! Write paths: `directory::skills::download*` pulls markdown either
 //! from the workers registry (`worker=NAME version=X.Y.Z|tag=latest`;
 //! defaults to `tag=latest`) or from a GitHub repo (`repo=URL
-//! skill=NAME branch?=main`) and writes skills/prompts into
-//! `<skills_folder>/<namespace>/...`; registry agent entries are routed to
-//! `agents_folder`. `directory::skills::update` /
+//! skill=NAME branch?=main`) and writes skills/system prompts into
+//! `<skills_folder>/<namespace>/...`; legacy `prompts/` paths are ignored,
+//! while registry agent entries are routed to `agents_folder`.
+//! `directory::skills::update` /
 //! `directory::system-prompts::update` /
 //! `directory::agents::update` overwrite one existing file with edited
 //! full-file content; `directory::skills::{create,delete}`,

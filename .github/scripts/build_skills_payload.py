@@ -44,7 +44,17 @@ def collect_skills(worker_root: pathlib.Path) -> dict[str, str]:
 
     leaves_dir = worker_root / "skills"
     skills_skill = leaves_dir / "SKILL.md"
-    skill_markdown = list(leaves_dir.rglob("*.md")) if leaves_dir.is_dir() else []
+    skill_markdown = (
+        [
+            path
+            for path in leaves_dir.rglob("*.md")
+            if not {"prompts", "agents"}.intersection(
+                path.relative_to(leaves_dir).parts
+            )
+        ]
+        if leaves_dir.is_dir()
+        else []
+    )
     agents_dir = worker_root / "agents"
     agent_markdown = list(agents_dir.glob("*.md")) if agents_dir.is_dir() else []
     markdown = sorted([*skill_markdown, *agent_markdown])

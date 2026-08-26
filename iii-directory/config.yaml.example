@@ -18,7 +18,8 @@
 # auto_download).
 #
 # When omitted entirely, the worker seeds the built-in defaults
-# (skills_folder: skills, registry_url: https://api.workers.iii.dev).
+# (skills_folder: skills, agents_folder: agents,
+# registry_url: https://api.workers.iii.dev).
 
 # Folder that backs every read (`directory::skills::list`,
 # `directory::skills::get`, `directory::system-prompts::*`) and every write

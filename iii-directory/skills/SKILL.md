@@ -105,6 +105,8 @@ that kind's files directly on disk, outside this worker (`op: "external"` — a
 file pasted in, edited in an external editor, deleted, or renamed). Bind one when
 a *different* worker must react to the on-disk set changing; the `mcp` worker uses
 this to emit `notifications/*_list_changed` to its clients without re-polling.
+Direct `<id>.md` profile edits under `agents_folder` fire
+`directory::agents::on-change`; nested files there are ignored.
 
 Reach for it when:
 

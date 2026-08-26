@@ -140,6 +140,8 @@ required" log; the previous configuration is kept until the worker restarts.
 
 The writable `skills_folder`, `local_skills_folder`, and `agents_folder` are
 watch roots, and the watcher creates each one at boot if it is missing.
+Direct `<id>.md` edits under `agents_folder` fire
+`directory::agents::on-change` with `op: "external"`; nested files are ignored.
 `agents_skills_folder` is a watch root too,
 but only when it already exists — the worker never creates (or writes)
 anything under it. Install your first agents skill while the worker is
