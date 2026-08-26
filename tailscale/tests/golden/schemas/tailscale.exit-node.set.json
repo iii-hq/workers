@@ -1,0 +1,143 @@
+{
+  "description": "Route this node's internet traffic through an exit node (by name or IP, or `auto:any`), or clear it with an empty value.",
+  "function_id": "tailscale::exit-node::set",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "allow_lan_access": {
+        "description": "Allow direct access to the local LAN while the exit node is in use.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "exit_node": {
+        "description": "Exit node by MagicDNS name, hostname, Tailscale IP, or `auto:any`; empty or omitted clears the exit node.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "ExitNodeSetInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "accept_dns": {
+        "description": "Accept DNS configuration from the tailnet.",
+        "type": "boolean"
+      },
+      "accept_routes": {
+        "description": "Accept subnet routes advertised by other nodes.",
+        "type": "boolean"
+      },
+      "advertise_exit_node": {
+        "description": "Whether this node advertises itself as an exit node.",
+        "type": "boolean"
+      },
+      "advertise_routes": {
+        "description": "Subnet routes this node advertises.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "advertise_tags": {
+        "description": "ACL tags requested by this node.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "app_connector": {
+        "description": "Advertised as an app connector.",
+        "type": "boolean"
+      },
+      "auto_update_apply": {
+        "description": "Automatic updates applied.",
+        "type": "boolean"
+      },
+      "auto_update_check": {
+        "description": "Automatic update checks enabled.",
+        "type": "boolean"
+      },
+      "control_url": {
+        "description": "Control server URL.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "exit_node_allow_lan_access": {
+        "description": "LAN access allowed while using an exit node.",
+        "type": "boolean"
+      },
+      "exit_node_id": {
+        "description": "Exit node in use, by id.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "exit_node_ip": {
+        "description": "Exit node in use, by IP.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "hostname": {
+        "description": "Hostname override, empty when the OS name is used.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "logged_out": {
+        "description": "Whether the node is logged out.",
+        "type": "boolean"
+      },
+      "posture_checking": {
+        "description": "Device posture reporting enabled.",
+        "type": "boolean"
+      },
+      "shields_up": {
+        "description": "Incoming connections blocked.",
+        "type": "boolean"
+      },
+      "ssh": {
+        "description": "Tailscale SSH server enabled on this node.",
+        "type": "boolean"
+      },
+      "want_running": {
+        "description": "Whether the node wants to be connected.",
+        "type": "boolean"
+      },
+      "webclient": {
+        "description": "Web client exposed on port 5252.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "accept_dns",
+      "accept_routes",
+      "advertise_exit_node",
+      "advertise_routes",
+      "advertise_tags",
+      "app_connector",
+      "auto_update_apply",
+      "auto_update_check",
+      "exit_node_allow_lan_access",
+      "logged_out",
+      "posture_checking",
+      "shields_up",
+      "ssh",
+      "want_running",
+      "webclient"
+    ],
+    "title": "Prefs",
+    "type": "object"
+  }
+}

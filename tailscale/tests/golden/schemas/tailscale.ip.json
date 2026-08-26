@@ -1,0 +1,40 @@
+{
+  "description": "Tailscale IP addresses of this node, or of a peer by hostname or IP.",
+  "function_id": "tailscale::ip",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "peer": {
+        "description": "Peer hostname or Tailscale IP; omitted means this node.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "IpInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "addresses": {
+        "description": "Tailscale IPv4 and IPv6 addresses.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "peer": {
+        "description": "Peer the addresses belong to, or `self`.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "addresses",
+      "peer"
+    ],
+    "title": "IpOutput",
+    "type": "object"
+  }
+}

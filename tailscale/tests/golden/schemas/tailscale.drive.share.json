@@ -1,0 +1,64 @@
+{
+  "description": "Share a directory with the tailnet through Taildrive under a name (`tailscale drive share`).",
+  "function_id": "tailscale::drive::share",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "name": {
+        "description": "Share name.",
+        "type": "string"
+      },
+      "path": {
+        "description": "Absolute directory to share.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "name",
+      "path"
+    ],
+    "title": "DriveShareInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "DriveShare": {
+        "properties": {
+          "name": {
+            "description": "Share name.",
+            "type": "string"
+          },
+          "path": {
+            "description": "Directory shared.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "path"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "output": {
+        "description": "The CLI's own output.",
+        "type": "string"
+      },
+      "shares": {
+        "description": "Taildrive shares as `name  path` lines from the CLI.",
+        "items": {
+          "$ref": "#/definitions/DriveShare"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "output",
+      "shares"
+    ],
+    "title": "DriveListOutput",
+    "type": "object"
+  }
+}

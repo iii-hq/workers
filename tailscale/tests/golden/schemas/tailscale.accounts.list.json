@@ -1,0 +1,62 @@
+{
+  "description": "List the Tailscale accounts logged in on this device and which one is active.",
+  "function_id": "tailscale::accounts::list",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "EmptyInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Account": {
+        "properties": {
+          "account": {
+            "description": "Login name.",
+            "type": "string"
+          },
+          "id": {
+            "description": "Short id used by `switch`.",
+            "type": "string"
+          },
+          "nickname": {
+            "description": "Nickname, when set.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "selected": {
+            "description": "Whether this account is active.",
+            "type": "boolean"
+          },
+          "tailnet": {
+            "description": "Tailnet name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "account",
+          "id",
+          "selected",
+          "tailnet"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "accounts": {
+        "description": "Accounts logged in on this device.",
+        "items": {
+          "$ref": "#/definitions/Account"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "accounts"
+    ],
+    "title": "AccountsOutput",
+    "type": "object"
+  }
+}

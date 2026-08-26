@@ -1,0 +1,53 @@
+{
+  "description": "Send files to a tailnet device with Taildrop (`tailscale file cp`). Paths must be absolute and exist on this host.",
+  "function_id": "tailscale::file::send",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "name": {
+        "description": "Alternate file name to use when sending a single file.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "paths": {
+        "description": "Absolute paths of the files to send.",
+        "items": {
+          "type": "string"
+        },
+        "minItems": 1,
+        "type": "array"
+      },
+      "target": {
+        "description": "Receiving device by machine name or Tailscale IP.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "paths",
+      "target"
+    ],
+    "title": "FileSendInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "ok": {
+        "description": "True when the CLI exited successfully.",
+        "type": "boolean"
+      },
+      "output": {
+        "description": "The CLI's own output.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "ok",
+      "output"
+    ],
+    "title": "CommandOutput",
+    "type": "object"
+  }
+}

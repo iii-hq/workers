@@ -1,0 +1,84 @@
+{
+  "description": "Report the MagicDNS and split-DNS configuration the local Tailscale DNS forwarder is using.",
+  "function_id": "tailscale::dns::status",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "EmptyInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SplitDnsRoute": {
+        "properties": {
+          "domain": {
+            "description": "Domain suffix routed to the resolvers.",
+            "type": "string"
+          },
+          "resolvers": {
+            "description": "Resolvers used for that suffix.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "domain",
+          "resolvers"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "cert_domains": {
+        "description": "Domains this node can obtain HTTPS certificates for.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "magic_dns": {
+        "description": "Whether MagicDNS is enabled for this node.",
+        "type": "boolean"
+      },
+      "magic_dns_suffix": {
+        "description": "MagicDNS suffix of the tailnet.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "resolvers": {
+        "description": "Upstream resolvers Tailscale forwards to.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "search_domains": {
+        "description": "Search domains pushed by the tailnet.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "split_dns_routes": {
+        "description": "Split-DNS routes: domain suffix to resolvers.",
+        "items": {
+          "$ref": "#/definitions/SplitDnsRoute"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "cert_domains",
+      "magic_dns",
+      "resolvers",
+      "search_domains",
+      "split_dns_routes"
+    ],
+    "title": "DnsStatusOutput",
+    "type": "object"
+  }
+}
