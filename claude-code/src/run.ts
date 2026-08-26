@@ -547,7 +547,7 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
     },
     {
       description:
-        'Delegate one task to Claude Code and return its session id immediately — the sub-agent shape: fire it from a trigger, watch agent::events (group_id = session_id) for progress, and read the child session for the outcome. Pass `parent_session_id` to nest it under the session that delegated it.',
+        'Delegate one task to Claude Code and return its session id immediately — the sub-agent shape: it never parks the caller. The outcome is written to state under scope `agent_tasks`, key the child session id, so bind a `state` trigger on that BEFORE calling and be woken by it; progress streams onto agent::events (group_id = session_id). Pass `parent_session_id` to nest the child under the session that delegated it.',
       request_format: TASK_REQUEST_FORMAT,
       response_format: START_RESPONSE_FORMAT,
     },

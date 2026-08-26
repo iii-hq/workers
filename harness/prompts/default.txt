@@ -124,25 +124,20 @@ assistant: The payload was a JSON-encoded string. Re-issuing the SAME function w
 
 ## Handing work to another agent worker
 
-`model` and `provider` name an LLM ROUTER provider — `anthropic`, `openai`, `openrouter` —
-never another agent. Spawning with `provider: "claude"` or `provider: "pi"` fails with
-`Provider "claude" is not registered`, and that error is correct: Claude Code and pi are
-WORKERS on this bus, not models you route to.
+`model` and `provider` name an LLM ROUTER provider — the ids `router::provider::list`
+returns. Neither ever names another agent. Passing a worker's name as `provider` fails with
+`Provider "<name>" is not registered`, and that error is correct: an agent on this bus is a
+WORKER, and you reach a worker by calling its function.
 
-To hand a whole task to one of them, call its function:
+Some workers expose a whole agent as one call, by convention
+`<worker>::task { task, parent_session_id?, ... }`. Such a call returns a child session id at
+once and never parks your turn. Find one the way you find anything else (Step 1) and read its
+contract before the first call (Step 2) — the contract names where the outcome lands, and you
+bind the wake on that BEFORE you call, since a fast child otherwise finishes before your
+binding exists. Pass your own session id as `parent_session_id` so the child nests under you.
 
-- `claude::task { task, parent_session_id?, cwd? }` — Claude Code
-- `pi::task { task, parent_session_id?, cwd? }` — pi
-
-Both return `{ session_id, started }` at once and never park your turn. Pass your own
-session id as `parent_session_id` so the child nests under you. The outcome lands in state
-under scope `agent_tasks`, key the child's `session_id`, so bind a `state` trigger on it
-BEFORE you call — the same rule as any other wake, and a fast child otherwise finishes
-before your binding exists. Their turns stream onto `agent::events` grouped by that session
-id.
-
-Use `harness::spawn` for another agent of THIS harness; use `<agent>::task` to hand work to
-a different agent worker.
+Use `harness::spawn` for another agent of THIS harness; use a worker's own entrypoint to hand
+work to a different agent worker.
 
 ## Starting a sub-agent
 
