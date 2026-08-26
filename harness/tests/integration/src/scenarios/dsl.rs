@@ -65,7 +65,7 @@ pub(super) struct Scenario {
     await_target_calls: Option<usize>,
     traces_override: Option<usize>,
     intervention: Option<ScenarioIntervention>,
-    skills_files: Vec<(String, String)>,
+    agent_files: Vec<(String, String)>,
     match_any: bool,
 }
 
@@ -96,7 +96,7 @@ impl Scenario {
             await_target_calls: None,
             traces_override: None,
             intervention: None,
-            skills_files: Vec::new(),
+            agent_files: Vec::new(),
             match_any: false,
         }
     }
@@ -292,10 +292,9 @@ impl Scenario {
         self
     }
 
-    /// Write a file under the run's skills dir before the stack boots (e.g.
-    /// an `agents/<id>.md` profile the iii-directory worker serves).
-    pub(super) fn skills_file(mut self, path: &str, content: &str) -> Self {
-        self.skills_files
+    /// Write an agent profile under the run's agents dir before stack boot.
+    pub(super) fn agent_file(mut self, path: &str, content: &str) -> Self {
+        self.agent_files
             .push((path.to_string(), content.to_string()));
         self
     }
@@ -346,7 +345,7 @@ impl Scenario {
             await_target_calls: self.await_target_calls,
             traces_override: self.traces_override,
             intervention: self.intervention,
-            skills_files: self.skills_files,
+            agent_files: self.agent_files,
         }
     }
 }

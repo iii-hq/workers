@@ -3,7 +3,7 @@
 //! profile, and the frozen identity gates delegation:
 //!   * the parent's prompt is the top-level identity ENRICHED with
 //!     `You are Lead.` + the profile body, resolved server-side from the
-//!     run's `skills/agents/lead.md` — no prompt fields on the send;
+//!     run's `agents/lead.md` — no prompt fields on the send;
 //!   * the omitted policy defaults to the configured baseline (`allow: *`),
 //!     which is what lets the spawn dispatch at all;
 //!   * a spawn naming an agent OUTSIDE the lead's `delegates_to` comes back
@@ -75,8 +75,8 @@ pub(super) fn scenario() -> ScenarioFixture {
             .agent("lead")
             .omit_functions(),
     )
-    .skills_file("agents/lead.md", LEAD_PROFILE)
-    .skills_file("agents/coder.md", CODER_PROFILE)
+    .agent_file("lead.md", LEAD_PROFILE)
+    .agent_file("coder.md", CODER_PROFILE)
     // The child's opening step races the parent's post-spawn step — every
     // generation here is uniquely matchable (step + prompt), so dispatch by
     // match instead of arrival order.
@@ -193,7 +193,7 @@ mod tests {
         // Four generations: three parent (denied spawn, corrected spawn,
         // final), one child.
         assert_eq!(fixture.script.generations.len(), 4);
-        assert_eq!(fixture.skills_files.len(), 2);
+        assert_eq!(fixture.agent_files.len(), 2);
         // The send carries the agent id and NO functions policy — the
         // harness-side default is part of what this scenario pins.
         assert_eq!(fixture.scenario.send.options.agent.as_deref(), Some("lead"));
