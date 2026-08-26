@@ -7,3 +7,14 @@ license: Apache-2.0
 bin: console
 tags: [console, dashboard, ui, web, admin]
 description: Web console for iii — bundles the React UI and proxies the engine WebSocket on a single port.
+
+runtime:
+  kind: rust
+
+# How a supervisor starts this worker from a source checkout. `iii compose`
+# reads `scripts.start` as the default for a container, so a compose file needs
+# no `run` line of its own — the port stays an operator setting (`http_port` in
+# the stored config, or `--http-port`).
+scripts:
+  install: cargo build
+  start: cargo run --bin console
