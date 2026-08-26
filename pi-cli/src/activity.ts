@@ -31,12 +31,43 @@ type SessionState = {
   calls: Map<string, ToolCall>;
   results: FunctionResultMessage[];
   touched: number;
+  /**
+   * Ids this worker invented, by tool name. pi's `call_id` is optional, and
+   * both halves of a call have to carry the SAME id — otherwise the console
+   * shows a call that never ends, and its duration reads as 0. An id derived
+   * from the pending-call count cannot do that, because the count moves
+   * between the two events, so the id is generated once at `tool_start` and
+   * kept here until `tool_end` claims it.
+   */
+  generated: Map<string, string>;
+  /** Only ever grows, so two calls to one tool never share an id. */
+  nextId: number;
 };
 
 /** pi's built-in tools are this worker's; an MCP-style name keeps its server. */
 export function toolFunctionId(name: string): string {
   if (!name) return 'pi-cli::tool';
   return name.includes('__') ? name.replace(/__/g, '::') : `pi-cli::${name}`;
+}
+
+/** The id for a `tool_start` that named none, remembered for its `tool_end`. */
+function startGeneratedId(state: SessionState, tool: string): string {
+  const id = `${tool}-${state.nextId}`;
+  state.nextId += 1;
+  state.generated.set(tool, id);
+  return id;
+}
+
+/**
+ * The id its `tool_start` invented. A `tool_end` with no start behind it (a
+ * restart mid-call, an extension that dropped a frame) still gets an id of its
+ * own rather than one belonging to another call.
+ */
+function endGeneratedId(state: SessionState, tool: string): string {
+  const id = state.generated.get(tool);
+  if (id === undefined) return startGeneratedId(state, tool);
+  state.generated.delete(tool);
+  return id;
 }
 
 function assistant(content: ContentBlock[], stop_reason = 'tool_use'): AssistantMessage {
@@ -82,7 +113,14 @@ export class ActivityTracker {
   private state(sessionId: string): SessionState {
     let state = this.sessions.get(sessionId);
     if (!state) {
-      state = { transcript: [], calls: new Map(), results: [], touched: Date.now() };
+      state = {
+        transcript: [],
+        calls: new Map(),
+        results: [],
+        touched: Date.now(),
+        generated: new Map(),
+        nextId: 0,
+      };
       this.sessions.set(sessionId, state);
     }
     state.touched = Date.now();
@@ -117,7 +155,7 @@ export class ActivityTracker {
       }
 
       case 'tool_start': {
-        const id = event.call_id || `${event.tool ?? 'tool'}-${state.calls.size}`;
+        const id = event.call_id || startGeneratedId(state, event.tool ?? 'tool');
         const function_id = toolFunctionId(event.tool ?? '');
         state.calls.set(id, { function_id, started_at: Date.now() });
         const message = assistant([
@@ -135,7 +173,7 @@ export class ActivityTracker {
       }
 
       case 'tool_end': {
-        const id = event.call_id || `${event.tool ?? 'tool'}-${state.calls.size}`;
+        const id = event.call_id || endGeneratedId(state, event.tool ?? 'tool');
         const call = state.calls.get(id);
         state.calls.delete(id);
         const function_id = call?.function_id ?? toolFunctionId(event.tool ?? '');

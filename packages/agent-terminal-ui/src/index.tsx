@@ -22,7 +22,7 @@ import { Button, PageBody, PageHeader, PageMain, PageShell } from '@iii-dev/cons
 import { MAX_FONT_SIZE, MIN_FONT_SIZE, stepFontSize, useTerminalFontSize } from '@iii-workers/terminal-font'
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
-import { useCallback, useEffect, useRef, useState, type WheelEvent } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 const STALL_MS = 250
 const MAX_QUEUED_EVENTS = 4096
@@ -146,6 +146,11 @@ interface OrderedWriterOptions {
 function createOrderedWriter(opts: OrderedWriterOptions) {
   let last = 0
   const pending = new Map<number, PtyOutputEvent>()
+  // An EOF frame carries no sequence, so it cannot be ordered against frames
+  // still in flight: it waits here until nothing is pending. Handing it
+  // `last + 1` ended the session before its last output arrived AND took the
+  // sequence that output was about to use, which dropped the final chunk.
+  let eof: PtyOutputEvent | null = null
   let timer: number | null = null
 
   const flush = () => {
@@ -156,6 +161,11 @@ function createOrderedWriter(opts: OrderedWriterOptions) {
       if (event.data) opts.write(decodeB64(event.data))
       opts.onApplied(last)
       if (event.eof) opts.onEof(event)
+    }
+    if (eof !== null && pending.size === 0) {
+      const event = eof
+      eof = null
+      opts.onEof(event)
     }
     if (pending.size > 0) {
       if (timer === null) {
@@ -171,16 +181,35 @@ function createOrderedWriter(opts: OrderedWriterOptions) {
   }
 
   return {
-    /** Set the already-applied base sequence (0 for a fresh session). */
+    /** Set the already-applied base sequence within the SAME session. */
     base(sequence: number) {
       last = sequence
       for (const key of [...pending.keys()]) if (key <= sequence) pending.delete(key)
       flush()
     },
+    /**
+     * Start over on another session's stream. `base(0)` cannot do this: it
+     * deletes keys `<= 0`, which is nothing, so a frame left pending by the
+     * session that just died keeps its sequence and paints its bytes into the
+     * fresh terminal.
+     */
+    reset(sequence: number) {
+      pending.clear()
+      eof = null
+      last = sequence
+      if (timer !== null) {
+        window.clearTimeout(timer)
+        timer = null
+      }
+    },
     feed(event: PtyOutputEvent) {
-      // An EOF frame carries no sequence of its own in the shell protocol.
+      if (event.eof && event.sequence == null) {
+        eof = event
+        flush()
+        return
+      }
       const sequence = event.sequence ?? last + 1
-      if (sequence <= last && !event.eof) return
+      if (sequence <= last) return
       pending.set(sequence, { ...event, sequence })
       flush()
     },
@@ -188,6 +217,7 @@ function createOrderedWriter(opts: OrderedWriterOptions) {
     dispose() {
       if (timer !== null) window.clearTimeout(timer)
       pending.clear()
+      eof = null
     },
   }
 }
@@ -561,7 +591,7 @@ function AgentTerminal({
           // so a tail replay leaves a blank pane until the next keystroke.
           // Only the mid-session stall recovery, where the same terminal is
           // still on screen, replays from the last applied sequence.
-          writer.base(0)
+          writer.reset(0)
           unsubscribe = router.subscribe(lease.sessionId, handleEvent)
           for (const event of router.drain(lease.sessionId)) writer.feed(event)
           try {
@@ -630,9 +660,9 @@ function AgentTerminal({
             })
             term.reset()
             if (adopted.truncated) {
-              writer.base(adopted.frames.at(-1)?.sequence ?? 0)
+              writer.reset(adopted.frames.at(-1)?.sequence ?? 0)
             } else {
-              writer.base(0)
+              writer.reset(0)
               for (const frame of adopted.frames) writer.feed(frameToEvent(orphan, frame))
             }
             setStatus('running')
@@ -646,7 +676,7 @@ function AgentTerminal({
           }
         }
 
-        writer.base(0)
+        writer.reset(0)
         const opened = await call<OpenResponse>('shell::pty::open', {
           cwd: spec.cwd,
           cols,
@@ -733,20 +763,27 @@ function AgentTerminal({
     setGeneration((n) => n + 1)
   }, [leasePrefix, tabId])
 
-  // Ctrl/⌘ + wheel is what every terminal emulator does, and it beats
-  // clicking a stepper 20 times to get from 14 to 34.
-  const onWheel = useCallback(
-    (event: WheelEvent<HTMLDivElement>) => {
+  // Ctrl/⌘ + wheel is what every terminal emulator does, and it beats clicking
+  // a stepper 20 times to get from 14 to 34.
+  //
+  // A native listener with `{ passive: false }`, not React's `onWheel`: React
+  // registers wheel handlers as passive, so `preventDefault()` inside one is
+  // ignored and the browser zooms the whole page underneath the terminal.
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+    const zoom = (event: globalThis.WheelEvent) => {
       if (!event.ctrlKey && !event.metaKey) return
       event.preventDefault()
-      setFontSize(stepFontSize(fontSize, event.deltaY < 0 ? 1 : -1))
-    },
-    [fontSize, setFontSize],
-  )
+      setFontSize(stepFontSize(fontSizeRef.current, event.deltaY < 0 ? 1 : -1))
+    }
+    container.addEventListener('wheel', zoom, { passive: false })
+    return () => container.removeEventListener('wheel', zoom)
+  }, [setFontSize])
 
   return (
     <div className="agent-terminal">
-      <div className="agent-terminal-viewport" ref={containerRef} data-autofocus="true" onWheel={onWheel} />
+      <div className="agent-terminal-viewport" ref={containerRef} data-autofocus="true" />
       <div className="agent-terminal-statusbar">
         {status === 'error' ? (
           <span className="agent-terminal-status-error">{detail}</span>

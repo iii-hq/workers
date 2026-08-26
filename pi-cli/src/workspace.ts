@@ -53,14 +53,23 @@ export async function prepareWorkspace(iii: IIIClient, config: Config): Promise<
 
   let bridge = '';
   if (config.setup_workspace) {
-    await installSkills(iii, workspace);
-    await writeNotes(iii, workspace);
-    bridge = await writeExtension(iii, workspace);
-    if (!bridge) {
-      const mute =
-        'the `iii` CLI is not on the terminal host, so the activity extension cannot reach the bus: the terminal works, but no run will reach agent::events';
-      console.warn(`pi-cli: ${mute}`);
-      detail = detail ? `${detail}; ${mute}` : mute;
+    // Equipping the workspace is not what makes a terminal usable: a read-only
+    // `AGENTS.md` or an unwritable `.pi/` still leaves a working CLI in a
+    // working directory. A failure here is reported, and the terminal opens.
+    try {
+      await installSkills(iii, workspace);
+      await writeNotes(iii, workspace);
+      bridge = await writeExtension(iii, workspace);
+      if (!bridge) {
+        const mute =
+          'the `iii` CLI is not on the terminal host, so the activity extension cannot reach the bus: the terminal works, but no run will reach agent::events';
+        console.warn(`pi-cli: ${mute}`);
+        detail = detail ? `${detail}; ${mute}` : mute;
+      }
+    } catch (err) {
+      const failed = `the workspace could not be equipped (${String(err)}); the terminal opens without the iii notes or the activity extension`;
+      console.warn(`pi-cli: ${failed}`);
+      detail = detail ? `${detail}; ${failed}` : failed;
     }
   }
 

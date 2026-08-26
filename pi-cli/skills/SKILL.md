@@ -23,7 +23,7 @@ worker's.
 - An operator wants a second agent harness on the same engine to compare
   against Claude Code.
 
-Use `pi` instead for headless turns over the bus, and `claude-cli` for the
+Use `pi` instead for headless turns over the bus, and `claude-code` for the
 same terminal shape with Claude Code.
 
 ## What it produces

@@ -33,6 +33,16 @@
   No credentials. It separates a terminal that shows nothing because nothing
   was produced from one whose frames the browser dropped.
 
+### Fixed
+
+- **A per-call env key now has to BE a key.** `shell::exec`, `shell::exec_bg`
+  and `shell::pty::open` checked the deny-list against the string handed in,
+  and an environment entry is one `key=value` string — so `PATH=/tmp/evil`
+  read as an unknown (therefore allowed) name, passed the `PATH` rule, and
+  still handed the child a `PATH`. A key must now be an environment variable
+  name (`[A-Za-z_][A-Za-z0-9_]*`): an empty key, a key holding a NUL, and any
+  key carrying `=` are refused (`S210` on the exec surface).
+
 ### Changed
 
 - The output handler a session may deliver to is validated by SHAPE rather

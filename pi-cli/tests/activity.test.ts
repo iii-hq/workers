@@ -77,6 +77,26 @@ describe('a pi run becomes AgentEvent frames', () => {
     expect(end.is_error).toBe(true);
   });
 
+  it('pairs a call that carries no id of its own', async () => {
+    const { emitted, tracker: subject } = tracker();
+    await subject.handle({ event: 'tool_start', session_id: 's', tool: 'bash' });
+    await subject.handle({ event: 'tool_end', session_id: 's', tool: 'bash', result: 'ok' });
+
+    const start = emitted[1]?.event;
+    const end = emitted.at(-1)?.event;
+    if (start?.type !== 'function_execution_start') throw new Error('expected a call start');
+    if (end?.type !== 'function_execution_end') throw new Error('expected a call end');
+    // Same id on both halves, or the console shows a call that never ends.
+    expect(end.function_call_id).toBe(start.function_call_id);
+    expect(end.function_id).toBe('pi-cli::bash');
+
+    // A second call to the same tool is a second call, not the first one again.
+    await subject.handle({ event: 'tool_start', session_id: 's', tool: 'bash' });
+    const again = emitted.at(-1)?.event;
+    if (again?.type !== 'function_execution_start') throw new Error('expected a call start');
+    expect(again.function_call_id).not.toBe(start.function_call_id);
+  });
+
   it('answers every event, including ones it does not map', async () => {
     const { tracker: subject } = tracker();
     expect(await subject.handle({ event: 'compaction', session_id: 's' })).toEqual({

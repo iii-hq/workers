@@ -34,6 +34,16 @@ export async function exec(
   };
 }
 
+/**
+ * A value the terminal host's shell reads as one word. Paths come from a
+ * config field or from `command -v`, and a path with a space in it splits into
+ * two arguments without this — the command then runs against the wrong name
+ * and its output stops being an answer.
+ */
+export function quote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 /** stdout of a command, or '' when it fails — for probes like `command -v`. */
 export async function probe(iii: IIIClient, command: string): Promise<string> {
   try {
@@ -65,6 +75,12 @@ export async function writeFile(iii: IIIClient, path: string, content: string): 
  * File contents, or null when the file is absent. `coder::read-file` returns
  * the text inline; `shell::fs::read` streams through a channel, which a
  * worker reading a small settings file does not need.
+ *
+ * Any other failure throws instead of reading as "absent". The callers here
+ * merge worker-owned blocks into operator-owned files, so "the read timed out"
+ * answered as "the file is empty" is how a worker overwrites the notes and the
+ * settings a person wrote. C211 is the coder surface's missing-or-denied code,
+ * and it is the only answer that means the file is not there to preserve.
  */
 export async function readFile(iii: IIIClient, path: string): Promise<string | null> {
   try {
@@ -74,8 +90,9 @@ export async function readFile(iii: IIIClient, path: string): Promise<string | n
       timeoutMs: 30_000,
     });
     return typeof res?.content === 'string' ? res.content : null;
-  } catch {
-    return null;
+  } catch (err) {
+    if (String(err).includes('C211')) return null;
+    throw err;
   }
 }
 

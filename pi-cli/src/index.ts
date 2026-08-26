@@ -46,21 +46,33 @@ let prepared: Prepared = {
 // The prepare step talks to the shell worker (install, skills, notes, hooks).
 // It is re-run on every settings change, so a new workspace or binary applies
 // to the next session without a restart.
-const reconcile = async () => {
-  config = await fetchConfig(iii);
-  try {
-    prepared = await prepareWorkspace(iii, config);
-    if (prepared.detail) console.warn(`pi-cli: ${prepared.detail}`);
-    else console.log(`pi-cli: ${prepared.executable} in ${prepared.workspace}`);
-  } catch (err) {
-    prepared = { ...prepared, executable: '', detail: String(err) };
-    console.warn(`pi-cli: terminal host is not ready: ${String(err)}`);
-  }
+//
+// Reloads run one at a time. A prepare can take minutes on a cold host and the
+// configuration worker starts one invocation per change, so two can be in
+// flight — and then the slower, OLDER one lands last and
+// `pi-cli::terminal::describe` answers with a workspace nobody configured any
+// more.
+let preparing: Promise<void> = Promise.resolve();
+const reconcile = (): Promise<void> => {
+  preparing = preparing.then(async () => {
+    config = await fetchConfig(iii);
+    try {
+      prepared = await prepareWorkspace(iii, config);
+      if (prepared.detail) console.warn(`pi-cli: ${prepared.detail}`);
+      else console.log(`pi-cli: ${prepared.executable} in ${prepared.workspace}`);
+    } catch (err) {
+      prepared = { ...prepared, executable: '', detail: String(err) };
+      console.warn(`pi-cli: terminal host is not ready: ${String(err)}`);
+    }
+  });
+  return preparing;
 };
 
 await bindConfigTrigger(iii, reconcile);
 
-const emit = makeEmitter(iii, config.events_stream);
+// The stream name is read per event, not captured: a live `events_stream`
+// change then applies to the next frame instead of waiting for a restart.
+const emit = makeEmitter(iii, () => config.events_stream);
 registerActivity(iii, emit);
 registerTerminal(iii, () => prepared);
 registerAuth(iii, () => ({

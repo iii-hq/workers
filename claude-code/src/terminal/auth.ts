@@ -13,7 +13,7 @@
  */
 
 import type { IIIClient } from 'iii-sdk';
-import { exec } from './host.js';
+import { exec, quote } from './host.js';
 
 export type Billing = 'subscription' | 'api-key' | 'none' | 'unknown';
 
@@ -133,7 +133,10 @@ export function registerAuth(
       // the JSON that says so, so the exit code is not the answer here —
       // reading it as failure turns "not signed in" into "billing unknown".
       try {
-        const result = await exec(iii, `${executable} auth status`, { env, timeoutMs: 20_000 });
+        const result = await exec(iii, `${quote(executable)} auth status`, {
+          env,
+          timeoutMs: 20_000,
+        });
         const raw = result.stdout.trim() || result.stderr.trim();
         return raw ? readStatus(raw) : UNKNOWN;
       } catch (err) {

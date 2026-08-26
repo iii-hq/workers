@@ -9,7 +9,7 @@
  */
 
 import type { IIIClient } from 'iii-sdk';
-import { exec } from './host.js';
+import { exec, quote } from './host.js';
 
 export type Billing = 'subscription' | 'api-key' | 'none' | 'unknown';
 
@@ -181,10 +181,11 @@ export function registerAuth(
         const answers = await Promise.all(
           names.map(async (name): Promise<ProviderStatus> => {
             try {
-              const result = await exec(iii, `${executable} auth check --provider ${name} --json`, {
-                env,
-                timeoutMs: 20_000,
-              });
+              const result = await exec(
+                iii,
+                `${quote(executable)} auth check --provider ${quote(name)} --json`,
+                { env, timeoutMs: 20_000 },
+              );
               const raw = result.stdout.trim() || result.stderr.trim();
               return raw
                 ? readProvider(raw, name)

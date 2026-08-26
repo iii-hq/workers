@@ -7,12 +7,14 @@
 
 import type { IIIClient } from 'iii-sdk';
 import type { TerminalConfig } from '../config.js';
-import { exec, hostRoot, mkdir, probe, readFile, writeFile } from './host.js';
+import { exec, hostRoot, mkdir, probe, quote, readFile, writeFile } from './host.js';
 import { NOTES_BEGIN, NOTES_END, engineNotes } from './notes.js';
 
 const INSTALL_CMD = 'curl -fsSL https://claude.ai/install.sh | bash';
 const SKILLS_CMD = 'npx -y skills add iii-hq/iii --all -y';
 const SKILLS_MARKER = '.iii/skills-installed';
+/** Where every hook posts, and therefore how a hook entry is recognised. */
+const ACTIVITY_TARGET = 'claude::terminal::activity';
 
 /** Claude Code lifecycle events worth reporting, and the shape each takes. */
 const HOOK_EVENTS: [event: string, shape: 'plain' | 'matcher'][] = [
@@ -61,14 +63,23 @@ export async function prepareWorkspace(iii: IIIClient, config: TerminalConfig): 
 
   let bridge = '';
   if (config.setup_workspace) {
-    await installSkills(iii, workspace);
-    await writeNotes(iii, workspace);
-    bridge = await writeHooks(iii, workspace);
-    if (!bridge) {
-      const mute =
-        'the `iii` CLI is not on the terminal host, so the activity hooks cannot reach the bus: the terminal works, but no turn will reach agent::events';
-      console.warn(`claude-code: ${mute}`);
-      detail = detail ? `${detail}; ${mute}` : mute;
+    // Equipping the workspace is not what makes a terminal usable: a read-only
+    // `CLAUDE.md` or an unreadable `.claude/` still leaves a working CLI in a
+    // working directory. A failure here is reported, and the terminal opens.
+    try {
+      await installSkills(iii, workspace);
+      await writeNotes(iii, workspace);
+      bridge = await writeHooks(iii, workspace);
+      if (!bridge) {
+        const mute =
+          'the `iii` CLI is not on the terminal host, so the activity hooks cannot reach the bus: the terminal works, but no turn will reach agent::events';
+        console.warn(`claude-code: ${mute}`);
+        detail = detail ? `${detail}; ${mute}` : mute;
+      }
+    } catch (err) {
+      const failed = `the workspace could not be equipped (${String(err)}); the terminal opens without the iii notes or the activity hooks`;
+      console.warn(`claude-code: ${failed}`);
+      detail = detail ? `${detail}; ${failed}` : failed;
     }
   }
 
@@ -136,15 +147,15 @@ async function resolveExecutable(iii: IIIClient, config: TerminalConfig): Promis
  * one the skills land above the workspace, where Claude does not look.
  */
 async function installSkills(iii: IIIClient, workspace: string): Promise<void> {
-  if ((await readFile(iii, `${workspace}/${SKILLS_MARKER}`)) !== null) return;
-  if ((await readFile(iii, `${workspace}/package.json`)) === null) {
-    await writeFile(
-      iii,
-      `${workspace}/package.json`,
-      `${JSON.stringify({ name: 'claude-code-workspace', private: true, version: '0.0.0' }, null, 2)}\n`,
-    );
-  }
   try {
+    if ((await readFile(iii, `${workspace}/${SKILLS_MARKER}`)) !== null) return;
+    if ((await readFile(iii, `${workspace}/package.json`)) === null) {
+      await writeFile(
+        iii,
+        `${workspace}/package.json`,
+        `${JSON.stringify({ name: 'claude-code-workspace', private: true, version: '0.0.0' }, null, 2)}\n`,
+      );
+    }
     const result = await exec(iii, SKILLS_CMD, { cwd: workspace, timeoutMs: 5 * 60_000 });
     if (result.exit_code !== 0) {
       console.warn(`iii skills install exited ${result.exit_code}: ${result.stderr.slice(0, 400)}`);
@@ -187,10 +198,23 @@ async function writeNotes(iii: IIIClient, workspace: string): Promise<void> {
  * installed later then works), but an empty answer means they are mute and the
  * caller says so out loud.
  */
+/**
+ * True for an entry this worker wrote. The trigger target is the mark — an
+ * operator hook never posts to `claude::terminal::activity` — so a stale entry
+ * from an earlier boot is recognised whatever `iii` path it was baked with.
+ */
+function isWorkerHook(entry: unknown): boolean {
+  const commands = (entry as { hooks?: { command?: unknown }[] } | null)?.hooks;
+  if (!Array.isArray(commands)) return false;
+  return commands.some(
+    (hook) => typeof hook?.command === 'string' && hook.command.includes(ACTIVITY_TARGET),
+  );
+}
+
 export async function writeHooks(iii: IIIClient, workspace: string): Promise<string> {
   const found = await probe(iii, 'command -v iii');
   const cli = found || 'iii';
-  const command = `${cli} trigger claude::terminal::activity --json "$(cat)" --timeout-ms 3000 >/dev/null 2>&1 || true`;
+  const command = `${quote(cli)} trigger ${ACTIVITY_TARGET} --json "$(cat)" --timeout-ms 3000 >/dev/null 2>&1 || true`;
   const path = `${workspace}/.claude/settings.json`;
 
   let settings: Record<string, unknown> = {};
@@ -207,7 +231,15 @@ export async function writeHooks(iii: IIIClient, workspace: string): Promise<str
   };
   for (const [event, shape] of HOOK_EVENTS) {
     const entry = { hooks: [{ type: 'command', command }] };
-    hooks[event] = shape === 'matcher' ? [{ matcher: '*', ...entry }] : [entry];
+    const mine = shape === 'matcher' ? { matcher: '*', ...entry } : entry;
+    // Only this worker's own entry is rewritten. An operator who hangs a
+    // formatter on PostToolUse keeps it: the entries here are appended to what
+    // is already registered for the event, and the one dropped is the previous
+    // version of this same entry (the `iii` path can move between boots).
+    const existing = Array.isArray(hooks[event])
+      ? (hooks[event] as unknown[]).filter((item) => !isWorkerHook(item))
+      : [];
+    hooks[event] = [...existing, mine];
   }
   const next = `${JSON.stringify({ ...settings, hooks }, null, 2)}\n`;
   if (next !== current) await writeFile(iii, path, next);

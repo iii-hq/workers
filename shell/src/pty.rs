@@ -876,6 +876,16 @@ fn validate_size(cols: u16, rows: u16) -> Result<(), String> {
 /// the exec-hijacking keys are never settable, everything else is.
 fn reject_dangerous_env(env: &BTreeMap<String, String>) -> Result<(), String> {
     for key in env.keys() {
+        // Syntax first, and for the deny-list's sake: an environment entry is
+        // one `key=value` string, so a key carrying its own `=` is checked
+        // under one name and delivered under another — `PATH=/tmp/evil` passes
+        // the `PATH` rule and still hands the child a `PATH`.
+        if crate::exec::policy::is_invalid_env_key(key) {
+            return Err(format!(
+                "terminal env key '{key}' is not an environment variable name \
+                 ([A-Za-z_][A-Za-z0-9_]*); remove it"
+            ));
+        }
         if crate::exec::policy::is_dangerous_env_key(key) {
             return Err(format!(
                 "terminal env key '{key}' is never settable (exec-hijacking key); remove it"

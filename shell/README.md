@@ -216,10 +216,18 @@ names:
 |---|---|
 | `program` | Program to run instead of the login shell, resolved on PATH. A caller that can open a login shell can already run any program by typing it, so this is reach, not privilege — it is what lets a session BE one program, with no shell around it. |
 | `args` | argv for `program`; ignored without it. |
-| `env` | Extra environment for the session. Deny-only exactly like `shell::exec`'s per-call `env`: an exec-hijacking key (`PATH`, `LD_*`, `DYLD_*`, `BASH_ENV`, ...) refuses the whole call. |
+| `env` | Extra environment for the session. Deny-only exactly like `shell::exec`'s per-call `env`: an exec-hijacking key (`PATH`, `LD_*`, `DYLD_*`, `BASH_ENV`, ...) refuses the whole call, and so does a key that is not a variable name (`[A-Za-z_][A-Za-z0-9_]*`) — a key like `PATH=/tmp/evil` would otherwise carry its own assignment past the `PATH` rule. |
 
-`cwd` resolves through the same jail as `shell::fs::*`, so a session can only
-start inside a configured root.
+`cwd` resolves through the same jail as `shell::fs::*`, so what it can reach is
+whatever that config says:
+
+- `fs.host_roots` set: a session can only start inside a configured root.
+- `fs.allow_unjailed: true` with `fs.host_roots` empty (**the shipped
+  default**): there is no root to be inside, and `cwd` reaches the real
+  filesystem, held back only by `fs.denylist_paths`.
+
+Either way this bounds where a session STARTS. A login shell can then `cd`
+anywhere its user can, which is the point of a terminal.
 
 Output goes to a browser-registered console handler and nowhere else:
 `iii::<worker>-ui::pty-output::console-<browser-id>`. The `<worker>-ui`

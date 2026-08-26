@@ -10,7 +10,13 @@ type Call = { function_id: string; payload: Record<string, unknown> };
  * `prepareWorkspace` does goes over the bus, so this is the whole boundary.
  */
 function fakeShell(
-  options: { files?: Record<string, string>; whichClaude?: string; noIiiCli?: boolean } = {},
+  options: {
+    files?: Record<string, string>;
+    whichClaude?: string;
+    noIiiCli?: boolean;
+    /** A read failure that is NOT "missing": a timeout, a read budget. */
+    readError?: Error;
+  } = {},
 ) {
   const calls: Call[] = [];
   const files: Record<string, string> = { ...options.files };
@@ -40,8 +46,11 @@ function fakeShell(
           files[String(payload.path)] = String(payload.content);
           return { bytes_written: String(payload.content).length };
         case 'coder::read-file': {
+          if (options.readError) throw options.readError;
           const content = files[String(payload.path)];
-          if (content === undefined) throw new Error('no such file');
+          // The shape the coder surface answers with: C211 is missing-or-denied,
+          // and it is the only failure that means "there is nothing to preserve".
+          if (content === undefined) throw new Error('error[C211]: no such file');
           return { content };
         }
         default:
@@ -109,7 +118,8 @@ describe('preparing the terminal host', () => {
       'UserPromptSubmit',
     ]);
     const command = settings.hooks.PreToolUse[0].hooks[0].command;
-    expect(command).toContain('/usr/bin/iii trigger claude::terminal::activity --json "$(cat)"');
+    // The CLI path is quoted: a `command -v` answer can carry a space.
+    expect(command).toContain(`'/usr/bin/iii' trigger claude::terminal::activity --json "$(cat)"`);
     expect(settings.hooks.PreToolUse[0].matcher).toBe('*');
   });
 
@@ -155,6 +165,58 @@ describe('preparing the terminal host', () => {
     expect(notes).toContain('# My own notes');
     expect(notes).toContain('keep me');
     expect(notes.indexOf('<!-- iii:begin')).toBeLessThan(notes.indexOf('# My own notes'));
+  });
+
+  it('keeps an operator hook on an event it also writes', async () => {
+    // A formatter on PostToolUse is the operator's, and it is registered on an
+    // event this worker also hooks. Replacing the event's array deleted it on
+    // the next boot; the worker's own entry is the only one it may rewrite.
+    const { iii, files } = fakeShell({
+      whichClaude: '/usr/local/bin/claude',
+      files: {
+        '/hostroot/claude-code/.claude/settings.json': JSON.stringify({
+          hooks: {
+            PostToolUse: [
+              { matcher: 'Edit', hooks: [{ type: 'command', command: 'biome check' }] },
+            ],
+            SessionStart: [
+              {
+                hooks: [{ type: 'command', command: 'old-iii trigger claude::terminal::activity' }],
+              },
+            ],
+          },
+        }),
+        '/hostroot/claude-code/.iii/skills-installed': '2026-01-01',
+      },
+    });
+    await prepareWorkspace(iii, { ...DEFAULTS });
+
+    const settings = JSON.parse(files['/hostroot/claude-code/.claude/settings.json']);
+    const post = settings.hooks.PostToolUse;
+    expect(post).toHaveLength(2);
+    expect(post[0].hooks[0].command).toBe('biome check');
+    expect(post[1].hooks[0].command).toContain('claude::terminal::activity');
+    // Its own entry from an earlier boot is replaced, not kept beside the new
+    // one — the `iii` path it was baked with can move.
+    expect(settings.hooks.SessionStart).toHaveLength(1);
+    expect(settings.hooks.SessionStart[0].hooks[0].command).toContain("'/usr/bin/iii'");
+  });
+
+  it('keeps CLAUDE.md and the terminal when a read fails for another reason', async () => {
+    // A read that TIMED OUT says nothing about the file. Answering that as
+    // "absent" is how a worker overwrites what a person wrote, so the notes are
+    // left alone — and the terminal still opens, because a workspace that could
+    // not be equipped is still a workspace Claude runs in.
+    const { iii, files } = fakeShell({
+      whichClaude: '/usr/local/bin/claude',
+      files: { '/hostroot/claude-code/CLAUDE.md': '# My own notes\n' },
+      readError: new Error('error[S303]: read timed out'),
+    });
+    const prepared = await prepareWorkspace(iii, { ...DEFAULTS });
+
+    expect(prepared.executable).toBe('/usr/local/bin/claude');
+    expect(prepared.detail).toContain('could not be equipped');
+    expect(files['/hostroot/claude-code/CLAUDE.md']).toBe('# My own notes\n');
   });
 
   it('leaves the workspace alone when setup is off', async () => {

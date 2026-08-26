@@ -10,7 +10,13 @@ type Call = { function_id: string; payload: Record<string, unknown> };
  * `prepareWorkspace` does goes over the bus, so this is the whole boundary.
  */
 function fakeShell(
-  options: { files?: Record<string, string>; whichPi?: string; noIiiCli?: boolean } = {},
+  options: {
+    files?: Record<string, string>;
+    whichPi?: string;
+    noIiiCli?: boolean;
+    /** A read failure that is NOT "missing": a timeout, a read budget. */
+    readError?: Error;
+  } = {},
 ) {
   const calls: Call[] = [];
   const files: Record<string, string> = { ...options.files };
@@ -40,8 +46,11 @@ function fakeShell(
           files[String(payload.path)] = String(payload.content);
           return { bytes_written: String(payload.content).length };
         case 'coder::read-file': {
+          if (options.readError) throw options.readError;
           const content = files[String(payload.path)];
-          if (content === undefined) throw new Error('no such file');
+          // The shape the coder surface answers with: C211 is missing-or-denied,
+          // and it is the only failure that means "there is nothing to preserve".
+          if (content === undefined) throw new Error('error[C211]: no such file');
           return { content };
         }
         default:
@@ -139,6 +148,23 @@ describe('preparing the terminal host', () => {
     expect(prepared.bridge).toBe('');
     expect(prepared.detail).toContain('cannot reach the bus');
     expect(files['/hostroot/pi-cli/.pi/extensions/iii-activity.ts']).toContain('pi-cli::activity');
+  });
+
+  it('keeps AGENTS.md and the terminal when a read fails for another reason', async () => {
+    // A read that TIMED OUT says nothing about the file. Answering that as
+    // "absent" is how a worker overwrites what a person wrote, so the notes are
+    // left alone — and the terminal still opens, because a workspace that could
+    // not be equipped is still a workspace pi runs in.
+    const { iii, files } = fakeShell({
+      whichPi: '/usr/local/bin/pi',
+      files: { '/hostroot/pi-cli/AGENTS.md': '# House rules\n' },
+      readError: new Error('error[S303]: read timed out'),
+    });
+    const prepared = await prepareWorkspace(iii, { ...DEFAULTS });
+
+    expect(prepared.executable).toBe('/usr/local/bin/pi');
+    expect(prepared.detail).toContain('could not be equipped');
+    expect(files['/hostroot/pi-cli/AGENTS.md']).toBe('# House rules\n');
   });
 
   it('leaves the workspace alone when setup is off', async () => {

@@ -9,7 +9,7 @@ this terminal's turns exactly like a headless agent worker's.
 
 Its siblings: [`pi`](https://github.com/iii-hq/workers/tree/main/pi) runs the
 same agent headless over the bus (no terminal), and
-[`claude-cli`](https://github.com/iii-hq/workers/tree/main/claude-cli) is this
+[`claude-code`](https://github.com/iii-hq/workers/tree/main/claude-code) is this
 worker for Claude Code.
 
 ## Install

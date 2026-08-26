@@ -5,7 +5,7 @@ import {
   useTerminalFontSize,
 } from '@iii-workers/terminal-font'
 import { ArrowDown, Minus, Plus, RefreshCw } from 'lucide-react'
-import { type ReactNode, type WheelEvent, useCallback } from 'react'
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { HoverTip } from './HoverTip'
 import type { TerminalSession } from './terminal-session'
 
@@ -78,15 +78,34 @@ export function TerminalPane({ session, actions, docked }: TerminalPaneProps) {
   const recoverable =
     status === 'disconnected' || status === 'exited' || status === 'error'
   const [fontSize, setFontSize] = useTerminalFontSize()
+  const fontSizeRef = useRef(fontSize)
+  fontSizeRef.current = fontSize
+  // The xterm host element, kept here as well so the wheel gesture can bind to
+  // it; `setContainer` is the session's own callback ref.
+  const [container, setContainerNode] = useState<HTMLDivElement | null>(null)
+  const attach = useCallback(
+    (node: HTMLDivElement | null) => {
+      setContainerNode(node)
+      setContainer(node)
+    },
+    [setContainer],
+  )
+
   // Ctrl/⌘ + scroll, the gesture every terminal emulator already answers to.
-  const zoom = useCallback(
-    (event: WheelEvent<HTMLDivElement>) => {
+  //
+  // A native listener with `{ passive: false }`, not React's `onWheel`: React
+  // registers wheel handlers as passive, so `preventDefault()` inside one is
+  // ignored and the browser zooms the whole page underneath the terminal.
+  useEffect(() => {
+    if (!container) return
+    const zoom = (event: WheelEvent) => {
       if (!event.ctrlKey && !event.metaKey) return
       event.preventDefault()
-      setFontSize(stepFontSize(fontSize, event.deltaY < 0 ? 1 : -1))
-    },
-    [fontSize, setFontSize],
-  )
+      setFontSize(stepFontSize(fontSizeRef.current, event.deltaY < 0 ? 1 : -1))
+    }
+    container.addEventListener('wheel', zoom, { passive: false })
+    return () => container.removeEventListener('wheel', zoom)
+  }, [container, setFontSize])
 
   return (
     <div className="shui-terminal">
@@ -116,11 +135,10 @@ export function TerminalPane({ session, actions, docked }: TerminalPaneProps) {
       ) : null}
       {error ? <div className="shui-terminal-error">{error}</div> : null}
       <div
-        ref={setContainer}
+        ref={attach}
         className="shui-xterm"
         role="application"
         aria-label="Interactive zsh terminal"
-        onWheel={zoom}
       />
       {docked ? null : (
         <div className="shui-terminal-hud">
