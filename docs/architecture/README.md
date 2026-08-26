@@ -11,6 +11,7 @@ procedures, see [`../sops/`](../sops/).
 | [`testing-and-ci.md`](testing-and-ci.md) | PR discovery, gates, interface boot smoke, dedicated e2e workflows |
 | [`skills-and-permissions.md`](skills-and-permissions.md) | `SKILL.md` lifecycle and `iii-permissions.yaml` conventions |
 | [`per-worker-architecture.md`](per-worker-architecture.md) | When to add `<worker>/architecture/`; session-manager as reference |
+| [`worker-owned-state-and-activity.md`](worker-owned-state-and-activity.md) | Optional worker-owned UI, truthful turn correlation, and the worker/Console ownership boundary |
 
 ## Per-worker architecture
 
