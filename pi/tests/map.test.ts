@@ -135,10 +135,21 @@ describe('mapUsage', () => {
 });
 
 describe('message constructors', () => {
-  it('builds an assistant message with provider pi', () => {
-    const msg = makeAssistantMessage([{ type: 'text', text: 'hi' }], 'anthropic/claude', null);
+  it('names the AGENT that ran the turn, and the provider that served it', () => {
+    // Two different answers: `pi` is the worker on the bus, `openai` is who
+    // served the model. A reader given only a model cannot tell which agent
+    // produced it — which is how a pi turn rendered as a nameless "Agent".
+    const msg = makeAssistantMessage(
+      [{ type: 'text', text: 'hi' }],
+      'gpt-5.5',
+      null,
+      'end',
+      'openai',
+    );
     expect(msg.role).toBe('assistant');
-    expect(msg.provider).toBe('pi');
+    expect(msg.agent).toBe('pi');
+    expect(msg.provider).toBe('openai');
+    expect(msg.model).toBe('gpt-5.5');
     expect(msg.stop_reason).toBe('end');
   });
 

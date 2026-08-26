@@ -30,6 +30,8 @@ export type AgentMessage =
       stop_reason: 'end' | 'length' | 'function_call' | 'aborted' | 'error'
       native_stop_reason?: string
       error_message?: string
+      /** The agent worker that ran the turn, when it names itself. */
+      agent?: string
       model: string
       provider: string
       timestamp: number

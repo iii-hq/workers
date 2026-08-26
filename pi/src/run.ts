@@ -24,6 +24,7 @@ import {
   makeFunctionResult,
   mapMessageContent,
   messageModel,
+  messageProvider,
   mapToolResultContent,
   mapUsage,
   toolFunctionId,
@@ -353,7 +354,13 @@ async function runReserved(
       // pi resolves the model per turn; remember which one answered so the
       // record, the fallback message and `pi::status` all name it.
       record.model = messageModel(message, record.model);
-      const assistant = makeAssistantMessage(content, record.model, record.usage);
+      const assistant = makeAssistantMessage(
+        content,
+        record.model,
+        record.usage,
+        'end',
+        messageProvider(message),
+      );
       transcript.push(assistant);
       const text = content
         .filter((b): b is { type: 'text'; text: string } => b.type === 'text')

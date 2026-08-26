@@ -102,6 +102,12 @@ export interface UserMessage extends BaseMessage {
 export interface AssistantMessage extends BaseMessage {
   role: 'assistant'
   content: string
+  /**
+   * The agent worker that produced the turn (`claude-code`, `pi`), when it
+   * says so. A model id alone does not identify an agent: two agents can run
+   * the same model, and one agent's model can be anything its provider serves.
+   */
+  agent?: string
   model?: ModelId
   mode?: Mode
   streaming?: boolean

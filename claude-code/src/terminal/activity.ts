@@ -87,8 +87,11 @@ function assistant(content: ContentBlock[], stop_reason = 'tool_use'): Assistant
     stop_reason,
     error_message: null,
     usage: null,
-    model: 'claude-code',
-    provider: 'claude-code',
+    // The CLI does not tell the hooks which model answered, so the agent is
+    // the honest label here; `model` stays empty rather than repeating it.
+    model: '',
+    agent: 'claude-code',
+    provider: '',
     timestamp: Date.now(),
   };
 }

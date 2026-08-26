@@ -82,7 +82,11 @@ export function makeAssistantMessage(
     error_message: null,
     usage,
     model,
-    provider: 'claude-code',
+    // `agent` is this worker; `provider` is whoever served the model. They were
+    // the same word before, which left a reader unable to tell a Claude Code
+    // turn from any other Anthropic turn.
+    agent: 'claude-code',
+    provider: 'anthropic',
     timestamp: Date.now(),
   };
 }

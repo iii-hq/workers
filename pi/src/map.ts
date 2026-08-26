@@ -56,6 +56,12 @@ export function messageModel(message: unknown, fallback: string): string {
   return typeof named === 'string' && named ? named : fallback;
 }
 
+/** The provider that served that model, when pi names one. */
+export function messageProvider(message: unknown): string {
+  const named = (message as { provider?: unknown } | null)?.provider;
+  return typeof named === 'string' ? named : '';
+}
+
 /** Extract the text/thinking blocks from a Pi assistant message. */
 export function mapMessageContent(message: unknown): ContentBlock[] {
   const content = (message as PiMessage)?.content;
@@ -99,6 +105,7 @@ export function makeAssistantMessage(
   model: string,
   usage: Usage | null,
   stop_reason = 'end',
+  provider = '',
 ): AssistantMessage {
   return {
     role: 'assistant',
@@ -107,7 +114,11 @@ export function makeAssistantMessage(
     error_message: null,
     usage,
     model,
-    provider: 'pi',
+    // `agent` is this worker; `provider` is whoever served the model. pi runs
+    // on whichever provider its auth store is set up for, so the two are
+    // different answers and a reader needs both.
+    agent: 'pi',
+    provider,
     timestamp: Date.now(),
   };
 }

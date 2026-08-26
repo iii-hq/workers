@@ -33,6 +33,13 @@ export type Usage = {
 
 export type AssistantMessage = {
   role: 'assistant';
+  /**
+   * The agent worker that ran this turn (`pi`, `claude-code`). Not the same
+   * thing as `provider`, which names the upstream model provider: an agent is
+   * a worker on the bus, and a reader who sees only a model cannot tell which
+   * agent produced it.
+   */
+  agent?: string;
   content: ContentBlock[];
   stop_reason: string;
   error_message?: string | null;
