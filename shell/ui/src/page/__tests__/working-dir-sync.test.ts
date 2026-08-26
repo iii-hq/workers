@@ -1,14 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import {
+  acknowledgeUnavailableWorkingDirectory,
   acknowledgeValidatedWorkingDirectory,
   deepLinkRootTarget,
+  isUnavailableWorkingDirectoryError,
   ownsRequestToken,
   ownsScopedRequestToken,
   rebasePathAfterValidation,
   rootValidationRetryDelay,
   validateRootTarget,
-  workingDirectoryRetryMessage,
+  workingDirectoryFollowRetryDelay,
   workingDirectoryNeedsFollow,
+  workingDirectoryRetryMessage,
 } from '../working-dir-sync'
 
 describe('working directory synchronization', () => {
@@ -24,23 +27,13 @@ describe('working directory synchronization', () => {
     expect(rootAfterFailure).not.toBe(workingDir)
     expect(workingDirectoryNeedsFollow(workingDir, acknowledged)).toBe(true)
 
-    acknowledged = acknowledgeValidatedWorkingDirectory(
-      acknowledged,
-      workingDir,
-      workingDir,
-      true,
-    )
+    acknowledged = acknowledgeValidatedWorkingDirectory(acknowledged, workingDir, workingDir, true)
     expect(workingDirectoryNeedsFollow(workingDir, acknowledged)).toBe(false)
   })
 
   it('keeps a manual root sticky after acknowledging the unchanged chat directory', () => {
     const workingDir = '/work/chat'
-    const acknowledged = acknowledgeValidatedWorkingDirectory(
-      null,
-      workingDir,
-      workingDir,
-      true,
-    )
+    const acknowledged = acknowledgeValidatedWorkingDirectory(null, workingDir, workingDir, true)
 
     // The actual Shell root may now differ because the user selected it.
     expect('/work/manual').not.toBe(workingDir)
@@ -48,15 +41,22 @@ describe('working directory synchronization', () => {
   })
 
   it('does not acknowledge a stale async validation result', () => {
-    const acknowledged = acknowledgeValidatedWorkingDirectory(
-      '/work/old',
-      '/work/first',
-      '/work/second',
-      true,
-    )
+    const acknowledged = acknowledgeValidatedWorkingDirectory('/work/old', '/work/first', '/work/second', true)
 
     expect(acknowledged).toBe('/work/old')
     expect(workingDirectoryNeedsFollow('/work/second', acknowledged)).toBe(true)
+  })
+
+  it('quietly stops following an unavailable chat directory', () => {
+    const unavailable = acknowledgeUnavailableWorkingDirectory(
+      '/work/old',
+      '/private/tmp/deleted',
+      '/private/tmp/deleted',
+    )
+    expect(unavailable).toBe('/private/tmp/deleted')
+    expect(workingDirectoryNeedsFollow('/private/tmp/deleted', unavailable)).toBe(false)
+
+    expect(acknowledgeUnavailableWorkingDirectory('/work/old', '/private/tmp/deleted', '/work/new')).toBe('/work/old')
   })
 
   it('does not permit destructive transition work before validation resolves', async () => {
@@ -65,7 +65,10 @@ describe('working directory synchronization', () => {
       resolveValidation = resolve
     })
     let resetCount = 0
-    const pending = validateRootTarget(() => validation, () => true).then((result) => {
+    const pending = validateRootTarget(
+      () => validation,
+      () => true,
+    ).then((result) => {
       if (result.outcome === 'validated') resetCount += 1
       return result
     })
@@ -121,20 +124,26 @@ describe('working directory synchronization', () => {
 
   it('recovers a valid temp target within a bounded retry sequence', async () => {
     let attempts = 0
-    let result = await validateRootTarget(async () => {
-      attempts += 1
-      throw new Error('worker not registered yet')
-    }, () => true)
+    let result = await validateRootTarget(
+      async () => {
+        attempts += 1
+        throw new Error('worker not registered yet')
+      },
+      () => true,
+    )
 
     let failures = 0
     while (result.outcome === 'failed') {
       expect(rootValidationRetryDelay(failures)).not.toBeNull()
       failures += 1
-      result = await validateRootTarget(async () => {
-        attempts += 1
-        if (attempts < 3) throw new Error('worker not registered yet')
-        return { path: '/private/tmp/harness-app' }
-      }, () => true)
+      result = await validateRootTarget(
+        async () => {
+          attempts += 1
+          if (attempts < 3) throw new Error('worker not registered yet')
+          return { path: '/private/tmp/harness-app' }
+        },
+        () => true,
+      )
     }
 
     expect(result).toEqual({
@@ -147,25 +156,14 @@ describe('working directory synchronization', () => {
 
   it('rebases a pending temp file through the validated canonical root', () => {
     expect(
-      rebasePathAfterValidation(
-        '/tmp/harness-app/src/app.ts',
-        '/tmp/harness-app/src',
-        '/private/tmp/harness-app/src',
-      ),
+      rebasePathAfterValidation('/tmp/harness-app/src/app.ts', '/tmp/harness-app/src', '/private/tmp/harness-app/src'),
     ).toBe('/private/tmp/harness-app/src/app.ts')
   })
 
   it('roots a nested deep link at the chat working directory during recovery', () => {
-    expect(
-      deepLinkRootTarget('/tmp/harness-app', '/tmp/harness-app'),
-    ).toBe('/tmp/harness-app')
+    expect(deepLinkRootTarget('/tmp/harness-app', '/tmp/harness-app')).toBe('/tmp/harness-app')
 
-    expect(
-      deepLinkRootTarget(
-        '/tmp/harness-app/src/components/App.tsx',
-        '/tmp/harness-app',
-      ),
-    ).toBe('/tmp/harness-app')
+    expect(deepLinkRootTarget('/tmp/harness-app/src/components/App.tsx', '/tmp/harness-app')).toBe('/tmp/harness-app')
 
     expect(
       rebasePathAfterValidation(
@@ -177,12 +175,8 @@ describe('working directory synchronization', () => {
   })
 
   it('uses the file parent when the deep link is outside the chat directory', () => {
-    expect(
-      deepLinkRootTarget('/work/another/src/App.tsx', '/work/app'),
-    ).toBe('/work/another/src')
-    expect(
-      deepLinkRootTarget('/work/application/App.tsx', '/work/app'),
-    ).toBe('/work/application')
+    expect(deepLinkRootTarget('/work/another/src/App.tsx', '/work/app')).toBe('/work/another/src')
+    expect(deepLinkRootTarget('/work/application/App.tsx', '/work/app')).toBe('/work/application')
   })
 
   it('exhausts and explicitly re-arms a bounded retry budget', () => {
@@ -200,6 +194,22 @@ describe('working directory synchronization', () => {
 
     failures = 0
     expect(rootValidationRetryDelay(failures)).toBe(250)
+  })
+
+  it('acknowledges only definite missing paths after the initial retry burst', () => {
+    expect(
+      isUnavailableWorkingDirectoryError({
+        message: 'handler error: {"code":"S211","message":"not found or not accessible"}',
+      }),
+    ).toBe(true)
+    expect(isUnavailableWorkingDirectoryError(new Error('worker offline'))).toBe(false)
+    expect(
+      workingDirectoryFollowRetryDelay(5, {
+        code: 'S212',
+        message: 'not a directory',
+      }),
+    ).toBeNull()
+    expect(workingDirectoryFollowRetryDelay(5, new Error('temporary worker outage'))).toBe(5_000)
   })
 
   it('keeps overlapping manual transitions owned by the newest request', () => {
@@ -222,15 +232,11 @@ describe('working directory synchronization', () => {
     expect(ownsScopedRequestToken(2, currentRequest, currentRequest)).toBe(true)
   })
 
-  it('surfaces exhausted and declined chat follows for explicit retry', () => {
-    expect(
-      workingDirectoryRetryMessage('/private/tmp/app', 'failed', 250),
-    ).toBeNull()
-    expect(
-      workingDirectoryRetryMessage('/private/tmp/app', 'failed', null),
-    ).toBe('could not validate working directory /private/tmp/app')
-    expect(
-      workingDirectoryRetryMessage('/private/tmp/app', 'declined', null),
-    ).toBe('working directory change paused for /private/tmp/app')
+  it('keeps missing chat roots quiet but surfaces a declined change', () => {
+    expect(workingDirectoryRetryMessage('/private/tmp/app', 'failed', 250)).toBeNull()
+    expect(workingDirectoryRetryMessage('/private/tmp/app', 'failed', null)).toBeNull()
+    expect(workingDirectoryRetryMessage('/private/tmp/app', 'declined', null)).toBe(
+      'working directory change paused for /private/tmp/app',
+    )
   })
 })
