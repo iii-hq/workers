@@ -313,7 +313,7 @@ on the raw engine path, because the engine has no notion of a session's policy.
 **Shaping, ownership and cleanup have nowhere else to live.** An event's schema
 is never the target's, so something must project it into the target's payload.
 Owner-scoped unregister, the per-session cap, the session-deleted sweep, and
-`once` / `max_fires` / `expires_at` are not engine concepts.
+`once` / `max_fires` / `expires_in_ms` are not engine concepts.
 
 ### Workers register directly, and should
 

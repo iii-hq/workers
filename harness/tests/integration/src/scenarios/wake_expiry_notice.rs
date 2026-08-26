@@ -19,9 +19,10 @@
 //!
 //! Shape: the arm turn is a PARKED completion (`terminal: false` — the first
 //! in the suite), declared via `parked_completions(1)`; the expiry wake is an
-//! externally initiated turn with its own trace. The binding's `expires_at`
-//! is a `{{now_plus_…ms}}` token resolved at run expansion, and the sweep
-//! interval is shrunk via the harness env so expiry lands in seconds.
+//! externally initiated turn with its own trace. The binding's deadline is a
+//! relative `expires_in_ms` (the contract's only form — resolved server-side
+//! at registration), and the sweep interval is shrunk via the harness env so
+//! expiry lands in seconds.
 
 use serde_json::{json, Value};
 
@@ -39,12 +40,11 @@ const KEY: &str = "never";
 /// harness's own `sweep_interval_parses_only_positive_ms` unit test).
 const SWEEP_INTERVAL_ENV: &str = "III_HARNESS_EXPIRY_SWEEP_MS";
 
-/// Comfortably after the arm turn completes (~2-4s from expansion including
-/// stack boot), comfortably inside the 60s scenario deadline with the 500ms
-/// sweep. The margin is deliberate: a slow machine must still finish arming
-/// before the deadline passes, or the notification lands mid-turn and the
-/// park never happens.
-const EXPIRES_IN: &str = "{{now_plus_12000ms}}";
+/// Relative to REGISTRATION (server-side resolution), so a slow machine can
+/// never lose the window to boot: the deadline starts counting only once the
+/// arm call lands. Comfortably inside the 60s scenario deadline with the
+/// 500ms sweep.
+const EXPIRES_IN_MS: u64 = 12_000;
 
 pub(super) fn scenario() -> ScenarioFixture {
     const ID: &str = "INT-017";
@@ -69,7 +69,7 @@ pub(super) fn scenario() -> ScenarioFixture {
         "config": { "scope": SCOPE, "key": KEY },
         "once": true,
         "label": "doomed",
-        "lifecycle": { "expires_at": EXPIRES_IN }
+        "lifecycle": { "expires_in_ms": EXPIRES_IN_MS }
     });
 
     Scenario::new(
