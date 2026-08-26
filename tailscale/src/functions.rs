@@ -1,4 +1,6 @@
+use std::pin::Pin;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use iii_sdk::errors::Error;
@@ -8,7 +10,10 @@ use qrcode::QrCode;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
+use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 use crate::config::{SharedConfig, WorkerConfig};
@@ -21,9 +26,14 @@ pub const STOP_ID: &str = "tailscale::share::stop";
 const STATUS_DESC: &str = "Inspect local Tailscale connectivity, node identity, health notices, and the active Serve and Funnel routes. Keys, users, and capability maps are omitted.";
 const CONFIGURATION_DESC: &str = "Return the non-secret worker settings and the current Serve configuration. The CLI path is omitted.";
 const SHARE_DESC: &str = "Share the local iii Console. Serve is tailnet-only and the default; Funnel is public and requires allow_funnel in the configuration plus confirm_public in the request.";
-const STOP_DESC: &str = "Stop one exact Serve or Funnel route by mode, HTTPS port, and path. Other routes are never reset.";
+const STOP_DESC: &str = "Stop one exact Serve or Funnel route by mode, HTTPS port, and path; a Funnel route loses both its public and tailnet listener. Other routes are never reset.";
+pub const CONNECT_ID: &str = "tailscale::connect";
+pub const DISCONNECT_ID: &str = "tailscale::disconnect";
+const CONNECT_DESC: &str = "Connect this node to the tailnet (`tailscale up`). When the node still needs a sign-in, returns the Tailscale login URL instead of connecting.";
+const DISCONNECT_DESC: &str = "Disconnect this node from the tailnet (`tailscale down`). Shared routes stop answering until the node connects again.";
 
 const FUNNEL_PORTS: [u16; 3] = [443, 8443, 10000];
+const CONNECT_TIMEOUT_SECS: u64 = 15;
 
 pub struct FunctionSpec {
     pub function_id: &'static str,
@@ -54,9 +64,21 @@ pub fn catalog() -> Vec<FunctionSpec> {
     vec![
         spec::<EmptyInput, StatusOutput>(STATUS_ID, STATUS_DESC),
         spec::<EmptyInput, ConfigurationOutput>(CONFIGURATION_ID, CONFIGURATION_DESC),
+        spec::<EmptyInput, ConnectOutput>(CONNECT_ID, CONNECT_DESC),
+        spec::<EmptyInput, ConnectOutput>(DISCONNECT_ID, DISCONNECT_DESC),
         spec::<ShareInput, ShareOutput>(SHARE_ID, SHARE_DESC),
         spec::<StopInput, StopOutput>(STOP_ID, STOP_DESC),
     ]
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ConnectOutput {
+    /// True when the node is connected to the tailnet after the call.
+    pub connected: bool,
+    /// Backend state reported by the client after the call.
+    pub backend_state: Option<String>,
+    /// Tailscale sign-in page when the node still needs a login; open it, then call connect again.
+    pub authorization_url: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -214,8 +236,124 @@ pub struct StopOutput {
 pub fn register_all(iii: &IIIClient, config: SharedConfig) {
     register_status(iii, config.clone());
     register_configuration(iii, config.clone());
+    register_connect(iii, config.clone());
+    register_disconnect(iii, config.clone());
     register_share(iii, config.clone());
     register_stop(iii, config);
+}
+
+fn register_connect(iii: &IIIClient, config: SharedConfig) {
+    iii.register_function(
+        CONNECT_ID,
+        RegisterFunction::new_async(move |_: EmptyInput| {
+            let config = config.load_full();
+            async move { connect(&config).await.map_err(Error::Handler) }
+        })
+        .description(CONNECT_DESC),
+    );
+}
+
+fn register_disconnect(iii: &IIIClient, config: SharedConfig) {
+    iii.register_function(
+        DISCONNECT_ID,
+        RegisterFunction::new_async(move |_: EmptyInput| {
+            let config = config.load_full();
+            async move { disconnect(&config).await.map_err(Error::Handler) }
+        })
+        .description(DISCONNECT_DESC),
+    );
+}
+
+async fn connect(config: &WorkerConfig) -> Result<ConnectOutput, String> {
+    let mut child = Command::new(&config.tailscale_binary)
+        .arg("up")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("could not start Tailscale CLI: {error}"))?;
+    let transcript = Arc::new(Mutex::new(String::new()));
+    let readers = [
+        child
+            .stdout
+            .take()
+            .map(|out| spawn_line_reader(Box::pin(out), transcript.clone())),
+        child
+            .stderr
+            .take()
+            .map(|err| spawn_line_reader(Box::pin(err), transcript.clone())),
+    ];
+    let exit = timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS), child.wait()).await;
+    if exit.is_err() {
+        let _ = child.kill().await;
+    }
+    for reader in readers.into_iter().flatten() {
+        let _ = reader.await;
+    }
+    let output = transcript.lock().await.clone();
+    let authorization_url = login_url(&output);
+    match exit {
+        Ok(Ok(status)) if !status.success() && authorization_url.is_none() => {
+            let text = output.trim().to_string();
+            return Err(if text.is_empty() {
+                format!("tailscale up exited with {status}")
+            } else {
+                text
+            });
+        }
+        Ok(Err(error)) => return Err(format!("Tailscale CLI failed: {error}")),
+        Err(_) if authorization_url.is_none() => {
+            return Err(format!(
+                "tailscale up did not finish within {CONNECT_TIMEOUT_SECS}s"
+            ));
+        }
+        _ => {}
+    }
+    let state = run_json(config, &["status", "--json"]).await?;
+    let backend_state = string_at(&state, "/BackendState");
+    let connected = backend_state.as_deref() == Some("Running")
+        && state
+            .pointer("/Self/Online")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+    Ok(ConnectOutput {
+        connected,
+        backend_state,
+        authorization_url,
+    })
+}
+
+async fn disconnect(config: &WorkerConfig) -> Result<ConnectOutput, String> {
+    run(config, &["down"]).await?;
+    let state = run_json(config, &["status", "--json"]).await?;
+    Ok(ConnectOutput {
+        connected: false,
+        backend_state: string_at(&state, "/BackendState"),
+        authorization_url: None,
+    })
+}
+
+fn spawn_line_reader(
+    stream: Pin<Box<dyn AsyncRead + Send>>,
+    transcript: Arc<Mutex<String>>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stream).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let mut buffer = transcript.lock().await;
+            buffer.push_str(&line);
+            buffer.push('\n');
+        }
+    })
+}
+
+pub fn login_url(text: &str) -> Option<String> {
+    text.split_whitespace()
+        .find(|word| word.starts_with("https://login.tailscale.com/a/"))
+        .map(|word| {
+            word.trim_end_matches(|c: char| !c.is_ascii_alphanumeric())
+                .to_string()
+        })
 }
 
 fn register_status(iii: &IIIClient, config: SharedConfig) {
@@ -389,19 +527,33 @@ async fn stop(config: &WorkerConfig, input: StopInput) -> Result<StopOutput, Str
     let path = normalize_path(&input.path)?;
     validate_port(input.mode, input.https_port)?;
     let port = input.https_port.to_string();
-    run(
-        config,
-        &[
-            input.mode.command(),
-            "--yes",
-            "--https",
-            &port,
-            "--set-path",
-            &path,
-            "off",
-        ],
-    )
-    .await?;
+    let off = |command: &'static str| {
+        let port = port.clone();
+        let path = path.clone();
+        async move {
+            run(
+                config,
+                &[
+                    command,
+                    "--yes",
+                    "--https",
+                    &port,
+                    "--set-path",
+                    &path,
+                    "off",
+                ],
+            )
+            .await
+        }
+    };
+    if input.mode == ShareMode::Funnel {
+        off("funnel").await?;
+        if let Err(error) = off("serve").await {
+            tracing::debug!(%error, "serve listener already gone after funnel off");
+        }
+    } else {
+        off("serve").await?;
+    }
     Ok(StopOutput {
         stopped: true,
         mode: input.mode,
@@ -656,6 +808,16 @@ mod tests {
         assert_eq!(routes[1].path, "/remote");
         assert_eq!(routes[1].url, "https://node.ts.net:8443/remote/");
         assert_eq!(routes[1].target, "http://127.0.0.1:3113");
+    }
+
+    #[test]
+    fn login_url_is_extracted_from_cli_output() {
+        let text = "To authenticate, visit:\n\n\thttps://login.tailscale.com/a/abc123def\n\n";
+        assert_eq!(
+            login_url(text).as_deref(),
+            Some("https://login.tailscale.com/a/abc123def")
+        );
+        assert!(login_url("Success.").is_none());
     }
 
     #[test]

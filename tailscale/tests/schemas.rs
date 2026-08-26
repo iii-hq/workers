@@ -26,6 +26,8 @@ fn catalog_lists_all_functions_in_registration_order() {
         vec![
             "tailscale::status",
             "tailscale::configuration",
+            "tailscale::connect",
+            "tailscale::disconnect",
             "tailscale::share",
             "tailscale::share::stop",
         ]

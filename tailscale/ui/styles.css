@@ -20,6 +20,10 @@
   gap: 1rem;
 }
 
+[data-iii-ui='tailscale'] .ts-main > * {
+  flex: 0 0 auto;
+}
+
 [data-iii-ui='tailscale'] .ts-card {
   min-width: 0;
 }
@@ -123,6 +127,26 @@
   padding: 0.5rem;
   border-radius: var(--radius-md, 6px);
   background: #ffffff;
+}
+
+[data-iii-ui='tailscale'] .ts-row-actions,
+[data-iii-ui='tailscale'] .ts-row-actions-head {
+  width: 2.5rem;
+  text-align: right;
+}
+
+[data-iii-ui='tailscale'] .ts-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+[data-iii-ui='tailscale'] .ts-policy {
+  width: 100%;
+  max-width: 100%;
 }
 
 [data-iii-ui='tailscale'] .ts-url {

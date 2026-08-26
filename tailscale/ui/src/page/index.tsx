@@ -5,6 +5,7 @@ import {
   CardBody,
   CardHeader,
   Chip,
+  CodeHighlight,
   ConfirmDialog,
   type Host,
   IconButton,
@@ -69,17 +70,20 @@ const modeOptions = [
 ]
 
 function describe(cause: unknown): string {
-  if (cause instanceof Error) return cause.message
-  if (cause && typeof cause === 'object') {
-    const message = (cause as { message?: unknown }).message
-    if (typeof message === 'string') return message
-    try {
-      return JSON.stringify(cause)
-    } catch {
-      return String(cause)
+  const text = (() => {
+    if (cause instanceof Error) return cause.message
+    if (cause && typeof cause === 'object') {
+      const message = (cause as { message?: unknown }).message
+      if (typeof message === 'string') return message
+      try {
+        return JSON.stringify(cause)
+      } catch {
+        return String(cause)
+      }
     }
-  }
-  return String(cause)
+    return String(cause)
+  })()
+  return text.replace(/^handler error:\s*/i, '')
 }
 
 function qrDataUrl(svg: string) {
@@ -163,6 +167,55 @@ export function TailscalePage({ host, onRequestClose, commands }: Props) {
     }
   }, [host, share, refresh])
 
+  const [loginUrl, setLoginUrl] = useState<string | null>(null)
+  const [stoppingRoute, setStoppingRoute] = useState<string | null>(null)
+
+  const connect = useCallback(async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      const result = await host.iii.trigger<{ connected: boolean; authorization_url?: string | null }>('tailscale::connect', {})
+      setLoginUrl(result.authorization_url ?? null)
+      await refresh()
+    } catch (cause) {
+      setError(describe(cause))
+    } finally {
+      setBusy(false)
+    }
+  }, [host, refresh])
+
+  const disconnect = useCallback(async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      await host.iii.trigger('tailscale::disconnect', {})
+      setShare(null)
+      await refresh()
+    } catch (cause) {
+      setError(describe(cause))
+    } finally {
+      setBusy(false)
+    }
+  }, [host, refresh])
+
+  const stopRoute = useCallback(
+    async (route: Route) => {
+      const key = `${route.host}:${route.port}${route.path}`
+      setStoppingRoute(key)
+      setError(null)
+      try {
+        await host.iii.trigger('tailscale::share::stop', { mode: route.mode, https_port: route.port, path: route.path })
+        if (share && share.https_port === route.port && share.path === route.path) setShare(null)
+        await refresh()
+      } catch (cause) {
+        setError(describe(cause))
+      } finally {
+        setStoppingRoute(null)
+      }
+    },
+    [host, share, refresh],
+  )
+
   const copyLink = useCallback(async () => {
     if (!share) return
     await navigator.clipboard.writeText(share.url)
@@ -205,7 +258,16 @@ export function TailscalePage({ host, onRequestClose, commands }: Props) {
       <PageHeader
         icon={<Globe />}
         title="Tailscale"
-        description={status?.dns_name ? <span className="ts-mono">{status.dns_name}</span> : 'Share the Console over your tailnet'}
+        description={
+          status?.dns_name ? (
+            <>
+              <span className="ts-mono">{status.dns_name}</span>
+              {status.routes.length > 0 && ` · ${status.routes.length} ${status.routes.length === 1 ? 'route' : 'routes'} live`}
+            </>
+          ) : (
+            'Share the Console over your tailnet'
+          )
+        }
         actions={
           <IconButton label="Refresh status" variant="ghost" onClick={() => void refresh()}>
             <RefreshCw />
@@ -217,6 +279,17 @@ export function TailscalePage({ host, onRequestClose, commands }: Props) {
         <PageMain className="ts-main">
           {error && <StatusPanel variant="alert" headline="Tailscale request failed" detail={error} />}
           {status?.error && !error && <StatusPanel variant="warn" headline="Tailscale is not available" detail={status.error} />}
+          {status && status.installed && !status.error && !online && (
+            <StatusPanel
+              variant="warn"
+              headline="Tailscale is not connected"
+              detail={
+                status.health.length
+                  ? status.health.join(' · ')
+                  : `The client reports ${status.backend_state ?? 'no state'}. Connect Tailscale on this machine, then refresh.`
+              }
+            />
+          )}
 
           <div className="ts-columns">
             <Card className="ts-card">
@@ -259,6 +332,30 @@ export function TailscalePage({ host, onRequestClose, commands }: Props) {
                     </div>
                   ) : null}
                 </dl>
+                {loginUrl && (
+                  <StatusPanel
+                    variant="info"
+                    headline="This node needs a Tailscale sign-in"
+                    detail="Open the sign-in page, finish the login, then connect again."
+                  />
+                )}
+                <div className="ts-actions">
+                  {status?.installed && !online && (
+                    <Button variant="primary" disabled={busy} onClick={() => void connect()}>
+                      {busy ? 'Connecting…' : 'Connect to tailnet'}
+                    </Button>
+                  )}
+                  {loginUrl && (
+                    <Button variant="ghost" onClick={() => window.open(loginUrl, '_blank', 'noopener')}>
+                      Open Tailscale sign-in
+                    </Button>
+                  )}
+                  {online && (
+                    <Button variant="ghost" disabled={busy} onClick={() => void disconnect()}>
+                      {busy ? 'Working…' : 'Disconnect from tailnet'}
+                    </Button>
+                  )}
+                </div>
               </CardBody>
             </Card>
 
@@ -311,33 +408,53 @@ export function TailscalePage({ host, onRequestClose, commands }: Props) {
                 </Chip>
               </CardHeader>
               <CardBody className="ts-link-body">
-                {authorizationRequired && (
-                  <StatusPanel
-                    variant="info"
-                    headline="Approve Funnel in Tailscale first"
-                    detail="Scan or open the link, approve Funnel for this node in the Tailscale admin console, then create the link again."
-                  />
+                {authorizationRequired ? (
+                  <>
+                    <StatusPanel
+                      variant="info"
+                      headline="Funnel is not enabled for this node yet"
+                      detail="A tailnet admin approves it once; the page below signs you into Tailscale and adds the funnel attribute to the policy. The public link itself never asks for a login."
+                    />
+                    <CodeHighlight
+                      className="ts-policy"
+                      language="json"
+                      wrap
+                      code={'"nodeAttrs": [{ "target": ["autogroup:member"], "attr": ["funnel"] }]'}
+                    />
+                    <div className="ts-actions">
+                      <Button variant="primary" onClick={openLink}>
+                        Enable Funnel in Tailscale
+                      </Button>
+                      <Button variant="ghost" disabled={busy} onClick={() => void createShare(true)}>
+                        {busy ? 'Checking…' : 'Check again'}
+                      </Button>
+                      <IconButton label={copied ? 'Copied' : 'Copy approval link'} variant="ghost" onClick={() => void copyLink()}>
+                        {copied ? <Check /> : <Copy />}
+                      </IconButton>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <img className="ts-qr" alt={`QR code for ${share.url}`} src={qrDataUrl(share.qr_svg)} />
+                    <code className="ts-url">{share.url}</code>
+                    <p className="ts-note">
+                      {share.public
+                        ? 'Opens for anyone with the link.'
+                        : 'Opens on any device signed into your tailnet; other devices are refused by Tailscale.'}
+                    </p>
+                    <div className="ts-actions">
+                      <IconButton label={copied ? 'Copied' : 'Copy link'} variant="ghost" onClick={() => void copyLink()}>
+                        {copied ? <Check /> : <Copy />}
+                      </IconButton>
+                      <IconButton label="Open link in a browser tab" variant="ghost" onClick={openLink}>
+                        <ExternalLink />
+                      </IconButton>
+                      <IconButton label="Stop route" variant="ghost" disabled={busy} onClick={() => void stopShare()}>
+                        <Square />
+                      </IconButton>
+                    </div>
+                  </>
                 )}
-                <img className="ts-qr" alt={`QR code for ${share.url}`} src={qrDataUrl(share.qr_svg)} />
-                <code className="ts-url">{share.url}</code>
-                <div className="ts-actions">
-                  <IconButton label={copied ? 'Copied' : 'Copy link'} variant="ghost" onClick={() => void copyLink()}>
-                    {copied ? <Check /> : <Copy />}
-                  </IconButton>
-                  <IconButton label="Open link in a browser tab" variant="ghost" onClick={openLink}>
-                    <ExternalLink />
-                  </IconButton>
-                  {routeLive && (
-                    <IconButton label="Stop route" variant="ghost" disabled={busy} onClick={() => void stopShare()}>
-                      <Square />
-                    </IconButton>
-                  )}
-                  {authorizationRequired && (
-                    <Button variant="primary" disabled={busy} onClick={() => void createShare(true)}>
-                      {busy ? 'Checking…' : 'I approved it'}
-                    </Button>
-                  )}
-                </div>
               </CardBody>
             </Card>
           )}
@@ -357,16 +474,33 @@ export function TailscalePage({ host, onRequestClose, commands }: Props) {
                           <TableHead>Visibility</TableHead>
                           <TableHead>URL</TableHead>
                           <TableHead>Target</TableHead>
+                          <TableHead className="ts-row-actions-head">
+                            <span className="ts-visually-hidden">Actions</span>
+                          </TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {status.routes.map((route) => (
-                          <TableRow key={`${route.host}:${route.port}${route.path}`}>
-                            <TableCell>{route.mode === 'funnel' ? 'Public' : 'Tailnet'}</TableCell>
-                            <TableCell className="ts-mono">{route.url}</TableCell>
-                            <TableCell className="ts-mono">{route.target}</TableCell>
-                          </TableRow>
-                        ))}
+                        {status.routes.map((route) => {
+                          const key = `${route.host}:${route.port}${route.path}`
+                          return (
+                            <TableRow key={key}>
+                              <TableCell>{route.mode === 'funnel' ? 'Public' : 'Tailnet'}</TableCell>
+                              <TableCell className="ts-mono">{route.url}</TableCell>
+                              <TableCell className="ts-mono">{route.target}</TableCell>
+                              <TableCell className="ts-row-actions">
+                                <IconButton
+                                  label={`Stop ${route.url}`}
+                                  variant="ghost"
+                                  disabled={stoppingRoute !== null}
+                                  aria-busy={stoppingRoute === key}
+                                  onClick={() => void stopRoute(route)}
+                                >
+                                  <Square />
+                                </IconButton>
+                              </TableCell>
+                            </TableRow>
+                          )
+                        })}
                       </TableBody>
                     </Table>
                   </TableFrame>

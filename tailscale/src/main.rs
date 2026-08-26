@@ -14,11 +14,13 @@ use tailscale::{configuration, functions, manifest, ui};
     about = "Share the iii Console over Tailscale Serve or explicitly enabled Funnel."
 )]
 struct Cli {
-    /// Optional YAML seed used only when the configuration entry is first created.
+    /// YAML seed applied only when the `tailscale` configuration entry is first created.
     #[arg(long)]
     config: Option<String>,
+    /// iii engine WebSocket address.
     #[arg(long, default_value = "ws://127.0.0.1:49134")]
     url: String,
+    /// Print the registry manifest as JSON and exit without connecting.
     #[arg(long)]
     manifest: bool,
 }

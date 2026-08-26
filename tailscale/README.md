@@ -34,7 +34,7 @@ iii trigger tailscale::share mode=serve https_port=443 path=/
 }
 ```
 
-`tailscale::status` reports connectivity, the MagicDNS name, health notices, whether Funnel is allowed for this node, and every active route with its URL. `tailscale::share::stop` removes exactly one route by mode, port, and path; the worker never runs `serve reset` or `funnel reset`, so routes it did not create stay intact.
+`tailscale::status` reports connectivity, the MagicDNS name, health notices, whether Funnel is allowed for this node, and every active route with its URL. The page lists those routes with a stop action on each row; `tailscale::share::stop` removes exactly one route by mode, port, and path (a Funnel route loses both its public and tailnet listener), and the worker never runs `serve reset` or `funnel reset`, so routes it did not create stay intact. `tailscale::connect` and `tailscale::disconnect` bring the node on and off the tailnet (`tailscale up` / `tailscale down`); when the node still needs a sign-in, connect returns the Tailscale login URL and the page offers it as a button.
 
 ### Public access with Funnel
 
@@ -75,4 +75,4 @@ The first build runs `pnpm install && pnpm build` inside `ui/` (Node 22 on PATH)
 - Serve routes are only reachable by devices your tailnet policy admits, and Tailscale adds `Tailscale-User-Login` and `Tailscale-User-Name` headers to each proxied request.
 - Funnel routes are public. Both locks (`allow_funnel` and `confirm_public`) are required, and the page confirms before publishing.
 - The upstream target must be a loopback HTTP(S) URL pointing at the Console root; anything else is rejected at configuration time.
-- `tailscale::status` and `tailscale::configuration` are allowed for agents by default; `tailscale::share` and `tailscale::share::stop` need approval.
+- `tailscale::status` and `tailscale::configuration` are allowed for agents by default; `tailscale::connect`, `tailscale::disconnect`, `tailscale::share`, and `tailscale::share::stop` need approval.

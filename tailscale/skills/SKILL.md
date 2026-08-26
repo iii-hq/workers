@@ -44,9 +44,12 @@ the Console host with MagicDNS and HTTPS certificates enabled.
 
 - `tailscale::status` — connectivity, node name and MagicDNS name, Tailscale IPs, health notices, whether Funnel is allowed, and every active route with its URL.
 - `tailscale::configuration` — the non-secret worker settings plus the raw Serve configuration.
+- `tailscale::connect` — bring this node onto the tailnet (`tailscale up`), or return the Tailscale sign-in URL when the node still needs a login.
+- `tailscale::disconnect` — take this node off the tailnet (`tailscale down`); shared routes stop answering until it connects again.
 - `tailscale::share` — publish the Console on an HTTPS port and path, returning the link and its QR code, or the Funnel authorization page when that step is still needed.
-- `tailscale::share::stop` — remove one route by mode, HTTPS port, and path.
+- `tailscale::share::stop` — remove one route by mode, HTTPS port, and path; a Funnel route loses both its public and tailnet listener.
 
 `tailscale::status` and `tailscale::configuration` are allowed by default;
-`tailscale::share` and `tailscale::share::stop` are approval-gated because they
-change what the network can reach.
+`tailscale::connect`, `tailscale::disconnect`, `tailscale::share`, and
+`tailscale::share::stop` are approval-gated because they change what the
+network can reach.

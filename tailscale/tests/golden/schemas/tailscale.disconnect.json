@@ -1,0 +1,37 @@
+{
+  "description": "Disconnect this node from the tailnet (`tailscale down`). Shared routes stop answering until the node connects again.",
+  "function_id": "tailscale::disconnect",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "EmptyInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "authorization_url": {
+        "description": "Tailscale sign-in page when the node still needs a login; open it, then call connect again.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "backend_state": {
+        "description": "Backend state reported by the client after the call.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "connected": {
+        "description": "True when the node is connected to the tailnet after the call.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "connected"
+    ],
+    "title": "ConnectOutput",
+    "type": "object"
+  }
+}
