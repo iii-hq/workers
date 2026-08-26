@@ -922,8 +922,8 @@ export interface ConversationsApi {
   setSystemPrompt: (id: string, systemPrompt: SystemPromptState) => void
   setSkills: (id: string, skills: string[] | undefined) => void
   setMode: (id: string, mode: Mode) => void
-  /** Per-session working directory; only meaningful while the chat is a draft. */
-  setWorkingDir: (id: string, dir: string) => void
+  /** Per-session working directory; null clears a scope that is no longer usable. */
+  setWorkingDir: (id: string, dir: string | null) => void
   /**
    * Seed a draft's working dir with the stack default: patches state only
    * while the chat is still a draft with no dir (an explicit pick or a
@@ -2122,11 +2122,11 @@ export function useConversations(
   )
 
   const setWorkingDir = useCallback(
-    (id: string, dir: string) => {
+    (id: string, dir: string | null) => {
       patchConversation(id, (c) =>
         applyConversationMetadataPatch(c, { workingDir: dir }),
       )
-      saveRecentProject(dir)
+      if (dir) saveRecentProject(dir)
       // Moving the working directory away from a console-claimed worktree
       // releases the claim (keepPath guards the pick-this-worktree flow,
       // which records the claim before updating the dir).

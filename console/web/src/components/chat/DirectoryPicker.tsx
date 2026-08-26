@@ -72,8 +72,8 @@ interface DirectoryPickerProps {
   disabled?: boolean
   /**
    * Externally-detected problem with the current value (e.g. the saved dir
-   * no longer validates against the live shell). Auto-opens the panel with
-   * the message shown so the user can pick a replacement.
+   * no longer validates against the live shell). The message is shown only
+   * when the user opens the picker.
    */
   externalError?: string | null
   /**
@@ -194,9 +194,9 @@ export function DirectoryPicker({
     setProjects(loadRecentProjects())
     setView('projects')
     setQuery('')
-    setError(null)
+    setError(externalError ?? null)
     setOpen(true)
-  }, [])
+  }, [externalError])
 
   useEffect(() => {
     if (!embedded) return
@@ -206,17 +206,12 @@ export function DirectoryPicker({
     setError(externalError ?? null)
   }, [embedded, externalError])
 
-  // A stale saved dir (deleted, unmounted, denylisted) surfaces here: open
-  // the panel with the failure shown so the user picks a replacement instead
-  // of silently chatting against a dead folder.
+  // Keep an externally detected error available for an explicitly opened
+  // picker without interrupting the current chat with a surprise dialog.
   useEffect(() => {
     if (!externalError || locked || disabled) return
-    setProjects(loadRecentProjects())
-    setView('projects')
-    setQuery('')
     setError(externalError)
-    if (!embedded) setOpen(true)
-  }, [externalError, locked, disabled, embedded])
+  }, [externalError, locked, disabled])
 
   const ensureRoots = useCallback(async (): Promise<string[]> => {
     if (roots !== null) return roots

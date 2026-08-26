@@ -174,6 +174,11 @@ import {
 } from './turns'
 import { WorkspaceBrowser } from './WorkspaceBrowser'
 import {
+  workingDirectoryScopeMessage,
+  workingDirectoryScopeMismatch,
+} from './working-dir-scope'
+import {
+  acknowledgeUnavailableWorkingDirectory,
   acknowledgeValidatedWorkingDirectory,
   deepLinkRootTarget,
   ownsRequestToken,
@@ -183,6 +188,7 @@ import {
   rootValidationRetryDelay,
   type ScopedRequestToken,
   validateRootTarget,
+  workingDirectoryFollowRetryDelay,
   workingDirectoryNeedsFollow,
   workingDirectoryRetryMessage,
 } from './working-dir-sync'
@@ -1936,7 +1942,11 @@ export function ShellExplorerPage({
   const changeRoot = useCallback(
     (
       nextRoot: string,
-      onResolved?: (outcome: RootChangeOutcome, path?: string) => void,
+      onResolved?: (
+        outcome: RootChangeOutcome,
+        path?: string,
+        error?: unknown,
+      ) => void,
     ): boolean => {
       if (!reviewSaveBarrier.canTransition()) return false
       const resolveSeq = ++rootResolveSeqRef.current
@@ -1945,7 +1955,11 @@ export function ShellExplorerPage({
         () => rootResolveSeqRef.current === resolveSeq,
       ).then((result) => {
         if (result.outcome !== 'validated') {
-          onResolved?.(result.outcome)
+          onResolved?.(
+            result.outcome,
+            undefined,
+            result.outcome === 'failed' ? result.error : undefined,
+          )
           if (result.outcome === 'failed') {
             setRootChangeSettledEpoch((epoch) => epoch + 1)
           }
@@ -2075,7 +2089,7 @@ export function ShellExplorerPage({
     const request = ++workingDirFollowRequestSeqRef.current
     workingDirFollowPendingRef.current = { path: next, request }
     setPendingRoot(next)
-    const accepted = changeRoot(next, (outcome) => {
+    const accepted = changeRoot(next, (outcome, _path, error) => {
       if (workingDirFollowPendingRef.current?.request !== request) return
       workingDirFollowPendingRef.current = null
       setPendingRoot(null)
@@ -2091,7 +2105,7 @@ export function ShellExplorerPage({
         setWorkingDirError(null)
       } else if (outcome === 'failed' && workingDirRef.current === next) {
         const retry = workingDirRetryRef.current
-        const delay = rootValidationRetryDelay(retry.failures)
+        const delay = workingDirectoryFollowRetryDelay(retry.failures, error)
         retry.failures += 1
         if (delay !== null && workingDirRetryTimerRef.current === null) {
           workingDirRetryTimerRef.current = window.setTimeout(() => {
@@ -2099,6 +2113,12 @@ export function ShellExplorerPage({
             setWorkingDirRetryEpoch((epoch) => epoch + 1)
           }, delay)
         } else if (delay === null) {
+          acknowledgedWorkingDirRef.current =
+            acknowledgeUnavailableWorkingDirectory(
+              acknowledgedWorkingDirRef.current,
+              next,
+              workingDirRef.current,
+            )
           setWorkingDirError(
             workingDirectoryRetryMessage(next, 'failed', delay),
           )
@@ -2765,6 +2785,13 @@ export function ShellExplorerPage({
     )
   }
 
+  const rootIsOutsideChatScope = workingDirectoryScopeMismatch(
+    root,
+    workingDir,
+    conversationId,
+    !!host.chat?.requestWorkingDirectoryChange,
+  )
+
   return (
     <PageShell>
       {header}
@@ -2829,6 +2856,24 @@ export function ShellExplorerPage({
           </PageSidebar>
 
           <PageMain>
+            {rootIsOutsideChatScope ? (
+              <div className="shui-review-message warn" role="status">
+                <span>{workingDirectoryScopeMessage(root, workingDir)}</span>
+                <button
+                  type="button"
+                  className="shui-review-inline-action"
+                  onClick={() => {
+                    if (!conversationId) return
+                    host.chat?.requestWorkingDirectoryChange?.({
+                      sessionId: conversationId,
+                      path: root,
+                    })
+                  }}
+                >
+                  use for chat
+                </button>
+              </div>
+            ) : null}
             {workingDirError ? (
               <div className="shui-review-message warn" role="alert">
                 <span>{workingDirError}</span>

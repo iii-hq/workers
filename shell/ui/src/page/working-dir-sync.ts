@@ -1,7 +1,4 @@
-export function workingDirectoryNeedsFollow(
-  workingDir: string | null,
-  acknowledgedWorkingDir: string | null,
-): boolean {
+export function workingDirectoryNeedsFollow(workingDir: string | null, acknowledgedWorkingDir: string | null): boolean {
   return workingDir !== null && workingDir !== acknowledgedWorkingDir
 }
 
@@ -13,9 +10,16 @@ export function acknowledgeValidatedWorkingDirectory(
   currentWorkingDir: string | null,
   validated: boolean,
 ): string | null {
-  return validated && requestedWorkingDir === currentWorkingDir
-    ? requestedWorkingDir
-    : acknowledgedWorkingDir
+  return validated && requestedWorkingDir === currentWorkingDir ? requestedWorkingDir : acknowledgedWorkingDir
+}
+
+/** Stop following an unavailable chat root only when it is still current. */
+export function acknowledgeUnavailableWorkingDirectory(
+  acknowledgedWorkingDir: string | null,
+  requestedWorkingDir: string,
+  currentWorkingDir: string | null,
+): string | null {
+  return requestedWorkingDir === currentWorkingDir ? requestedWorkingDir : acknowledgedWorkingDir
 }
 
 export type RootTargetValidation =
@@ -38,6 +42,7 @@ export async function validateRootTarget(
 }
 
 const ROOT_VALIDATION_RETRY_DELAYS = [250, 500, 1_000, 2_000, 4_000] as const
+const TRANSIENT_WORKING_DIR_RETRY_MS = 5_000
 
 /** Delay after the given consecutive failure, or null once retries are
     exhausted. A later directory selection starts a new bounded sequence. */
@@ -45,11 +50,27 @@ export function rootValidationRetryDelay(failures: number): number | null {
   return ROOT_VALIDATION_RETRY_DELAYS[failures] ?? null
 }
 
-export function rebasePathAfterValidation(
-  absolutePath: string,
-  requestedRoot: string,
-  validatedRoot: string,
-): string {
+export function isUnavailableWorkingDirectoryError(error: unknown): boolean {
+  const raw =
+    error instanceof Error
+      ? error.message
+      : error && typeof error === 'object' && 'message' in error
+        ? String((error as { message: unknown }).message)
+        : String(error)
+  const directCode =
+    error && typeof error === 'object' && 'code' in error ? String((error as { code: unknown }).code) : undefined
+  const nestedCodes = [...raw.matchAll(/"code"\s*:\s*"([A-Z]\d{3})"/g)]
+  const code = nestedCodes.at(-1)?.[1] ?? directCode
+  return code === 'S211' || code === 'S212' || /not found or not accessible|not a directory/i.test(raw)
+}
+
+export function workingDirectoryFollowRetryDelay(failures: number, error: unknown): number | null {
+  const initialDelay = rootValidationRetryDelay(failures)
+  if (initialDelay !== null) return initialDelay
+  return isUnavailableWorkingDirectoryError(error) ? null : TRANSIENT_WORKING_DIR_RETRY_MS
+}
+
+export function rebasePathAfterValidation(absolutePath: string, requestedRoot: string, validatedRoot: string): string {
   if (absolutePath === requestedRoot) return validatedRoot
   const prefix = requestedRoot.endsWith('/') ? requestedRoot : `${requestedRoot}/`
   if (!absolutePath.startsWith(prefix)) return absolutePath
@@ -57,10 +78,7 @@ export function rebasePathAfterValidation(
   return `${base}${absolutePath.slice(prefix.length)}`
 }
 
-export function deepLinkRootTarget(
-  absolutePath: string,
-  workingDir: string | null,
-): string {
+export function deepLinkRootTarget(absolutePath: string, workingDir: string | null): string {
   if (workingDir !== null) {
     const prefix = workingDir.endsWith('/') ? workingDir : `${workingDir}/`
     if (absolutePath === workingDir || absolutePath.startsWith(prefix)) {
@@ -71,10 +89,7 @@ export function deepLinkRootTarget(
   return cut > 0 ? absolutePath.slice(0, cut) : '/'
 }
 
-export function ownsRequestToken(
-  activeRequest: number | null,
-  request: number,
-): boolean {
+export function ownsRequestToken(activeRequest: number | null, request: number): boolean {
   return activeRequest === request
 }
 
@@ -98,10 +113,8 @@ export function ownsScopedRequestToken(
 export function workingDirectoryRetryMessage(
   path: string,
   outcome: 'failed' | 'declined',
-  retryDelay: number | null,
+  _retryDelay: number | null,
 ): string | null {
   if (outcome === 'declined') return `working directory change paused for ${path}`
-  return retryDelay === null
-    ? `could not validate working directory ${path}`
-    : null
+  return null
 }

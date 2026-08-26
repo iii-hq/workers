@@ -509,6 +509,14 @@ export interface Host {
     registerTurnSummary(summary: SessionTurnSummaryRegistration): () => void
     /** Jump the sidebar to this session. Feature-detect on older consoles. */
     selectConversation?(sessionId: string): void
+    /**
+     * Ask the mounted conversation to adopt a validated working directory.
+     * Call this only from an explicit user action such as "Use for chat".
+     */
+    requestWorkingDirectoryChange?(request: {
+      sessionId: string
+      path: string
+    }): boolean
     /** Live composer model for a conversation, including unsaved drafts. */
     composerModel?(conversationId?: string | null): string | null
   }
