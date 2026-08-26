@@ -48,7 +48,7 @@ import { StatusPanel } from '@/components/ui/StatusPanel'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { getIiiClient } from '@/lib/iii-client'
 import { requestChatMessageFocus } from '@/lib/trace-links'
-import { startTraceSpansStream } from '@/lib/traces-stream'
+import { startTraceActivityFeed } from '@/lib/traces-activity'
 import { cn } from '@/lib/utils'
 import type { PageCommandsApi } from '@/types/injectable-ui'
 import { fetchTraces, type StoredSpan } from './api/traces'
@@ -87,7 +87,6 @@ import {
 } from './lib/tracesViews'
 import { traceSpanGroupKey } from './lib/traceTimelineFilters'
 import {
-  mergeDetailSpan,
   toWaterfallData,
   type VisualizationSpan,
   type WaterfallData,
@@ -492,32 +491,45 @@ export function TracesV2({
     [rebuildDetail],
   )
 
-  const appendDetailSpans = useCallback(
-    (traceId: string, spans: StoredSpan[]) => {
-      if (spans.length === 0) return
-      for (const s of spans) mergeDetailSpan(detailSpansRef.current, s)
-      rebuildDetail(traceId)
-    },
-    [rebuildDetail],
-  )
-
+  // Silent refresh of the OPEN trace on each activity tick that touches it:
+  // no loading state (ticks keep landing while the trace runs), one reload in
+  // flight at a time with one trailing rerun so the final tick of a burst is
+  // never lost, and a stale response for a since-deselected trace is dropped
+  // by `loadTraceSpans` keying on the trace id it was called with.
   useEffect(() => {
     if (!selectedTraceId) return
     let stop: (() => void) | undefined
     let active = true
+    let inFlight = false
+    let rerun = false
+    const refresh = () => {
+      if (inFlight) {
+        rerun = true
+        return
+      }
+      inFlight = true
+      void loadTraceSpans(selectedTraceId, { silent: true }).finally(() => {
+        inFlight = false
+        if (rerun && active && !isPausedRef.current) {
+          rerun = false
+          refresh()
+        }
+      })
+    }
     void (async () => {
       const client = await getIiiClient()
       if (!active) return
-      stop = startTraceSpansStream(client, selectedTraceId, (spans) => {
+      stop = startTraceActivityFeed(client, (traceIds) => {
         if (!active || isPausedRef.current) return
-        appendDetailSpans(selectedTraceId, spans)
+        if (!traceIds.includes(selectedTraceId)) return
+        refresh()
       })
     })()
     return () => {
       active = false
       stop?.()
     }
-  }, [selectedTraceId, appendDetailSpans])
+  }, [selectedTraceId, loadTraceSpans])
 
   // ── Scroll anchoring across accordion swaps ──
   // Selecting a trace while another's detail is expanded ABOVE it removes a
