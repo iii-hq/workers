@@ -1,0 +1,15 @@
+# Agent permissions for the vscode worker.
+# Spec: docs/sops/new-worker.md § 7. First-match-wins.
+#
+# vscode::start runs a loopback-only VS Code Server for a folder the Console
+# page then shows; it is the call the page itself makes, so it is allowed.
+# Stop and delete tear down a person's editor session and stay at the
+# needs_approval default. The config-reload callback and the Console asset
+# function are bus-internal, never agent-callable.
+version: 1
+
+rules:
+  - '!vscode::on-config-change'
+  - '!vscode::ui-content'
+  - vscode::start
+  - vscode::instances::list
