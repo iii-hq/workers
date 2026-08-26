@@ -17,6 +17,9 @@ use serde_json::{json, Value};
 
 pub const PROPOSE_ID: &str = "console::working-directory::propose";
 pub const STAMP_SESSION_ID: &str = "console::working-directory::stamp-session";
+pub const GUIDANCE_ID: &str = "console::working-directory::inject-guidance";
+
+const WORKING_DIRECTORY_GUIDANCE: &str = "Working-directory handoff (pre-verified Console capability): when the user explicitly asks you to create or clone a project in another directory and continue there, set it as the working directory, or open it as the chat workspace, call `console::working-directory::propose` after the directory exists with `{ \"path\": \"/absolute/path\", \"reason\": \"...\" }`. This exact function and payload are pre-verified while Console is connected, so call it directly without another discovery search. The function validates and canonicalizes the path; it does not silently move the chat. Console asks the user to confirm, then the chat and paired Shell follow together. Do not call it merely because you inspected or edited a file outside the current workspace.";
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ProposeWorkingDirectoryRequest {
@@ -62,6 +65,29 @@ pub struct HookMutations {
 pub struct StampSessionResponse {
     pub decision: String,
     pub mutations: HookMutations,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct WorkingDirectoryGuidanceEvent {
+    #[serde(default)]
+    pub generate: WorkingDirectoryGenerateContext,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct WorkingDirectoryGenerateContext {
+    #[serde(default)]
+    pub system_prompt: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct WorkingDirectoryGuidanceResponse {
+    pub mutations: WorkingDirectoryGuidanceMutations,
+}
+
+#[derive(Debug, Default, Serialize, JsonSchema)]
+pub struct WorkingDirectoryGuidanceMutations {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -135,6 +161,16 @@ fn stamp_session(event: StampSessionEvent) -> Option<StampSessionResponse> {
     })
 }
 
+fn guidance_mutations(base: &str) -> WorkingDirectoryGuidanceMutations {
+    if base.is_empty() {
+        WorkingDirectoryGuidanceMutations::default()
+    } else {
+        WorkingDirectoryGuidanceMutations {
+            system_prompt: Some(format!("{base}\n\n{WORKING_DIRECTORY_GUIDANCE}")),
+        }
+    }
+}
+
 pub fn register(iii: &Arc<IIIClient>) {
     let client = iii.clone();
     iii.register_function(
@@ -161,6 +197,19 @@ pub fn register(iii: &Arc<IIIClient>) {
         )
         .metadata(json!({ "internal": true })),
     );
+
+    iii.register_function(
+        GUIDANCE_ID,
+        RegisterFunction::new_async(|event: WorkingDirectoryGuidanceEvent| async move {
+            Ok::<WorkingDirectoryGuidanceResponse, Error>(WorkingDirectoryGuidanceResponse {
+                mutations: guidance_mutations(&event.generate.system_prompt),
+            })
+        })
+        .description(
+            "Internal: append Console working-directory handoff guidance to Harness generations.",
+        )
+        .metadata(json!({ "internal": true })),
+    );
 }
 
 pub fn bind(iii: &IIIClient) -> Result<(), Error> {
@@ -173,12 +222,44 @@ pub fn bind(iii: &IIIClient) -> Result<(), Error> {
             "on_error": "fail_closed"
         }),
     ))?;
+    iii.register_trigger(RegisterTriggerInput::new(
+        "harness::hook::pre-generate",
+        GUIDANCE_ID,
+        json!({
+            "timeout_ms": 5_000,
+            "on_error": "fail_open"
+        }),
+    ))?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generation_guidance_names_the_exact_handoff_contract() {
+        let prompt = guidance_mutations("BASE")
+            .system_prompt
+            .expect("a real prompt receives working-directory guidance");
+        assert!(prompt.starts_with("BASE\n\n"));
+        assert!(prompt.contains("console::working-directory::propose"));
+        assert!(prompt.contains("after the directory exists"));
+        assert!(prompt.contains("explicitly asks"));
+        assert!(prompt.contains("pre-verified"));
+        assert!(prompt.contains(r#"{ "path": "/absolute/path", "reason": "..." }"#));
+    }
+
+    #[test]
+    fn empty_generation_prompt_is_preserved() {
+        let response = WorkingDirectoryGuidanceResponse {
+            mutations: guidance_mutations(""),
+        };
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            json!({ "mutations": {} })
+        );
+    }
 
     #[test]
     fn stamped_session_overwrites_spoofed_context() {

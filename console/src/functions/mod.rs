@@ -40,7 +40,7 @@ pub fn register_all(
     }
     workspace::register(iii);
     tracing::info!(
-        "registered console::status, console::ui-manifest, console::working-directory::propose, console::workspace::{{list,open,close}}"
+        "registered console::status, console::ui-manifest, console::working-directory::{{propose,inject-guidance}}, console::workspace::{{list,open,close}}"
     );
 }
 
