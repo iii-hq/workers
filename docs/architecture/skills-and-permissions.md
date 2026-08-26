@@ -54,6 +54,17 @@ rules:
 Precedent: `session-manager` block — deny all writes and `session::store::*`;
 reads stay at default approval.
 
+For the configuration worker, `configuration::list` and
+`configuration::schema` are read-only and allowed. `configuration::get` is a
+sensitive read and needs approval by default when the gate is configured. When
+approval-gate configuration is unavailable, the Console fallback permits both
+`configuration::get` and `configuration::set` for existing entries. With the
+gate configured, `configuration::set` follows its deployment rules; the
+repository default denies it. Agents cannot call
+`configuration::register`. Direct Console configuration pages and
+worker-to-worker configuration calls use privileged paths; this agent policy
+does not change them.
+
 Update [`iii-permissions.yaml`](../../iii-permissions.yaml) when adding a worker
 whose functions agents should or should not call without approval.
 
