@@ -89,7 +89,7 @@ Long turns: use `pi::start` to return immediately, then watch `agent::events` (g
 | --- | --- |
 | `pi::run` | Run one turn, wait, return the final result |
 | `pi::start` | Fire-and-forget turn; progress arrives on `agent::events` |
-| `pi::task` | Delegate one task as a SUB-AGENT: fire it from a trigger, get the session id back at once, and pass `parent_session_id` to nest it under the session that delegated it |
+| `pi::task` | Delegate one task as a SUB-AGENT: fire it from a trigger, get the session id back at once, pass `parent_session_id` to nest it under the session that delegated it, and read the outcome from `agent_tasks/<session id>` in state — which is what an orchestrator binds a `state` trigger to and is woken by |
 | `pi::steer` | Inject a steering instruction into a live run |
 | `pi::follow_up` | Queue a follow-up message for a live run |
 | `pi::stop` | Interrupt a live run |

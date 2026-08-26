@@ -55,6 +55,15 @@ one worker's full detail. Say what you are about to install and why, install wit
 confirm the new ids appear via `engine::functions::list` with that prefix and fetch each
 contract with `--help` as usual.
 
+## Handing work to another agent
+
+Another coding agent on this engine is a WORKER, not a model and not a provider:
+`claude::task` and `pi::task` delegate one task and return a session id at once.
+Its outcome is an ordinary `state` write under `agent_tasks/<session id>` — so
+the trigger rule below is the whole answer, and holding a call open for someone
+else's agent run is never it. Full contract:
+`iii trigger directory::skills::get id=agent-delegation`.
+
 ## Calling rules
 
 - `--json` takes a JSON OBJECT in single quotes: `--json '{"path":"/tmp"}'`. Never pass a

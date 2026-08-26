@@ -24,7 +24,7 @@ import {
   type ToolCallIndex,
 } from './map.js';
 import { listSessions, loadSession, saveSession } from './state.js';
-import { linkChildSession, setSessionStatus } from './session-link.js';
+import { linkChildSession, recordTaskOutcome, setSessionStatus } from './session-link.js';
 import { runTurnSpan } from './trace.js';
 import type { AgentMessage, FunctionResultMessage, SessionRecord } from './types.js';
 
@@ -513,10 +513,36 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
         session_id,
         prompt: parsed.task,
       };
-      void executeRun(iii, getCfg(), emit, emitRaw, run).catch(async (err) => {
-        console.error(`claude::task background run failed for ${session_id}: ${String(err)}`);
-        await markSessionError(iii, session_id);
-      });
+      // Fire-and-forget, and REACTIVE: the caller is not held open for the
+      // length of an agent run. When the task settles, its outcome is written
+      // to state under `agent_tasks/<session id>`, which is what an
+      // orchestrator binds a `state` trigger to and gets woken by — the same
+      // shape a harness sub-agent uses, with no polling and no blocking call.
+      void executeRun(iii, getCfg(), emit, emitRaw, run)
+        .then(async (result) => {
+          await recordTaskOutcome(iii, {
+            session_id,
+            parent_session_id: parsed.parent_session_id,
+            agent: 'claude-code',
+            task: parsed.task,
+            status: 'done',
+            result: typeof result.result === 'string' ? result.result : undefined,
+            updated_at_ms: Date.now(),
+          });
+        })
+        .catch(async (err) => {
+          console.error(`claude::task background run failed for ${session_id}: ${String(err)}`);
+          await markSessionError(iii, session_id);
+          await recordTaskOutcome(iii, {
+            session_id,
+            parent_session_id: parsed.parent_session_id,
+            agent: 'claude-code',
+            task: parsed.task,
+            status: 'error',
+            error: String(err),
+            updated_at_ms: Date.now(),
+          });
+        });
       return { session_id, started: true };
     },
     {

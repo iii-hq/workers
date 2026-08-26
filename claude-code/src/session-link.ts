@@ -72,3 +72,44 @@ export async function setSessionStatus(
     );
   }
 }
+
+/**
+ * The scope a delegated task's outcome lands in. An orchestrator binds a
+ * `state` trigger on `{ scope: TASK_SCOPE, key: <child session id> }` and is
+ * WOKEN when the task settles — no polling, no blocking call held open for the
+ * length of an agent run. It is the same shape a harness sub-agent uses: the
+ * child writes where it was told to write, and the parent reacts to that write.
+ */
+export const TASK_SCOPE = 'agent_tasks';
+
+export type TaskOutcome = {
+  session_id: string;
+  parent_session_id?: string;
+  /** Which agent ran it, so one binding can serve several. */
+  agent: string;
+  task: string;
+  status: 'done' | 'error';
+  /** The agent's answer, when it produced one. */
+  result?: string;
+  error?: string;
+  updated_at_ms: number;
+};
+
+/**
+ * Publish a delegated task's outcome. Best-effort: a missing `state` worker
+ * costs the parent its wake-up, not the work — the run already happened, and
+ * its events are on the stream either way.
+ */
+export async function recordTaskOutcome(iii: IIIClient, outcome: TaskOutcome): Promise<void> {
+  try {
+    await iii.trigger({
+      function_id: 'state::set',
+      payload: { scope: TASK_SCOPE, key: outcome.session_id, value: outcome },
+      timeoutMs: TIMEOUT_MS,
+    });
+  } catch (err) {
+    console.warn(
+      `claude-code: task outcome for ${outcome.session_id} was not published: ${String(err)}`,
+    );
+  }
+}

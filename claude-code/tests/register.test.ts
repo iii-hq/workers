@@ -117,6 +117,21 @@ describe('register', () => {
     });
     // The task text is the prompt the agent actually ran.
     expect(capture.prompt).toBe('review the diff');
+
+    // And the outcome is PUBLISHED, so an orchestrator can bind a `state`
+    // trigger on it and be woken instead of holding a call open.
+    await vi.waitFor(() => {
+      const outcome = fake.state.get(`agent_tasks/${res.session_id}`) as
+        | Record<string, unknown>
+        | undefined;
+      expect(outcome).toMatchObject({
+        session_id: res.session_id,
+        parent_session_id: 'parent-1',
+        agent: 'claude-code',
+        task: 'review the diff',
+        status: 'done',
+      });
+    });
   });
 
   it('claude::task refuses a task with nothing in it', async () => {

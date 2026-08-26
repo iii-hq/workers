@@ -96,7 +96,7 @@ Long turns: use `claude::start` to return immediately, then watch `agent::events
 | --- | --- |
 | `claude::run` | Run one turn, wait, return the final result |
 | `claude::start` | Fire-and-forget turn; progress arrives on `agent::events` |
-| `claude::task` | Delegate one task as a SUB-AGENT: fire it from a trigger, get the session id back at once, and pass `parent_session_id` to nest it under the session that delegated it |
+| `claude::task` | Delegate one task as a SUB-AGENT: fire it from a trigger, get the session id back at once, pass `parent_session_id` to nest it under the session that delegated it, and read the outcome from `agent_tasks/<session id>` in state — which is what an orchestrator binds a `state` trigger to and is woken by |
 | `claude::stop` | Interrupt a live run |
 | `claude::status` | Session state, live flag, usage, cost |
 | `claude::sessions::list` | All sessions this worker has run |
