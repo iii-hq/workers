@@ -7,7 +7,7 @@
  * save/reset, and error mapping stay host-owned (the console's SaveBar
  * below the form drives `configuration::set`). Mirrors SkillsConfig
  * (workers/iii-directory/src/config.rs): skills_folder,
- * local_skills_folder, agents_skills_folder, registry_url,
+ * local_skills_folder, agents_folder, agents_skills_folder, registry_url,
  * download_timeout_ms, registry_cache_ttl_ms, filter_unregistered,
  * auto_download, inject_hint, hint_min_workers, registry_search.
  */
@@ -35,6 +35,7 @@ function asString(v: JsonValue | undefined): string {
 const TOPOLOGY_FIELDS = new Set([
   'skills_folder',
   'local_skills_folder',
+  'agents_folder',
   'agents_skills_folder',
   'auto_download',
 ])
@@ -97,6 +98,16 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
         placeholder="skills/iii"
         hint="Project-scoped overrides relative to III_COMPOSE_DIR (process cwd when standalone) — a namespace here shadows the global folder"
         value={asString(value.local_skills_folder)}
+        onChange={setString}
+        errors={props.errors}
+      />
+
+      <TextField
+        field="agents_folder"
+        label="Agent profiles folder"
+        placeholder="agents"
+        hint="Read-write root for reusable agent profile Markdown files — absolute, ~-prefixed, or relative to III_COMPOSE_DIR"
+        value={asString(value.agents_folder)}
         onChange={setString}
         errors={props.errors}
       />

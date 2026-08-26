@@ -546,10 +546,9 @@ pub fn validate_agent_logo(logo: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Scan agent profiles (`agents/` path segment) under `root`. Mirrors
-/// [`scan_system_prompts`]: required frontmatter, stem-derived flat id
-/// validated by [`validate_name`], first-wins dedupe with a
-/// [`SkipReason`] for the loser.
+/// Scan direct `*.md` agent profiles under `root`. Nested Markdown is
+/// ignored; profile ids come from the file stem and are validated by
+/// [`validate_name`].
 pub fn scan_agents(root: &Path) -> (Vec<FsAgent>, Vec<SkipReason>) {
     let mut agents: Vec<FsAgent> = Vec::new();
     let mut skipped: Vec<SkipReason> = Vec::new();
@@ -567,7 +566,7 @@ pub fn scan_agents(root: &Path) -> (Vec<FsAgent>, Vec<SkipReason>) {
     };
 
     for (abs, rel) in entries {
-        if classify_rel_path(&rel) != Some(SourceKind::Agent) {
+        if rel.components().count() != 1 {
             continue;
         }
         let mut skip = |reason: String| {
@@ -598,16 +597,6 @@ pub fn scan_agents(root: &Path) -> (Vec<FsAgent>, Vec<SkipReason>) {
             .to_string();
         if let Err(e) = validate_name(&name) {
             skip(format!("invalid agent id {name:?}: {e}"));
-            continue;
-        }
-        if let Some(existing) = agents.iter().find(|a| a.name == name) {
-            if existing.abs_path != abs {
-                let reason = format!(
-                    "duplicate id {name:?} also produced by {}",
-                    existing.abs_path.display()
-                );
-                skip(reason);
-            }
             continue;
         }
         agents.push(FsAgent {
@@ -641,52 +630,6 @@ pub fn scan_agents(root: &Path) -> (Vec<FsAgent>, Vec<SkipReason>) {
 
     agents.sort_by(|a, b| a.name.cmp(&b.name));
     (agents, skipped)
-}
-
-/// Merged scan of agents from a global root and a local root — same
-/// whole-namespace override semantics as [`scan_system_prompts_merged`].
-pub fn scan_agents_merged(
-    global_root: &Path,
-    local_root: &Path,
-) -> (Vec<FsAgent>, Vec<SkipReason>) {
-    let local_ns = top_level_namespaces(local_root);
-
-    let (global_agents, mut global_skipped) = scan_agents(global_root);
-    let global_filtered: Vec<FsAgent> = global_agents
-        .into_iter()
-        .filter(|a| {
-            let top_seg = a
-                .abs_path
-                .strip_prefix(global_root)
-                .ok()
-                .and_then(|r| r.components().next())
-                .and_then(|c| c.as_os_str().to_str())
-                .unwrap_or("");
-            !local_ns.contains(&top_seg.to_string())
-        })
-        .collect();
-
-    global_skipped.retain(|s| {
-        let rel = s
-            .path
-            .strip_prefix(global_root)
-            .ok()
-            .and_then(|p| p.components().next())
-            .and_then(|c| c.as_os_str().to_str())
-            .unwrap_or("");
-        !local_ns.contains(&rel.to_string())
-    });
-
-    let (local_agents, local_skipped) = scan_agents(local_root);
-
-    let mut merged = local_agents;
-    merged.extend(global_filtered);
-    merged.sort_by(|a, b| a.name.cmp(&b.name));
-
-    let mut all_skipped = global_skipped;
-    all_skipped.extend(local_skipped);
-
-    (merged, all_skipped)
 }
 
 /// Read a fs entry's body fresh from disk, strip any leading
@@ -1745,7 +1688,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         write_fixture(
             tmp.path(),
-            "agents/captain.md",
+            "captain.md",
             "---\nname: Release Captain\ndescription: Cuts releases.\nlogo: \"🚢\"\nskills:\n  - iii-sandbox\ndelegates_to: [frontend]\nleaf: true\nmodel: codex/gpt-5.4-mini\n---\nYou are the captain.\n",
         );
         let (agents, skipped) = scan_agents(tmp.path());
@@ -1768,7 +1711,7 @@ mod tests {
     #[test]
     fn scan_agents_empty_description_and_absent_optionals_ok() {
         let tmp = tempfile::tempdir().unwrap();
-        write_fixture(tmp.path(), "agents/min.md", "---\nname: Min\n---\nBody.\n");
+        write_fixture(tmp.path(), "min.md", "---\nname: Min\n---\nBody.\n");
         let (agents, skipped) = scan_agents(tmp.path());
         assert!(skipped.is_empty(), "unexpected skips: {skipped:?}");
         let a = &agents[0];
@@ -1783,19 +1726,15 @@ mod tests {
     #[test]
     fn scan_agents_skips_invalid_files() {
         let tmp = tempfile::tempdir().unwrap();
-        write_fixture(tmp.path(), "agents/no-fm.md", "no frontmatter\n");
+        write_fixture(tmp.path(), "no-fm.md", "no frontmatter\n");
+        write_fixture(tmp.path(), "no-name.md", "---\ndescription: x\n---\nB\n");
         write_fixture(
             tmp.path(),
-            "agents/no-name.md",
-            "---\ndescription: x\n---\nB\n",
-        );
-        write_fixture(
-            tmp.path(),
-            "agents/bad-logo.md",
+            "bad-logo.md",
             "---\nname: X\nlogo: ./logo.png\n---\nB\n",
         );
-        write_fixture(tmp.path(), "agents/Bad-Stem.md", "---\nname: X\n---\nB\n");
-        write_fixture(tmp.path(), "agents/good.md", "---\nname: Good\n---\nB\n");
+        write_fixture(tmp.path(), "Bad-Stem.md", "---\nname: X\n---\nB\n");
+        write_fixture(tmp.path(), "good.md", "---\nname: Good\n---\nB\n");
         let (agents, skipped) = scan_agents(tmp.path());
         let ids: Vec<&str> = agents.iter().map(|a| a.name.as_str()).collect();
         assert_eq!(ids, vec!["good"]);
@@ -1816,14 +1755,18 @@ mod tests {
     }
 
     #[test]
-    fn scan_agents_duplicate_stem_first_wins() {
+    fn scan_agents_ignores_nested_markdown() {
         let tmp = tempfile::tempdir().unwrap();
-        write_fixture(tmp.path(), "agents/shared.md", "---\nname: Top\n---\nA\n");
-        write_fixture(tmp.path(), "ns/agents/shared.md", "---\nname: Ns\n---\nB\n");
+        write_fixture(tmp.path(), "shared.md", "---\nname: Top\n---\nA\n");
+        write_fixture(
+            tmp.path(),
+            "nested/ignored.md",
+            "---\nname: Nested\n---\nB\n",
+        );
         let (agents, skipped) = scan_agents(tmp.path());
         assert_eq!(agents.len(), 1);
-        assert_eq!(skipped.len(), 1);
-        assert!(skipped[0].reason.contains("duplicate id \"shared\""));
+        assert_eq!(agents[0].name, "shared");
+        assert!(skipped.is_empty(), "{skipped:?}");
     }
 
     #[test]
@@ -1835,18 +1778,6 @@ mod tests {
         assert!(skipped.is_empty(), "{skipped:?}");
         let ids: Vec<_> = skills.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, vec!["ns/skill"]);
-    }
-
-    #[test]
-    fn scan_agents_merged_local_namespace_shadows_global() {
-        let global = tempfile::tempdir().unwrap();
-        let local = tempfile::tempdir().unwrap();
-        write_fixture(global.path(), "agents/a.md", "---\nname: GA\n---\nG\n");
-        write_fixture(local.path(), "agents/b.md", "---\nname: LB\n---\nL\n");
-        // Local top-level `agents/` dir shadows the global one wholesale.
-        let (merged, _) = scan_agents_merged(global.path(), local.path());
-        let ids: Vec<&str> = merged.iter().map(|a| a.name.as_str()).collect();
-        assert_eq!(ids, vec!["b"]);
     }
 
     #[test]

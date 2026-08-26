@@ -8,7 +8,7 @@
 //!
 //! Tunable fields (`registry_url`, `download_timeout_ms`,
 //! `registry_cache_ttl_ms`, `filter_unregistered`) hot-reload in place;
-//! topology fields (`skills_folder`, `local_skills_folder`,
+//! topology fields (`skills_folder`, `local_skills_folder`, `agents_folder`,
 //! `agents_skills_folder`, `auto_download`) are refused with a "restart
 //! required" log because they define on-disk roots and boot-time task
 //! wiring.
@@ -229,8 +229,8 @@ async fn on_config_change(iii: &IIIClient, state: &SharedState) {
     if cfg.topology() != state.boot_topology {
         tracing::warn!(
             "configuration change alters topology (skills_folder, local_skills_folder, \
-             agents_skills_folder, or auto_download); a restart is required to apply it — \
-             keeping previous configuration"
+             agents_folder, agents_skills_folder, or auto_download); a restart is required \
+             to apply it — keeping previous configuration"
         );
         return;
     }

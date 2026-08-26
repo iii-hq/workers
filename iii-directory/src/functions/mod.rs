@@ -96,7 +96,8 @@ pub fn log_fs_health(cfg: &SkillsConfig) {
     let folder = cfg.resolved_skills_folder();
     let (skills, skill_skipped) = fs_source::scan_skills(&folder);
     let (system_prompts, system_prompt_skipped) = fs_source::scan_system_prompts(&folder);
-    let (agent_profiles, agent_skipped) = fs_source::scan_agents(&folder);
+    let agents_folder = cfg.resolved_agents_folder();
+    let (agent_profiles, agent_skipped) = fs_source::scan_agents(&agents_folder);
     let (agents_skills, agents_skipped) =
         fs_source::scan_agents_skills(&cfg.resolved_agents_skills_folder());
 
@@ -159,6 +160,7 @@ pub fn log_fs_health(cfg: &SkillsConfig) {
         agent_profiles = agent_profiles.len(),
         skipped = total_skipped,
         skills_folder = %folder.display(),
+        agents_folder = %agents_folder.display(),
         "fs source scan complete"
     );
 }

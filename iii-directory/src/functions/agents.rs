@@ -318,12 +318,12 @@ fn register_delete(iii: &Arc<IIIClient>, cfg: &SharedConfig, subs: &trigger_type
 
 // ---------- core helpers (engine-free, reusable in tests) ----------
 
-fn scan_merged(cfg: &SkillsConfig) -> Vec<FsAgent> {
-    fs_source::scan_agents_merged(&cfg.resolved_skills_folder(), &cfg.local_skills_folder()).0
+fn scan_profiles(cfg: &SkillsConfig) -> Vec<FsAgent> {
+    fs_source::scan_agents(&cfg.resolved_agents_folder()).0
 }
 
 pub fn list_agents(cfg: &SkillsConfig) -> ListAgentsOutput {
-    let agents = scan_merged(cfg)
+    let agents = scan_profiles(cfg)
         .into_iter()
         .map(|a| AgentEntry {
             modified_at: fs_modified_at(&a.abs_path),
@@ -349,7 +349,7 @@ pub fn get_agent(
     visible_skills: &[FsSkill],
 ) -> Result<AgentGetOutput, String> {
     validate_name(&req.id)?;
-    let agents = scan_merged(cfg);
+    let agents = scan_profiles(cfg);
     let Some(agent) = agents.iter().find(|a| a.name == req.id).cloned() else {
         return Err(agent_not_found(&agents, &req.id));
     };
@@ -398,7 +398,7 @@ pub fn create_agent(
     req: &AgentCreateInput,
 ) -> Result<AgentWriteOutput, String> {
     validate_name(&req.id)?;
-    let agents = scan_merged(cfg);
+    let agents = scan_profiles(cfg);
     if agents.iter().any(|a| a.name == req.id) {
         return Err(invalid_input_message(
             "D414",
@@ -406,10 +406,7 @@ pub fn create_agent(
             AGENT_CREATE_CONFLICT_NEXT,
         ));
     }
-    let dest = cfg
-        .resolved_skills_folder()
-        .join(fs_source::AGENTS_SEGMENT)
-        .join(format!("{}.md", req.id));
+    let dest = cfg.resolved_agents_folder().join(format!("{}.md", req.id));
     if dest.exists() {
         return Err(invalid_input_message(
             "D414",
@@ -431,7 +428,7 @@ pub fn update_agent(
     req: &AgentUpdateInput,
 ) -> Result<AgentWriteOutput, String> {
     validate_name(&req.id)?;
-    let agents = scan_merged(cfg);
+    let agents = scan_profiles(cfg);
     let Some(agent) = agents.iter().find(|a| a.name == req.id) else {
         return Err(agent_not_found(&agents, &req.id));
     };
@@ -450,7 +447,7 @@ pub fn delete_agent(
     req: &AgentDeleteInput,
 ) -> Result<AgentDeleteOutput, String> {
     validate_name(&req.id)?;
-    let agents = scan_merged(cfg);
+    let agents = scan_profiles(cfg);
     let Some(agent) = agents.iter().find(|a| a.name == req.id) else {
         return Err(agent_not_found(&agents, &req.id));
     };
@@ -545,8 +542,9 @@ mod tests {
 
     fn cfg_for(dir: &Path) -> SkillsConfig {
         SkillsConfig {
-            skills_folder: dir.to_string_lossy().into_owned(),
+            skills_folder: dir.join("skills").to_string_lossy().into_owned(),
             local_skills_folder: dir.join("local-empty").to_string_lossy().into_owned(),
+            agents_folder: dir.join("agents").to_string_lossy().into_owned(),
             ..SkillsConfig::default()
         }
     }
@@ -658,6 +656,21 @@ mod tests {
         assert!(err.starts_with("D410 not_found: agent"), "got: {err}");
         assert!(err.contains("real"), "candidate missing: {err}");
         assert!(err.contains("directory::agents::list"), "got: {err}");
+    }
+
+    #[test]
+    fn list_does_not_fall_back_to_profiles_under_skills() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture(tmp.path(), "skills/ns/agents/legacy.md", CAPTAIN);
+        write_fixture(tmp.path(), "agents/current.md", CAPTAIN);
+        let cfg = cfg_for(tmp.path());
+
+        let ids = list_agents(&cfg)
+            .agents
+            .into_iter()
+            .map(|agent| agent.id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["current"]);
     }
 
     #[test]

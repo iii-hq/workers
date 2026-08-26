@@ -137,6 +137,7 @@ async fn main() -> Result<()> {
     tracing::info!(
         skills_folder = %cfg.resolved_skills_folder().display(),
         local_skills_folder = %cfg.local_skills_folder().display(),
+        agents_folder = %cfg.resolved_agents_folder().display(),
         registry_url = %cfg.registry_base(),
         filter_unregistered = cfg.filter_unregistered,
         auto_download = cfg.auto_download,

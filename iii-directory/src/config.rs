@@ -30,6 +30,9 @@ pub const DEFAULT_SKILLS_FOLDER: &str = "skills";
 /// Project-relative destination for local skill overrides.
 pub const DEFAULT_LOCAL_SKILLS_FOLDER: &str = "skills/iii";
 
+/// Project-relative destination for reusable agent profiles.
+pub const DEFAULT_AGENTS_FOLDER: &str = "agents";
+
 /// Project-relative root for agent skills. Read-only; never written by this worker.
 pub const DEFAULT_AGENTS_SKILLS_FOLDER: &str = ".agents/skills";
 
@@ -39,6 +42,10 @@ fn default_skills_folder() -> String {
 
 fn default_local_skills_folder() -> String {
     iii_worker_paths::default_path(DEFAULT_LOCAL_SKILLS_FOLDER)
+}
+
+fn default_agents_folder() -> String {
+    iii_worker_paths::default_path(DEFAULT_AGENTS_FOLDER)
 }
 
 fn default_agents_skills_folder() -> String {
@@ -83,6 +90,11 @@ pub struct SkillsConfig {
     /// Supports the same three resolution forms as `skills_folder`.
     #[serde(default = "default_local_skills_folder")]
     pub local_skills_folder: String,
+
+    /// Read-write root for reusable agent profile Markdown files. Supports
+    /// the same three resolution forms as `skills_folder`.
+    #[serde(default = "default_agents_folder")]
+    pub agents_folder: String,
 
     /// Read-only root for system-installed agent skills (the
     /// `~/.agents/skills` convention: one directory per skill, each
@@ -170,6 +182,7 @@ impl Default for SkillsConfig {
         Self {
             skills_folder: default_skills_folder(),
             local_skills_folder: default_local_skills_folder(),
+            agents_folder: default_agents_folder(),
             agents_skills_folder: default_agents_skills_folder(),
             registry_url: default_registry_url(),
             download_timeout_ms: default_download_timeout_ms(),
@@ -201,6 +214,11 @@ impl SkillsConfig {
         iii_worker_paths::resolve_path(&self.local_skills_folder)
     }
 
+    /// Absolute path to the configured read-write agent profile folder.
+    pub fn resolved_agents_folder(&self) -> PathBuf {
+        iii_worker_paths::resolve_path(&self.agents_folder)
+    }
+
     /// Absolute path to the configured (read-only) agents skills folder.
     pub fn resolved_agents_skills_folder(&self) -> PathBuf {
         iii_worker_paths::resolve_path(&self.agents_skills_folder)
@@ -214,15 +232,16 @@ impl SkillsConfig {
 
     /// Restart-requiring fields. A `configuration:updated` reload that
     /// changes any of these is refused (logged "restart required"):
-    /// `skills_folder` / `local_skills_folder` / `agents_skills_folder`
-    /// are the on-disk read/write roots baked into running tasks (and the
-    /// fs-watch root set), and `auto_download` wires the `worker`-trigger
-    /// subscription + boot reconcile at startup — none can be re-wired
-    /// safely in place.
+    /// `skills_folder` / `local_skills_folder` / `agents_folder` /
+    /// `agents_skills_folder` are the on-disk read/write roots baked into
+    /// running tasks (and the fs-watch root set), and `auto_download` wires
+    /// the `worker`-trigger subscription + boot reconcile at startup — none
+    /// can be re-wired safely in place.
     pub fn topology(&self) -> Topology {
         Topology {
             skills_folder: self.skills_folder.clone(),
             local_skills_folder: self.local_skills_folder.clone(),
+            agents_folder: self.agents_folder.clone(),
             agents_skills_folder: self.agents_skills_folder.clone(),
             auto_download: self.auto_download,
         }
@@ -280,6 +299,7 @@ impl SkillsConfig {
 pub struct Topology {
     pub skills_folder: String,
     pub local_skills_folder: String,
+    pub agents_folder: String,
     pub agents_skills_folder: String,
     pub auto_download: bool,
 }
@@ -299,6 +319,7 @@ mod tests {
         let cfg: SkillsConfig = serde_yaml::from_str("{}").unwrap();
         assert_eq!(cfg.skills_folder, default_skills_folder());
         assert_eq!(cfg.local_skills_folder, default_local_skills_folder());
+        assert_eq!(cfg.agents_folder, default_agents_folder());
         assert_eq!(cfg.agents_skills_folder, default_agents_skills_folder());
         assert_eq!(cfg.registry_url, DEFAULT_REGISTRY_URL);
         assert_eq!(cfg.download_timeout_ms, 60_000);
@@ -316,6 +337,7 @@ mod tests {
             from_empty.local_skills_folder,
             from_default.local_skills_folder
         );
+        assert_eq!(from_empty.agents_folder, from_default.agents_folder);
         assert_eq!(
             from_empty.agents_skills_folder,
             from_default.agents_skills_folder
@@ -341,6 +363,7 @@ mod tests {
         let yaml = "\
 skills_folder: ./my-skills
 local_skills_folder: ./local-skills
+agents_folder: ./profiles
 agents_skills_folder: ./agents-skills
 registry_url: https://example.com/registry/
 download_timeout_ms: 30000
@@ -351,6 +374,7 @@ auto_download: false
         let cfg: SkillsConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(cfg.skills_folder, "./my-skills");
         assert_eq!(cfg.local_skills_folder, "./local-skills");
+        assert_eq!(cfg.agents_folder, "./profiles");
         assert_eq!(cfg.agents_skills_folder, "./agents-skills");
         assert_eq!(cfg.registry_url, "https://example.com/registry/");
         assert_eq!(cfg.download_timeout_ms, 30_000);
@@ -415,6 +439,18 @@ auto_download: false
     }
 
     #[test]
+    fn resolved_agents_folder_relative_resolves_against_project() {
+        let cfg = SkillsConfig {
+            agents_folder: "./profiles".into(),
+            ..SkillsConfig::default()
+        };
+        assert_eq!(
+            cfg.resolved_agents_folder(),
+            iii_worker_paths::project_path("profiles")
+        );
+    }
+
+    #[test]
     fn local_skills_folder_relative_resolves_against_project() {
         let cfg = SkillsConfig {
             local_skills_folder: "./.iii/skills".into(),
@@ -445,6 +481,7 @@ auto_download: false
         for field in [
             "skills_folder",
             "local_skills_folder",
+            "agents_folder",
             "agents_skills_folder",
             "registry_url",
             "download_timeout_ms",
@@ -515,6 +552,10 @@ auto_download: false
             agents_skills_folder: "/other-agents".into(),
             ..base.clone()
         };
+        let profiles = SkillsConfig {
+            agents_folder: "/other-profiles".into(),
+            ..base.clone()
+        };
         let auto = SkillsConfig {
             auto_download: !base.auto_download,
             ..base.clone()
@@ -522,6 +563,7 @@ auto_download: false
         assert_ne!(base.topology(), folder.topology());
         assert_ne!(base.topology(), local.topology());
         assert_ne!(base.topology(), agents.topology());
+        assert_ne!(base.topology(), profiles.topology());
         assert_ne!(base.topology(), auto.topology());
     }
 }
