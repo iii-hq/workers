@@ -8,15 +8,13 @@ the workers-registry endpoint. Skill paths map to keys as:
     <worker>/skills/SKILL.md      -> "SKILL.md"
     <worker>/skills/<rel>.md      -> "skills/<rel>.md"  (except SKILL.md)
 
-If no non-empty markdown is found the script writes ``skip=true`` to
-``$GITHUB_OUTPUT`` (so the calling workflow can gate the POST step off) and
-exits cleanly; the API rejects payloads that omit both ``skills`` and
-``prompts``, and ``skills: {}`` would be a destructive "clear all" call which is
-wrong on a fresh publish.
+The payload always carries the complete skills snapshot, including
+``skills: {}`` when no non-empty markdown exists. Publishing that explicit
+empty snapshot is idempotent and lets retries prove that the exact version has
+no attached skills before a mutable Registry channel is assigned.
 """
 import argparse
 import json
-import os
 import pathlib
 import re
 import sys
@@ -68,14 +66,6 @@ def collect_skills(worker_root: pathlib.Path) -> dict[str, str]:
     return skills
 
 
-def _signal_skip(worker: str) -> None:
-    gha_out = os.environ.get("GITHUB_OUTPUT")
-    if gha_out:
-        with open(gha_out, "a", encoding="utf-8") as f:
-            f.write("skip=true\n")
-    print(f"::notice::no skills found for {worker}; skipping POST /w/.../skills")
-
-
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--worker", required=True, help="Worker folder name in the repo root")
@@ -99,13 +89,8 @@ def main() -> int:
         print(f"::error::{exc}", file=sys.stderr)
         return 1
 
-    out_path = pathlib.Path(args.out)
-    if not skills:
-        out_path.write_text("{}\n", encoding="utf-8")
-        _signal_skip(args.worker)
-        return 0
-
     payload = {"version": args.version, "skills": skills}
+    out_path = pathlib.Path(args.out)
     out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     print(f"::notice::collected {len(skills)} skill file(s) for {args.worker}")
     return 0
