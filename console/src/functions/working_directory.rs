@@ -83,6 +83,13 @@ pub struct WorkingDirectoryGuidanceEvent {
 pub struct WorkingDirectoryGenerateContext {
     #[serde(default)]
     pub system_prompt: String,
+    #[serde(default)]
+    tools: Vec<WorkingDirectoryTool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct WorkingDirectoryTool {
+    name: String,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -190,8 +197,12 @@ fn stamp_session(event: StampSessionEvent) -> Option<StampSessionResponse> {
     })
 }
 
-fn guidance_mutations(base: &str) -> WorkingDirectoryGuidanceMutations {
-    if base.is_empty() {
+fn guidance_mutations(
+    base: &str,
+    tools: &[WorkingDirectoryTool],
+) -> WorkingDirectoryGuidanceMutations {
+    let proposal_is_allowed = tools.iter().any(|tool| tool.name == PROPOSE_ID);
+    if base.is_empty() || !proposal_is_allowed {
         WorkingDirectoryGuidanceMutations::default()
     } else {
         WorkingDirectoryGuidanceMutations {
@@ -231,7 +242,7 @@ pub fn register(iii: &Arc<IIIClient>) {
         GUIDANCE_ID,
         RegisterFunction::new_async(|event: WorkingDirectoryGuidanceEvent| async move {
             Ok::<WorkingDirectoryGuidanceResponse, Error>(WorkingDirectoryGuidanceResponse {
-                mutations: guidance_mutations(&event.generate.system_prompt),
+                mutations: guidance_mutations(&event.generate.system_prompt, &event.generate.tools),
             })
         })
         .description(
@@ -268,7 +279,10 @@ mod tests {
 
     #[test]
     fn generation_guidance_names_the_exact_handoff_contract() {
-        let prompt = guidance_mutations("BASE")
+        let tools = [WorkingDirectoryTool {
+            name: PROPOSE_ID.into(),
+        }];
+        let prompt = guidance_mutations("BASE", &tools)
             .system_prompt
             .expect("a real prompt receives working-directory guidance");
         assert!(prompt.starts_with("BASE\n\n"));
@@ -281,8 +295,22 @@ mod tests {
 
     #[test]
     fn empty_generation_prompt_is_preserved() {
+        let tools = [WorkingDirectoryTool {
+            name: PROPOSE_ID.into(),
+        }];
         let response = WorkingDirectoryGuidanceResponse {
-            mutations: guidance_mutations(""),
+            mutations: guidance_mutations("", &tools),
+        };
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            json!({ "mutations": {} })
+        );
+    }
+
+    #[test]
+    fn generation_guidance_is_not_advertised_when_proposal_is_denied() {
+        let response = WorkingDirectoryGuidanceResponse {
+            mutations: guidance_mutations("BASE", &[]),
         };
         assert_eq!(
             serde_json::to_value(response).unwrap(),
