@@ -275,7 +275,7 @@ export function CollectionBrowser({
 }: {
   host: Host
   adapter: BrowserAdapter
-  /** Sidebar top slot — the skills/prompts switcher lives here. */
+  /** Sidebar top slot — the collection switcher lives here. */
   nav?: ReactNode
   panelSide?: 'left' | 'right'
   /** localStorage namespace for per-tab+collection UI state. */

@@ -30,10 +30,10 @@ export type SkillSelection = string[] | undefined
 /** What the select shows: provider default, a named fs prompt, or free text. */
 export type SystemPromptChoice = 'default' | 'custom' | { named: string }
 
-/** Legacy body addon kept only to decode established pre-ID-filter sessions. */
+/** Legacy skill body kept only to decode established pre-ID-filter sessions. */
 export interface SystemPromptAddon {
-  kind: 'prompt' | 'skill'
-  /** Prompt name (`directory::prompts::*`) or skill id (`directory::skills::*`). */
+  kind: 'skill'
+  /** Skill id (`directory::skills::*`). */
   name: string
   /** Body resolved at selection time, frozen server-side on the first send —
    * same contract as `namedBody`. */
@@ -49,7 +49,7 @@ export interface SystemPromptState {
   namedBody: string
   /** Custom textarea content; kept while switching choices. */
   customText: string
-  /** Legacy prompt/skill bodies; new skill selections never write here. */
+  /** Legacy skill bodies; new skill selections never write here. */
   addons: SystemPromptAddon[]
 }
 

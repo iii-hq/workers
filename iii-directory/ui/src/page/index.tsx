@@ -1,12 +1,12 @@
 /**
  * The directory page (#/ext/directory): a full-height application shell —
- * slim product top bar, a navigation sidebar carrying the skills/prompts
+ * slim product top bar, a navigation sidebar carrying the directory
  * switcher, and a document workspace that opens one entry in the shared
  * CodeEditor/MarkdownPreview pair, saving through the worker's update
  * functions.
  *
- * Both collections stay MOUNTED (the inactive one is display:none) so an
- * unsaved draft survives switching between skills and prompts.
+ * All collections stay MOUNTED (the inactive ones are display:none) so an
+ * unsaved draft survives switching between them.
  */
 
 import {
@@ -31,7 +31,7 @@ interface SkillRow {
   modified_at: string
 }
 
-interface PromptRow {
+interface SystemPromptRow {
   name: string
   description: string
   modified_at: string
@@ -107,56 +107,6 @@ const skillsAdapter: BrowserAdapter = {
   },
 }
 
-const promptsAdapter: BrowserAdapter = {
-  noun: 'prompt',
-  crumbRoot: 'prompts',
-  slugName: true,
-  descriptionRequired: true,
-  onChangeType: 'directory::prompts::on-change',
-  emptyTitle: 'Select a prompt',
-  emptyBody:
-    'Choose a prompt from the sidebar to view and edit its markdown. Prompts are filesystem-backed — files added to the prompts folders appear here automatically.',
-  async list(host) {
-    const out = await host.iii.trigger<{ prompts: PromptRow[] }>(
-      'directory::prompts::list',
-    )
-    return (out.prompts ?? []).map((p) => ({
-      key: p.name,
-      title: '',
-      description: p.description,
-      fine: formatRelativeTime(p.modified_at),
-    }))
-  },
-  async load(host, name) {
-    const out = await host.iii.trigger<{ body: string; raw?: string | null }>(
-      'directory::prompts::get',
-      {
-        name,
-        raw: true,
-      },
-    )
-    return out.raw ?? out.body
-  },
-  async save(host, name, content) {
-    // The effective name after the write follows a frontmatter rename.
-    const out = await host.iii.trigger<{ name: string }>(
-      'directory::prompts::update',
-      { name, content },
-    )
-    return out.name ?? name
-  },
-  async create(host, name, content) {
-    const out = await host.iii.trigger<{ name: string }>(
-      'directory::prompts::create',
-      { name, content },
-    )
-    return out.name ?? name
-  },
-  async remove(host, name) {
-    await host.iii.trigger('directory::prompts::delete', { name })
-  },
-}
-
 export const HARNESS_DEFAULT_SYSTEM_PROMPT_KEY = 'harness/default'
 
 export const systemPromptsAdapter: BrowserAdapter = {
@@ -169,7 +119,7 @@ export const systemPromptsAdapter: BrowserAdapter = {
   emptyBody:
     'Choose a system prompt from the sidebar to view and edit its markdown. These are what the chat picker offers as an identity prompt — filesystem-backed, so files added to the system-prompts folders appear here automatically.',
   async list(host) {
-    const out = await host.iii.trigger<{ prompts: PromptRow[] }>(
+    const out = await host.iii.trigger<{ prompts: SystemPromptRow[] }>(
       'directory::system-prompts::list',
     )
     return [
@@ -286,18 +236,16 @@ export const agentsAdapter: BrowserAdapter = {
   },
 }
 
-type Collection = 'skills' | 'prompts' | 'system-prompts' | 'agents'
+type Collection = 'skills' | 'system-prompts' | 'agents'
 
 const COLLECTIONS: { value: Collection; label: string }[] = [
   { value: 'skills', label: 'Skills' },
-  { value: 'prompts', label: 'Prompts' },
   { value: 'system-prompts', label: 'System Prompts' },
   { value: 'agents', label: 'Agents' },
 ]
 
 const ADAPTERS: Record<Collection, BrowserAdapter> = {
   skills: skillsAdapter,
-  prompts: promptsAdapter,
   'system-prompts': systemPromptsAdapter,
   agents: agentsAdapter,
 }
@@ -352,7 +300,7 @@ export function DirectoryPage({
       onChange={setCollection}
       options={COLLECTIONS}
       className="dir-ui-collection-tabs"
-      aria-label="Browse skills, prompts, system prompts or agents"
+      aria-label="Browse skills, system prompts or agents"
     />
   )
 
@@ -361,7 +309,7 @@ export function DirectoryPage({
       <PageHeader
         icon={<MarkdownFileIcon />}
         title="Directory"
-        description="Filesystem-backed skills, prompts, system prompts and agents"
+        description="Filesystem-backed skills, system prompts and agents"
         onClose={onRequestClose}
       />
       {COLLECTIONS.map((c) => (

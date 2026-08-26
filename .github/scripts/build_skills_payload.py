@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Build the POST /w/<slug>/skills payload from a worker directory.
 
-Walks the optional ``<worker>/skills/SKILL.md`` entrypoint plus every other
-``<worker>/skills/**/*.md`` document and produces the JSON body expected by
-the workers-registry endpoint. Skill paths map to keys as:
+Walks the optional ``<worker>/skills/SKILL.md`` entrypoint, every other
+``<worker>/skills/**/*.md`` document, and direct ``<worker>/agents/*.md``
+profiles. It produces the JSON body expected by the workers-registry endpoint.
+Paths map to keys as:
 
     <worker>/skills/SKILL.md      -> "SKILL.md"
     <worker>/skills/<rel>.md      -> "skills/<rel>.md"  (except SKILL.md)
+    <worker>/agents/<id>.md       -> "agents/<id>.md"
 
 The payload always carries the complete skills snapshot, including
 ``skills: {}`` when no non-empty markdown exists. Publishing that explicit
@@ -42,7 +44,20 @@ def collect_skills(worker_root: pathlib.Path) -> dict[str, str]:
 
     leaves_dir = worker_root / "skills"
     skills_skill = leaves_dir / "SKILL.md"
-    markdown = sorted(leaves_dir.rglob("*.md")) if leaves_dir.is_dir() else []
+    skill_markdown = (
+        [
+            path
+            for path in leaves_dir.rglob("*.md")
+            if not {"prompts", "agents"}.intersection(
+                path.relative_to(leaves_dir).parts
+            )
+        ]
+        if leaves_dir.is_dir()
+        else []
+    )
+    agents_dir = worker_root / "agents"
+    agent_markdown = list(agents_dir.glob("*.md")) if agents_dir.is_dir() else []
+    markdown = sorted([*skill_markdown, *agent_markdown])
 
     top_body = _read_nonempty(skills_skill) if skills_skill.is_file() else None
     if top_body is not None:

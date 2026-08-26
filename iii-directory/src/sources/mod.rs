@@ -4,7 +4,7 @@
 //! disk. The high-level `skills::download` function in
 //! [`crate::functions::download`] picks one of these based on the
 //! incoming arguments and fires the `skills::on-change` /
-//! `prompts::on-change` triggers afterwards.
+//! `system-prompts::on-change` / `agents::on-change` triggers afterwards.
 
 pub mod git;
 pub mod registry;
@@ -38,7 +38,6 @@ pub fn build_http_client(timeout_ms: u64) -> Result<reqwest::Client, String> {
 pub struct DownloadResult {
     pub namespace: String,
     pub skills_written: Vec<String>,
-    pub prompts_written: Vec<String>,
     pub system_prompts_written: Vec<String>,
     pub agents_written: Vec<String>,
 }
@@ -48,17 +47,13 @@ impl DownloadResult {
         Self {
             namespace: namespace.into(),
             skills_written: Vec::new(),
-            prompts_written: Vec::new(),
             system_prompts_written: Vec::new(),
             agents_written: Vec::new(),
         }
     }
 
     pub fn total_files(&self) -> usize {
-        self.skills_written.len()
-            + self.prompts_written.len()
-            + self.system_prompts_written.len()
-            + self.agents_written.len()
+        self.skills_written.len() + self.system_prompts_written.len() + self.agents_written.len()
     }
 }
 
@@ -226,7 +221,6 @@ mod tests {
         let mut r = DownloadResult::new("foo");
         r.skills_written.push("a.md".into());
         r.skills_written.push("b.md".into());
-        r.prompts_written.push("p1".into());
-        assert_eq!(r.total_files(), 3);
+        assert_eq!(r.total_files(), 2);
     }
 }

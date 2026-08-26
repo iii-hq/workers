@@ -239,7 +239,7 @@ function decodeSystemPrompt(v: unknown): SystemPromptState {
     ? (md.addons as unknown[]).flatMap((a): SystemPromptAddon[] => {
         if (typeof a !== 'object' || a === null) return []
         const r = a as Record<string, unknown>
-        return (r.kind === 'prompt' || r.kind === 'skill') &&
+        return r.kind === 'skill' &&
           typeof r.name === 'string' &&
           typeof r.body === 'string'
           ? [{ kind: r.kind, name: r.name, body: r.body }]
@@ -270,9 +270,7 @@ function decodeSessionSelections(
 ): Pick<Conversation, 'systemPrompt' | 'skills' | 'legacySkillMigration'> {
   const systemPrompt = decodeSystemPrompt(md.system_prompt)
   const skills = decodeSkills(md.skills)
-  const hasLegacySkills = systemPrompt.addons.some(
-    (addon) => addon.kind === 'skill',
-  )
+  const hasLegacySkills = systemPrompt.addons.length > 0
   return {
     systemPrompt,
     skills,
@@ -287,9 +285,9 @@ function finalizeLegacySkillMigration(c: Conversation): Conversation {
   const migration = c.legacySkillMigration
   if (migration?.state !== 'candidate') return c
 
-  const legacySkills = decodeSystemPrompt(migration.metadata.system_prompt)
-    .addons.filter((addon) => addon.kind === 'skill')
-    .map((addon) => addon.name)
+  const legacySkills = decodeSystemPrompt(
+    migration.metadata.system_prompt,
+  ).addons.map((addon) => addon.name)
   const skills = Object.hasOwn(migration.edits ?? {}, 'skills')
     ? migration.edits?.skills
     : Array.isArray(migration.metadata.skills)
@@ -300,7 +298,7 @@ function finalizeLegacySkillMigration(c: Conversation): Conversation {
   const systemPrompt = c.systemPrompt
     ? {
         ...c.systemPrompt,
-        addons: c.systemPrompt.addons.filter((addon) => addon.kind !== 'skill'),
+        addons: [],
       }
     : undefined
   const migrated = { ...c, systemPrompt, skills }

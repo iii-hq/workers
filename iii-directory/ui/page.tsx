@@ -8,7 +8,7 @@
  * `setup(host)` composes the worker's four console contributions, one
  * module each:
  *
- * - src/page/             — the skills & prompts browser/editor (#/ext/directory)
+ * - src/page/             — the skills, system prompts & agents browser/editor
  * - src/configuration/    — custom form for the `iii-directory` configuration entry
  * - src/function-trigger/ — how directory::* function triggers render in chat/traces
  * - src/session-chip/     — the chat header's system-prompt read-out + dialog

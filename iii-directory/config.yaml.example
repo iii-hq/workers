@@ -13,19 +13,25 @@
 #
 # Tunable fields hot-reload on change (registry_url, download_timeout_ms,
 # registry_cache_ttl_ms, filter_unregistered). Topology fields require a
-# worker restart (skills_folder, local_skills_folder, agents_skills_folder,
+# worker restart (skills_folder, local_skills_folder, agents_folder,
+# agents_skills_folder,
 # auto_download).
 #
 # When omitted entirely, the worker seeds the built-in defaults
-# (skills_folder: skills, registry_url: https://api.workers.iii.dev).
+# (skills_folder: skills, agents_folder: agents,
+# registry_url: https://api.workers.iii.dev).
 
 # Folder that backs every read (`directory::skills::list`,
-# `directory::skills::get`, `directory::prompts::*`) and every write
+# `directory::skills::get`, `directory::system-prompts::*`) and every write
 # from `directory::skills::download`. Relative paths are resolved
 # against III_COMPOSE_DIR (or the process current working directory when
 # running outside Compose); absolute paths are
 # used as-is.
 skills_folder: ./skills
+
+# Read-write root for reusable agent profiles. Each agent is one direct
+# `<id>.md` file. Relative paths resolve like skills_folder.
+agents_folder: ./agents
 
 # Read-only root for system-installed agent skills (one directory per
 # skill, each containing a SKILL.md). Scanned shallowly; a missing

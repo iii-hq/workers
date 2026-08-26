@@ -47,10 +47,9 @@ pub struct ScenarioFixture {
     /// outside the compiled subject scenario: it is test synchronization, not
     /// a public harness request.
     pub intervention: Option<ScenarioIntervention>,
-    /// Files written under the run's skills dir before the stack boots —
-    /// `(relative path, content)` — e.g. `agents/lead.md` profiles the
-    /// iii-directory worker scans at startup.
-    pub skills_files: Vec<(String, String)>,
+    /// Agent profiles written under the run's agents dir before the stack
+    /// boots — `(relative path, content)`.
+    pub agent_files: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -214,16 +213,16 @@ impl ScenarioFixture {
                 }
             }
         }
-        for (path, content) in &self.skills_files {
+        for (path, content) in &self.agent_files {
             anyhow::ensure!(
                 !path.is_empty()
                     && !path.starts_with('/')
                     && !path.split('/').any(|part| part.is_empty() || part == ".."),
-                "skills file path {path:?} must be a clean relative path"
+                "agent file path {path:?} must be a clean relative path"
             );
             anyhow::ensure!(
                 !content.trim().is_empty(),
-                "skills file {path:?} must not be empty"
+                "agent file {path:?} must not be empty"
             );
         }
         // A direct scenario is one external send, but the harness may seed

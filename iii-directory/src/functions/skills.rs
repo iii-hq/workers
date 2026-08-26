@@ -1422,10 +1422,10 @@ fn rank_suggestions_in(skills: &[FsSkill], missed: &str, limit: usize) -> Vec<Su
 }
 
 /// Iterative two-row Levenshtein distance. Used by [`rank_suggestions_in`]
-/// to break ties on shared-segment count, and re-used by the prompts
+/// to break ties on shared-segment count, and re-used by the system-prompt
 /// not-found ranker. Allocates two `usize` rows of size
 /// `b.chars().count() + 1`; cost is O(|a| * |b|) which is fine for skill
-/// ids / prompt names (capped at [`ID_TOTAL_MAX_LEN`] = 1024).
+/// ids / system-prompt names (capped at [`ID_TOTAL_MAX_LEN`] = 1024).
 pub(crate) fn levenshtein(a: &str, b: &str) -> usize {
     let a_chars: Vec<char> = a.chars().collect();
     let b_chars: Vec<char> = b.chars().collect();

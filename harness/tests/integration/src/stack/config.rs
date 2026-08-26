@@ -78,7 +78,8 @@ pub fn render_seed(worker: &str, layout: &RunLayout) -> Option<Value> {
             }
         })),
         "iii-directory" => Some(json!({
-            "skills_folder": layout.skills_dir().to_string_lossy()
+            "skills_folder": layout.skills_dir().to_string_lossy(),
+            "agents_folder": layout.agents_dir().to_string_lossy()
         })),
         "database" => Some(json!({
             "databases": {

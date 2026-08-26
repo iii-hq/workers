@@ -10,6 +10,7 @@ procedures, see [`../sops/`](../sops/).
 | [`deploy-modes.md`](deploy-modes.md) | `binary` / `image` / `bundle` paths through build and publish |
 | [`testing-and-ci.md`](testing-and-ci.md) | PR discovery, gates, interface boot smoke, dedicated e2e workflows |
 | [`skills-and-permissions.md`](skills-and-permissions.md) | `SKILL.md` lifecycle and `iii-permissions.yaml` conventions |
+| [`agent-profile-storage.md`](agent-profile-storage.md) | Canonical `agents/<id>.md` storage and directory integration |
 | [`per-worker-architecture.md`](per-worker-architecture.md) | When to add `<worker>/architecture/`; session-manager as reference |
 
 ## Per-worker architecture

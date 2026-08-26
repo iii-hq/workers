@@ -2,8 +2,6 @@
  * Thin READ client over the iii-directory worker for the chat:
  *
  *  - `directory::system-prompts::*` — the new-session identity picker.
- *  - `directory::prompts::*` — command templates, offered as session addons
- *    on the welcome screen and as `/name` slash commands in the composer.
  *  - `directory::skills::*` — listed by the session ID filter and offered as
  *    `/skill:<id>` slash commands (only the manual command resolves a body).
  *
@@ -85,28 +83,6 @@ export async function getPrompt(
 ): Promise<PromptBody> {
   return client.trigger<PromptBody>(
     'directory::system-prompts::get',
-    { name },
-    { timeoutMs: FETCH_TIMEOUT_MS },
-  )
-}
-
-export async function listCommandPrompts(
-  client: IiiClient,
-): Promise<PromptEntry[]> {
-  const res = await client.trigger<{ prompts: PromptEntry[] }>(
-    'directory::prompts::list',
-    {},
-    { timeoutMs: FETCH_TIMEOUT_MS },
-  )
-  return res.prompts
-}
-
-export async function getCommandPrompt(
-  client: IiiClient,
-  name: string,
-): Promise<PromptBody> {
-  return client.trigger<PromptBody>(
-    'directory::prompts::get',
     { name },
     { timeoutMs: FETCH_TIMEOUT_MS },
   )

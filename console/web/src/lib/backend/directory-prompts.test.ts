@@ -1,9 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
-  getCommandPrompt,
   getPrompt,
   getSkill,
-  listCommandPrompts,
   listPrompts,
   listSkills,
   skillBodyWithBaseDir,
@@ -44,32 +42,6 @@ describe('client calls', () => {
     expect(client.trigger).toHaveBeenCalledWith(
       'directory::system-prompts::get',
       { name: 'pirate' },
-      TIMEOUT,
-    )
-  })
-
-  it('listCommandPrompts targets the command-prompt family', async () => {
-    const entries = [{ name: 'review', description: 'R.', modified_at: 't' }]
-    const client = fakeClient(() => ({ prompts: entries }))
-    expect(await listCommandPrompts(client)).toEqual(entries)
-    expect(client.trigger).toHaveBeenCalledWith(
-      'directory::prompts::list',
-      {},
-      TIMEOUT,
-    )
-  })
-
-  it('getCommandPrompt passes the name through', async () => {
-    const client = fakeClient(() => ({
-      name: 'review',
-      description: 'R.',
-      body: 'Check.',
-      modified_at: 't',
-    }))
-    expect((await getCommandPrompt(client, 'review')).body).toBe('Check.')
-    expect(client.trigger).toHaveBeenCalledWith(
-      'directory::prompts::get',
-      { name: 'review' },
       TIMEOUT,
     )
   })

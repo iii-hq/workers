@@ -53,32 +53,29 @@ describe('toSelection', () => {
     ).toEqual({ body: 'Arr.', strategy: 'enrich' })
   })
 
-  it('addons on the default choice send alone, always as enrich', () => {
+  it('legacy skill addons on the default choice send alone, always as enrich', () => {
     expect(
       toSelection({
         choice: 'default',
         strategy: 'override',
         namedBody: '',
         customText: '',
-        addons: [
-          { kind: 'prompt', name: 'review', body: 'Review checklist.' },
-          { kind: 'skill', name: 'coder/index', body: 'Coder skill.' },
-        ],
+        addons: [{ kind: 'skill', name: 'coder/index', body: 'Coder skill.' }],
       }),
     ).toEqual({
-      body: 'Review checklist.\n\nCoder skill.',
+      body: 'Coder skill.',
       strategy: 'enrich',
     })
   })
 
-  it('addons append after the named body, strategy preserved', () => {
+  it('legacy skill addons append after the named body, strategy preserved', () => {
     expect(
       toSelection({
         choice: { named: 'pirate' },
         strategy: 'override',
         namedBody: 'Arr.',
         customText: '',
-        addons: [{ kind: 'prompt', name: 'review', body: 'Review checklist.' }],
+        addons: [{ kind: 'skill', name: 'review', body: 'Review checklist.' }],
       }),
     ).toEqual({ body: 'Arr.\n\nReview checklist.', strategy: 'override' })
   })
@@ -90,7 +87,7 @@ describe('toSelection', () => {
         strategy: 'override',
         namedBody: '   ',
         customText: '',
-        addons: [{ kind: 'prompt', name: 'review', body: 'Review checklist.' }],
+        addons: [{ kind: 'skill', name: 'review', body: 'Review checklist.' }],
       }),
     ).toEqual({ body: 'Review checklist.', strategy: 'enrich' })
   })
@@ -102,7 +99,7 @@ describe('toSelection', () => {
         strategy: 'enrich',
         namedBody: '',
         customText: '',
-        addons: [{ kind: 'prompt', name: 'empty', body: '   ' }],
+        addons: [{ kind: 'skill', name: 'empty', body: '   ' }],
       }),
     ).toBeNull()
   })

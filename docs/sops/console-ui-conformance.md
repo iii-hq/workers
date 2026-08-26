@@ -41,7 +41,7 @@ or the selection/motion rules change.
 
 ## Injectable worker sweep
 
-All 23 checked-in injectable UI packages were inspected. “Domain adapter”
+All 24 checked-in injectable UI packages were inspected. “Domain adapter”
 means a local component still adds information architecture or semantics; it
 must compose shared controls/tokens and is not permission to fork base hover,
 selection, tooltip, or selector behavior.
@@ -106,7 +106,7 @@ owns; the registry refuses those at registration. See the injectable-UI SOP,
 | state | save; setup: open | `Mod+S` | keys (`state::list_groups` + `state::list_keys`) |
 | storage | upload, refresh; setup: open | `U`, `R` | objects (`storage::listObjects`) |
 | memory | reload, new bank; setup: open | `R`, `N` | banks (`memory::bank::list`), memories (`memory::list`) |
-| iii-directory | new entry, filter, save; setup: open | `N`, `/`, `Mod+S` | entries (`directory::skills::list`, `prompts::list`, `system-prompts::list`) |
+| iii-directory | new entry, filter, save; setup: open | `N`, `/`, `Mod+S` | entries (`directory::skills::list`, `directory::system-prompts::list`, `directory::agents::list`) |
 | canvas | new, save, delete; setup: open | `N`, `Mod+S`, `X` | canvases (`canvas::list`) |
 | a2ui | new from template, undo, pin, export React; setup: open | `N`, `Z`, `P`, `E` | surfaces (`a2ui::surface::list`, per conversation) |
 | browser | new session, stop, address bar, ⋮ menu (find in page, zoom, screenshot, print to PDF, device toolbar, import / copy cookies, clear browsing data, diagnostics), device toolbar (viewport presets), responsive live view (tracks the pane), read-only badge, handoff banner (confirm a paused session), Console / Network / Downloads / History panes, annotate (pin / box / arrow tools, colours, undo; pins carry the element under them), send / save / download / clear annotations, saved-sets dialog; setup: open | `N`, `X`, `L`, `Mod+F`, `Mod+=`/`Mod+-`/`Mod+0`, `C`, `Mod+Enter` | sessions, downloads (`browser::downloads::list`), history (`browser::history::list`), cookies (`browser::cookies::list`), diagnostics (`browser::doctor`), saved annotation sets (state scope `annotations`) |

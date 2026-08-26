@@ -1,4 +1,4 @@
-//! Filesystem watch: external changes under the skills roots fire the
+//! Filesystem watch: external changes under the directory roots fire the
 //! matching `directory::*::on-change` with `{op: "external"}`.
 //!
 //! Reads are scan-on-demand and never stale — this is purely the push
@@ -30,25 +30,39 @@ pub struct FsWatchHandle {
     _watcher: RecommendedWatcher,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatchRootKind {
+    Directory,
+    AgentProfiles,
+    AgentSkills,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchRoot {
+    pub path: PathBuf,
+    pub kind: WatchRootKind,
+}
+
 /// Watch `roots` recursively; call `sink(kind)` at most once per kind per
 /// debounce window when an external `*.md` change lands under one. Missing
-/// roots are created rather than skipped: on a fresh install neither
-/// default root exists yet, and both are restart-required config, so
-/// skipping would leave the watch off for the whole process lifetime (the
-/// write path already creates parents per file).
+/// writable roots are created rather than skipped: on a fresh install the
+/// defaults may not exist yet, and restart-required roots cannot be added
+/// later. The read-only agent-skills root is never created here.
 pub fn spawn_fs_watch(
-    roots: Vec<PathBuf>,
+    roots: Vec<WatchRoot>,
     sink: impl Fn(SourceKind) + Send + 'static,
 ) -> Result<FsWatchHandle, String> {
     let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
     let mut watcher = notify::recommended_watcher(tx).map_err(|e| format!("fs watch: {e}"))?;
-    let mut watched: Vec<PathBuf> = Vec::new();
+    let mut watched: Vec<WatchRoot> = Vec::new();
     for root in roots {
-        let _ = std::fs::create_dir_all(&root);
-        if root.is_dir() {
+        if root.kind != WatchRootKind::AgentSkills {
+            let _ = std::fs::create_dir_all(&root.path);
+        }
+        if root.path.is_dir() {
             watcher
-                .watch(&root, RecursiveMode::Recursive)
-                .map_err(|e| format!("fs watch {}: {e}", root.display()))?;
+                .watch(&root.path, RecursiveMode::Recursive)
+                .map_err(|e| format!("fs watch {}: {e}", root.path.display()))?;
             watched.push(root);
         }
     }
@@ -66,7 +80,7 @@ pub fn spawn_fs_watch(
 /// collecting for `window`, then fire each collected kind once.
 fn debounce_loop(
     rx: &mpsc::Receiver<notify::Result<notify::Event>>,
-    roots: &[PathBuf],
+    roots: &[WatchRoot],
     window: Duration,
     sink: impl Fn(SourceKind),
 ) {
@@ -100,7 +114,7 @@ fn debounce_loop(
 /// contains them.
 fn collect(
     ev: notify::Result<notify::Event>,
-    roots: &[PathBuf],
+    roots: &[WatchRoot],
     seen: &mut HashSet<PathBuf>,
     kinds: &mut HashSet<SourceKind>,
 ) {
@@ -125,10 +139,25 @@ fn collect(
         if take_self_write(&path) {
             continue;
         }
-        let Some(rel) = roots.iter().find_map(|r| path.strip_prefix(r).ok()) else {
+        let Some((root, rel)) = roots
+            .iter()
+            .filter_map(|root| path.strip_prefix(&root.path).ok().map(|rel| (root, rel)))
+            .max_by_key(|(root, _)| root.path.components().count())
+        else {
             continue;
         };
-        kinds.insert(classify_rel_path(rel));
+        let kind = match root.kind {
+            WatchRootKind::Directory => {
+                classify_rel_path(rel).filter(|kind| *kind != SourceKind::Agent)
+            }
+            WatchRootKind::AgentProfiles => {
+                (rel.components().count() == 1).then_some(SourceKind::Agent)
+            }
+            WatchRootKind::AgentSkills => Some(SourceKind::Skill),
+        };
+        if let Some(kind) = kind {
+            kinds.insert(kind);
+        }
     }
 }
 
@@ -139,14 +168,69 @@ mod tests {
     use crate::fs_source::SourceKind;
 
     #[test]
+    fn root_roles_route_only_canonical_agent_profiles() {
+        let skills = tempfile::tempdir().unwrap();
+        let agents = tempfile::tempdir().unwrap();
+        let agent_skills = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(skills.path().join("legacy/agents")).unwrap();
+        std::fs::create_dir_all(agents.path().join("nested")).unwrap();
+        std::fs::create_dir_all(agent_skills.path().join("review")).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _h = super::spawn_fs_watch(
+            vec![
+                super::WatchRoot {
+                    path: skills.path().to_path_buf(),
+                    kind: super::WatchRootKind::Directory,
+                },
+                super::WatchRoot {
+                    path: agents.path().to_path_buf(),
+                    kind: super::WatchRootKind::AgentProfiles,
+                },
+                super::WatchRoot {
+                    path: agent_skills.path().to_path_buf(),
+                    kind: super::WatchRootKind::AgentSkills,
+                },
+            ],
+            move |kind| {
+                let _ = tx.send(kind);
+            },
+        )
+        .unwrap();
+
+        std::fs::write(skills.path().join("legacy/agents/old.md"), "old").unwrap();
+        assert!(rx.recv_timeout(Duration::from_millis(700)).is_err());
+
+        std::fs::write(agents.path().join("reviewer.md"), "profile").unwrap();
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(3)).unwrap(),
+            SourceKind::Agent
+        );
+
+        std::fs::write(agents.path().join("nested/ignored.md"), "nested").unwrap();
+        assert!(rx.recv_timeout(Duration::from_millis(700)).is_err());
+
+        std::fs::write(agent_skills.path().join("review/SKILL.md"), "skill").unwrap();
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(3)).unwrap(),
+            SourceKind::Skill
+        );
+    }
+
+    #[test]
     fn external_md_write_fires_kind_once_and_self_write_is_suppressed() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join("system-prompts")).unwrap();
         std::fs::create_dir_all(tmp.path().join("ns/prompts")).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
-        let _h = super::spawn_fs_watch(vec![tmp.path().to_path_buf()], move |k| {
-            let _ = tx.send(k);
-        })
+        let _h = super::spawn_fs_watch(
+            vec![super::WatchRoot {
+                path: tmp.path().to_path_buf(),
+                kind: super::WatchRootKind::Directory,
+            }],
+            move |k| {
+                let _ = tx.send(k);
+            },
+        )
         .unwrap();
 
         // External paste → exactly one SystemPrompt fire for the burst.
@@ -208,7 +292,16 @@ mod tests {
         std::fs::create_dir_all(local.path().join("ns")).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         let _h = super::spawn_fs_watch(
-            vec![global.path().to_path_buf(), local.path().to_path_buf()],
+            vec![
+                super::WatchRoot {
+                    path: global.path().to_path_buf(),
+                    kind: super::WatchRootKind::Directory,
+                },
+                super::WatchRoot {
+                    path: local.path().to_path_buf(),
+                    kind: super::WatchRootKind::Directory,
+                },
+            ],
             move |k| {
                 let _ = tx.send(k);
             },
@@ -216,10 +309,7 @@ mod tests {
         .unwrap();
 
         std::fs::write(global.path().join("ns/prompts/cmd.md"), "x").unwrap();
-        assert_eq!(
-            rx.recv_timeout(Duration::from_secs(3)).expect("root 1"),
-            SourceKind::Prompt
-        );
+        assert!(rx.recv_timeout(Duration::from_millis(700)).is_err());
 
         std::fs::write(local.path().join("ns/guide.md"), "x").unwrap();
         assert_eq!(

@@ -4034,105 +4034,7 @@
   }
  },
  {
-  "description": "Create a NEW command-template prompt at <skills_folder>/prompts/<name>.md from full-file markdown content (frontmatter block included; a non-empty `description` is required, and a declared frontmatter `name` must match the requested name). Rejects names that already exist anywhere in the merged command-prompt scan, or a target path that already exists on disk (even one the scanner would skip). The write is atomic and fans out directory::prompts::on-change with { op: \"create\" }. Use directory::prompts::update to edit existing prompts.",
-  "name": "directory::prompts::create",
-  "parameters": {
-   "$schema": "http://json-schema.org/draft-07/schema#",
-   "properties": {
-    "content": {
-     "description": "FULL file content, frontmatter block included \u2014 the same form `directory::prompts::update` takes. Frontmatter must carry a non-empty `description`; a declared `name` must match the requested name.",
-     "type": "string"
-    },
-    "name": {
-     "description": "New prompt name \u2014 becomes the file stem (`<skills_folder>/prompts/<name>.md` for command templates, `<skills_folder>/system-prompts/<name>.md` for system prompts). Same charset rules as list/get names; must not collide with an existing prompt of the SAME kind (a command prompt and a system prompt may share a name).",
-     "type": "string"
-    }
-   },
-   "required": [
-    "content",
-    "name"
-   ],
-   "title": "PromptCreateInput",
-   "type": "object"
-  }
- },
- {
-  "description": "Permanently delete one EXISTING filesystem-backed command-template prompt by name. Resolves against the same merged scan as directory::prompts::list, removes only that prompt's markdown file, and fans out directory::prompts::on-change with { op: \"delete\" }.",
-  "name": "directory::prompts::delete",
-  "parameters": {
-   "$schema": "http://json-schema.org/draft-07/schema#",
-   "properties": {
-    "name": {
-     "description": "Existing prompt name, as returned by the matching list function for this kind (`directory::prompts::list` / `directory::system-prompts::list`).",
-     "type": "string"
-    }
-   },
-   "required": [
-    "name"
-   ],
-   "title": "PromptDeleteInput",
-   "type": "object"
-  }
- },
- {
-  "description": "Fetch one filesystem-backed command-template prompt by name. Returns the raw markdown body plus name, description, and modified_at \u2014 no envelope, no templating.",
-  "name": "directory::prompts::get",
-  "parameters": {
-   "$schema": "http://json-schema.org/draft-07/schema#",
-   "properties": {
-    "name": {
-     "type": "string"
-    },
-    "raw": {
-     "default": null,
-     "description": "When `true`, the response includes the FULL on-disk file content (frontmatter block included) as `raw`. For editors that need to round-trip the exact file (`directory::prompts::update` takes the same full-file form); agent readers should leave this unset and use `body`.",
-     "type": [
-      "boolean",
-      "null"
-     ]
-    }
-   },
-   "required": [
-    "name"
-   ],
-   "title": "PromptGetInput",
-   "type": "object"
-  }
- },
- {
-  "description": "List filesystem-backed command-template prompts (name, description, modified_at) from skills_folder (`prompts/` path segment).",
-  "name": "directory::prompts::list",
-  "parameters": {
-   "$schema": "http://json-schema.org/draft-07/schema#",
-   "title": "ListPromptsInput",
-   "type": "object"
-  }
- },
- {
-  "description": "Overwrite one EXISTING filesystem-backed prompt with new full-file markdown content. The frontmatter must keep a non-empty `description` (and a valid `name` when it declares one) \u2014 the same rules the scanner enforces, so an update can never produce a file the next directory::prompts::list would skip. The write is atomic and fans out directory::prompts::on-change with { op: \"update\" }. Returns the prompt's effective name after the write (frontmatter `name:` wins over the file stem). Command templates only \u2014 system prompts have their own directory::system-prompts::* family.",
-  "name": "directory::prompts::update",
-  "parameters": {
-   "$schema": "http://json-schema.org/draft-07/schema#",
-   "properties": {
-    "content": {
-     "description": "FULL new file content, frontmatter block included. The frontmatter must keep a non-empty `description` \u2014 a prompt without one would be skipped by the next scan.",
-     "type": "string"
-    },
-    "name": {
-     "description": "Prompt name to overwrite, as returned by the matching list for this kind (`directory::prompts::list` for command templates, `directory::system-prompts::list` for system prompts). The target file must already exist.",
-     "type": "string"
-    }
-   },
-   "required": [
-    "content",
-    "name"
-   ],
-   "title": "PromptUpdateInput",
-   "type": "object"
-  }
- },
- {
-  "description": "Fetch full registry metadata for one worker: worker envelope (same core fields as the engine's `engine::workers::list` row shape, plus registry-only `type` / `config` / `supported_targets` / `total_downloads` / `dependencies` / `image`), readme, full API reference (functions + triggers schemas), and the tree of skill / prompt file paths fetched from the registry's /w/{slug}/skills endpoint. Pass either `version` or `tag` (defaults to tag=\"latest\"). Results are cached for `registry_cache_ttl_ms`.",
+  "description": "Fetch full registry metadata for one worker: worker envelope (same core fields as the engine's `engine::workers::list` row shape, plus registry-only `type` / `config` / `supported_targets` / `total_downloads` / `dependencies` / `image`), readme, full API reference (functions + triggers schemas), and the tree of skill file paths fetched from the registry's /w/{slug}/skills endpoint. Pass either `version` or `tag` (defaults to tag=\"latest\"). Results are cached for `registry_cache_ttl_ms`.",
   "name": "directory::registry::workers::info",
   "parameters": {
    "$schema": "http://json-schema.org/draft-07/schema#",
@@ -4194,7 +4096,7 @@
   }
  },
  {
-  "description": "Download skills + prompts into skills_folder from EITHER source. Prefer the explicit directory::skills::download_from_registry / directory::skills::download_from_repo, whose schemas can't be mixed up. Pass {repo, skill, branch?} to clone one skill folder from a GitHub repo (branch defaults to \"main\"), or {worker, version?|tag?} to pull from the workers registry (tag defaults to \"latest\"). Specify exactly ONE source set. Files in the destination namespace are overwritten file-by-file.",
+  "description": "Download skills into skills_folder from EITHER source. Prefer the explicit directory::skills::download_from_registry / directory::skills::download_from_repo, whose schemas can't be mixed up. Pass {repo, skill, branch?} to clone one skill folder from a GitHub repo (branch defaults to \"main\"), or {worker, version?|tag?} to pull from the workers registry (tag defaults to \"latest\"). Specify exactly ONE source set. Files in the destination namespace are overwritten file-by-file.",
   "name": "directory::skills::download",
   "parameters": {
    "$schema": "http://json-schema.org/draft-07/schema#",
@@ -4253,7 +4155,7 @@
   }
  },
  {
-  "description": "Download one worker's skills + prompts from the workers registry into skills_folder. `worker` is required; pass either `version` (exact semver) OR `tag` (e.g. \"latest\", the default when both are omitted), not both. Files in the destination namespace are overwritten file-by-file. A missing worker returns a `D310 not_found` naming the next function to call. To pull from a GitHub repo instead, use directory::skills::download_from_repo.",
+  "description": "Download one worker's directory bundle from the workers registry into skills_folder. `worker` is required; pass either `version` (exact semver) OR `tag` (e.g. \"latest\", the default when both are omitted), not both. Files in the destination namespace are overwritten file-by-file. A missing worker returns a `D310 not_found` naming the next function to call. To pull from a GitHub repo instead, use directory::skills::download_from_repo.",
   "name": "directory::skills::download_from_registry",
   "parameters": {
    "$schema": "http://json-schema.org/draft-07/schema#",
@@ -4427,11 +4329,11 @@
    "$schema": "http://json-schema.org/draft-07/schema#",
    "properties": {
     "content": {
-     "description": "FULL file content, frontmatter block included \u2014 the same form `directory::prompts::update` takes. Frontmatter must carry a non-empty `description`; a declared `name` must match the requested name.",
+     "description": "FULL file content, frontmatter block included \u2014 the same form `directory::system-prompts::update` takes. Frontmatter must carry a non-empty `description`; a declared `name` must match the requested name.",
      "type": "string"
     },
     "name": {
-     "description": "New prompt name \u2014 becomes the file stem (`<skills_folder>/prompts/<name>.md` for command templates, `<skills_folder>/system-prompts/<name>.md` for system prompts). Same charset rules as list/get names; must not collide with an existing prompt of the SAME kind (a command prompt and a system prompt may share a name).",
+     "description": "New system prompt name \u2014 becomes the file stem `<skills_folder>/system-prompts/<name>.md`. Same charset rules as list/get names; must not collide with an existing system prompt.",
      "type": "string"
     }
    },
@@ -4439,7 +4341,7 @@
     "content",
     "name"
    ],
-   "title": "PromptCreateInput",
+   "title": "SystemPromptCreateInput",
    "type": "object"
   }
  },
@@ -4450,14 +4352,14 @@
    "$schema": "http://json-schema.org/draft-07/schema#",
    "properties": {
     "name": {
-     "description": "Existing prompt name, as returned by the matching list function for this kind (`directory::prompts::list` / `directory::system-prompts::list`).",
+     "description": "Existing system prompt name, as returned by `directory::system-prompts::list`.",
      "type": "string"
     }
    },
    "required": [
     "name"
    ],
-   "title": "PromptDeleteInput",
+   "title": "SystemPromptDeleteInput",
    "type": "object"
   }
  },
@@ -4472,7 +4374,7 @@
     },
     "raw": {
      "default": null,
-     "description": "When `true`, the response includes the FULL on-disk file content (frontmatter block included) as `raw`. For editors that need to round-trip the exact file (`directory::prompts::update` takes the same full-file form); agent readers should leave this unset and use `body`.",
+     "description": "When `true`, the response includes the full on-disk file content (frontmatter included) as `raw`, ready for `directory::system-prompts::update`.",
      "type": [
       "boolean",
       "null"
@@ -4482,7 +4384,7 @@
    "required": [
     "name"
    ],
-   "title": "PromptGetInput",
+   "title": "SystemPromptGetInput",
    "type": "object"
   }
  },
@@ -4491,22 +4393,22 @@
   "name": "directory::system-prompts::list",
   "parameters": {
    "$schema": "http://json-schema.org/draft-07/schema#",
-   "title": "ListPromptsInput",
+   "title": "ListSystemPromptsInput",
    "type": "object"
   }
  },
  {
-  "description": "Overwrite one EXISTING filesystem-backed system prompt with new full-file markdown content. The frontmatter must keep a non-empty `description` (and a valid `name` when it declares one) \u2014 the same rules the scanner enforces, so an update can never produce a file the next directory::system-prompts::list would skip. The write is atomic and fans out directory::system-prompts::on-change with { op: \"update\" }. Returns the system prompt's effective name after the write (frontmatter `name:` wins over the file stem). System prompts only \u2014 command templates have their own directory::prompts::* family.",
+  "description": "Overwrite one EXISTING filesystem-backed system prompt with new full-file markdown content. The frontmatter must keep a non-empty `description` (and a valid `name` when it declares one) \u2014 the same rules the scanner enforces, so an update can never produce a file the next directory::system-prompts::list would skip. The write is atomic and fans out directory::system-prompts::on-change with { op: \"update\" }. Returns the system prompt's effective name after the write (frontmatter `name:` wins over the file stem).",
   "name": "directory::system-prompts::update",
   "parameters": {
    "$schema": "http://json-schema.org/draft-07/schema#",
    "properties": {
     "content": {
-     "description": "FULL new file content, frontmatter block included. The frontmatter must keep a non-empty `description` \u2014 a prompt without one would be skipped by the next scan.",
+     "description": "FULL new file content, frontmatter block included. The frontmatter must keep a non-empty `description` \u2014 a system prompt without one would be skipped by the next scan.",
      "type": "string"
     },
     "name": {
-     "description": "Prompt name to overwrite, as returned by the matching list for this kind (`directory::prompts::list` for command templates, `directory::system-prompts::list` for system prompts). The target file must already exist.",
+     "description": "System prompt name to overwrite, as returned by `directory::system-prompts::list`. The target file must already exist.",
      "type": "string"
     }
    },
@@ -4514,7 +4416,7 @@
     "content",
     "name"
    ],
-   "title": "PromptUpdateInput",
+   "title": "SystemPromptUpdateInput",
    "type": "object"
   }
  },

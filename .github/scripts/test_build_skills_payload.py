@@ -44,6 +44,37 @@ class CollectSkillsTests(unittest.TestCase):
                 },
             )
 
+    def test_direct_agent_profiles_are_published_outside_skills(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "agent-worker"
+            (root / "agents").mkdir(parents=True)
+            profile = "---\nname: Reviewer\n---\nReview changes.\n"
+            (root / "agents" / "reviewer.md").write_text(profile, encoding="utf-8")
+
+            self.assertEqual(collect_skills(root), {"agents/reviewer.md": profile})
+
+    def test_reserved_legacy_paths_are_not_published(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "filtered-worker"
+            files = {
+                "skills/prompts/legacy.md": "# Legacy prompt\n",
+                "skills/nested/agents/legacy.md": "# Legacy agent\n",
+                "skills/system-prompts/reviewer.md": "# System prompt\n",
+                "agents/reviewer.md": "---\nname: Reviewer\n---\nReview.\n",
+            }
+            for relative, content in files.items():
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+
+            self.assertEqual(
+                collect_skills(root),
+                {
+                    "skills/system-prompts/reviewer.md": "# System prompt\n",
+                    "agents/reviewer.md": "---\nname: Reviewer\n---\nReview.\n",
+                },
+            )
+
     def test_empty_skill_md_skipped(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp) / "empty-worker"
