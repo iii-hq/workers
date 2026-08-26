@@ -1,5 +1,5 @@
 /**
- * Unsaved-work persistence for the skills/prompts editor.
+ * Unsaved-work persistence for the directory editor.
  *
  * The console unmounts the directory page on every tab switch, so without
  * this a mid-typed new entry — or an unsaved edit to an existing one — dies

@@ -8,14 +8,13 @@
 //!   `delete`. External edits under the read-only `agents_skills_folder`
 //!   also fire it via the fs watcher (doorbell only — the worker never
 //!   writes there).
-//! - `directory::prompts::on-change` — fires after every successful
-//!   `directory::skills::download` that wrote at least one command-
-//!   template prompt, a `directory::prompts::update`, or a
-//!   `directory::prompts::create`.
 //! - `directory::system-prompts::on-change` — fires after every
 //!   successful `directory::skills::download` that wrote at least one
 //!   system prompt, a `directory::system-prompts::update`, or a
 //!   `directory::system-prompts::create` / `delete`.
+//! - `directory::agents::on-change` — fires after every successful
+//!   download or direct create, update, delete, or external edit of an
+//!   agent profile.
 //!
 //! The `mcp` worker (and any other interested subscriber) registers a
 //! trigger instance of these types via
@@ -41,7 +40,6 @@ use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
 use serde_json::Value;
 
 pub const SKILLS_ON_CHANGE: &str = "directory::skills::on-change";
-pub const PROMPTS_ON_CHANGE: &str = "directory::prompts::on-change";
 pub const SYSTEM_PROMPTS_ON_CHANGE: &str = "directory::system-prompts::on-change";
 pub const AGENTS_ON_CHANGE: &str = "directory::agents::on-change";
 
@@ -119,15 +117,12 @@ pub async fn dispatch(iii: &IIIClient, subscribers: &SubscriberSet, payload: Val
 
 pub struct RegisteredTriggerTypes {
     pub skills: SubscriberSet,
-    pub prompts: SubscriberSet,
     pub system_prompts: SubscriberSet,
     pub agents: SubscriberSet,
 }
 
 pub fn register_all(iii: &Arc<IIIClient>) -> RegisteredTriggerTypes {
     let skills = SubscriberSet::new();
-    let prompts = SubscriberSet::new();
-
     let _ = iii.register_trigger_type(RegisterTriggerType::new(
         SKILLS_ON_CHANGE.to_string(),
         "Fires after a directory::skills::download that wrote at least one skill markdown file, \
@@ -138,16 +133,6 @@ pub fn register_all(iii: &Arc<IIIClient>) -> RegisteredTriggerTypes {
         SkillsTriggerHandler::new(SKILLS_ON_CHANGE, skills.clone()),
     ));
     tracing::info!(trigger_type = SKILLS_ON_CHANGE, "registered trigger type");
-
-    let _ = iii.register_trigger_type(RegisterTriggerType::new(
-        PROMPTS_ON_CHANGE.to_string(),
-        "Fires after a directory::skills::download that wrote at least one command-template \
-         prompt, or a directory::prompts::update, create, or delete. Also fires with \
-         { op: \"external\" } when a watched prompts root changes on disk outside this worker."
-            .to_string(),
-        SkillsTriggerHandler::new(PROMPTS_ON_CHANGE, prompts.clone()),
-    ));
-    tracing::info!(trigger_type = PROMPTS_ON_CHANGE, "registered trigger type");
 
     let system_prompts = SubscriberSet::new();
     let _ = iii.register_trigger_type(RegisterTriggerType::new(
@@ -178,7 +163,6 @@ pub fn register_all(iii: &Arc<IIIClient>) -> RegisteredTriggerTypes {
 
     RegisteredTriggerTypes {
         skills,
-        prompts,
         system_prompts,
         agents,
     }

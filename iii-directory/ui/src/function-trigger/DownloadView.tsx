@@ -76,7 +76,6 @@ export function SkillsDownloadView({ input, output, running }: ViewProps) {
   if (!resp) return null
 
   const skillsCount = resp.skills_written.length
-  const promptsCount = resp.prompts_written.length
 
   return (
     <Card>
@@ -84,13 +83,11 @@ export function SkillsDownloadView({ input, output, running }: ViewProps) {
         <StatusPill label="downloaded" variant="accent" />
         <KvChip label="namespace">{resp.namespace}</KvChip>
         <KvChip label="skills">{skillsCount}</KvChip>
-        <KvChip label="prompts">{promptsCount}</KvChip>
       </MetaRow>
       <ActionLine symbol="↓" tone="ink">
         <span>{describeSource(source)}</span>
       </ActionLine>
       <WrittenList label="skills written" names={resp.skills_written} />
-      <WrittenList label="prompts written" names={resp.prompts_written} />
     </Card>
   )
 }

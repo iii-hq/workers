@@ -1,4 +1,4 @@
-use iii_directory::fs_source::{scan_prompts, scan_skills, PromptKind};
+use iii_directory::fs_source::{scan_skills, scan_system_prompts};
 use iii_directory::sources::registry::{download, VersionSpec};
 
 #[tokio::main]
@@ -20,10 +20,13 @@ async fn main() -> Result<(), String> {
     println!("\n[download result]");
     println!("  namespace        = {}", result.namespace);
     println!("  skills_written   = {:?}", result.skills_written);
-    println!("  prompts_written  = {:?}", result.prompts_written);
+    println!(
+        "  system_prompts_written = {:?}",
+        result.system_prompts_written
+    );
 
     let (skills, skill_skipped) = scan_skills(skills_folder);
-    let (prompts, prompt_skipped) = scan_prompts(skills_folder, PromptKind::Command);
+    let (system_prompts, prompt_skipped) = scan_system_prompts(skills_folder);
 
     println!("\n[scan_skills]");
     for s in &skills {
@@ -36,8 +39,8 @@ async fn main() -> Result<(), String> {
         }
     }
 
-    println!("\n[scan_prompts: command]");
-    for p in &prompts {
+    println!("\n[scan_system_prompts]");
+    for p in &system_prompts {
         println!("  name={:<30} path={}", p.name, p.abs_path.display());
     }
     if !prompt_skipped.is_empty() {
@@ -48,9 +51,9 @@ async fn main() -> Result<(), String> {
     }
 
     println!(
-        "\nDONE — skills scanned={}, prompts scanned={}",
+        "\nDONE — skills scanned={}, system prompts scanned={}",
         skills.len(),
-        prompts.len()
+        system_prompts.len()
     );
 
     // Soft assertions so the example doubles as a smoke test.

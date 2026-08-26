@@ -4,7 +4,7 @@
 //!
 //! Ships two assets into any running console:
 //!
-//! - `iii-directory/page.js` (`console:script`) — the skills & prompts
+//! - `iii-directory/page.js` (`console:script`) — the directory
 //!   browser/editor page (#/ext/directory), plus the `directory::*`
 //!   function-trigger renderer and the custom `iii-directory`
 //!   configuration form its `setup(host)` registers.

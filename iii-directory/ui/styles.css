@@ -1831,7 +1831,7 @@
 /* ── agent form: sectioned settings layout (Identity / Behavior /
    Execution / Delegation), the reference pattern. Sits where the flat
    edit-fields grid sits for other collections, scrolling on its own so
-   the system-prompt editor below keeps its room. */
+   the editor below keeps its room. */
 [data-iii-ui="iii-directory"] .dir-ui-af {
   flex-shrink: 0;
   max-height: 55%;

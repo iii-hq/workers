@@ -13,15 +13,9 @@ import {
 } from './slash-commands'
 
 describe('parseSlashInvocation', () => {
-  it('parses a leading /name as a prompt, args untouched', () => {
-    expect(parseSlashInvocation('/review-pr the auth changes')).toEqual({
-      kind: 'prompt',
-      name: 'review-pr',
-    })
-    expect(parseSlashInvocation('/review-pr')).toEqual({
-      kind: 'prompt',
-      name: 'review-pr',
-    })
+  it('leaves a leading /name as ordinary text', () => {
+    expect(parseSlashInvocation('/review-pr the auth changes')).toBeNull()
+    expect(parseSlashInvocation('/review-pr')).toBeNull()
   })
 
   it('parses /skill:<id> including slashes in the id', () => {
@@ -51,22 +45,18 @@ describe('mergeSlashEntries', () => {
     const merged = mergeSlashEntries([
       {
         command: '/compact',
-        description: 'a prompt named compact',
-        kind: 'prompt',
+        description: 'a skill named compact',
       },
-      { command: '/review-pr', description: 'review a pr', kind: 'prompt' },
+      { command: '/skill:review-pr', description: 'review a pr' },
     ])
     expect(merged.slice(0, SLASH_COMMANDS.length)).toEqual(SLASH_COMMANDS)
     expect(merged.filter((c) => c.command === '/compact')).toHaveLength(1)
-    expect(merged.some((c) => c.command === '/review-pr')).toBe(true)
+    expect(merged.some((c) => c.command === '/skill:review-pr')).toBe(true)
   })
 })
 
 describe('slashAttachmentBlock', () => {
-  it('wraps prompt and skill bodies distinctly', () => {
-    expect(
-      slashAttachmentBlock({ kind: 'prompt', name: 'review-pr' }, 'Check X.'),
-    ).toBe('<command name="review-pr">\nCheck X.\n</command>')
+  it('wraps skill bodies', () => {
     expect(
       slashAttachmentBlock({ kind: 'skill', id: 'coder/index' }, 'Skill.'),
     ).toBe(
@@ -76,15 +66,11 @@ describe('slashAttachmentBlock', () => {
 })
 
 describe('parseSlashBlockHeader', () => {
-  it('round-trips both block shapes back to their invocation', () => {
-    for (const inv of [
-      { kind: 'prompt', name: 'review-pr' },
-      { kind: 'skill', id: 'coder/index' },
-    ] as const) {
-      expect(parseSlashBlockHeader(slashAttachmentBlock(inv, 'body'))).toEqual(
-        inv,
-      )
-    }
+  it('round-trips skill blocks back to their invocation', () => {
+    const inv = { kind: 'skill', id: 'coder/index' } as const
+    expect(parseSlashBlockHeader(slashAttachmentBlock(inv, 'body'))).toEqual(
+      inv,
+    )
   })
 
   it('ignores plain text and attached-file blocks', () => {
@@ -92,17 +78,14 @@ describe('parseSlashBlockHeader', () => {
     expect(
       parseSlashBlockHeader('<attached-file path="a.rs">x</attached-file>'),
     ).toBeNull()
+    expect(
+      parseSlashBlockHeader('<command name="review-pr">x</command>'),
+    ).toBeNull()
   })
 })
 
 describe('slashChip', () => {
-  it('builds the collapsed chip per kind', () => {
-    expect(slashChip({ kind: 'prompt', name: 'review-pr' }, 42)).toEqual({
-      id: 'slash-/review-pr',
-      name: '/review-pr',
-      size: 42,
-      type: 'text/x-slash-command',
-    })
+  it('builds the collapsed skill chip', () => {
     expect(slashChip({ kind: 'skill', id: 'coder/index' }, 7)).toEqual({
       id: 'slash-/skill:coder/index',
       name: '/skill:coder/index',
@@ -122,8 +105,9 @@ describe('expandSlashInvocation gate', () => {
 
   it('never expands slugs the palette did not offer', async () => {
     setDynamicSlashEntries([
-      { command: '/review-pr', description: 'review a pr', kind: 'prompt' },
+      { command: '/skill:review-pr', description: 'review a pr' },
     ])
+    expect(await expandSlashInvocation('/review-pr x')).toBeNull()
     expect(await expandSlashInvocation('/etc is full')).toBeNull()
     expect(await expandSlashInvocation('/compact now')).toBeNull()
     expect(await expandSlashInvocation('/skill:coder/index go')).toBeNull()
@@ -133,7 +117,7 @@ describe('expandSlashInvocation gate', () => {
   /* The dedupe branch also returns before any client is touched. */
   it('an already-loaded skill expands to a pointer without a refetch', async () => {
     setDynamicSlashEntries([
-      { command: '/skill:coder/index', description: 'coder', kind: 'skill' },
+      { command: '/skill:coder/index', description: 'coder' },
     ])
     const result = await expandSlashInvocation(
       '/skill:coder/index go',
@@ -168,15 +152,12 @@ describe('loadedSkillIds', () => {
     ).toBe(0)
   })
 
-  it('prompt chips and plain attachments never count', () => {
+  it('plain attachments never count', () => {
     expect(
       loadedSkillIds([
         {
           role: 'user',
-          attachments: [
-            slashChip({ kind: 'prompt', name: 'review-pr' }, 7),
-            { name: 'a.pdf', type: 'application/pdf' },
-          ],
+          attachments: [{ name: 'a.pdf', type: 'application/pdf' }],
         },
       ]).size,
     ).toBe(0)
@@ -185,18 +166,14 @@ describe('loadedSkillIds', () => {
 
 describe('fuzzyFilterSlash', () => {
   const entries = mergeSlashEntries([
-    { command: '/review-pr', description: 'review a pr', kind: 'prompt' },
-    { command: '/skill:coder/index', description: 'coder', kind: 'skill' },
+    { command: '/skill:coder/index', description: 'coder' },
   ])
 
   it('empty query returns everything up to the limit', () => {
     expect(fuzzyFilterSlash('', entries)).toHaveLength(entries.length)
   })
 
-  it('matches command and description substrings across kinds', () => {
-    expect(fuzzyFilterSlash('review', entries).map((c) => c.command)).toEqual([
-      '/review-pr',
-    ])
+  it('matches command and description substrings', () => {
     expect(
       fuzzyFilterSlash('skill:cod', entries).map((c) => c.command),
     ).toEqual(['/skill:coder/index'])

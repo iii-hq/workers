@@ -6,13 +6,11 @@
  * Wire source: `iii-directory/src/functions/*.rs`
  *   - skills.rs        — directory::skills::list / get / index
  *   - download.rs      — directory::skills::download (+ _from_registry / _from_repo)
- *   - update.rs        — directory::skills::update / create,
- *                        directory::prompts::update / create and the
- *                        directory::system-prompts::* mirrors
- *   - prompts.rs       — directory::prompts::list / get + system-prompts mirrors
+ *   - update.rs        — directory::skills::update / create and
+ *                        directory::system-prompts::* updates
  *   - registry.rs      — directory::registry::workers::list / info
  *
- * The `::delete` ids (skills, prompts, system-prompts) are deliberately
+ * The `::delete` ids (skills, system-prompts) are deliberately
  * absent: their `{ name }` / `{ id }` in/out shape has no dedicated view,
  * and the console's generic JSON card is the right rendering for a delete
  * confirmation.
@@ -29,10 +27,6 @@ export const DIRECTORY_FUNCTION_IDS = [
   'directory::skills::download_from_repo',
   'directory::skills::update',
   'directory::skills::create',
-  'directory::prompts::list',
-  'directory::prompts::get',
-  'directory::prompts::update',
-  'directory::prompts::create',
   'directory::system-prompts::list',
   'directory::system-prompts::get',
   'directory::system-prompts::update',
@@ -127,7 +121,6 @@ export type SkillsDownloadRequest = z.infer<typeof skillsDownloadRequestSchema>
 export const skillsDownloadResponseSchema = z.object({
   namespace: z.string(),
   skills_written: z.array(z.string()),
-  prompts_written: z.array(z.string()),
   source: z.unknown(),
 })
 export type SkillsDownloadResponse = z.infer<
@@ -152,55 +145,65 @@ export const skillsUpdateResponseSchema = z.object({
 })
 export type SkillsUpdateResponse = z.infer<typeof skillsUpdateResponseSchema>
 
-/* ---------------- prompts::list ---------------- */
+/* ---------------- system-prompts::list ---------------- */
 
-export const promptsListRequestSchema = z.object({})
-export type PromptsListRequest = z.infer<typeof promptsListRequestSchema>
+export const systemPromptsListRequestSchema = z.object({})
+export type SystemPromptsListRequest = z.infer<
+  typeof systemPromptsListRequestSchema
+>
 
-export const promptEntrySchema = z.object({
+export const systemPromptEntrySchema = z.object({
   name: z.string(),
   description: z.string(),
   modified_at: z.string(),
 })
-export type PromptEntry = z.infer<typeof promptEntrySchema>
+export type SystemPromptEntry = z.infer<typeof systemPromptEntrySchema>
 
-export const promptsListResponseSchema = z.object({
-  prompts: z.array(promptEntrySchema),
+export const systemPromptsListResponseSchema = z.object({
+  prompts: z.array(systemPromptEntrySchema),
 })
-export type PromptsListResponse = z.infer<typeof promptsListResponseSchema>
+export type SystemPromptsListResponse = z.infer<
+  typeof systemPromptsListResponseSchema
+>
 
-/* ---------------- prompts::get ---------------- */
+/* ---------------- system-prompts::get ---------------- */
 
-export const promptsGetRequestSchema = z.object({
+export const systemPromptsGetRequestSchema = z.object({
   name: z.string(),
   raw: z.boolean().optional(),
 })
-export type PromptsGetRequest = z.infer<typeof promptsGetRequestSchema>
+export type SystemPromptsGetRequest = z.infer<typeof systemPromptsGetRequestSchema>
 
-export const promptsGetResponseSchema = z.object({
+export const systemPromptsGetResponseSchema = z.object({
   name: z.string(),
   description: z.string(),
   body: z.string(),
   raw: z.string().nullable().optional(),
   modified_at: z.string(),
 })
-export type PromptsGetResponse = z.infer<typeof promptsGetResponseSchema>
+export type SystemPromptsGetResponse = z.infer<
+  typeof systemPromptsGetResponseSchema
+>
 
-/* ---------------- prompts::update ---------------- */
+/* ---------------- system-prompts::update ---------------- */
 
-export const promptsUpdateRequestSchema = z.object({
+export const systemPromptsUpdateRequestSchema = z.object({
   name: z.string(),
   content: z.string(),
 })
-export type PromptsUpdateRequest = z.infer<typeof promptsUpdateRequestSchema>
+export type SystemPromptsUpdateRequest = z.infer<
+  typeof systemPromptsUpdateRequestSchema
+>
 
-export const promptsUpdateResponseSchema = z.object({
+export const systemPromptsUpdateResponseSchema = z.object({
   name: z.string(),
   description: z.string(),
   bytes: z.number(),
   modified_at: z.string(),
 })
-export type PromptsUpdateResponse = z.infer<typeof promptsUpdateResponseSchema>
+export type SystemPromptsUpdateResponse = z.infer<
+  typeof systemPromptsUpdateResponseSchema
+>
 
 /* ---------------- agents::list ---------------- */
 
@@ -357,13 +360,8 @@ export type ApiReferenceShape = z.infer<typeof apiReferenceSchema>
 export const skillsTreeSkillSchema = z.object({
   path: z.string(),
 })
-export const skillsTreePromptSchema = z.object({
-  name: z.string(),
-  description: z.string().nullable().optional(),
-})
 export const skillsTreeSchema = z.object({
   skills: z.array(skillsTreeSkillSchema).optional(),
-  prompts: z.array(skillsTreePromptSchema).optional(),
 })
 export type SkillsTreeShape = z.infer<typeof skillsTreeSchema>
 

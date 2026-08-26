@@ -635,7 +635,7 @@ export function ChatView({
           }
         }
         // Same expansion as the live send path: an edited queued message
-        // keeps its `/name` / `/skill:<id>` block instead of silently
+        // keeps its `/skill:<id>` block instead of silently
         // dropping it. Staying silent on a failed re-resolution would strip
         // the body the queued message already carried with no explanation.
         const slashExpansion =
@@ -1339,8 +1339,7 @@ export function ChatView({
         }
       }
 
-      // A leading `/name` (directory prompt) or `/skill:<id>` the palette
-      // offered expands here: the resolved body rides as another attachment
+      // A leading `/skill:<id>` the palette offered expands here: the resolved body rides as another attachment
       // block while the typed text (command + args) stays the user message.
       // Prose that merely starts with a slash never resolves (the expander
       // is gated on the palette's fetched entries).

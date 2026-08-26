@@ -3,6 +3,5 @@
 
 pub mod download_registry;
 pub mod download_repo;
-pub mod prompts;
 pub mod read;
 pub mod registry;

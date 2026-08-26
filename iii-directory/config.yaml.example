@@ -20,7 +20,7 @@
 # (skills_folder: skills, registry_url: https://api.workers.iii.dev).
 
 # Folder that backs every read (`directory::skills::list`,
-# `directory::skills::get`, `directory::prompts::*`) and every write
+# `directory::skills::get`, `directory::system-prompts::*`) and every write
 # from `directory::skills::download`. Relative paths are resolved
 # against III_COMPOSE_DIR (or the process current working directory when
 # running outside Compose); absolute paths are

@@ -10,11 +10,12 @@ import {
 } from 'lexical'
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { listCommandPrompts, listSkills } from '@/lib/backend/directory-prompts'
+import { listSkills } from '@/lib/backend/directory-prompts'
 import { getIiiClient } from '@/lib/iii-client'
 import {
   fuzzyFilterSlash,
   mergeSlashEntries,
+  SLASH_COMMANDS,
   type SlashCommand,
   setDynamicSlashEntries,
 } from '@/lib/slash-commands'
@@ -34,17 +35,25 @@ interface SlashCommandsPluginProps {
 }
 
 // Anchored at column 0 so `/` mid-sentence ("either/or") doesn't fire. The
-// query is either a plain slug (built-ins + directory prompt names) or the
-// `/skill:<id>` form (ids are `/`-separated paths) — a bare second `/`
+// query is either a plain built-in slug or the `/skill:<id>` form (ids are
+// `/`-separated paths) — a bare second `/`
 // ("/home/…") disarms the palette at once instead of shadowing a typed path.
 const SLASH_PATTERN = /^\/(skill:[\w./-]*|[\w-]*)$/
 
-function slashTriggerFn(text: string, _editor: LexicalEditor) {
+export function slashTriggerFn(text: string, _editor: LexicalEditor) {
   const match = text.match(SLASH_PATTERN)
   if (!match) return null
+  const query = match[1] ?? ''
+  if (
+    !query.startsWith('skill:') &&
+    !SLASH_COMMANDS.some((command) =>
+      command.command.slice(1).startsWith(query),
+    )
+  )
+    return null
   return {
     leadOffset: 0,
-    matchingString: match[1] ?? '',
+    matchingString: query,
     replaceableString: match[0],
   }
 }
@@ -54,11 +63,9 @@ export function SlashCommandsPlugin({
 }: SlashCommandsPluginProps = {}) {
   const [query, setQuery] = useState<string | null>(null)
 
-  /* Directory-backed entries, refetched on EVERY open (SystemPromptPicker's
-     pattern) and kept while loading, so prompts/skills created or deleted
-     mid-session appear without a reload. The fetched list is also published
-     to the module registry that gates submit-time expansion. A failed or
-     absent directory worker degrades to built-ins only. */
+  /* Directory-backed skills, refetched on EVERY open and published to the
+     module registry that gates submit-time expansion. A failed or absent
+     directory worker degrades to built-ins only. */
   const [dynamic, setDynamic] = useState<SlashCommand[] | null>(null)
   const loadingRef = useRef(false)
   const loadDynamic = useCallback(async () => {
@@ -66,22 +73,11 @@ export function SlashCommandsPlugin({
     loadingRef.current = true
     try {
       const client = await getIiiClient()
-      const [prompts, skills] = await Promise.all([
-        listCommandPrompts(client).catch(() => []),
-        listSkills(client).catch(() => []),
-      ])
-      const entries = [
-        ...prompts.map((p) => ({
-          command: `/${p.name}`,
-          description: p.description,
-          kind: 'prompt' as const,
-        })),
-        ...skills.map((s) => ({
-          command: `/skill:${s.id}`,
-          description: s.description || s.title,
-          kind: 'skill' as const,
-        })),
-      ]
+      const skills = await listSkills(client).catch(() => [])
+      const entries = skills.map((s) => ({
+        command: `/skill:${s.id}`,
+        description: s.description || s.title,
+      }))
       setDynamic(entries)
       setDynamicSlashEntries(entries)
     } catch {

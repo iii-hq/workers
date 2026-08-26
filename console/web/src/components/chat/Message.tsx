@@ -1,4 +1,4 @@
-import { Blocks, Bot, Sparkles, SquareSlash } from 'lucide-react'
+import { Blocks, Bot, Sparkles } from 'lucide-react'
 import { FunctionTriggerCard } from '@/components/function-trigger/FunctionTriggerCard'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import type { TriggerRegistration } from '@/components/trigger-activity/model'
@@ -410,8 +410,6 @@ function SpawnTaskMessage({
   )
 }
 
-const SLASH_CHIP_TYPES = new Set(['text/x-slash-command', 'text/x-skill'])
-
 /**
  * The `/command` token inside the user bubble: the typed command fused with
  * its expansion metadata (body size), so the slash chip never repeats the
@@ -419,14 +417,12 @@ const SLASH_CHIP_TYPES = new Set(['text/x-slash-command', 'text/x-skill'])
  * accent glyph, ink text, one alpha-surface step above the bubble.
  */
 function SlashCommandToken({ chip }: { chip: Attachment }) {
-  const isSkill = chip.type === 'text/x-skill'
-  const Icon = isSkill ? Blocks : SquareSlash
   return (
     <span
       className="inline-flex items-center gap-1.5 px-1.5 h-[22px] rounded-xs bg-surface font-mono text-[13px] text-ink select-none"
-      title={`${isSkill ? 'skill' : 'prompt'} body attached · ${formatSize(chip.size)}`}
+      title={`skill body attached · ${formatSize(chip.size)}`}
     >
-      <Icon size={16} aria-hidden className="text-accent shrink-0" />
+      <Blocks size={16} aria-hidden className="text-accent shrink-0" />
       <span className="leading-none truncate">{chip.name}</span>
       <span className="leading-none text-[11px] text-ink-ghost tabular-nums shrink-0">
         {formatSize(chip.size)}
@@ -443,7 +439,7 @@ function UserMessage({ message }: { message: UserMessageType }) {
      (shouldn't happen) keeps the strip as a fallback. */
   const slashChip = attachments.find(
     (a) =>
-      SLASH_CHIP_TYPES.has(a.type) &&
+      a.type === 'text/x-skill' &&
       message.content.startsWith(a.name) &&
       (message.content.length === a.name.length ||
         message.content.charAt(a.name.length) === ' '),

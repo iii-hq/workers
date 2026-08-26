@@ -10,9 +10,9 @@ import {
   StatusPill,
 } from '../lib/widgets'
 import {
-  promptsGetRequestSchema,
-  promptsGetResponseSchema,
-  promptsListResponseSchema,
+  systemPromptsGetRequestSchema,
+  systemPromptsGetResponseSchema,
+  systemPromptsListResponseSchema,
   safeParseRequest,
   safeParseResponse,
 } from './parsers'
@@ -23,28 +23,28 @@ interface ViewProps {
   running?: boolean
 }
 
-/* ---------------- directory::prompts::list ---------------- */
+/* ---------------- directory::system-prompts::list ---------------- */
 
-export function PromptsListView({ output, running }: ViewProps) {
+export function SystemPromptsListView({ output, running }: ViewProps) {
   if (running) {
     return (
       <Card>
         <MetaRow>
           <StatusPill label="listing…" variant="default" />
         </MetaRow>
-        <PulseLine label="scanning prompts folder…" />
+        <PulseLine label="scanning system prompts folder…" />
       </Card>
     )
   }
 
-  const resp = safeParseResponse(promptsListResponseSchema, output)
+  const resp = safeParseResponse(systemPromptsListResponseSchema, output)
   if (!resp) return null
 
   const label =
     resp.prompts.length === 0
-      ? 'no prompts'
+      ? 'no system prompts'
       : `${resp.prompts.length} ${
-          resp.prompts.length === 1 ? 'prompt' : 'prompts'
+          resp.prompts.length === 1 ? 'system prompt' : 'system prompts'
         }`
 
   return (
@@ -56,7 +56,7 @@ export function PromptsListView({ output, running }: ViewProps) {
         />
       </MetaRow>
       {resp.prompts.length === 0 ? (
-        <EmptyRow label="no prompts found" />
+        <EmptyRow label="no system prompts found" />
       ) : (
         <ul className="dir-ui-list">
           {resp.prompts.map((p) => (
@@ -76,10 +76,10 @@ export function PromptsListView({ output, running }: ViewProps) {
   )
 }
 
-/* ---------------- directory::prompts::get ---------------- */
+/* ---------------- directory::system-prompts::get ---------------- */
 
-export function PromptsGetView({ input, output, running }: ViewProps) {
-  const req = safeParseRequest(promptsGetRequestSchema, input)
+export function SystemPromptsGetView({ input, output, running }: ViewProps) {
+  const req = safeParseRequest(systemPromptsGetRequestSchema, input)
 
   if (running) {
     return (
@@ -88,18 +88,18 @@ export function PromptsGetView({ input, output, running }: ViewProps) {
           <StatusPill label="loading…" variant="default" />
           {req ? <KvChip label="name">{req.name}</KvChip> : null}
         </MetaRow>
-        <PulseLine label="fetching prompt…" />
+        <PulseLine label="fetching system prompt…" />
       </Card>
     )
   }
 
-  const resp = safeParseResponse(promptsGetResponseSchema, output)
+  const resp = safeParseResponse(systemPromptsGetResponseSchema, output)
   if (!resp) return null
 
   return (
     <Card>
       <MetaRow>
-        <StatusPill label="prompt" variant="accent" />
+        <StatusPill label="system prompt" variant="accent" />
         <KvChip label="modified">{formatRelativeTime(resp.modified_at)}</KvChip>
       </MetaRow>
       <ActionLine symbol="ƒ" tone="accent">

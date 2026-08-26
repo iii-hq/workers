@@ -4,7 +4,7 @@
 //! (the file body), a display name, a description, an emoji logo, and a
 //! skill filter — one markdown file with required YAML frontmatter under
 //! an `agents/` path segment (see `harness/architecture/agents.md`).
-//! Five verbs mirroring the prompt families:
+//! Five filesystem-backed verbs:
 //!
 //!   * `directory::agents::list`   — metadata-only listing.
 //!   * `directory::agents::get`    — one agent's system prompt + metadata,

@@ -6,7 +6,7 @@ manifest: Cargo.toml
 license: Apache-2.0
 bin: iii-directory
 tags: [introspect, registry, skills, directory, search, functions, agents]
-description: Engine introspection (functions / triggers / workers), workers registry proxy, filesystem-backed skill, prompt, system-prompt + agent-profile reader/editor, and one-shot lexical function search with a conditional pre-generate search hint.
+description: Engine introspection, workers registry proxy, filesystem-backed skills, system prompts, and agent profiles, plus lexical function search with a conditional pre-generate hint.
 
 dependencies:
   configuration: "0.x"

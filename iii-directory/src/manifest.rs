@@ -17,8 +17,9 @@ pub fn build_manifest() -> ModuleManifest {
     ModuleManifest {
         name: env!("CARGO_PKG_NAME").to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        description: "Engine introspection (functions / triggers / workers), workers \
-             registry proxy, and filesystem-backed skill + prompt reader."
+        description: "Engine introspection, workers registry proxy, filesystem-backed \
+             skills, system prompts, and agent profiles, plus lexical function search \
+             with a conditional pre-generate hint."
             .to_string(),
         default_config: SkillsConfig::default().to_json(),
         supported_targets: vec![env!("TARGET").to_string()],
@@ -41,6 +42,17 @@ mod tests {
         assert!(parsed["description"]
             .as_str()
             .is_some_and(|s| !s.is_empty()));
+        let description = parsed["description"]
+            .as_str()
+            .unwrap()
+            .to_lowercase()
+            .replace('-', " ");
+        for surface in ["skills", "system prompt", "agent", "registry", "search"] {
+            assert!(
+                description.contains(surface),
+                "manifest description omits {surface}: {description}"
+            );
+        }
         assert_eq!(parsed["default_config"], SkillsConfig::default().to_json());
         assert_eq!(
             parsed["default_config"]["registry_url"],

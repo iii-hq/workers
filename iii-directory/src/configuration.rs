@@ -97,7 +97,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&SkillsConfig>) -> Re
     let mut payload = json!({
         "id": config_id(),
         "name": "iii-directory",
-        "description": "Skills/prompts folders, workers-registry URL, download timeouts, \
+        "description": "Skills and agent-skills folders, workers-registry URL, download timeouts, \
                         skill-visibility filters, and the function-search knobs \
                         (inject_hint, hint_min_workers, registry_search) for the \
                         iii-directory worker.",

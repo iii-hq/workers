@@ -128,7 +128,9 @@ fn collect(
         let Some(rel) = roots.iter().find_map(|r| path.strip_prefix(r).ok()) else {
             continue;
         };
-        kinds.insert(classify_rel_path(rel));
+        if let Some(kind) = classify_rel_path(rel) {
+            kinds.insert(kind);
+        }
     }
 }
 
@@ -216,10 +218,7 @@ mod tests {
         .unwrap();
 
         std::fs::write(global.path().join("ns/prompts/cmd.md"), "x").unwrap();
-        assert_eq!(
-            rx.recv_timeout(Duration::from_secs(3)).expect("root 1"),
-            SourceKind::Prompt
-        );
+        assert!(rx.recv_timeout(Duration::from_millis(700)).is_err());
 
         std::fs::write(local.path().join("ns/guide.md"), "x").unwrap();
         assert_eq!(

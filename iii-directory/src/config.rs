@@ -68,7 +68,7 @@ fn default_auto_download() -> bool {
 #[derive(Deserialize, Serialize, Debug, Clone, JsonSchema)]
 pub struct SkillsConfig {
     /// Folder that backs every read (`directory::skills::list`,
-    /// `directory::skills::get`, `directory::prompts::*`) and every
+    /// `directory::skills::get`, `directory::system-prompts::*`) and every
     /// write from `directory::skills::download`. Supports three forms:
     ///
     /// - Absolute path — used as-is.
