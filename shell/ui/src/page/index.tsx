@@ -142,8 +142,9 @@ import {
   isLiveGitReviewScope,
   isShellUiStatePath,
   LAST_TURN_SCOPE,
+  SESSION_SCOPE,
   shouldFallbackToTurnScope,
-  shouldFollowHarnessTurn,
+  shouldEnterTurnScope,
 } from './review-scope'
 import { useShellReviewSummaryBridge } from './review-summary-store'
 import { changedParentDirs, withReviewChanges } from './review-tree'
@@ -178,8 +179,13 @@ import {
 import {
   fetchSessionTurn,
   fetchSessionTurns,
+  relativeToRoot,
+  reviewEntriesFromSession,
   reviewEntriesFromTurn,
+  summarizeSessionActivity,
+  type SessionTurn,
   type SessionTurnSummary,
+  type TurnEntries,
   turnLabel,
 } from './turns'
 import { WorkspaceBrowser } from './WorkspaceBrowser'
@@ -218,6 +224,15 @@ interface ReviewEditBackup {
 }
 
 type RootChangeOutcome = RootTargetValidation['outcome'] | 'declined'
+
+type WorkingDirectoryHost = Host & {
+  chat?: {
+    requestWorkingDirectoryChange?(request: {
+      sessionId: string
+      path: string
+    }): boolean
+  }
+}
 
 function ReviewOption({
   label,
@@ -512,6 +527,7 @@ export function ShellExplorerPage({
   const copyApplyCommand = async () => {
     if (
       reviewScope.kind === 'last-turn' ||
+      reviewScope.kind === 'session' ||
       reviewScope.kind === 'turn' ||
       copyingPatch ||
       root === null
@@ -554,6 +570,8 @@ export function ShellExplorerPage({
     readonly SessionTurnSummary[]
   >([])
   const [turnOutside, setTurnOutside] = useState(0)
+  const [turnOutsideRoot, setTurnOutsideRoot] = useState<string | null>(null)
+  const sessionTurnsSeqRef = useRef(0)
   const [scopeMetadataLoading, setScopeMetadataLoading] = useState(false)
   const [scopeMetadataError, setScopeMetadataError] = useState<string | null>(
     null,
@@ -763,18 +781,14 @@ export function ShellExplorerPage({
       setReviewSummary([])
       setScopeMetadataLoading(false)
       setScopeMetadataError(null)
-      if (
-        shouldFollowHarnessTurn(
-          followHarnessTurnsRef.current,
-          reviewScopeRef.current,
-        )
-      ) {
+      setTurnOutside(0)
+      setTurnOutsideRoot(null)
+      if (reviewScopeRef.current.kind === 'last-turn') {
         setDiff(null)
-        forceReviewScope(LAST_TURN_SCOPE)
       }
       return true
     },
-    [forceReviewScope, reviewSaveBarrier],
+    [reviewSaveBarrier],
   )
 
   // This runs inside Harness's awaited pre-turn hook: the snapshot is fully
@@ -1092,6 +1106,17 @@ export function ShellExplorerPage({
     reviewScope.kind === 'last-turn' &&
     observedReview.active &&
     reviewEntries.size === 0
+  const sessionActivity = useMemo(
+    () =>
+      root === null
+        ? { inside: 0, outside: 0, outsideRoot: null }
+        : summarizeSessionActivity(sessionTurns, root),
+    [root, sessionTurns],
+  )
+  const canUseSessionOutsideForChat =
+    !!conversationId &&
+    typeof (host as WorkingDirectoryHost).chat?.requestWorkingDirectoryChange ===
+      'function'
 
   // The panel, not the viewport, decides what fits: a shell page shares the
   // console with other panels. Below the same width the stylesheet treats as
@@ -1140,6 +1165,7 @@ export function ShellExplorerPage({
     const next: ReviewScopeCounts = {
       ...scopeCounts,
       'last-turn': reviewEntries.size,
+      session: sessionActivity.inside,
     }
     if (isLiveGitReviewScope(reviewScope)) {
       if (scopeLoading || scopeError !== null) delete next[reviewScope.kind]
@@ -1150,6 +1176,7 @@ export function ShellExplorerPage({
     orderedReviewEntries.length,
     reviewEntries.size,
     reviewScope,
+    sessionActivity.inside,
     scopeCounts,
     scopeError,
     scopeLoading,
@@ -1302,18 +1329,111 @@ export function ShellExplorerPage({
     [reviewSaveBarrier],
   )
 
+  useEffect(() => {
+    if (
+      !conversationId ||
+      root === null ||
+      observedReview.turnId === null ||
+      observedReview.active ||
+      observedReview.completedAtMs === null
+    ) {
+      return
+    }
+    let cancelled = false
+    const completedTurnId = observedReview.turnId
+    const completedRoot = root
+    void fetchSessionTurn(host, conversationId, completedTurnId)
+      .then((turn) => {
+        if (
+          cancelled ||
+          turn === null ||
+          rootRef.current !== completedRoot ||
+          reviewWindowRef.current.turnId !== completedTurnId
+        ) {
+          return
+        }
+        const mapped = reviewEntriesFromTurn(turn, completedRoot)
+        setTurnOutside(mapped.outside)
+        setTurnOutsideRoot(mapped.outsideRoot)
+
+        const merged = new Map(reviewEntriesRef.current)
+        for (const [path, stored] of mapped.entries) {
+          const live = merged.get(path)
+          merged.set(path, {
+            ...stored,
+            ...(live ?? {}),
+            baseline:
+              live?.baseline === undefined || live.baseline === null
+                ? stored.baseline
+                : live.baseline,
+          })
+        }
+        reviewEntriesRef.current = merged
+        setReviewEntries(merged)
+
+        const scope = reviewScopeRef.current
+        if (
+          !shouldEnterTurnScope(
+            followHarnessTurnsRef.current,
+            scope,
+            merged.size,
+          )
+        ) {
+          return
+        }
+        forceReviewScope(LAST_TURN_SCOPE)
+        const activePath = diffRef.current?.change.path
+        const entry =
+          (activePath ? merged.get(activePath) : undefined) ??
+          merged.values().next().value
+        if (entry) openReviewEntry(entry)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [
+    conversationId,
+    forceReviewScope,
+    host,
+    observedReview.active,
+    observedReview.completedAtMs,
+    observedReview.turnId,
+    openReviewEntry,
+    root,
+  ])
+
+  const refreshSessionTurns = useCallback(() => {
+    if (!conversationId) {
+      setSessionTurns([])
+      return
+    }
+    const seq = ++sessionTurnsSeqRef.current
+    void fetchSessionTurns(host, conversationId)
+      .then((turns) => {
+        if (sessionTurnsSeqRef.current === seq) setSessionTurns(turns)
+      })
+      .catch(() => {})
+  }, [conversationId, host])
+
+  useEffect(() => {
+    refreshSessionTurns()
+    if (!observedReview.active) return
+    const timer = window.setInterval(refreshSessionTurns, 1_500)
+    return () => window.clearInterval(timer)
+  }, [
+    observedReview.active,
+    observedReview.completedAtMs,
+    observedReview.turnId,
+    refreshSessionTurns,
+  ])
+
   const loadScopeMetadata = useCallback(() => {
     if (root === null) return
     const seq = ++scopeMetadataSeqRef.current
     setScopeMetadataLoading(true)
     setScopeMetadataError(null)
-    if (conversationId) {
-      void fetchSessionTurns(host, conversationId)
-        .then((turns) => {
-          if (scopeMetadataSeqRef.current === seq) setSessionTurns(turns)
-        })
-        .catch(() => {})
-    }
+    refreshSessionTurns()
     void Promise.all([
       gitRecentCommits(host, root),
       gitRefs(host, root),
@@ -1351,7 +1471,7 @@ export function ShellExplorerPage({
       .finally(() => {
         if (scopeMetadataSeqRef.current === seq) setScopeMetadataLoading(false)
       })
-  }, [host, root, conversationId])
+  }, [host, refreshSessionTurns, root])
 
   const loadReviewScope = useCallback(
     (
@@ -1363,6 +1483,77 @@ export function ShellExplorerPage({
       setScopeLoading(true)
       setScopeError(null)
       setTurnOutside(0)
+      setTurnOutsideRoot(null)
+      const applyMapped = (mapped: TurnEntries) => {
+        if (scopeLoadSeqRef.current !== seq || rootRef.current !== root)
+          return
+        scopeEntriesRef.current = mapped.entries
+        setScopeEntries(mapped.entries)
+        setTurnOutside(mapped.outside)
+        setTurnOutsideRoot(mapped.outsideRoot)
+        const activePath = diffRef.current?.change.path
+        const entry =
+          (preferredPath
+            ? mapped.entries.get(preferredPath)
+            : undefined) ??
+          (activePath ? mapped.entries.get(activePath) : undefined) ??
+          (preferredPath === undefined
+            ? mapped.entries.values().next().value
+            : undefined)
+        if (entry) openReviewEntry(entry)
+        else {
+          diffRequestRef.current += 1
+          setDiff(null)
+        }
+      }
+      if (scope.kind === 'session') {
+        if (!conversationId) {
+          setScopeLoading(false)
+          setScopeError('no chat session')
+          return
+        }
+        void fetchSessionTurns(host, conversationId)
+          .then(async (summaries) => {
+            if (scopeLoadSeqRef.current !== seq || rootRef.current !== root)
+              return null
+            setSessionTurns(summaries)
+            const relevant = summaries.filter((turn) =>
+              turn.files.some(
+                (file) => relativeToRoot(file.path, root) !== null,
+              ),
+            )
+            const turns = (
+              await Promise.all(
+                relevant.map((turn) =>
+                  fetchSessionTurn(host, conversationId, turn.turn_id),
+                ),
+              )
+            ).filter((turn): turn is SessionTurn => turn !== null)
+            const mapped = reviewEntriesFromSession(turns, root)
+            const activity = summarizeSessionActivity(summaries, root)
+            return {
+              entries: mapped.entries,
+              outside: activity.outside,
+              outsideRoot: activity.outsideRoot,
+            } satisfies TurnEntries
+          })
+          .then((mapped) => {
+            if (mapped) applyMapped(mapped)
+          })
+          .catch((error: unknown) => {
+            if (scopeLoadSeqRef.current !== seq || rootRef.current !== root)
+              return
+            scopeEntriesRef.current = new Map()
+            setScopeEntries(new Map())
+            setScopeError(errorMessage(error))
+            diffRequestRef.current += 1
+            setDiff(null)
+          })
+          .finally(() => {
+            if (scopeLoadSeqRef.current === seq) setScopeLoading(false)
+          })
+        return
+      }
       if (scope.kind === 'turn') {
         if (!conversationId) {
           setScopeLoading(false)
@@ -1373,26 +1564,11 @@ export function ShellExplorerPage({
           .then((turn) => {
             if (scopeLoadSeqRef.current !== seq || rootRef.current !== root)
               return
-            const mapped = turn
-              ? reviewEntriesFromTurn(turn, root)
-              : { entries: new Map(), outside: 0 }
-            scopeEntriesRef.current = mapped.entries
-            setScopeEntries(mapped.entries)
-            setTurnOutside(mapped.outside)
-            const activePath = diffRef.current?.change.path
-            const entry =
-              (preferredPath
-                ? mapped.entries.get(preferredPath)
-                : undefined) ??
-              (activePath ? mapped.entries.get(activePath) : undefined) ??
-              (preferredPath === undefined
-                ? mapped.entries.values().next().value
-                : undefined)
-            if (entry) openReviewEntry(entry)
-            else {
-              diffRequestRef.current += 1
-              setDiff(null)
-            }
+            applyMapped(
+              turn
+                ? reviewEntriesFromTurn(turn, root)
+                : { entries: new Map(), outside: 0, outsideRoot: null },
+            )
           })
           .catch((error: unknown) => {
             if (scopeLoadSeqRef.current !== seq || rootRef.current !== root)
@@ -1423,6 +1599,10 @@ export function ShellExplorerPage({
           if (state.kind !== 'ready') {
             if (shouldFallbackToTurnScope(scope, state.kind)) {
               followHarnessTurnsRef.current = true
+              if (conversationId) {
+                forceReviewScope(SESSION_SCOPE)
+                return
+              }
               forceReviewScope(LAST_TURN_SCOPE)
               const activePath = diffRef.current?.change.path
               const entry =
@@ -1852,6 +2032,21 @@ export function ShellExplorerPage({
           setReviewEntries(enriched)
 
           const activeScope = reviewScopeRef.current
+          if (
+            activeScope.kind !== 'last-turn' &&
+            shouldEnterTurnScope(
+              followHarnessTurnsRef.current,
+              activeScope,
+              enriched.size,
+            )
+          ) {
+            forceReviewScope(LAST_TURN_SCOPE)
+            const entry =
+              (follow ? enriched.get(follow.rel) : undefined) ??
+              enriched.values().next().value
+            if (entry) openReviewEntry(entry)
+            return
+          }
           if (isLiveGitReviewScope(activeScope)) {
             loadReviewScope(activeScope, follow?.rel ?? null)
             return
@@ -2117,6 +2312,8 @@ export function ShellExplorerPage({
         setScopeCommits([])
         setScopeRefs([])
         setScopeCounts({})
+        setTurnOutside(0)
+        setTurnOutsideRoot(null)
         setScopeMetadataLoading(false)
         setScopeMetadataError(null)
         followHarnessTurnsRef.current = true
@@ -3014,6 +3211,47 @@ export function ShellExplorerPage({
                 </button>
               </div>
             ) : null}
+            {sessionActivity.outside > 0 ? (
+              <div className="shui-review-message" role="status">
+                <span>
+                  {sessionActivity.outside}{' '}
+                  {sessionActivity.outside === 1 ? 'file changed' : 'files changed'}
+                  {' '}outside this folder
+                  {sessionActivity.outsideRoot
+                    ? ` in ${sessionActivity.outsideRoot}`
+                    : ''}
+                </span>
+                {sessionActivity.outsideRoot ? (
+                  <>
+                    <button
+                      type="button"
+                      className="shui-review-inline-action"
+                      onClick={() =>
+                        changeManualRoot(sessionActivity.outsideRoot!)
+                      }
+                    >
+                      open in Shell
+                    </button>
+                    {canUseSessionOutsideForChat ? (
+                      <button
+                        type="button"
+                        className="shui-review-inline-action"
+                        onClick={() =>
+                          (host as WorkingDirectoryHost).chat?.requestWorkingDirectoryChange?.(
+                            {
+                              sessionId: conversationId!,
+                              path: sessionActivity.outsideRoot!,
+                            },
+                          )
+                        }
+                      >
+                        use for chat
+                      </button>
+                    ) : null}
+                  </>
+                ) : null}
+              </div>
+            ) : null}
             {!(terminalOpen && terminalDock === 'editor' && terminalActive) ? (
               <div className="shui-review-toolbar">
                 {reviewSavePending ? (
@@ -3060,10 +3298,13 @@ export function ShellExplorerPage({
                     unavailable
                   </span>
                 ) : null}
-                {reviewScope.kind === 'turn' && turnOutside > 0 ? (
+                {(reviewScope.kind === 'last-turn' ||
+                  reviewScope.kind === 'session' ||
+                  reviewScope.kind === 'turn') &&
+                turnOutside > 0 ? (
                   <span
                     className="shui-review-count"
-                    title="files this turn changed outside the folder you are browsing"
+                    title={`files changed outside the folder you are browsing${turnOutsideRoot ? ` in ${turnOutsideRoot}` : ''}`}
                   >
                     +{turnOutside} outside
                   </span>
@@ -3174,6 +3415,7 @@ export function ShellExplorerPage({
                     <ReviewMenuAction
                       label={
                         reviewScope.kind === 'last-turn' ||
+                        reviewScope.kind === 'session' ||
                         reviewScope.kind === 'turn'
                           ? 'Copy git apply command (git scopes only)'
                           : 'Copy git apply command'
@@ -3181,6 +3423,7 @@ export function ShellExplorerPage({
                       icon={<ClipboardCopy />}
                       disabled={
                         reviewScope.kind === 'last-turn' ||
+                        reviewScope.kind === 'session' ||
                         reviewScope.kind === 'turn' ||
                         copyingPatch
                       }

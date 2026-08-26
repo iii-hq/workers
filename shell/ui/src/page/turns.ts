@@ -108,15 +108,22 @@ export interface TurnEntries {
   entries: ReadonlyMap<string, ReviewEntry>
   /** Files the turn changed outside the browsed root. */
   outside: number
+  outsideRoot: string | null
+}
+
+export interface SessionActivitySummary {
+  inside: number
+  outside: number
+  outsideRoot: string | null
 }
 
 export function reviewEntriesFromTurn(turn: SessionTurn, root: string): TurnEntries {
   const entries = new Map<string, ReviewEntry>()
-  let outside = 0
+  const outsidePaths: string[] = []
   for (const file of turn.files) {
     const rel = relativeToRoot(file.path, root)
     if (rel === null) {
-      outside += 1
+      outsidePaths.push(file.path)
       continue
     }
     const from = file.from ? relativeToRoot(file.from, root) : null
@@ -138,5 +145,102 @@ export function reviewEntriesFromTurn(turn: SessionTurn, root: string): TurnEntr
     }
     entries.set(rel, entry)
   }
-  return { entries, outside }
+  return {
+    entries,
+    outside: new Set(outsidePaths).size,
+    outsideRoot: sharedFolder([...new Set(outsidePaths)]),
+  }
+}
+
+function parentPath(path: string): string | null {
+  const normalized = path.replace(/\/+$/, '')
+  const separator = normalized.lastIndexOf('/')
+  if (separator <= 0) return null
+  return normalized.slice(0, separator)
+}
+
+function sharedFolder(paths: readonly string[]): string | null {
+  const parents = paths.map(parentPath).filter((path): path is string => path !== null)
+  if (parents.length !== paths.length || parents.length === 0) return null
+  const parts = parents.map((path) => path.split('/').filter(Boolean))
+  const common: string[] = []
+  for (let index = 0; index < parts[0].length; index += 1) {
+    const segment = parts[0][index]
+    if (parts.some((path) => path[index] !== segment)) break
+    common.push(segment)
+  }
+  return common.length >= 2 ? `/${common.join('/')}` : null
+}
+
+export function summarizeSessionActivity(
+  turns: readonly SessionTurnSummary[],
+  root: string,
+): SessionActivitySummary {
+  const paths = new Set(turns.flatMap((turn) => turn.files.map((file) => file.path)))
+  const outsidePaths = [...paths].filter((path) => relativeToRoot(path, root) === null)
+  return {
+    inside: paths.size - outsidePaths.length,
+    outside: outsidePaths.length,
+    outsideRoot: sharedFolder(outsidePaths),
+  }
+}
+
+export function reviewEntriesFromSession(
+  turns: readonly SessionTurn[],
+  root: string,
+): TurnEntries {
+  const chronological = [...turns].sort((left, right) => left.started_at - right.started_at)
+  const history = new Map<
+    string,
+    { first: TurnFileRecord; latest: TurnFileRecord }
+  >()
+  const outside = new Set<string>()
+
+  for (const turn of chronological) {
+    for (const file of turn.files) {
+      if (relativeToRoot(file.path, root) === null) {
+        outside.add(file.path)
+        continue
+      }
+      const previous = history.get(file.path)
+      history.set(file.path, {
+        first: previous?.first ?? file,
+        latest: file,
+      })
+    }
+  }
+
+  const entries = new Map<string, ReviewEntry>()
+  for (const [path, { first, latest }] of history) {
+    const rel = relativeToRoot(path, root)
+    if (rel === null) continue
+    const firstBaseline =
+      first.before == null && first.kind === 'created'
+        ? ''
+        : baselineFor(first.before)
+    if (firstBaseline === '' && latest.kind === 'deleted') continue
+
+    const status: GitFileStatus =
+      latest.kind === 'deleted'
+        ? 'deleted'
+        : firstBaseline === ''
+          ? 'added'
+          : statusFor(latest.kind)
+    const from = latest.from ? relativeToRoot(latest.from, root) : null
+    entries.set(rel, {
+      path: rel,
+      change: {
+        path: rel,
+        status,
+        staged: false,
+        ...(from ? { from } : {}),
+      },
+      baseline: firstBaseline,
+    })
+  }
+  return {
+    entries,
+    outside: outside.size,
+    outsideRoot: sharedFolder([...outside]),
+  }
 }

@@ -5,6 +5,7 @@ import {
   isLiveGitReviewScope,
   isShellUiStatePath,
   shouldFallbackToTurnScope,
+  shouldEnterTurnScope,
   shouldFollowHarnessTurn,
 } from '../review-scope'
 
@@ -39,6 +40,14 @@ describe('review scope defaults', () => {
         subject: 'previous work',
       }),
     ).toBe(false)
+  })
+
+  it('waits for a relevant workspace change before entering Current Turn', () => {
+    expect(shouldEnterTurnScope(true, DEFAULT_REVIEW_SCOPE, 0)).toBe(false)
+    expect(shouldEnterTurnScope(true, DEFAULT_REVIEW_SCOPE, 1)).toBe(true)
+    expect(shouldEnterTurnScope(false, DEFAULT_REVIEW_SCOPE, 1)).toBe(false)
+    expect(shouldEnterTurnScope(false, { kind: 'last-turn' }, 0)).toBe(false)
+    expect(shouldEnterTurnScope(false, { kind: 'last-turn' }, 1)).toBe(true)
   })
 
   it('ignores Shell UI persistence events that would refresh the active diff again', () => {

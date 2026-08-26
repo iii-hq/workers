@@ -15,6 +15,7 @@ import { useEffect, useRef, useState } from 'react'
 
 export type ReviewScopeSelection =
   | { kind: 'last-turn' }
+  | { kind: 'session' }
   | { kind: 'uncommitted' }
   | { kind: 'unstaged' }
   | { kind: 'staged' }
@@ -40,12 +41,16 @@ export interface ReviewBranchChoice {
   current: boolean
 }
 
-export type ReviewScopeCounts = Partial<Record<'last-turn' | 'uncommitted' | 'unstaged' | 'staged', number>>
+export type ReviewScopeCounts = Partial<
+  Record<'last-turn' | 'session' | 'uncommitted' | 'unstaged' | 'staged', number>
+>
 
 export function reviewScopeLabel(scope: ReviewScopeSelection, currentTurn = false): string {
   switch (scope.kind) {
     case 'last-turn':
       return currentTurn ? 'Current Turn' : 'Last Turn'
+    case 'session':
+      return 'Session Changes'
     case 'uncommitted':
       return 'Uncommitted'
     case 'unstaged':
@@ -65,6 +70,8 @@ function scopeIcon(scope: ReviewScopeSelection) {
   switch (scope.kind) {
     case 'last-turn':
       return <History aria-hidden className="menu-icon" />
+    case 'session':
+      return <MessagesSquare aria-hidden className="menu-icon" />
     case 'uncommitted':
       return <FilePen aria-hidden className="menu-icon" />
     case 'unstaged':
@@ -172,7 +179,7 @@ export function ReviewScopePicker({
           {subMenu === null ? (
             <>
               <div className="shui-review-menu-label">Activity</div>
-              {([{ kind: 'last-turn' }] as const).map((scope) => (
+              {([{ kind: 'last-turn' }, { kind: 'session' }] as const).map((scope) => (
                 <div key={scope.kind}>
                   <button
                     type="button"
