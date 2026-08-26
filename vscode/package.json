@@ -1,6 +1,6 @@
 {
   "name": "vscode",
-  "version": "0.1.0",
+  "version": "0.1.1-experimental",
   "private": true,
   "description": "VS Code Workbench served by the VS Code Server CLI as an injectable iii Console page.",
   "license": "Apache-2.0",
