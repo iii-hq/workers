@@ -1,6 +1,6 @@
 # compose-ui
 
-The compose daemon in the Console. A **Compose** page lists every container the
+The compose daemon in the Console. A **Compose** page opens on a topology map (engine, namespace group, containers laid out by `start_after`, ports and sources on the cards, upstream/downstream tracing on select) and lists every container the
 daemon supervises with live state, PID, and last error; starts, stops, and
 restarts containers or the whole project in dependency order; adds, updates,
 and removes declared worker packages; and tails each container's log. Every
