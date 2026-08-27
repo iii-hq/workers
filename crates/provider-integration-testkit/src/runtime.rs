@@ -106,22 +106,34 @@ async fn wait_for_state(url: &str) -> anyhow::Result<()> {
     let probe = register_worker(url, test_init_options());
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
-        if call(
-            &probe,
-            "state::get",
-            json!({ "scope": "provider-contract", "key": "ready" }),
-        )
-        .await
-        .is_ok()
-        {
-            probe.shutdown();
-            return Ok(());
-        }
-        if Instant::now() >= deadline {
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
             probe.shutdown();
             bail!("state worker did not become ready in 20 seconds");
+        };
+        match tokio::time::timeout(
+            remaining,
+            call(
+                &probe,
+                "state::get",
+                json!({ "scope": "provider-contract", "key": "ready" }),
+            ),
+        )
+        .await
+        {
+            Ok(Ok(_)) => {
+                probe.shutdown();
+                return Ok(());
+            }
+            Ok(Err(_)) => {}
+            Err(_) => {
+                probe.shutdown();
+                bail!("state worker did not become ready in 20 seconds");
+            }
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(
+            Duration::from_millis(100).min(deadline.saturating_duration_since(Instant::now())),
+        )
+        .await;
     }
 }
 

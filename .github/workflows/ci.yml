@@ -315,6 +315,8 @@ jobs:
     name: "llm-router: live engine integration"
     needs: discover
     if: needs.discover.outputs.llm_router_integration == 'true'
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -350,7 +352,6 @@ jobs:
       - name: Install pinned iii engine
         env:
           III_RELEASE_TAG: 'iii-alpha/v0.22.1-alpha.25'
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
@@ -394,6 +395,8 @@ jobs:
     name: "${{ matrix.provider }}: provider contract"
     needs: discover
     if: needs.discover.outputs.provider_contract != '[]'
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -440,7 +443,6 @@ jobs:
       - name: Install pinned iii engine
         env:
           III_RELEASE_TAG: 'iii-alpha/v0.22.1-alpha.25'
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
@@ -532,6 +534,8 @@ jobs:
     name: "${{ matrix.worker }}: interface boot smoke"
     needs: discover
     if: github.event_name == 'pull_request' && needs.discover.outputs.rust != '[]'
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -625,7 +629,6 @@ jobs:
           # pruned — 0.17.0 vanished and broke every boot smoke). Keep aligned
           # with the workers' iii-sdk protocol line.
           III_RELEASE_TAG: 'iii-alpha/v0.22.1-alpha.25'
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh

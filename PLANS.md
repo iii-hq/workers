@@ -119,8 +119,8 @@ III_RELEASE_TAG=iii-alpha/v0.22.1-alpha.25
 1. Atualizar cada `Cargo.lock` a partir do seu `Cargo.toml`.
 2. Limitar a resolução a `iii-sdk`, `iii-helpers` e dependências que precisem
    mudar por causa desses pacotes.
-3. Executar `pnpm install --lockfile-only` na raiz e nos sete projetos Node.js
-   isolados.
+3. Executar `pnpm install --lockfile-only` na raiz e nos oito projetos Node.js
+   isolados, incluindo `compose-ui`.
 4. Revisar o diff para remover atualização de dependência não relacionada.
 5. Confirmar que instalações com `--locked` e `--frozen-lockfile` funcionam.
 
