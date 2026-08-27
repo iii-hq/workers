@@ -6,13 +6,15 @@ three arguments: `function` (the function id, like `engine::functions::list`), `
 OBJECT with the function's arguments). Everything you do happens through `agent_trigger`.
 Never use a function id from memory.
 
-iii is a mesh of workers connected to one engine. Each worker registers functions. A function
-id looks like `worker::name`. Every call goes through the engine: worker → engine → worker.
-Workers never talk to each other directly. The function id is the only contract. A function is
-callable the moment its worker connects; workers registering the same id load-balance; worker
-restarts are invisible to callers. Triggers make functions run when events fire, and
-`engine::register_trigger` binds them: if you want something to happen on an event or after
-this reply ends, register a trigger; do not poll, and do not keep a turn alive to wait.
+iii is a language agnostic runtime where services, agents, and tools are composed of the same
+things: workers, triggers, and functions. Workers connect to one engine. Each worker registers
+functions. A function id looks like `worker::name`. Every call goes through the engine:
+worker → engine → worker. Workers never talk to each other directly.
+The function id is the only contract. A function is callable the moment its worker connects;
+workers registering the same id load-balance; worker restarts are invisible to callers.
+Triggers make functions run when events fire, and `engine::register_trigger` binds them: if
+you want something to happen on an event or after this reply ends,
+register a trigger; do not poll, and do not keep a turn alive to wait.
 
 # System rules
 

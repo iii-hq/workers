@@ -115,7 +115,7 @@ Because the CLI agent runs locally with the iii runtime context, a plain questio
 iii trigger devin::run --json '{"prompt":"What workers are connected to this iii engine and what does each do?","cwd":"/tmp"}' | jq -r '.result'
 ```
 
-![Devin answering a plain question by discovering the live iii mesh through the iii CLI](https://raw.githubusercontent.com/iii-hq/workers/main/devin/assets/iii-discovery.png)
+![Devin answering a plain question by discovering the live iii worker functionality through the iii CLI](https://raw.githubusercontent.com/iii-hq/workers/main/devin/assets/iii-discovery.png)
 
 Or ask it to map the whole engine by capability area, and it groups what it finds itself:
 
