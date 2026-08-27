@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { uiPage, uiStyles } from 'virtual:compose-ui-assets'
 import { registerWorker } from 'iii-sdk'
 import { DEFAULT_LINES, MAX_LINES, readLogTail } from './logs.js'
+import { listeningPorts, readProject } from './project.js'
 import { type ChangedEvent, createStateWatcher, type ProjectLocation } from './watch.js'
 
 const WORKER = 'compose-ui'
@@ -24,7 +25,14 @@ const object = (properties: Record<string, unknown>, required: string[] = []) =>
 const string = { type: 'string' }
 const nullableString = { type: ['string', 'null'] }
 
-type Status = { file?: string; namespace?: string; state_dir?: string }
+type StatusContainer = { container: string; pid?: number | null; state?: string }
+type Status = {
+  file?: string
+  namespace?: string
+  state_dir?: string
+  daemon_pid?: number
+  containers?: StatusContainer[]
+}
 
 async function locate(file?: string | null): Promise<ProjectLocation | null> {
   const status = await iii.trigger<Record<string, unknown>, Status>({
@@ -106,6 +114,71 @@ iii.registerFunction(
         missing: { type: 'boolean' },
       },
       ['container', 'path', 'lines', 'size', 'truncated', 'missing'],
+    ),
+  },
+)
+
+const portSchema = object({ port: { type: 'integer' }, address: string }, ['port', 'address'])
+const containerSchema = object(
+  {
+    name: string,
+    source: { type: 'string', enum: ['path', 'package', 'unknown'] },
+    ref: string,
+    version: nullableString,
+    start_after: { type: 'array', items: string },
+    environment: { type: 'array', items: string },
+    run: nullableString,
+    pid: { type: ['integer', 'null'] },
+    ports: { type: 'array', items: portSchema },
+  },
+  ['name', 'source', 'ref', 'version', 'start_after', 'environment', 'run', 'pid', 'ports'],
+)
+
+iii.registerFunction(
+  'compose-ui::project',
+  async (input: { file?: string | null }) => {
+    const status = await iii.trigger<Record<string, unknown>, Status>({
+      function_id: 'compose::status',
+      payload: input.file ? { file: input.file } : {},
+      timeoutMs: 10_000,
+    })
+    if (!status.file) throw new Error('COMPOSE_UNAVAILABLE: compose::status answered without a compose file')
+    const project = await readProject(status.file)
+    const pids = new Map<string, number>()
+    for (const c of status.containers ?? []) {
+      if (typeof c.pid === 'number' && (c.state === 'ready' || c.state === 'starting')) pids.set(c.container, c.pid)
+    }
+    const ports = await listeningPorts([...pids.values(), ...(status.daemon_pid ? [status.daemon_pid] : [])])
+    return {
+      ...project,
+      daemon_pid: status.daemon_pid ?? null,
+      daemon_ports: status.daemon_pid ? (ports.get(status.daemon_pid) ?? []) : [],
+      containers: project.containers.map((c) => {
+        const pid = pids.get(c.name) ?? null
+        return { ...c, pid, ports: pid === null ? [] : (ports.get(pid) ?? []) }
+      }),
+    }
+  },
+  {
+    description:
+      'The compose file as declared plus what each container listens on: namespace, engine endpoint, timeouts, and per container the worker source (path or package@version), start_after, environment keys, run script, PID, and listening TCP ports read from the host.',
+    request_format: object({
+      file: { ...nullableString, description: 'Compose file on the daemon host; defaults to the daemon project.' },
+    }),
+    response_format: object(
+      {
+        file: string,
+        namespace: nullableString,
+        engine_url: nullableString,
+        engine_host: nullableString,
+        engine_port: { type: ['integer', 'null'] },
+        startup_timeout: nullableString,
+        stop_timeout: nullableString,
+        daemon_pid: { type: ['integer', 'null'] },
+        daemon_ports: { type: 'array', items: portSchema },
+        containers: { type: 'array', items: containerSchema },
+      },
+      ['file', 'namespace', 'engine_url', 'containers', 'daemon_ports'],
     ),
   },
 )

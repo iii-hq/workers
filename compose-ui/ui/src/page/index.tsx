@@ -68,6 +68,30 @@ type Status = {
   containers?: Container[]
 }
 
+type ListeningPort = { port: number; address: string }
+type DeclaredContainer = {
+  name: string
+  source: 'path' | 'package' | 'unknown'
+  ref: string
+  version: string | null
+  start_after: string[]
+  environment: string[]
+  run: string | null
+  pid: number | null
+  ports: ListeningPort[]
+}
+type Project = {
+  file: string
+  namespace: string | null
+  engine_url: string | null
+  engine_host: string | null
+  engine_port: number | null
+  startup_timeout: string | null
+  stop_timeout: string | null
+  daemon_pid: number | null
+  daemon_ports: ListeningPort[]
+  containers: DeclaredContainer[]
+}
 type ProjectSummary = { namespace?: string; file?: string; containers?: Container[] }
 type ProjectList = { daemon?: string; daemon_namespace?: string; daemon_pid?: number; projects?: ProjectSummary[] }
 
@@ -183,6 +207,45 @@ function describeHealth(counts: Record<ContainerState, number>, total: number): 
   return { tone: 'neutral', label: 'no containers' }
 }
 
+function sourceCell(declared: DeclaredContainer | undefined): ReactNode {
+  if (!declared) return <span className="cu-faint">–</span>
+  if (declared.source === 'package') {
+    return (
+      <span className="cu-mono" title={declared.ref}>
+        {declared.ref.split('/').pop()}
+        {declared.version ? `@${declared.version}` : ''}
+      </span>
+    )
+  }
+  return (
+    <span className="cu-mono" title={declared.ref}>
+      {declared.source === 'path' ? `path ${declared.ref}` : declared.ref || '–'}
+    </span>
+  )
+}
+
+function portsCell(declared: DeclaredContainer | undefined): ReactNode {
+  if (!declared || declared.ports.length === 0) return <span className="cu-faint">–</span>
+  return declared.ports.map((p) => `${p.address === '*' ? '' : `${p.address}:`}${p.port}`).join(', ')
+}
+
+function portSummary(project: Project | null): ReactNode {
+  if (!project) return <span className="cu-faint">–</span>
+  const rows = project.containers.filter((c) => c.ports.length > 0)
+  if (rows.length === 0) return <span className="cu-faint">no container listens on TCP</span>
+  return (
+    <span className="cu-chips">
+      {rows.map((c) => (
+        <Chip key={c.name} tone="neutral" title={`${c.name} pid ${c.pid ?? '–'}`}>
+          <span className="cu-mono">
+            {c.name} {c.ports.map((p) => p.port).join(', ')}
+          </span>
+        </Chip>
+      ))}
+    </span>
+  )
+}
+
 function Field({ id, label, hint, children }: { id: string; label: string; hint?: string; children: ReactNode }) {
   return (
     <div className={uiClasses.field}>
@@ -243,6 +306,7 @@ export function ComposePage({ host, onRequestClose, panelSide, commands, panelCo
   const [section, setSection] = useState<Section>('overview')
   const [status, setStatus] = useState<Status | null>(null)
   const [projects, setProjects] = useState<ProjectList | null>(null)
+  const [project, setProject] = useState<Project | null>(null)
   const [loaded, setLoaded] = useState(false)
   const [unavailable, setUnavailable] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
@@ -275,14 +339,16 @@ export function ComposePage({ host, onRequestClose, panelSide, commands, panelCo
       if (visible) setRefreshing(true)
       try {
         const file = fileRef.current
-        const [nextStatus, nextProjects] = await Promise.all([
+        const [nextStatus, nextProjects, nextProject] = await Promise.all([
           trigger<Status>('compose::status', file ? { file } : {}, 10_000),
           trigger<ProjectList>('compose::list', {}, 10_000).catch(() => null),
+          trigger<Project>('compose-ui::project', file ? { file } : {}, 15_000).catch(() => null),
         ])
         if (mine !== generation.current) return
         fileRef.current = nextStatus.file ?? fileRef.current
         setStatus(nextStatus)
         setProjects(nextProjects)
+        setProject(nextProject)
         setUnavailable(null)
         setUpdatedAt(Date.now())
       } catch (cause) {
@@ -509,6 +575,7 @@ export function ComposePage({ host, onRequestClose, panelSide, commands, panelCo
   )
 
   const all = status?.containers ?? []
+  const declared = useMemo(() => new Map((project?.containers ?? []).map((c) => [c.name, c])), [project])
   const counts = useMemo(() => {
     const next = { ready: 0, starting: 0, failed: 0, stopped: 0 }
     for (const c of all) if (c.state in next) next[c.state as ContainerState] += 1
@@ -552,8 +619,25 @@ export function ComposePage({ host, onRequestClose, panelSide, commands, panelCo
             </div>
             <Facts
               items={[
-                { term: 'Namespace', children: status?.namespace ?? '–' },
+                { term: 'Namespace', children: <span className="cu-mono">{status?.namespace ?? '–'}</span> },
                 { term: 'Daemon pid', children: <span className="cu-mono">{status?.daemon_pid ?? '–'}</span> },
+                {
+                  term: 'Engine',
+                  children: <span className="cu-mono">{project?.engine_url ?? 'compose default'}</span>,
+                },
+                {
+                  term: 'Timeouts',
+                  children: (
+                    <span className="cu-mono">
+                      start {project?.startup_timeout ?? '–'} · stop {project?.stop_timeout ?? '–'}
+                    </span>
+                  ),
+                },
+                {
+                  term: 'Ports',
+                  children: portSummary(project),
+                  wide: true,
+                },
                 { term: 'Compose file', children: <span className="cu-mono">{status?.file ?? '–'}</span>, wide: true },
                 {
                   term: 'State directory',
@@ -668,6 +752,8 @@ export function ComposePage({ host, onRequestClose, panelSide, commands, panelCo
                   <TableHead>State</TableHead>
                   <TableHead>PID</TableHead>
                   <TableHead>Supervision</TableHead>
+                  <TableHead>Source</TableHead>
+                  <TableHead>Ports</TableHead>
                   <TableHead className="cu-actions-head">Actions</TableHead>
                 </TableRow>
               </TableHeader>
@@ -694,6 +780,8 @@ export function ComposePage({ host, onRequestClose, panelSide, commands, panelCo
                       </TableCell>
                       <TableCell className="cu-mono cu-num">{running(c.state) ? (c.pid ?? '–') : '–'}</TableCell>
                       <TableCell className="cu-faint">{supervision(c)}</TableCell>
+                      <TableCell>{sourceCell(declared.get(c.container))}</TableCell>
+                      <TableCell className="cu-mono cu-num">{portsCell(declared.get(c.container))}</TableCell>
                       <TableCell>
                         <div className="cu-row-actions">
                           {running(c.state) ? (
@@ -736,7 +824,7 @@ export function ComposePage({ host, onRequestClose, panelSide, commands, panelCo
                     </TableRow>,
                     open ? (
                       <TableRow key={`${c.container}:log`} className="cu-log-row">
-                        <TableCell colSpan={5}>
+                        <TableCell colSpan={7}>
                           <div className="cu-log">
                             <div className="cu-log-head">
                               <span className="cu-mono cu-faint">
@@ -864,6 +952,18 @@ export function ComposePage({ host, onRequestClose, panelSide, commands, panelCo
                 children: <span className="cu-mono">{projects?.daemon_pid ?? status?.daemon_pid ?? '–'}</span>,
               },
               { term: 'Projects', children: String(projects?.projects?.length ?? 0) },
+              {
+                term: 'Engine',
+                children: (
+                  <span className="cu-mono">
+                    {project?.engine_url ?? 'compose default'}
+                    {project?.daemon_ports.length
+                      ? ` · daemon listens ${project.daemon_ports.map((p) => p.port).join(', ')}`
+                      : ''}
+                  </span>
+                ),
+                wide: true,
+              },
             ]}
           />
           {projects?.projects?.length ? (

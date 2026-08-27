@@ -9,11 +9,6 @@
     "node": ">=22"
   },
   "packageManager": "pnpm@11.13.1",
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild"
-    ]
-  },
   "scripts": {
     "build": "pnpm --dir ui build && node scripts/build-bundle.mjs",
     "build:bundle": "node scripts/build-bundle.mjs",
@@ -24,7 +19,8 @@
     "start": "node dist/bundle/index.mjs"
   },
   "dependencies": {
-    "iii-sdk": "0.23.0-rc.2"
+    "iii-sdk": "0.23.0-rc.2",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

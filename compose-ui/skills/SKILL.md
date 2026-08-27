@@ -39,6 +39,7 @@ durable project state or the compose file changes on disk, and
 - Lifecycle belongs to the daemon. Call `compose::up`, `compose::down`,
   `compose::restart`, `compose::add`, `compose::remove`, and `compose::update`
   directly; this worker adds no proxies for them.
+- `compose-ui::project` reports environment variable names only, never values.
 - `compose-ui::logs` reads at most 500 lines and 256 KiB from the end of one
   file and never lists or reads anything else in the state directory.
 - The worker must run in the compose project's namespace (compose supplies it;
@@ -49,6 +50,7 @@ durable project state or the compose file changes on disk, and
 | Function | Purpose |
 |---|---|
 | `compose-ui::logs` | `{ container, lines?, file? }` → last lines of `<state_dir>/logs/<container>.log` with `size`, `truncated`, `missing`. |
+| `compose-ui::project` | `{ file? }` → the compose file as declared (namespace, engine endpoint, timeouts, each container's source, version, `start_after`, environment keys, run script) plus each running container's PID and listening TCP ports. |
 
 ## Trigger types
 

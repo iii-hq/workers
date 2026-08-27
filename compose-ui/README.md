@@ -46,6 +46,23 @@ iii trigger compose-ui::logs container=provider-openai lines=50
 }
 ```
 
+See what the project declares and what each container listens on:
+
+```bash
+iii trigger compose-ui::project
+```
+
+```json
+{
+  "namespace": "my-project",
+  "engine_url": "ws://127.0.0.1:49134",
+  "containers": [
+    { "name": "console", "source": "path", "ref": "../console", "pid": 27129, "ports": [{ "port": 3113, "address": "*" }] },
+    { "name": "web", "source": "package", "ref": "api.workers.iii.dev/web", "version": "1.2.10", "ports": [] }
+  ]
+}
+```
+
 React to supervisor changes without polling — bind the trigger type with an
 empty config and re-read `compose::status` on each event:
 
@@ -80,7 +97,7 @@ containers:
   compose-ui:
     worker: path://../compose-ui
     scripts:
-      run: pnpm install --ignore-workspace && pnpm build:bundle && node dist/bundle/index.mjs
+      run: pnpm install --ignore-workspace --ignore-scripts && pnpm build:bundle && node dist/bundle/index.mjs
 ```
 
 A worker started by hand needs `III_NAMESPACE=<compose namespace>` or the
