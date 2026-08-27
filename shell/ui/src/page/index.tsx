@@ -114,7 +114,11 @@ import {
 } from './git'
 import { HoverTip } from './HoverTip'
 import { useWorkspaceChanges } from './live'
-import { normalizeLiveReviewEvent, onlyIgnoredChanges } from './live-review'
+import {
+  normalizeLiveReviewEvent,
+  onlyIgnoredChanges,
+  trackIgnoredPath,
+} from './live-review'
 import { parseShellPanelContext } from './panel-context'
 import {
   createTabUiStateSaver,
@@ -1929,7 +1933,7 @@ export function ShellExplorerPage({
     if (isShellUiStatePath(event.path)) return
     const eventAbs = joinPath(event.root, event.path)
     changedAbsRef.current.set(eventAbs, event.kind)
-    if (event.ignored === true) ignoredAbsRef.current.add(eventAbs)
+    trackIgnoredPath(ignoredAbsRef.current, eventAbs, event.ignored === true)
     // Directories refresh the tree but must never open as files —
     // reading one is a C210.
     if (event.dir === true) {

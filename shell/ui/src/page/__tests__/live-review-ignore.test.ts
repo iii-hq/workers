@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { onlyIgnoredChanges } from '../live-review'
+import { onlyIgnoredChanges, trackIgnoredPath } from '../live-review'
 import { type ReviewEntry, sameReviewEntry } from '../review'
 
 describe('onlyIgnoredChanges', () => {
@@ -12,6 +12,18 @@ describe('onlyIgnoredChanges', () => {
       false,
     )
     expect(onlyIgnoredChanges([], ignored)).toBe(false)
+  })
+})
+
+describe('trackIgnoredPath', () => {
+  it('keeps the latest verdict when a path flips within one burst', () => {
+    const ignored = new Set<string>()
+    trackIgnoredPath(ignored, '/w/data/a.jsonl', true)
+    expect(ignored.has('/w/data/a.jsonl')).toBe(true)
+    trackIgnoredPath(ignored, '/w/data/a.jsonl', false)
+    expect(ignored.has('/w/data/a.jsonl')).toBe(false)
+    trackIgnoredPath(ignored, '/w/src/main.rs', false)
+    expect(ignored.size).toBe(0)
   })
 })
 

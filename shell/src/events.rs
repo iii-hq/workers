@@ -185,11 +185,17 @@ pub(crate) async fn git_ignored<'a>(
     else {
         return HashSet::new();
     };
-    if let Some(mut stdin) = child.stdin.take() {
-        use tokio::io::AsyncWriteExt;
-        let _ = stdin.write_all(&input).await;
-    }
-    let Ok(out) = child.wait_with_output().await else {
+    let stdin = child.stdin.take();
+    let writer = tokio::spawn(async move {
+        if let Some(mut stdin) = stdin {
+            use tokio::io::AsyncWriteExt;
+            let _ = stdin.write_all(&input).await;
+            let _ = stdin.shutdown().await;
+        }
+    });
+    let output = child.wait_with_output().await;
+    let _ = writer.await;
+    let Ok(out) = output else {
         return HashSet::new();
     };
     out.stdout
