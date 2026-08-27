@@ -63,12 +63,10 @@ function SidebarExample({
         >
           <Navigation />
         </PageSidebar>
-        <PageMain
-          className={`items-center justify-center p-6 font-sans text-sm text-ink-faint${
-            narrowBelow === undefined ? '' : ' max-[700px]:hidden'
-          }`}
-        >
-          Resize the separator, then collapse and expand the shared sidebar.
+        <PageMain className="items-center justify-center p-6 font-sans text-sm text-ink-faint">
+          {narrowBelow === undefined
+            ? 'Resize the separator, then collapse and expand the shared sidebar.'
+            : 'Below 700px the sidebar is a rail; expand it to open the drawer over this column.'}
         </PageMain>
       </PageBody>
     </PageShell>

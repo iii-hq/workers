@@ -64,9 +64,25 @@ describe('PageSidebar', () => {
     expect(html).toContain('inert=""')
   })
 
-  it('forces the responsive presentation open without changing preference', () => {
+  it('narrows a host-owned sidebar to a closed drawer rail', () => {
     const html = renderSidebar(
-      <PageSidebar label="files" collapsible defaultCollapsed narrow>
+      <PageSidebar label="files" collapsible narrow>
+        file tree
+      </PageSidebar>,
+    )
+
+    expect(html).toContain('style="width:36px"')
+    expect(html).toContain('data-narrow=""')
+    expect(html).toContain('data-drawer="closed"')
+    expect(html).toContain('data-collapsed=""')
+    expect(html).toContain('file tree')
+    expect(html).toContain('aria-label="expand files"')
+    expect(html).not.toContain('aria-label="close files"')
+  })
+
+  it('keeps the full-width presentation for a page that controls collapse', () => {
+    const html = renderSidebar(
+      <PageSidebar label="files" collapsible collapsed={false} narrow>
         file tree
       </PageSidebar>,
     )
@@ -74,6 +90,7 @@ describe('PageSidebar', () => {
     expect(html).toContain('style="width:100%"')
     expect(html).toContain('file tree')
     expect(html).not.toContain('data-collapsed')
+    expect(html).not.toContain('data-drawer')
     expect(html).not.toContain('aria-label="expand files"')
   })
 })
