@@ -242,6 +242,21 @@
   white-space: nowrap;
 }
 
+[data-iii-ui='compose-ui'] .cu-source {
+  display: inline-block;
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+
+[data-iii-ui='compose-ui'] td.cu-ports {
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+
 [data-iii-ui='compose-ui'] .cu-last-error {
   display: block;
   max-width: 32rem;

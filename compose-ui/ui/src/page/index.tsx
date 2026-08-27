@@ -207,19 +207,32 @@ function describeHealth(counts: Record<ContainerState, number>, total: number): 
   return { tone: 'neutral', label: 'no containers' }
 }
 
+function shortRef(ref: string): string {
+  const parts = ref.split('/').filter(Boolean)
+  if (parts.length <= 2) return ref
+  return `…/${parts.slice(-2).join('/')}`
+}
+
 function sourceCell(declared: DeclaredContainer | undefined): ReactNode {
   if (!declared) return <span className="cu-faint">–</span>
   if (declared.source === 'package') {
     return (
-      <span className="cu-mono" title={declared.ref}>
+      <span className="cu-mono cu-source" title={declared.ref}>
         {declared.ref.split('/').pop()}
         {declared.version ? `@${declared.version}` : ''}
       </span>
     )
   }
+  if (declared.source === 'path') {
+    return (
+      <span className="cu-mono cu-source" title={declared.ref}>
+        path {shortRef(declared.ref)}
+      </span>
+    )
+  }
   return (
-    <span className="cu-mono" title={declared.ref}>
-      {declared.source === 'path' ? `path ${declared.ref}` : declared.ref || '–'}
+    <span className="cu-mono cu-source" title={declared.ref}>
+      {declared.ref || '–'}
     </span>
   )
 }
@@ -781,7 +794,7 @@ export function ComposePage({ host, onRequestClose, panelSide, commands, panelCo
                       <TableCell className="cu-mono cu-num">{running(c.state) ? (c.pid ?? '–') : '–'}</TableCell>
                       <TableCell className="cu-faint">{supervision(c)}</TableCell>
                       <TableCell>{sourceCell(declared.get(c.container))}</TableCell>
-                      <TableCell className="cu-mono cu-num">{portsCell(declared.get(c.container))}</TableCell>
+                      <TableCell className="cu-mono cu-num cu-ports">{portsCell(declared.get(c.container))}</TableCell>
                       <TableCell>
                         <div className="cu-row-actions">
                           {running(c.state) ? (
