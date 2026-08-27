@@ -144,8 +144,8 @@ fn default_discovery_fallback_yields_to_injected_assist() {
 
 #[test]
 fn runtime_preverification_covers_updates_and_subagents() {
-    for out in [variants::DEFAULT] {
-        let out = out.replace('\n', " ");
+    {
+        let out = variants::DEFAULT.replace('\n', " ");
         assert!(out.contains("marked `pre-verified` by a Harness runtime block or update"));
         assert!(out.contains("already satisfies Steps 1 and 2"));
         assert!(out.contains("without discovery or `engine::functions::info`"));
@@ -392,8 +392,8 @@ fn default_variant_step_by_step() {
 
 #[test]
 fn progress_updates_are_phase_scoped_and_keep_descriptions_and_final_text() {
-    for out in [variants::DEFAULT] {
-        let normalized = out.replace('\n', " ");
+    {
+        let normalized = variants::DEFAULT.replace('\n', " ");
         assert!(normalized.contains("# User-visible progress"));
         assert!(normalized.contains("materially new investigative or action phase"));
         assert!(normalized.contains("One update may cover any number of related function calls"));
