@@ -38,7 +38,13 @@ DEPENDENCY_RANGES = {
     "state": "^0.22.2",
 }
 
-WORKER_DEPENDENCY_RANGE_OVERRIDES: dict[str, dict[str, str]] = {}
+WORKER_DEPENDENCY_RANGE_OVERRIDES: dict[str, dict[str, str]] = {
+    # Both terminals need shell 0.12.0's named-program PTY session
+    # (`shell::pty::open` with `program`/`args`/`env`) to run the agent CLI
+    # with no login shell around it; other consumers stay on 0.11.9.
+    "claude-code": {"shell": "^0.12.0"},
+    "pi": {"shell": "^0.12.0"},
+}
 
 
 def dependencies(worker: str) -> dict[str, str]:
