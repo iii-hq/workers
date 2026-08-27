@@ -35,6 +35,7 @@ packages:
   - provider-openai-codex/ui
   - tailscale/ui
   - vscode/ui
+  - compose-ui/ui
 
 # pnpm ≥11 blocks dependency postinstall scripts by default; esbuild's
 # installs its platform binary. protobufjs (via iii-sdk → @opentelemetry)

@@ -1,0 +1,35 @@
+{
+  "name": "compose-ui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Compose project supervision as an injectable iii Console page: live container state, lifecycle actions, worker packages, and log tails.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@11.13.1",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  },
+  "scripts": {
+    "build": "pnpm --dir ui build && node scripts/build-bundle.mjs",
+    "build:bundle": "node scripts/build-bundle.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit && pnpm --dir ui typecheck",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "test": "vitest run",
+    "start": "node dist/bundle/index.mjs"
+  },
+  "dependencies": {
+    "iii-sdk": "0.23.0-rc.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.2",
+    "vitest": "^3.0.0"
+  }
+}
