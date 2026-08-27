@@ -167,8 +167,10 @@ pub struct SkillDeleteOutput {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SystemPromptUpdateInput {
     /// System prompt name to overwrite, as returned by
-    /// `directory::system-prompts::list`. The
-    /// target file must already exist.
+    /// `directory::system-prompts::list`. The target file must already
+    /// exist — except for a worker-bundled prompt (`builtin: true` in the
+    /// list), where the update copy-on-writes the local file that then
+    /// shadows the bundled copy.
     pub name: String,
     /// FULL new file content, frontmatter block included. The
     /// frontmatter must keep a non-empty `description` — a system prompt
@@ -408,7 +410,9 @@ fn register_update_system_prompt(
         })
         .description(
             "Overwrite one EXISTING filesystem-backed system prompt with new full-file \
-             markdown content. The frontmatter must keep a non-empty `description` (and \
+             markdown content. Updating a worker-bundled prompt (`builtin: true` in the \
+             list) that has no local file yet copy-on-writes that file, which then \
+             shadows the bundled copy. The frontmatter must keep a non-empty `description` (and \
              a valid `name` when it declares one) — the same rules the scanner enforces, \
              so an update can never produce a file the next \
              directory::system-prompts::list would skip. The write is atomic and fans \

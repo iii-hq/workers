@@ -171,9 +171,15 @@ export const systemPromptsAdapter: BrowserAdapter = {
   async save(host, name, content) {
     if (name === HARNESS_DEFAULT_SYSTEM_PROMPT_KEY) {
       // Copy-on-write: the built-in prompt has no store file; saving it
-      // CREATES the local entry (named by the draft's frontmatter, `default`
-      // unless renamed), which the harness picks up on the next send.
+      // CREATES the local `default` entry, which the harness picks up on
+      // the next send. Only that exact name overrides the embedded
+      // identity, so a rename here would silently save an inactive prompt.
       const local = frontmatterName(content)
+      if (local !== 'default') {
+        throw new Error(
+          'the Harness default override must keep the name "default" — use "New system prompt" to save it under another name',
+        )
+      }
       const out = await host.iii.trigger<{ name: string }>(
         'directory::system-prompts::create',
         { name: local, content },

@@ -12,7 +12,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub use mode::{paragraph, Mode};
-pub use stored::{effective_default, STORED_DEFAULT_PROMPT_NAME};
+pub use stored::{effective_default, EffectiveDefault, STORED_DEFAULT_PROMPT_NAME};
 pub use variants::DEFAULT;
 
 /// How a caller-supplied system prompt combines with the built-in identity prompt.

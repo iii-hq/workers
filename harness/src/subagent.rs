@@ -286,7 +286,7 @@ async fn seed_child(
     // (+ override strategy) is the escape hatch for a child that genuinely
     // needs a different identity; an `agent` profile enriches this same
     // identity with its body.
-    let identity = prompt::effective_default(&deps.iii).await;
+    let identity = prompt::effective_default(&deps.iii).await.identity;
     let identity = identity.as_str();
 
     let orchestrator = req

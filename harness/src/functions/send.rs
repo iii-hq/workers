@@ -281,7 +281,7 @@ async fn start_with_delivery_lock(
 
     // Freeze the per-send options before moving the message out of `req`.
     let inherits_prompt = prev.is_some() && prompt_fields_omitted(req.options.as_ref());
-    let identity = crate::prompt::effective_default(&deps.iii).await;
+    let identity = crate::prompt::effective_default(&deps.iii).await.identity;
     let mut options = build_options(&cfg, &req, model, provider, agent.as_ref(), &identity);
     inherit_prior_functions(
         &cfg,

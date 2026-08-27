@@ -97,7 +97,7 @@ pub fn register(iii: &Arc<IIIClient>, cfg: &SharedConfig) {
                 Ok::<_, Error>(ListSystemPromptsOutput { prompts: entries })
             }
         })
-        .description("List filesystem-backed system prompts (name, description, modified_at) from skills_folder (`system-prompts/` path segment)."),
+        .description("List system prompts (name, description, modified_at): filesystem-backed entries from skills_folder (`system-prompts/` path segment) plus the prompts bundled with this worker. A bundled prompt with no local file carries `builtin: true` — editing it via directory::system-prompts::update creates the local file, which then shadows the bundled copy."),
     );
 
     let cfg_inner = cfg.clone();
@@ -107,7 +107,7 @@ pub fn register(iii: &Arc<IIIClient>, cfg: &SharedConfig) {
             let cfg = cfg_inner.load_full();
             async move { get_system_prompt(&cfg, req).await.map_err(Error::Handler) }
         })
-        .description("Fetch one filesystem-backed system prompt by name. Returns the raw markdown body plus name, description, and modified_at — no envelope, no templating."),
+        .description("Fetch one system prompt by name — a filesystem-backed entry, or a worker-bundled one (`builtin: true`) when no local file shadows it. Returns the raw markdown body plus name, description, and modified_at — no envelope, no templating."),
     );
 }
 

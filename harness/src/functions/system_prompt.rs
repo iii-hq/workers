@@ -18,8 +18,10 @@ pub struct SelectedSystemPrompt {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SystemPromptRequest {
     pub session_id: String,
-    /// Return only the embedded Harness default, without session, runtime,
-    /// registry, or hook layers.
+    /// Return only the built-in default layer — the stored
+    /// `system-prompts/default` override when one is active, else the
+    /// embedded Harness default — without session, runtime, registry, or
+    /// hook layers. The part's `name` states which source served it.
     #[serde(default)]
     pub default_only: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -129,17 +131,18 @@ pub async fn handle(
     })
 }
 
-/// The effective default identity and its user-facing source label: the
-/// stored `system-prompts/default` entry when it overrides, else the
-/// embedded prompt.
+/// The effective default identity and its user-facing source label. The
+/// label follows the LOOKUP's source, never a body comparison — a stored
+/// `system-prompts/default` entry whose text happens to equal the embedded
+/// prompt is still reported as stored.
 async fn default_identity(deps: &Deps) -> (String, String) {
-    let identity = prompt::effective_default(&deps.iii).await;
-    let name = if identity == prompt::DEFAULT {
-        "embedded harness default"
-    } else {
+    let effective = prompt::effective_default(&deps.iii).await;
+    let name = if effective.stored {
         "stored default (system-prompts/default)"
+    } else {
+        "embedded harness default"
     };
-    (name.to_string(), identity)
+    (name.to_string(), effective.identity)
 }
 
 fn default_only_preview((name, identity): (String, String)) -> SystemPromptPreview {

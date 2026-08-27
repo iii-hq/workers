@@ -78,6 +78,17 @@ it('saving the built-in default creates the local override entry', async () => {
   await expect(
     systemPromptsAdapter.save?.(host, HARNESS_DEFAULT_SYSTEM_PROMPT_KEY, draft),
   ).resolves.toBe('default')
+
+  // A renamed draft would create an entry that overrides nothing — refused.
+  const renamed =
+    '---\nname: my-prompt\ndescription: Local override\n---\nEdited prompt.'
+  await expect(
+    systemPromptsAdapter.save?.(
+      host,
+      HARNESS_DEFAULT_SYSTEM_PROMPT_KEY,
+      renamed,
+    ),
+  ).rejects.toThrow('must keep the name "default"')
 })
 
 it('hides the built-in row once a local default exists', async () => {
