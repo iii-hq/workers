@@ -10,7 +10,6 @@
  */
 
 import { useMemo } from 'react'
-import { AgentSessionToolView } from '@/components/chat/agent-session'
 import { CoderFunctionIdLabel, CoderToolView } from '@/components/chat/coder'
 import {
   EngineFunctionIdLabel,
@@ -18,11 +17,7 @@ import {
   EngineToolView,
 } from '@/components/chat/engine'
 import { FpFunctionIdLabel, FpToolView } from '@/components/chat/fp'
-import {
-  HarnessFunctionIdLabel,
-  HarnessSpawnToolView,
-  HarnessToolView,
-} from '@/components/chat/harness'
+import { HarnessFunctionIdLabel, HarnessToolView } from '@/components/chat/harness'
 import { RouterFunctionIdLabel, RouterToolView } from '@/components/chat/router'
 import {
   ScraplingFunctionIdLabel,
@@ -119,20 +114,10 @@ export const FIRST_PARTY_RENDERERS: readonly FunctionTriggerRenderer[] = [
     FunctionIdLabel: RouterFunctionIdLabel,
   },
   {
-    id: 'first-party/harness-spawn',
-    isMatch: HarnessSpawnToolView.isHarnessSpawnFunction,
-    tryRender: HarnessSpawnToolView.tryRender,
-    tryRenderRunning: HarnessSpawnToolView.tryRenderRunning,
-    tryRenderDisplay: HarnessSpawnToolView.tryRenderDisplay,
-    FunctionIdLabel: HarnessFunctionIdLabel,
-    metadata: { display: true },
-  },
-  {
     id: 'first-party/harness',
     isMatch: HarnessToolView.isHarnessFunction,
     tryRender: HarnessToolView.tryRender,
     tryRenderRunning: HarnessToolView.tryRenderRunning,
-    tryRenderPreview: HarnessToolView.tryRenderPreview,
     FunctionIdLabel: HarnessFunctionIdLabel,
   },
   {
@@ -150,26 +135,6 @@ export const FIRST_PARTY_RENDERERS: readonly FunctionTriggerRenderer[] = [
     tryRenderRunning: StateToolView.tryRenderRunning,
     tryRenderPreview: StateToolView.tryRenderPreview,
     FunctionIdLabel: StateFunctionIdLabel,
-  },
-  // LAST on purpose. This one is claimed by the MESSAGE rather than by a
-  // function id: any worker's agent run — `claude::start`,
-  // `run::start_and_wait`, a worker nobody has written yet — renders as the
-  // child session it created, so a sub-agent is a sub-agent whoever answers
-  // it. Every family above still wins its own ids; this only ever picks up
-  // what nothing else claimed.
-  //
-  // It declares no `FunctionIdLabel`, no `redactRaw`, no `tryRenderPreview`
-  // and NO `display` metadata, which is what makes matching every id free:
-  // `display` is read off `isMatch` alone (the collapsed-activity prominence
-  // check in `MessageList`), so a display-carrying renderer that matches
-  // everything would mark every call in the transcript prominent and stop
-  // sequences from collapsing. The card therefore renders inside an opened
-  // call; giving it the prominent collapsed row spawn gets needs that
-  // prominence check to consult the message too.
-  {
-    id: 'first-party/agent-session',
-    isMatch: AgentSessionToolView.isMatch,
-    tryRender: AgentSessionToolView.tryRender,
   },
 ]
 

@@ -1,10 +1,9 @@
 import { renderToStaticMarkup } from 'react-dom/server'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import {
   RegisterTriggerView,
   TriggerRegisteredDisplay,
 } from '@/components/chat/engine/RegisterTriggerView'
-import { SpawnActivityCard } from '@/components/chat/harness/SpawnView'
 import {
   engineFunctionsListEmpty,
   engineRegisterTriggerSubscribe,
@@ -13,10 +12,7 @@ import { FunctionTriggerCard } from './FunctionTriggerCard'
 import { FIRST_PARTY_RENDERERS } from './renderer-registry'
 
 describe('featured first-party renderers', () => {
-  it('marks only spawn and trigger registration as prominent', () => {
-    const spawn = FIRST_PARTY_RENDERERS.find(
-      (renderer) => renderer.id === 'first-party/harness-spawn',
-    )
+  it('marks only trigger registration as prominent', () => {
     const register = FIRST_PARTY_RENDERERS.find(
       (renderer) => renderer.id === 'first-party/engine-register-trigger',
     )
@@ -27,8 +23,6 @@ describe('featured first-party renderers', () => {
       (renderer) => renderer.id === 'first-party/engine',
     )
 
-    expect(spawn?.metadata).toEqual({ display: true })
-    expect(spawn?.tryRenderDisplay).toBeTypeOf('function')
     expect(register?.metadata).toEqual({
       display: true,
       displayAction: 'expand',
@@ -57,121 +51,6 @@ describe('featured first-party renderers', () => {
     )
     expect(collapsed).not.toContain('no functions returned')
     expect(expanded).toContain('no functions returned')
-  })
-})
-
-describe('spawn activity display', () => {
-  const now = Date.UTC(2026, 7, 19, 12, 2)
-
-  it.each([
-    ['active', 'Active'],
-    ['working', 'Working'],
-    ['thinking', 'Thinking'],
-    ['messaging', 'Sending a message'],
-    ['error', 'Needs attention'],
-  ] as const)('renders the %s live state', (status, label) => {
-    const html = renderToStaticMarkup(
-      <SpawnActivityCard
-        title="Review the release"
-        task="Audit the release candidate and report blockers."
-        status={status}
-        activityAt={now - 120_000}
-        now={now}
-      />,
-    )
-
-    expect(html).toContain(`data-subagent-status="${status}"`)
-    expect(html).toContain(label)
-    expect(html).toContain('Review the release')
-    expect(html).toContain('Sub-agent')
-    expect(html).toContain(`${label} for 2m`)
-  })
-
-  it.each([
-    ['completed', 'Completed'],
-    ['stopped', 'Stopped'],
-  ] as const)('renders the %s terminal state', (status, label) => {
-    const html = renderToStaticMarkup(
-      <SpawnActivityCard
-        title="Reviewer"
-        task="Audit the release candidate."
-        status={status}
-        activityAt={now - 120_000}
-        now={now}
-      />,
-    )
-
-    expect(html).toContain(label)
-    expect(html).toContain(`${label} 2m ago`)
-  })
-
-  it('does not present stale activity age as disconnect duration', () => {
-    const html = renderToStaticMarkup(
-      <SpawnActivityCard
-        title="Reviewer"
-        task="Audit the release candidate."
-        status="disconnected"
-        activityAt={now - 10_800_000}
-        now={now}
-      />,
-    )
-
-    expect(html).toContain('Disconnected')
-    expect(html).not.toContain('Disconnected for')
-  })
-
-  it('renders the requested metadata and the entire widget as the session destination', () => {
-    const html = renderToStaticMarkup(
-      <SpawnActivityCard
-        title="Review the release"
-        task="Audit the release candidate."
-        status="working"
-        sessionId="child-1"
-        icon="review"
-        color="purple"
-        createdAt={now - 120_000}
-        activityAt={now - 120_000}
-        now={now}
-        onOpen={vi.fn()}
-      />,
-    )
-
-    expect(html.match(/<button/g)).toHaveLength(1)
-    expect(html).toContain(
-      'aria-label="Open Review the release sub-agent in a new panel"',
-    )
-    expect(html).toContain('data-color="purple"')
-    expect(html).toContain('lucide-clipboard-check')
-    expect(html).toContain('Open details')
-    expect(html).toContain('2m ago')
-    expect(html).toContain('ID: child-1')
-    expect(html).not.toContain('Created by you')
-    expect(html).not.toContain('aria-label="More')
-  })
-
-  it('shows the assigned task once when it is also the session title', () => {
-    const task = 'Audit the release candidate.'
-    const html = renderToStaticMarkup(
-      <SpawnActivityCard title={task} task={task} status="working" />,
-    )
-
-    expect(html.match(/Audit the release candidate\./g)).toHaveLength(1)
-  })
-
-  it('keeps its mobile controls on one overflow-safe row below the content', () => {
-    const html = renderToStaticMarkup(
-      <SpawnActivityCard
-        title="Review the release"
-        task="Audit the release candidate."
-        status="active"
-        sessionId="child-1"
-        onOpen={vi.fn()}
-      />,
-    )
-
-    expect(html).toContain('@xl:grid-cols-[minmax(0,1fr)_auto]')
-    expect(html).toContain('grid-cols-[minmax(0,1fr)_auto]')
-    expect(html).toContain('min-w-0')
   })
 })
 

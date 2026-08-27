@@ -6,7 +6,7 @@
  * metadata names its parent, a transcript the console can read, and a status
  * that moves. Any worker that does those three things shows up in the console's
  * session tree and in the parent turn's chat — no harness change, no special
- * case for this worker (see `console/web/src/components/chat/agent-session`).
+ * case for this worker.
  *
  * Everything here is best-effort. `session-manager` is a dependency of the
  * console's views, not of running an agent: a task must still run when nobody

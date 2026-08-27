@@ -1,6 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { useEffect } from 'react'
-import { SpawnActivityCard } from '@/components/chat/harness/SpawnView'
 import { FunctionTriggerCard } from '@/components/function-trigger/FunctionTriggerCard'
 import { registerExtRenderer } from '@/lib/ui-slots'
 import { coderFixtures } from '@/stories/fixtures/coder-fixtures'
@@ -10,10 +9,7 @@ import {
   engineRegisterTriggerSubscribe,
 } from '@/stories/fixtures/engine-fixtures'
 import { fpFixtures } from '@/stories/fixtures/fp-fixtures'
-import {
-  harnessFixtures,
-  spawnDirectDone,
-} from '@/stories/fixtures/harness-fixtures'
+import { harnessFixtures } from '@/stories/fixtures/harness-fixtures'
 import { routerFixtures } from '@/stories/fixtures/router-fixtures'
 import { sandboxFixtures } from '@/stories/fixtures/sandbox-fixtures'
 import { scraplingFixtures } from '@/stories/fixtures/scrapling-fixtures'
@@ -279,46 +275,9 @@ export const FileChangesArtifact: Story = {
   render: () => <FileChangesActivityStory />,
 }
 
-export const SpawnedSubagentWidget: Story = {
-  name: 'spawned sub-agent widget',
-  args: { message: spawnDirectDone },
-}
-
 export const TriggerRegisteredWidget: Story = {
   name: 'trigger registered widget',
   args: { message: engineRegisterTriggerSubscribe },
-}
-
-export const SubagentLiveStates: Story = {
-  name: 'sub-agent live states',
-  render: () => {
-    const now = Date.now()
-    return (
-      <div className="grid max-w-5xl gap-3">
-        {(
-          [
-            ['active', 'Active'],
-            ['working', 'Working'],
-            ['thinking', 'Thinking'],
-            ['messaging', 'Sending a message'],
-            ['error', 'Needs attention'],
-          ] as const
-        ).map(([status, title]) => (
-          <SpawnActivityCard
-            key={status}
-            title={title}
-            task="Audit the release candidate and report any blocker."
-            status={status}
-            sessionId={`sub_${status}_8f3a7d2e`}
-            createdAt={now - 120_000}
-            activityAt={now - 120_000}
-            now={now}
-            onOpen={() => {}}
-          />
-        ))}
-      </div>
-    )
-  },
 }
 
 export const DoneExpanded: Story = {
