@@ -1,0 +1,6 @@
+{
+  "worker": "iii",
+  "source": "registry",
+  "tag_or_version": "latest",
+  "schema": 1
+}

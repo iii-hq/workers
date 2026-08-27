@@ -144,16 +144,16 @@ retries) and their defaults live in [`src/config.rs`](src/config.rs).
 
 ## System prompt
 
-The identity prompt is assembled once at send/spawn time. A TOP-LEVEL turn
-(`harness::send`) always uses the embedded step-by-step default prompt
-([`prompts/default.txt`](prompts/default.txt)). Spawned
-CHILDREN never get the top-level prompt: every child is seeded with the
-embedded minimal sub-agent identity
-([`prompts/subagent.txt`](prompts/subagent.txt)) — do the one task, record
-the result where the task says, stop — and is capability-walled out of the
-orchestration surface (`harness::spawn`, `harness::send`, trigger
-registration) unless spawned with `options: { orchestrator: true }`; spawn
-`options.system_prompt` remains the identity escape hatch.
+The identity prompt is assembled once at send/spawn time. EVERY agent —
+top-level turns (`harness::send`) and spawned children alike — is seeded with
+the same single embedded identity
+([`prompts/default.txt`](prompts/default.txt)): a deliberately minimal prompt
+carrying only the basic engine functions and the discovery loop (list, info,
+call). What makes a child a leaf is its POLICY, not its prompt: children are
+capability-walled out of the orchestration surface (`harness::spawn`,
+`harness::send`, trigger registration) unless spawned with
+`options: { orchestrator: true }`; spawn `options.system_prompt` remains the
+identity escape hatch.
 
 A spawn may also give its child a display-only identity with
 `display: { name, icon?, color? }`. `name` is trimmed, limited to 48 characters,

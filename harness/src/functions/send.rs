@@ -1532,7 +1532,7 @@ mod tests {
         );
         let prompt = opts.system_prompt.expect("built-in prompt");
         assert!(prompt.contains("operating in agent mode"));
-        assert!(prompt.contains("# System rules"));
+        assert!(prompt.contains("# How to call a function"));
     }
 
     #[test]
