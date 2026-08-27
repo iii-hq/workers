@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   AGENT_CHOICE_PREFIX,
   agentIdForSend,
+  agentIdFromSystemPrompt,
   choiceToValue,
   DEFAULT_SYSTEM_PROMPT_STATE,
   type SystemPromptState,
@@ -10,6 +11,8 @@ import {
   toggleSkillSelection,
   toSelection,
   valueToChoice,
+  withAgentChoice,
+  withoutAgentChoice,
 } from './system-prompt-selection'
 
 describe('toSelection', () => {
@@ -218,5 +221,31 @@ describe('agentIdForSend', () => {
 
   it('an agent choice with an empty namedBody yields no prompt selection', () => {
     expect(toSelection(agentState)).toBeNull()
+  })
+})
+
+describe('agent choice state', () => {
+  it('selects an agent and returns to a clean manual default', () => {
+    const agent = withAgentChoice(DEFAULT_SYSTEM_PROMPT_STATE, 'engineer')
+
+    expect(agentIdFromSystemPrompt(agent)).toBe('engineer')
+    expect(agent.choice).toEqual({
+      named: `${AGENT_CHOICE_PREFIX}engineer`,
+    })
+    expect(agent.strategy).toBe('enrich')
+
+    const manual = withoutAgentChoice(agent)
+    expect(agentIdFromSystemPrompt(manual)).toBeNull()
+    expect(manual.choice).toBe('default')
+  })
+
+  it('leaves an existing manual prompt unchanged', () => {
+    const manual: SystemPromptState = {
+      ...DEFAULT_SYSTEM_PROMPT_STATE,
+      choice: { named: 'reviewer' },
+      namedBody: 'Review carefully.',
+    }
+
+    expect(withoutAgentChoice(manual)).toBe(manual)
   })
 })

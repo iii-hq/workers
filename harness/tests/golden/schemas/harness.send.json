@@ -430,7 +430,7 @@
         "description": "Per-send options frozen onto the turn record (harness.md § `harness::send`).",
         "properties": {
           "agent": {
-            "description": "Run the session as a directory agent profile (`directory::agents::*` id). Session-creating sends only — the profile's body becomes the enrich system prompt, its skill filter the session's skill selection, its `model` the fallback when this send names none, and its identity sticks like the system prompt (later sends inherit; naming an explicit prompt field sheds it). Refused on an existing session, combined with either prompt field, or naming a `leaf` profile (a spawn target).",
+            "description": "Run the session as a directory agent profile (`directory::agents::*` id). Session-creating sends only — the profile's body becomes the enrich system prompt, its skill filter the session's skill selection, its `model` the fallback when this send names none, and its identity sticks like the system prompt (later sends inherit; naming an explicit prompt field sheds it). Refused on an existing session or combined with either prompt field.",
             "type": [
               "string",
               "null"

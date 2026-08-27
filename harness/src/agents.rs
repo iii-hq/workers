@@ -13,7 +13,7 @@ use iii_sdk::protocol::TriggerRequest;
 use crate::config::WorkerConfig;
 use crate::deps::Deps;
 use crate::error::HarnessError;
-use crate::functions::spawn::SubagentIcon;
+use crate::functions::spawn::{SubagentColor, SubagentIcon};
 use crate::types::turn::AgentIdentity;
 
 const AGENTS_GET_ID: &str = "directory::agents::get";
@@ -27,11 +27,11 @@ struct AgentGetWire {
     #[serde(default)]
     skills: Vec<String>,
     #[serde(default)]
-    leaf: bool,
-    #[serde(default)]
     model: Option<String>,
     #[serde(default)]
     icon: Option<String>,
+    #[serde(default)]
+    color: Option<String>,
 }
 
 /// A profile resolved and normalized for turn seeding.
@@ -50,8 +50,9 @@ pub struct ResolvedAgent {
     /// Harness display icon; `None` when the profile has none (the token set
     /// is shared, so a directory-validated icon always parses).
     pub icon: Option<SubagentIcon>,
-    /// `true` = spawn target only, refused as a session identity.
-    pub leaf: bool,
+    /// Harness display color; `None` when the profile uses the neutral
+    /// default.
+    pub color: Option<SubagentColor>,
 }
 
 /// Fetch and normalize one agent profile. An unknown id maps to
@@ -78,11 +79,11 @@ pub async fn resolve(
     Ok(normalize(id, wire))
 }
 
-/// D410 is the directory's not-found code for agents — the caller named a
+/// D410 is the directory's not-found code for agent profiles — the caller named a
 /// bad id, not a broken dependency.
 fn classify_fetch_error(message: &str) -> HarnessError {
     if message.contains("D410") {
-        HarnessError::InvalidRequest(format!("agent resolution failed: {message}"))
+        HarnessError::InvalidRequest(format!("agent profile resolution failed: {message}"))
     } else {
         HarnessError::Dependency(format!("{AGENTS_GET_ID}: {message}"))
     }
@@ -103,7 +104,9 @@ fn normalize(id: &str, wire: AgentGetWire) -> ResolvedAgent {
         icon: wire.icon.and_then(|t| {
             serde_json::from_value::<SubagentIcon>(serde_json::Value::String(t)).ok()
         }),
-        leaf: wire.leaf,
+        color: wire.color.and_then(|t| {
+            serde_json::from_value::<SubagentColor>(serde_json::Value::String(t)).ok()
+        }),
     }
 }
 
@@ -118,8 +121,8 @@ mod tests {
     #[test]
     fn not_found_maps_to_invalid_request_and_keeps_the_directory_hint() {
         let err = classify_fetch_error(
-            "handler error: D410 not_found: agent \"nope\" does not exist. Did you mean: coder. \
-             Next: call directory::agents::list to browse agent ids.",
+            "handler error: D410 not_found: agent profile \"nope\" does not exist. Did you mean: coder. \
+             Next: call directory::agents::list to browse agent profile ids.",
         );
         assert_eq!(err.code(), "harness/invalid_request");
         assert!(err.to_string().contains("directory::agents::list"));
@@ -137,15 +140,16 @@ mod tests {
                 "name": "Tech Leader",
                 "system_prompt": "Delegate everything.",
                 "skills": [],
-                "leaf": false,
                 "model": "codex/gpt-5.4",
                 "icon": "agent",
+                "color": "purple",
             })),
         );
         assert_eq!(agent.prompt, "You are Tech Leader.\n\nDelegate everything.");
         assert_eq!(agent.skills, None, "empty filter means every skill");
         assert_eq!(agent.identity.id, "tech-leader");
         assert_eq!(agent.icon, Some(SubagentIcon::Agent));
+        assert_eq!(agent.color, Some(SubagentColor::Purple));
         assert_eq!(agent.model.as_deref(), Some("codex/gpt-5.4"));
     }
 
@@ -157,8 +161,8 @@ mod tests {
                 "name": "  ",
                 "system_prompt": "Write code.",
                 "skills": ["review"],
-                "leaf": true,
                 "icon": "magnifier",
+                "color": "ultraviolet",
             })),
         );
         assert_eq!(
@@ -168,6 +172,6 @@ mod tests {
         assert_eq!(agent.prompt, "You are coder.\n\nWrite code.");
         assert_eq!(agent.skills.as_deref(), Some(&["review".to_string()][..]));
         assert_eq!(agent.icon, None, "unknown token degrades, never errors");
-        assert!(agent.leaf);
+        assert_eq!(agent.color, None, "unknown color degrades, never errors");
     }
 }

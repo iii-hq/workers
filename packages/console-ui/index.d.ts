@@ -1126,6 +1126,8 @@ export interface SegmentedControlProps<T extends string = string> {
   itemClassName?: string
   activeItemClassName?: string
   variant?: 'tabs' | 'radio'
+  /** Show only the semantic icon and expose each label through Tooltip. */
+  iconOnly?: boolean
   'aria-label'?: string
 }
 export declare const SegmentedControl: <T extends string = string>(
@@ -1358,6 +1360,38 @@ export interface MarkdownPreviewProps {
 /** `Markdown` inside the standard `bg-bg` pane chrome — the preview
     counterpart to `CodeEditor` for markdown-editing UIs. */
 export declare const MarkdownPreview: React.ComponentType<MarkdownPreviewProps>
+
+export type ModelId = string
+export type ThinkingLevel = string
+export interface ReasoningEffortOption {
+  effort: string
+  description?: string
+}
+export interface ModelOption {
+  id: ModelId
+  label: string
+  contextWindow?: number
+  supportsThinking?: boolean
+  supportsVision?: boolean
+  reasoningEfforts?: ReasoningEffortOption[]
+}
+export interface ModelPickerProps {
+  value: ModelId | null
+  options: ModelOption[]
+  openRequest?: number
+  thinkingLevel: ThinkingLevel
+  onChange: (next: ModelId) => void
+  onThinkingLevelChange: (next: ThinkingLevel) => void
+  disabled?: boolean
+  loading?: boolean
+  showRefresh?: boolean
+  placeholder?: string
+  showProviderConfiguration?: boolean
+  showReasoningEffort?: boolean
+  className?: string
+}
+/** The Console's responsive searchable model catalog picker. */
+export declare const ModelPicker: React.ComponentType<ModelPickerProps>
 
 export interface WorkerConfigurationDialogProps {
   /** Which worker's configuration to edit; `null` renders the dialog closed. */

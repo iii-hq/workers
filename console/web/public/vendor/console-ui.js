@@ -50,6 +50,7 @@ export const {
   ListItem,
   Markdown,
   MarkdownPreview,
+  ModelPicker,
   PageBody,
   PageHeader,
   PageMain,

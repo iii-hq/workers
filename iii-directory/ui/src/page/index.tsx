@@ -9,19 +9,13 @@
  * unsaved draft survives switching between them.
  */
 
-import {
-  type Host,
-  PageHeader,
-  type PageRenderProps,
-  PageShell,
-  SegmentedControl,
-} from '@iii-dev/console-ui'
+import { type Host, PageHeader, type PageRenderProps, PageShell, SegmentedControl } from '@iii-dev/console-ui'
 import { useEffect, useRef, useState } from 'react'
 import { formatBytes, formatRelativeTime } from '../lib/format'
 import { MarkdownFileIcon } from '../lib/widgets'
-import { AgentForm } from './agent-fields'
-import { TokenIcon } from './token-icons'
+import { AgentForm, AgentFormSkeleton } from './agent-fields'
 import { type BrowserAdapter, CollectionBrowser } from './browser'
+import { TokenIcon } from './token-icons'
 
 interface SkillRow {
   id: string
@@ -43,6 +37,7 @@ interface AgentRow {
   description: string
   logo: string | null
   icon: string | null
+  color: string | null
   modified_at: string
 }
 
@@ -58,17 +53,13 @@ const skillsAdapter: BrowserAdapter = {
   modelInvocationOption: true,
   // Skill ids are slash-separated lowercase segments (ns/skill/…).
   namePattern: /^[a-z0-9_-]+(\/[a-z0-9_-]+)*$/,
-  nameHint:
-    'enter an id of lowercase slash-separated segments (a–z, 0–9, hyphens or underscores)',
+  nameHint: 'enter an id of lowercase slash-separated segments (a–z, 0–9, hyphens or underscores)',
   onChangeType: 'directory::skills::on-change',
   emptyTitle: 'Select a skill',
   emptyBody:
     'Choose a skill from the sidebar to view and edit its markdown. New skills arrive through the new-skill button, downloads (directory::skills::download), or direct edits to the skills folder.',
   async list(host) {
-    const out = await host.iii.trigger<{ skills: SkillRow[] }>(
-      'directory::skills::list',
-      { include_description: true },
-    )
+    const out = await host.iii.trigger<{ skills: SkillRow[] }>('directory::skills::list', { include_description: true })
     return (out.skills ?? []).map((s) => ({
       key: s.id,
       title: s.title,
@@ -77,29 +68,20 @@ const skillsAdapter: BrowserAdapter = {
     }))
   },
   async load(host, id) {
-    const out = await host.iii.trigger<{ body: string; raw?: string | null }>(
-      'directory::skills::get',
-      {
-        id,
-        raw: true,
-      },
-    )
+    const out = await host.iii.trigger<{ body: string; raw?: string | null }>('directory::skills::get', {
+      id,
+      raw: true,
+    })
     // `raw` is the exact on-disk file; body (frontmatter-stripped) is the
     // fallback against a not-yet-updated worker.
     return out.raw ?? out.body
   },
   async save(host, id, content) {
-    const out = await host.iii.trigger<{ id: string }>(
-      'directory::skills::update',
-      { id, content },
-    )
+    const out = await host.iii.trigger<{ id: string }>('directory::skills::update', { id, content })
     return out.id ?? id
   },
   async create(host, id, content) {
-    const out = await host.iii.trigger<{ id: string }>(
-      'directory::skills::create',
-      { id, content },
-    )
+    const out = await host.iii.trigger<{ id: string }>('directory::skills::create', { id, content })
     return out.id ?? id
   },
   async remove(host, id) {
@@ -119,9 +101,7 @@ export const systemPromptsAdapter: BrowserAdapter = {
   emptyBody:
     'Choose a system prompt from the sidebar to view and edit its markdown. These are what the chat picker offers as an identity prompt — filesystem-backed, so files added to the system-prompts folders appear here automatically.',
   async list(host) {
-    const out = await host.iii.trigger<{ prompts: SystemPromptRow[] }>(
-      'directory::system-prompts::list',
-    )
+    const out = await host.iii.trigger<{ prompts: SystemPromptRow[] }>('directory::system-prompts::list')
     return [
       {
         key: HARNESS_DEFAULT_SYSTEM_PROMPT_KEY,
@@ -140,36 +120,27 @@ export const systemPromptsAdapter: BrowserAdapter = {
   },
   async load(host, name) {
     if (name === HARNESS_DEFAULT_SYSTEM_PROMPT_KEY) {
-      const out = await host.iii.trigger<SystemPromptPreview>(
-        'harness::system-prompt::get',
-        {
-          session_id: `iii-directory:${host.iii.browserId}`,
-          default_only: true,
-        },
-      )
+      const out = await host.iii.trigger<SystemPromptPreview>('harness::system-prompt::get', {
+        session_id: `iii-directory:${host.iii.browserId}`,
+        default_only: true,
+      })
       const builtIn = out.parts.find((part) => part.kind === 'built_in')
       if (!builtIn) throw new Error('Harness default system prompt is unavailable')
       return builtIn.body
     }
-    const out = await host.iii.trigger<{ body: string; raw?: string | null }>(
-      'directory::system-prompts::get',
-      { name, raw: true },
-    )
+    const out = await host.iii.trigger<{ body: string; raw?: string | null }>('directory::system-prompts::get', {
+      name,
+      raw: true,
+    })
     return out.raw ?? out.body
   },
   async save(host, name, content) {
     // The effective name after the write follows a frontmatter rename.
-    const out = await host.iii.trigger<{ name: string }>(
-      'directory::system-prompts::update',
-      { name, content },
-    )
+    const out = await host.iii.trigger<{ name: string }>('directory::system-prompts::update', { name, content })
     return out.name ?? name
   },
   async create(host, name, content) {
-    const out = await host.iii.trigger<{ name: string }>(
-      'directory::system-prompts::create',
-      { name, content },
-    )
+    const out = await host.iii.trigger<{ name: string }>('directory::system-prompts::create', { name, content })
     return out.name ?? name
   },
   async remove(host, name) {
@@ -178,7 +149,7 @@ export const systemPromptsAdapter: BrowserAdapter = {
 }
 
 export const agentsAdapter: BrowserAdapter = {
-  noun: 'agent',
+  noun: 'agent profile',
   crumbRoot: 'agents',
   // The id (file stem) and the display name are different things for an
   // agent: "Release Captain" lives in frontmatter `name`, the file is
@@ -189,22 +160,23 @@ export const agentsAdapter: BrowserAdapter = {
   },
   nameRequired: true,
   newTemplate: '---\nname: \ndescription: ""\n---\n\n',
-  extraManagedKeys: ['logo', 'skills', 'leaf', 'model', 'icon'],
+  newTemplateStartsClean: true,
+  extraManagedKeys: ['logo', 'skills', 'model', 'icon', 'color'],
   customForm: (ctx) => <AgentForm {...ctx} />,
-  sourceLabel: 'Instructions · system prompt',
+  customLoading: () => <AgentFormSkeleton />,
+  customFormOwnsContent: true,
+  customFormOwnsWorkspaceHeader: true,
+  prominentListItems: true,
   onChangeType: 'directory::agents::on-change',
-  emptyTitle: 'Select an agent',
-  emptyBody:
-    'Choose an agent from the sidebar to view and edit its profile. The content below the fields is the system prompt the session runs as; name, logo and skill selection live in the fields above it.',
+  emptyTitle: 'Select an agent profile',
+  emptyBody: 'Choose an agent profile from the sidebar to edit its identity, default model, system prompt, and skills.',
   async list(host) {
-    const out = await host.iii.trigger<{ agents: AgentRow[] }>(
-      'directory::agents::list',
-    )
+    const out = await host.iii.trigger<{ agents: AgentRow[] }>('directory::agents::list')
     return (out.agents ?? []).map((a) => ({
       key: a.id,
       // The row glyph is the SAME token glyph the avatar picker and the
       // console session tree render — one identity, one pictogram.
-      icon: a.icon ? <TokenIcon token={a.icon} size={14} /> : undefined,
+      icon: <TokenIcon token={a.icon || 'agent'} size={20} />,
       title: a.name,
       description: a.description,
       fine: formatRelativeTime(a.modified_at),
@@ -218,17 +190,11 @@ export const agentsAdapter: BrowserAdapter = {
     return out.raw ?? out.system_prompt
   },
   async save(host, id, content) {
-    const out = await host.iii.trigger<{ id: string }>(
-      'directory::agents::update',
-      { id, content },
-    )
+    const out = await host.iii.trigger<{ id: string }>('directory::agents::update', { id, content })
     return out.id ?? id
   },
   async create(host, id, content) {
-    const out = await host.iii.trigger<{ id: string }>(
-      'directory::agents::create',
-      { id, content },
-    )
+    const out = await host.iii.trigger<{ id: string }>('directory::agents::create', { id, content })
     return out.id ?? id
   },
   async remove(host, id) {
@@ -241,7 +207,7 @@ type Collection = 'skills' | 'system-prompts' | 'agents'
 const COLLECTIONS: { value: Collection; label: string }[] = [
   { value: 'skills', label: 'Skills' },
   { value: 'system-prompts', label: 'System Prompts' },
-  { value: 'agents', label: 'Agents' },
+  { value: 'agents', label: 'Agent Profiles' },
 ]
 
 const ADAPTERS: Record<Collection, BrowserAdapter> = {
@@ -299,8 +265,9 @@ export function DirectoryPage({
       value={collection}
       onChange={setCollection}
       options={COLLECTIONS}
+      iconOnly
       className="dir-ui-collection-tabs"
-      aria-label="Browse skills, system prompts or agents"
+      aria-label="Browse skills, system prompts or agent profiles"
     />
   )
 
@@ -309,15 +276,11 @@ export function DirectoryPage({
       <PageHeader
         icon={<MarkdownFileIcon />}
         title="Directory"
-        description="Filesystem-backed skills, system prompts and agents"
+        description="Filesystem-backed skills, system prompts and agent profiles"
         onClose={onRequestClose}
       />
       {COLLECTIONS.map((c) => (
-        <div
-          key={c.value}
-          className="dir-ui-shell-body"
-          hidden={collection !== c.value}
-        >
+        <div key={c.value} className="dir-ui-shell-body" hidden={collection !== c.value}>
           <CollectionBrowser
             host={host}
             adapter={ADAPTERS[c.value]}
@@ -326,11 +289,7 @@ export function DirectoryPage({
             storageKey={`iii-directory-ui:${tabId || 'page'}:${c.value}`}
             commands={commands}
             active={collection === c.value}
-            pendingOpen={
-              pendingOpen && pendingOpen.collection === c.value
-                ? pendingOpen
-                : null
-            }
+            pendingOpen={pendingOpen && pendingOpen.collection === c.value ? pendingOpen : null}
           />
         </div>
       ))}

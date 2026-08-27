@@ -62,7 +62,7 @@ never appear in `index` and `update`/`delete` refuse them.
 - Do not put a skill id (`/`) in `agent_trigger`'s `function:` field, and do not pass a function id (`::`) to `directory::skills::get`.
 - System prompt files without a `description:` in frontmatter are silently skipped by `directory::system-prompts::list`.
 - Skills and system prompts share `skills_folder`; a `system-prompts/` path component selects the prompt family, other `prompts/` paths are ignored, and `agents/` is reserved. Agent profiles are direct `<agents_folder>/<id>.md` files.
-- An agent's `skills:` list is curation, not enforcement: it narrows what a skill index shows, grants no access, and unknown ids are reported by `get` as `unknown_skills` warnings rather than errors. `agents_folder` profiles are unrelated to the read-only `agents_skills_folder` (`~/.agents/skills`), which holds external tools' skills.
+- An agent profile's `skills:` list is curation, not enforcement: it narrows what a skill index shows, grants no access, and unknown ids are reported by `get` as `unknown_skills` warnings rather than errors. `agents_folder` profiles are unrelated to the read-only `agents_skills_folder` (`~/.agents/skills`), which holds external tools' skills.
 - Registry answers (`registry::workers::list` / `info`) are cached ~60 s per unique input by default (`registry_cache_ttl_ms`) — change a parameter to refresh.
 
 ## Functions
@@ -83,15 +83,15 @@ never appear in `index` and `update`/`delete` refuse them.
 - `directory::system-prompts::update` — overwrite one EXISTING system prompt; the frontmatter must keep a non-empty `description` (a declared `name` renames it).
 - `directory::system-prompts::delete` — permanently remove one EXISTING system prompt by name.
 - `directory::agents::list` — list agent profiles (id, display name, description, emoji logo, `skill_count` where null means every skill).
-- `directory::agents::get` — read one agent by id: its system prompt (the file body), skill filter + `unknown_skills`, `leaf`, and `model` (the agent's default model id — use it when spawning/sending as this agent; `null` = caller decides); `raw: true` as above.
-- `directory::agents::create` — create a NEW agent at `<agents_folder>/<id>.md` from full-file content; frontmatter needs a non-empty `name`, `logo` is emoji-only.
-- `directory::agents::update` — overwrite one EXISTING agent (same scanner rules; the id stays the file stem, frontmatter `name` is display-only).
-- `directory::agents::delete` — permanently remove one EXISTING agent by id; running sessions are unaffected.
+- `directory::agents::get` — read one agent profile by id: its system prompt (the file body), skill filter + `unknown_skills`, and `model` (the profile's default model id — use it when spawning/sending with this profile; `null` = caller decides); `raw: true` as above.
+- `directory::agents::create` — create a NEW agent profile at `<agents_folder>/<id>.md` from full-file content; frontmatter needs a non-empty `name`, `logo` is emoji-only.
+- `directory::agents::update` — overwrite one EXISTING agent profile (same scanner rules; the id stays the file stem, frontmatter `name` is display-only).
+- `directory::agents::delete` — permanently remove one EXISTING agent profile by id; running sessions are unaffected.
 - `directory::registry::workers::list` — page through published workers in the public registry (`pagination.next_cursor` feeds the next page's `cursor`).
 - `directory::registry::workers::info` — full registry detail for one worker, including ones not installed: `api_reference` (functions + triggers with schemas) and `skills_tree`.
 - `directory::engine::functions::info` — thin proxy to the engine's `engine::functions::info`; returns request/response schema, metadata, and registered triggers for one function id.
 
-A failed call returns one plain sentence carrying a `Did you mean:` suggestion and a `Next:` function to call (codes `D110`/`D112`/`D210`/`D310`/`D311`, `D410` for a missing agent, `D320` when the registry is unreachable, and on the write paths `D213` for content the next scan would skip, `D214`/`D114`/`D414` for a create whose name/id or target path is already taken, `D115` for a skill id the visibility filter or an agents namespace reserves, and `D116` for a write to a read-only system-installed skill) — follow it instead of retrying the same input. Downloads overwrite file-by-file, so hand-edited extra files survive a re-pull.
+A failed call returns one plain sentence carrying a `Did you mean:` suggestion and a `Next:` function to call (codes `D110`/`D112`/`D210`/`D310`/`D311`, `D410` for a missing agent profile, `D320` when the registry is unreachable, and on the write paths `D213` for content the next scan would skip, `D214`/`D114`/`D414` for a create whose name/id or target path is already taken, `D115` for a skill id the visibility filter or an agents namespace reserves, and `D116` for a write to a read-only system-installed skill) — follow it instead of retrying the same input. Downloads overwrite file-by-file, so hand-edited extra files survive a re-pull.
 
 ## Reactive triggers
 
@@ -110,7 +110,7 @@ Direct `<id>.md` profile edits under `agents_folder` fire
 
 Reach for it when:
 
-- A worker caches the skill, system-prompt, or agent list and must invalidate it on change.
+- A worker caches the skill, system-prompt, or agent-profile list and must invalidate it on change.
 - You want a push the moment new bundles install, instead of polling `directory::skills::list`.
 
 Do not bind when:

@@ -238,9 +238,7 @@ async fn seed_child(
     let session = deps.session().await;
 
     // Resolve the agent profile (if named) before anything else fallible —
-    // an unknown id must not leave a session behind. Leaf profiles are the
-    // POINT here (specialists meant to be spawned), so unlike send there is
-    // no leaf refusal.
+    // an unknown id must not leave a session behind.
     let agent = match req.agent.as_deref() {
         Some(id) => {
             if req
@@ -285,10 +283,11 @@ async fn seed_child(
     // an `agent` profile enriches this same identity with its body.
     let identity = prompt::SUBAGENT;
 
-    let orchestrator = child_orchestrator(
-        req.options.as_ref().and_then(|o| o.orchestrator),
-        agent.as_ref(),
-    );
+    let orchestrator = req
+        .options
+        .as_ref()
+        .and_then(|o| o.orchestrator)
+        .unwrap_or(false);
 
     let functions = child_functions(
         cfg,
@@ -530,20 +529,10 @@ fn caller_holds_child_session_lock(
     parent_record.is_some_and(|parent| parent.session_id == child_session_id)
 }
 
-/// An unset `orchestrator` follows the profile: a non-leaf agent exists to
-/// delegate, so it gets the orchestration surface; a leaf (or no profile)
-/// stays a leaf. An explicit value always wins.
-fn child_orchestrator(
-    explicit: Option<bool>,
-    agent: Option<&crate::agents::ResolvedAgent>,
-) -> bool {
-    explicit.unwrap_or_else(|| agent.is_some_and(|a| !a.leaf))
-}
-
 /// Display defaults from the agent profile: no explicit display → the
-/// profile's name (truncated to the 48-char cap) and icon; an explicit
-/// display keeps its fields and only borrows the profile icon when it names
-/// none. Without a profile the request passes through untouched.
+/// profile's name (truncated to the 48-char cap), icon, and color; an explicit
+/// display keeps its fields and borrows profile appearance where fields are
+/// absent. Without a profile the request passes through untouched.
 fn merged_display(
     display: Option<&SubagentDisplay>,
     agent: Option<&crate::agents::ResolvedAgent>,
@@ -554,12 +543,13 @@ fn merged_display(
     match display {
         Some(d) => Some(SubagentDisplay {
             icon: d.icon.or(agent.icon),
+            color: d.color.or(agent.color),
             ..d.clone()
         }),
         None => Some(SubagentDisplay {
             name: agent.name.chars().take(48).collect(),
             icon: agent.icon,
-            color: None,
+            color: agent.color,
         }),
     }
 }
@@ -1292,11 +1282,7 @@ mod tests {
             .is_some_and(|message| message.contains("8 child sessions created this turn")));
     }
 
-    fn resolved_agent(
-        name: &str,
-        leaf: bool,
-        icon: Option<SubagentIcon>,
-    ) -> crate::agents::ResolvedAgent {
+    fn resolved_agent(name: &str, icon: Option<SubagentIcon>) -> crate::agents::ResolvedAgent {
         crate::agents::ResolvedAgent {
             identity: crate::types::turn::AgentIdentity {
                 id: name.to_lowercase(),
@@ -1306,31 +1292,20 @@ mod tests {
             model: None,
             name: name.to_string(),
             icon,
-            leaf,
+            color: None,
         }
     }
 
     #[test]
-    fn orchestrator_defaults_follow_the_profile() {
-        let lead = resolved_agent("Lead", false, None);
-        let coder = resolved_agent("Coder", true, None);
-        assert!(child_orchestrator(None, Some(&lead)));
-        assert!(!child_orchestrator(None, Some(&coder)));
-        assert!(!child_orchestrator(None, None));
-        // Explicit always wins, both directions.
-        assert!(!child_orchestrator(Some(false), Some(&lead)));
-        assert!(child_orchestrator(Some(true), Some(&coder)));
-    }
-
-    #[test]
     fn display_merges_profile_defaults_under_explicit_fields() {
-        let coder = resolved_agent("Coder", true, Some(SubagentIcon::Code));
+        let mut coder = resolved_agent("Coder", Some(SubagentIcon::Code));
+        coder.color = Some(SubagentColor::Purple);
         // No explicit display → full profile identity.
         let display = merged_display(None, Some(&coder)).unwrap();
         assert_eq!(display.name, "Coder");
         assert_eq!(display.icon, Some(SubagentIcon::Code));
-        assert_eq!(display.color, None);
-        // Explicit display keeps its fields, borrowing only a missing icon.
+        assert_eq!(display.color, Some(SubagentColor::Purple));
+        // Explicit display keeps its fields, borrowing missing profile fields.
         let explicit = SubagentDisplay {
             name: "Fixer".into(),
             icon: None,
@@ -1340,6 +1315,16 @@ mod tests {
         assert_eq!(display.name, "Fixer");
         assert_eq!(display.icon, Some(SubagentIcon::Code));
         assert_eq!(display.color, Some(SubagentColor::Blue));
+        let colorless = SubagentDisplay {
+            color: None,
+            ..explicit.clone()
+        };
+        assert_eq!(
+            merged_display(Some(&colorless), Some(&coder))
+                .unwrap()
+                .color,
+            Some(SubagentColor::Purple)
+        );
         let iconed = SubagentDisplay {
             icon: Some(SubagentIcon::Search),
             ..explicit.clone()
@@ -1352,7 +1337,7 @@ mod tests {
         assert_eq!(merged_display(None, None), None);
         assert_eq!(merged_display(Some(&explicit), None), Some(explicit));
         // Long profile names are truncated to the display cap, not rejected.
-        let long = resolved_agent(&"x".repeat(60), false, None);
+        let long = resolved_agent(&"x".repeat(60), None);
         let display = merged_display(None, Some(&long)).unwrap();
         assert_eq!(display.name.chars().count(), 48);
         assert!(normalize_display(Some(&display)).is_ok());

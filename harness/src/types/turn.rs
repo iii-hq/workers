@@ -88,10 +88,9 @@ pub struct SkillAck {
 /// The agent profile a turn runs as, frozen at resolution time
 /// (`options.agent` on `harness::send`, `agent` on `harness::spawn`). Only
 /// what later turn machinery needs survives here: the id for display and
-/// inheritance. Which agent a spawn may name is the prompt's decision — the
+/// inheritance. Which agent profile a spawn may name is the prompt's decision — the
 /// profile body steers it; nothing gates it. Directory edits after
-/// resolution never reach a live session. (Old records carrying the retired
-/// `delegates_to` key still deserialize; the key is ignored.)
+/// resolution never reach a live session.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AgentIdentity {
     pub id: String,

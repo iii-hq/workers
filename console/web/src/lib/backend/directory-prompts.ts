@@ -116,11 +116,10 @@ export interface AgentEntry {
   description: string
   logo: string | null
   icon: string | null
+  /** Semantic display color; absent on older Directory workers. */
+  color?: string | null
   model: string | null
   skill_count: number | null
-  /** true = a specialist meant to be spawned, not to front a session.
-   * Absent on directory workers that predate the field. */
-  leaf?: boolean
   modified_at: string
 }
 

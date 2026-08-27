@@ -45,8 +45,8 @@ pub struct SendOptions {
     /// enrich system prompt, its skill filter the session's skill selection,
     /// its `model` the fallback when this send names none, and its identity
     /// sticks like the system prompt (later sends inherit; naming an explicit
-    /// prompt field sheds it). Refused on an existing session, combined with
-    /// either prompt field, or naming a `leaf` profile (a spawn target).
+    /// prompt field sheds it). Refused on an existing session or combined
+    /// with either prompt field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -941,8 +941,7 @@ fn inherit_prior_system_prompt(options: &mut TurnOptions, prev: &TurnOptions) {
 }
 
 /// Resolve `options.agent` for this send, or `None` when absent. Validation
-/// happens before any session/budget side effects; the fetched profile is
-/// checked by [`validate_resolved_agent`].
+/// happens before any session/budget side effects.
 async fn resolve_send_agent(
     deps: &Deps,
     cfg: &WorkerConfig,
@@ -952,9 +951,7 @@ async fn resolve_send_agent(
     let Some(id) = agent_send_id(req.options.as_ref(), prev.is_some())? else {
         return Ok(None);
     };
-    let agent = crate::agents::resolve(deps, cfg, id).await?;
-    validate_resolved_agent(&agent)?;
-    Ok(Some(agent))
+    crate::agents::resolve(deps, cfg, id).await.map(Some)
 }
 
 /// The pre-fetch half of agent-send validation: which id (if any) this send
@@ -969,30 +966,18 @@ fn agent_send_id(
     if has_prev {
         return Err(HarnessError::InvalidRequest(
             "`options.agent` applies only when starting a session; later sends inherit the \
-             frozen identity — start a new session to run as a different agent"
+             frozen identity — start a new session to use a different agent profile"
                 .into(),
         ));
     }
     if !prompt_fields_omitted(options) {
         return Err(HarnessError::InvalidRequest(
-            "`options.agent` supplies the system prompt; drop `system_prompt` / \
+            "`options.agent` selects an agent profile that supplies the system prompt; drop `system_prompt` / \
              `system_prompt_strategy` or drop `agent`"
                 .into(),
         ));
     }
     Ok(Some(id))
-}
-
-/// The IO-free half of send-side agent validation.
-fn validate_resolved_agent(agent: &crate::agents::ResolvedAgent) -> Result<(), HarnessError> {
-    if agent.leaf {
-        return Err(HarnessError::InvalidRequest(format!(
-            "agent `{}` is `leaf: true` — a spawn target, not a session identity; pass it to \
-             `harness::spawn` as `agent` instead",
-            agent.identity.id
-        )));
-    }
-    Ok(())
 }
 
 /// A send whose metadata does not name the `fs_scope` key inherits the prior
@@ -2136,7 +2121,7 @@ mod tests {
         );
     }
 
-    fn resolved_agent(leaf: bool, model: Option<&str>) -> crate::agents::ResolvedAgent {
+    fn resolved_agent(model: Option<&str>) -> crate::agents::ResolvedAgent {
         crate::agents::ResolvedAgent {
             identity: crate::types::turn::AgentIdentity {
                 id: "tech-leader".into(),
@@ -2146,7 +2131,7 @@ mod tests {
             model: model.map(str::to_string),
             name: "Tech Leader".into(),
             icon: None,
-            leaf,
+            color: None,
         }
     }
 
@@ -2208,20 +2193,13 @@ mod tests {
     }
 
     #[test]
-    fn leaf_agents_are_refused_as_session_identities() {
-        let err = validate_resolved_agent(&resolved_agent(true, None)).unwrap_err();
-        assert!(err.to_string().contains("harness::spawn"), "{err}");
-        assert!(validate_resolved_agent(&resolved_agent(false, None)).is_ok());
-    }
-
-    #[test]
     fn build_options_applies_agent_prompt_and_identity() {
         let cfg = WorkerConfig::default();
         let req = agent_send_request(SendOptions {
             agent: Some("tech-leader".into()),
             ..Default::default()
         });
-        let agent = resolved_agent(false, None);
+        let agent = resolved_agent(None);
         let opts = build_options(&cfg, &req, "m".into(), None, Some(&agent));
         let prompt = opts.system_prompt.expect("agent prompt");
         assert!(
@@ -2235,7 +2213,7 @@ mod tests {
     #[test]
     fn agent_send_defaults_functions_to_the_configured_baseline() {
         let cfg = WorkerConfig::default();
-        let agent = resolved_agent(false, None);
+        let agent = resolved_agent(None);
         let req = agent_send_request(SendOptions {
             agent: Some("tech-leader".into()),
             ..Default::default()
@@ -2299,7 +2277,7 @@ mod tests {
     #[test]
     fn agent_identity_inherits_with_the_prompt_and_sheds_with_it() {
         let cfg = WorkerConfig::default();
-        let agent = resolved_agent(false, None);
+        let agent = resolved_agent(None);
         let req = agent_send_request(SendOptions {
             agent: Some("tech-leader".into()),
             ..Default::default()

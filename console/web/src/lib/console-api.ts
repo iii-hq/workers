@@ -12,6 +12,7 @@
 
 import tokenNames from '@iii-dev/console-ui/token-names'
 import sharedUiClasses from '@iii-dev/console-ui/ui-classes'
+import { ModelPicker } from '@/components/chat/ModelPicker'
 import { AnnotationLayer, AnnotationList } from '@/components/ui/Annotations'
 import { AnsiText } from '@/components/ui/AnsiText'
 import { Badge } from '@/components/ui/Badge'
@@ -179,6 +180,7 @@ export const components: ConsoleApi['components'] = {
   JsonHighlight,
   Markdown,
   MarkdownPreview,
+  ModelPicker,
   // The one page-level composite in the kit: worker pages offer "configure"
   // in place instead of navigating to the workers tab and stranding the
   // operator there when the editor closes.

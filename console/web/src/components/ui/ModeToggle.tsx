@@ -3,6 +3,7 @@ import type * as React from 'react'
 import { useRef } from 'react'
 import { cn } from '@/lib/utils'
 import { TabIconSlot } from './TabIcon'
+import { Tooltip, TooltipContent, TooltipTrigger } from './Tooltip'
 
 export interface SegmentedControlOption<T extends string> {
   value: T
@@ -29,6 +30,8 @@ export interface SegmentedControlProps<T extends string> {
   itemClassName?: string
   activeItemClassName?: string
   variant?: SegmentedControlVariant
+  /** Show only the semantic icon and expose each label through Tooltip. */
+  iconOnly?: boolean
   /** Accessible name for the group. Required for `variant="radio"`. */
   'aria-label'?: string
 }
@@ -41,10 +44,12 @@ export function SegmentedControl<T extends string>({
   itemClassName,
   activeItemClassName,
   variant = 'tabs',
+  iconOnly = false,
   'aria-label': ariaLabel,
 }: SegmentedControlProps<T>) {
   const groupRole = variant === 'radio' ? 'radiogroup' : 'tablist'
   const itemRole = variant === 'radio' ? 'radio' : 'tab'
+  const renderIconOnly = iconOnly && variant === 'tabs'
   const buttonRefs = useRef<(HTMLButtonElement | null)[]>([])
 
   // Both tabs and radios are one keyboard stop. Arrow keys move and commit;
@@ -82,6 +87,7 @@ export function SegmentedControl<T extends string>({
       role={groupRole}
       aria-label={ariaLabel}
       data-variant={variant}
+      data-icon-only={renderIconOnly || undefined}
       className={cn(
         variant === 'tabs' ? uiClasses.tabsList : uiClasses.segmentedControl,
         className,
@@ -93,19 +99,22 @@ export function SegmentedControl<T extends string>({
           variant === 'radio'
             ? { 'aria-checked': active }
             : { 'aria-selected': active }
-        return (
+        const accessibleLabel =
+          opt.title ?? (typeof opt.label === 'string' ? opt.label : opt.value)
+        const button = (
           <button
             key={opt.value}
             type="button"
             role={itemRole}
             {...ariaState}
+            aria-label={renderIconOnly ? accessibleLabel : undefined}
             ref={(el) => {
               buttonRefs.current[idx] = el
             }}
             tabIndex={active ? 0 : -1}
             onClick={() => onChange(opt.value)}
             onKeyDown={(e) => handleKeyDown(e, idx)}
-            title={opt.title}
+            title={renderIconOnly ? undefined : opt.title}
             data-selected={active || undefined}
             className={cn(
               variant === 'tabs' ? uiClasses.tab : uiClasses.segmentedItem,
@@ -116,8 +125,15 @@ export function SegmentedControl<T extends string>({
             {variant === 'tabs' ? (
               <TabIconSlot icon={opt.icon} value={opt.value} />
             ) : null}
-            <span>{opt.label}</span>
+            {renderIconOnly ? null : <span>{opt.label}</span>}
           </button>
+        )
+        if (!renderIconOnly) return button
+        return (
+          <Tooltip key={opt.value}>
+            <TooltipTrigger asChild>{button}</TooltipTrigger>
+            <TooltipContent>{opt.label}</TooltipContent>
+          </Tooltip>
         )
       })}
     </div>

@@ -1,13 +1,13 @@
 //! Filesystem-backed agent profiles (`directory::agents::*`).
 //!
-//! An agent is a reusable identity a session runs as: a system prompt
+//! An agent profile is a reusable identity selected for a session: a system prompt
 //! (the file body), a display name, a description, an emoji logo, and a
 //! skill filter — one direct `<agents_folder>/<id>.md` file with required
 //! YAML frontmatter (see `docs/architecture/agent-profile-storage.md`).
 //! Five filesystem-backed verbs:
 //!
 //!   * `directory::agents::list`   — metadata-only listing.
-//!   * `directory::agents::get`    — one agent's system prompt + metadata,
+//!   * `directory::agents::get`    — one agent profile's system prompt + metadata,
 //!     plus `unknown_skills` (ids that resolve to nothing — warnings,
 //!     never load failures).
 //!   * `directory::agents::create` / `update` / `delete` — full-file
@@ -38,12 +38,15 @@ use crate::trigger_types;
 /// Recovery pointer attached to a `directory::agents::get` / write miss.
 const AGENT_NOT_FOUND_NEXT: &[NextAction] = &[NextAction::new(
     "directory::agents::list",
-    "browse agent ids",
+    "browse agent profile ids",
 )];
 
 const AGENT_CREATE_CONFLICT_NEXT: &[NextAction] = &[
-    NextAction::new("directory::agents::update", "edit the existing agent"),
-    NextAction::new("directory::agents::list", "browse agent ids"),
+    NextAction::new(
+        "directory::agents::update",
+        "edit the existing agent profile",
+    ),
+    NextAction::new("directory::agents::list", "browse agent profile ids"),
 ];
 
 // ---------- wire shapes ----------
@@ -53,26 +56,26 @@ struct ListAgentsInput {}
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct AgentEntry {
-    /// Flat agent id (the file stem) — what `harness::send { options:
+    /// Flat agent profile id (the file stem) — what `harness::send { options:
     /// { agent } }` will take.
     pub id: String,
     /// Display name from frontmatter (`name:`).
     pub name: String,
     pub description: String,
-    /// Emoji logo, `null` when the agent has none.
+    /// Emoji logo, `null` when the agent profile has none.
     pub logo: Option<String>,
-    /// Length of the agent's skill filter; `null` = no filter (every
+    /// Length of the agent profile's skill filter; `null` = no filter (every
     /// skill).
     pub skill_count: Option<usize>,
-    /// Default model id for sessions running as this agent; `null` =
+    /// Default model id for sessions using this profile; `null` =
     /// the send decides.
     pub model: Option<String>,
     /// Harness subagent icon token for spawn display identities;
     /// `null` = caller picks.
     pub icon: Option<String>,
-    /// `true` = this agent may not delegate — a specialist meant to be
-    /// spawned by an orchestrator, not to front a session.
-    pub leaf: bool,
+    /// Harness subagent color token for display identities; `null` =
+    /// neutral.
+    pub color: Option<String>,
     /// File mtime as RFC 3339.
     pub modified_at: String,
 }
@@ -103,17 +106,18 @@ pub struct AgentGetOutput {
     /// The frontmatter skill filter. Empty = every skill.
     pub skills: Vec<String>,
     /// Filter entries that resolve to no currently visible skill.
-    /// Warnings — the agent still loads and runs.
+    /// Warnings — the agent profile still loads.
     pub unknown_skills: Vec<String>,
-    /// `true` = this agent may not delegate at all.
-    pub leaf: bool,
-    /// Default model id for sessions running as this agent; `null` =
+    /// Default model id for sessions using this profile; `null` =
     /// the send decides. Served verbatim — resolution against the live
     /// model catalog happens where it is used.
     pub model: Option<String>,
     /// Harness subagent icon token (closed set, validated at write
     /// time); `null` = caller picks.
     pub icon: Option<String>,
+    /// Harness subagent color token (closed set, validated at write
+    /// time); `null` = neutral.
+    pub color: Option<String>,
     /// FULL on-disk file content. Present only when the request set
     /// `raw: true`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -124,9 +128,9 @@ pub struct AgentGetOutput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AgentCreateInput {
-    /// New agent id — becomes the file stem
+    /// New agent profile id — becomes the file stem
     /// (`<agents_folder>/<id>.md`). Lowercase ASCII, digits,
-    /// `-` and `_` only. Must not collide with an existing agent or an
+    /// `-` and `_` only. Must not collide with an existing agent profile or an
     /// on-disk file at the target path.
     pub id: String,
     /// FULL file content, frontmatter block included. Frontmatter must
@@ -137,7 +141,7 @@ pub struct AgentCreateInput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AgentUpdateInput {
-    /// Existing agent id, as returned by `directory::agents::list`.
+    /// Existing agent profile id, as returned by `directory::agents::list`.
     pub id: String,
     /// FULL new file content, frontmatter block included — the string
     /// `directory::agents::get { raw: true }` returns, edited.
@@ -159,7 +163,7 @@ pub struct AgentWriteOutput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AgentDeleteInput {
-    /// Existing agent id, as returned by `directory::agents::list`.
+    /// Existing agent profile id, as returned by `directory::agents::list`.
     pub id: String,
 }
 
@@ -193,9 +197,10 @@ fn register_list(iii: &Arc<IIIClient>, cfg: &SharedConfig) {
         })
         .description(
             "List filesystem-backed agent profiles (id, display name, description, emoji \
-             logo, skill_count, modified_at) from the configured agents folder. An agent \
-             is a reusable session identity: its file body is the \
-             system prompt. skill_count null = the agent uses every skill.",
+             logo, icon, color, model, skill_count, modified_at) from the configured \
+             agents folder. An agent profile is a reusable session identity: its file body \
+             is the system prompt. skill_count null = sessions using the profile can use \
+             every skill.",
         ),
     );
 }
@@ -219,7 +224,7 @@ fn register_get(iii: &Arc<IIIClient>, cfg: &SharedConfig, cache: &Arc<Registered
             "Fetch one agent profile by id. Returns the system prompt (the file body, \
              frontmatter stripped), display name, description, emoji logo, the skill \
              filter plus unknown_skills (filter entries matching no visible skill — \
-             warnings, the agent still runs), leaf, \
+             warnings, the profile still loads), \
              and modified_at. Pass raw: true to also get the exact on-disk file for \
              editing with directory::agents::update.",
         ),
@@ -251,7 +256,7 @@ fn register_create(iii: &Arc<IIIClient>, cfg: &SharedConfig, subs: &trigger_type
              or a target path that already exists on disk. The write is atomic and \
              fans out directory::agents::on-change with { op: \"create\" }.",
         )
-        .metadata(json!({"tool": {"label": "Create agent"}})),
+        .metadata(json!({"tool": {"label": "Create agent profile"}})),
     );
 }
 
@@ -276,11 +281,11 @@ fn register_update(iii: &Arc<IIIClient>, cfg: &SharedConfig, subs: &trigger_type
             "Overwrite one EXISTING agent profile with new full-file markdown content — \
              the same rules the scanner enforces (required frontmatter with a non-empty \
              `name`, emoji-only `logo`, non-empty body), so an update can never produce \
-             a file the next directory::agents::list would skip. The agent id stays the \
+             a file the next directory::agents::list would skip. The agent profile id stays the \
              file stem; frontmatter `name` is only the display name. The write is atomic \
              and fans out directory::agents::on-change with { op: \"update\" }.",
         )
-        .metadata(json!({"tool": {"label": "Update agent"}})),
+        .metadata(json!({"tool": {"label": "Update agent profile"}})),
     );
 }
 
@@ -303,12 +308,12 @@ fn register_delete(iii: &Arc<IIIClient>, cfg: &SharedConfig, subs: &trigger_type
         })
         .description(
             "Permanently delete one EXISTING agent profile by id. Resolves against the \
-             same merged scan as directory::agents::list, removes only that agent's \
+             same merged scan as directory::agents::list, removes only that profile's \
              markdown file, and fans out directory::agents::on-change with \
-             { op: \"delete\" }. Sessions already running as this agent are not \
+             { op: \"delete\" }. Sessions already using this profile are not \
              affected; the id just stops resolving for new sends.",
         )
-        .metadata(json!({"tool": {"label": "Delete agent"}})),
+        .metadata(json!({"tool": {"label": "Delete agent profile"}})),
     );
 }
 
@@ -332,7 +337,7 @@ pub fn list_agents(cfg: &SkillsConfig) -> ListAgentsOutput {
             skill_count: (!a.skills.is_empty()).then_some(a.skills.len()),
             model: a.model,
             icon: a.icon,
-            leaf: a.leaf,
+            color: a.color,
             id: a.name,
             name: a.display_name,
             description: a.description,
@@ -378,9 +383,9 @@ pub fn get_agent(
         system_prompt: body,
         skills: agent.skills,
         unknown_skills,
-        leaf: agent.leaf,
         model: agent.model,
         icon: agent.icon,
+        color: agent.color,
         raw,
     })
 }
@@ -404,7 +409,7 @@ pub fn create_agent(
         };
         return Err(invalid_input_message(
             "D414",
-            &format!("agent {:?} already exists{origin}.", req.id),
+            &format!("agent profile {:?} already exists{origin}.", req.id),
             AGENT_CREATE_CONFLICT_NEXT,
         ));
     }
@@ -495,7 +500,13 @@ fn agent_not_found(agents: &[FsAgent], missed: &str) -> String {
         .collect();
     scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
     let candidates: Vec<String> = scored.into_iter().take(3).map(|(_, n)| n.clone()).collect();
-    not_found_message("D410", "agent", missed, &candidates, AGENT_NOT_FOUND_NEXT)
+    not_found_message(
+        "D410",
+        "agent profile",
+        missed,
+        &candidates,
+        AGENT_NOT_FOUND_NEXT,
+    )
 }
 
 fn write_output(
@@ -532,7 +543,7 @@ mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
 
-    const CAPTAIN: &str = "---\nname: Release Captain\ndescription: Cuts releases.\nlogo: \"🚢\"\nskills:\n  - iii-sandbox\n  - agent-memory/observe\nmodel: codex/gpt-5.4-mini\nicon: search\n---\nYou are the release captain.\n";
+    const CAPTAIN: &str = "---\nname: Release Captain\ndescription: Cuts releases.\nlogo: \"🚢\"\nskills:\n  - iii-sandbox\n  - agent-memory/observe\nmodel: codex/gpt-5.4-mini\nicon: search\ncolor: purple\n---\nYou are the release captain.\n";
 
     fn write_fixture(dir: &Path, rel: &str, contents: &str) {
         let path = dir.join(rel);
@@ -580,7 +591,7 @@ mod tests {
         assert_eq!(row.skill_count, Some(2));
         assert_eq!(row.model.as_deref(), Some("codex/gpt-5.4-mini"));
         assert_eq!(row.icon.as_deref(), Some("search"));
-        assert!(!row.leaf);
+        assert_eq!(row.color.as_deref(), Some("purple"));
 
         // `iii-sandbox` is known via the `<ns>/index` alias; the other id
         // matches nothing.
@@ -596,9 +607,9 @@ mod tests {
         .unwrap();
         assert_eq!(got.system_prompt.trim(), "You are the release captain.");
         assert_eq!(got.unknown_skills, vec!["agent-memory/observe".to_string()]);
-        assert!(!got.leaf);
         assert_eq!(got.model.as_deref(), Some("codex/gpt-5.4-mini"));
         assert_eq!(got.icon.as_deref(), Some("search"));
+        assert_eq!(got.color.as_deref(), Some("purple"));
         assert_eq!(got.raw.as_deref(), Some(CAPTAIN));
     }
 
@@ -639,7 +650,10 @@ mod tests {
             &[],
         )
         .unwrap_err();
-        assert!(err.starts_with("D410 not_found: agent"), "got: {err}");
+        assert!(
+            err.starts_with("D410 not_found: agent profile"),
+            "got: {err}"
+        );
         assert!(err.contains("real"), "candidate missing: {err}");
         assert!(err.contains("directory::agents::list"), "got: {err}");
     }
@@ -718,7 +732,10 @@ mod tests {
             },
         )
         .unwrap_err();
-        assert!(err.starts_with("D410 not_found: agent"), "got: {err}");
+        assert!(
+            err.starts_with("D410 not_found: agent profile"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -732,6 +749,10 @@ mod tests {
             (
                 "---\nname: X\nicon: rocket\n---\nbody\n",
                 "`icon` must be one of",
+            ),
+            (
+                "---\nname: X\ncolor: ultraviolet\n---\nbody\n",
+                "`color` must be one of",
             ),
             ("---\nname: X\ndescription: y\n---\n", "non-empty"),
         ] {

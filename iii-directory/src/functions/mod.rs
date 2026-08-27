@@ -149,7 +149,7 @@ pub fn log_fs_health(cfg: &SkillsConfig) {
         let kind = match s.kind {
             SourceKind::Skill => "skill",
             SourceKind::SystemPrompt => "system prompt",
-            SourceKind::Agent => "agent",
+            SourceKind::Agent => "agent profile",
         };
         tracing::warn!(
             kind,

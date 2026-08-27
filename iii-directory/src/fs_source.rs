@@ -436,8 +436,8 @@ pub fn scan_system_prompts(skills_folder: &Path) -> (Vec<FsPrompt>, Vec<SkipReas
 // ───────────────────────── agents family ─────────────────────────────
 
 /// One filesystem-backed agent profile entry. Everything a `list` row
-/// or a delegation catalog needs is parsed at scan time; only the body
-/// (the system prompt) is re-read on `get`.
+/// needs is parsed at scan time; only the body (the system prompt) is
+/// re-read on `get`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FsAgent {
     /// Flat id: the file stem, validated like a prompt name.
@@ -449,8 +449,6 @@ pub struct FsAgent {
     pub logo: Option<String>,
     /// Skill-id filter. Empty = every skill.
     pub skills: Vec<String>,
-    /// `true` = this agent may not delegate at all.
-    pub leaf: bool,
     /// Default model id for sessions running as this agent (a router
     /// model id, e.g. `codex/gpt-5.4-mini`). `None` = the send decides.
     /// Stored verbatim — whether the id resolves is checked where it is
@@ -460,6 +458,9 @@ pub struct FsAgent {
     /// Harness subagent icon token (one of [`AGENT_ICON_TOKENS`]) for
     /// spawn display identities. `None` = caller picks.
     pub icon: Option<String>,
+    /// Harness subagent color token (one of [`AGENT_COLOR_TOKENS`]) for
+    /// display identities. `None` = neutral.
+    pub color: Option<String>,
     pub abs_path: PathBuf,
 }
 
@@ -474,11 +475,11 @@ pub struct AgentFrontmatter {
     #[serde(default)]
     pub skills: Vec<String>,
     #[serde(default)]
-    pub leaf: bool,
-    #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
     pub icon: Option<String>,
+    #[serde(default)]
+    pub color: Option<String>,
 }
 
 /// The harness `SubagentIcon` closed token set — `harness::spawn`
@@ -486,6 +487,12 @@ pub struct AgentFrontmatter {
 /// than letting a typo fail every future spawn.
 pub const AGENT_ICON_TOKENS: &[&str] = &[
     "agent", "code", "search", "terminal", "database", "test", "review", "docs", "design",
+];
+
+/// The harness `SubagentColor` closed token set. Keeping the directory
+/// validator in lock-step means saved profiles always render in the console.
+pub const AGENT_COLOR_TOKENS: &[&str] = &[
+    "neutral", "blue", "purple", "teal", "green", "amber", "rose",
 ];
 
 /// Max byte length for an emoji logo (a couple of emoji with modifiers).
@@ -519,6 +526,19 @@ pub fn parse_agent_frontmatter(content: &str) -> Result<AgentFrontmatter, String
             return Err(format!(
                 "`icon` must be one of {} (got {icon:?})",
                 AGENT_ICON_TOKENS.join(", ")
+            ));
+        }
+    }
+    if let Some(color) = fm
+        .color
+        .as_deref()
+        .map(str::trim)
+        .filter(|color| !color.is_empty())
+    {
+        if !AGENT_COLOR_TOKENS.contains(&color) {
+            return Err(format!(
+                "`color` must be one of {} (got {color:?})",
+                AGENT_COLOR_TOKENS.join(", ")
             ));
         }
     }
@@ -596,7 +616,7 @@ pub fn scan_agents(root: &Path) -> (Vec<FsAgent>, Vec<SkipReason>) {
             .unwrap_or("")
             .to_string();
         if let Err(e) = validate_name(&name) {
-            skip(format!("invalid agent id {name:?}: {e}"));
+            skip(format!("invalid agent profile id {name:?}: {e}"));
             continue;
         }
         agents.push(FsAgent {
@@ -610,7 +630,6 @@ pub fn scan_agents(root: &Path) -> (Vec<FsAgent>, Vec<SkipReason>) {
                 .to_string(),
             logo: fm.logo.map(|l| l.trim().to_string()),
             skills: fm.skills,
-            leaf: fm.leaf,
             model: fm
                 .model
                 .as_deref()
@@ -622,6 +641,12 @@ pub fn scan_agents(root: &Path) -> (Vec<FsAgent>, Vec<SkipReason>) {
                 .as_deref()
                 .map(str::trim)
                 .filter(|i| !i.is_empty())
+                .map(str::to_string),
+            color: fm
+                .color
+                .as_deref()
+                .map(str::trim)
+                .filter(|color| !color.is_empty())
                 .map(str::to_string),
             abs_path: abs,
         });
@@ -1773,7 +1798,7 @@ mod tests {
         write_fixture(
             tmp.path(),
             "captain.md",
-            "---\nname: Release Captain\ndescription: Cuts releases.\nlogo: \"🚢\"\nskills:\n  - iii-sandbox\nleaf: true\nmodel: codex/gpt-5.4-mini\n---\nYou are the captain.\n",
+            "---\nname: Release Captain\ndescription: Cuts releases.\nlogo: \"🚢\"\nskills:\n  - iii-sandbox\nmodel: codex/gpt-5.4-mini\n---\nYou are the captain.\n",
         );
         let (agents, skipped) = scan_agents(tmp.path());
         assert!(skipped.is_empty(), "unexpected skips: {skipped:?}");
@@ -1784,7 +1809,6 @@ mod tests {
         assert_eq!(a.description, "Cuts releases.");
         assert_eq!(a.logo.as_deref(), Some("🚢"));
         assert_eq!(a.skills, vec!["iii-sandbox".to_string()]);
-        assert!(a.leaf);
         assert_eq!(a.model.as_deref(), Some("codex/gpt-5.4-mini"));
     }
 
@@ -1798,7 +1822,6 @@ mod tests {
         assert_eq!(a.description, "");
         assert!(a.logo.is_none());
         assert!(a.skills.is_empty());
-        assert!(!a.leaf);
         assert!(a.model.is_none());
     }
 
@@ -1830,7 +1853,9 @@ mod tests {
             .any(|r| r.contains("missing YAML frontmatter")));
         assert!(reasons.iter().any(|r| r.contains("non-empty `name`")));
         assert!(reasons.iter().any(|r| r.contains("emoji only")));
-        assert!(reasons.iter().any(|r| r.contains("invalid agent id")));
+        assert!(reasons
+            .iter()
+            .any(|r| r.contains("invalid agent profile id")));
     }
 
     #[test]

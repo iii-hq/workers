@@ -38,13 +38,7 @@ import {
 } from '@iii-dev/console-ui'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import {
-  BackButton,
-  MarkdownFileIcon,
-  PlusIcon,
-  SearchIcon,
-  XIcon,
-} from '../lib/widgets'
+import { BackButton, MarkdownFileIcon, PlusIcon, SearchIcon, XIcon } from '../lib/widgets'
 import { draftAction, parseStoredDraft } from './draft-storage'
 import {
   frontmatterBody,
@@ -94,6 +88,12 @@ export interface FormContext extends ExtraFieldsContext {
   setName: (next: string) => void
   setDescription: (next: string) => void
   creating: boolean
+  dirty: boolean
+  saving: boolean
+  saved: boolean
+  deleting: boolean
+  onSave: () => void
+  onRemove?: () => void
 }
 
 export interface BrowserAdapter {
@@ -125,6 +125,8 @@ export interface BrowserAdapter {
   nameRequired?: boolean
   /** Starter document for a new entry (defaults to name+description). */
   newTemplate?: string
+  /** Treat the starter document as the pristine create-form baseline. */
+  newTemplateStartsClean?: boolean
   /** Extra frontmatter keys managed by `extraFields` — hidden from the
       content editor and restored verbatim on save, like name/description. */
   extraManagedKeys?: readonly string[]
@@ -134,6 +136,15 @@ export interface BrowserAdapter {
       sectioned Identity / Behavior / Execution form). Wins over
       `extraFields`. */
   customForm?: (ctx: FormContext) => ReactNode
+  /** Shape-matched loading state for a custom form. */
+  customLoading?: () => ReactNode
+  /** The custom form edits the markdown body itself, so omit CodeEditor. */
+  customFormOwnsContent?: boolean
+  /** The custom form provides its own identity/actions, so omit the generic
+      title, mode tabs, and save toolbar. */
+  customFormOwnsWorkspaceHeader?: boolean
+  /** Render list entries as identity rows with a larger glyph and title. */
+  prominentListItems?: boolean
   /** Label for the source editor header (default "Content"). */
   sourceLabel?: string
   /** Show the skill's model-invocation control. */
@@ -233,9 +244,7 @@ function errorText(e: unknown): string {
  * gives it. Measures synchronously on mount to avoid a wide-mode flash;
  * zero widths (display:none — the inactive collection) are ignored so a
  * hidden browser keeps its last real layout. */
-function useContainerNarrow(
-  threshold: number,
-): [(node: HTMLDivElement | null) => void, boolean] {
+function useContainerNarrow(threshold: number): [(node: HTMLDivElement | null) => void, boolean] {
   const [narrow, setNarrow] = useState(false)
   const observerRef = useRef<ResizeObserver | null>(null)
   const refCb = useCallback(
@@ -318,16 +327,10 @@ export function CollectionBrowser({
   /* Restore unsaved work from the last unmount (tab switch). A creating
      draft is self-contained; a selected-entry draft still needs the disk
      baseline, loaded by the mount effect below. */
-  const [restored] = useState(() =>
-    parseStoredDraft(readStored(`${storageKey}:draft`)),
-  )
-  const [selected, setSelected] = useState<string | null>(
-    restored && !restored.creating ? restored.key : null,
-  )
+  const [restored] = useState(() => parseStoredDraft(readStored(`${storageKey}:draft`)))
+  const [selected, setSelected] = useState<string | null>(restored && !restored.creating ? restored.key : null)
   const [creating, setCreating] = useState(restored?.creating ?? false)
-  const [loaded, setLoaded] = useState<Loaded | null>(
-    restored?.creating ? { key: '', content: '' } : null,
-  )
+  const [loaded, setLoaded] = useState<Loaded | null>(restored?.creating ? { key: '', content: '' } : null)
   const [draft, setDraft] = useState(restored?.content ?? '')
   const [loadError, setLoadError] = useState<string | null>(null)
 
@@ -365,7 +368,11 @@ export function CollectionBrowser({
   const readOnly = !creating && row?.readOnly === true
   const dirty = !readOnly && loaded !== null && draft !== loaded.content
   // Split needs side-by-side room; narrow containers fall back to edit.
-  const effMode: EditorMode = narrow && mode === 'split' ? 'edit' : mode
+  const effMode: EditorMode = adapter.customFormOwnsWorkspaceHeader
+    ? 'edit'
+    : narrow && mode === 'split'
+      ? 'edit'
+      : mode
 
   const refreshList = useCallback(() => {
     adapter
@@ -413,6 +420,7 @@ export function CollectionBrowser({
   /* One-shot: fetch the disk baseline under a restored selected-entry draft
      so dirty tracking and save() have the real `loaded.content` to diff
      against. The restored draft itself is kept, never overwritten. */
+  // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only restore
   useEffect(() => {
     if (!restored || restored.creating || !restored.key) return
     const key = restored.key
@@ -425,7 +433,6 @@ export function CollectionBrowser({
       .catch((e) => {
         if (selectedRef.current === key) setLoadError(errorText(e))
       })
-    // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only restore
   }, [])
 
   /* Mirror unsaved work to storage on every change, so a tab switch (which
@@ -491,16 +498,19 @@ export function CollectionBrowser({
     open(pendingOpen.key)
   }, [pendingOpen, open])
 
-  /** Blank editor for a new entry. `loaded.content` is empty rather than the
-      template, so the scaffold already counts as unsaved work and ⌘S/save is
-      live immediately. */
+  /** Blank editor for a new entry. Most collections count their scaffold as
+      unsaved work; custom forms can treat it as a pristine visual baseline. */
   const startCreate = useCallback(() => {
     guardDirty(() => {
+      const template = adapter.newTemplate ?? NEW_TEMPLATE
       removeStored(`${storageKey}:draft`)
       setCreating(true)
       setSelected(null)
-      setLoaded({ key: '', content: '' })
-      setDraft(adapter.newTemplate ?? NEW_TEMPLATE)
+      setLoaded({
+        key: '',
+        content: adapter.newTemplateStartsClean ? template : '',
+      })
+      setDraft(template)
       setLoadError(null)
       setSaveError(null)
       setDeleteError(null)
@@ -521,9 +531,7 @@ export function CollectionBrowser({
     adapter
       .load(host, key)
       .then((content) => {
-        setLoaded((prev) =>
-          prev && prev.key === key ? { key, content } : prev,
-        )
+        setLoaded((prev) => (prev && prev.key === key ? { key, content } : prev))
         setDraft((prev) => {
           const current = selectedRef.current
           return current === key ? content : prev
@@ -536,11 +544,7 @@ export function CollectionBrowser({
 
   const save = useCallback(() => {
     if (readOnly || !loaded || saving || deleting || draft === loaded.content) return
-    const name = readFrontmatterField(
-      draft,
-      adapter.nameKeys ?? ['name'],
-      adapter.defaultNameKey,
-    ).value.trim()
+    const name = readFrontmatterField(draft, adapter.nameKeys ?? ['name'], adapter.defaultNameKey).value.trim()
     if (adapter.nameRequired && !name) {
       setSaveError(`enter a display name for this ${adapter.noun}`)
       return
@@ -566,10 +570,7 @@ export function CollectionBrowser({
           ? SLUG_NAME
           : null
       if (pattern && !pattern.test(effectiveName)) {
-        setSaveError(
-          adapter.nameHint ??
-            'enter a name using lowercase letters, numbers, hyphens or underscores',
-        )
+        setSaveError(adapter.nameHint ?? 'enter a name using lowercase letters, numbers, hyphens or underscores')
         return
       }
     }
@@ -594,10 +595,7 @@ export function CollectionBrowser({
           setStaleOnDisk(false)
           setSavedFlash(true)
           window.clearTimeout(flashTimer.current)
-          flashTimer.current = window.setTimeout(
-            () => setSavedFlash(false),
-            2400,
-          )
+          flashTimer.current = window.setTimeout(() => setSavedFlash(false), 2400)
         })
         .catch((e) => {
           if (creatingRef.current) setSaveError(errorText(e))
@@ -630,6 +628,37 @@ export function CollectionBrowser({
       .finally(() => setSaving(false))
   }, [host, adapter, loaded, draft, saving, deleting, creating, readOnly, refreshList])
 
+  const revert = useCallback(() => {
+    setDraft(loaded?.content ?? '')
+    setSaveError(null)
+  }, [loaded])
+
+  const removeNow = useCallback(
+    (key: string) => {
+      if (!adapter.remove) return
+      setDeleting(true)
+      setDeleteError(null)
+      setSaveError(null)
+      adapter
+        .remove(host, key)
+        .then(() => {
+          setRows((current) => current?.filter((row) => row.key !== key) ?? null)
+          refreshList()
+          if (selectedRef.current !== key) return
+          setSelected(null)
+          setLoaded(null)
+          setDraft('')
+          setLoadError(null)
+          setStaleOnDisk(false)
+        })
+        .catch((error) => {
+          if (selectedRef.current === key) setDeleteError(errorText(error))
+        })
+        .finally(() => setDeleting(false))
+    },
+    [host, adapter, refreshList],
+  )
+
   const remove = useCallback(() => {
     if (readOnly || !adapter.remove || !loaded || creating || saving || deleting) return
     const key = loaded.key
@@ -640,30 +669,7 @@ export function CollectionBrowser({
       confirmLabel: 'Delete',
       proceed: () => removeNow(key),
     })
-  }, [adapter, loaded, creating, saving, deleting, readOnly, dirty])
-
-  const removeNow = useCallback((key: string) => {
-    if (!adapter.remove) return
-    setDeleting(true)
-    setDeleteError(null)
-    setSaveError(null)
-    adapter
-      .remove(host, key)
-      .then(() => {
-        setRows((current) => current?.filter((row) => row.key !== key) ?? null)
-        refreshList()
-        if (selectedRef.current !== key) return
-        setSelected(null)
-        setLoaded(null)
-        setDraft('')
-        setLoadError(null)
-        setStaleOnDisk(false)
-      })
-      .catch((error) => {
-        if (selectedRef.current === key) setDeleteError(errorText(error))
-      })
-      .finally(() => setDeleting(false))
-  }, [host, adapter, loaded, creating, saving, deleting, dirty, readOnly, refreshList])
+  }, [adapter, loaded, creating, saving, deleting, readOnly, dirty, removeNow])
 
   const onWorkspaceKeyDown = (e: React.KeyboardEvent) => {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
@@ -737,10 +743,7 @@ export function CollectionBrowser({
     if (rect.width <= 0) return
     setSplit(clampRatio((clientX - rect.left) / rect.width))
   }
-  const persistSplit = useCallback(
-    (value: number) => writeStored(`${storageKey}:split`, String(value)),
-    [storageKey],
-  )
+  const persistSplit = useCallback((value: number) => writeStored(`${storageKey}:split`, String(value)), [storageKey])
   const onDividerPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault()
     e.currentTarget.setPointerCapture(e.pointerId)
@@ -762,8 +765,7 @@ export function CollectionBrowser({
     })
   }
   const onDividerKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    const step =
-      e.key === 'ArrowLeft' ? -0.05 : e.key === 'ArrowRight' ? 0.05 : null
+    const step = e.key === 'ArrowLeft' ? -0.05 : e.key === 'ArrowRight' ? 0.05 : null
     if (step !== null) {
       e.preventDefault()
       setSplit((v) => {
@@ -795,51 +797,24 @@ export function CollectionBrowser({
 
   const docKey = loaded?.key ?? selected
   const docSegments = docKey ? docKey.split('/') : []
-  const docName = creating
-    ? `New ${adapter.noun}`
-    : (docSegments[docSegments.length - 1] ?? '')
+  const docName = creating ? `New ${adapter.noun}` : (docSegments[docSegments.length - 1] ?? '')
 
-  const modeOptions: EditorMode[] = narrow
-    ? ['edit', 'preview']
-    : ['edit', 'split', 'preview']
+  const modeOptions: EditorMode[] = narrow ? ['edit', 'preview'] : ['edit', 'split', 'preview']
 
-  const nameField = readFrontmatterField(
-    draft,
-    adapter.nameKeys ?? ['name'],
-    adapter.defaultNameKey,
-  )
+  const nameField = readFrontmatterField(draft, adapter.nameKeys ?? ['name'], adapter.defaultNameKey)
   const descriptionField = readFrontmatterField(draft, ['description'])
-  const nameValue = nameField.present
-    ? nameField.value
-    : creating
-      ? ''
-      : row?.title || row?.key || ''
-  const descriptionValue = descriptionField.present
-    ? descriptionField.value
-    : creating
-      ? ''
-      : row?.description || ''
-  const modelInvocationField = readFrontmatterField(draft, [
-    'disable-model-invocation',
-  ])
-  const modelInvocationSimple = frontmatterFieldIsSimpleBoolean(
-    draft,
-    'disable-model-invocation',
-  )
-  const modelInvocationDisabled = /:\s*(?:true|True|TRUE)\s*$/.test(
-    modelInvocationField.raw ?? '',
-  )
+  const nameValue = nameField.present ? nameField.value : creating ? '' : row?.title || row?.key || ''
+  const descriptionValue = descriptionField.present ? descriptionField.value : creating ? '' : row?.description || ''
+  const modelInvocationField = readFrontmatterField(draft, ['disable-model-invocation'])
+  const modelInvocationSimple = frontmatterFieldIsSimpleBoolean(draft, 'disable-model-invocation')
+  const modelInvocationDisabled = /:\s*(?:true|True|TRUE)\s*$/.test(modelInvocationField.raw ?? '')
   const managedFields = [
     { ...nameField, value: nameValue, bare: adapter.slugName },
     { ...descriptionField, value: descriptionValue },
-    ...(adapter.modelInvocationOption && modelInvocationSimple
-      ? [{ ...modelInvocationField, bare: true }]
-      : []),
+    ...(adapter.modelInvocationOption && modelInvocationSimple ? [{ ...modelInvocationField, bare: true }] : []),
     // Extra keys an adapter's custom controls own (agents: logo, skills):
     // hidden from the content editor, restored verbatim from `raw` on save.
-    ...(adapter.extraManagedKeys ?? []).map((key) =>
-      readFrontmatterField(draft, [key]),
-    ),
+    ...(adapter.extraManagedKeys ?? []).map((key) => readFrontmatterField(draft, [key])),
   ]
   const editorSource = withoutFrontmatterFields(
     draft,
@@ -855,18 +830,12 @@ export function CollectionBrowser({
   const draftLines = loaded === null ? 0 : draft.split('\n').length
   const draftBytes = loaded === null ? 0 : new Blob([draft]).size
 
-  const saveStatus = saving
-    ? 'Saving…'
-    : savedFlash
-      ? '✓ Saved'
-      : dirty
-        ? 'Unsaved'
-        : ''
+  const saveStatus = saving ? 'Saving…' : savedFlash ? '✓ Saved' : dirty ? 'Unsaved' : ''
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: shortcut relay ('/' jumps to the filter) around real controls
     <div
-      className={`dir-ui-browser${narrow ? ' narrow' : ''}${panelSide === 'right' ? ' right' : ''}`}
+      className={`dir-ui-browser${narrow ? ' narrow' : ''}${panelSide === 'right' ? ' right' : ''}${adapter.prominentListItems ? ' prominent-list' : ''}`}
       ref={rootRef}
       onKeyDown={onRootKeyDown}
     >
@@ -991,11 +960,7 @@ export function CollectionBrowser({
                     <p>
                       No {adapter.noun}s match “{search.trim()}”.
                     </p>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setSearch('')}
-                    >
+                    <Button variant="ghost" size="sm" onClick={() => setSearch('')}>
                       Clear filter
                     </Button>
                   </>
@@ -1011,20 +976,18 @@ export function CollectionBrowser({
                     <li key={r.key}>
                       <button
                         type="button"
-                        className={`dir-ui-nav-row${r.key === selected ? ' active' : ''}`}
+                        className={`dir-ui-nav-row${r.icon ? ' with-icon' : ''}${r.key === selected ? ' active' : ''}`}
                         aria-current={r.key === selected ? 'true' : undefined}
                         onClick={() => open(r.key)}
                       >
-                        <span className={`name${isTitled ? '' : ' mono'}`}>
-                          {r.icon ? (
-                            <span className="dir-ui-nav-ico">{r.icon}</span>
-                          ) : null}
-                          {isTitled ? r.title : r.key}
-                        </span>
-                        {isTitled ? <span className="id">{r.key}</span> : null}
-                        {r.description ? (
-                          <span className="desc">{r.description}</span>
+                        {r.icon ? (
+                          <span className="dir-ui-nav-ico" aria-hidden>
+                            {r.icon}
+                          </span>
                         ) : null}
+                        <span className={`name${isTitled ? '' : ' mono'}`}>{isTitled ? r.title : r.key}</span>
+                        {isTitled || adapter.prominentListItems ? <span className="id">{r.key}</span> : null}
+                        {r.description ? <span className="desc">{r.description}</span> : null}
                         <span className="fine">{r.fine}</span>
                       </button>
                     </li>
@@ -1037,11 +1000,7 @@ export function CollectionBrowser({
       ) : null}
 
       {showDoc ? (
-        <section
-          className="dir-ui-doc"
-          onKeyDown={onWorkspaceKeyDown}
-          aria-label={`${adapter.noun} workspace`}
-        >
+        <section className="dir-ui-doc" onKeyDown={onWorkspaceKeyDown} aria-label={`${adapter.noun} workspace`}>
           {selected === null && !creating ? (
             <div className="dir-ui-hero">
               <MarkdownFileIcon className="dir-ui-hero-icon" />
@@ -1053,86 +1012,93 @@ export function CollectionBrowser({
             </div>
           ) : (
             <>
-              <header className="dir-ui-doc-head">
-                {narrow ? (
-                  <BackButton
-                    onClick={goBack}
-                    label={`back to ${adapter.noun} list`}
-                  />
-                ) : null}
-                <div className="dir-ui-doc-identity">
-                  <span className="dir-ui-doc-name" title={docKey ?? ''}>
-                    <span className="txt">{docName}</span>
-                    {dirty ? (
-                      <span
-                        className="dir-ui-dirty-dot"
-                        title="unsaved changes"
-                        aria-hidden
-                      />
-                    ) : null}
-                  </span>
-                  {!narrow ? (
-                    <span className="dir-ui-doc-crumb">
-                      {[adapter.crumbRoot, ...docSegments].join(' / ')}
+              {!adapter.customFormOwnsWorkspaceHeader ? (
+                <header className="dir-ui-doc-head">
+                  {narrow ? <BackButton onClick={goBack} label={`back to ${adapter.noun} list`} /> : null}
+                  <div className="dir-ui-doc-identity">
+                    <span className="dir-ui-doc-name" title={docKey ?? ''}>
+                      <span className="txt">{docName}</span>
+                      {dirty ? <span className="dir-ui-dirty-dot" title="unsaved changes" aria-hidden /> : null}
                     </span>
+                    {!narrow ? (
+                      <span className="dir-ui-doc-crumb">{[adapter.crumbRoot, ...docSegments].join(' / ')}</span>
+                    ) : null}
+                  </div>
+                  <SegmentedControl<EditorMode>
+                    value={effMode}
+                    onChange={setMode}
+                    options={modeOptions.map((mode) => ({
+                      value: mode,
+                      label: EDITOR_MODE_LABELS[mode],
+                    }))}
+                    className="dir-ui-editor-tabs"
+                    aria-label="Editor mode"
+                  />
+                  <div className="dir-ui-save-area">
+                    {adapter.remove && !creating && !readOnly ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="dir-ui-delete-btn"
+                        disabled={!loaded || saving || deleting}
+                        onClick={remove}
+                      >
+                        {deleting ? 'Deleting…' : 'Delete'}
+                      </Button>
+                    ) : null}
+                    <span className="dir-ui-save-note" aria-live="polite">
+                      {readOnly ? 'Read only' : saveStatus}
+                    </span>
+                    {dirty && !saving ? (
+                      <Button variant="ghost" size="sm" disabled={deleting} onClick={revert}>
+                        Revert
+                      </Button>
+                    ) : null}
+                    {!readOnly ? (
+                      <Button variant="primary" size="sm" disabled={!dirty || saving || deleting} onClick={save}>
+                        {saving ? 'Saving…' : 'Save'}
+                      </Button>
+                    ) : null}
+                  </div>
+                </header>
+              ) : null}
+
+              {adapter.customFormOwnsWorkspaceHeader && (narrow || (dirty && !readOnly)) ? (
+                <div className="dir-ui-af-save-panel">
+                  {narrow ? (
+                    <div className="dir-ui-doc-mobile-back">
+                      <BackButton onClick={goBack} label={`back to ${adapter.noun} list`} />
+                      <span>{adapter.noun}s</span>
+                    </div>
+                  ) : null}
+                  {dirty && !readOnly ? (
+                    <div className="dir-ui-af-save-actions">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="dir-ui-af-revert"
+                        disabled={saving || deleting}
+                        onClick={revert}
+                      >
+                        Revert
+                      </Button>
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        className="dir-ui-af-save"
+                        disabled={saving || deleting}
+                        onClick={save}
+                      >
+                        {saving ? 'Saving…' : 'Save'}
+                      </Button>
+                    </div>
                   ) : null}
                 </div>
-                <SegmentedControl<EditorMode>
-                  value={effMode}
-                  onChange={setMode}
-                  options={modeOptions.map((mode) => ({
-                    value: mode,
-                    label: EDITOR_MODE_LABELS[mode],
-                  }))}
-                  className="dir-ui-editor-tabs"
-                  aria-label="Editor mode"
-                />
-                <div className="dir-ui-save-area">
-                  {adapter.remove && !creating && !readOnly ? (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="dir-ui-delete-btn"
-                      disabled={!loaded || saving || deleting}
-                      onClick={remove}
-                    >
-                      {deleting ? 'Deleting…' : 'Delete'}
-                    </Button>
-                  ) : null}
-                  <span className="dir-ui-save-note" aria-live="polite">
-                    {readOnly ? 'Read only' : saveStatus}
-                  </span>
-                  {dirty && !saving ? (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      disabled={deleting}
-                      onClick={() => {
-                        setDraft(loaded?.content ?? '')
-                        setSaveError(null)
-                      }}
-                    >
-                      Revert
-                    </Button>
-                  ) : null}
-                  {!readOnly ? (
-                    <Button
-                      variant="primary"
-                      size="sm"
-                      disabled={!dirty || saving || deleting}
-                      onClick={save}
-                    >
-                      {saving ? 'Saving…' : 'Save'}
-                    </Button>
-                  ) : null}
-                </div>
-              </header>
+              ) : null}
 
               {staleOnDisk ? (
                 <div className="dir-ui-banner warn" role="status">
-                  <span>
-                    This {adapter.noun} changed on disk while you were editing.
-                  </span>
+                  <span>This {adapter.noun} changed on disk while you were editing.</span>
                   <button
                     type="button"
                     className="dir-ui-linkish"
@@ -1149,18 +1115,10 @@ export function CollectionBrowser({
                     Save failed.
                     <span className="detail">{saveError}</span>
                   </span>
-                  <button
-                    type="button"
-                    className="dir-ui-linkish"
-                    onClick={save}
-                  >
+                  <button type="button" className="dir-ui-linkish" onClick={save}>
                     Retry
                   </button>
-                  <button
-                    type="button"
-                    className="dir-ui-linkish quiet"
-                    onClick={() => setSaveError(null)}
-                  >
+                  <button type="button" className="dir-ui-linkish quiet" onClick={() => setSaveError(null)}>
                     dismiss
                   </button>
                 </div>
@@ -1172,18 +1130,10 @@ export function CollectionBrowser({
                     Delete failed.
                     <span className="detail">{deleteError}</span>
                   </span>
-                  <button
-                    type="button"
-                    className="dir-ui-linkish"
-                    onClick={remove}
-                  >
+                  <button type="button" className="dir-ui-linkish" onClick={remove}>
                     Retry
                   </button>
-                  <button
-                    type="button"
-                    className="dir-ui-linkish quiet"
-                    onClick={() => setDeleteError(null)}
-                  >
+                  <button type="button" className="dir-ui-linkish quiet" onClick={() => setDeleteError(null)}>
                     dismiss
                   </button>
                 </div>
@@ -1195,34 +1145,26 @@ export function CollectionBrowser({
                     {docKey} could not be loaded.
                     <span className="detail">{loadError}</span>
                   </p>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => docKey && open(docKey, { reload: true })}
-                  >
+                  <Button variant="ghost" size="sm" onClick={() => docKey && open(docKey, { reload: true })}>
                     Retry
                   </Button>
                 </div>
               ) : loaded === null ? (
-                <div className="dir-ui-doc-loading" aria-hidden>
-                  <span className="bar w40" />
-                  <span className="bar w90" />
-                  <span className="bar w75" />
-                  <span className="bar w85" />
-                  <span className="bar w30" />
-                </div>
+                adapter.customLoading ? (
+                  adapter.customLoading()
+                ) : (
+                  <div className="dir-ui-doc-loading" aria-hidden>
+                    <span className="bar w40" />
+                    <span className="bar w90" />
+                    <span className="bar w75" />
+                    <span className="bar w85" />
+                    <span className="bar w30" />
+                  </div>
+                )
               ) : (
                 <>
-                  <div
-                    className={`dir-ui-doc-body mode-${effMode}${dragging ? ' dragging' : ''}`}
-                    ref={bodyRef}
-                  >
-                    <div
-                      className="dir-ui-pane editor"
-                      style={
-                        effMode === 'split' ? { flexGrow: split } : undefined
-                      }
-                    >
+                  <div className={`dir-ui-doc-body mode-${effMode}${dragging ? ' dragging' : ''}`} ref={bodyRef}>
+                    <div className="dir-ui-pane editor" style={effMode === 'split' ? { flexGrow: split } : undefined}>
                       {adapter.customForm ? (
                         adapter.customForm({
                           host,
@@ -1242,157 +1184,122 @@ export function CollectionBrowser({
                                 adapter.slugName,
                               ),
                             ),
-                          setDescription: (next) =>
-                            editDraft(
-                              setFrontmatterField(
-                                draft,
-                                descriptionField.key,
-                                next,
-                              ),
-                            ),
+                          setDescription: (next) => editDraft(setFrontmatterField(draft, descriptionField.key, next)),
                           creating,
+                          dirty,
+                          saving,
+                          saved: savedFlash,
+                          deleting,
+                          onSave: save,
+                          onRemove: adapter.remove && !creating && !readOnly ? remove : undefined,
                         })
                       ) : (
-                      <div className="dir-ui-edit-fields">
-                        <label
-                          className="dir-ui-edit-field"
-                          htmlFor={`${fieldId}-name`}
-                        >
-                          <span className="dir-ui-edit-label">
-                            name
-                            {adapter.slugName ? (
-                              <span className="dir-ui-edit-hint">
-                                a–z · 0–9 · - · _
-                              </span>
-                            ) : adapter.separateId && creating ? (
-                              <span className="dir-ui-edit-hint">
-                                {slugify(nameValue)
-                                  ? `→ ${slugify(nameValue)}.md`
-                                  : 'the id derives from the name'}
-                              </span>
-                            ) : null}
-                          </span>
-                          <Input
-                            id={`${fieldId}-name`}
-                            value={nameValue}
-                            onChange={(next) =>
-                              editDraft(
-                                setFrontmatterField(
-                                  draft,
-                                  nameField.key,
-                                  adapter.slugName ? next.toLowerCase() : next,
-                                  adapter.slugName,
-                                ),
-                              )
-                            }
-                            placeholder={`${adapter.noun} name`}
-                            preserveCase={!adapter.slugName}
-                            required={adapter.slugName || adapter.nameRequired}
-                            pattern={
-                              adapter.slugName ? '[a-z0-9_-]+' : undefined
-                            }
-                            spellCheck={false}
-                            readOnly={readOnly}
-                            className="dir-ui-edit-input"
-                          />
-                        </label>
-                        <label
-                          className="dir-ui-edit-field"
-                          htmlFor={`${fieldId}-description`}
-                        >
-                          <span className="dir-ui-edit-label">Description</span>
-                          <textarea
-                            id={`${fieldId}-description`}
-                            value={descriptionValue}
-                            onChange={(event) =>
-                              editDraft(
-                                setFrontmatterField(
-                                  draft,
-                                  descriptionField.key,
-                                  event.currentTarget.value,
-                                ),
-                              )
-                            }
-                            placeholder={`what this ${adapter.noun} is for…`}
-                            required={adapter.descriptionRequired}
-                            readOnly={readOnly}
-                            rows={2}
-                            className="dir-ui-edit-textarea"
-                          />
-                        </label>
-                        {adapter.modelInvocationOption ? (
-                          modelInvocationSimple ? (
-                            <label className="dir-ui-checkrow dir-ui-model-invocation">
-                              <input
-                                id={`${fieldId}-disable-model-invocation`}
-                                type="checkbox"
-                                checked={modelInvocationDisabled}
-                                disabled={readOnly}
-                                onChange={(event) =>
-                                  editDraft(
-                                    event.currentTarget.checked
-                                      ? setFrontmatterField(
-                                          draft,
-                                          'disable-model-invocation',
-                                          'true',
-                                          true,
-                                        )
-                                      : withoutFrontmatterFields(draft, [
-                                          'disable-model-invocation',
-                                        ]),
-                                  )
-                                }
-                              />
-                              <span className={uiClasses.field}>
-                                <span className={uiClasses.fieldLabel}>
-                                  Require explicit invocation
+                        <div className="dir-ui-edit-fields">
+                          <label className="dir-ui-edit-field" htmlFor={`${fieldId}-name`}>
+                            <span className="dir-ui-edit-label">
+                              name
+                              {adapter.slugName ? (
+                                <span className="dir-ui-edit-hint">a–z · 0–9 · - · _</span>
+                              ) : adapter.separateId && creating ? (
+                                <span className="dir-ui-edit-hint">
+                                  {slugify(nameValue) ? `→ ${slugify(nameValue)}.md` : 'the id derives from the name'}
                                 </span>
-                                <span className={uiClasses.fieldDescription}>
-                                  The model won’t select this skill
-                                  automatically.
+                              ) : null}
+                            </span>
+                            <Input
+                              id={`${fieldId}-name`}
+                              value={nameValue}
+                              onChange={(next) =>
+                                editDraft(
+                                  setFrontmatterField(
+                                    draft,
+                                    nameField.key,
+                                    adapter.slugName ? next.toLowerCase() : next,
+                                    adapter.slugName,
+                                  ),
+                                )
+                              }
+                              placeholder={`${adapter.noun} name`}
+                              preserveCase={!adapter.slugName}
+                              required={adapter.slugName || adapter.nameRequired}
+                              pattern={adapter.slugName ? '[a-z0-9_-]+' : undefined}
+                              spellCheck={false}
+                              readOnly={readOnly}
+                              className="dir-ui-edit-input"
+                            />
+                          </label>
+                          <label className="dir-ui-edit-field" htmlFor={`${fieldId}-description`}>
+                            <span className="dir-ui-edit-label">Description</span>
+                            <textarea
+                              id={`${fieldId}-description`}
+                              value={descriptionValue}
+                              onChange={(event) =>
+                                editDraft(setFrontmatterField(draft, descriptionField.key, event.currentTarget.value))
+                              }
+                              placeholder={`what this ${adapter.noun} is for…`}
+                              required={adapter.descriptionRequired}
+                              readOnly={readOnly}
+                              rows={2}
+                              className="dir-ui-edit-textarea"
+                            />
+                          </label>
+                          {adapter.modelInvocationOption ? (
+                            modelInvocationSimple ? (
+                              <label className="dir-ui-checkrow dir-ui-model-invocation">
+                                <input
+                                  id={`${fieldId}-disable-model-invocation`}
+                                  type="checkbox"
+                                  checked={modelInvocationDisabled}
+                                  disabled={readOnly}
+                                  onChange={(event) =>
+                                    editDraft(
+                                      event.currentTarget.checked
+                                        ? setFrontmatterField(draft, 'disable-model-invocation', 'true', true)
+                                        : withoutFrontmatterFields(draft, ['disable-model-invocation']),
+                                    )
+                                  }
+                                />
+                                <span className={uiClasses.field}>
+                                  <span className={uiClasses.fieldLabel}>Require explicit invocation</span>
+                                  <span className={uiClasses.fieldDescription}>
+                                    The model won’t select this skill automatically.
+                                  </span>
                                 </span>
-                              </span>
-                            </label>
-                          ) : (
-                            <div
-                              className={`${uiClasses.field} dir-ui-model-invocation`}
-                            >
-                              <span className={uiClasses.fieldLabel}>
-                                Model invocation
-                              </span>
-                              <span className={uiClasses.fieldDescription}>
-                                Advanced value — edit it in Content.
-                              </span>
-                            </div>
-                          )
-                        ) : null}
-                        {adapter.extraFields?.({
-                          host,
-                          draft,
-                          editDraft,
-                          readOnly,
-                          fieldId,
-                          entryKey: creating ? null : (loaded?.key ?? selected),
-                        })}
-                      </div>
+                              </label>
+                            ) : (
+                              <div className={`${uiClasses.field} dir-ui-model-invocation`}>
+                                <span className={uiClasses.fieldLabel}>Model invocation</span>
+                                <span className={uiClasses.fieldDescription}>Advanced value — edit it in Content.</span>
+                              </div>
+                            )
+                          ) : null}
+                          {adapter.extraFields?.({
+                            host,
+                            draft,
+                            editDraft,
+                            readOnly,
+                            fieldId,
+                            entryKey: creating ? null : (loaded?.key ?? selected),
+                          })}
+                        </div>
                       )}
-                      <div className="dir-ui-source-head" aria-hidden>
-                        <span>{adapter.sourceLabel ?? 'Content'}</span>
-                        <span>Markdown</span>
-                      </div>
-                      <CodeEditor
-                        value={editorSource}
-                        onChange={(next) =>
-                          editDraft(
-                            restoreFrontmatterFields(next, managedFields),
-                          )
-                        }
-                        language="markdown"
-                        readOnly={readOnly}
-                        className="dir-ui-code"
-                        aria-label={`${adapter.noun} markdown content`}
-                        placeholder="# markdown…"
-                      />
+                      {!adapter.customFormOwnsContent ? (
+                        <>
+                          <div className="dir-ui-source-head" aria-hidden>
+                            <span>{adapter.sourceLabel ?? 'Content'}</span>
+                            <span>Markdown</span>
+                          </div>
+                          <CodeEditor
+                            value={editorSource}
+                            onChange={(next) => editDraft(restoreFrontmatterFields(next, managedFields))}
+                            language="markdown"
+                            readOnly={readOnly}
+                            className="dir-ui-code"
+                            aria-label={`${adapter.noun} markdown content`}
+                            placeholder="# markdown…"
+                          />
+                        </>
+                      ) : null}
                     </div>
                     {effMode === 'split' ? (
                       // biome-ignore lint/a11y/useSemanticElements: drag handle is not an <hr>; semantic separator + tabIndex is enough
@@ -1419,17 +1326,10 @@ export function CollectionBrowser({
                     {effMode !== 'edit' ? (
                       <div
                         className="dir-ui-pane preview"
-                        style={
-                          effMode === 'split'
-                            ? { flexGrow: 1 - split }
-                            : undefined
-                        }
+                        style={effMode === 'split' ? { flexGrow: 1 - split } : undefined}
                       >
                         <div className="dir-ui-reading">
-                          <MarkdownPreview
-                            markdown={frontmatterBody(draft)}
-                            className="dir-ui-preview"
-                          />
+                          <MarkdownPreview markdown={frontmatterBody(draft)} className="dir-ui-preview" />
                         </div>
                       </div>
                     ) : null}
@@ -1441,13 +1341,7 @@ export function CollectionBrowser({
                     </span>
                     <span className="fact">{formatKb(draftBytes)}</span>
                     <span className="spacer" />
-                    <span className="fact">
-                      {readOnly
-                        ? 'read only'
-                        : dirty
-                          ? '⌘S saves'
-                          : 'all changes saved'}
-                    </span>
+                    <span className="fact">{readOnly ? 'read only' : dirty ? '⌘S saves' : 'all changes saved'}</span>
                   </footer>
                 </>
               )}

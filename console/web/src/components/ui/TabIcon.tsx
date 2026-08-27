@@ -1,6 +1,7 @@
 import uiClasses from '@iii-dev/console-ui/ui-classes'
 import {
   Activity,
+  Bot,
   Braces,
   ChartNoAxesColumnIncreasing,
   CircleAlert,
@@ -36,6 +37,8 @@ import { TriggerIcon } from './TriggerIcon'
 
 const TAB_ICONS: Readonly<Record<string, LucideIcon>> = {
   activity: Activity,
+  agent: Bot,
+  agents: Bot,
   baggage: Braces,
   cell: Braces,
   changes: History,
