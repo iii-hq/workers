@@ -16,13 +16,20 @@ function dotTone(state: string): 'accent' | 'alert' | 'warn' | 'ink' {
   return 'ink'
 }
 
-function sourceLabel(c: TopologyContainer): string {
+function sourceLabel(c: TopologyContainer): string | null {
   if (c.source === 'package') return `${(c.ref ?? '').split('/').pop() ?? ''}${c.version ? `@${c.version}` : ''}`
   if (c.source === 'path') {
-    const parts = (c.ref ?? '').split('/').filter(Boolean)
-    return `path ${parts.length > 2 ? `…/${parts.slice(-2).join('/')}` : (c.ref ?? '')}`
+    const ref = c.ref ?? ''
+    if (ref === '.' || ref === './' || ref === `../${c.name}` || ref === `./${c.name}`) return null
+    const parts = ref.split('/').filter(Boolean)
+    return parts.length > 2 ? `…/${parts.slice(-2).join('/')}` : ref
   }
-  return c.ref ?? ''
+  return c.ref || null
+}
+
+function edgePath(edge: { start: { x: number; y: number }; end: { x: number; y: number } }): string {
+  const dx = Math.max(32, (edge.end.x - edge.start.x) / 2)
+  return `M ${edge.start.x} ${edge.start.y} C ${edge.start.x + dx} ${edge.start.y}, ${edge.end.x - dx} ${edge.end.y}, ${edge.end.x - 1} ${edge.end.y}`
 }
 
 export function Topology({ input, selected, onSelect }: TopologyProps) {
@@ -75,6 +82,11 @@ export function Topology({ input, selected, onSelect }: TopologyProps) {
     return 'dim'
   }
 
+  const edges = [...layout.edges].sort((a, b) => {
+    const rank = (rel: string | undefined) => (rel === 'up' || rel === 'down' ? 1 : 0)
+    return rank(edgeState(a.from, a.to)) - rank(edgeState(b.from, b.to))
+  })
+
   return (
     <div className="cu-topo-scroll">
       <div className="cu-topo" style={{ width: layout.width, height: layout.height }}>
@@ -92,13 +104,13 @@ export function Topology({ input, selected, onSelect }: TopologyProps) {
               <path d="M0 0 L8 4 L0 8 Z" />
             </marker>
           </defs>
-          {layout.edges.map((edge) => (
+          {edges.map((edge) => (
             <path
               key={edge.key}
               className="cu-topo-edge"
               data-rel={edgeState(edge.from, edge.to)}
               data-running={input.containers.find((c) => c.name === edge.to)?.state === 'ready' ? '' : undefined}
-              d={`M ${edge.start.x} ${edge.start.y} H ${edge.midX} V ${edge.end.y} H ${edge.end.x - 1}`}
+              d={edgePath(edge)}
               markerEnd="url(#cu-topo-arrow)"
             />
           ))}
@@ -151,12 +163,13 @@ export function Topology({ input, selected, onSelect }: TopologyProps) {
                 <span className="cu-mono cu-topo-name">{c.name}</span>
                 {c.ports.length ? <span className="cu-mono cu-topo-ports">:{c.ports.join(' :')}</span> : null}
               </span>
-              <span className="cu-mono cu-topo-sub" title={c.ref ?? undefined}>
-                {sourceLabel(c) || c.state}
-              </span>
-              <span className="cu-topo-sub">
-                {c.state}
-                {c.pid ? ` · pid ${c.pid}` : ''}
+              <span className="cu-topo-sub" data-state={c.state}>
+                {c.state === 'ready' ? `pid ${c.pid ?? '–'}` : c.state}
+                {sourceLabel(c) ? (
+                  <span className="cu-mono cu-topo-source" title={c.ref ?? undefined}>
+                    {sourceLabel(c)}
+                  </span>
+                ) : null}
               </span>
             </button>
           )

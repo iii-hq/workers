@@ -59,9 +59,9 @@ export const TOPO = {
   engineW: 176,
   engineH: 64,
   nodeW: 208,
-  nodeH: 64,
-  hGap: 64,
-  vGap: 12,
+  nodeH: 56,
+  hGap: 88,
+  vGap: 14,
   groupPad: 16,
   groupLabelH: 30,
 } as const

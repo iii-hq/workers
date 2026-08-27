@@ -349,7 +349,7 @@
   stroke: var(--color-ink-faint);
   stroke-width: 1;
   stroke-dasharray: 4 3;
-  opacity: 0.75;
+  opacity: 0.55;
 }
 
 [data-iii-ui='compose-ui'] .cu-topo-edge[data-running] {
@@ -478,12 +478,30 @@
 }
 
 [data-iii-ui='compose-ui'] .cu-topo-sub {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
   font-size: 0.75rem;
   color: var(--color-ink-faint);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   overflow-wrap: normal;
+}
+
+[data-iii-ui='compose-ui'] .cu-topo-sub[data-state='failed'] {
+  color: var(--color-alert);
+}
+
+[data-iii-ui='compose-ui'] .cu-topo-sub[data-state='starting'] {
+  color: var(--color-warn);
+}
+
+[data-iii-ui='compose-ui'] .cu-topo-source {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--color-ink-faint);
 }
 
 @media (hover: hover) and (pointer: fine) {
