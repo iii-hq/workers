@@ -63,6 +63,12 @@ concurrency:
 jobs:
   publish:
     name: Publish ${{ inputs.worker }} ${{ inputs.candidate_version }}
+    concurrency:
+      # Prepared commits from one multi-worker plan are siblings. Only the Git
+      # commit/tag section may advance main at a time; Registry jobs can still
+      # continue in parallel after this job releases the lock.
+      group: release-candidate-main
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
@@ -116,6 +122,7 @@ jobs:
         env:
           WORKER: ${{ inputs.worker }}
           CANDIDATE: ${{ inputs.candidate_version }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
           PREPARED_SHA: ${{ inputs.prepared_sha }}
         run: |
           set -euo pipefail
@@ -130,12 +137,21 @@ jobs:
           print(f"deploy={manifest['deploy']}")
           print(f"bin={manifest.get('bin') or worker}")
           PY
+          test "$(git rev-parse HEAD)" = "$PREPARED_SHA"
+          git merge-base --is-ancestor "$SOURCE_SHA" "$PREPARED_SHA"
+          while IFS= read -r changed; do
+            case "$changed" in
+              "$WORKER"/*) ;;
+              *) echo "::error::prepared commit changed out-of-scope path: $changed"; exit 1 ;;
+            esac
+          done < <(git diff --name-only "$SOURCE_SHA" "$PREPARED_SHA")
           git fetch origin main --quiet
           main_sha=$(git rev-parse origin/main)
-          test "$main_sha" = '${{ inputs.source_sha }}' \
+          test "$main_sha" = "$SOURCE_SHA" \
             || test "$main_sha" = "$PREPARED_SHA" \
-            || git merge-base --is-ancestor "$PREPARED_SHA" "$main_sha"
-          test "$(git rev-parse HEAD)" = "$PREPARED_SHA"
+            || git merge-base --is-ancestor "$PREPARED_SHA" "$main_sha" \
+            || { git merge-base --is-ancestor "$SOURCE_SHA" "$main_sha" \
+              && git diff --quiet "$SOURCE_SHA" "$main_sha" -- "$WORKER"; }
 
       - name: Push candidate commit and annotated tag atomically
         env:
@@ -151,6 +167,30 @@ jobs:
           git config user.email "workers-ci[bot]@users.noreply.github.com"
           git fetch origin main --quiet
           git fetch origin "refs/tags/$TAG:refs/tags/$TAG" --quiet || true
+          prepare_main_target() {
+            local main_sha
+            main_sha=$(git rev-parse origin/main)
+            main_target=
+            if [[ "$main_sha" == "$PREPARED_SHA" ]] \
+              || git merge-base --is-ancestor "$PREPARED_SHA" "$main_sha"; then
+              return 0
+            fi
+            if [[ "$main_sha" == "$SOURCE_SHA" ]]; then
+              main_target=$PREPARED_SHA
+              return 0
+            fi
+            git merge-base --is-ancestor "$SOURCE_SHA" "$main_sha" || {
+              echo "::error::main diverged from the planned source"
+              return 1
+            }
+            git diff --quiet "$SOURCE_SHA" "$main_sha" -- "$WORKER" || {
+              echo "::error::$WORKER changed on main after the candidate was prepared"
+              return 1
+            }
+            git checkout --detach "$main_sha"
+            git merge --no-ff --no-edit "$PREPARED_SHA"
+            main_target=$(git rev-parse HEAD)
+          }
           if git rev-parse --verify --quiet "refs/tags/$TAG" >/dev/null; then
             test "$(git rev-list -n 1 "$TAG^{}")" = "$PREPARED_SHA"
             annotation=$(git tag -l --format='%(contents)' "$TAG")
@@ -159,14 +199,8 @@ jobs:
               "plan-hash: $PLAN_HASH" "source-sha: $SOURCE_SHA" "prepared-sha: $PREPARED_SHA"; do
               grep -Fx "$field" <<<"$annotation" >/dev/null
             done
-            main_sha=$(git rev-parse origin/main)
-            if [[ "$main_sha" == "$SOURCE_SHA" ]]; then
-              git push origin "$PREPARED_SHA:refs/heads/main"
-            else
-              # Reconciliation: the tag already anchors the prepared commit, so
-              # any main that still contains it is settled even after later work.
-              git merge-base --is-ancestor "$PREPARED_SHA" "$main_sha"
-            fi
+            prepare_main_target
+            [[ -z "$main_target" ]] || git push origin "$main_target:refs/heads/main"
             exit 0
           fi
           git tag -a "$TAG" -m "Release $TAG
@@ -186,16 +220,13 @@ jobs:
           registry-tag: next
           experimental: false
           "
-          main_sha=$(git rev-parse origin/main)
-          if [[ "$main_sha" == "$SOURCE_SHA" ]]; then
+          prepare_main_target
+          if [[ -n "$main_target" ]]; then
             git push --atomic origin \
-            "$PREPARED_SHA:refs/heads/main" \
-            "refs/tags/$TAG"
-          elif [[ "$main_sha" == "$PREPARED_SHA" ]]; then
-            git push origin "refs/tags/$TAG"
+              "$main_target:refs/heads/main" \
+              "refs/tags/$TAG"
           else
-            echo "::error::main moved from the planned source and cannot be reconciled safely"
-            exit 1
+            git push origin "refs/tags/$TAG"
           fi
 
       - name: Create draft prerelease and upload prepared assets
