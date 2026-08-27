@@ -15,7 +15,7 @@ name = "worktree"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.23.0-rc.2"
+iii-sdk = "=0.22.1-alpha.25"
 iii-worker-paths = { path = "../crates/worker-paths" }
 # Worker-side injectable console UI (content function + console:script/style
 # triggers + hot-reload watcher) — direct path link, never published.

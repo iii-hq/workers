@@ -14,6 +14,7 @@ use tempfile::TempDir;
 pub(crate) struct Engine {
     pub(crate) url: String,
     child: Child,
+    state_child: Option<Child>,
     _directory: TempDir,
 }
 
@@ -28,6 +29,15 @@ impl Engine {
                 binary.display()
             );
         }
+        let state_binary = std::env::var_os("III_STATE_BIN")
+            .map(PathBuf::from)
+            .context("III_STATE_BIN is required for provider contracts")?;
+        if !state_binary.is_file() {
+            bail!(
+                "III_STATE_BIN does not point to a file: {}",
+                state_binary.display()
+            );
+        }
         let port = StdTcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
         let directory = tempfile::tempdir()?;
         let config_path = directory.path().join("config.yaml");
@@ -36,26 +46,7 @@ impl Engine {
   - name: iii-worker-manager
     config:
       port: {port}
-  - name: iii-pubsub
-    config:
-      adapter:
-        name: local
-  - name: configuration
-    config:
-      adapter:
-        name: fs
-        config:
-          directory: {directory}/configuration
-      ttl_seconds: 0
-  - name: iii-state
-    config:
-      adapter:
-        name: kv
-        config:
-          file_path: {directory}/state.db
-          store_method: file_based
-"#,
-            directory = directory.path().display()
+"#
         );
         std::fs::write(&config_path, config)?;
         let stdout = File::create(directory.path().join("engine.stdout.log"))?;
@@ -70,19 +61,67 @@ impl Engine {
             .spawn()
             .with_context(|| format!("spawn iii engine {}", binary.display()))?;
         let url = format!("ws://127.0.0.1:{port}");
-        wait_for_engine(&url).await?;
-        Ok(Self {
+        let mut engine = Self {
             url,
             child,
+            state_child: None,
             _directory: directory,
-        })
+        };
+        wait_for_engine(&engine.url).await?;
+        let state_config_path = engine._directory.path().join("state-config.yaml");
+        std::fs::write(
+            &state_config_path,
+            "adapter:\n  name: kv\n  config:\n    store_method: in_memory\n",
+        )?;
+        let state_stdout = File::create(engine._directory.path().join("state.stdout.log"))?;
+        let state_stderr = File::create(engine._directory.path().join("state.stderr.log"))?;
+        let state_child = Command::new(&state_binary)
+            .arg("--url")
+            .arg(&engine.url)
+            .arg("--config")
+            .arg(&state_config_path)
+            .current_dir(engine._directory.path())
+            .stdout(Stdio::from(state_stdout))
+            .stderr(Stdio::from(state_stderr))
+            .spawn()
+            .with_context(|| format!("spawn state worker {}", state_binary.display()))?;
+        engine.state_child = Some(state_child);
+        wait_for_state(&engine.url).await?;
+        Ok(engine)
     }
 }
 
 impl Drop for Engine {
     fn drop(&mut self) {
+        if let Some(state_child) = self.state_child.as_mut() {
+            let _ = state_child.kill();
+            let _ = state_child.wait();
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+async fn wait_for_state(url: &str) -> anyhow::Result<()> {
+    let probe = register_worker(url, test_init_options());
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if call(
+            &probe,
+            "state::get",
+            json!({ "scope": "provider-contract", "key": "ready" }),
+        )
+        .await
+        .is_ok()
+        {
+            probe.shutdown();
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            probe.shutdown();
+            bail!("state worker did not become ready in 20 seconds");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 

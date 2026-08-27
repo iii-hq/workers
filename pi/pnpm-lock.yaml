@@ -12,8 +12,8 @@ importers:
         specifier: ^0.79.0
         version: 0.79.10(ws@8.21.0)(zod@4.4.3)
       iii-sdk:
-        specifier: 0.23.0-rc.2
-        version: 0.23.0-rc.2
+        specifier: 0.22.1-alpha.25
+        version: 0.22.1-alpha.25
       yaml:
         specifier: ^2.6.0
         version: 2.9.0
@@ -704,8 +704,8 @@ packages:
       '@modelcontextprotocol/sdk':
         optional: true
 
-  '@iii-dev/helpers@0.23.0-rc.2':
-    resolution: {integrity: sha512-/DgN6p7lv+FGaFwIkW/uyf9pe6STfVQpJviMY41AEv9HUSlFj2tAo0nqlSKj2RIs1SqsCUo0RlT3mzN5TnLb7Q==}
+  '@iii-dev/helpers@0.22.1-alpha.25':
+    resolution: {integrity: sha512-q3XQZ4i+eMA4mi1iRaNHlTcIGJVvhCYkmfiIPn0rvlFjLYU32vEqjbxKeNsy9YyRbAhGbjF+kzXp2cUpycVhJw==}
 
   '@jridgewell/sourcemap-codec@1.5.5':
     resolution: {integrity: sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==}
@@ -1301,8 +1301,8 @@ packages:
     resolution: {integrity: sha512-Hs59xBNfUIunMFgWAbGX5cq6893IbWg4KnrjbYwX3tx0ztorVgTDA6B2sxf8ejHJ4wz8BqGUMYlnzNBer5NvGg==}
     engines: {node: '>= 4'}
 
-  iii-sdk@0.23.0-rc.2:
-    resolution: {integrity: sha512-HiPIeXh9n6EU53NsTQrFi7FgouB5o0kHrQtCuvF7JfS0epypxoGzgiyZ6mamrPSRfUN8sG9K0YFq5KjXV/fcNQ==}
+  iii-sdk@0.22.1-alpha.25:
+    resolution: {integrity: sha512-WUDzAydJacutn5IQz3Tcx296fAn88UnUt8S5/2slRsZK7WCadMS9o3qXmkgKAUAmPHsdCOAwVolBWNnAz4imqQ==}
 
   import-in-the-middle@1.15.0:
     resolution: {integrity: sha512-bpQy+CrsRmYmoPMAE/0G33iwRqwW4ouqdRg8jgbH3aKuCtOc8lxgmYXg2dMM92CRiGP660EtBcymH/eVUpCSaA==}
@@ -2246,7 +2246,7 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@iii-dev/helpers@0.23.0-rc.2':
+  '@iii-dev/helpers@0.22.1-alpha.25':
     dependencies:
       '@opentelemetry/api': 1.9.1
       '@opentelemetry/api-logs': 0.57.2
@@ -2865,9 +2865,9 @@ snapshots:
 
   ignore@7.0.5: {}
 
-  iii-sdk@0.23.0-rc.2:
+  iii-sdk@0.22.1-alpha.25:
     dependencies:
-      '@iii-dev/helpers': 0.23.0-rc.2
+      '@iii-dev/helpers': 0.22.1-alpha.25
       '@opentelemetry/api': 1.9.1
       ws: 8.21.0
     transitivePeerDependencies:

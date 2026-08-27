@@ -329,16 +329,18 @@ jobs:
         with:
           shared-key: llm-router-integration
           save-if: false
-          workspaces: llm-router -> target
+          workspaces: |
+            llm-router -> target
+            state -> target
 
       - name: Install pinned iii engine
         env:
-          VERSION: '0.23.0-rc.2'
+          III_RELEASE_TAG: 'iii-alpha/v0.22.1-alpha.25'
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
-          sh /tmp/install-iii.sh --rc
+          sh /tmp/install-iii.sh
           {
             echo "$HOME/.local/bin"
             echo "$HOME/.iii/bin"
@@ -348,6 +350,14 @@ jobs:
           [[ -x "$engine_bin" ]] || { echo "::error::iii engine is not executable"; exit 3; }
           echo "III_ENGINE_BIN=$engine_bin" >> "$GITHUB_ENV"
           iii --version
+
+      - name: Build standalone state worker
+        run: |
+          set -euo pipefail
+          cargo build --locked --manifest-path state/Cargo.toml --bin state
+          state_bin="$GITHUB_WORKSPACE/state/target/debug/state"
+          [[ -x "$state_bin" ]] || { echo "::error::state worker is unavailable"; exit 3; }
+          echo "III_STATE_BIN=$state_bin" >> "$GITHUB_ENV"
 
       - name: Run real-engine router lifecycle suite
         run: |
@@ -388,7 +398,9 @@ jobs:
         with:
           shared-key: provider-contract-${{ matrix.provider }}
           save-if: false
-          workspaces: crates/provider-integration-testkit -> target
+          workspaces: |
+            crates/provider-integration-testkit -> target
+            state -> target
 
       # provider-openai-codex embeds a small console UI. The integration
       # testkit enables every provider feature in its Rust gate, so build the
@@ -412,12 +424,12 @@ jobs:
 
       - name: Install pinned iii engine
         env:
-          VERSION: '0.23.0-rc.2'
+          III_RELEASE_TAG: 'iii-alpha/v0.22.1-alpha.25'
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
-          sh /tmp/install-iii.sh --rc
+          sh /tmp/install-iii.sh
           {
             echo "$HOME/.local/bin"
             echo "$HOME/.iii/bin"
@@ -427,6 +439,14 @@ jobs:
           [[ -x "$engine_bin" ]] || { echo "::error::iii engine is not executable"; exit 3; }
           echo "III_ENGINE_BIN=$engine_bin" >> "$GITHUB_ENV"
           iii --version
+
+      - name: Build standalone state worker
+        run: |
+          set -euo pipefail
+          cargo build --locked --manifest-path state/Cargo.toml --bin state
+          state_bin="$GITHUB_WORKSPACE/state/target/debug/state"
+          [[ -x "$state_bin" ]] || { echo "::error::state worker is unavailable"; exit 3; }
+          echo "III_STATE_BIN=$state_bin" >> "$GITHUB_ENV"
 
       - name: Run hermetic provider contract
         env:
@@ -589,12 +609,12 @@ jobs:
           # Must be a tag that still exists on iii-hq/iii (old releases get
           # pruned — 0.17.0 vanished and broke every boot smoke). Keep aligned
           # with the workers' iii-sdk protocol line.
-          VERSION: '0.23.0-rc.2'
+          III_RELEASE_TAG: 'iii-alpha/v0.22.1-alpha.25'
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
-          sh /tmp/install-iii.sh --rc
+          sh /tmp/install-iii.sh
           {
             echo "$HOME/.local/bin"
             echo "$HOME/.iii/bin"
