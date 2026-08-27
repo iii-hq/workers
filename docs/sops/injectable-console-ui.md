@@ -407,9 +407,13 @@ the 220 ms width transition, content fade/offset, reduced-motion behavior,
 accessible toggle, pointer/keyboard resize, and best-effort persistence.
 Instances with the same `storageKey` share one preference. Pass `narrow` when
 your page's own drill-in state already knows the pane is narrow, or
-`narrowBelow` when only the sidebar chrome needs a container breakpoint; both
-temporarily force the full-width presentation without overwriting the saved
-wide preference. Drag resize and wide↔narrow changes remain instant.
+`narrowBelow` when only the sidebar chrome needs a container breakpoint. In
+the narrow presentation a sidebar with host-owned collapse state becomes a
+rail; its toggle opens the content as a drawer over the main column (scrim,
+Escape, and activating any control inside close it), so the page keeps
+rendering `PageMain` unchanged. A page that controls `collapsed` keeps the
+full-width aside and decides what shows beside it. Neither overwrites the
+saved wide preference. Drag resize and wide↔narrow changes remain instant.
 
 All human-facing chrome uses sans and authored sentence/title case; do not use
 CSS case transforms on tabs, buttons, menus, fields, or labels. Reserve mono

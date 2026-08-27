@@ -1056,7 +1056,7 @@ export interface PageSidebarProps extends React.HTMLAttributes<HTMLElement> {
   resizable?: boolean
   /** Host-owned persistence/synchronization key; no storage logic ships in worker bundles. */
   storageKey?: string
-  /** Full-width responsive presentation without changing the wide preference. */
+  /** Responsive presentation: a rail that opens as a drawer over the main column when the host owns collapse state, the full-width aside when the page controls `collapsed`; never changes the wide preference. */
   narrow?: boolean
   /** Host-owned PageBody breakpoint for the responsive presentation. */
   narrowBelow?: number
