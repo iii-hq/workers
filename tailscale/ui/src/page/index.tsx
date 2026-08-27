@@ -169,6 +169,19 @@ const conflictOptions = [
   { value: 'rename', label: 'Rename incoming files' },
 ]
 
+const BACKEND_STATE_LABEL: Record<string, string> = {
+  NeedsLogin: 'Needs sign-in',
+  NeedsMachineAuth: 'Needs device approval',
+  Starting: 'Starting',
+  Stopped: 'Stopped',
+  NoState: 'Not running',
+}
+
+function backendStateLabel(state: string | null | undefined): string {
+  if (!state) return 'Not running'
+  return BACKEND_STATE_LABEL[state] ?? state
+}
+
 function describe(cause: unknown): string {
   const text = (() => {
     if (cause instanceof Error) return cause.message
@@ -307,6 +320,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
   )
 
   const online = status?.online ?? false
+  const needsLogin = status?.backend_state === 'NeedsLogin'
 
   const connect = useCallback(
     () =>
@@ -333,7 +347,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
       ? 'Tailscale CLI not found'
       : online
         ? 'Connected'
-        : (status.backend_state ?? 'Not running')
+        : backendStateLabel(status.backend_state)
 
   const [share, setShare] = useState<Share | null>(null)
   const [mode, setMode] = useState<Mode>('serve')
@@ -850,13 +864,15 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
               ) : (
                 <LoadingRows rows={4} />
               )}
-              {loginUrl && (
+              {loginUrl ? (
                 <StatusPanel variant="info" headline="This node needs a Tailscale sign-in" detail="Open the sign-in page, finish the login, then connect again." />
-              )}
+              ) : needsLogin ? (
+                <StatusPanel variant="info" headline="This device is signed out" detail="Sign in to add it to a tailnet; the sign-in page opens in a new tab." />
+              ) : null}
               <div className="ts-actions">
                 {status?.installed && !online && (
-                  <Button variant="primary" disabled={busy} data-autofocus="" onClick={() => void connect()}>
-                    {busy ? 'Working…' : 'Connect to tailnet'}
+                  <Button variant="primary" disabled={busy} data-autofocus="" onClick={() => void (needsLogin ? login() : connect())}>
+                    {busy ? 'Working…' : needsLogin ? 'Sign in to Tailscale' : 'Connect to tailnet'}
                   </Button>
                 )}
                 {loginUrl && (
