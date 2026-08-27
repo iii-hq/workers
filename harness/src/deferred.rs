@@ -478,6 +478,30 @@ pub async fn resolve_parent(
     result: Option<&Value>,
     reason: Option<&str>,
 ) -> bool {
+    // Lock-free pre-check. Every caller is a child-finalize tail that still
+    // holds the CHILD session lock; `resolve` below takes the PARENT lock. A
+    // parent turn holding its own lock while spawning into this child (the
+    // in-turn re-task) waits on the child lock — taking the parent lock here
+    // unconditionally is an AB-BA deadlock. Fire-and-forget children have no
+    // parked parent call, so skip the lock when there is nothing to resolve;
+    // a genuinely parked parent is between steps and its lock is free.
+    // `resolve` re-validates under the lock, so this stale read only skips.
+    let cfg = deps.cfg().await;
+    // On a state read error, fall through and let `resolve` report it.
+    if let Ok(record) =
+        crate::state::get_turn(&deps.iii, &parent.session_id, cfg.session_timeout_ms).await
+    {
+        let pending = record.is_some_and(|r| {
+            r.turn_id == parent.turn_id
+                && !r.status.is_terminal()
+                && r.calls
+                    .get(&parent.function_call_id)
+                    .is_some_and(|c| c.state == CallState::Pending)
+        });
+        if !pending {
+            return false;
+        }
+    }
     let (content, details, is_error) = if status == "completed" {
         let text = result.map(render_text).unwrap_or_default();
         (
