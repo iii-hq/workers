@@ -91,6 +91,18 @@ const skillsAdapter: BrowserAdapter = {
 
 export const HARNESS_DEFAULT_SYSTEM_PROMPT_KEY = 'harness/default'
 
+/** Frontmatter the built-in default is wrapped in when opened for editing:
+ * saving that draft copy-on-writes a LOCAL `default` store entry, which the
+ * harness then uses instead of the embedded prompt (deleting the local entry
+ * falls back to the embedded one). */
+const HARNESS_DEFAULT_FRONTMATTER =
+  '---\nname: default\ndescription: Harness default system prompt (local override)\n---\n'
+
+function frontmatterName(content: string): string {
+  const match = /^---\n[\s\S]*?^name:[ \t]*(.+?)[ \t]*$[\s\S]*?\n---\n/m.exec(content)
+  return match?.[1] ?? 'default'
+}
+
 export const systemPromptsAdapter: BrowserAdapter = {
   noun: 'system prompt',
   crumbRoot: 'system-prompts',
@@ -102,15 +114,24 @@ export const systemPromptsAdapter: BrowserAdapter = {
     'Choose a system prompt from the sidebar to view and edit its markdown. These are what the chat picker offers as an identity prompt — filesystem-backed, so files added to the system-prompts folders appear here automatically.',
   async list(host) {
     const out = await host.iii.trigger<{ prompts: SystemPromptRow[] }>('directory::system-prompts::list')
+    const prompts = out.prompts ?? []
+    // The built-in row exists only while no LOCAL `default` overrides it:
+    // editing the built-in saves that local entry (copy-on-write), and the
+    // local row then replaces this one in the list.
+    const overridden = prompts.some((p) => p.name === 'default')
     return [
-      {
-        key: HARNESS_DEFAULT_SYSTEM_PROMPT_KEY,
-        title: 'default',
-        description: 'Harness default system prompt',
-        fine: 'Read only',
-        readOnly: true,
-      },
-      ...(out.prompts ?? []).map((p) => ({
+      ...(overridden
+        ? []
+        : [
+            {
+              key: HARNESS_DEFAULT_SYSTEM_PROMPT_KEY,
+              title: 'default',
+              description: 'Harness default system prompt',
+              fine: 'Built-in · edits save a local override',
+              noDelete: true,
+            },
+          ]),
+      ...prompts.map((p) => ({
         key: p.name,
         title: '',
         description: p.description,
@@ -126,7 +147,7 @@ export const systemPromptsAdapter: BrowserAdapter = {
       })
       const builtIn = out.parts.find((part) => part.kind === 'built_in')
       if (!builtIn) throw new Error('Harness default system prompt is unavailable')
-      return builtIn.body
+      return HARNESS_DEFAULT_FRONTMATTER + builtIn.body
     }
     const out = await host.iii.trigger<{ body: string; raw?: string | null }>('directory::system-prompts::get', {
       name,
@@ -135,6 +156,17 @@ export const systemPromptsAdapter: BrowserAdapter = {
     return out.raw ?? out.body
   },
   async save(host, name, content) {
+    if (name === HARNESS_DEFAULT_SYSTEM_PROMPT_KEY) {
+      // Copy-on-write: the built-in prompt has no store file; saving it
+      // CREATES the local entry (named by the draft's frontmatter, `default`
+      // unless renamed), which the harness picks up on the next send.
+      const local = frontmatterName(content)
+      const out = await host.iii.trigger<{ name: string }>(
+        'directory::system-prompts::create',
+        { name: local, content },
+      )
+      return out.name ?? local
+    }
     // The effective name after the write follows a frontmatter rename.
     const out = await host.iii.trigger<{ name: string }>('directory::system-prompts::update', { name, content })
     return out.name ?? name

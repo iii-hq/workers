@@ -64,6 +64,9 @@ export interface BrowserRow {
   fine: string
   /** Built-in entries can be viewed and copied but not changed. */
   readOnly?: boolean
+  /** Editable entries with no backing file yet (saving creates one) have
+   * nothing to delete. */
+  noDelete?: boolean
 }
 
 /** What an adapter's `extraFields` renderer gets to work with: the full
@@ -660,7 +663,8 @@ export function CollectionBrowser({
   )
 
   const remove = useCallback(() => {
-    if (readOnly || !adapter.remove || !loaded || creating || saving || deleting) return
+    if (readOnly || row?.noDelete === true) return
+    if (!adapter.remove || !loaded || creating || saving || deleting) return
     const key = loaded.key
     const dirtyNote = dirty ? ' Your unsaved changes will also be lost.' : ''
     setPendingConfirm({
@@ -669,7 +673,7 @@ export function CollectionBrowser({
       confirmLabel: 'Delete',
       proceed: () => removeNow(key),
     })
-  }, [adapter, loaded, creating, saving, deleting, readOnly, dirty, removeNow])
+  }, [adapter, loaded, creating, saving, deleting, readOnly, row?.noDelete, dirty, removeNow])
 
   const onWorkspaceKeyDown = (e: React.KeyboardEvent) => {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
@@ -1035,7 +1039,7 @@ export function CollectionBrowser({
                     aria-label="Editor mode"
                   />
                   <div className="dir-ui-save-area">
-                    {adapter.remove && !creating && !readOnly ? (
+                    {adapter.remove && !creating && !readOnly && row?.noDelete !== true ? (
                       <Button
                         variant="ghost"
                         size="sm"
@@ -1191,7 +1195,10 @@ export function CollectionBrowser({
                           saved: savedFlash,
                           deleting,
                           onSave: save,
-                          onRemove: adapter.remove && !creating && !readOnly ? remove : undefined,
+                          onRemove:
+                            adapter.remove && !creating && !readOnly && row?.noDelete !== true
+                              ? remove
+                              : undefined,
                         })
                       ) : (
                         <div className="dir-ui-edit-fields">
