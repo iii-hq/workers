@@ -2294,6 +2294,7 @@ mod tests {
             "codex/gpt-5.6-sol".into(),
             Some("openai-codex".into()),
             Some(&agent),
+            crate::prompt::DEFAULT,
         );
         assert_eq!(opts.thinking_level, Some(ThinkingLevel::High));
         assert_eq!(
