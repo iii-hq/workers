@@ -121,7 +121,8 @@ interface MessageListProps {
   /**
    * External landing request (trace → "go to message"): once this row's node
    * exists, the list centers it, flashes it, and calls
-   * `onFocusMessageHandled` so the owner can consume the request.
+   * `onFocusMessageHandled` so the owner can consume the request. A target
+   * hidden behind a collapsed activity group is revealed first.
    */
   focusMessageId?: string | null
   onFocusMessageHandled?: () => void
@@ -624,10 +625,11 @@ export function MessageList({
     if (!container || !content) return
     // `data-message-row` is the transcript-row identity (top-level rows,
     // group items, group summaries) — not `data-message-id`, which is the
-    // card-level attribute the approval jump uses.
+    // card-level attribute the approval jump uses. A row that absorbed a
+    // wake notification carries both entry ids, space-separated.
     const node = Array.from(
       content.querySelectorAll<HTMLElement>('[data-message-row]'),
-    ).find((el) => el.dataset.messageRow === focusMessageId)
+    ).find((el) => el.dataset.messageRow?.split(' ').includes(focusMessageId))
     if (!node) return
     focusAppliedRef.current = focusMessageId
     cancelTailAnimation()
@@ -733,6 +735,7 @@ export function MessageList({
                     renderers={renderers}
                     registrations={registrations}
                     defaultOpenCalls={defaultOpenCalls}
+                    focusMessageId={focusMessageId}
                     onResolveApproval={onResolveApproval}
                     onAlwaysAllow={onAlwaysAllow}
                     onResolveFilesystemAccess={onResolveFilesystemAccess}
@@ -828,6 +831,8 @@ interface FunctionTriggerGroupProps {
   onResolveFilesystemAccess?: MessageListProps['onResolveFilesystemAccess']
   onManageFilesystemAccess?: MessageListProps['onManageFilesystemAccess']
   workingDir?: string | null
+  /** External landing target — a hidden matching item expands the group. */
+  focusMessageId?: string | null
 }
 
 /**
@@ -847,6 +852,7 @@ function FunctionTriggerGroup({
   onResolveFilesystemAccess,
   onManageFilesystemAccess,
   workingDir,
+  focusMessageId,
 }: FunctionTriggerGroupProps) {
   const [expanded, setExpanded] = useState(!!defaultOpenCalls)
   const contentId = useId()
@@ -857,6 +863,24 @@ function FunctionTriggerGroup({
         renderer.isMatch(call.functionId),
     ),
   )
+  // External landing (trace → "go to message"): a target hidden behind the
+  // collapse must have a DOM row in the same render the request resolves, so
+  // the reveal happens here, via the render-phase setState pattern. Latched
+  // through `expanded` — not derived — so consuming the request doesn't
+  // re-collapse the revealed row. An absorbed wake notification is this
+  // row's transcript entry too, so it counts as a match.
+  const ownsFocusTarget = (item: (typeof row.items)[number]) =>
+    item.message.id === focusMessageId ||
+    (item.kind === 'trigger-activity' &&
+      item.notification?.id === focusMessageId)
+  if (
+    !expanded &&
+    focusMessageId != null &&
+    !collapsedItems.some(ownsFocusTarget) &&
+    row.items.some(ownsFocusTarget)
+  ) {
+    setExpanded(true)
+  }
   const hiddenCount = row.items.length - collapsedItems.length
   const visibleItems = expanded ? row.items : collapsedItems
   const canCollapse = hiddenCount > 0
@@ -905,7 +929,11 @@ function FunctionTriggerGroup({
             return (
               <div
                 key={item.id}
-                data-message-row={message.id}
+                // An item that absorbed its wake notification represents two
+                // transcript entries; the row id carries both, space-separated.
+                data-message-row={
+                  notification ? `${message.id} ${notification.id}` : message.id
+                }
                 className={cn(index > 0 && '-mt-6.5')}
               >
                 <Message
