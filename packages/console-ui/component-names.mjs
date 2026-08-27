@@ -53,6 +53,7 @@ export const componentNames = [
   'ListItem',
   'Markdown',
   'MarkdownPreview',
+  'ModelPicker',
   'PageBody',
   'PageHeader',
   'PageMain',

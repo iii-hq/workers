@@ -92,7 +92,7 @@ export function SkillsDownloadView({ input, output, running }: ViewProps) {
         label="system prompts written"
         names={resp.system_prompts_written}
       />
-      <WrittenList label="agents written" names={resp.agents_written} />
+      <WrittenList label="agent profiles written" names={resp.agents_written} />
     </Card>
   )
 }

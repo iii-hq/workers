@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { useState } from 'react'
 import { fn } from 'storybook/test'
 import type { InstallStage } from '@/hooks/use-harness-status'
+import type { AgentEntry } from '@/lib/backend/directory-prompts'
 import { EmptyState, type EmptyStateProps } from './EmptyState'
 import {
   DEFAULT_SYSTEM_PROMPT_STATE,
@@ -25,6 +26,42 @@ const failedStages: InstallStage[] = [
     worker: 'harness',
     error: { code: 'W900', message: 'registry unreachable' },
     at: 4,
+  },
+]
+
+const agents: AgentEntry[] = [
+  {
+    id: 'qa-assistant',
+    name: 'QA Assistant',
+    description: 'Focuses on testing, quality checks, and bug prevention.',
+    logo: null,
+    icon: 'review',
+    color: 'purple',
+    model: 'gpt-5.6-sol',
+    skill_count: 3,
+    modified_at: '2026-08-27T00:00:00.000Z',
+  },
+  {
+    id: 'engineer',
+    name: 'Engineer',
+    description: 'Builds, tests, and reviews production code.',
+    logo: null,
+    icon: 'code',
+    color: 'blue',
+    model: 'gpt-5.6-sol',
+    skill_count: 4,
+    modified_at: '2026-08-27T00:00:00.000Z',
+  },
+  {
+    id: 'researcher',
+    name: 'Researcher',
+    description: 'Finds reliable evidence and turns it into clear decisions.',
+    logo: null,
+    icon: 'search',
+    color: 'teal',
+    model: null,
+    skill_count: 2,
+    modified_at: '2026-08-27T00:00:00.000Z',
   },
 ]
 
@@ -71,6 +108,7 @@ function ConfiguredReadyStory(args: EmptyStateProps) {
 
 export const Ready: Story = {
   name: 'ready (harness + provider)',
+  render: (args) => <ConfiguredReadyStory {...args} />,
   args: {
     variant: 'ready',
     workingDir: '/Users/sergio/Documents/workspaces/iii/workers',
@@ -79,6 +117,7 @@ export const Ready: Story = {
     systemPrompt: DEFAULT_SYSTEM_PROMPT_STATE,
     onSystemPromptChange: fn(),
     onSkillsChange: fn(),
+    agentEntries: agents,
   },
 }
 
@@ -97,6 +136,7 @@ export const ReadyConfigured: Story = {
     onSystemPromptChange: fn(),
     skills: ['design', 'linear-workflow', 'canonicalize-tailwind'],
     onSkillsChange: fn(),
+    agentEntries: agents,
   },
 }
 
@@ -109,6 +149,7 @@ export const ReadyWithoutProject: Story = {
     systemPrompt: DEFAULT_SYSTEM_PROMPT_STATE,
     onSystemPromptChange: fn(),
     onSkillsChange: fn(),
+    agentEntries: agents,
   },
 }
 

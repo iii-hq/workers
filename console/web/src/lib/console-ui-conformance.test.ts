@@ -22,6 +22,7 @@ import componentNames from '@iii-dev/console-ui/component-names'
 import tokenNames from '@iii-dev/console-ui/token-names'
 import uiClasses, { uiClassNames } from '@iii-dev/console-ui/ui-classes'
 import { describe, expect, it } from 'vitest'
+import { ModelPicker } from '@/components/chat/ModelPicker'
 import { AnnotationLayer, AnnotationList } from '@/components/ui/Annotations'
 import { AnsiText } from '@/components/ui/AnsiText'
 import { Badge } from '@/components/ui/Badge'
@@ -153,6 +154,7 @@ const conformance: {
   ListItem: typeof ConsoleUi.ListItem
   Markdown: typeof ConsoleUi.Markdown
   MarkdownPreview: typeof ConsoleUi.MarkdownPreview
+  ModelPicker: typeof ConsoleUi.ModelPicker
   PageBody: typeof ConsoleUi.PageBody
   PageHeader: typeof ConsoleUi.PageHeader
   PageMain: typeof ConsoleUi.PageMain
@@ -230,6 +232,7 @@ const conformance: {
   ListItem,
   Markdown,
   MarkdownPreview,
+  ModelPicker,
   PageBody,
   PageHeader,
   PageMain,

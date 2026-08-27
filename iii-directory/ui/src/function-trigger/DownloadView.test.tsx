@@ -35,7 +35,7 @@ describe('SkillsDownloadView', () => {
     expect(writtenLists).toEqual([
       { label: 'skills written', names: ['index.md'] },
       { label: 'system prompts written', names: ['assistant'] },
-      { label: 'agents written', names: ['reviewer'] },
+      { label: 'agent profiles written', names: ['reviewer'] },
     ])
   })
 })

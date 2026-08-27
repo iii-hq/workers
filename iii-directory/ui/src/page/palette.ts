@@ -1,7 +1,7 @@
 /**
  * The directory worker in the command palette, before its page is even
  * open. One combined source answers a query across all three collections
- * (skills, system prompts, agents) — the worker has no unified search
+ * (skills, system prompts, agent profiles) — the worker has no unified search
  * function, so this fetches each collection's list and filters
  * client-side, the same as the in-page filter does. Rows open the page on
  * that collection with the entry selected (see the page's panelContext
@@ -30,7 +30,11 @@ const COLLECTIONS: {
     label: 'System prompts',
     listFn: 'directory::system-prompts::list',
   },
-  { id: 'agents', label: 'Agents', listFn: 'directory::agents::list' },
+  {
+    id: 'agents',
+    label: 'Agent Profiles',
+    listFn: 'directory::agents::list',
+  },
 ]
 
 interface Row {
@@ -50,7 +54,7 @@ async function listCollection(
     payload,
   )
   // Skills answer `{ skills }`, system prompts answer `{ prompts }`, and
-  // agents answer `{ agents }`.
+  // agent profiles answer `{ agents }`.
   const items = (out.skills ??
     out.prompts ??
     out.agents ??
@@ -105,8 +109,8 @@ export function registerDirectoryPalette(host: Host): void {
     {
       id: 'open',
       title: 'Open Directory',
-      detail: 'Filesystem-backed skills, system prompts and agents',
-      keywords: ['skills', 'system prompts', 'agents'],
+      detail: 'Filesystem-backed skills, system prompts and agent profiles',
+      keywords: ['skills', 'system prompts', 'agent profiles', 'agents'],
       run: () => host.panels?.open({ pageId: 'directory', context: {} }),
     },
   ])

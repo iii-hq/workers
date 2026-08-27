@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { SegmentedControl } from './ModeToggle'
+import { TooltipProvider } from './Tooltip'
 
 describe('SegmentedControl', () => {
   it('uses shared line tabs and semantic icons by default', () => {
@@ -40,5 +41,28 @@ describe('SegmentedControl', () => {
     expect(html).toContain('role="radiogroup"')
     expect(html).toContain('iii-ui-segmented')
     expect(html).not.toContain('iii-ui-tab__icon')
+  })
+
+  it('renders icon-only tabs with accessible labels and tooltip triggers', () => {
+    const html = renderToStaticMarkup(
+      <TooltipProvider delayDuration={0}>
+        <SegmentedControl
+          value="skills"
+          onChange={() => undefined}
+          iconOnly
+          options={[
+            { value: 'skills', label: 'Skills' },
+            { value: 'agents', label: 'Agent Profiles' },
+          ]}
+          aria-label="Directory collection"
+        />
+      </TooltipProvider>,
+    )
+
+    expect(html).toContain('data-icon-only="true"')
+    expect(html).toContain('aria-label="Skills"')
+    expect(html).toContain('aria-label="Agent Profiles"')
+    expect(html).toContain('data-state="closed"')
+    expect(html).not.toContain('<span>Skills</span>')
   })
 })

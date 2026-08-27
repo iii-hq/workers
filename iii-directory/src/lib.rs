@@ -20,10 +20,10 @@
 //!     namespace under the global or local root.
 //!   * **System prompts** (`directory::system-prompts::*`): filesystem-backed
 //!     prompts loaded from `system-prompts/` path segments with YAML frontmatter.
-//!   * **Agents** (`directory::agents::*`): filesystem-backed agent
+//!   * **Agent Profiles** (`directory::agents::*`): filesystem-backed
 //!     profiles stored directly under `agents_folder` — reusable session
 //!     identities whose file body is the system prompt, with display
-//!     name / emoji logo / skill filter / delegation fields in required
+//!     name / emoji logo / skill filter in required
 //!     YAML frontmatter (see `docs/architecture/agent-profile-storage.md`).
 //!   * **Registry** (`directory::registry::*`): HTTP proxy over
 //!     `api.workers.iii.dev` with the same `workers::{list,info}` shape
@@ -39,17 +39,17 @@
 //! defaults to `tag=latest`) or from a GitHub repo (`repo=URL
 //! skill=NAME branch?=main`) and writes skills/system prompts into
 //! `<skills_folder>/<namespace>/...`; legacy `prompts/` paths are ignored,
-//! while registry agent entries are routed to `agents_folder`.
+//! while registry agent-profile entries are routed to `agents_folder`.
 //! `directory::skills::update` /
 //! `directory::system-prompts::update` /
 //! `directory::agents::update` overwrite one existing file with edited
 //! full-file content; `directory::skills::{create,delete}`,
 //! `directory::system-prompts::{create,delete}` and
-//! `directory::agents::{create,delete}` manage skill/system-prompt/agent
+//! `directory::agents::{create,delete}` manage skill/system-prompt/agent-profile
 //! files (never touching the read-only `agents_skills_folder`). After
 //! every successful write the worker fires the matching family's
 //! `directory::*::on-change` (skills / system-prompts /
-//! agents) so subscribers can forward change notifications to their
+//! agent profiles) so subscribers can forward change notifications to their
 //! clients.
 //!
 //! The worker also ships an injectable console UI (see [`ui`]): a

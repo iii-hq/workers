@@ -57,6 +57,41 @@ export const DEFAULT_SYSTEM_PROMPT_STATE: SystemPromptState = {
   addons: [],
 }
 
+/** Agent id encoded in a new-session selection, or null for manual setup. */
+export function agentIdFromSystemPrompt(
+  state: SystemPromptState,
+): string | null {
+  if (
+    typeof state.choice !== 'object' ||
+    !state.choice.named.startsWith(AGENT_CHOICE_PREFIX)
+  ) {
+    return null
+  }
+  return state.choice.named.slice(AGENT_CHOICE_PREFIX.length) || null
+}
+
+/** Select an agent profile while preserving the dormant manual fields. */
+export function withAgentChoice(
+  state: SystemPromptState,
+  agentId: string,
+): SystemPromptState {
+  return {
+    ...state,
+    choice: { named: `${AGENT_CHOICE_PREFIX}${agentId}` },
+    namedBody: '',
+    strategy: 'enrich',
+  }
+}
+
+/** Enter manual setup without carrying an agent profile into the first send. */
+export function withoutAgentChoice(
+  state: SystemPromptState,
+): SystemPromptState {
+  return agentIdFromSystemPrompt(state) === null
+    ? state
+    : { ...state, choice: 'default', namedBody: '' }
+}
+
 /** Map picker state to the per-send selection; null = send no prompt fields. */
 export function toSelection(
   s: SystemPromptState,
@@ -104,16 +139,7 @@ export function agentIdForSend(
   state: { turnEstablished: boolean; willQueue: boolean },
 ): string | undefined {
   if (state.turnEstablished || state.willQueue) return undefined
-  if (
-    typeof s.choice === 'object' &&
-    s.choice !== null &&
-    'named' in s.choice &&
-    s.choice.named.startsWith(AGENT_CHOICE_PREFIX)
-  ) {
-    const id = s.choice.named.slice(AGENT_CHOICE_PREFIX.length)
-    return id || undefined
-  }
-  return undefined
+  return agentIdFromSystemPrompt(s) ?? undefined
 }
 
 export function toggleSkillSelection(

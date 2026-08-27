@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import type { UserMessage } from '@/types/chat'
+import type { AssistantMessage, UserMessage } from '@/types/chat'
 import { Message } from './Message'
 
 const spawnMessage: UserMessage = {
@@ -10,6 +10,25 @@ const spawnMessage: UserMessage = {
   spawn: true,
   createdAt: 0,
 }
+
+const assistantMessage: AssistantMessage = {
+  id: 'assistant-message',
+  role: 'assistant',
+  content: 'Done.',
+  model: 'codex/gpt-5.6-sol',
+  createdAt: 0,
+}
+
+describe('AssistantMessage', () => {
+  it('shows the session agent profile name in the message header', () => {
+    const html = renderToStaticMarkup(
+      <Message message={assistantMessage} agentName="Researcher" />,
+    )
+
+    expect(html).toContain('>Researcher</span>')
+    expect(html).toContain('· codex/gpt-5.6-sol')
+  })
+})
 
 describe('SpawnTaskMessage', () => {
   it('uses the shared card recipe and current sub-agent identity', () => {

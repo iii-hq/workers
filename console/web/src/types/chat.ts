@@ -327,6 +327,8 @@ export interface ConversationMetadataEdits {
   workingDir?: string | null
   memoryBank?: string | null
   systemPrompt?: SystemPromptState
+  /** An own `undefined` value clears the selected agent profile. */
+  agentProfile?: AgentProfileSnapshot | undefined
   /** An own `undefined` value records an explicit All-skills selection. */
   skills?: string[] | undefined
 }
@@ -358,6 +360,16 @@ export type SubagentColor =
  */
 export interface SubagentAppearance {
   name: string
+  icon?: SubagentIcon
+  color?: SubagentColor
+}
+
+/** Directory agent profile frozen onto session metadata at selection/send. */
+export interface AgentProfileSnapshot {
+  id: string
+  name: string
+  model?: ModelId
+  reasoningEffort?: ThinkingLevel
   icon?: SubagentIcon
   color?: SubagentColor
 }
@@ -401,6 +413,8 @@ export interface Conversation {
    * Omitted = `DEFAULT_SYSTEM_PROMPT_STATE`.
    */
   systemPrompt?: SystemPromptState
+  /** Selected Directory agent profile, frozen for session identity/rendering. */
+  agentProfile?: AgentProfileSnapshot
   /** Undefined/empty means all model-invocable skills; otherwise exact IDs. */
   skills?: string[]
   /**

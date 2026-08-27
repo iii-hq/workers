@@ -37,6 +37,11 @@ pub(super) fn scenario() -> ScenarioFixture {
                 2,
             )),
     )
+    // Console E2E reuses this fixture for longer UI journeys (workspace
+    // persistence, reloads, multiple browsers, and responsive navigation).
+    // Keep the playground alive for those interactions after the turn itself
+    // has completed instead of applying the short direct-scenario default.
+    .scenario_timeout_ms(60_000)
     .verify(|run| {
         run.expect_assistant_texts([TEXT])?;
         run.expect_message_counts(1, 1, 0)?;
@@ -53,6 +58,7 @@ mod tests {
     #[test]
     fn stream_has_one_terminal_frame_and_matching_response() {
         let fixture = scenario();
+        assert_eq!(fixture.scenario.deadlines.scenario_ms, 60_000);
         let generation = &fixture.script.generations[0];
         assert_eq!(
             generation
