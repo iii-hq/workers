@@ -2,7 +2,7 @@
 
 [package]
 name = "provider-openai-codex"
-version = "0.4.5"
+version = "0.4.6-rc.1"
 edition = "2021"
 publish = false
 license = "Apache-2.0"
