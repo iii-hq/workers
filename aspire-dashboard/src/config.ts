@@ -5,6 +5,13 @@ import { z } from 'zod'
 
 const port = z.number().int().min(1).max(65535)
 
+// The dashboard process runs with `--allow-anonymous`, and OTLP ingestion is
+// unauthenticated whenever secure_otlp is false - which is the default, because
+// iii-observability cannot authenticate to a secure endpoint. A non-loopback
+// bind_host would therefore put an open dashboard and an open trace sink on the
+// network. Remote viewing goes through the Console proxy instead.
+const LOOPBACK_HOST = /^(?:localhost|127(?:\.\d{1,3}){3}|::1)$/
+
 const RuntimeFields = z
   .object({
     aspire_command: z
@@ -12,7 +19,14 @@ const RuntimeFields = z
       .min(1)
       .default(['npx', '-y', '@microsoft/aspire-cli', 'dashboard', 'run'])
       .describe('Command that launches the standalone Aspire Dashboard process (no Docker)'),
-    bind_host: z.string().default('127.0.0.1').describe('Loopback interface for the dashboard and OTLP ports'),
+    bind_host: z
+      .string()
+      .default('127.0.0.1')
+      .refine((host) => LOOPBACK_HOST.test(host), {
+        message:
+          'bind_host must be a loopback address (127.x.x.x, ::1, or localhost): the dashboard runs anonymously and OTLP ingestion is unauthenticated',
+      })
+      .describe('Loopback interface for the dashboard and OTLP ports'),
     dashboard_port: port.default(18888).describe('Host port for the Aspire Dashboard web UI'),
     proxy_port: port.default(18887).describe('Host port for the frame-safe reverse proxy used by the Console page'),
     otlp_port: port.default(4317).describe('Host port for the Aspire Dashboard OTLP/gRPC endpoint'),

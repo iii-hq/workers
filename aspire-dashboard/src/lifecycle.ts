@@ -21,12 +21,26 @@ export async function assertPortsFree(ports: readonly number[], host: string) {
   }
 }
 
-export async function respondsOverHttp(url: string, fetchImpl: typeof fetch = fetch) {
+export async function respondsOverHttp(url: string, fetchImpl: typeof fetch = fetch, signal?: AbortSignal) {
   try {
-    const response = await fetchImpl(url, { redirect: 'manual' })
+    const response = await fetchImpl(url, { redirect: 'manual', signal })
     return response.status === 200 || (response.status >= 300 && response.status < 400)
   } catch {
     return false
+  }
+}
+
+// Shares one run between overlapping callers. The dashboard has a single
+// process and a fixed set of ports, so two concurrent starts would both clear
+// the port check before either child binds, and the second would overwrite the
+// first - leaving an untracked process that stop cannot reach.
+export function singleFlight<T>(run: () => Promise<T>): () => Promise<T> {
+  let inFlight: Promise<T> | null = null
+  return () => {
+    inFlight ??= run().finally(() => {
+      inFlight = null
+    })
+    return inFlight
   }
 }
 
@@ -47,7 +61,10 @@ export async function waitForHttp(options: {
   const deadline = now() + options.timeoutMs
   while (now() < deadline) {
     if (options.exited()) return 'exited'
-    if (await respondsOverHttp(options.url, options.fetch)) return 'ready'
+    // The probe carries the remaining deadline. Without it, an endpoint that
+    // accepts the connection and never answers would hold this loop open past
+    // timeoutMs, so the caller never reaches its own failure handling.
+    if (await respondsOverHttp(options.url, options.fetch, AbortSignal.timeout(deadline - now()))) return 'ready'
     await sleep(intervalMs)
   }
   return 'timeout'

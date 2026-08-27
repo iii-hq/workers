@@ -17,6 +17,18 @@ describe('Aspire Dashboard config', () => {
     expect(RuntimeConfigSchema.parse({}).secure_otlp).toBe(false)
   })
 
+  it('accepts loopback bind hosts', () => {
+    for (const bind_host of ['127.0.0.1', '127.0.0.53', '::1', 'localhost']) {
+      expect(RuntimeConfigSchema.parse({ bind_host }).bind_host).toBe(bind_host)
+    }
+  })
+
+  it('rejects non-loopback bind hosts, which would expose the anonymous dashboard and OTLP ingest', () => {
+    for (const bind_host of ['0.0.0.0', '10.0.0.5', '192.168.1.4', '::']) {
+      expect(() => RuntimeConfigSchema.parse({ bind_host })).toThrow(/loopback/)
+    }
+  })
+
   it('rejects reused ports', () => {
     expect(() =>
       RuntimeConfigSchema.parse({

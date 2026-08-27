@@ -17,7 +17,7 @@ import {
   registerAspireDashboardConfig,
   watchConfiguration,
 } from './configuration.js'
-import { assertPortsFree, processExited, waitForHttp } from './lifecycle.js'
+import { assertPortsFree, processExited, singleFlight, waitForHttp } from './lifecycle.js'
 
 const { values } = parseArgs({
   options: {
@@ -126,7 +126,7 @@ iii.registerTriggerType<Record<string, never>>(
   {
     id: CHANGED_TRIGGER,
     description:
-      'Fires when the Aspire Dashboard process changes state or when iii-observability configuration is updated. Payload: reason (dashboard|observability) and the dashboard snapshot that aspire-dashboard::status also reports. Bind with an empty config.',
+      "Fires when the Aspire Dashboard process changes state, when this worker's own configuration is updated, or when iii-observability configuration is updated. Payload: reason (dashboard|observability) and the dashboard snapshot that aspire-dashboard::status also reports. Bind with an empty config.",
   },
   {
     async registerTrigger({ id, function_id, namespace }) {
@@ -145,6 +145,11 @@ type ProxyState = {
 }
 
 let proxy: ProxyState | null = null
+
+// Upgraded sockets outlive the request that created them, and `server.close()`
+// neither destroys them nor fires its callback while one is open. A single live
+// dashboard websocket would otherwise stall proxy replacement and shutdown.
+const upgradedSockets = new Set<net.Socket>()
 
 const droppedProxyHeaders = new Set([
   'connection',
@@ -197,6 +202,8 @@ function proxyRequest(req: IncomingMessage, res: ServerResponse) {
 
 function proxyUpgrade(req: IncomingMessage, socket: net.Socket, head: Buffer) {
   const config = holder.current
+  upgradedSockets.add(socket)
+  socket.once('close', () => upgradedSockets.delete(socket))
   const upstream = net.connect(config.dashboard_port, hostForUrl(config.bind_host), () => {
     const headers = copyProxyHeaders(req.headers)
     headers.host = `${hostForUrl(config.bind_host)}:${config.dashboard_port}`
@@ -218,13 +225,18 @@ function proxyUpgrade(req: IncomingMessage, socket: net.Socket, head: Buffer) {
   socket.on('error', () => upstream.destroy())
 }
 
+async function closeProxy() {
+  if (!proxy) return
+  for (const socket of upgradedSockets) socket.destroy()
+  upgradedSockets.clear()
+  await new Promise<void>((done) => proxy?.server.close(() => done()))
+  proxy = null
+}
+
 async function ensureProxy() {
   const config = holder.current
   if (proxy && proxy.host === config.bind_host && proxy.port === config.proxy_port) return
-  if (proxy) {
-    await new Promise<void>((done) => proxy?.server.close(() => done()))
-    proxy = null
-  }
+  await closeProxy()
   const server = http.createServer(proxyRequest)
   server.on('upgrade', proxyUpgrade)
   await new Promise<void>((resolve, reject) => {
@@ -257,7 +269,7 @@ async function killProcess(child: ChildProcess, graceMs: number) {
   if (!exited) child.kill('SIGKILL')
 }
 
-async function startDashboard() {
+async function spawnDashboard() {
   const existing = dashboard
   if (existing && existing.state === 'running' && !processExited(existing.process)) {
     return publicDashboard()
@@ -340,6 +352,9 @@ async function startDashboard() {
   emitChanged('dashboard')
   return publicDashboard()
 }
+
+// Boot auto-start and an `aspire-dashboard::start` trigger can arrive together.
+const startDashboard = singleFlight(spawnDashboard)
 
 async function stopDashboard() {
   if (dashboard) await killProcess(dashboard.process, holder.current.stop_grace_ms)
@@ -644,7 +659,7 @@ if (holder.current.auto_start) {
 
 async function shutdown() {
   await stopDashboard()
-  if (proxy) await new Promise<void>((done) => proxy?.server.close(() => done()))
+  await closeProxy()
   await iii.shutdown()
 }
 
