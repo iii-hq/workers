@@ -45,6 +45,7 @@ INTEGRATION_WORKERS = {
     "context-manager",
     "iii-directory",
     "state",
+    "database",
     "console",
 }
 INTEGRATION_DOC_GLOBS = (

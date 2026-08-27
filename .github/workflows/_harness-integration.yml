@@ -100,10 +100,8 @@ jobs:
           package-manager-cache: false
           node-version: 22
 
-      # The engine source is immutable at the locked revision. Cache the final
-      # executable, not its multi-gigabyte target directory, so a hit can skip
-      # Cargo entirely instead of merely making the unconditional rebuild less
-      # cold.
+      # The scenario engine source is immutable at the locked revision. Cache
+      # its final executable so a hit skips the engine build.
       - name: Restore pinned engine binary
         id: engine-cache
         uses: actions/cache/restore@v4
@@ -132,7 +130,172 @@ jobs:
           sha256sum "$bin"
           echo "bin=$bin" >> "$GITHUB_OUTPUT"
 
-      - name: Restore integration Rust cache
+      - name: Read and validate compose.lock
+        id: compose-lock
+        run: |
+          set -euo pipefail
+          lock=harness/tests/integration/compose.lock
+          read_field() {
+            local field=$1 values
+            values=$(sed -n "s/^${field} = \"\\([^\"]*\\)\"$/\\1/p" "$lock")
+            [[ $(printf '%s\n' "$values" | sed '/^$/d' | wc -l) -eq 1 ]] || {
+              echo "compose.lock: $field must appear exactly once"
+              exit 3
+            }
+            printf '%s' "$values"
+          }
+          invalid=$(sed \
+            -e '/^[[:space:]]*$/d' \
+            -e '/^[[:space:]]*#/d' \
+            -e '/^\(repository\|tag\|revision\|binary\|x86_64_asset\|x86_64_sha256\|aarch64_asset\|aarch64_sha256\) = "[^"]*"$/d' \
+            "$lock")
+          [[ -z "$invalid" ]] || {
+            echo "compose.lock: unsupported or malformed entry"
+            printf '%s\n' "$invalid"
+            exit 3
+          }
+          repository=$(read_field repository)
+          tag=$(read_field tag)
+          revision=$(read_field revision)
+          binary=$(read_field binary)
+          x86_64_asset=$(read_field x86_64_asset)
+          x86_64_sha256=$(read_field x86_64_sha256)
+          aarch64_asset=$(read_field aarch64_asset)
+          aarch64_sha256=$(read_field aarch64_sha256)
+          [[ "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || {
+            echo "compose.lock: repository must be an owner/name slug"
+            exit 3
+          }
+          [[ "$tag" =~ ^iii/v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]] || {
+            echo "compose.lock: tag must be an iii release candidate"
+            exit 3
+          }
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || { echo "compose.lock: revision must be 40-hex"; exit 3; }
+          [[ "$binary" == "iii" ]] || { echo "compose.lock: binary must be iii"; exit 3; }
+          [[ "$x86_64_asset" == "iii-x86_64-unknown-linux-musl.tar.gz" ]] || {
+            echo "compose.lock: unsupported x86_64 asset"
+            exit 3
+          }
+          [[ "$aarch64_asset" == "iii-aarch64-unknown-linux-gnu.tar.gz" ]] || {
+            echo "compose.lock: unsupported aarch64 asset"
+            exit 3
+          }
+          [[ "$x86_64_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "compose.lock: invalid x86_64 digest"; exit 3; }
+          [[ "$aarch64_sha256" =~ ^[0-9a-f]{64}$ ]] || { echo "compose.lock: invalid aarch64 digest"; exit 3; }
+          {
+            echo "repository=$repository"
+            echo "tag=$tag"
+            echo "revision=$revision"
+            echo "binary=$binary"
+            echo "x86_64_asset=$x86_64_asset"
+            echo "x86_64_sha256=$x86_64_sha256"
+            echo "aarch64_asset=$aarch64_asset"
+            echo "aarch64_sha256=$aarch64_sha256"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install pinned Compose release
+        id: compose-engine
+        env:
+          ARCH: ${{ runner.arch }}
+          REPOSITORY: ${{ steps.compose-lock.outputs.repository }}
+          TAG: ${{ steps.compose-lock.outputs.tag }}
+          BINARY: ${{ steps.compose-lock.outputs.binary }}
+          X86_64_ASSET: ${{ steps.compose-lock.outputs.x86_64_asset }}
+          X86_64_SHA256: ${{ steps.compose-lock.outputs.x86_64_sha256 }}
+          AARCH64_ASSET: ${{ steps.compose-lock.outputs.aarch64_asset }}
+          AARCH64_SHA256: ${{ steps.compose-lock.outputs.aarch64_sha256 }}
+        run: |
+          set -euo pipefail
+          case "$ARCH" in
+            X64) asset=$X86_64_ASSET; expected=$X86_64_SHA256 ;;
+            ARM64) asset=$AARCH64_ASSET; expected=$AARCH64_SHA256 ;;
+            *) echo "unsupported runner architecture: $ARCH"; exit 3 ;;
+          esac
+          archive="$RUNNER_TEMP/$asset"
+          destination="$GITHUB_WORKSPACE/target/integration-compose-release"
+          url="https://github.com/$REPOSITORY/releases/download/$TAG/$asset"
+          curl --proto '=https' --tlsv1.2 --retry 3 --retry-all-errors -fsSLo "$archive" "$url"
+          printf '%s  %s\n' "$expected" "$archive" | sha256sum --check
+          [[ "$(tar -tzf "$archive")" == "$BINARY" ]] || {
+            echo "release archive must contain only $BINARY"
+            exit 3
+          }
+          mkdir -p "$destination"
+          tar -xzf "$archive" -C "$destination"
+          bin="$destination/$BINARY"
+          [[ -x "$bin" ]] || { echo "release binary missing at $bin"; exit 3; }
+          expected_version=${TAG#iii/v}
+          actual_version=$("$bin" --version)
+          [[ "$actual_version" == "$expected_version" ]] || {
+            echo "release binary version does not match $TAG"
+            exit 3
+          }
+          sha256sum "$bin"
+          echo "bin=$bin" >> "$GITHUB_OUTPUT"
+          echo "release=$TAG" >> "$GITHUB_OUTPUT"
+
+      # Restore only final executables first. A PR normally gets these exact
+      # binaries from the latest trusted main build, so Cargo runs only for a
+      # component whose own inputs (or shared Rust inputs) changed.
+      - name: Restore harness binaries
+        id: harness-bin-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            harness/target/release/harness
+            harness/target/release/harness-integration
+          key: integration-component-bin-v1-rust-1.97.1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.coverage && 'coverage' || 'release' }}-harness-${{ hashFiles('harness/**', 'crates/**', 'packages/console-ui/**', 'rust-toolchain.toml', 'pnpm-lock.yaml', 'package.json') }}
+
+      - name: Restore queue binary
+        id: queue-bin-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: queue/target/release/queue
+          key: integration-component-bin-v1-rust-1.97.1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.coverage && 'coverage' || 'release' }}-queue-${{ hashFiles('queue/**', 'crates/**', 'rust-toolchain.toml') }}
+
+      - name: Restore iii-directory binary
+        id: directory-bin-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: iii-directory/target/release/iii-directory
+          key: integration-component-bin-v1-rust-1.97.1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.coverage && 'coverage' || 'release' }}-iii-directory-${{ hashFiles('iii-directory/**', 'crates/**', 'packages/console-ui/**', 'rust-toolchain.toml', 'pnpm-lock.yaml', 'package.json') }}
+
+      - name: Restore session-manager binary
+        id: session-bin-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: session-manager/target/release/session-manager
+          key: integration-component-bin-v1-rust-1.97.1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.coverage && 'coverage' || 'release' }}-session-manager-${{ hashFiles('session-manager/**', 'crates/**', 'rust-toolchain.toml') }}
+
+      - name: Restore context-manager binary
+        id: context-bin-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: context-manager/target/release/context-manager
+          key: integration-component-bin-v1-rust-1.97.1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.coverage && 'coverage' || 'release' }}-context-manager-${{ hashFiles('context-manager/**', 'crates/**', 'packages/console-ui/**', 'rust-toolchain.toml', 'pnpm-lock.yaml', 'package.json') }}
+
+      - name: Restore state binary
+        id: state-bin-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: state/target/release/state
+          key: integration-component-bin-v1-rust-1.97.1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.coverage && 'coverage' || 'release' }}-state-${{ hashFiles('state/**', 'crates/**', 'packages/console-ui/**', 'rust-toolchain.toml', 'pnpm-lock.yaml', 'package.json') }}
+
+      - name: Restore database binary
+        id: database-bin-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: database/target/release/database
+          key: integration-component-bin-v1-rust-1.97.1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.coverage && 'coverage' || 'release' }}-database-${{ hashFiles('database/**', 'crates/**', 'packages/console-ui/**', 'rust-toolchain.toml', 'pnpm-lock.yaml', 'package.json') }}
+
+      - name: Restore console binary
+        id: console-bin-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: console/target/release/console
+          key: integration-component-bin-v1-rust-1.97.1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.coverage && 'coverage' || 'release' }}-console-${{ hashFiles('console/**', 'crates/**', 'packages/console-ui/**', 'rust-toolchain.toml', 'pnpm-lock.yaml', 'package.json') }}
+
+      - name: Restore fallback integration Rust cache
         id: stack-cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -160,14 +323,61 @@ jobs:
         if: inputs.coverage
         run: mkdir -p target/coverage/profraw
 
-      - name: Run integration scenarios
+      - name: Build missing integration binaries
         env:
           RUSTFLAGS: ${{ inputs.coverage && '-Cinstrument-coverage -Cllvm-args=-runtime-counter-relocation' || '' }}
           LLVM_PROFILE_FILE: ${{ inputs.coverage && format('{0}/target/coverage/profraw/%m_%p%c.profraw', github.workspace) || '' }}
-        run: >-
-          make -C harness integration-test
-          III_BIN="${{ steps.engine.outputs.bin }}"
-          CARGO_BUILD_FLAGS="--locked --timings"
+        run: |
+          set -euo pipefail
+          build_component() {
+            local hit=$1 manifest=$2
+            shift 2
+            if [[ "$hit" == "true" ]]; then
+              echo "using cached binaries for $manifest"
+              return
+            fi
+            cargo build --locked --release --timings --manifest-path "$manifest" "$@"
+          }
+
+          build_component '${{ steps.queue-bin-cache.outputs.cache-hit }}' queue/Cargo.toml
+          build_component '${{ steps.directory-bin-cache.outputs.cache-hit }}' iii-directory/Cargo.toml
+          build_component '${{ steps.session-bin-cache.outputs.cache-hit }}' session-manager/Cargo.toml
+          build_component '${{ steps.context-bin-cache.outputs.cache-hit }}' context-manager/Cargo.toml
+          build_component '${{ steps.state-bin-cache.outputs.cache-hit }}' state/Cargo.toml
+          build_component '${{ steps.database-bin-cache.outputs.cache-hit }}' database/Cargo.toml
+          build_component '${{ steps.harness-bin-cache.outputs.cache-hit }}' harness/Cargo.toml -p harness -p harness-integration
+          build_component '${{ steps.console-bin-cache.outputs.cache-hit }}' console/Cargo.toml
+
+      - name: Verify integration binaries
+        run: |
+          set -euo pipefail
+          binaries=(
+            harness/target/release/harness
+            harness/target/release/harness-integration
+            queue/target/release/queue
+            iii-directory/target/release/iii-directory
+            session-manager/target/release/session-manager
+            context-manager/target/release/context-manager
+            state/target/release/state
+            database/target/release/database
+            console/target/release/console
+          )
+          for binary in "${binaries[@]}"; do
+            [[ -x "$binary" ]] || { echo "missing integration binary: $binary"; exit 3; }
+            sha256sum "$binary"
+          done
+
+      - name: Smoke test iii compose
+        env:
+          III_BIN: ${{ steps.compose-engine.outputs.bin }}
+          COMPOSE_SMOKE_ROOT: ${{ github.workspace }}/target/integration-compose-smoke
+          COMPOSE_LLVM_PROFILE_FILE: ${{ inputs.coverage && format('{0}/target/coverage/profraw/%m_%p%c.profraw', github.workspace) || '' }}
+        run: bash harness/tests/integration/compose-smoke.sh
+
+      - name: Run integration scenarios
+        env:
+          LLVM_PROFILE_FILE: ${{ inputs.coverage && format('{0}/target/coverage/profraw/%m_%p%c.profraw', github.workspace) || '' }}
+        run: make -C harness integration-run III_BIN="${{ steps.engine.outputs.bin }}"
 
       - name: Install Console web dependencies
         working-directory: console/web
@@ -176,12 +386,6 @@ jobs:
       - name: Build Console web app
         working-directory: console/web
         run: pnpm build
-
-      - name: Build Console worker
-        env:
-          RUSTFLAGS: ${{ inputs.coverage && '-Cinstrument-coverage -Cllvm-args=-runtime-counter-relocation' || '' }}
-          LLVM_PROFILE_FILE: ${{ inputs.coverage && format('{0}/target/coverage/profraw/%m_%p%c.profraw', github.workspace) || '' }}
-        run: cargo build --locked --release --timings --manifest-path console/Cargo.toml
 
       - name: Install Playwright Chromium
         working-directory: console/web
@@ -229,6 +433,66 @@ jobs:
             }
           done
 
+      # Publish component binaries only after every integration and browser
+      # check passed on trusted main.
+      - name: Save harness binaries
+        if: inputs.save-cache && steps.harness-bin-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            harness/target/release/harness
+            harness/target/release/harness-integration
+          key: ${{ steps.harness-bin-cache.outputs.cache-primary-key }}
+
+      - name: Save queue binary
+        if: inputs.save-cache && steps.queue-bin-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: queue/target/release/queue
+          key: ${{ steps.queue-bin-cache.outputs.cache-primary-key }}
+
+      - name: Save iii-directory binary
+        if: inputs.save-cache && steps.directory-bin-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: iii-directory/target/release/iii-directory
+          key: ${{ steps.directory-bin-cache.outputs.cache-primary-key }}
+
+      - name: Save session-manager binary
+        if: inputs.save-cache && steps.session-bin-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: session-manager/target/release/session-manager
+          key: ${{ steps.session-bin-cache.outputs.cache-primary-key }}
+
+      - name: Save context-manager binary
+        if: inputs.save-cache && steps.context-bin-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: context-manager/target/release/context-manager
+          key: ${{ steps.context-bin-cache.outputs.cache-primary-key }}
+
+      - name: Save state binary
+        if: inputs.save-cache && steps.state-bin-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: state/target/release/state
+          key: ${{ steps.state-bin-cache.outputs.cache-primary-key }}
+
+      - name: Save database binary
+        if: inputs.save-cache && steps.database-bin-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: database/target/release/database
+          key: ${{ steps.database-bin-cache.outputs.cache-primary-key }}
+
+      - name: Save console binary
+        if: inputs.save-cache && steps.console-bin-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: console/target/release/console
+          key: ${{ steps.console-bin-cache.outputs.cache-primary-key }}
+
       - name: Generate coverage report
         if: always() && inputs.coverage
         run: |
@@ -261,6 +525,15 @@ jobs:
         if: always()
         env:
           ENGINE_HIT: ${{ steps.engine-cache.outputs.cache-hit }}
+          COMPOSE_RELEASE: ${{ steps.compose-engine.outputs.release }}
+          HARNESS_HIT: ${{ steps.harness-bin-cache.outputs.cache-hit }}
+          QUEUE_HIT: ${{ steps.queue-bin-cache.outputs.cache-hit }}
+          DIRECTORY_HIT: ${{ steps.directory-bin-cache.outputs.cache-hit }}
+          SESSION_HIT: ${{ steps.session-bin-cache.outputs.cache-hit }}
+          CONTEXT_HIT: ${{ steps.context-bin-cache.outputs.cache-hit }}
+          STATE_HIT: ${{ steps.state-bin-cache.outputs.cache-hit }}
+          DATABASE_HIT: ${{ steps.database-bin-cache.outputs.cache-hit }}
+          CONSOLE_HIT: ${{ steps.console-bin-cache.outputs.cache-hit }}
           SAVE_CACHE: ${{ inputs.save-cache }}
         run: |
           {
@@ -268,8 +541,17 @@ jobs:
             echo
             echo "| Cache | Hit | Save enabled |"
             echo "| --- | --- | --- |"
-            echo "| pinned engine | ${ENGINE_HIT:-false} | $SAVE_CACHE |"
-            echo "| integration Rust | see rust-cache log | $SAVE_CACHE |"
+            echo "| scenario engine | ${ENGINE_HIT:-false} | $SAVE_CACHE |"
+            echo "| Compose release ${COMPOSE_RELEASE:-unavailable} | verified download | false |"
+            echo "| harness | ${HARNESS_HIT:-false} | $SAVE_CACHE |"
+            echo "| queue | ${QUEUE_HIT:-false} | $SAVE_CACHE |"
+            echo "| iii-directory | ${DIRECTORY_HIT:-false} | $SAVE_CACHE |"
+            echo "| session-manager | ${SESSION_HIT:-false} | $SAVE_CACHE |"
+            echo "| context-manager | ${CONTEXT_HIT:-false} | $SAVE_CACHE |"
+            echo "| state | ${STATE_HIT:-false} | $SAVE_CACHE |"
+            echo "| database | ${DATABASE_HIT:-false} | $SAVE_CACHE |"
+            echo "| console | ${CONSOLE_HIT:-false} | $SAVE_CACHE |"
+            echo "| fallback Rust objects | see rust-cache log | $SAVE_CACHE |"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Rust build timings
@@ -292,6 +574,7 @@ jobs:
             target/integration/*/result.json
             target/integration/*/execution.json
             target/integration/*/teardown.json
+            target/integration-compose-smoke/*.json
           if-no-files-found: ignore
 
       - name: Upload full non-pass artifacts
@@ -299,7 +582,9 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: integration-artifacts
-          path: target/integration/
+          path: |
+            target/integration/
+            target/integration-compose-smoke/
           retention-days: 14
           if-no-files-found: ignore
 

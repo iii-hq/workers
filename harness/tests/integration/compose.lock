@@ -1,0 +1,8 @@
+repository = "iii-hq/iii"
+tag = "iii/v0.23.0-rc.5"
+revision = "42b8627dd697076a339f8a1318843fae1f38a283"
+binary = "iii"
+x86_64_asset = "iii-x86_64-unknown-linux-musl.tar.gz"
+x86_64_sha256 = "84a55c93b724655cef1f9bcaa4a693bc5762c592388085cf751af4e1dbe402de"
+aarch64_asset = "iii-aarch64-unknown-linux-gnu.tar.gz"
+aarch64_sha256 = "ca42ccaa75bd506d392294e8f8aef9a7108c8ad8f175f8a536e3b30c91063c93"

@@ -78,22 +78,164 @@ def test_interface_smoke_bounds_each_engine_readiness_probe() -> None:
     ) in run
 
 
-def test_harness_integration_caches_the_final_engine_and_skips_rebuilds() -> None:
+def test_harness_integration_keeps_scenarios_on_the_source_pinned_engine() -> None:
     integration = workflow("_harness-integration.yml")
     steps = integration["jobs"]["integration"]["steps"]
     restore = named_step(steps, "Restore pinned engine binary")
     build = named_step(steps, "Build pinned engine")
     save = named_step(steps, "Save pinned engine binary")
-    stack_cache = named_step(steps, "Restore integration Rust cache")
+    lock = tomllib.loads(
+        (REPOSITORY / "harness" / "tests" / "integration" / "engine.lock").read_text()
+    )
 
+    assert lock["revision"] == "15dc993ebfdbfcabe5d299cf4cae4dd676db4c06"
     expected_path = "target/integration-engine-src/${{ steps.lock.outputs.binary }}"
     assert restore["with"]["path"] == expected_path
     assert "integration-engine-bin-rust-1.97.1" in restore["with"]["key"]
     assert "hashFiles('harness/tests/integration/engine.lock')" in restore["with"]["key"]
+    assert named_step(steps, "Checkout pinned engine source")["with"]["ref"] == (
+        "${{ steps.lock.outputs.revision }}"
+    )
     assert build["if"] == "steps.engine-cache.outputs.cache-hit != 'true'"
     assert "--locked --release --timings" in build["run"]
     assert save["with"]["path"] == expected_path
+    assert named_step(steps, "Run integration scenarios")["run"].endswith(
+        'III_BIN="${{ steps.engine.outputs.bin }}"'
+    )
+
+
+def test_harness_integration_installs_checksum_pinned_compose_release() -> None:
+    integration = workflow("_harness-integration.yml")
+    steps = integration["jobs"]["integration"]["steps"]
+    install = named_step(steps, "Install pinned Compose release")
+    stack_cache = named_step(steps, "Restore fallback integration Rust cache")
+    lock = tomllib.loads(
+        (REPOSITORY / "harness" / "tests" / "integration" / "compose.lock").read_text()
+    )
+
+    assert lock["tag"] == "iii/v0.23.0-rc.5"
+    assert lock["revision"] == "42b8627dd697076a339f8a1318843fae1f38a283"
+    assert lock["x86_64_asset"].endswith("unknown-linux-musl.tar.gz")
+    assert len(lock["x86_64_sha256"]) == 64
+    assert len(lock["aarch64_sha256"]) == 64
+    assert "--proto '=https' --tlsv1.2" in install["run"]
+    assert "sha256sum --check" in install["run"]
+    assert '[[ "$(tar -tzf "$archive")" == "$BINARY" ]]' in install["run"]
+    assert "expected_version=${TAG#iii/v}" in install["run"]
     assert "database -> target" in stack_cache["with"]["workspaces"]
+
+
+def test_harness_integration_restores_and_saves_final_component_binaries() -> None:
+    steps = workflow("_harness-integration.yml")["jobs"]["integration"]["steps"]
+    step_names = [step.get("name") for step in steps]
+    components = {
+        "harness": (
+            "Restore harness binaries",
+            "Save harness binaries",
+            "harness/target/release/harness-integration",
+        ),
+        "queue": (
+            "Restore queue binary",
+            "Save queue binary",
+            "queue/target/release/queue",
+        ),
+        "iii-directory": (
+            "Restore iii-directory binary",
+            "Save iii-directory binary",
+            "iii-directory/target/release/iii-directory",
+        ),
+        "session-manager": (
+            "Restore session-manager binary",
+            "Save session-manager binary",
+            "session-manager/target/release/session-manager",
+        ),
+        "context-manager": (
+            "Restore context-manager binary",
+            "Save context-manager binary",
+            "context-manager/target/release/context-manager",
+        ),
+        "state": (
+            "Restore state binary",
+            "Save state binary",
+            "state/target/release/state",
+        ),
+        "database": (
+            "Restore database binary",
+            "Save database binary",
+            "database/target/release/database",
+        ),
+        "console": (
+            "Restore console binary",
+            "Save console binary",
+            "console/target/release/console",
+        ),
+    }
+
+    for component, (restore_name, save_name, binary) in components.items():
+        restore = named_step(steps, restore_name)
+        save = named_step(steps, save_name)
+        assert restore["uses"] == "actions/cache/restore@v4"
+        assert binary in restore["with"]["path"]
+        assert "integration-component-bin-v1-rust-1.97.1" in restore["with"]["key"]
+        assert f"'{component}/**'" in restore["with"]["key"]
+        assert save["uses"] == "actions/cache/save@v4"
+        assert save["with"]["key"].endswith(".outputs.cache-primary-key }}")
+        assert save["if"].startswith("inputs.save-cache &&")
+        assert step_names.index(save_name) > step_names.index(
+            "Verify integration report links"
+        )
+
+    build = named_step(steps, "Build missing integration binaries")["run"]
+    run = named_step(steps, "Run integration scenarios")["run"]
+    assert "cargo build --locked --release --timings" in build
+    assert "steps.harness-bin-cache.outputs.cache-hit" in build
+    assert "steps.database-bin-cache.outputs.cache-hit" in build
+    assert "integration-run" in run
+    assert "integration-test" not in run
+    assert all(step.get("name") != "Build Console worker" for step in steps)
+
+
+def test_makefile_can_build_and_run_the_integration_stack_separately() -> None:
+    makefile = (REPOSITORY / "harness" / "Makefile").read_text()
+    assert "integration-test: integration-build integration-run" in makefile
+    assert "integration-build:" in makefile
+    assert "integration-run:" in makefile
+
+
+def test_harness_integration_smokes_the_compose_lifecycle() -> None:
+    steps = workflow("_harness-integration.yml")["jobs"]["integration"]["steps"]
+    smoke_step = named_step(steps, "Smoke test iii compose")
+    fixture_template = (
+        REPOSITORY / "harness" / "tests" / "integration" / "compose-smoke.yaml"
+    ).read_text()
+    fixture = yaml.load(
+        fixture_template.replace("@COMPOSE_ENGINE_PORT@", "3210"),
+        Loader=yaml.BaseLoader,
+    )
+    script = (
+        REPOSITORY / "harness" / "tests" / "integration" / "compose-smoke.sh"
+    ).read_text()
+
+    expected = {
+        "queue",
+        "iii-directory",
+        "session-manager",
+        "context-manager",
+        "state",
+        "database",
+    }
+    assert smoke_step["env"]["III_BIN"] == "${{ steps.compose-engine.outputs.bin }}"
+    assert smoke_step["run"] == "bash harness/tests/integration/compose-smoke.sh"
+    assert set(fixture["containers"]) == expected
+    assert all(
+        container["scripts"]["run"].startswith("@")
+        for container in fixture["containers"].values()
+    )
+    assert 'compose --up --file "$COMPOSE_FILE"' in script
+    assert "trigger compose::status" in script
+    assert "trigger state::set" in script
+    assert "trigger compose::down" in script
+    assert 'kill -TERM "$compose_pid"' in script
 
 
 def test_slow_rust_builds_upload_cargo_timing_reports() -> None:

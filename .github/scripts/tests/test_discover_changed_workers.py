@@ -338,7 +338,7 @@ class TestHarnessSelection:
         assert r.returncode == 0, r.stderr
         assert json.loads(r.stdout)["llm_router_integration"] is False
 
-    def test_database_change_stays_out_of_integration(self, tmp_path):
+    def test_database_change_runs_integration(self, tmp_path):
         repo = make_repo_with_harness(tmp_path)
         (repo / "database" / "lib.rs").write_text("// change\n")
         subprocess.run(
@@ -354,7 +354,7 @@ class TestHarnessSelection:
         assert r.returncode == 0, r.stderr
         data = json.loads(r.stdout)
         assert data["changed_workers"] == ["database"]
-        assert data["integration_changed"] is False
+        assert data["integration_changed"] is True
 
     def test_subscription_provider_change_stays_out_of_integration(self, tmp_path):
         repo = make_repo_with_harness(tmp_path)
