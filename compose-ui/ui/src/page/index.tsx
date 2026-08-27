@@ -1006,8 +1006,8 @@ export function ComposePage({ host, onRequestClose, panelSide, commands, panelCo
         ) : (
           <>
             <p className="cu-note">
-              Left to right in start order. Arrows follow <span className="cu-mono">start_after</span>; pick a container
-              to trace what it needs and what depends on it.
+              Ordered by <span className="cu-mono">start_after</span>. Pick a container to trace what it needs and what
+              depends on it.
             </p>
             <Topology input={topology} selected={selectedNode} onSelect={setSelectedNode} />
           </>

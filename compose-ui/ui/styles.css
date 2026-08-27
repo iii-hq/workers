@@ -381,14 +381,14 @@
   min-width: 0;
 }
 
-[data-iii-ui='compose-ui'] .cu-topo-engine-static {
+[data-iii-ui='compose-ui'] .cu-topo-stack .cu-topo-engine-static {
   position: static;
   height: auto;
   padding: 0.5rem 0.75rem;
   cursor: default;
 }
 
-[data-iii-ui='compose-ui'] .cu-topo-group-label-static {
+[data-iii-ui='compose-ui'] .cu-topo-stack .cu-topo-group-label-static {
   position: static;
   padding: 0;
 }
