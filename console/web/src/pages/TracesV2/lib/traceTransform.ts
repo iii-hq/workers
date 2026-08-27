@@ -43,21 +43,6 @@ export function isPendingSpan(span: {
 }
 
 /**
- * Merge one streamed/seeded span into the by-span_id accumulator.
- * Last write wins, with one guard: a late-delivered pending snapshot must
- * never overwrite the final span already stored under the same id (engine
- * storage never regresses final→pending; a stale frame can).
- */
-export function mergeDetailSpan(
-  spans: Map<string, StoredSpan>,
-  span: StoredSpan,
-): void {
-  const prev = spans.get(span.span_id)
-  if (prev && !isPendingSpan(prev) && isPendingSpan(span)) return
-  spans.set(span.span_id, span)
-}
-
-/**
  * Waterfall visualization data
  */
 export interface WaterfallData {

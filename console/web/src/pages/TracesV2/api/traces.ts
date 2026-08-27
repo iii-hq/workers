@@ -57,6 +57,11 @@ export interface TracesResponse {
   total: number
   offset: number
   limit: number
+  /** Client-side marker: the engine answered "memory exporter not enabled".
+   *  Set only by `fetchTraces`, never by the wire — it is what separates
+   *  "observability is off" from an ordinary empty result, so the UI can
+   *  reserve its no-observability message for the real thing. */
+  memoryExporterDisabled?: true
 }
 
 export interface TracesFilterParams {
@@ -174,7 +179,7 @@ export async function fetchTraces(
     )
   } catch (err) {
     if (isMemoryExporterNotEnabled(err)) {
-      return { spans: [], total: 0, offset, limit }
+      return { spans: [], total: 0, offset, limit, memoryExporterDisabled: true }
     }
     throw asError(err, 'Failed to fetch traces')
   }

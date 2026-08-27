@@ -24,7 +24,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { getIiiClient } from '@/lib/iii-client'
-import { startTraceActivityFeed } from '@/lib/traces-stream'
+import { startTraceActivityFeed } from '@/lib/traces-activity'
 
 /** forget traces with no activity for this long (strip window + wide slack) */
 const ACTIVITY_RETENTION_MS = 180_000

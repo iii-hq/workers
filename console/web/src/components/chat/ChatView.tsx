@@ -52,6 +52,13 @@ import {
   loadedSkillIds,
   slashChip,
 } from '@/lib/slash-commands'
+import {
+  CHAT_FOCUS_DROP_GRACE_MS,
+  clearChatMessageFocus,
+  shouldDropChatFocus,
+  useChatMessageFocus,
+} from '@/lib/trace-links'
+import { turnAnchorMessageId } from '@/lib/turn-anchor'
 import { useExtSessionChips, useExtSessionTurnSummaries } from '@/lib/ui-slots'
 import {
   activateWorkingDir,
@@ -1811,6 +1818,55 @@ export function ChatView({
     }
   })()
 
+  /* Trace → message landing: a pending turn-focus for THIS session resolves
+     to the transcript row to center (see lib/turn-anchor), recomputed as the
+     transcript hydrates. Consumed when MessageList lands on it. A missing
+     anchor drops the request only when nothing can still produce it — the
+     transcript is hydrated AND no turn is running (a live turn writes its
+     durable rows as it goes, so the click means "land there once it
+     exists") — and only after a grace, because completion flips the status
+     idle before the turn's last rows reach the transcript. So a stale
+     request still can't fire on a later visit. */
+  const chatFocusEvent = useChatMessageFocus()
+  const chatFocus =
+    chatFocusEvent && chatFocusEvent.sessionId === conversation.id
+      ? chatFocusEvent
+      : undefined
+  const focusMessageId = useMemo(
+    () =>
+      chatFocus
+        ? turnAnchorMessageId(conversation.messages, chatFocus.turnId)
+        : null,
+    [chatFocus, conversation.messages],
+  )
+  useEffect(() => {
+    if (!chatFocus) return
+    if (
+      !shouldDropChatFocus({
+        hydrated: conversation.hydrated,
+        working: conversation.status === 'working',
+        anchored: focusMessageId !== null,
+      })
+    ) {
+      return
+    }
+    // Any dep change — anchor resolved, a turn (re)started, a new request —
+    // cancels the pending drop; the id guard in clearChatMessageFocus keeps
+    // a stale timer from ever dropping a newer request.
+    const timer = window.setTimeout(
+      () => clearChatMessageFocus(chatFocus.id),
+      CHAT_FOCUS_DROP_GRACE_MS,
+    )
+    return () => window.clearTimeout(timer)
+  }, [chatFocus, conversation.hydrated, conversation.status, focusMessageId])
+  const chatFocusIdRef = useRef<number | null>(null)
+  chatFocusIdRef.current = chatFocus?.id ?? null
+  const handleFocusMessageHandled = useCallback(() => {
+    if (chatFocusIdRef.current !== null) {
+      clearChatMessageFocus(chatFocusIdRef.current)
+    }
+  }, [])
+
   const isDock = density === 'dock'
   const compact = isDock || onBack !== undefined
   const headerPad = compact ? 'px-3 sm:px-4' : 'px-3 sm:px-6 lg:px-9'
@@ -2225,6 +2281,8 @@ export function ChatView({
             : undefined
         }
         triggersById={triggersById}
+        focusMessageId={focusMessageId}
+        onFocusMessageHandled={handleFocusMessageHandled}
       />
       <LiveRegion announcement={announcer.announcement} />
 

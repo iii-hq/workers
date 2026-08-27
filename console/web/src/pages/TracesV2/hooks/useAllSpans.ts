@@ -21,7 +21,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getIiiClient } from '@/lib/iii-client'
-import { startAllSpansFeed } from '@/lib/traces-stream'
+import { startTraceActivityFeed } from '@/lib/traces-activity'
 import { fetchTraces, type StoredSpan } from '../api/traces'
 import { isPendingSpan, toMs } from '../lib/traceTransform'
 
@@ -29,6 +29,8 @@ import { isPendingSpan, toMs } from '../lib/traceTransform'
 const RETENTION_MS = 120_000
 /** Seed read size — bounds a busy engine's history, not the live feed. */
 const SEED_LIMIT = 500
+/** Debounce over activity ticks before re-seeding the strip. */
+const ACTIVITY_RESEED_DEBOUNCE_MS = 300
 /** Hard ceiling on retained spans; oldest effective-end evicted first. */
 const MAX_SPANS = 1_500
 
@@ -136,9 +138,18 @@ export function useAllSpans(isPaused: boolean): readonly StoredSpan[] {
     void (async () => {
       const client = await getIiiClient()
       if (disposed) return
-      const offFeed = startAllSpansFeed(client, (incoming) => {
+      // Notify-then-query: each activity tick re-seeds the strip's recent
+      // window (REPLACE semantics, same read as the initial seed), debounced
+      // so a burst of consecutive 300ms windows costs one read.
+      let reseedTimer: ReturnType<typeof setTimeout> | undefined
+      const offFeed = startTraceActivityFeed(client, () => {
         if (isPausedRef.current || isHidden()) return
-        setSpans((prev) => mergeSpans(prev, incoming, Date.now()))
+        if (reseedTimer !== undefined) return
+        reseedTimer = setTimeout(() => {
+          reseedTimer = undefined
+          if (disposed || isPausedRef.current || isHidden()) return
+          void seedRef.current()
+        }, ACTIVITY_RESEED_DEBOUNCE_MS)
       })
       const offConn = client.addConnectionStateListener((state) => {
         if (state === 'connected' && !isPausedRef.current) {
@@ -163,6 +174,10 @@ export function useAllSpans(isPaused: boolean): readonly StoredSpan[] {
         offFeed()
         offConn()
         offVisibility?.()
+        if (reseedTimer !== undefined) {
+          clearTimeout(reseedTimer)
+          reseedTimer = undefined
+        }
       }
     })()
 
