@@ -14,4 +14,4 @@ scripts:
   start: node ./index.mjs
 
 dependencies:
-  console: "^1.9.14"
+  console: "^1.9.11"
