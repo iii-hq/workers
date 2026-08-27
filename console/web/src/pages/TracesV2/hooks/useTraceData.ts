@@ -63,7 +63,11 @@ export interface UseTraceDataReturn {
   traceGroups: TraceListItem[]
   newTraceIds: Set<string>
   setNewTraceIds: React.Dispatch<React.SetStateAction<Set<string>>>
-  hasOtelConfigured: boolean
+  /** `false` ONLY on the engine's definitive "memory exporter not enabled"
+   *  answer; `null` while no response has settled yet (render loading, not
+   *  the no-observability message); `true` once any response proves the
+   *  pipeline — an empty result is an empty list, not missing observability. */
+  hasOtelConfigured: boolean | null
   isQueryLoading: boolean
   refetch: () => void
   isHoveredRef: React.RefObject<boolean>
@@ -78,7 +82,9 @@ export function useTraceData({
   hiddenFunctions,
 }: UseTraceDataOptions): UseTraceDataReturn {
   const [traceGroups, setTraceListItems] = useState<TraceListItem[]>([])
-  const [hasOtelConfigured, setHasOtelConfigured] = useState(false)
+  const [hasOtelConfigured, setHasOtelConfigured] = useState<boolean | null>(
+    null,
+  )
   const [newTraceIds, setNewTraceIds] = useState<Set<string>>(new Set())
 
   const fingerprintRef = useRef<string>('')
@@ -113,8 +119,30 @@ export function useTraceData({
   })
 
   const hiddenKey = hiddenFunctions?.join(',') ?? ''
+
+  // A scope/filter change is a DIFFERENT question — the previous answer's
+  // rows must not linger under the new scope (measured live: the old
+  // session's trace stayed on screen, under the new session's chip, for the
+  // whole slow fetch). Dropping them also re-arms the loading skeleton.
+  const scopeKey = JSON.stringify([filterParams, showSystem, debouncedSearch])
+  const scopeKeyRef = useRef(scopeKey)
+  useEffect(() => {
+    if (scopeKeyRef.current === scopeKey) return
+    scopeKeyRef.current = scopeKey
+    setTraceListItems([])
+    fingerprintRef.current = ''
+    prevTraceIdsRef.current = new Set()
+    pendingTracesRef.current = null
+    setNewTraceIds(new Set())
+  }, [scopeKey])
+
   useEffect(() => {
     if (!tracesData) return
+    if (tracesData.memoryExporterDisabled) {
+      setTraceListItems([])
+      setHasOtelConfigured(false)
+      return
+    }
 
     if (tracesData.spans && tracesData.spans.length > 0) {
       // Search uses `search_all_spans`, which returns every span of each
@@ -157,8 +185,10 @@ export function useTraceData({
       setTraceListItems(traces)
       setHasOtelConfigured(true)
     } else {
+      // An empty answer from a working exporter is an empty list — the
+      // no-observability message is reserved for the marker above.
       setTraceListItems([])
-      setHasOtelConfigured(false)
+      setHasOtelConfigured(true)
     }
   }, [tracesData, hiddenKey])
 

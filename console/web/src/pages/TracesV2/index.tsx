@@ -891,7 +891,10 @@ export function TracesV2({
       </div>
 
       <ErrorBoundary>
-        {!hasOtelConfigured ? (
+        {/* Only the engine's definitive answer earns this message — while
+            the seed is still unanswered (null) the list area renders its
+            loading skeleton instead. */}
+        {hasOtelConfigured === false ? (
           <div className="p-9">
             <Cell title="no observability">
               this engine does not have the trace exporter registered. configure
