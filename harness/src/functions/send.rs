@@ -281,7 +281,8 @@ async fn start_with_delivery_lock(
 
     // Freeze the per-send options before moving the message out of `req`.
     let inherits_prompt = prev.is_some() && prompt_fields_omitted(req.options.as_ref());
-    let mut options = build_options(&cfg, &req, model, provider, agent.as_ref());
+    let identity = crate::prompt::effective_default(&deps.iii).await;
+    let mut options = build_options(&cfg, &req, model, provider, agent.as_ref(), &identity);
     inherit_prior_functions(
         &cfg,
         &mut options,
@@ -769,6 +770,7 @@ fn build_options(
     model: String,
     provider: Option<String>,
     agent: Option<&crate::agents::ResolvedAgent>,
+    identity: &str,
 ) -> TurnOptions {
     let opts = req.options.clone().unwrap_or_default();
     let functions = clamp_for_mode(cfg, opts.mode, opts.functions);
@@ -792,13 +794,13 @@ fn build_options(
                 Some(a.prompt.clone()),
                 SystemPromptStrategy::Enrich,
                 opts.mode,
-                prompt::DEFAULT,
+                identity,
             ),
             None => prompt::resolve_system_prompt(
                 opts.system_prompt,
                 opts.system_prompt_strategy.unwrap_or_default(),
                 opts.mode,
-                prompt::DEFAULT,
+                identity,
             ),
         },
         skills_prompt: None,
@@ -1529,6 +1531,7 @@ mod tests {
             "claude-sonnet-4".into(),
             req.provider.clone(),
             None,
+            crate::prompt::DEFAULT,
         );
         let prompt = opts.system_prompt.expect("built-in prompt");
         assert!(prompt.contains("operating in agent mode"));
@@ -1558,6 +1561,7 @@ mod tests {
             "claude-sonnet-4".into(),
             req.provider.clone(),
             None,
+            crate::prompt::DEFAULT,
         );
         assert_eq!(opts.system_prompt.as_deref(), Some("custom"));
     }
@@ -1965,7 +1969,14 @@ mod tests {
                 ..Default::default()
             }),
         };
-        let opts = build_options(&cfg, &req, "m".into(), req.provider.clone(), None);
+        let opts = build_options(
+            &cfg,
+            &req,
+            "m".into(),
+            req.provider.clone(),
+            None,
+            crate::prompt::DEFAULT,
+        );
         let compiled = policy::CompiledPolicy::from(opts.functions.as_ref());
         // The wildcard default preserves the requested policy…
         assert!(compiled.allows("state::get"));
@@ -1997,7 +2008,7 @@ mod tests {
                     ..Default::default()
                 }),
             };
-            let opts = build_options(&cfg, &req, "m".into(), None, None);
+            let opts = build_options(&cfg, &req, "m".into(), None, None, crate::prompt::DEFAULT);
             let compiled = policy::CompiledPolicy::from(opts.functions.as_ref());
             assert!(
                 compiled.allows("state::set"),
@@ -2028,6 +2039,7 @@ mod tests {
             "claude-sonnet-4".into(),
             req.provider.clone(),
             None,
+            crate::prompt::DEFAULT,
         );
         let prompt = opts.system_prompt.expect("enriched prompt");
         assert!(prompt.starts_with(crate::prompt::DEFAULT));
@@ -2049,6 +2061,7 @@ mod tests {
             "m".into(),
             None,
             None,
+            crate::prompt::DEFAULT,
         )
     }
 
@@ -2248,7 +2261,14 @@ mod tests {
             ..Default::default()
         });
         let agent = resolved_agent(None);
-        let opts = build_options(&cfg, &req, "m".into(), None, Some(&agent));
+        let opts = build_options(
+            &cfg,
+            &req,
+            "m".into(),
+            None,
+            Some(&agent),
+            crate::prompt::DEFAULT,
+        );
         let prompt = opts.system_prompt.expect("agent prompt");
         assert!(
             prompt.starts_with(crate::prompt::DEFAULT),
@@ -2314,7 +2334,14 @@ mod tests {
             ..Default::default()
         });
         // Absent policy + agent → the configured default applies.
-        let mut opts = build_options(&cfg, &req, "m".into(), None, Some(&agent));
+        let mut opts = build_options(
+            &cfg,
+            &req,
+            "m".into(),
+            None,
+            Some(&agent),
+            crate::prompt::DEFAULT,
+        );
         inherit_prior_functions(
             &cfg,
             &mut opts,
@@ -2333,7 +2360,14 @@ mod tests {
             }),
             ..Default::default()
         });
-        let mut opts = build_options(&cfg, &req, "m".into(), None, Some(&agent));
+        let mut opts = build_options(
+            &cfg,
+            &req,
+            "m".into(),
+            None,
+            Some(&agent),
+            crate::prompt::DEFAULT,
+        );
         inherit_prior_functions(
             &cfg,
             &mut opts,
@@ -2358,7 +2392,14 @@ mod tests {
             mode: Some(Mode::Ask),
             ..Default::default()
         });
-        let mut opts = build_options(&narrow_cfg, &req, "m".into(), None, Some(&agent));
+        let mut opts = build_options(
+            &narrow_cfg,
+            &req,
+            "m".into(),
+            None,
+            Some(&agent),
+            crate::prompt::DEFAULT,
+        );
         inherit_prior_functions(
             &narrow_cfg,
             &mut opts,
@@ -2377,7 +2418,14 @@ mod tests {
             agent: Some("tech-leader".into()),
             ..Default::default()
         });
-        let prev = build_options(&cfg, &req, "m".into(), None, Some(&agent));
+        let prev = build_options(
+            &cfg,
+            &req,
+            "m".into(),
+            None,
+            Some(&agent),
+            crate::prompt::DEFAULT,
+        );
 
         // A bare steer inherits prompt AND identity.
         let mut next = bare_options();
@@ -2396,6 +2444,7 @@ mod tests {
             "m".into(),
             None,
             None,
+            crate::prompt::DEFAULT,
         );
         assert_eq!(explicit.agent, None);
     }

@@ -146,10 +146,15 @@ retries) and their defaults live in [`src/config.rs`](src/config.rs).
 
 The identity prompt is assembled once at send/spawn time. EVERY agent —
 top-level turns (`harness::send`) and spawned children alike — is seeded with
-the same single embedded identity
+the same single identity
 ([`prompts/default.txt`](prompts/default.txt)): a deliberately minimal prompt
 carrying only the basic engine functions and the discovery loop (list, info,
-call). What makes a child a leaf is its POLICY, not its prompt: children are
+call). A `default` entry in the directory's system-prompt store
+(`<skills_folder>/system-prompts/default.md`, served by
+`directory::system-prompts::get`) overrides the embedded prompt for every new
+composition — edit or delete it and the next send picks that up, no restart;
+any store failure (directory absent, entry missing, blank body) falls back to
+the embedded prompt. What makes a child a leaf is its POLICY, not its prompt: children are
 capability-walled out of the orchestration surface (`harness::spawn`,
 `harness::send`, trigger registration) unless spawned with
 `options: { orchestrator: true }`; spawn `options.system_prompt` remains the

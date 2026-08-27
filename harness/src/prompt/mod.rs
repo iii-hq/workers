@@ -5,12 +5,14 @@
 //! engine.
 
 mod mode;
+mod stored;
 mod variants;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub use mode::{paragraph, Mode};
+pub use stored::{effective_default, STORED_DEFAULT_PROMPT_NAME};
 pub use variants::DEFAULT;
 
 /// How a caller-supplied system prompt combines with the built-in identity prompt.
