@@ -2,15 +2,16 @@
 set -Eeuo pipefail
 
 # Validate the published quickstart in an isolated home and project:
-# install iii, boot an empty engine, add harness + console, and complete the
-# first Console conversation, switch from Anthropic Sonnet 5 to OpenAI Luna,
-# start a second Luna conversation, and exercise one real Harness capability.
+# install iii, boot an empty engine, bring up harness + console through
+# `iii compose`, and complete the first Console conversation, switch from
+# Anthropic Sonnet 5 to OpenAI Luna, start a second Luna conversation, and
+# exercise one real Harness capability.
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd -- "$script_dir/../../.." && pwd)
 artifact_dir=${HARNESS_QUICKSTART_ARTIFACTS_DIR:-"$repo_root/target/harness-quickstart"}
 install_url=${III_INSTALL_URL:-https://install.iii.dev/iii/main/install.sh}
-cli_channel=${III_CLI_CHANNEL:-latest}
+cli_channel=${III_CLI_CHANNEL:-rc}
 worker_tag=${III_WORKER_TAG:-latest}
 release_worker=${HARNESS_QUICKSTART_RELEASE_WORKER:-}
 release_version=${HARNESS_QUICKSTART_RELEASE_VERSION:-}
@@ -38,10 +39,13 @@ case "$trace_enabled" in
     ;;
 esac
 
+# The CLI's `next` prerelease channel died with iii/v0.21.8-next.4; the
+# prerelease channel is `rc` now, and `iii compose` only exists from
+# 0.23.0-rc onward.
 case "$cli_channel" in
-  latest | next) ;;
+  latest | rc) ;;
   *)
-    echo "III_CLI_CHANNEL must be 'latest' or 'next' (got: $cli_channel)" >&2
+    echo "III_CLI_CHANNEL must be 'latest' or 'rc' (got: $cli_channel)" >&2
     exit 2
     ;;
 esac
@@ -123,6 +127,7 @@ rm -f \
   "$artifact_dir/first-capability-evidence.json" \
   "$artifact_dir/config.yaml" \
   "$artifact_dir/iii.lock" \
+  "$artifact_dir/worker-compose.yaml" \
   "$artifact_dir/commands.log" \
   "$log_dir"/*.log
 rm -rf "$artifact_dir/playwright-output" "$artifact_dir/slack-evidence"
@@ -138,9 +143,11 @@ export PATH="$quickstart_home/.local/bin:$quickstart_home/.iii/bin:$PATH"
 unset ZAI_API_KEY DEEPSEEK_API_KEY OPENROUTER_API_KEY XAI_API_KEY KIMI_API_KEY
 
 engine_pid=""
+compose_pid=""
 iii_bin=""
 failure_reason=""
 cli_version="unknown"
+compose_file="$project_dir/worker-compose.yaml"
 started_at_seconds=$SECONDS
 
 log() {
@@ -238,16 +245,29 @@ stop_engine() {
 }
 
 snapshot_project() {
-  for output in config.yaml iii.lock; do
+  for output in config.yaml worker-compose.yaml; do
     [[ -f "$project_dir/$output" ]] && cp "$project_dir/$output" "$artifact_dir/$output"
   done
 }
 
-stop_managed_workers() {
-  [[ -n "$iii_bin" && -n "$engine_pid" ]] || return 0
-  kill -0 "$engine_pid" 2>/dev/null || return 0
-  (cd "$project_dir" && "$iii_bin" worker remove -y harness console) \
-    >"$log_dir/worker-remove.log" 2>&1 || true
+stop_compose() {
+  [[ -n "$compose_pid" ]] || return 0
+  # Ask the daemon to stop the project's children first; killing the daemon
+  # alone would leave them supervised by nothing until the orphan sweep.
+  if [[ -n "$iii_bin" && -n "$engine_pid" ]] \
+    && kill -0 "$engine_pid" 2>/dev/null && kill -0 "$compose_pid" 2>/dev/null; then
+    "$iii_bin" trigger compose::down --port "$engine_port" \
+      --json "$(jq -cn --arg file "$compose_file" '{file: $file}')" \
+      >"$log_dir/compose-down.log" 2>&1 || true
+  fi
+  kill -0 "$compose_pid" 2>/dev/null || return 0
+  kill -- "-$compose_pid" 2>/dev/null || kill "$compose_pid" 2>/dev/null || true
+  for _ in {1..20}; do
+    kill -0 "$compose_pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  kill -KILL -- "-$compose_pid" 2>/dev/null || kill -KILL "$compose_pid" 2>/dev/null || true
+  wait "$compose_pid" 2>/dev/null || true
 }
 
 stop_owned_orphans() {
@@ -271,7 +291,7 @@ cleanup() {
   set +e
 
   snapshot_project
-  stop_managed_workers
+  stop_compose
   stop_engine
   stop_owned_orphans
 
@@ -550,14 +570,26 @@ assert_secret_safe_artifacts() {
   ok "artifacts do not contain provider credentials"
 }
 
-run_worker_add() {
-  log_command "iii worker add $*"
+# Declares one worker (and everything the registry resolves for it) in the
+# compose file, then lets the daemon restart the project. The call is
+# synchronous: it returns after installs finish and every container reports
+# ready, so it carries the old `worker add` timeout.
+run_compose_add() {
+  local spec=$1 payload response
+  payload=$(jq -cn --arg file "$compose_file" --arg worker "$spec" \
+    '{file: $file, worker: $worker}')
+  log_command "iii trigger compose::add --port $engine_port --json '$payload'"
   if command -v timeout >/dev/null 2>&1; then
-    timeout --signal=TERM --kill-after=15s "$add_timeout_seconds" \
-      "$iii_bin" worker add "$@"
+    response=$(timeout --signal=TERM --kill-after=15s "$add_timeout_seconds" \
+      "$iii_bin" trigger compose::add --port "$engine_port" --json "$payload")
   else
-    "$iii_bin" worker add "$@"
+    response=$("$iii_bin" trigger compose::add --port "$engine_port" --json "$payload")
   fi
+  printf '%s\n' "$response"
+  # A container that failed to start comes back as JSON with status "failed",
+  # not as a non-zero exit; the exit code alone proves nothing.
+  jq -e '.status == "ok"' <<<"$response" >/dev/null 2>&1 \
+    || die "compose::add $spec did not report ok"
 }
 
 start_engine() {
@@ -571,15 +603,47 @@ start_engine() {
   engine_pid=$!
 }
 
+# The daemon serves `compose::*` in the `default` namespace so the triggers
+# below reach it the same way every other function is reached. It runs in the
+# foreground by design; the script owns backgrounding it, like the engine.
+start_compose() {
+  local command=("$iii_bin" compose --engine "ws://127.0.0.1:$engine_port" --namespace default)
+  log_command "iii compose --engine ws://127.0.0.1:$engine_port --namespace default"
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "${command[@]}" >"$log_dir/compose.log" 2>&1 &
+  else
+    "${command[@]}" >"$log_dir/compose.log" 2>&1 &
+  fi
+  compose_pid=$!
+}
+
+wait_for_compose() {
+  local response attempt
+  log "Waiting for the compose daemon (up to ${wait_seconds}s)"
+  log_command "iii trigger engine::functions::list --port $engine_port --json '{\"include_internal\":true}'"
+  for ((attempt = 0; attempt < wait_seconds; attempt++)); do
+    kill -0 "$compose_pid" 2>/dev/null || die "compose daemon exited before becoming ready"
+    response=$("$iii_bin" trigger engine::functions::list --port "$engine_port" \
+      --json '{"include_internal":true}' 2>>"$log_dir/discovery.log" || true)
+    if jq -e '(.functions // [] | map(.function_id)) | index("compose::add") != null' \
+      <<<"$response" >/dev/null 2>&1; then
+      ok "compose daemon ready after ${attempt}s"
+      return 0
+    fi
+    sleep 1
+  done
+  die "compose::add did not register within ${wait_seconds}s"
+}
+
 cd "$project_dir"
 
 log "Step 1/9: Install iii from $install_url (channel=$cli_channel)"
 log_command "curl -fsSL $install_url -o install.sh"
 curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 \
   "$install_url" -o "$run_root/install.sh"
-if [[ "$cli_channel" == "next" ]]; then
-  log_command "sh install.sh --next"
-  sh "$run_root/install.sh" --next 2>&1 | tee "$log_dir/install.log"
+if [[ "$cli_channel" == "rc" ]]; then
+  log_command "sh install.sh --rc"
+  sh "$run_root/install.sh" --rc 2>&1 | tee "$log_dir/install.log"
 else
   log_command "sh install.sh"
   sh "$run_root/install.sh" 2>&1 | tee "$log_dir/install.log"
@@ -588,23 +652,38 @@ iii_bin=$(command -v iii || true)
 [[ -n "$iii_bin" && -x "$iii_bin" ]] || die "iii CLI was not installed"
 log_command "iii --version"
 cli_version=$("$iii_bin" --version 2>&1)
+"$iii_bin" compose --help >/dev/null 2>&1 \
+  || die "the installed iii CLI ($cli_version) has no compose command; the quickstart needs 0.23.0-rc or newer"
 printf '%s\n' "$cli_version" >"$artifact_dir/cli-version.txt"
 ok "installed $cli_version"
 
-log "Step 2/9: Start an empty engine"
+log "Step 2/9: Start an empty engine and the compose daemon"
 printf 'workers: []\n' >config.yaml
+# The seed only names the project: `compose::add` writes every container.
+# `namespace: default` is required — harness and Console must register beside
+# the engine builtins, exactly like the flow this validates.
+cat >"$compose_file" <<'COMPOSE'
+namespace: default
+startup_timeout: 5m
+stop_timeout: 10s
+
+containers:
+COMPOSE
 start_engine
 wait_for_engine
+start_compose
+wait_for_compose
 
-log "Step 3/9: Add harness and Console from worker tag $worker_tag"
-run_worker_add "harness@$worker_tag" "console@$worker_tag" 2>&1 | tee "$log_dir/worker-add.log"
-ok "iii worker add harness console exited successfully"
+log "Step 3/9: Add harness and Console from worker tag $worker_tag via compose"
+run_compose_add "harness@$worker_tag" 2>&1 | tee "$log_dir/compose-add-harness.log"
+run_compose_add "console@$worker_tag" 2>&1 | tee "$log_dir/compose-add-console.log"
+ok "compose declared and started harness + console"
 
 log "Step 4/9: Apply exact release candidate override"
 if [[ -n "$release_worker" ]]; then
-  run_worker_add "${release_worker}@${release_version}" --force \
+  run_compose_add "${release_worker}@${release_version}" \
     2>&1 | tee "$log_dir/candidate-override.log"
-  ok "installed exact candidate ${release_worker}@${release_version}"
+  ok "pinned exact candidate ${release_worker}@${release_version}"
 else
   ok "no release candidate override requested"
 fi
@@ -634,12 +713,15 @@ wait_for_terminal_turns
 verify_first_capability
 
 log "Step 9/9: Verify generated project files and secret-safe evidence"
-for output in config.yaml iii.lock; do
-  [[ -s "$output" ]] || die "worker add did not write $output"
-  grep -Eiq 'harness' "$output" || die "$output does not contain harness"
-  grep -Eiq 'console' "$output" || die "$output does not contain console"
+[[ -s "$project_dir/config.yaml" ]] || die "the engine config.yaml is missing"
+[[ -s "$compose_file" ]] || die "compose::add did not write worker-compose.yaml"
+for required in harness console; do
+  grep -Eiq "$required" "$compose_file" \
+    || die "worker-compose.yaml does not contain $required"
 done
-ok "config.yaml and iii.lock reference harness + console"
+grep -Eq '^[[:space:]]+version:' "$compose_file" \
+  || die "worker-compose.yaml has no pinned versions"
+ok "worker-compose.yaml declares harness + console with pinned versions"
 snapshot_project
 assert_secret_safe_artifacts
 

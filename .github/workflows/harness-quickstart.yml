@@ -10,7 +10,9 @@ on:
       cli_channel:
         required: true
         type: choice
-        options: [latest, next]
+        # `rc` replaced the CLI's dead `next` prerelease channel; the compose
+        # flow the validator drives needs a 0.23.0-rc or newer CLI.
+        options: [latest, rc]
       registry_tag:
         required: true
         type: choice
@@ -95,12 +97,14 @@ jobs:
           HARNESS_QUICKSTART_RELEASE_VERSION: ${{ inputs.release_version != 'none' && inputs.release_version || '' }}
         run: harness/tests/quickstart/run-ci.sh
 
-      - name: Verify exact release in lock
+      - name: Verify exact release in compose file
         if: inputs.release_version != 'none'
+        # No --manifest here: compose only declares workers it can run, so
+        # engine-builtin dependencies (iii-stream, iii-observability) are
+        # deliberately absent from the compose file.
         run: >-
           python3 .github/scripts/verify_registry_lock.py
-          --lock target/harness-quickstart/iii.lock
-          --manifest harness/iii.worker.yaml
+          --lock target/harness-quickstart/worker-compose.yaml
           --required harness
           --required console
           --worker '${{ inputs.release_worker }}'
