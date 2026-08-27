@@ -15,6 +15,8 @@ const rows: WorkerRow[] = [
     configurationId: 'harness',
     stopEnabled: false,
     stopDisabledReason: null,
+    composeState: null,
+    lastError: null,
   },
   {
     id: '2',
@@ -29,6 +31,8 @@ const rows: WorkerRow[] = [
     configurationId: null,
     stopEnabled: false,
     stopDisabledReason: 'standalone',
+    composeState: null,
+    lastError: null,
   },
 ]
 
@@ -38,6 +42,7 @@ describe('filterWorkerRows', () => {
       search: '',
       tag: 'dev',
       runtime: null,
+      management: null,
     })
     expect(filtered).toHaveLength(1)
     expect(filtered[0]?.name).toBe('todo-app')
@@ -48,6 +53,7 @@ describe('filterWorkerRows', () => {
       search: '127.0.0.1',
       tag: null,
       runtime: null,
+      management: null,
     })
     expect(filtered).toHaveLength(1)
     expect(filtered[0]?.name).toBe('harness')

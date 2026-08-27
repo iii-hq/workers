@@ -1,11 +1,12 @@
 import type { WorkerSummary } from '@/components/chat/engine/parsers'
 import type { WorkerEntry } from '@/components/chat/worker/parsers'
 import type { ConfigurationSchemaView } from '@/pages/Configuration/tabs/WorkersTab/api'
-import type { RawWorkersSnapshot } from '../api/workers'
-import type {
-  WorkerConnectionStatus,
-  WorkerManagementKind,
-  WorkerRow,
+import type { ComposeContainer, RawWorkersSnapshot } from '../api/workers'
+import {
+  isComposeRunning,
+  type WorkerConnectionStatus,
+  type WorkerManagementKind,
+  type WorkerRow,
 } from '../types'
 
 const STOP_REASON = {
@@ -19,6 +20,19 @@ const STOP_REASON = {
 interface ConfigurationLookup {
   byId: Map<string, string>
   byName: Map<string, string>
+}
+
+export interface ComposeSummary {
+  namespace: string | null
+  file: string | null
+  daemonPid: number | null
+  ready: number
+  total: number
+}
+
+export interface WorkersView {
+  rows: WorkerRow[]
+  compose: ComposeSummary | null
 }
 
 function configurationLookup(
@@ -48,12 +62,24 @@ function supervisorMap(entries: WorkerEntry[]): Map<string, WorkerEntry> {
   return map
 }
 
+function composeMap(
+  compose: RawWorkersSnapshot['compose'],
+): Map<string, ComposeContainer> {
+  const map = new Map<string, ComposeContainer>()
+  for (const container of compose?.containers ?? []) {
+    map.set(container.container, container)
+  }
+  return map
+}
+
 function deriveManagementKind(
   internal: boolean,
   configurationId: string | null,
   supervisor?: WorkerEntry,
+  compose?: ComposeContainer,
 ): WorkerManagementKind {
   if (internal) return 'internal'
+  if (compose) return 'compose'
   if (configurationId) return 'config'
   if (supervisor) return 'supervisor'
   return 'standalone'
@@ -62,8 +88,15 @@ function deriveManagementKind(
 function deriveConnectionStatus(
   engineStatus: string | undefined,
   supervisor: WorkerEntry | undefined,
+  compose: ComposeContainer | undefined,
 ): WorkerConnectionStatus {
   if (engineStatus?.toLowerCase() === 'connected') return 'connected'
+  if (compose) {
+    if (compose.state === 'ready') return 'connected'
+    if (compose.state === 'starting') return 'starting'
+    if (compose.state === 'failed') return 'failed'
+    return 'stopped'
+  }
   if (supervisor?.running) return 'connected'
   if (supervisor && !supervisor.running) return 'stopped'
   return 'disconnected'
@@ -74,6 +107,9 @@ function deriveStopState(
   status: WorkerConnectionStatus,
   supervisor: WorkerEntry | undefined,
 ): Pick<WorkerRow, 'stopEnabled' | 'stopDisabledReason'> {
+  if (kind === 'compose') {
+    return { stopEnabled: false, stopDisabledReason: null }
+  }
   if (kind === 'supervisor' && status === 'connected' && supervisor?.running) {
     return { stopEnabled: true, stopDisabledReason: null }
   }
@@ -89,10 +125,25 @@ function deriveStopState(
   return { stopEnabled: false, stopDisabledReason: STOP_REASON.notRunning }
 }
 
+function composeFields(
+  compose: ComposeContainer | undefined,
+): Pick<WorkerRow, 'composeState' | 'lastError'> {
+  return {
+    composeState: compose?.state ?? null,
+    lastError: compose?.last_error ?? null,
+  }
+}
+
+function composePid(compose: ComposeContainer | undefined): number | null {
+  if (!compose || !isComposeRunning(compose.state)) return null
+  return compose.pid ?? null
+}
+
 function engineRowToWorkerRow(
   summary: WorkerSummary,
   configurations: ConfigurationLookup,
   supervisors: Map<string, WorkerEntry>,
+  composes: Map<string, ComposeContainer>,
   infoByName: Map<
     string,
     { pid?: number; internal: boolean; tag?: string | null }
@@ -102,13 +153,15 @@ function engineRowToWorkerRow(
   const info = infoByName.get(name)
   const internal = info?.internal ?? false
   const supervisor = supervisors.get(name)
+  const compose = composes.get(name)
   const configurationId = resolveConfigurationId(name, configurations)
   const managementKind = deriveManagementKind(
     internal,
     configurationId,
     supervisor,
+    compose,
   )
-  const status = deriveConnectionStatus(summary.status, supervisor)
+  const status = deriveConnectionStatus(summary.status, supervisor, compose)
   const stop = deriveStopState(managementKind, status, supervisor)
 
   return {
@@ -117,12 +170,13 @@ function engineRowToWorkerRow(
     runtime: summary.runtime ?? null,
     ipAddress: summary.ip_address ?? null,
     version: summary.version ?? null,
-    pid: info?.pid ?? supervisor?.pid ?? null,
+    pid: info?.pid ?? composePid(compose) ?? supervisor?.pid ?? null,
     tag: info?.tag ?? summary.tag ?? null,
     managementKind,
     status,
     configurationId,
     ...stop,
+    ...composeFields(compose),
   }
 }
 
@@ -147,13 +201,53 @@ function syntheticSupervisorRow(
     status,
     configurationId,
     ...stop,
+    ...composeFields(undefined),
   }
 }
 
-/** Merge engine catalogue, supervisor list, and configuration registry into table rows. */
+function syntheticComposeRow(
+  container: ComposeContainer,
+  configurations: ConfigurationLookup,
+): WorkerRow {
+  const name = container.container
+  const status = deriveConnectionStatus(undefined, undefined, container)
+
+  return {
+    id: `compose:${name}`,
+    name,
+    runtime: null,
+    ipAddress: null,
+    version: null,
+    pid: composePid(container),
+    tag: null,
+    managementKind: 'compose',
+    status,
+    configurationId: resolveConfigurationId(name, configurations),
+    stopEnabled: false,
+    stopDisabledReason: null,
+    ...composeFields(container),
+  }
+}
+
+export function summarizeCompose(
+  compose: RawWorkersSnapshot['compose'],
+): ComposeSummary | null {
+  if (!compose) return null
+  const containers = compose.containers
+  return {
+    namespace: compose.namespace ?? null,
+    file: compose.file ?? null,
+    daemonPid: compose.daemon_pid ?? null,
+    ready: containers.filter((c) => c.state === 'ready').length,
+    total: containers.length,
+  }
+}
+
+/** Merge engine catalogue, supervisor list, compose status, and configuration registry into table rows. */
 export function mergeWorkers(snapshot: RawWorkersSnapshot): WorkerRow[] {
   const configurations = configurationLookup(snapshot.configurations)
   const supervisors = supervisorMap(snapshot.supervisorWorkers)
+  const composes = composeMap(snapshot.compose)
   const seen = new Set<string>()
   const rows: WorkerRow[] = []
 
@@ -165,9 +259,16 @@ export function mergeWorkers(snapshot: RawWorkersSnapshot): WorkerRow[] {
         engineWorker,
         configurations,
         supervisors,
+        composes,
         snapshot.infoByName,
       ),
     )
+  }
+
+  for (const [name, container] of composes) {
+    if (seen.has(name)) continue
+    rows.push(syntheticComposeRow(container, configurations))
+    seen.add(name)
   }
 
   for (const [name, entry] of supervisors) {
@@ -180,8 +281,18 @@ export function mergeWorkers(snapshot: RawWorkersSnapshot): WorkerRow[] {
   return rows
 }
 
-export async function fetchMergedWorkers(): Promise<WorkerRow[]> {
+export function mergeWorkersView(snapshot: RawWorkersSnapshot): WorkersView {
+  return {
+    rows: mergeWorkers(snapshot),
+    compose: summarizeCompose(snapshot.compose),
+  }
+}
+
+export async function fetchWorkersView(): Promise<WorkersView> {
   const { fetchRawWorkersSnapshot } = await import('../api/workers')
-  const snapshot = await fetchRawWorkersSnapshot()
-  return mergeWorkers(snapshot)
+  return mergeWorkersView(await fetchRawWorkersSnapshot())
+}
+
+export async function fetchMergedWorkers(): Promise<WorkerRow[]> {
+  return (await fetchWorkersView()).rows
 }

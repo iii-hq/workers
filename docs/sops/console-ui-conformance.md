@@ -98,7 +98,7 @@ owns; the registry refuses those at registration. See the injectable-UI SOP,
 | Page | Commands (render time unless noted) | Keys | Palette source |
 |---|---|---|---|
 | chat (first-party) | focus composer, next / previous message, approve / deny the pending call, expand, copy, latest, switch model, stop, new chat, search conversations | `I`, `J` / `K`, `A` / `D`, `O`, `Y`, `End`, `M`, `Escape`, `N`, `/` | chats (built in) |
-| workers (first-party) | refresh, search | `R`, `/` | workers, functions (built in) |
+| workers (first-party) | refresh, search, open Compose (when the compose-ui page is registered); start / stop / restart on compose-supervised rows | `R`, `/`, `C` | workers, functions (built in) |
 | traces (first-party) | search, follow turns, clear filters, close detail | `/`, `F`, `Escape` | |
 | shell | open file…, search in files, file tree, toggle sidebar, toggle terminal, next / previous tab, close tab, next / previous change; setup: open file…, open | `P`, `F`, `E`, `B`, `` ` ``, `Alt+←` / `Alt+→`, `W`, `J` / `K` | files (`coder::search`, `#`) |
 | database | focus SQL, refresh, focus tables; setup: open | `S`, `R`, `/` | tables (`database::listTables`) |

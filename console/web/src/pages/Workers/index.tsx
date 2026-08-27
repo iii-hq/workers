@@ -1,16 +1,20 @@
-import { AlertCircle, Blocks, RefreshCw } from 'lucide-react'
+import { AlertCircle, Blocks, Layers, RefreshCw } from 'lucide-react'
 import { useEffect, useRef } from 'react'
 import { Button } from '@/components/ui/Button'
 import { PageHeader, PageShell } from '@/components/ui/PageChrome'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { TooltipProvider } from '@/components/ui/Tooltip'
 import { useWorkersConfigurationRoute } from '@/hooks/use-hash-route'
+import { requestPanelOpen } from '@/lib/panel-context'
+import { useExtPages } from '@/lib/ui-slots'
 import { cn } from '@/lib/utils'
 import type { PageCommandsApi } from '@/types/injectable-ui'
 import { WorkerConfigurationPanel } from './components/WorkerConfigurationPanel'
 import { WorkersFilters } from './components/WorkersFilters'
 import { WorkersTable } from './components/WorkersTable'
 import { useWorkersLive } from './hooks/useWorkersLive'
+
+const COMPOSE_PAGE_ID = 'compose'
 
 interface WorkersProps {
   /** Close the hosting pane — the header's standard ✕ when present. */
@@ -25,6 +29,7 @@ export function Workers({ onRequestClose, commands }: WorkersProps) {
   const {
     rows,
     allRows,
+    compose,
     filters,
     updateFilters,
     clearFilters,
@@ -34,7 +39,11 @@ export function Workers({ onRequestClose, commands }: WorkersProps) {
     refetch,
     stoppingName,
     stopWorker,
+    pendingCompose,
+    composeAction,
+    composeError,
   } = useWorkersLive()
+  const composePage = useExtPages().some((page) => page.id === COMPOSE_PAGE_ID)
   const rootRef = useRef<HTMLDivElement>(null)
   useEffect(
     () =>
@@ -58,11 +67,23 @@ export function Workers({ onRequestClose, commands }: WorkersProps) {
               ?.querySelector<HTMLElement>('[aria-label="search workers"]')
               ?.focus(),
         },
+        {
+          id: 'compose',
+          title: 'Open Compose',
+          detail: 'Containers, lifecycle, worker packages, and logs',
+          keywords: ['compose', 'containers', 'daemon', 'logs'],
+          shortcut: 'C',
+          enabled: () => composePage,
+          run: () => requestPanelOpen({ pageId: COMPOSE_PAGE_ID, context: {} }),
+        },
       ]),
-    [commands, refetch],
+    [commands, refetch, composePage],
   )
 
   const countLabel = isLoading ? '…' : String(allRows.length)
+  const description = compose
+    ? `${countLabel} connected or declared · compose${compose.namespace ? ` ${compose.namespace}` : ''} ${compose.ready}/${compose.total} ready`
+    : `${countLabel} connected or installed`
 
   return (
     <TooltipProvider>
@@ -77,22 +98,37 @@ export function Workers({ onRequestClose, commands }: WorkersProps) {
           <PageHeader
             icon={<Blocks />}
             title="Workers"
-            description={`${countLabel} connected or installed`}
+            description={description}
             onClose={onRequestClose}
             actions={
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => void refetch()}
-                disabled={isLoading}
-                className="gap-1.5"
-              >
-                <RefreshCw
-                  className={cn('size-4', isLoading && 'animate-spin')}
-                  aria-hidden
-                />
-                refresh
-              </Button>
+              <>
+                {composePage ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() =>
+                      requestPanelOpen({ pageId: COMPOSE_PAGE_ID, context: {} })
+                    }
+                    className="gap-1.5"
+                  >
+                    <Layers className="size-4" aria-hidden />
+                    compose
+                  </Button>
+                ) : null}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => void refetch()}
+                  disabled={isLoading}
+                  className="gap-1.5"
+                >
+                  <RefreshCw
+                    className={cn('size-4', isLoading && 'animate-spin')}
+                    aria-hidden
+                  />
+                  refresh
+                </Button>
+              </>
             }
           />
           <div className="flex-1 overflow-y-auto px-4 sm:px-6 lg:px-8 py-4 space-y-4">
@@ -109,6 +145,19 @@ export function Workers({ onRequestClose, commands }: WorkersProps) {
               />
             ) : null}
 
+            {composeError ? (
+              <StatusPanel
+                variant="alert"
+                icon={<AlertCircle className="w-full h-full" />}
+                headline="compose action failed"
+                detail={
+                  composeError instanceof Error
+                    ? composeError.message
+                    : String(composeError)
+                }
+              />
+            ) : null}
+
             <WorkersFilters
               rows={allRows}
               filters={filters}
@@ -120,7 +169,9 @@ export function Workers({ onRequestClose, commands }: WorkersProps) {
               rows={rows}
               isLoading={isLoading}
               stoppingName={stoppingName}
+              pendingCompose={pendingCompose}
               onStop={stopWorker}
+              onComposeAction={composeAction}
               onConfigure={(configurationId) =>
                 navigateConfiguration(configurationId)
               }
