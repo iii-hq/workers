@@ -1295,7 +1295,9 @@
   color: var(--color-warn);
 }
 [data-iii-ui="shell"] .shui-review-count {
+  flex: none;
   color: var(--color-ink-faint);
+  white-space: nowrap;
 }
 [data-iii-ui="shell"] .shui-review-scope-error {
   max-width: 130px;
@@ -2902,6 +2904,16 @@
 /* Narrow panels — phones, and desktop panels split small ------------------- */
 
 @container shui-page (max-width: 720px) {
+  [data-iii-ui='shell'] .shui-review-toolbar {
+    gap: 6px;
+    padding: 0 6px;
+  }
+
+  [data-iii-ui='shell'] .shui-review-file-head {
+    gap: 6px;
+    padding: 0 6px;
+  }
+
   [data-iii-ui='shell'] .shui-review-notice {
     grid-template-columns: 32px minmax(0, 1fr);
   }
