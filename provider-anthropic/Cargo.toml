@@ -5,7 +5,7 @@
 # collides.
 [package]
 name = "provider-anthropic"
-version = "1.2.10"
+version = "1.2.11-rc.1"
 edition = "2021"
 publish = false
 license = "Apache-2.0"
