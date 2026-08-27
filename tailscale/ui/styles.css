@@ -296,6 +296,10 @@
 }
 
 @container (max-width: 44rem) {
+  [data-iii-ui='tailscale'] .ts-card-header {
+    flex-wrap: wrap;
+  }
+
   [data-iii-ui='tailscale'] .ts-columns,
   [data-iii-ui='tailscale'] .ts-facts-grid,
   [data-iii-ui='tailscale'] .ts-fields {
