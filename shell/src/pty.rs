@@ -2423,10 +2423,10 @@ mod tests {
             "iii::claude-ui::pty-output::console-{browser}"
         ))
         .is_ok());
-        assert!(validate_output_function_id(&format!(
-            "iii::pi-ui::pty-output::console-{browser}"
-        ))
-        .is_ok());
+        assert!(
+            validate_output_function_id(&format!("iii::pi-ui::pty-output::console-{browser}"))
+                .is_ok()
+        );
         // Still a console UI handler and nothing else.
         assert!(validate_output_function_id(&format!(
             "iii::claude::pty-output::console-{browser}"
