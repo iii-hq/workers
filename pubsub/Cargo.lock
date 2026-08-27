@@ -717,7 +717,7 @@ dependencies = [
 
 [[package]]
 name = "iii-pubsub"
-version = "0.21.2"
+version = "0.21.3-rc.1"
 dependencies = [
  "anyhow",
  "async-trait",
