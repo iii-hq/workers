@@ -1,0 +1,6 @@
+version: 1
+
+rules:
+  - '!compose-ui::ui-content'
+  - compose-ui::logs
+  - compose-ui::project
