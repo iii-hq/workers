@@ -352,9 +352,11 @@ jobs:
       - name: Install pinned iii engine
         env:
           III_RELEASE_TAG: 'iii-alpha/v0.22.1-alpha.25'
+          III_INSTALLER_URL: https://raw.githubusercontent.com/iii-hq/iii/5d23fefcf9398e0c430b08a03ab29395829e2822/engine/install.sh
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
+          curl -fsSL "$III_INSTALLER_URL" -o /tmp/install-iii.sh
           sh /tmp/install-iii.sh
           {
             echo "$HOME/.local/bin"
@@ -443,9 +445,11 @@ jobs:
       - name: Install pinned iii engine
         env:
           III_RELEASE_TAG: 'iii-alpha/v0.22.1-alpha.25'
+          III_INSTALLER_URL: https://raw.githubusercontent.com/iii-hq/iii/5d23fefcf9398e0c430b08a03ab29395829e2822/engine/install.sh
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
+          curl -fsSL "$III_INSTALLER_URL" -o /tmp/install-iii.sh
           sh /tmp/install-iii.sh
           {
             echo "$HOME/.local/bin"
@@ -629,9 +633,11 @@ jobs:
           # pruned — 0.17.0 vanished and broke every boot smoke). Keep aligned
           # with the workers' iii-sdk protocol line.
           III_RELEASE_TAG: 'iii-alpha/v0.22.1-alpha.25'
+          III_INSTALLER_URL: https://raw.githubusercontent.com/iii-hq/iii/5d23fefcf9398e0c430b08a03ab29395829e2822/engine/install.sh
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
+          curl -fsSL "$III_INSTALLER_URL" -o /tmp/install-iii.sh
           sh /tmp/install-iii.sh
           {
             echo "$HOME/.local/bin"
