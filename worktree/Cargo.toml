@@ -2,7 +2,7 @@
 
 [package]
 name = "worktree"
-version = "0.3.3"
+version = "0.3.4-rc.1"
 edition = "2021"
 publish = false
 
