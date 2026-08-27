@@ -47,6 +47,17 @@ function withTimeout<T>(
   })
 }
 
+export interface CollectTraceDetailOptions<S> {
+  timeoutMs?: number
+  /**
+   * Called after each non-empty page merges, with the accumulated map (the
+   * same live map the promise resolves with — it keeps growing). Lets the
+   * caller render progressively: a large trace paints from its first page
+   * instead of behind the full multi-second sweep.
+   */
+  onPage?: (spans: Map<string, S>) => void
+}
+
 /**
  * Fetch every span of one trace through `fetchPage(offset, limit)`,
  * deduplicated by `span_id`. Stops on a short page (the end, per the
@@ -55,8 +66,9 @@ function withTimeout<T>(
  */
 export async function collectTraceDetailSpans<S extends { span_id: string }>(
   fetchPage: (offset: number, limit: number) => Promise<TraceDetailPage<S>>,
-  timeoutMs: number = TRACE_DETAIL_PAGE_TIMEOUT_MS,
+  opts?: CollectTraceDetailOptions<S>,
 ): Promise<Map<string, S>> {
+  const timeoutMs = opts?.timeoutMs ?? TRACE_DETAIL_PAGE_TIMEOUT_MS
   const spans = new Map<string, S>()
   let pageSize = TRACE_DETAIL_PROBE_PAGE_SIZE
   let priced = false
@@ -78,6 +90,7 @@ export async function collectTraceDetailSpans<S extends { span_id: string }>(
 
     for (const span of page.spans) spans.set(span.span_id, span)
     total = page.total
+    if (page.spans.length > 0) opts?.onPage?.(spans)
 
     if (!priced && page.spans.length > 0) {
       priced = true

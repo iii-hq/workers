@@ -95,6 +95,9 @@ import {
 
 const PAGE_SIZES = [25, 50, 100]
 
+// Sentinel a superseded trace seed throws to abandon its own page sweep.
+const superseded = new Error('trace seed superseded')
+
 export interface TracesV2Props {
   /** mount with a trace's detail already expanded (stories/deep links) */
   initialTraceId?: string
@@ -398,8 +401,15 @@ export function TracesV2({
     return () => clearInterval(timer)
   }, [hasPendingSpans, selectedTraceId, isPaused, rebuildDetail])
 
+  // One seed at a time: selecting another trace supersedes the sweep in
+  // flight, which must neither clobber the new trace's spans nor surface
+  // its own late error. Progressive rendering makes this guard load-bearing
+  // — a stale sweep now touches state on every page, not just at the end.
+  const seedSeqRef = useRef(0)
   const loadTraceSpans = useCallback(
     async (traceId: string, opts?: { silent?: boolean }) => {
+      const seq = ++seedSeqRef.current
+      const stale = () => seedSeqRef.current !== seq
       const silent = opts?.silent ?? false
       if (!silent) {
         setIsLoadingSpans(true)
@@ -409,17 +419,36 @@ export function TracesV2({
       try {
         // Pages sized by response bytes, not span count — an oversized page
         // hangs forever instead of erroring. See lib/traceDetailPages.
-        const detailSpans = await collectTraceDetailSpans((offset, limit) =>
-          fetchTraces({
-            trace_id: traceId,
-            search_all_spans: true,
-            include_internal: false,
-            sort_by: 'start_time',
-            sort_order: 'asc',
-            offset,
-            limit,
-          }),
+        let revealed = false
+        const detailSpans = await collectTraceDetailSpans(
+          (offset, limit) => {
+            if (stale()) throw superseded
+            return fetchTraces({
+              trace_id: traceId,
+              search_all_spans: true,
+              include_internal: false,
+              sort_by: 'start_time',
+              sort_order: 'asc',
+              offset,
+              limit,
+            })
+          },
+          {
+            // Paint from the first page: a large trace fills in page by page
+            // (the shape live appends already have) instead of holding the
+            // skeleton through the whole multi-second sweep.
+            onPage: (accumulated) => {
+              if (stale()) return
+              detailSpansRef.current = accumulated
+              const wf = rebuildDetail(traceId)
+              if (!silent && !revealed && wf) {
+                revealed = true
+                setIsLoadingSpans(false)
+              }
+            },
+          },
         )
+        if (stale()) return
 
         detailSpansRef.current = detailSpans
         const wf = rebuildDetail(traceId)
@@ -427,13 +456,14 @@ export function TracesV2({
           setSpansError('no span data available for this trace')
         }
       } catch (err) {
+        if (stale() || err === superseded) return
         if (!silent) {
           setSpansError(
             err instanceof Error ? err.message : 'failed to load trace',
           )
         }
       } finally {
-        if (!silent) setIsLoadingSpans(false)
+        if (!stale() && !silent) setIsLoadingSpans(false)
       }
     },
     [rebuildDetail],

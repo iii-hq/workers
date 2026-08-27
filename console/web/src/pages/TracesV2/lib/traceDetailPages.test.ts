@@ -69,7 +69,7 @@ describe('collectTraceDetailSpans', () => {
         total: all.length,
       })
     }
-    const out = await collectTraceDetailSpans(fetch, 10)
+    const out = await collectTraceDetailSpans(fetch, { timeoutMs: 10 })
 
     expect(out.size).toBe(80)
     expect(calls[0]).toEqual([0, TRACE_DETAIL_PROBE_PAGE_SIZE])
@@ -78,8 +78,30 @@ describe('collectTraceDetailSpans', () => {
 
   it('fails once the floor page size cannot be delivered either', async () => {
     await expect(
-      collectTraceDetailSpans(() => new Promise<never>(() => {}), 5),
+      collectTraceDetailSpans(() => new Promise<never>(() => {}), {
+        timeoutMs: 5,
+      }),
     ).rejects.toThrow(/never arrived/)
+  })
+
+  it('reports each merged page so callers can render progressively', async () => {
+    const all = spans(0, 700)
+    const calls: Array<[number, number]> = []
+    const seen: number[] = []
+    const out = await collectTraceDetailSpans(pagedFetch(all, calls), {
+      onPage: (accumulated) => seen.push(accumulated.size),
+    })
+
+    expect(seen).toEqual([50, 300, 550, 700])
+    expect(out.size).toBe(700)
+  })
+
+  it('never reports a page for an empty trace', async () => {
+    const seen: number[] = []
+    await collectTraceDetailSpans(pagedFetch([], []), {
+      onPage: (accumulated) => seen.push(accumulated.size),
+    })
+    expect(seen).toEqual([])
   })
 
   it('propagates a fetch rejection as-is', async () => {
