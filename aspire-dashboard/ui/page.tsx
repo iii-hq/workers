@@ -341,7 +341,7 @@ function AspireDashboardPage({ host, onRequestClose, commands }: Props) {
   )
 
   return (
-    <PageShell>
+    <PageShell className="aspire-dashboard-shell">
       <PageHeader
         icon={<IconGauge />}
         title="Aspire Dashboard"
