@@ -1,10 +1,9 @@
-//! The single shipped identity prompt must describe the surface the harness
+//! Every shipped identity prompt must describe the surface the harness
 //! actually serves.
 //!
 //! Every agent — top-level and spawned children alike — sees
-//! `harness/prompts/default.txt`: the basic engine functions and the
-//! discovery loop. Roles differ by policy and enrich layers, never by a
-//! separate embedded identity.
+//! `harness/prompts/default.txt`; the separate sub-agent identity is retired
+//! (children differ by policy and enrich layers, never by embedded prompt).
 
 use std::path::{Path, PathBuf};
 
@@ -16,6 +15,11 @@ const REMOVED: &[&str] = &[
     "harness::trigger-call",
 ];
 
+/// Prompts must not name a worker the agent is meant to DISCOVER: naming one
+/// preempts discovery and skews any evaluation of whether the agent finds it.
+/// (`fp` advertises itself through its own presence-gated guidance hook.)
+const UNDISCOVERABLE: &[&str] = &["fp::"];
+
 fn repo_root() -> PathBuf {
     // CARGO_MANIFEST_DIR is <repo>/harness.
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -24,8 +28,9 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn shipped_prompt() -> PathBuf {
-    repo_root().join("harness/prompts/default.txt")
+/// The single prompt file that the harness owns and sends to agents.
+fn shipped_prompts() -> Vec<PathBuf> {
+    vec![repo_root().join("harness/prompts/default.txt")]
 }
 
 fn label(path: &Path) -> String {
@@ -36,8 +41,9 @@ fn label(path: &Path) -> String {
 }
 
 #[test]
-fn harness_owns_the_only_shipped_prompt() {
-    assert!(shipped_prompt().is_file());
+fn harness_owns_the_only_shipped_prompts() {
+    let prompts = shipped_prompts();
+    assert!(prompts.iter().all(|path| path.is_file()));
 
     // The separate sub-agent identity is retired: one prompt for every agent.
     let retired = repo_root().join("harness/prompts/subagent.txt");
@@ -65,49 +71,128 @@ fn harness_owns_the_only_shipped_prompt() {
 }
 
 #[test]
-fn shipped_prompt_teaches_no_removed_id() {
-    let body = std::fs::read_to_string(shipped_prompt()).expect("prompt is readable");
-    for gone in REMOVED {
-        assert!(
-            !body.contains(gone),
-            "prompt teaches a surface the harness no longer serves: {gone}"
-        );
+fn no_shipped_prompt_teaches_a_removed_id() {
+    let mut stale = Vec::new();
+    for path in shipped_prompts() {
+        let body = std::fs::read_to_string(&path).expect("prompt is readable");
+        for gone in REMOVED {
+            if body.contains(gone) {
+                stale.push(format!("{} names `{gone}`", label(&path)));
+            }
+        }
     }
+    assert!(
+        stale.is_empty(),
+        "prompts teach a surface the harness no longer serves:\n  {}",
+        stale.join("\n  ")
+    );
 }
 
-/// The identity is minimal by design: the engine's own surface plus
-/// `directory::search_functions` — the default discovery path, served by the
-/// directory worker that installs alongside the harness (engine discovery is
-/// the fallback). Naming any other worker preempts discovery; teaching an
-/// orchestration process re-imports doctrine that lives in contracts, hooks,
-/// and skills.
 #[test]
-fn shipped_prompt_teaches_discovery_and_nothing_else() {
-    let body = std::fs::read_to_string(shipped_prompt()).expect("prompt is readable");
-    assert!(body.contains("directory::search_functions"));
-    assert!(body.contains("engine::functions::list"));
-    assert!(body.contains("engine::functions::info"));
-    assert!(body.contains("engine::register_trigger"));
+fn no_shipped_prompt_preempts_worker_discovery() {
+    let mut named = Vec::new();
+    for path in shipped_prompts() {
+        let body = std::fs::read_to_string(&path).expect("prompt is readable");
+        for worker in UNDISCOVERABLE {
+            if body.contains(worker) {
+                named.push(format!("{} names `{worker}`", label(&path)));
+            }
+        }
+    }
+    assert!(
+        named.is_empty(),
+        "prompts name a worker agents are meant to discover:\n  {}",
+        named.join("\n  ")
+    );
+}
 
-    for named in [
-        "fp::",
-        "coder::",
-        "compose::",
-        "directory::registry",
-        "directory::agents",
-        "harness::spawn",
-    ] {
+/// The top-level identity prompt teaches the orchestration surface. The
+/// sub-agent prompt intentionally omits it because children are leaves.
+fn is_identity_prompt(path: &Path) -> bool {
+    matches!(
+        path.file_name().and_then(|n| n.to_str()),
+        Some("identity.txt") | Some("default.txt")
+    )
+}
+
+#[test]
+fn every_identity_prompt_teaches_the_live_surface() {
+    // Tool guidance, not process: a prompt must still NAME the callback
+    // primitive, the spawn function, and the leaf-escape option — those are
+    // the API surface — while prescribing no topology (the sweep below owns
+    // that half).
+    for path in shipped_prompts()
+        .into_iter()
+        .filter(|p| is_identity_prompt(p))
+    {
+        let name = label(&path);
+        let body = std::fs::read_to_string(&path).expect("prompt is readable");
+        let normalized = body.replace('\n', " ");
         assert!(
-            !body.contains(named),
-            "prompt names a surface agents are meant to discover: {named}"
+            body.contains("engine::register_trigger"),
+            "{name} never mentions the callback primitive"
         );
+        assert!(
+            body.contains("harness::spawn"),
+            "{name} never mentions how to start a sub-agent"
+        );
+        assert!(
+            body.contains("display: { name, icon?, color? }"),
+            "{name} never teaches the sub-agent display identity"
+        );
+        assert!(
+            normalized.contains("user-visible identity, not its technical id"),
+            "{name} conflates a child's display identity with its session id"
+        );
+        assert!(
+            body.contains("orchestrator: true"),
+            "{name} never mentions the leaf default's escape hatch"
+        );
+        assert!(
+            normalized.contains("materially new investigative or action phase"),
+            "{name} never asks for a user-visible update when a new phase starts"
+        );
+        assert!(
+            normalized.contains("One update may cover any number of related function calls"),
+            "{name} asks for progress without allowing one update to cover a call batch"
+        );
+        assert!(
+            normalized.contains("lead with its concrete result"),
+            "{name} never asks an update to report the preceding phase's result"
+        );
+        assert!(
+            normalized.contains("summary of that whole batch"),
+            "{name} does not connect the progress result to the completed call batch"
+        );
+        assert!(
+            normalized.contains("still needs its concise `description`"),
+            "{name} does not preserve the per-call activity description"
+        );
+        assert!(
+            normalized.contains("For the ordinary text contract, use normal assistant text"),
+            "{name} does not preserve the final answer after progress updates"
+        );
+        assert!(
+            !body.contains(r#"function_id: "harness::spawn""#),
+            "{name} still teaches spawn as a binding target"
+        );
+        // `condition_function_id` reaches the engine's own contract, where an
+        // unknown or erroring condition skips every fire silently and forever.
+        // A prompt may name it — but only to steer agents off it.
+        if body.contains("condition_function_id") {
+            assert!(
+                body.contains("refused") || body.contains("Do NOT") || body.contains("do NOT"),
+                "{name} names `condition_function_id` without warning against it"
+            );
+        }
     }
 }
 
 /// Phrases that prescribe an orchestration PROCESS — a fixed ordering, a
-/// topology recipe, a mandated shared-state flow. Orchestration guidance is
-/// opt-in (harness/skills/orchestration.md, or the task prompt), never baked
-/// into the identity.
+/// topology recipe, a mandated shared-state flow. The runtime no longer has a
+/// trigger→spawn path, and the prompts must not smuggle its doctrine back in:
+/// orchestration guidance is opt-in (harness/skills/orchestration.md, or the
+/// task prompt), never baked into an identity.
 const PRESCRIBED_PROCESS: &[&str] = &[
     "wire, spawn, stop",
     "wire → spawn → stop",
@@ -124,14 +209,21 @@ const PRESCRIBED_PROCESS: &[&str] = &[
 ];
 
 #[test]
-fn shipped_prompt_prescribes_no_orchestration_process() {
-    let body = std::fs::read_to_string(shipped_prompt())
-        .expect("prompt is readable")
-        .to_lowercase();
-    for phrase in PRESCRIBED_PROCESS {
-        assert!(
-            !body.contains(&phrase.to_lowercase()),
-            "prompt prescribes an orchestration process: {phrase:?}"
-        );
+fn no_shipped_prompt_prescribes_an_orchestration_process() {
+    let mut prescriptive = Vec::new();
+    for path in shipped_prompts() {
+        let body = std::fs::read_to_string(&path)
+            .expect("prompt is readable")
+            .to_lowercase();
+        for phrase in PRESCRIBED_PROCESS {
+            if body.contains(&phrase.to_lowercase()) {
+                prescriptive.push(format!("{} says {phrase:?}", label(&path)));
+            }
+        }
     }
+    assert!(
+        prescriptive.is_empty(),
+        "prompts prescribe an orchestration process:\n  {}",
+        prescriptive.join("\n  ")
+    );
 }
