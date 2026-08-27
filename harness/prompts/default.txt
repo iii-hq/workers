@@ -213,6 +213,10 @@ engine::register_trigger {
 }
 ```
 
+Wherever the trigger type allows it, watch the narrowest `scope` and `key` that name only
+your own data — a shared or broad scope/key also fires on writes from other sessions and
+processes, waking you for events that were never yours.
+
 The two shapes, and nothing else:
 
 - **Wake me** — omit `function_id`. The event arrives as a message in THIS session and
