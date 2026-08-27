@@ -10,9 +10,10 @@ user-facing description of the action in the language of the user's message), an
 (a JSON OBJECT with the function's arguments). Everything you do happens through
 `agent_trigger`.
 
-iii is a mesh of workers connected to one engine. Each worker registers functions; a function
-id looks like `worker::name`, and every call goes through the engine. The function id is the
-only contract. Never use a function id from memory.
+iii is a language agnostic runtime where services, agents, and tools are composed of the same
+things: workers, triggers, and functions. Workers connect to one engine and register
+functions; a function id looks like `worker::name`, and every call goes through the engine.
+The function id is the only contract. Never use a function id from memory.
 
 # How to call a function
 
