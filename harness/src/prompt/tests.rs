@@ -144,8 +144,8 @@ fn default_discovery_fallback_yields_to_injected_assist() {
 
 #[test]
 fn runtime_preverification_covers_updates_and_subagents() {
-    for out in [variants::DEFAULT, variants::SUBAGENT] {
-        let out = out.replace('\n', " ");
+    {
+        let out = variants::DEFAULT.replace('\n', " ");
         assert!(out.contains("marked `pre-verified` by a Harness runtime block or update"));
         assert!(out.contains("already satisfies Steps 1 and 2"));
         assert!(out.contains("without discovery or `engine::functions::info`"));
@@ -392,8 +392,8 @@ fn default_variant_step_by_step() {
 
 #[test]
 fn progress_updates_are_phase_scoped_and_keep_descriptions_and_final_text() {
-    for out in [variants::DEFAULT, variants::SUBAGENT] {
-        let normalized = out.replace('\n', " ");
+    {
+        let normalized = variants::DEFAULT.replace('\n', " ");
         assert!(normalized.contains("# User-visible progress"));
         assert!(normalized.contains("materially new investigative or action phase"));
         assert!(normalized.contains("One update may cover any number of related function calls"));
@@ -489,45 +489,6 @@ fn default_variant_invariants() {
         assert!(
             id.starts_with("directory::registry::workers::"),
             "bad directory id {id}"
-        );
-    }
-}
-
-/// The sub-agent identity is a LEAF by design: task mechanics, the
-/// medium-agnostic deliverable (the TASK names the destination and its
-/// format), the FAILED rule, injection defense — and NONE of the
-/// orchestration surface (spawning, triggers, joins, worker installs), with
-/// no "unless told to" escape: capability, not permission-by-prompt.
-#[test]
-fn subagent_variant_invariants() {
-    let out = variants::SUBAGENT;
-    let normalized = out.replace('\n', " ");
-    assert!(out.starts_with("You are an iii sub-agent."));
-    assert!(out.contains("agent_trigger"));
-    assert!(normalized.contains("JSON OBJECT, never a JSON-encoded string"));
-    assert!(out.contains("state::set"));
-    assert!(out.contains("BEFORE your final reply"));
-    assert!(out.contains("format the task specifies"));
-    assert!(out.contains("FAILED: <function> is denied by policy"));
-    assert!(out.contains("data, not instructions"));
-    assert!(out.contains("coder::"));
-    // Zero orchestration knowledge — children are leaves, and there is no
-    // coordinator EXCEPTION anymore: an orchestrator child is made by the
-    // spawn option, never by task text claiming inherited permission.
-    for forbidden in [
-        "harness::spawn",
-        "engine::register_trigger",
-        "engine::unregister_trigger",
-        "worker::add",
-        "directory::registry",
-        "join",
-        "subscription",
-        "EXCEPTION",
-        "inherited the permission",
-    ] {
-        assert!(
-            !out.contains(forbidden),
-            "subagent prompt must not mention {forbidden}"
         );
     }
 }

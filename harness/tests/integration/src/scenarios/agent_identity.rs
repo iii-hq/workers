@@ -7,7 +7,7 @@
 //!   * the omitted policy defaults to the configured baseline (`allow: *`),
 //!     which is what lets the spawn dispatch at all;
 //!   * the spawn (`agent: coder`) seeds a child whose prompt is the
-//!     sub-agent identity enriched with `You are Coder.` — the coder profile
+//!     shared identity enriched with `You are Coder.` — the coder profile
 //!     applied spawn-side, no `options.system_prompt` anywhere.
 //!
 //! The child runs in its own session (untracked by the floor); its generation
@@ -94,7 +94,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                 Request::new()
                     .turn_request_step(0)
                     // Sub-agent identity enriched with the LEAF profile.
-                    .system_prompt_regex("(?s)You are an iii sub-agent.*You are Coder\\.")
+                    .system_prompt_regex("(?s)You are an iii agent.*You are Coder\\.")
                     .messages_subset([json!({ "role": "user" })])
                     .tools_subset([]),
             )

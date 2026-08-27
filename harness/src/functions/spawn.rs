@@ -121,7 +121,7 @@ pub struct SpawnRequest {
     pub task: MessageInput,
     /// Run the child as a directory agent profile (`directory::agents::*`
     /// id). The profile's body becomes the child's enrich system prompt
-    /// (over the sub-agent identity), its skill
+    /// (over the shared identity), its skill
     /// filter applies when `options.skills` is omitted, its `model` slots
     /// between an explicit `model` and the parent's, and its name/icon become
     /// the display defaults. Which agent profile to name is the prompt's decision.

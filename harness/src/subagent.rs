@@ -279,13 +279,15 @@ async fn seed_child(
     let provider = agent_route
         .and_then(|(_, provider)| provider)
         .or_else(|| child_provider(req, parent_record, inherits_parent_model));
-    // Children get the embedded minimal sub-agent identity, never the
-    // top-level orchestrator prompt: a child
-    // knows its one task, its state destination, and nothing else — by
-    // design. Spawn `options.system_prompt` (+ override strategy) is the
-    // escape hatch for a child that genuinely needs a different identity;
-    // an `agent` profile enriches this same identity with its body.
-    let identity = prompt::SUBAGENT;
+    // Children get the same single identity as every agent (the stored
+    // `system-prompts/default` override when present, else the embedded
+    // prompt); what makes a child a leaf is its POLICY (the control-plane
+    // deny set), not a separate prompt. Spawn `options.system_prompt`
+    // (+ override strategy) is the escape hatch for a child that genuinely
+    // needs a different identity; an `agent` profile enriches this same
+    // identity with its body.
+    let identity = prompt::effective_default(&deps.iii).await.identity;
+    let identity = identity.as_str();
 
     let orchestrator = req
         .options

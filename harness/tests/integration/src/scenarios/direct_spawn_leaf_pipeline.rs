@@ -11,7 +11,7 @@
 //!   * child outcomes flow ONLY through the medium — the parent's transcript
 //!     gains exactly one `[notification]` (the barrier payload) and never a
 //!     `[child-failure]` or injected child result;
-//!   * the leaf runs on the sub-agent identity and needs no trigger
+//!   * the leaf runs on the shared identity and needs no trigger
 //!     knowledge — its generations are plain task → `state::set` writes.
 //!
 //! The leaf runs in its own session (untracked by the probe), so its turns
@@ -133,7 +133,7 @@ pub(super) fn scenario() -> ScenarioFixture {
             .expect(
                 Request::new()
                     .turn_request_step(0)
-                    .system_prompt_regex("You are an iii sub-agent")
+                    .system_prompt_regex("You are an iii agent")
                     .messages_subset([json!({ "role": "user" })])
                     .tools_subset([]),
             )
@@ -174,7 +174,7 @@ pub(super) fn scenario() -> ScenarioFixture {
             .expect(
                 Request::new()
                     .turn_request_step(1)
-                    .system_prompt_regex("You are an iii sub-agent")
+                    .system_prompt_regex("You are an iii agent")
                     .messages_subset([
                         json!({ "role": "user" }),
                         json!({ "role": "assistant", "content": [
@@ -199,7 +199,7 @@ pub(super) fn scenario() -> ScenarioFixture {
             .expect(
                 Request::new()
                     .turn_request_step(2)
-                    .system_prompt_regex("You are an iii sub-agent")
+                    .system_prompt_regex("You are an iii agent")
                     .messages_subset([
                         json!({ "role": "user" }),
                         json!({ "role": "assistant" }),

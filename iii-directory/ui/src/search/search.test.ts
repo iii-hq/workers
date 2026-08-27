@@ -77,8 +77,8 @@ describe('parseDiscoverResponse', () => {
           description: 'III engine image resize worker.',
           functions: [fn],
           install: {
-            function: 'worker::add',
-            payload: { source: { kind: 'registry', name: 'image-resize' }, wait: false },
+            function: 'compose::add',
+            payload: { worker: 'image-resize' },
           },
         },
       ],

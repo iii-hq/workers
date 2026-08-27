@@ -33,7 +33,7 @@ use crate::fixtures::ScenarioFixture;
 
 const SPAWN: &str = "harness::spawn";
 const INFO: &str = "engine::functions::info";
-const SUBAGENT_PROMPT: &str = "You are an iii sub-agent";
+const SUBAGENT_PROMPT: &str = "You are an iii agent";
 
 const TASK: &str = "Fetch the contract for {{run_id}}::record with engine::functions::info, \
                     then call it with value \"discovered\", then reply done.";

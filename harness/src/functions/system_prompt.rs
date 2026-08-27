@@ -18,8 +18,10 @@ pub struct SelectedSystemPrompt {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SystemPromptRequest {
     pub session_id: String,
-    /// Return only the embedded Harness default, without session, runtime,
-    /// registry, or hook layers.
+    /// Return only the built-in default layer — the stored
+    /// `system-prompts/default` override when one is active, else the
+    /// embedded Harness default — without session, runtime, registry, or
+    /// hook layers. The part's `name` states which source served it.
     #[serde(default)]
     pub default_only: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -58,7 +60,7 @@ pub async fn handle(
     req: SystemPromptRequest,
 ) -> Result<SystemPromptPreview, HarnessError> {
     if req.default_only {
-        return Ok(default_only_preview());
+        return Ok(default_only_preview(default_identity(deps).await));
     }
     let cfg = deps.cfg().await;
     let record = crate::state::get_turn(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?;
@@ -76,13 +78,16 @@ pub async fn handle(
     };
     let (built_in_name, built_in) = match frozen {
         Some(prompt) => ("session (frozen at send)".to_string(), prompt),
-        None => (
-            "embedded harness default".to_string(),
-            Some(prompt::build_system_prompt(SystemPromptOpts {
-                mode,
-                identity: prompt::DEFAULT,
-            })),
-        ),
+        None => {
+            let (name, identity) = default_identity(deps).await;
+            (
+                name,
+                Some(prompt::build_system_prompt(SystemPromptOpts {
+                    mode,
+                    identity: &identity,
+                })),
+            )
+        }
     };
 
     let filesystem_root = req.filesystem_root.or_else(|| match record.as_ref() {
@@ -126,12 +131,26 @@ pub async fn handle(
     })
 }
 
-fn default_only_preview() -> SystemPromptPreview {
+/// The effective default identity and its user-facing source label. The
+/// label follows the LOOKUP's source, never a body comparison — a stored
+/// `system-prompts/default` entry whose text happens to equal the embedded
+/// prompt is still reported as stored.
+async fn default_identity(deps: &Deps) -> (String, String) {
+    let effective = prompt::effective_default(&deps.iii).await;
+    let name = if effective.stored {
+        "stored default (system-prompts/default)"
+    } else {
+        "embedded harness default"
+    };
+    (name.to_string(), effective.identity)
+}
+
+fn default_only_preview((name, identity): (String, String)) -> SystemPromptPreview {
     SystemPromptPreview {
         parts: vec![SystemPromptPart {
             kind: SystemPromptPartKind::BuiltIn,
-            name: Some("embedded harness default".into()),
-            body: prompt::DEFAULT.into(),
+            name: Some(name),
+            body: identity,
         }],
     }
 }
@@ -197,9 +216,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_only_preview_is_the_exact_embedded_prompt() {
+    fn default_only_preview_carries_the_effective_identity_and_source() {
         assert_eq!(
-            default_only_preview(),
+            default_only_preview((
+                "embedded harness default".into(),
+                prompt::DEFAULT.to_string()
+            )),
             SystemPromptPreview {
                 parts: vec![SystemPromptPart {
                     kind: SystemPromptPartKind::BuiltIn,
@@ -207,6 +229,15 @@ mod tests {
                     body: prompt::DEFAULT.into(),
                 }],
             }
+        );
+        let stored = default_only_preview((
+            "stored default (system-prompts/default)".into(),
+            "You are CUSTOM.".into(),
+        ));
+        assert_eq!(stored.parts[0].body, "You are CUSTOM.");
+        assert_eq!(
+            stored.parts[0].name.as_deref(),
+            Some("stored default (system-prompts/default)")
         );
     }
 
