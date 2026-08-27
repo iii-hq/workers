@@ -62,6 +62,7 @@ pub mod fs_source;
 pub mod functions;
 pub mod hook;
 pub mod manifest;
+pub mod seed;
 pub mod sources;
 pub mod surface;
 pub mod trigger_types;
