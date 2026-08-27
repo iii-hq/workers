@@ -263,6 +263,25 @@ function portSummary(project: Project | null): ReactNode {
   )
 }
 
+function NodeChip({ name, onPick }: { name: string; onPick: (name: string) => void }) {
+  return (
+    <Chip
+      tone="neutral"
+      role="button"
+      tabIndex={0}
+      onClick={() => onPick(name)}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          onPick(name)
+        }
+      }}
+    >
+      <span className="cu-mono">{name}</span>
+    </Chip>
+  )
+}
+
 function Field({ id, label, hint, children }: { id: string; label: string; hint?: string; children: ReactNode }) {
   return (
     <div className={uiClasses.field}>
@@ -621,6 +640,9 @@ export function ComposePage({ host, onRequestClose, panelSide, commands, panelCo
   )
   const selectedContainer = selectedNode ? (all.find((c) => c.container === selectedNode) ?? null) : null
   const selectedDeclared = selectedNode ? declared.get(selectedNode) : undefined
+  useEffect(() => {
+    if (loaded && selectedNode && !all.some((c) => c.container === selectedNode)) setSelectedNode(null)
+  }, [loaded, selectedNode, all])
   const counts = useMemo(() => {
     const next = { ready: 0, starting: 0, failed: 0, stopped: 0 }
     for (const c of all) if (c.state in next) next[c.state as ContainerState] += 1
@@ -1111,9 +1133,7 @@ export function ComposePage({ host, onRequestClose, panelSide, commands, panelCo
               {selectedDeclared?.start_after.length ? (
                 <span className="cu-chips">
                   {selectedDeclared.start_after.map((dep) => (
-                    <Chip key={dep} tone="neutral" onClick={() => setSelectedNode(dep)} role="button" tabIndex={0}>
-                      <span className="cu-mono">{dep}</span>
-                    </Chip>
+                    <NodeChip key={dep} name={dep} onPick={setSelectedNode} />
                   ))}
                 </span>
               ) : (
@@ -1129,15 +1149,7 @@ export function ComposePage({ host, onRequestClose, panelSide, commands, panelCo
                 return dependents.length ? (
                   <span className="cu-chips">
                     {dependents.map((d) => (
-                      <Chip
-                        key={d.name}
-                        tone="neutral"
-                        onClick={() => setSelectedNode(d.name)}
-                        role="button"
-                        tabIndex={0}
-                      >
-                        <span className="cu-mono">{d.name}</span>
-                      </Chip>
+                      <NodeChip key={d.name} name={d.name} onPick={setSelectedNode} />
                     ))}
                   </span>
                 ) : (
