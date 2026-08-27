@@ -352,6 +352,7 @@ jobs:
       - name: Install pinned iii engine
         env:
           III_RELEASE_TAG: 'iii-alpha/v0.22.1-alpha.25'
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
@@ -443,6 +444,7 @@ jobs:
       - name: Install pinned iii engine
         env:
           III_RELEASE_TAG: 'iii-alpha/v0.22.1-alpha.25'
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
@@ -629,6 +631,7 @@ jobs:
           # pruned — 0.17.0 vanished and broke every boot smoke). Keep aligned
           # with the workers' iii-sdk protocol line.
           III_RELEASE_TAG: 'iii-alpha/v0.22.1-alpha.25'
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh

@@ -112,6 +112,31 @@ async fn wait_for_provider(router: &IIIClient, provider: &str) -> anyhow::Result
     }
 }
 
+async fn wait_for_registration_token(
+    provider: &IIIClient,
+    provider_id: &str,
+) -> anyhow::Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let token = call(
+            provider,
+            "state::get",
+            json!({
+                "scope": format!("provider-{provider_id}"),
+                "key": "registration_token"
+            }),
+        )
+        .await?;
+        if token.as_str().is_some_and(|value| !value.is_empty()) {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            bail!("registration token was not persisted: {token}");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 async fn wait_for_discovered_models(router: &IIIClient, case: ProviderCase) -> anyhow::Result<()> {
     if !case.requires_model_discovery {
         return Ok(());
@@ -246,19 +271,7 @@ pub(crate) async fn run_contract(case: ProviderCase) -> anyhow::Result<()> {
         ),
     }
     wait_for_discovered_models(&router, case).await?;
-    let token = call(
-        &provider,
-        "state::get",
-        json!({
-            "scope": format!("provider-{}", case.id),
-            "key": "registration_token"
-        }),
-    )
-    .await?;
-    anyhow::ensure!(
-        token.as_str().is_some_and(|value| !value.is_empty()),
-        "registration token was not persisted: {token}"
-    );
+    wait_for_registration_token(&provider, case.id).await?;
 
     // Successful streaming plus exact request/auth/tool serialization.
     stub.clear_requests();
