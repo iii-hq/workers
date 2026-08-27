@@ -677,6 +677,7 @@ async fn send_finalization(
 
 fn send_options(job: &EvalJobRecordV1, variant: &crate::contract::EvalVariantV1) -> SendOptions {
     SendOptions {
+        agent: None,
         system_prompt: variant.system_prompt.clone(),
         system_prompt_strategy: if variant.system_prompt.is_none() {
             Some(harness::prompt::SystemPromptStrategy::Disabled)
@@ -692,6 +693,7 @@ fn send_options(job: &EvalJobRecordV1, variant: &crate::contract::EvalVariantV1)
         provider_options: job.request.model.provider_options.clone(),
         output: Some(job.request.output.clone()),
         functions: Some(job.request.functions.clone()),
+        skills: None,
         metadata: job.request.metadata.clone(),
         max_validation_retries: None,
     }
