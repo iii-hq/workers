@@ -13,6 +13,7 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
+use super::peers::{parse_prefs, up_args};
 use super::share::{normalize_routes, serve_status, Route};
 use super::{
     bool_at, register_fn, run, run_json, run_text, spec, string_at, strings_at, EmptyInput,
@@ -507,7 +508,10 @@ async fn connect_output(
 }
 
 async fn connect(config: &WorkerConfig, _: EmptyInput) -> Result<ConnectOutput, String> {
-    let authorization_url = run_with_login_watch(config, &["up"], CONNECT_TIMEOUT_SECS).await?;
+    let prefs = parse_prefs(&run_json(config, &["debug", "prefs"]).await?);
+    let args = up_args(&prefs);
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let authorization_url = run_with_login_watch(config, &refs, CONNECT_TIMEOUT_SECS).await?;
     connect_output(config, authorization_url).await
 }
 

@@ -439,6 +439,57 @@ pub fn prefs_set_args(input: &PrefsSetInput) -> Result<Vec<String>, String> {
     Ok(args)
 }
 
+const DEFAULT_CONTROL_URL: &str = "https://controlplane.tailscale.com";
+
+pub fn up_args(prefs: &Prefs) -> Vec<String> {
+    let mut args = vec!["up".to_string()];
+    if let Some(url) = &prefs.control_url {
+        if !url.is_empty() && url != DEFAULT_CONTROL_URL {
+            args.push(format!("--login-server={url}"));
+        }
+    }
+    if prefs.accept_routes {
+        args.push("--accept-routes".to_string());
+    }
+    if !prefs.accept_dns {
+        args.push("--accept-dns=false".to_string());
+    }
+    if let Some(exit_node) = prefs.exit_node_ip.as_ref().or(prefs.exit_node_id.as_ref()) {
+        args.push(format!("--exit-node={exit_node}"));
+    }
+    if prefs.exit_node_allow_lan_access {
+        args.push("--exit-node-allow-lan-access".to_string());
+    }
+    if prefs.ssh {
+        args.push("--ssh".to_string());
+    }
+    if prefs.shields_up {
+        args.push("--shields-up".to_string());
+    }
+    if let Some(hostname) = &prefs.hostname {
+        args.push(format!("--hostname={hostname}"));
+    }
+    if !prefs.advertise_routes.is_empty() {
+        args.push(format!(
+            "--advertise-routes={}",
+            prefs.advertise_routes.join(",")
+        ));
+    }
+    if prefs.advertise_exit_node {
+        args.push("--advertise-exit-node".to_string());
+    }
+    if !prefs.advertise_tags.is_empty() {
+        args.push(format!(
+            "--advertise-tags={}",
+            prefs.advertise_tags.join(",")
+        ));
+    }
+    if prefs.app_connector {
+        args.push("--advertise-connector".to_string());
+    }
+    args
+}
+
 async fn prefs_set(config: &WorkerConfig, input: PrefsSetInput) -> Result<Prefs, String> {
     let args = prefs_set_args(&input)?;
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -497,6 +548,48 @@ mod tests {
         assert!(prefs.advertise_exit_node);
         assert!(prefs.auto_update_apply);
         assert!(!serde_json::to_string(&prefs).unwrap().contains("privkey"));
+    }
+
+    #[test]
+    fn up_args_restate_non_default_prefs_and_nothing_else() {
+        let prefs = parse_prefs(&serde_json::json!({
+            "ControlURL": "https://controlplane.tailscale.com", "RouteAll": true, "CorpDNS": true,
+            "ExitNodeID": "", "ExitNodeIP": "", "RunSSH": false, "ShieldsUp": false, "Hostname": "",
+            "AdvertiseRoutes": ["10.0.0.0/8", "0.0.0.0/0", "::/0"], "AdvertiseTags": ["tag:ci"]
+        }));
+        assert_eq!(
+            up_args(&prefs),
+            vec![
+                "up",
+                "--accept-routes",
+                "--advertise-routes=10.0.0.0/8",
+                "--advertise-exit-node",
+                "--advertise-tags=tag:ci"
+            ]
+        );
+
+        let bare = parse_prefs(
+            &serde_json::json!({"ControlURL": "https://controlplane.tailscale.com", "CorpDNS": true}),
+        );
+        assert_eq!(up_args(&bare), vec!["up"]);
+
+        let custom = parse_prefs(&serde_json::json!({
+            "ControlURL": "https://headscale.example", "CorpDNS": false, "ExitNodeIP": "100.64.0.9",
+            "ExitNodeAllowLANAccess": true, "RunSSH": true, "ShieldsUp": true, "Hostname": "lab"
+        }));
+        assert_eq!(
+            up_args(&custom),
+            vec![
+                "up",
+                "--login-server=https://headscale.example",
+                "--accept-dns=false",
+                "--exit-node=100.64.0.9",
+                "--exit-node-allow-lan-access",
+                "--ssh",
+                "--shields-up",
+                "--hostname=lab"
+            ]
+        );
     }
 
     #[test]
