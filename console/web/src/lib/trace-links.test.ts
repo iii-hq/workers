@@ -4,6 +4,7 @@ import {
   getChatMessageFocus,
   requestChatMessageFocus,
   resetTraceLinksForTests,
+  shouldDropChatFocus,
 } from './trace-links'
 
 beforeEach(resetTraceLinksForTests)
@@ -46,5 +47,39 @@ describe('chat message focus (traces → chat)', () => {
     clearChatMessageFocus(second.id)
     expect(getChatMessageFocus()).toBeUndefined()
     clearChatMessageFocus(second.id)
+  })
+})
+
+describe('shouldDropChatFocus', () => {
+  it('holds while the transcript is still hydrating', () => {
+    expect(
+      shouldDropChatFocus({ hydrated: false, working: false, anchored: false }),
+    ).toBe(false)
+  })
+
+  it('holds while a turn is running — its rows may still produce the anchor', () => {
+    expect(
+      shouldDropChatFocus({ hydrated: true, working: true, anchored: false }),
+    ).toBe(false)
+  })
+
+  it('never drops a resolved anchor', () => {
+    expect(
+      shouldDropChatFocus({ hydrated: true, working: false, anchored: true }),
+    ).toBe(false)
+  })
+
+  it('drops when hydrated, idle, and anchorless', () => {
+    expect(
+      shouldDropChatFocus({ hydrated: true, working: false, anchored: false }),
+    ).toBe(true)
+    // Backends that never track hydration count as hydrated.
+    expect(
+      shouldDropChatFocus({
+        hydrated: undefined,
+        working: false,
+        anchored: false,
+      }),
+    ).toBe(true)
   })
 })

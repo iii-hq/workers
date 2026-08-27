@@ -75,6 +75,30 @@ export function clearChatMessageFocus(id: number): void {
   emit()
 }
 
+/**
+ * Completion writes the turn's last transcript rows AFTER the session's
+ * status flips idle — dropping on the flip itself would eat a landing whose
+ * anchor is milliseconds away. Consumers wait this long in the droppable
+ * state before actually clearing the request.
+ */
+export const CHAT_FOCUS_DROP_GRACE_MS = 2_000
+
+/**
+ * Whether a pending focus request is provably dead: the transcript is
+ * hydrated, no anchor row resolved, and no turn is running that could still
+ * write it. A working session holds the request instead — a live turn
+ * persists its durable rows as it goes, and landing when they appear is
+ * still what the click asked for. `hydrated: undefined` counts as hydrated
+ * (backends that never track hydration).
+ */
+export function shouldDropChatFocus(state: {
+  hydrated?: boolean
+  working: boolean
+  anchored: boolean
+}): boolean {
+  return !state.anchored && state.hydrated !== false && !state.working
+}
+
 /** Test-only reset; exported to keep the store deterministic in unit tests. */
 export function resetTraceLinksForTests(): void {
   nextEventId = 1

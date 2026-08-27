@@ -52,7 +52,12 @@ import {
   loadedSkillIds,
   slashChip,
 } from '@/lib/slash-commands'
-import { clearChatMessageFocus, useChatMessageFocus } from '@/lib/trace-links'
+import {
+  CHAT_FOCUS_DROP_GRACE_MS,
+  clearChatMessageFocus,
+  shouldDropChatFocus,
+  useChatMessageFocus,
+} from '@/lib/trace-links'
 import { turnAnchorMessageId } from '@/lib/turn-anchor'
 import { useExtSessionChips, useExtSessionTurnSummaries } from '@/lib/ui-slots'
 import {
@@ -1815,9 +1820,13 @@ export function ChatView({
 
   /* Trace → message landing: a pending turn-focus for THIS session resolves
      to the transcript row to center (see lib/turn-anchor), recomputed as the
-     transcript hydrates. Consumed when MessageList lands on it; dropped once
-     a hydrated transcript provably lacks the turn, so a stale request can't
-     fire on a later visit. */
+     transcript hydrates. Consumed when MessageList lands on it. A missing
+     anchor drops the request only when nothing can still produce it — the
+     transcript is hydrated AND no turn is running (a live turn writes its
+     durable rows as it goes, so the click means "land there once it
+     exists") — and only after a grace, because completion flips the status
+     idle before the turn's last rows reach the transcript. So a stale
+     request still can't fire on a later visit. */
   const chatFocusEvent = useChatMessageFocus()
   const chatFocus =
     chatFocusEvent && chatFocusEvent.sessionId === conversation.id
@@ -1832,10 +1841,24 @@ export function ChatView({
   )
   useEffect(() => {
     if (!chatFocus) return
-    if (conversation.hydrated !== false && focusMessageId === null) {
-      clearChatMessageFocus(chatFocus.id)
+    if (
+      !shouldDropChatFocus({
+        hydrated: conversation.hydrated,
+        working: conversation.status === 'working',
+        anchored: focusMessageId !== null,
+      })
+    ) {
+      return
     }
-  }, [chatFocus, conversation.hydrated, focusMessageId])
+    // Any dep change — anchor resolved, a turn (re)started, a new request —
+    // cancels the pending drop; the id guard in clearChatMessageFocus keeps
+    // a stale timer from ever dropping a newer request.
+    const timer = window.setTimeout(
+      () => clearChatMessageFocus(chatFocus.id),
+      CHAT_FOCUS_DROP_GRACE_MS,
+    )
+    return () => window.clearTimeout(timer)
+  }, [chatFocus, conversation.hydrated, conversation.status, focusMessageId])
   const chatFocusIdRef = useRef<number | null>(null)
   chatFocusIdRef.current = chatFocus?.id ?? null
   const handleFocusMessageHandled = useCallback(() => {
