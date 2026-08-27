@@ -223,14 +223,11 @@ def test_candidate_smoke_prepares_kvm_only_for_scrapling() -> None:
     assert "sudo chmod 0666 /dev/kvm" in prepare["run"]
 
 
-def test_candidate_publish_serializes_and_safely_joins_prepared_commits() -> None:
+def test_candidate_publish_retries_and_safely_joins_prepared_commits() -> None:
     path = WORKFLOWS / "publish-candidate.yml"
     value = workflow(path)
     publish = value["jobs"]["publish"]
-    assert publish["concurrency"] == {
-        "group": "release-candidate-main",
-        "cancel-in-progress": "false",
-    }
+    assert "concurrency" not in publish
 
     steps = publish["steps"]
     verify = next(step for step in steps if step.get("name") == "Verify prepared artifact and release metadata")
@@ -241,7 +238,10 @@ def test_candidate_publish_serializes_and_safely_joins_prepared_commits() -> Non
     assert 'case "$changed" in' in verify["run"]
     assert '"$WORKER"/*)' in verify["run"]
     assert "prepare_main_target()" in push["run"]
+    assert "publish_git_refs()" in push["run"]
     assert 'git merge --no-ff --no-edit "$PREPARED_SHA"' in push["run"]
+    assert "for attempt in $(seq 1 60)" in push["run"]
+    assert "main advanced during candidate publication; retrying CAS" in push["run"]
     assert 'git push --atomic origin' in push["run"]
 
 

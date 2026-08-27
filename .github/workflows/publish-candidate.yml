@@ -63,12 +63,6 @@ concurrency:
 jobs:
   publish:
     name: Publish ${{ inputs.worker }} ${{ inputs.candidate_version }}
-    concurrency:
-      # Prepared commits from one multi-worker plan are siblings. Only the Git
-      # commit/tag section may advance main at a time; Registry jobs can still
-      # continue in parallel after this job releases the lock.
-      group: release-candidate-main
-      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
@@ -191,6 +185,31 @@ jobs:
             git merge --no-ff --no-edit "$PREPARED_SHA"
             main_target=$(git rev-parse HEAD)
           }
+          publish_git_refs() {
+            local include_tag=$1
+            local attempt
+            for attempt in $(seq 1 60); do
+              git fetch origin +refs/heads/main:refs/remotes/origin/main --quiet
+              prepare_main_target
+              if [[ -z "$main_target" ]]; then
+                if [[ "$include_tag" == true ]]; then
+                  git push origin "refs/tags/$TAG" && return 0
+                fi
+                return 0
+              fi
+              if [[ "$include_tag" == true ]]; then
+                git push --atomic origin \
+                  "$main_target:refs/heads/main" \
+                  "refs/tags/$TAG" && return 0
+              else
+                git push origin "$main_target:refs/heads/main" && return 0
+              fi
+              echo "main advanced during candidate publication; retrying CAS ($attempt/60)"
+              sleep $((RANDOM % 5 + 1))
+            done
+            echo "::error::main kept advancing during candidate publication"
+            return 1
+          }
           if git rev-parse --verify --quiet "refs/tags/$TAG" >/dev/null; then
             test "$(git rev-list -n 1 "$TAG^{}")" = "$PREPARED_SHA"
             annotation=$(git tag -l --format='%(contents)' "$TAG")
@@ -199,8 +218,7 @@ jobs:
               "plan-hash: $PLAN_HASH" "source-sha: $SOURCE_SHA" "prepared-sha: $PREPARED_SHA"; do
               grep -Fx "$field" <<<"$annotation" >/dev/null
             done
-            prepare_main_target
-            [[ -z "$main_target" ]] || git push origin "$main_target:refs/heads/main"
+            publish_git_refs false
             exit 0
           fi
           git tag -a "$TAG" -m "Release $TAG
@@ -220,14 +238,7 @@ jobs:
           registry-tag: next
           experimental: false
           "
-          prepare_main_target
-          if [[ -n "$main_target" ]]; then
-            git push --atomic origin \
-              "$main_target:refs/heads/main" \
-              "refs/tags/$TAG"
-          else
-            git push origin "refs/tags/$TAG"
-          fi
+          publish_git_refs true
 
       - name: Create draft prerelease and upload prepared assets
         env:
