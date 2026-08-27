@@ -65,6 +65,90 @@ export interface CollectTraceDetailOptions<S> {
  * verified filtered `total` semantics — also the guard that keeps a stale
  * `total` from looping while a trace is completing).
  */
+/** Windows fired together after the probe. The scoped/search list scan
+ *  costs seconds per call server-side REGARDLESS of limit or offset
+ *  (measured: ~3.4s flat), so sequential pages would multiply it. */
+export const SEED_WINDOW_PARALLELISM = 3
+
+/**
+ * Fetch the most-recent window of a `search_all_spans` query — up to
+ * `maxSpans` spans — as byte-priced pages: a probe first, then the
+ * remaining windows in parallel batches. A window whose response never
+ * arrives (oversized — the transport drops it silently) splits in half and
+ * retries; only a window undeliverable at the floor fails the read.
+ * Returns the deduped spans plus the server's filtered total.
+ */
+export async function collectRecentSpanWindow<S extends { span_id: string }>(
+  fetchPage: (offset: number, limit: number) => Promise<TraceDetailPage<S>>,
+  maxSpans: number,
+  timeoutMs: number = TRACE_DETAIL_PAGE_TIMEOUT_MS,
+): Promise<{ spans: S[]; total: number }> {
+  let probeSize = Math.min(TRACE_DETAIL_PROBE_PAGE_SIZE, maxSpans)
+  let probe: TraceDetailPage<S> | typeof TIMED_OUT
+  for (;;) {
+    probe = await withTimeout(fetchPage(0, probeSize), timeoutMs)
+    if (probe !== TIMED_OUT) break
+    if (probeSize <= TRACE_DETAIL_MIN_PAGE_SIZE) {
+      throw new Error(
+        `trace page of ${probeSize} spans never arrived — spans too large to deliver`,
+      )
+    }
+    probeSize = Math.max(TRACE_DETAIL_MIN_PAGE_SIZE, Math.floor(probeSize / 2))
+  }
+
+  const spans = new Map<string, S>()
+  for (const span of probe.spans) spans.set(span.span_id, span)
+  const target = Math.min(probe.total, maxSpans)
+  if (probe.spans.length < probeSize || spans.size >= target) {
+    return { spans: [...spans.values()], total: probe.total }
+  }
+
+  // A recency window mixes spans from different calls, so the probe samples
+  // only its thin end (measured: 28KB/span up front, ~83KB deeper in). Half
+  // the detail budget absorbs that heterogeneity — an under-priced window
+  // costs a full timeout+split round, far more than a smaller page does.
+  const bytesPerSpan =
+    JSON.stringify(probe.spans).length / Math.max(1, probe.spans.length)
+  const pageSize = Math.min(
+    TRACE_DETAIL_MAX_PAGE_SIZE,
+    Math.max(
+      TRACE_DETAIL_MIN_PAGE_SIZE,
+      Math.floor(TRACE_DETAIL_SAFE_RESPONSE_BYTES / 2 / bytesPerSpan),
+    ),
+  )
+
+  const fetchWindow = async (offset: number, limit: number): Promise<S[]> => {
+    const page = await withTimeout(fetchPage(offset, limit), timeoutMs)
+    if (page !== TIMED_OUT) return page.spans
+    if (limit <= TRACE_DETAIL_MIN_PAGE_SIZE) {
+      throw new Error(
+        `trace page of ${limit} spans never arrived — spans too large to deliver`,
+      )
+    }
+    const half = Math.ceil(limit / 2)
+    const halves = await Promise.all([
+      fetchWindow(offset, half),
+      fetchWindow(offset + half, limit - half),
+    ])
+    return halves.flat()
+  }
+
+  const windows: Array<[number, number]> = []
+  for (let offset = probe.spans.length; offset < target; offset += pageSize) {
+    windows.push([offset, Math.min(pageSize, target - offset)])
+  }
+  for (let i = 0; i < windows.length; i += SEED_WINDOW_PARALLELISM) {
+    const batch = windows.slice(i, i + SEED_WINDOW_PARALLELISM)
+    const results = await Promise.all(
+      batch.map(([offset, limit]) => fetchWindow(offset, limit)),
+    )
+    for (const win of results) {
+      for (const span of win) spans.set(span.span_id, span)
+    }
+  }
+  return { spans: [...spans.values()], total: probe.total }
+}
+
 export async function collectTraceDetailSpans<S extends { span_id: string }>(
   fetchPage: (offset: number, limit: number) => Promise<TraceDetailPage<S>>,
   opts?: CollectTraceDetailOptions<S>,

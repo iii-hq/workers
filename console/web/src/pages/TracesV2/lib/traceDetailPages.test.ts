@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  collectRecentSpanWindow,
   collectTraceDetailSpans,
   TRACE_DETAIL_MAX_PAGE_SIZE,
   TRACE_DETAIL_MIN_PAGE_SIZE,
@@ -136,5 +137,54 @@ describe('collectTraceDetailSpans', () => {
     }
     const out = await collectTraceDetailSpans(fetch)
     expect(out.size).toBe(60)
+  })
+})
+
+describe('collectRecentSpanWindow', () => {
+  it('stops at the span budget and reports the true total', async () => {
+    const all = spans(0, 2000)
+    const calls: Array<[number, number]> = []
+    const out = await collectRecentSpanWindow(pagedFetch(all, calls), 250)
+
+    expect(out.spans.length).toBe(250)
+    expect(out.total).toBe(2000)
+    expect(calls[0]).toEqual([0, TRACE_DETAIL_PROBE_PAGE_SIZE])
+    // Windows tile the remainder exactly up to the budget.
+    const fetched = calls.reduce((n, [, limit]) => n + limit, 0)
+    expect(fetched).toBe(250)
+  })
+
+  it('returns the probe alone when it already covers the data', async () => {
+    const all = spans(0, 30)
+    const calls: Array<[number, number]> = []
+    const out = await collectRecentSpanWindow(pagedFetch(all, calls), 250)
+    expect(out.spans.length).toBe(30)
+    expect(calls).toHaveLength(1)
+  })
+
+  it('splits a window in half when its response never arrives', async () => {
+    const all = spans(0, 150)
+    const calls: Array<[number, number]> = []
+    const fetch = (offset: number, limit: number) => {
+      calls.push([offset, limit])
+      // The first full post-probe window "hangs"; its halves deliver.
+      if (offset === 50 && limit === 100) return new Promise<never>(() => {})
+      return Promise.resolve({
+        spans: all.slice(offset, offset + limit),
+        total: all.length,
+      })
+    }
+    // Thin spans price to the max page; force a deterministic split by
+    // budgeting exactly one 100-span window after the probe.
+    const out = await collectRecentSpanWindow(fetch, 150, 15)
+    expect(out.spans.length).toBe(150)
+    expect(calls).toContainEqual([50, 50])
+    expect(calls).toContainEqual([100, 50])
+  })
+
+  it('fails when even the floor window cannot be delivered', async () => {
+    await expect(
+      collectRecentSpanWindow(() => new Promise<never>(() => {}), 100, 5),
+    ).rejects.toThrow(/never arrived/)
   })
 })

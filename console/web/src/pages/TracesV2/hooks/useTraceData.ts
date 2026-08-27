@@ -12,6 +12,7 @@ import {
   type TracesFilterParams,
   type TracesResponse,
 } from '../api/traces'
+import { collectRecentSpanWindow } from '../lib/traceDetailPages'
 import {
   dedupeToTraceRoots,
   fingerprintTraceList,
@@ -19,10 +20,21 @@ import {
 } from '../lib/traceListItem'
 
 const DEFAULT_TRACE_LIMIT = 500
+/**
+ * Span budget for `search_all_spans` seeds. Full-fat spans run 30-80KB and
+ * the server-side scan costs ~3.4s PER CALL regardless of limit/offset
+ * (measured live), so the window has to stay small: 250 recent spans cover a
+ * session's recent turns in 2-3 parallel reads. Deeper history stays
+ * reachable through the pager and text search.
+ */
+const SEARCH_SEED_MAX_SPANS = 250
 
 /** Coalesce window for the trace-tags refresh: batches the trace ids that
  *  arrived from the rows stream / activity feed into one `trace_ids` read. */
 const TAG_REFRESH_DEBOUNCE_MS = 1000
+/** Minimum gap between activity-driven reseeds of a filtered/searched list
+ *  (each one re-runs the parallel multi-MB window sweep). */
+const FILTERED_RESEED_COOLDOWN_MS = 10_000
 /** Ids per refresh read. Overflow is dropped, not queued — a still-active
  *  trace re-enters via its next activity window. */
 const TAG_REFRESH_MAX_IDS = 100
@@ -99,16 +111,42 @@ export function useTraceData({
     refetch,
   } = useQuery({
     queryKey: ['traces', filterParams, showSystem, debouncedSearch],
-    queryFn: () =>
-      fetchTraces({
+    queryFn: async (): Promise<TracesResponse> => {
+      const params = {
         ...filterParams,
         ...(debouncedSearch && !filterParams.name
           ? { name: debouncedSearch, search_all_spans: true }
           : {}),
-        offset: 0,
-        limit: DEFAULT_TRACE_LIMIT,
         include_internal: showSystem,
-      }),
+      }
+      if (params.search_all_spans !== true) {
+        // Roots-only responses carry thin spans — one read is light & safe.
+        return fetchTraces({ ...params, offset: 0, limit: DEFAULT_TRACE_LIMIT })
+      }
+      // A search_all_spans seed (session scope, text search) returns FULL
+      // spans: one big read can exceed the transport's ~16MiB delivery cap
+      // and hang forever — no error. Collect a byte-priced recency window
+      // instead, windows in parallel because the server-side scan costs
+      // seconds per call regardless of limit/offset.
+      let exporterDisabled = false
+      const { spans, total } = await collectRecentSpanWindow(
+        async (offset, limit) => {
+          const page = await fetchTraces({ ...params, offset, limit })
+          if (page.memoryExporterDisabled) exporterDisabled = true
+          return page
+        },
+        SEARCH_SEED_MAX_SPANS,
+      )
+      return exporterDisabled
+        ? {
+            spans: [],
+            total: 0,
+            offset: 0,
+            limit: SEARCH_SEED_MAX_SPANS,
+            memoryExporterDisabled: true,
+          }
+        : { spans, total, offset: 0, limit: SEARCH_SEED_MAX_SPANS }
+    },
     // This query is the one-time SEED read. Live updates arrive by APPEND over
     // the engine `iii:devtools:trace-rows` stream (see the stream effect
     // below), which merges new rows straight into this cache — no polling
@@ -116,6 +154,9 @@ export function useTraceData({
     // frames; manual Refresh re-reads on demand.
     refetchInterval: false,
     staleTime: 1000,
+    // The collector already ladders timeouts internally; stacking the
+    // default 3 retries on top would turn a failed seed into minutes.
+    retry: 1,
   })
 
   const hiddenKey = hiddenFunctions?.join(',') ?? ''
@@ -322,6 +363,30 @@ export function useTraceData({
       }, TAG_REFRESH_DEBOUNCE_MS)
     }
 
+    // Filtered/searched seeds are EXPENSIVE (parallel multi-MB windows —
+    // see the queryFn): under a busy session the rows stream would refetch
+    // them back-to-back and saturate the main thread with payload parses.
+    // Cool down to one reseed per window, trailing so the last burst lands.
+    let reseedCooldownTimer: ReturnType<typeof setTimeout> | undefined
+    let lastFilteredReseed = 0
+    const throttledFilteredReseed = () => {
+      const wait = Math.max(
+        0,
+        lastFilteredReseed + FILTERED_RESEED_COOLDOWN_MS - Date.now(),
+      )
+      if (wait === 0) {
+        lastFilteredReseed = Date.now()
+        qc.invalidateQueries({ queryKey: ['traces'] })
+        return
+      }
+      if (reseedCooldownTimer !== undefined) return
+      reseedCooldownTimer = setTimeout(() => {
+        reseedCooldownTimer = undefined
+        lastFilteredReseed = Date.now()
+        qc.invalidateQueries({ queryKey: ['traces'] })
+      }, wait)
+    }
+
     void (async () => {
       const client = await getIiiClient()
       if (disposed) return
@@ -347,7 +412,7 @@ export function useTraceData({
           // spans settle. (The filtered branch refetches, which re-reads tags.)
           scheduleTagRefresh(spans.map((s) => s.trace_id))
         } else {
-          qc.invalidateQueries({ queryKey: ['traces'] })
+          throttledFilteredReseed()
         }
         // The group-by aggregate (and any expanded group's member list)
         // can't be appended; refetch them on activity.
@@ -392,6 +457,10 @@ export function useTraceData({
         if (tagFlushTimer !== undefined) {
           clearTimeout(tagFlushTimer)
           tagFlushTimer = undefined
+        }
+        if (reseedCooldownTimer !== undefined) {
+          clearTimeout(reseedCooldownTimer)
+          reseedCooldownTimer = undefined
         }
       }
     })()
