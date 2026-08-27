@@ -209,6 +209,12 @@ def test_every_dispatch_is_actor_gated_and_emits_factual_evidence() -> None:
         assert ("--mutating" in body) == (name in MUTATING), name
 
 
+def test_harness_shadow_uses_the_general_self_hosted_pool() -> None:
+    observe = workflow(WORKFLOWS / "harness-e2e-shadow.yml")["jobs"]["observe"]
+    assert observe["runs-on"] == ["self-hosted", "Linux", "X64", "general"]
+    assert observe["environment"] == "harness-e2e-trusted"
+
+
 def test_candidate_smoke_prepares_kvm_only_for_scrapling() -> None:
     steps = workflow(WORKFLOWS / "candidate-smoke.yml")["jobs"]["smoke"]["steps"]
     prepare = next(step for step in steps if step.get("name") == "Prepare KVM for Scrapling sandbox")
