@@ -35,7 +35,7 @@ const DEFAULT_EFFORT: ReasoningEffortOption = {
 const FILTER_KEYS = ['ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter', 'Escape']
 const MODEL_PICKER_PAGE_TRANSITION_MS = 250
 
-interface ModelPickerProps {
+export interface ModelPickerProps {
   value: ModelId | null
   options: ModelOption[]
   /** Incremented by a parent CTA to open this picker when its trigger is visible. */
@@ -46,6 +46,12 @@ interface ModelPickerProps {
   disabled?: boolean
   loading?: boolean
   showRefresh?: boolean
+  /** Copy shown when models exist but this optional field has no selection. */
+  placeholder?: string
+  /** Worker/profile pickers can hide provider setup owned by chat settings. */
+  showProviderConfiguration?: boolean
+  /** Worker/profile pickers can choose a model without configuring effort. */
+  showReasoningEffort?: boolean
   className?: string
 }
 
@@ -135,6 +141,9 @@ export function ModelPicker({
   disabled,
   loading,
   showRefresh = true,
+  placeholder = 'Choose model',
+  showProviderConfiguration = true,
+  showReasoningEffort = true,
   className,
 }: ModelPickerProps) {
   const ctx = useConversationsCtxOptional()
@@ -250,7 +259,12 @@ export function ModelPicker({
             !selected && 'text-ink-faint',
           )}
         >
-          {selected?.label ?? (loading ? 'Loading…' : 'No models')}
+          {selected?.label ??
+            (loading
+              ? 'Loading…'
+              : options.length > 0
+                ? placeholder
+                : 'No models')}
         </span>
         {selectedEfforts.length > 1 && thinkingLevel !== 'default' ? (
           <span className="shrink-0 text-[11px] text-ink-faint">
@@ -283,12 +297,18 @@ export function ModelPicker({
           thinkingLevel={thinkingLevel}
           onChange={onChange}
           onThinkingLevelChange={onThinkingLevelChange}
-          onConfigureProvider={(providerId) => {
-            setReasoningOpen(false)
-            setRenderedConfigurationProvider(providerId)
-            setConfigurationProvider(providerId)
-          }}
-          onOpenReasoning={() => setReasoningOpen(true)}
+          onConfigureProvider={
+            showProviderConfiguration
+              ? (providerId) => {
+                  setReasoningOpen(false)
+                  setRenderedConfigurationProvider(providerId)
+                  setConfigurationProvider(providerId)
+                }
+              : undefined
+          }
+          onOpenReasoning={
+            showReasoningEffort ? () => setReasoningOpen(true) : undefined
+          }
           disabled={disabled}
           loading={loading}
           contentClassName="space-y-4 px-3 pb-3"
@@ -697,23 +717,25 @@ export function ModelPickerPanel({
         )}
       </div>
 
-      <button
-        type="button"
-        disabled={disabled || loading || !selected || !onOpenReasoning}
-        onClick={onOpenReasoning}
-        className="sticky bottom-0 flex min-h-16 w-full shrink-0 items-center justify-between gap-3 border-t border-edge bg-panel-raised px-4 py-2 text-left font-sans text-base text-ink shadow-[0_-8px_20px_rgba(0,0,0,0.08)] hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-rule-focus disabled:pointer-events-none disabled:opacity-40 sm:min-h-14 sm:text-sm"
-      >
-        <span className="min-w-0 flex-1">
-          <span className="block font-medium">Reasoning effort</span>
-          <span className="block capitalize text-ink-faint">
-            {thinkingLevel}
+      {onOpenReasoning ? (
+        <button
+          type="button"
+          disabled={disabled || loading || !selected}
+          onClick={onOpenReasoning}
+          className="sticky bottom-0 flex min-h-16 w-full shrink-0 items-center justify-between gap-3 border-t border-edge bg-panel-raised px-4 py-2 text-left font-sans text-base text-ink shadow-[0_-8px_20px_rgba(0,0,0,0.08)] hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-rule-focus disabled:pointer-events-none disabled:opacity-40 sm:min-h-14 sm:text-sm"
+        >
+          <span className="min-w-0 flex-1">
+            <span className="block font-medium">Reasoning effort</span>
+            <span className="block capitalize text-ink-faint">
+              {thinkingLevel}
+            </span>
           </span>
-        </span>
-        <ChevronRight
-          className="size-5 shrink-0 text-ink-faint sm:size-4"
-          aria-hidden
-        />
-      </button>
+          <ChevronRight
+            className="size-5 shrink-0 text-ink-faint sm:size-4"
+            aria-hidden
+          />
+        </button>
+      ) : null}
     </div>
   )
 }

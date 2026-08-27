@@ -256,6 +256,22 @@ impl SessionClient {
             .ok_or_else(|| HarnessError::Dependency("session::create: no session_id".into()))
     }
 
+    /// Replace one session's metadata after the caller has merged against an
+    /// authoritative read. `session::set-meta` is whole-object replacement,
+    /// so accepting the complete map here makes that hazard explicit.
+    pub async fn set_metadata(
+        &self,
+        session_id: &str,
+        metadata: serde_json::Map<String, Value>,
+    ) -> Result<(), HarnessError> {
+        self.call(
+            "session::set-meta",
+            json!({ "session_id": session_id, "metadata": metadata }),
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Set the coarse session status (idle/working/done/error).
     pub async fn set_status(
         &self,

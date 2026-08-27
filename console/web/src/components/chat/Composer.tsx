@@ -55,6 +55,8 @@ interface ComposerProps {
   catalogLoading?: boolean
   /** Increment to open the visible model picker from an external CTA. */
   modelPickerOpenRequest?: number
+  /** Agent profile owns model + effort for this session. */
+  modelLocked?: boolean
   /**
    * Per-conversation permission mode (manual / auto / full). Owned by
    * the backend `approval_settings` scope; ChatView passes the loaded
@@ -161,6 +163,7 @@ export function Composer({
   modelOptions,
   catalogLoading,
   modelPickerOpenRequest,
+  modelLocked,
   permissionMode,
   permissionModeLoading,
   showPermissionMode = true,
@@ -463,7 +466,7 @@ export function Composer({
           thinkingLevel={thinkingLevel}
           onChange={onModelChange}
           onThinkingLevelChange={onThinkingLevelChange}
-          disabled={optionsDisabled}
+          disabled={optionsDisabled || modelLocked}
           loading={catalogLoading}
           showRefresh={false}
           className="min-w-0 flex-1 bg-surface"
@@ -511,7 +514,7 @@ export function Composer({
             thinkingLevel={thinkingLevel}
             onChange={onModelChange}
             onThinkingLevelChange={onThinkingLevelChange}
-            disabled={optionsDisabled}
+            disabled={optionsDisabled || modelLocked}
             loading={catalogLoading}
             className="min-w-0 flex-1 max-lg:order-first max-lg:min-w-40"
           />
@@ -551,6 +554,7 @@ export function Composer({
         defaultWorkingDir={defaultWorkingDir}
         worktreePicker={worktreePicker}
         disabled={optionsDisabled}
+        modelDisabled={modelLocked}
         onModeChange={onModeChange}
         onModelChange={onModelChange}
         onMemoryBankChange={onMemoryBankChange}

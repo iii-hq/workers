@@ -4,12 +4,14 @@ import { useCallback, useState } from 'react'
 import { type AgentEntry, listAgents } from '@/lib/backend/directory-prompts'
 import { getIiiClient } from '@/lib/iii-client'
 import { cn } from '@/lib/utils'
+import type { SubagentIcon } from '@/types/chat'
 import { SUBAGENT_ICON_COMPONENTS } from './ActiveSubagentChips'
 import {
   AGENT_CHOICE_PREFIX,
+  agentIdFromSystemPrompt,
   type SystemPromptState,
+  withAgentChoice,
 } from './system-prompt-selection'
-import type { SubagentIcon } from '@/types/chat'
 
 /**
  * The new-session agent picker: "Default" (the provider's built-in prompt)
@@ -28,10 +30,7 @@ function agentIcon(icon: string | null): React.ComponentType<{
   className?: string
   'aria-hidden'?: boolean
 }> {
-  return (
-    (icon && SUBAGENT_ICON_COMPONENTS[icon as SubagentIcon]) ||
-    Bot
-  )
+  return (icon && SUBAGENT_ICON_COMPONENTS[icon as SubagentIcon]) || Bot
 }
 
 function AgentItem({
@@ -91,21 +90,13 @@ export function AgentPicker({
   const handleOpenChange = useCallback(async (open: boolean) => {
     if (!open) return
     try {
-      /* Leaf agents are spawn targets for orchestrators, not session
-         identities — the picker offers only agents that may delegate. */
-      setEntries(
-        (await listAgents(await getIiiClient())).filter((e) => !e.leaf),
-      )
+      setEntries(await listAgents(await getIiiClient()))
     } catch {
       setEntries((prev) => prev ?? [])
     }
   }, [])
 
-  const selectedId =
-    typeof value.choice === 'object' &&
-    value.choice.named.startsWith(AGENT_CHOICE_PREFIX)
-      ? value.choice.named.slice(AGENT_CHOICE_PREFIX.length)
-      : null
+  const selectedId = agentIdFromSystemPrompt(value)
 
   const handleValueChange = useCallback(
     (v: string) => {
@@ -116,18 +107,14 @@ export function AgentPicker({
       /* Store only the id; the harness resolves the profile on the first
          send (`options.agent`) and freezes it server-side. */
       const id = v.slice(`named:${AGENT_CHOICE_PREFIX}`.length)
-      onChange({
-        ...value,
-        choice: { named: `${AGENT_CHOICE_PREFIX}${id}` },
-        namedBody: '',
-        strategy: 'enrich',
-      })
+      onChange(withAgentChoice(value, id))
     },
     [onChange, value],
   )
 
   const selectedEntry = entries?.find((e) => e.id === selectedId)
-  const label = selectedId === null ? 'Default' : (selectedEntry?.name ?? selectedId)
+  const label =
+    selectedId === null ? 'Default' : (selectedEntry?.name ?? selectedId)
   const TriggerIconComp = agentIcon(selectedEntry?.icon ?? null)
 
   return (
@@ -142,7 +129,7 @@ export function AgentPicker({
       disabled={disabled}
     >
       <SelectPrimitive.Trigger
-        aria-label="agent"
+        aria-label="agent profile"
         className={cn(
           'inline-flex w-full items-center justify-between gap-x-2 rounded-sm border border-transparent bg-bg px-3 h-9 text-ink font-sans text-[13px] hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus data-[state=open]:bg-surface-active transition-colors',
           disabled && 'opacity-40 pointer-events-none',
@@ -174,7 +161,7 @@ export function AgentPicker({
             <AgentItem
               value="default"
               label="Default"
-              description="No agent — the provider's built-in prompt"
+              description="No agent profile — the provider's built-in prompt"
             />
             {(entries ?? []).map((e) => (
               <AgentItem

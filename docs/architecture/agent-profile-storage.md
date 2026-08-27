@@ -2,7 +2,7 @@
 
 ## Decision
 
-Agent profiles live in a dedicated root as one Markdown file per agent:
+Agent profiles live in a dedicated root as one Markdown file per profile:
 
 ```text
 agents/
@@ -46,14 +46,21 @@ Automatic vendor-directory discovery stays out of scope.
 ## Discovery and identity
 
 The scanner reads only direct `<agents_folder>/<id>.md` files. Nested files
-are ignored. Agent ids keep the current lowercase ASCII, digit, hyphen, and
+are ignored. Agent profile ids keep the current lowercase ASCII, digit, hyphen, and
 underscore validation.
 
 The current required frontmatter and non-empty body validation stays in
 place. Unknown frontmatter keys remain harmless, so fields that iii does not
 consume do not prevent a profile from loading.
 
-Agent list/get/update/delete resolve against the merged project +
+`model` and `reasoning_effort` are optional, verbatim catalog selections. A
+catalog key may include its provider (`provider::model`); the harness splits
+that key when routing. Directory deliberately does not reject a retired model
+or effort: resolution against the live catalog happens when the profile is
+used, so the profile remains editable and the send returns the authoritative
+resolution error instead of silently choosing another model.
+
+Agent-profile list/get/update/delete operations resolve against the merged project +
 user-global scan; only create is anchored to the project root:
 
 - create writes `<agents_folder>/<id>.md`, and refuses an id already served
@@ -73,7 +80,7 @@ classification. A request to create a skill whose id contains that segment
 returns a normal validation error and directs the caller to
 `directory::agents::create`; it must never panic.
 
-Skill and system-prompt scans do not inspect `agents_folder`. Agent scans do
+Skill and system-prompt scans do not inspect `agents_folder`. Agent-profile scans do
 not inspect `skills_folder`, `local_skills_folder`, or
 `agents_skills_folder`.
 
@@ -87,10 +94,10 @@ that exact shape are not treated as agent profiles.
 The registry's existing skills snapshot transport may carry those entries;
 that wire name does not determine their destination. Repository skill
 downloads continue to copy only the requested skill and do not install an
-unrelated top-level agent catalog.
+unrelated top-level agent-profile catalog.
 
 Installing a bundle may atomically replace a profile with the same id, just
-as reinstalling a bundle may replace its skills. Agent ids are therefore a
+as reinstalling a bundle may replace its skills. Agent profile ids are therefore a
 shared catalog namespace.
 
 The download response and console renderer show all three result families:
@@ -112,9 +119,14 @@ events and suppress the corresponding external-write event.
 
 ## Compatibility with harness
 
-Harness remains storage-agnostic. `harness::send` and `harness::spawn` keep
-passing a flat agent id to `directory::agents::get`, so session resolution,
-delegation, model selection, and frozen identity behavior do not change.
+Harness remains storage-agnostic. `harness::send` and `harness::spawn` pass a
+flat agent profile id to `directory::agents::get` and freeze its prompt,
+skills, model, reasoning effort, display name, icon, and color. When a profile
+declares a model, that model and its effort are authoritative for the session.
+The harness also writes the frozen display/configuration snapshot to
+`SessionMeta.metadata.agent_profile`, allowing the Console sidebar and panel
+header to identify the session without re-reading the mutable Directory
+catalog. Existing sessions are therefore unaffected by later profile edits.
 
 Tests must cover the default/configured root, exact scanner shape, CRUD
 destinations, lack of legacy fallback, bundle routing, root-aware watch

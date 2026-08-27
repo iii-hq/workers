@@ -45,8 +45,8 @@ pub struct SendOptions {
     /// enrich system prompt, its skill filter the session's skill selection,
     /// its `model` the fallback when this send names none, and its identity
     /// sticks like the system prompt (later sends inherit; naming an explicit
-    /// prompt field sheds it). Refused on an existing session, combined with
-    /// either prompt field, or naming a `leaf` profile (a spawn target).
+    /// prompt field sheds it). Refused on an existing session or combined
+    /// with either prompt field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -122,10 +122,11 @@ pub struct SendRequest {
     /// The incoming message; a string is sugar for a user text message. The
     /// role must be `user` or `custom`.
     pub message: MessageInput,
-    /// Required to start a NEW session. Steering or waking an EXISTING
-    /// session may omit it — the session's last turn's model (and provider,
-    /// unless overridden) is inherited, the same rule the notification
-    /// inject path uses.
+    /// Required to start a NEW session unless `options.agent` supplies a
+    /// model. Steering or waking an EXISTING session may omit it — the
+    /// session's last turn's model (and provider, unless overridden) is
+    /// inherited, the same rule the notification inject path uses. A model
+    /// declared by the selected agent profile is authoritative.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -243,27 +244,33 @@ async fn start_with_delivery_lock(
     // and a failed resolve must leave no session or budget ledger behind.
     let agent = resolve_send_agent(deps, &cfg, &req, prev.as_ref()).await?;
 
-    let (model, provider) = match (
-        req.model
-            .clone()
-            .or_else(|| agent.as_ref().and_then(|a| a.model.clone())),
-        &prev,
-    ) {
-        (Some(m), _) => (m, req.provider.clone()),
-        (None, Some(prev)) => (
+    // A profile-associated model is authoritative for that profile. Console
+    // locks its picker to the same value, while this server-side precedence
+    // keeps non-Console callers from accidentally running the identity on a
+    // different model. Catalog keys may carry `provider::model`; split them
+    // before routing.
+    let agent_route = agent
+        .as_ref()
+        .and_then(|profile| profile.model_and_provider());
+    let (model, provider) = match (agent_route, req.model.clone(), &prev) {
+        (Some((model, profile_provider)), _, _) => {
+            (model, profile_provider.or_else(|| req.provider.clone()))
+        }
+        (None, Some(model), _) => (model, req.provider.clone()),
+        (None, None, Some(prev)) => (
             prev.options.model.clone(),
             req.provider
                 .clone()
                 .or_else(|| prev.options.provider.clone()),
         ),
-        (None, None) if req.session_id.is_some() => {
+        (None, None, None) if req.session_id.is_some() => {
             return Err(HarnessError::InvalidRequest(
                 "harness::send without `model` inherits from the session's prior \
                  turn, but this session has none — name a `model`"
                     .into(),
             ))
         }
-        (None, None) => {
+        (None, None, None) => {
             return Err(HarnessError::InvalidRequest(
                 "harness::send creating a NEW session requires `model` (steering an \
                  existing session may omit it)"
@@ -310,11 +317,23 @@ async fn start_with_delivery_lock(
         .as_ref()
         .map(|s| (s.title.clone(), s.metadata.clone()))
         .unwrap_or((None, None));
+    let metadata = session_metadata_with_agent(metadata, agent.as_ref());
     let session_id = match &req.session_id {
         Some(id) => {
-            session
+            let ensured = session
                 .ensure(id, title.as_deref(), metadata.as_ref())
                 .await?;
+            // Console materialises its draft before calling harness::send, so
+            // ensure cannot apply the authoritative Directory snapshot on
+            // creation. Merge it into the stored whole-object metadata once.
+            if let Some(agent) = agent.as_ref() {
+                let snapshot = agent.session_metadata();
+                if ensured.metadata.get("agent_profile") != Some(&snapshot) {
+                    let mut stored = ensured.metadata;
+                    stored.insert("agent_profile".into(), snapshot);
+                    session.set_metadata(id, stored).await?;
+                }
+            }
             id.clone()
         }
         None => session.create(title.as_deref(), metadata.as_ref()).await?,
@@ -753,6 +772,15 @@ fn build_options(
 ) -> TurnOptions {
     let opts = req.options.clone().unwrap_or_default();
     let functions = clamp_for_mode(cfg, opts.mode, opts.functions);
+    let mut thinking_level = opts.thinking_level;
+    let mut provider_options = opts.provider_options;
+    if let Some(agent) = agent {
+        agent.apply_reasoning(
+            provider.as_deref(),
+            &mut thinking_level,
+            &mut provider_options,
+        );
+    }
     TurnOptions {
         model,
         provider,
@@ -781,8 +809,8 @@ fn build_options(
         max_total_tokens: opts.max_total_tokens,
         max_cost_usd: opts.max_cost_usd,
         budget_root_session_id: None,
-        thinking_level: opts.thinking_level,
-        provider_options: opts.provider_options,
+        thinking_level,
+        provider_options,
         output: opts.output.unwrap_or_default(),
         functions,
         metadata: opts.metadata,
@@ -792,6 +820,22 @@ fn build_options(
             .unwrap_or(cfg.max_validation_retries),
         max_transient_resumes: cfg.max_transient_resumes,
     }
+}
+
+/// Merge the frozen agent display/configuration snapshot into session
+/// metadata without disturbing console-owned or tenancy keys.
+pub(crate) fn session_metadata_with_agent(
+    metadata: Option<Value>,
+    agent: Option<&crate::agents::ResolvedAgent>,
+) -> Option<Value> {
+    let Some(agent) = agent else {
+        return metadata;
+    };
+    let mut object = metadata
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    object.insert("agent_profile".into(), agent.session_metadata());
+    Some(Value::Object(object))
 }
 
 /// The single chokepoint for the ask-mode policy cap:
@@ -941,8 +985,7 @@ fn inherit_prior_system_prompt(options: &mut TurnOptions, prev: &TurnOptions) {
 }
 
 /// Resolve `options.agent` for this send, or `None` when absent. Validation
-/// happens before any session/budget side effects; the fetched profile is
-/// checked by [`validate_resolved_agent`].
+/// happens before any session/budget side effects.
 async fn resolve_send_agent(
     deps: &Deps,
     cfg: &WorkerConfig,
@@ -952,9 +995,7 @@ async fn resolve_send_agent(
     let Some(id) = agent_send_id(req.options.as_ref(), prev.is_some())? else {
         return Ok(None);
     };
-    let agent = crate::agents::resolve(deps, cfg, id).await?;
-    validate_resolved_agent(&agent)?;
-    Ok(Some(agent))
+    crate::agents::resolve(deps, cfg, id).await.map(Some)
 }
 
 /// The pre-fetch half of agent-send validation: which id (if any) this send
@@ -969,30 +1010,18 @@ fn agent_send_id(
     if has_prev {
         return Err(HarnessError::InvalidRequest(
             "`options.agent` applies only when starting a session; later sends inherit the \
-             frozen identity — start a new session to run as a different agent"
+             frozen identity — start a new session to use a different agent profile"
                 .into(),
         ));
     }
     if !prompt_fields_omitted(options) {
         return Err(HarnessError::InvalidRequest(
-            "`options.agent` supplies the system prompt; drop `system_prompt` / \
+            "`options.agent` selects an agent profile that supplies the system prompt; drop `system_prompt` / \
              `system_prompt_strategy` or drop `agent`"
                 .into(),
         ));
     }
     Ok(Some(id))
-}
-
-/// The IO-free half of send-side agent validation.
-fn validate_resolved_agent(agent: &crate::agents::ResolvedAgent) -> Result<(), HarnessError> {
-    if agent.leaf {
-        return Err(HarnessError::InvalidRequest(format!(
-            "agent `{}` is `leaf: true` — a spawn target, not a session identity; pass it to \
-             `harness::spawn` as `agent` instead",
-            agent.identity.id
-        )));
-    }
-    Ok(())
 }
 
 /// A send whose metadata does not name the `fs_scope` key inherits the prior
@@ -2136,17 +2165,21 @@ mod tests {
         );
     }
 
-    fn resolved_agent(leaf: bool, model: Option<&str>) -> crate::agents::ResolvedAgent {
+    fn resolved_agent(model: Option<&str>) -> crate::agents::ResolvedAgent {
         crate::agents::ResolvedAgent {
             identity: crate::types::turn::AgentIdentity {
                 id: "tech-leader".into(),
+                name: Some("Tech Leader".into()),
+                icon: None,
+                color: None,
             },
             prompt: "You are Tech Leader.\n\nDelegate everything.".into(),
             skills: Some(vec!["review".into()]),
             model: model.map(str::to_string),
+            reasoning_effort: None,
             name: "Tech Leader".into(),
             icon: None,
-            leaf,
+            color: None,
         }
     }
 
@@ -2208,20 +2241,13 @@ mod tests {
     }
 
     #[test]
-    fn leaf_agents_are_refused_as_session_identities() {
-        let err = validate_resolved_agent(&resolved_agent(true, None)).unwrap_err();
-        assert!(err.to_string().contains("harness::spawn"), "{err}");
-        assert!(validate_resolved_agent(&resolved_agent(false, None)).is_ok());
-    }
-
-    #[test]
     fn build_options_applies_agent_prompt_and_identity() {
         let cfg = WorkerConfig::default();
         let req = agent_send_request(SendOptions {
             agent: Some("tech-leader".into()),
             ..Default::default()
         });
-        let agent = resolved_agent(false, None);
+        let agent = resolved_agent(None);
         let opts = build_options(&cfg, &req, "m".into(), None, Some(&agent));
         let prompt = opts.system_prompt.expect("agent prompt");
         assert!(
@@ -2233,9 +2259,56 @@ mod tests {
     }
 
     #[test]
+    fn build_options_applies_the_profile_reasoning_effort_exactly() {
+        let cfg = WorkerConfig::default();
+        let req = agent_send_request(SendOptions {
+            agent: Some("tech-leader".into()),
+            thinking_level: Some(ThinkingLevel::Low),
+            ..Default::default()
+        });
+        let mut agent = resolved_agent(Some("openai-codex::codex/gpt-5.6-sol"));
+        agent.reasoning_effort = Some("high".into());
+        let opts = build_options(
+            &cfg,
+            &req,
+            "codex/gpt-5.6-sol".into(),
+            Some("openai-codex".into()),
+            Some(&agent),
+        );
+        assert_eq!(opts.thinking_level, Some(ThinkingLevel::High));
+        assert_eq!(
+            opts.provider_options.unwrap()["openai-codex"],
+            serde_json::json!({ "reasoning_effort": "high" })
+        );
+    }
+
+    #[test]
+    fn agent_session_metadata_preserves_existing_keys() {
+        let mut agent = resolved_agent(Some("openai-codex::codex/gpt-5.6-sol"));
+        agent.reasoning_effort = Some("high".into());
+        let metadata = session_metadata_with_agent(
+            Some(serde_json::json!({
+                "surface": "console",
+                "fs_scope": { "root": "/workspace" },
+            })),
+            Some(&agent),
+        )
+        .unwrap();
+
+        assert_eq!(metadata["surface"], "console");
+        assert_eq!(metadata["fs_scope"]["root"], "/workspace");
+        assert_eq!(metadata["agent_profile"]["id"], "tech-leader");
+        assert_eq!(
+            metadata["agent_profile"]["model"],
+            "openai-codex::codex/gpt-5.6-sol"
+        );
+        assert_eq!(metadata["agent_profile"]["reasoning_effort"], "high");
+    }
+
+    #[test]
     fn agent_send_defaults_functions_to_the_configured_baseline() {
         let cfg = WorkerConfig::default();
-        let agent = resolved_agent(false, None);
+        let agent = resolved_agent(None);
         let req = agent_send_request(SendOptions {
             agent: Some("tech-leader".into()),
             ..Default::default()
@@ -2299,7 +2372,7 @@ mod tests {
     #[test]
     fn agent_identity_inherits_with_the_prompt_and_sheds_with_it() {
         let cfg = WorkerConfig::default();
-        let agent = resolved_agent(false, None);
+        let agent = resolved_agent(None);
         let req = agent_send_request(SendOptions {
             agent: Some("tech-leader".into()),
             ..Default::default()
