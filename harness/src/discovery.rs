@@ -107,23 +107,30 @@ pub async fn apply(cell: &FunctionsCell, functions: Vec<FunctionDescriptor>) {
     });
 }
 
-/// The already-hydrated `id -> parameters` map from the current snapshot,
-/// used to carry schemas forward across a reload without re-fetching.
-async fn prev_params(cell: &FunctionsCell) -> HashMap<String, Value> {
+/// The already-known `id -> descriptor` map from the current snapshot, used to
+/// carry schemas forward across a reload without re-fetching — and to spot a
+/// tool whose list-visible descriptor changed since the last reload (a
+/// mid-session contract mutation), whose cached schema must be invalidated
+/// instead of carried forward.
+async fn prev_descriptors(cell: &FunctionsCell) -> HashMap<String, FunctionDescriptor> {
     cell.read()
         .await
         .functions
         .iter()
-        .filter_map(|d| d.parameters.clone().map(|p| (d.function_id.clone(), p)))
+        .map(|d| (d.function_id.clone(), d.clone()))
         .collect()
 }
 
-/// Carry a prior `parameters` forward for any id still `None`; report the ids
-/// that need an `engine::functions::info` fan-out. Every descriptor is retained
-/// in the output — a still-`None` one is flagged for fetch, never dropped.
+/// Carry a prior `parameters` forward for any id still `None` whose list-visible
+/// descriptor is unchanged since the last reload; report the ids that need an
+/// `engine::functions::info` fan-out — new ids, still-schema-less ids, and ids
+/// whose descriptor changed (a mid-session contract mutation: the cached
+/// contract metadata is stale and must be invalidated, so the next `info`
+/// returns the live required fields). Every descriptor is retained in the
+/// output — a still-`None` one is flagged for fetch, never dropped.
 fn plan_hydration(
     functions: Vec<FunctionDescriptor>,
-    prev: &HashMap<String, Value>,
+    prev: &HashMap<String, FunctionDescriptor>,
 ) -> (Vec<FunctionDescriptor>, Vec<String>) {
     let mut needs_fetch = Vec::new();
     let carried = functions
@@ -131,8 +138,20 @@ fn plan_hydration(
         .map(|mut d| {
             if d.parameters.is_none() {
                 match prev.get(&d.function_id) {
-                    Some(p) => d.parameters = Some(p.clone()),
-                    None => needs_fetch.push(d.function_id.clone()),
+                    // Same id survived the reload with an unchanged list-visible
+                    // descriptor AND a cached schema: the contract is still
+                    // live — carry the parameters forward without a re-fetch.
+                    Some(p) if p.description == d.description => {
+                        if let Some(params) = &p.parameters {
+                            d.parameters = Some(params.clone());
+                        } else {
+                            needs_fetch.push(d.function_id.clone());
+                        }
+                    }
+                    // New id, previously schema-less, or a changed descriptor
+                    // (list-visible mutation): the cached parameters — if any —
+                    // may be stale; invalidate them and fetch the live contract.
+                    _ => needs_fetch.push(d.function_id.clone()),
                 }
             }
             d
@@ -145,17 +164,17 @@ fn plan_hydration(
 const INFO_BATCH_MAX: usize = 32;
 
 /// Fill each descriptor's `parameters`, carrying already-hydrated schemas
-/// forward and fetching only new/unresolved ids — one `engine::functions::info`
-/// `function_ids` batch per 32 ids, with a per-id fallback for engines that
-/// predate batch support. A per-id failure keeps the descriptor with
-/// `parameters: None`.
+/// forward for unchanged ids and fetching new, unresolved, or mutated ids — one
+/// `engine::functions::info` `function_ids` batch per 32 ids, with a per-id
+/// fallback for engines that predate batch support. A per-id failure keeps the
+/// descriptor with `parameters: None`.
 // ponytail: engine include_schemas-on-list would replace this with the one list call reload already makes
 async fn hydrate(
     engine: &EngineClient,
     cell: &FunctionsCell,
     functions: Vec<FunctionDescriptor>,
 ) -> Vec<FunctionDescriptor> {
-    let prev = prev_params(cell).await;
+    let prev = prev_descriptors(cell).await;
     let (mut carried, needs_fetch) = plan_hydration(functions, &prev);
     if needs_fetch.is_empty() {
         return carried;
@@ -359,9 +378,12 @@ mod tests {
 
     #[test]
     fn plan_hydration_carries_forward_and_retains_unresolved() {
-        let prev: HashMap<String, Value> = [("a::b".to_string(), json!({ "type": "object" }))]
-            .into_iter()
-            .collect();
+        let prev: HashMap<String, FunctionDescriptor> = [(
+            "a::b".to_string(),
+            desc("a::b", Some(json!({ "type": "object" }))),
+        )]
+        .into_iter()
+        .collect();
         let (carried, needs_fetch) =
             plan_hydration(vec![desc("a::b", None), desc("c::d", None)], &prev);
 
@@ -373,5 +395,34 @@ mod tests {
         let c = carried.iter().find(|d| d.function_id == "c::d").unwrap();
         assert_eq!(c.parameters, None);
         assert_eq!(needs_fetch, vec!["c::d".to_string()]);
+    }
+
+    #[test]
+    fn plan_hydration_invalidates_a_mutated_tool_s_cached_contract() {
+        // Same id, changed list-visible descriptor (a mid-session contract
+        // mutation, e.g. a migration resolver registering a new tool version):
+        // the cached parameters must NOT be carried forward — the id is flagged
+        // for a live `engine::functions::info` re-fetch so the next read gets
+        // the live required fields instead of the stale schema.
+        let prev: HashMap<String, FunctionDescriptor> = [(
+            "calendar::schedule".to_string(),
+            desc("calendar::schedule", Some(json!({ "type": "object" }))),
+        )]
+        .into_iter()
+        .collect();
+        let mut mutated = desc("calendar::schedule", None);
+        mutated.description = Some("v2 migrated scheduler".to_string());
+
+        let (carried, needs_fetch) = plan_hydration(vec![mutated], &prev);
+
+        let out = carried
+            .iter()
+            .find(|d| d.function_id == "calendar::schedule")
+            .unwrap();
+        assert_eq!(
+            out.parameters, None,
+            "stale cached contract must be invalidated, not carried forward"
+        );
+        assert_eq!(needs_fetch, vec!["calendar::schedule".to_string()]);
     }
 }

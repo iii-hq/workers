@@ -198,7 +198,7 @@ pub fn agent_trigger_schema() -> AgentFunction {
                       Only when it is absent, discover what is callable at runtime via engine::functions::list. \
                       Before first use, get selected contracts with engine::functions::info. Ordinary calls in one \
                       assistant response execute sequentially in content order. For independent same-function \
-                      work, use that function's supported bulk input."
+                      work, use that function's supported bulk input. When a target returns a rejected result carrying field-level guidance, apply that guidance in exactly one corrective call to the same target; do not re-list the registry or re-fetch its contract."
                 .to_string(),
         parameters: json!({
             "type": "object",
@@ -640,6 +640,18 @@ mod tests {
         );
         assert!(description.contains("independent same-function work"));
         assert!(description.contains("supported bulk input"));
+    }
+
+    #[test]
+    fn agent_trigger_schema_maps_rejection_guidance_to_one_corrective_call() {
+        // A rejected result carrying field-level guidance is a payload
+        // correction, not a discovery failure: apply it in exactly one
+        // corrective call to the same target instead of re-listing the registry
+        // or re-fetching the contract (the rejection/refetch churn loop).
+        let description = agent_trigger_schema().description;
+        assert!(description.contains("rejected result carrying field-level guidance"));
+        assert!(description.contains("exactly one corrective call to the same target"));
+        assert!(description.contains("do not re-list the registry"));
     }
 
     #[test]

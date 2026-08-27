@@ -108,6 +108,10 @@ WRONG is a string. RIGHT is an object. Always send an object.
 - `function_not_found` → the id is wrong. Find the replacement through the active discovery path from Step 1.
   Do not retry the bad id.
 - An error with a `code` and a `fix` hint → do what the `fix` says.
+- A result that comes back `rejected` with field-level guidance (exact field
+  names and formats) → apply the guidance in exactly ONE corrective call to the
+  SAME function. Do not re-list the registry or re-fetch the contract to recover
+  from a rejection; the guidance is the correction.
 - A timeout or transport error that repeats → stop retrying the same way. Make the call
   simpler, split the work, or report the blocker and stop.
 

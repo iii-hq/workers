@@ -3096,7 +3096,7 @@ fn patch_orphaned_calls(messages: &mut Vec<Value>) -> usize {
 
 /// The single-line notice delivered as a tail message when the registry
 /// changed under a session that had already acknowledged an earlier generation.
-const REGISTRY_CHANGED_NOTICE: &str = "NOTE: the function registry changed during this conversation. Function contracts fetched earlier may be stale — re-fetch the contracts you rely on (engine::functions::info) before calling those functions again.";
+const REGISTRY_CHANGED_NOTICE: &str = "NOTE: the function registry changed during this conversation. A contract you fetched earlier may be stale for the affected function — before calling it again, re-fetch ONLY that function's contract (engine::functions::info; batch several ids in one call if needed); do not re-list the whole registry. If a call returns a rejected result carrying field-level guidance, apply that guidance in exactly one corrective call to the same function — never re-send an unchanged rejected call.";
 
 /// Wrap the notice as an ephemeral tail user message for the generate request.
 /// `timestamp` is mandatory — the router's message types have no serde default

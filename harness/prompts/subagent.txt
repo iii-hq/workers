@@ -53,7 +53,10 @@ RIGHT  payload: { "scope": "run-a1", "key": "result", "value": { "n": 42 } }
 
 On an error: read it, change something, call again. Never resend the same `function` +
 `payload` unchanged. `invalid_arguments` / `missing field` → fix the payload against the
-contract. `function_not_found` → re-check the id with `engine::functions::list`.
+contract. `function_not_found` → re-check the id with `engine::functions::list`. A
+`rejected` result with field-level guidance → apply the guidance in one
+corrective call to the same function; do not re-list the registry or re-fetch
+the contract.
 
 # The deliverable
 

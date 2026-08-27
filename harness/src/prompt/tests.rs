@@ -252,6 +252,20 @@ fn error_driven_correction() {
     assert!(out.contains("function_not_found"));
     assert!(out.contains("A timeout or transport error that repeats"));
 }
+#[test]
+fn rejected_result_guidance_maps_to_one_corrective_call() {
+    // A rejected result carrying field-level guidance is a payload
+    // correction, not a discovery failure: apply it in exactly one
+    // corrective call to the same function instead of re-listing the
+    // registry or re-fetching the contract (the rejection/refetch churn
+    // loop). Both identities must teach it.
+    for out in [variants::DEFAULT, variants::SUBAGENT] {
+        let normalized = out.replace('\n', " ").to_lowercase();
+        assert!(normalized.contains("field-level guidance"));
+        assert!(normalized.contains("corrective call"));
+        assert!(normalized.contains("do not re-list the registry"));
+    }
+}
 
 #[test]
 fn registry_flow() {
