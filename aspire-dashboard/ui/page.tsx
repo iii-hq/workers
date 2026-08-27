@@ -480,9 +480,8 @@ function ConfigureCard({
           <p className="aspire-dashboard-note">
             Traces and logs use <code>both</code>, so iii-observability keeps its local stores while also exporting to
             Aspire. Metrics are different in the current iii-observability schema: <code>metrics_exporter</code> is
-            either <code>memory</code> or{' '}
-            <code>otlp</code>. Choose the metrics button only if you want live metrics in Aspire and accept switching
-            iii-observability metrics away from local memory storage.
+            either <code>memory</code> or <code>otlp</code>. Choose the metrics button only if you want live metrics in
+            Aspire and accept switching iii-observability metrics away from local memory storage.
           </p>
           {obs.warnings.length > 0 && (
             <ul className="aspire-dashboard-warnings">
