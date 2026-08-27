@@ -11,16 +11,21 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::{register_worker, InitOptions};
 use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
 use tokio_tungstenite::tungstenite::Message;
+use uuid::Uuid;
 
 const ENGINE_WS: &str = "ws://127.0.0.1:49134";
 const HTTP_PORT: u16 = 48217;
+const REBOUND_HTTP_PORT: u16 = 48218;
 
 struct Harness {
     iii: Child,
     worker: Child,
+    config_id: String,
 }
 
 impl Drop for Harness {
@@ -42,6 +47,13 @@ async fn boot() -> Option<Harness> {
         );
         return None;
     }
+    if TcpStream::connect(("127.0.0.1", REBOUND_HTTP_PORT))
+        .await
+        .is_ok()
+    {
+        eprintln!("skipping: rebound port {REBOUND_HTTP_PORT} already in use on 127.0.0.1");
+        return None;
+    }
 
     let iii = Command::new(&iii_bin)
         .arg("--use-default-config")
@@ -55,6 +67,7 @@ async fn boot() -> Option<Harness> {
     let worker_bin = env!("CARGO_BIN_EXE_console");
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let config_path = format!("{manifest_dir}/config.yaml");
+    let config_id = format!("console-integration-{}", Uuid::new_v4());
 
     let worker = Command::new(worker_bin)
         .args([
@@ -65,6 +78,7 @@ async fn boot() -> Option<Harness> {
             "--http-port",
             &HTTP_PORT.to_string(),
         ])
+        .env("III_CONFIG_NAME", &config_id)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -74,7 +88,11 @@ async fn boot() -> Option<Harness> {
         return None;
     }
 
-    Some(Harness { iii, worker })
+    Some(Harness {
+        iii,
+        worker,
+        config_id,
+    })
 }
 
 async fn wait_for_listen(port: u16, max: Duration) -> bool {
@@ -89,8 +107,8 @@ async fn wait_for_listen(port: u16, max: Duration) -> bool {
 }
 
 #[tokio::test]
-async fn end_to_end_http_and_ws_proxy() {
-    let Some(_h) = boot().await else {
+async fn end_to_end_http_ws_proxy_and_configuration_rebind() {
+    let Some(harness) = boot().await else {
         eprintln!("skipping: prerequisites not met (see logs above)");
         return;
     };
@@ -178,6 +196,86 @@ async fn end_to_end_http_and_ws_proxy() {
     }
 
     let _ = ws.close(None).await;
+
+    // 5. Change the authoritative configuration entry and prove the same
+    // process moves to the new listener: replacement serves, status updates,
+    // and the original port stops accepting new connections.
+    let client = register_worker(ENGINE_WS, InitOptions::default());
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let current = loop {
+        match client
+            .trigger(
+                TriggerRequest {
+                    function_id: "configuration::get".to_string(),
+                    payload: serde_json::json!({ "id": harness.config_id }),
+                    action: None,
+                    timeout_ms: Some(2_000),
+                }
+                .namespace("default"),
+            )
+            .await
+        {
+            Ok(value) => break value,
+            Err(error) => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "configuration::get never became callable: {error}"
+                );
+                sleep(Duration::from_millis(100)).await;
+            }
+        }
+    };
+    let mut value = current["value"].clone();
+    value["http_port"] = serde_json::json!(REBOUND_HTTP_PORT);
+    client
+        .trigger(
+            TriggerRequest {
+                function_id: "configuration::set".to_string(),
+                payload: serde_json::json!({
+                    "id": harness.config_id,
+                    "value": value,
+                }),
+                action: None,
+                timeout_ms: Some(5_000),
+            }
+            .namespace("default"),
+        )
+        .await
+        .expect("configuration::set failed");
+
+    assert!(
+        wait_for_listen(REBOUND_HTTP_PORT, Duration::from_secs(8)).await,
+        "rebound Console port never started listening"
+    );
+    let rebound = reqwest::get(format!("http://127.0.0.1:{REBOUND_HTTP_PORT}/"))
+        .await
+        .expect("GET / on rebound port failed");
+    assert!(rebound.status().is_success());
+
+    let status = client
+        .trigger(TriggerRequest {
+            function_id: "console::status".to_string(),
+            payload: serde_json::json!({}),
+            action: None,
+            timeout_ms: Some(5_000),
+        })
+        .await
+        .expect("console::status failed after rebind");
+    assert_eq!(status["http_port"], REBOUND_HTTP_PORT);
+
+    let old_deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if TcpStream::connect(("127.0.0.1", HTTP_PORT)).await.is_err() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < old_deadline,
+            "original Console port kept accepting connections after rebind"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    client.shutdown_async().await;
 }
 
 fn parse_first_asset(html: &str) -> Option<String> {

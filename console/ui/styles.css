@@ -36,6 +36,16 @@
   color: var(--color-ink-faint);
   max-width: 60ch;
 }
+[data-iii-ui="console"] .console-ui-port-input {
+  width: min(100%, 180px);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="console"] .console-ui-form-field-hint {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--color-ink-ghost);
+}
 
 /* ── the toggle board: one bordered card per worker ─────────────────── */
 
