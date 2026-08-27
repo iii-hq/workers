@@ -5,7 +5,7 @@
 # collides.
 [package]
 name = "provider-openai"
-version = "1.2.8"
+version = "1.2.9-rc.1"
 edition = "2021"
 publish = false
 license = "Apache-2.0"
