@@ -25,6 +25,9 @@ export interface WorkspaceChangedEvent {
   /** True for directories — they refresh the tree but must never open
       as files. Absent on older workers: treat as false. */
   dir?: boolean
+  /** True when git ignores the path under `root`. Absent on older
+      workers: treat as false. */
+  ignored?: boolean
 }
 
 export function useWorkspaceChanges(

@@ -114,7 +114,11 @@ import {
 } from './git'
 import { HoverTip } from './HoverTip'
 import { useWorkspaceChanges } from './live'
-import { normalizeLiveReviewEvent } from './live-review'
+import {
+  normalizeLiveReviewEvent,
+  onlyIgnoredChanges,
+  trackIgnoredPath,
+} from './live-review'
 import { parseShellPanelContext } from './panel-context'
 import {
   createTabUiStateSaver,
@@ -144,6 +148,7 @@ import {
   mergeReviewEntry,
   reviewContentsRepresentChange,
   type ReviewEntry,
+  sameReviewEntry,
 } from './review'
 import {
   DEFAULT_REVIEW_SCOPE,
@@ -1309,6 +1314,7 @@ export function ShellExplorerPage({
   const changedAbsRef = useRef<Map<string, string>>(new Map())
   const reviewEligibleAbsRef = useRef<Set<string>>(new Set())
   const changedDirsRef = useRef<Set<string>>(new Set())
+  const ignoredAbsRef = useRef<Set<string>>(new Set())
 
   const reloadActiveFile = useCallback(() => {
     const currentRoot = rootRef.current
@@ -1527,10 +1533,11 @@ export function ShellExplorerPage({
     (
       scope: Exclude<ReviewScopeSelection, { kind: 'last-turn' }>,
       preferredPath?: string | null,
+      options?: { touched: ReadonlySet<string> },
     ) => {
       if (root === null) return
       const seq = ++scopeLoadSeqRef.current
-      setScopeLoading(true)
+      if (options === undefined) setScopeLoading(true)
       setScopeError(null)
       setTurnOutside(0)
       setTurnOutsideRoot(null)
@@ -1693,6 +1700,7 @@ export function ShellExplorerPage({
             return
           }
           const next = reviewEntriesFromGit(state.changes)
+          const previousEntries = scopeEntriesRef.current
           scopeEntriesRef.current = next
           setScopeEntries(next)
           if (isLiveGitReviewScope(scope)) {
@@ -1708,8 +1716,14 @@ export function ShellExplorerPage({
             (preferredPath === undefined
               ? next.values().next().value
               : undefined)
-          if (entry) openReviewEntry(entry)
-          else {
+          if (entry) {
+            const settled =
+              options !== undefined &&
+              entry.path === activePath &&
+              !options.touched.has(entry.path) &&
+              sameReviewEntry(previousEntries.get(entry.path), entry)
+            if (!settled) openReviewEntry(entry)
+          } else {
             diffRequestRef.current += 1
             setDiff(null)
           }
@@ -1919,6 +1933,7 @@ export function ShellExplorerPage({
     if (isShellUiStatePath(event.path)) return
     const eventAbs = joinPath(event.root, event.path)
     changedAbsRef.current.set(eventAbs, event.kind)
+    trackIgnoredPath(ignoredAbsRef.current, eventAbs, event.ignored === true)
     // Directories refresh the tree but must never open as files —
     // reading one is a C210.
     if (event.dir === true) {
@@ -1965,7 +1980,7 @@ export function ShellExplorerPage({
           treeRef.current === null ? null : new Set(treeRef.current.paths)
         const kindsBefore = treeRef.current?.kinds
         reloadActiveFile()
-        const follow = followRef.current
+        const pendingFollow = followRef.current
         followRef.current = null
         const changed = changedAbsRef.current
         changedAbsRef.current = new Map()
@@ -1973,25 +1988,29 @@ export function ShellExplorerPage({
         reviewEligibleAbsRef.current = new Set()
         const changedDirs = changedDirsRef.current
         changedDirsRef.current = new Set()
+        const ignoredAbs = ignoredAbsRef.current
+        ignoredAbsRef.current = new Set()
         const currentRoot = rootRef.current
         if (currentRoot === null) return
 
         const prefix = currentRoot.endsWith('/')
           ? currentRoot
           : `${currentRoot}/`
-        const fileEvents = [...changed]
-          .filter(
-            ([abs]) =>
-              reviewEligible.has(abs) &&
-              !changedDirs.has(abs) &&
-              abs.startsWith(prefix),
-          )
+        const changedFiles = [...changed]
+          .filter(([abs]) => !changedDirs.has(abs) && abs.startsWith(prefix))
           .map(([abs, rawKind]) => ({
             abs,
             rawKind,
             rel: abs.slice(prefix.length),
           }))
           .filter(({ rel }) => reviewablePath(rel))
+        const fileEvents = changedFiles.filter(
+          ({ abs }) => reviewEligible.has(abs) && !ignoredAbs.has(abs),
+        )
+        const follow =
+          pendingFollow !== null && !ignoredAbs.has(prefix + pendingFollow.rel)
+            ? pendingFollow
+            : null
 
         // A lazily fetched subtree with a change under it is stale —
         // drop it; the load effect refetches while it stays expanded.
@@ -2010,6 +2029,13 @@ export function ShellExplorerPage({
           return next ?? prev
         })
         refreshTree()
+        if (
+          onlyIgnoredChanges(
+            changedFiles.map(({ abs }) => abs),
+            ignoredAbs,
+          )
+        )
+          return
         const followTicket = diffRequestRef.current
         void Promise.all([
           coderStatFiles(
@@ -2130,7 +2156,9 @@ export function ShellExplorerPage({
             return
           }
           if (isLiveGitReviewScope(activeScope)) {
-            loadReviewScope(activeScope, follow?.rel ?? null)
+            loadReviewScope(activeScope, follow?.rel ?? null, {
+              touched: new Set(fileEvents.map(({ rel }) => rel)),
+            })
             return
           }
           if (
