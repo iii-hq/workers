@@ -28,11 +28,20 @@ Docker, no manual install — `npx` ships with Node, which this worker already
 requires); override `aspire_command` to point at a locally installed `aspire`
 binary instead.
 
-- Web UI: `http://127.0.0.1:18888/`
-- Console iframe proxy: `http://127.0.0.1:18887/`
-- OTLP/gRPC endpoint: `http://127.0.0.1:4317`
-- OTLP/HTTP endpoint: `http://127.0.0.1:4318`
+Default addresses. Every port is configurable, so read the live values from
+`aspire-dashboard::status` rather than assuming these:
+
+- Web UI: `http://127.0.0.1:18888/` (`dashboard_port`)
+- Console iframe proxy: `http://127.0.0.1:18887/` (`proxy_port`)
+- OTLP/gRPC endpoint: `http://127.0.0.1:4317` (`otlp_port`)
+- OTLP/HTTP endpoint: `http://127.0.0.1:4318` (`otlp_http_port`)
 - OTLP auth: unsecured by default (`secure_otlp: false`)
+
+`bind_host` accepts only a loopback address (`127.x.x.x`, `::1`, or
+`localhost`). The dashboard process runs with `--allow-anonymous`, and OTLP
+ingestion is unauthenticated whenever `secure_otlp` is false, so a
+network-reachable bind would publish an open dashboard and an open trace sink.
+View it from another machine through the Console instead.
 
 Under [`iii compose`](../harness/DEVELOPMENT.md), this worker is just another
 `path://` container — compose supervises it as a plain OS process, the same
@@ -40,7 +49,7 @@ way it supervises every other worker, since compose has no separate container
 or VM runtime of its own.
 
 Open the Console page and click **Export traces and logs** to configure
-`iii-observability` while preserving its local trace/log stores. The button sets the configured gRPC endpoint and the trace/log exporters. iii-observability uses the configured gRPC endpoint for traces; its log exporter sends OTLP/HTTP to the paired `4318` endpoint.
+`iii-observability` while preserving its local trace/log stores. The button sets the configured gRPC endpoint and the trace/log exporters. iii-observability uses the configured gRPC endpoint for traces; its log exporter sends OTLP/HTTP to the paired `otlp_http_port` endpoint (`4318` by default).
 
 `endpoint`, `exporter`, `metrics_enabled`, and `metrics_exporter` are
 restart-tier fields in `iii-observability`. The write applies at the next
@@ -51,8 +60,12 @@ authenticate to a secure OTLP endpoint: its exporter sends no gRPC metadata,
 and its config schema is `additionalProperties: false`, which rejects an
 `otlp_api_key` or `otlp_headers` field. The only channel that reaches the
 exporter is `OTEL_EXPORTER_OTLP_HEADERS=x-otlp-api-key=<key>` on the engine
-process. Set that yourself if you turn `secure_otlp` on; the ports bind to
-loopback in either case.
+process.
+
+If you turn `secure_otlp` on, set `otlp_api_key` to an explicit value and give
+the engine header the same value before you restart. Leaving `otlp_api_key`
+unset makes the worker generate a key per process, which no engine header can
+match, so telemetry export fails on mismatched credentials.
 
 The Aspire Dashboard response blocks cross-origin iframes with CSP and `X-Frame-Options`. The worker's Console page therefore embeds the local proxy port, which forwards the dashboard and strips those frame-blocking headers.
 
@@ -91,10 +104,11 @@ the moment it wedges. The process exit event covers a dashboard that dies.
 
 | Trigger type | Description |
 |---|---|
-| `aspire-dashboard::changed` | Fires on dashboard process transitions and on `iii-observability` configuration updates. Empty config. |
+| `aspire-dashboard::changed` | Fires on dashboard process transitions, on this worker's own configuration updates, and on `iii-observability` configuration updates. Empty config. |
 
 Manual configuration equivalent for traces and logs, preserving the rest of the
-current `iii-observability` value:
+current `iii-observability` value. Substitute the worker's live `bind_host` and
+`otlp_port` for the default endpoint below:
 
 ```bash
 iii trigger configuration::set --json "$(iii trigger configuration::get id=iii-observability \
