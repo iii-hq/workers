@@ -282,6 +282,9 @@ API que não pertencem ao bump dos workers publicados.
 - A engine alvo não aceita mais `iii-pubsub` e `iii-state` na lista interna de
   workers. Os testes com engine real agora iniciam o worker `state` separado e
   esperam `state::get` antes de executar os contratos.
+- O `build.rs` do worker `state` exige que a UI injetada exista. Os jobs de
+  integração agora configuram Node e pnpm e geram `state/ui/dist` antes do
+  `cargo build`.
 - O `console/web` tem duas falhas de teste e erros de lint já presentes no
   código-base: as duas falhas ainda esperam a classe de layout `left-full`.
 - O `compose-ui`, adicionado a `main` durante a execução, tem um script de lint
@@ -303,6 +306,8 @@ API que não pertencem ao bump dos workers publicados.
   compilação ou teste, não como parte automática do bump.
 - 2026-08-27 — Iniciar o worker `state` dos testes de integração como processo
   separado, porque a engine alvo externalizou esse serviço.
+- 2026-08-27 — Pré-compilar a UI do worker `state` nos jobs que criam o binário
+  separado, para que a compilação seja reproduzível em um runner limpo.
 
 ## Outcomes & Retrospective
 
@@ -328,6 +333,8 @@ API que não pertencem ao bump dos workers publicados.
 - Python: Ruff lint, Ruff format e 131 testes passaram para `hermes` e
   `scrapling`, com as versões `0.22.1a25` instaladas.
 - Scripts e workflows: 255 testes, três subtestes e Actionlint passaram.
+- Os jobs de integração preparam a UI embutida antes de compilar o worker
+  `state`; o mesmo fluxo passou localmente com lockfile congelado.
 - O smoke do Compose registrou o worker como `foo`, concluiu readiness em
   205 ms e encerrou o worker sem processo órfão, mesmo com o código declarando
   o nome `state`.

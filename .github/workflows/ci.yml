@@ -333,6 +333,20 @@ jobs:
             llm-router -> target
             state -> target
 
+      - name: Setup pnpm (state UI)
+        uses: pnpm/action-setup@v5
+
+      - name: Setup Node (state UI)
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: '**/pnpm-lock.yaml'
+
+      - name: Pre-build state UI
+        working-directory: state/ui
+        run: pnpm install --frozen-lockfile && pnpm build
+
       - name: Install pinned iii engine
         env:
           III_RELEASE_TAG: 'iii-alpha/v0.22.1-alpha.25'
@@ -402,20 +416,21 @@ jobs:
             crates/provider-integration-testkit -> target
             state -> target
 
-      # provider-openai-codex embeds a small console UI. The integration
-      # testkit enables every provider feature in its Rust gate, so build the
-      # UI before Cargo reaches that provider's build.rs.
-      - name: Setup pnpm (providers with bundled UI)
-        if: hashFiles(format('{0}/ui/package.json', matrix.provider)) != ''
+      # The state worker always embeds its UI. provider-openai-codex also
+      # embeds a UI, so build that bundle when its contract is selected.
+      - name: Setup pnpm (bundled UIs)
         uses: pnpm/action-setup@v5
 
-      - name: Setup Node (providers with bundled UI)
-        if: hashFiles(format('{0}/ui/package.json', matrix.provider)) != ''
+      - name: Setup Node (bundled UIs)
         uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: '**/pnpm-lock.yaml'
+
+      - name: Pre-build state UI
+        working-directory: state/ui
+        run: pnpm install --frozen-lockfile && pnpm build
 
       - name: Pre-build provider UI
         if: hashFiles(format('{0}/ui/package.json', matrix.provider)) != ''
