@@ -11,7 +11,7 @@ export interface DiscoverWorkerView {
 
 /** A registry worker the search offered as installable: not on the stack,
  * but its functions matched the requested capabilities. `name` is the
- * registry slug `worker::add` installs. Functions carry names + descriptions
+ * registry slug `compose::add` installs. Functions carry names + descriptions
  * only — the worker deliberately withholds schemas so nothing looks callable. */
 export interface DiscoverInstallableView {
   name: string
