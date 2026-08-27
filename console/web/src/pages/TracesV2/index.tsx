@@ -909,12 +909,14 @@ export function TracesV2({
                       icon={GitBranch}
                       title={
                         sessionScope
-                          ? 'no traces for this session'
+                          ? 'no stored traces for this session'
                           : 'no traces recorded'
                       }
                       description={
                         sessionScope
-                          ? 'the list follows the active chat. send a message to see its work here, or clear the session chip above to see every trace.'
+                          ? // The client cannot tell "never ran" from "already
+                            // expired", so the copy owns both honestly.
+                            'the list follows the active chat, and nothing is stored for this conversation — no work recorded yet, or its traces already expired. new activity appears here as it runs, or clear the session chip above to see every trace.'
                           : 'traces appear here when functions execute. fire a request to your engine and refresh.'
                       }
                     />
