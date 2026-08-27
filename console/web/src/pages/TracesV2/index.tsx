@@ -76,6 +76,7 @@ import { useTraceFilters } from './hooks/useTraceFilters'
 import { useTraceViews } from './hooks/useTraceViews'
 import { isTraceLive } from './lib/timelineSpans'
 import { type TraceChatLink, traceChatLink } from './lib/traceChatLink'
+import { collectTraceDetailSpans } from './lib/traceDetailPages'
 import { withSessionScope } from './lib/traceFilters'
 import type { RowLabelConfig } from './lib/traceListItem'
 import {
@@ -93,11 +94,6 @@ import {
 } from './lib/traceTransform'
 
 const PAGE_SIZES = [25, 50, 100]
-// Keep each detail RPC well below the WebSocket payload limit. A trace may
-// contain thousands of spans with rich events and attributes; loading it in
-// pages preserves the complete detail without making one oversized response
-// stall the worker connection.
-const TRACE_DETAIL_PAGE_SIZE = 250
 
 export interface TracesV2Props {
   /** mount with a trace's detail already expanded (stories/deep links) */
@@ -411,29 +407,19 @@ export function TracesV2({
         setWaterfallData(null)
       }
       try {
-        const detailSpans = new Map<string, StoredSpan>()
-        let offset = 0
-        let total = Number.POSITIVE_INFINITY
-
-        while (offset < total) {
-          const page = await fetchTraces({
+        // Pages sized by response bytes, not span count — an oversized page
+        // hangs forever instead of erroring. See lib/traceDetailPages.
+        const detailSpans = await collectTraceDetailSpans((offset, limit) =>
+          fetchTraces({
             trace_id: traceId,
             search_all_spans: true,
             include_internal: false,
             sort_by: 'start_time',
             sort_order: 'asc',
             offset,
-            limit: TRACE_DETAIL_PAGE_SIZE,
-          })
-
-          for (const span of page.spans) detailSpans.set(span.span_id, span)
-          total = page.total
-
-          // A short page prevents an incorrect or stale `total` from turning
-          // into an unbounded request loop while a trace is completing.
-          if (page.spans.length < TRACE_DETAIL_PAGE_SIZE) break
-          offset += page.spans.length
-        }
+            limit,
+          }),
+        )
 
         detailSpansRef.current = detailSpans
         const wf = rebuildDetail(traceId)
