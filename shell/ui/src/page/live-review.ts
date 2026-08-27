@@ -67,3 +67,10 @@ export function normalizeLiveReviewEvent(input: LiveReviewEventInput): LiveRevie
     ? { action: 'created', path: input.path, baseline: '' }
     : { action: 'modified', path: input.path, baseline: undefined }
 }
+
+export function onlyIgnoredChanges(
+  paths: readonly string[],
+  ignored: ReadonlySet<string>,
+): boolean {
+  return paths.length > 0 && paths.every((path) => ignored.has(path))
+}

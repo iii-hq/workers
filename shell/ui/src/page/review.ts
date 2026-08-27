@@ -64,6 +64,43 @@ export function diffForReviewEntry(entry: ReviewEntry): ReviewDiff {
   }
 }
 
+function sameGitChange(a: GitChange, b: GitChange): boolean {
+  return (
+    a.path === b.path &&
+    a.status === b.status &&
+    a.staged === b.staged &&
+    a.from === b.from
+  )
+}
+
+function sameContentSource(
+  a?: GitContentSource,
+  b?: GitContentSource,
+): boolean {
+  if (a === undefined || b === undefined) return a === b
+  if (a.kind !== b.kind) return false
+  if (a.kind === 'empty' || b.kind === 'empty') return true
+  if (a.path !== b.path) return false
+  return a.kind === 'revision' && b.kind === 'revision'
+    ? a.revision === b.revision
+    : true
+}
+
+export function sameReviewEntry(
+  a: ReviewEntry | undefined,
+  b: ReviewEntry,
+): boolean {
+  if (a === undefined) return false
+  return (
+    a.path === b.path &&
+    sameGitChange(a.change, b.change) &&
+    a.baseline === b.baseline &&
+    a.gitDir === b.gitDir &&
+    sameContentSource(a.before, b.before) &&
+    sameContentSource(a.after, b.after)
+  )
+}
+
 export function statusForLiveKind(kind: string): GitFileStatus {
   if (kind === 'created') return 'untracked'
   if (kind === 'deleted') return 'deleted'
@@ -125,9 +162,8 @@ export function mergeGitReviewEntries(
     }
     if (
       !hasRenameSource &&
-      existing?.change.status === change.status &&
-      existing.change.staged === change.staged &&
-      existing.change.from === change.from
+      existing !== undefined &&
+      sameGitChange(existing.change, change)
     ) {
       continue
     }

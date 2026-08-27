@@ -13,8 +13,9 @@
 //! short window before emitting. Emission is best-effort: a slow or
 //! absent subscriber must never delay anything.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -53,6 +54,10 @@ pub struct ChangedEvent {
     /// files must skip these. Deleted paths can't be probed and report
     /// false.
     pub dir: bool,
+    /// True when git ignores the path under `root` — build output, a
+    /// dependency tree, a worker's own store. A root that is not a
+    /// repository reports false for everything.
+    pub ignored: bool,
 }
 
 struct WatchEntry {
@@ -155,6 +160,46 @@ pub(crate) fn merge_kinds(prev: &'static str, next: &'static str) -> &'static st
     }
 }
 
+/// The subset of root-relative `paths` git ignores under `root`. A root
+/// that is not a repository, or a host without git, ignores nothing.
+pub(crate) async fn git_ignored<'a>(
+    root: &Path,
+    paths: impl Iterator<Item = &'a String>,
+) -> HashSet<String> {
+    let mut input = Vec::new();
+    for rel in paths {
+        input.extend_from_slice(rel.as_bytes());
+        input.push(0);
+    }
+    if input.is_empty() {
+        return HashSet::new();
+    }
+    let Ok(mut child) = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["check-ignore", "--stdin", "-z"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return HashSet::new();
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        use tokio::io::AsyncWriteExt;
+        let _ = stdin.write_all(&input).await;
+    }
+    let Ok(out) = child.wait_with_output().await else {
+        return HashSet::new();
+    };
+    out.stdout
+        .split(|b| *b == 0)
+        .filter_map(|chunk| std::str::from_utf8(chunk).ok())
+        .filter(|rel| !rel.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
 /// Relative to the watched root; `None` for the root itself or paths
 /// outside it.
 fn rel_to(root: &Path, path: &Path) -> Option<String> {
@@ -212,13 +257,16 @@ async fn pump(
                 () = &mut window => break,
             }
         }
+        let ignored_paths = git_ignored(&root, batch.keys()).await;
         for (path, kind) in batch.drain() {
             let dir = kind != "deleted" && root.join(&path).is_dir();
+            let ignored = ignored_paths.contains(&path);
             let event = ChangedEvent {
                 path,
                 kind: kind.to_string(),
                 root: root_str.clone(),
                 dir,
+                ignored,
             };
             let payload = match serde_json::to_value(&event) {
                 Ok(v) => v,
@@ -329,6 +377,48 @@ pub fn register_changed_trigger(iii: &IIIClient, resolver: ResolverCell) {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn git_ignored_reports_only_the_ignored_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        std::fs::write(
+            root.join(".gitignore"),
+            "data/
+*.log
+",
+        )
+        .unwrap();
+        let paths = [
+            "data/session-manager/a.jsonl".to_string(),
+            "build.log".to_string(),
+            "src/main.rs".to_string(),
+        ];
+        let ignored = super::git_ignored(root, paths.iter()).await;
+        assert!(ignored.contains("data/session-manager/a.jsonl"));
+        assert!(ignored.contains("build.log"));
+        assert!(!ignored.contains("src/main.rs"));
+    }
+
+    #[tokio::test]
+    async fn git_ignored_is_empty_outside_a_repository() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = ["data/a.jsonl".to_string()];
+        let ignored = super::git_ignored(dir.path(), paths.iter()).await;
+        assert!(ignored.is_empty());
+    }
+
     use super::*;
     use serde_json::json;
 
