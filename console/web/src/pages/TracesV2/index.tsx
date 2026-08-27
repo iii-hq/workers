@@ -430,6 +430,7 @@ export function TracesV2({
         // Pages sized by response bytes, not span count — an oversized page
         // hangs forever instead of erroring. See lib/traceDetailPages.
         let revealed = false
+        let lastPaint = 0
         const detailSpans = await collectTraceDetailSpans(
           (offset, limit) => {
             if (stale()) throw superseded
@@ -451,7 +452,15 @@ export function TracesV2({
               if (stale()) return
               detailSpansRef.current = accumulated
               setSeedProgress({ loaded: accumulated.size, total })
+              // Rebuilding the waterfall on EVERY page saturates the main
+              // thread on fat traces (measured live: no frame painted
+              // between the first page and the sweep's end). Repaint at
+              // most ~1/600ms; the chip above still counts every page, and
+              // the final rebuild after the sweep always runs.
+              const now = Date.now()
+              if (revealed && now - lastPaint < 600) return
               const wf = rebuildDetail(traceId)
+              if (wf) lastPaint = now
               if (!silent && !revealed && wf) {
                 revealed = true
                 setIsLoadingSpans(false)
