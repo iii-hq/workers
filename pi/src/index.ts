@@ -76,14 +76,23 @@ let prepared: Prepared = {
   bridge: '',
 };
 let preparing: Promise<void> = Promise.resolve();
+// A queued reconcile must not let a slower, superseded preparation overwrite
+// a newer one's result: each run is stamped with the generation current when
+// it started, and only commits `prepared` if that generation is still current.
+let preparationGeneration = 0;
 const reconcileTerminal = () => {
+  const generation = ++preparationGeneration;
+  const config = holder.current.terminal;
   preparing = preparing
     .then(async () => {
-      prepared = await prepareWorkspace(iii, holder.current.terminal);
+      const candidate = await prepareWorkspace(iii, config);
+      if (generation !== preparationGeneration) return;
+      prepared = candidate;
       if (prepared.detail) console.warn(`pi terminal: ${prepared.detail}`);
       else console.log(`pi terminal: ${prepared.executable} in ${prepared.workspace}`);
     })
     .catch((err) => {
+      if (generation !== preparationGeneration) return;
       prepared = { ...prepared, executable: '', detail: String(err) };
       console.warn(`pi terminal: host is not ready: ${String(err)}`);
     });
