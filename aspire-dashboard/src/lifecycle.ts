@@ -65,7 +65,9 @@ export async function waitForHttp(options: {
     // accepts the connection and never answers would hold this loop open past
     // timeoutMs, so the caller never reaches its own failure handling.
     if (await respondsOverHttp(options.url, options.fetch, AbortSignal.timeout(deadline - now()))) return 'ready'
-    await sleep(intervalMs)
+    // Capped so a failed probe near the deadline cannot overshoot timeoutMs by
+    // most of an interval.
+    await sleep(Math.min(intervalMs, deadline - now()))
   }
   return 'timeout'
 }

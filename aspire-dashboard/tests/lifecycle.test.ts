@@ -21,6 +21,25 @@ describe('waitForHttp', () => {
     expect(outcome).toBe('timeout')
   })
 
+  it('never sleeps past the deadline between probes', async () => {
+    const slept: number[] = []
+    let clock = 0
+    const outcome = await waitForHttp({
+      url: 'http://127.0.0.1:1/',
+      timeoutMs: 60,
+      intervalMs: 250,
+      exited: () => false,
+      fetch: (async () => new Response(null, { status: 503 })) as unknown as typeof fetch,
+      now: () => clock,
+      sleep: async (ms) => {
+        slept.push(ms)
+        clock += ms
+      },
+    })
+    expect(outcome).toBe('timeout')
+    expect(slept).toEqual([60])
+  })
+
   it('reports ready as soon as a probe answers', async () => {
     const outcome = await waitForHttp({
       url: 'http://127.0.0.1:1/',

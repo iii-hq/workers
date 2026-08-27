@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
+import { isIPv4 } from 'node:net'
 import { parse } from 'yaml'
 import { z } from 'zod'
 
@@ -10,7 +11,12 @@ const port = z.number().int().min(1).max(65535)
 // iii-observability cannot authenticate to a secure endpoint. A non-loopback
 // bind_host would therefore put an open dashboard and an open trace sink on the
 // network. Remote viewing goes through the Console proxy instead.
-const LOOPBACK_HOST = /^(?:localhost|127(?:\.\d{1,3}){3}|::1)$/
+function isLoopbackHost(host: string) {
+  if (host === 'localhost' || host === '::1') return true
+  // isIPv4 checks the octet ranges, which a `127(\.\d{1,3}){3}` pattern does
+  // not: it would take 127.999.999.999 and fail later, at listen time.
+  return isIPv4(host) && host.startsWith('127.')
+}
 
 const RuntimeFields = z
   .object({
@@ -22,7 +28,7 @@ const RuntimeFields = z
     bind_host: z
       .string()
       .default('127.0.0.1')
-      .refine((host) => LOOPBACK_HOST.test(host), {
+      .refine(isLoopbackHost, {
         message:
           'bind_host must be a loopback address (127.x.x.x, ::1, or localhost): the dashboard runs anonymously and OTLP ingestion is unauthenticated',
       })

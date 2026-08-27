@@ -24,7 +24,7 @@ describe('Aspire Dashboard config', () => {
   })
 
   it('rejects non-loopback bind hosts, which would expose the anonymous dashboard and OTLP ingest', () => {
-    for (const bind_host of ['0.0.0.0', '10.0.0.5', '192.168.1.4', '::']) {
+    for (const bind_host of ['0.0.0.0', '10.0.0.5', '192.168.1.4', '::', '127.999.999.999', '127.0.0']) {
       expect(() => RuntimeConfigSchema.parse({ bind_host })).toThrow(/loopback/)
     }
   })
