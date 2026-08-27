@@ -108,6 +108,15 @@ async fn main() -> Result<()> {
     // Connect the project-scoped worker first. Compose observes that
     // registration to verify III_NAMESPACE before this process opens the
     // additional default-scoped connection for reserved engine::* providers.
+    //
+    // Compose injects III_WORKER_NAME, and the SDK lets that env override
+    // `metadata.name` on EVERY register_worker in this process — so this
+    // second connection would also register as 'queue' and, when the project
+    // namespace IS `default`, be rejected by the engine's per-namespace
+    // worker-name uniqueness (0.23+), killing the engine::* enqueue
+    // provider. Drop the env so `engine_worker_metadata()` actually names
+    // it 'queue-engine'.
+    std::env::remove_var("III_WORKER_NAME");
     let default_iii = Arc::new(register_worker(
         &cli.url,
         InitOptions {
