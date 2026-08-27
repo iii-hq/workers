@@ -31,10 +31,10 @@ describe('Shell and chat working-directory scope', () => {
 
   it('states both scopes clearly', () => {
     expect(workingDirectoryScopeMessage('/new', '/old')).toBe(
-      'Browsing /new; chat still works in /old.',
+      'Browsing /new. Chat still works in /old.',
     )
     expect(workingDirectoryScopeMessage('/new', null)).toBe(
-      'Browsing /new; chat has no working directory.',
+      'Browsing /new. Chat has no working directory yet.',
     )
   })
 })

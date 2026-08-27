@@ -21,6 +21,7 @@ import {
   reactivateSelectedFile,
   shouldActivateTreeSelection,
 } from './tree-activation'
+import { expandedDirectoryPaths } from './tree-expansion'
 import { TREE_THEME, TREE_UNSAFE_CSS } from './tree-theme'
 
 /** Directory paths live in the model with a trailing slash; callers key
@@ -140,8 +141,10 @@ export function FilesTab({
   // Expansion state is read back through the dir handles (the model has
   // no expansion events on its public surface): every model notification
   // schedules a debounced snapshot over the known dir paths.
-  const expandedRef = useRef<readonly string[]>(expanded)
-  expandedRef.current = expanded
+  const liveExpandedRef = useRef<readonly string[]>(expanded)
+  useEffect(() => {
+    liveExpandedRef.current = expanded
+  }, [expanded])
   const lastReportedRef = useRef<string>('')
   useEffect(() => {
     if (!kinds) return
@@ -152,24 +155,15 @@ export function FilesTab({
     let timer: number | null = null
     const snapshot = () => {
       timer = null
-      const open: string[] = []
-      for (const path of dirPaths) {
-        const handle = model.getItem(path) ?? model.getItem(`${path}/`)
-        // A method call doesn't narrow the handle union — the literal
-        // `isDirectory(): true` return type needs the explicit cast.
-        if (
-          handle?.isDirectory() &&
-          (handle as FileTreeDirectoryHandle).isExpanded()
-        ) {
-          open.push(path)
-        }
-      }
+      const open = expandedDirectoryPaths(model, dirPaths)
+      liveExpandedRef.current = open
       const key = open.join('\n')
       if (key === lastReportedRef.current) return
       lastReportedRef.current = key
       onExpandedChange(open)
     }
     const unsubscribe = model.subscribe(() => {
+      liveExpandedRef.current = expandedDirectoryPaths(model, dirPaths)
       if (timer != null) window.clearTimeout(timer)
       timer = window.setTimeout(snapshot, EXPAND_SNAPSHOT_MS)
     })
@@ -190,7 +184,7 @@ export function FilesTab({
     lastPathsKeyRef.current = pathsKey
     // The model accepts dir ids in either spelling depending on how the
     // row materialized — hand it both.
-    const initialExpandedPaths = expandedRef.current.flatMap((p) => [
+    const initialExpandedPaths = liveExpandedRef.current.flatMap((p) => [
       p,
       `${p}/`,
     ])
@@ -205,7 +199,7 @@ export function FilesTab({
       const handle = model.getItem(path) ?? model.getItem(`${path}/`)
       if (handle?.isDirectory()) (handle as FileTreeDirectoryHandle).expand()
     }
-  }, [model, pathsKey, expanded])
+  }, [model, expanded])
 
   // Keep the Files tree's selection aligned with the file currently
   // visible in the main pane, including files opened by live follow.
