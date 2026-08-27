@@ -22,7 +22,9 @@ on:
 jobs:
   integration:
     name: harness integration
-    runs-on: ubuntu-latest
+    # `rust` is the repository-scoped self-hosted pool. Keep public PR code on
+    # fresh GitHub-hosted runners and use the persistent pool only after merge.
+    runs-on: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'rust' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v5
         with:

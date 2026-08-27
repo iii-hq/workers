@@ -51,6 +51,21 @@ def test_prs_restore_rust_caches_and_main_pushes_publish_them() -> None:
     assert ci["jobs"]["harness-integration"]["with"]["save-cache"] == expected
 
 
+def test_only_trusted_main_pushes_use_the_rust_self_hosted_runner() -> None:
+    integration = workflow("_harness-integration.yml")["jobs"]["integration"]
+    assert integration["runs-on"] == (
+        "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' "
+        "&& 'rust' || 'ubuntu-latest' }}"
+    )
+
+
+def test_actionlint_knows_the_repository_runner_pool_labels() -> None:
+    config = yaml.load(
+        (GITHUB / "actionlint.yaml").read_text(), Loader=yaml.BaseLoader
+    )
+    assert config["self-hosted-runner"]["labels"] == ["general", "rust"]
+
+
 def test_interface_smoke_bounds_each_engine_readiness_probe() -> None:
     steps = workflow("ci.yml")["jobs"]["interface-smoke"]["steps"]
     run = named_step(steps, "Start III engine")["run"]

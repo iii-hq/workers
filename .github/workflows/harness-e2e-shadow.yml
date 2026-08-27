@@ -33,7 +33,9 @@ concurrency:
 jobs:
   observe:
     name: Run observe-only plan
-    runs-on: ubuntu-latest
+    # This bot-gated default-branch workflow runs the trusted ephemeral stack
+    # on the repository-scoped general self-hosted pool.
+    runs-on: [self-hosted, Linux, X64, general]
     timeout-minutes: 210
     environment: harness-e2e-trusted
     env:
