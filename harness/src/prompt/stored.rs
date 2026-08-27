@@ -5,16 +5,25 @@
 //! hot-applies on the next send. Any store failure — directory not
 //! installed, not running, entry absent, empty body — falls back to the
 //! embedded prompt: the override can never block a send.
+//!
+//! The lookup must also stay ERROR-SPAN-CLEAN on the fallback paths: this
+//! resolution runs on every send, so an expected miss must never stamp an
+//! error span into the turn's trace (the integration floor rejects turns
+//! with error spans, and production traces would carry one per send).
+//! Hence the ladder below: fail-open presence probe, OK-shaped existence
+//! check, and only then the direct get.
 
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::IIIClient;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::trace_tags::run_hidden;
 
 /// The reserved store entry name that overrides the embedded default.
 pub const STORED_DEFAULT_PROMPT_NAME: &str = "default";
 const GET_ID: &str = "directory::system-prompts::get";
+const LIST_ID: &str = "directory::system-prompts::list";
+const FUNCTIONS_LIST_ID: &str = "engine::functions::list";
 const HIDDEN_FAMILY: &str = "harness prompt";
 const TIMEOUT_MS: u64 = 5_000;
 
@@ -32,24 +41,59 @@ pub struct EffectiveDefault {
 /// The effective default identity: the stored `default` prompt body when
 /// present and non-empty, else the embedded [`super::DEFAULT`].
 pub async fn effective_default(iii: &IIIClient) -> EffectiveDefault {
-    let stored = run_hidden(
+    choose_identity(stored_default_body(iii).await)
+}
+
+/// The stored `default` body, resolved through a span-clean ladder:
+///
+/// 1. Presence — `engine::functions::list` is fail-open and answers OK
+///    (possibly empty) even when the directory worker is absent; a direct
+///    get there would `function_not_found` and error-stamp every send of a
+///    directory-less deployment.
+/// 2. Existence — `directory::system-prompts::list` answers OK whether or
+///    not a `default` entry exists; the get's miss is a handler ERROR and
+///    would error-stamp every send of every no-override deployment.
+/// 3. Only then fetch the body.
+async fn stored_default_body(iii: &IIIClient) -> Option<String> {
+    let functions = trigger(iii, FUNCTIONS_LIST_ID, json!({ "prefix": GET_ID })).await?;
+    let present = functions
+        .get("functions")
+        .and_then(Value::as_array)
+        .is_some_and(|functions| !functions.is_empty());
+    if !present {
+        return None;
+    }
+    let prompts = trigger(iii, LIST_ID, json!({})).await?;
+    let has_default = prompts
+        .get("prompts")
+        .and_then(Value::as_array)
+        .is_some_and(|prompts| {
+            prompts
+                .iter()
+                .any(|p| p.get("name").and_then(Value::as_str) == Some(STORED_DEFAULT_PROMPT_NAME))
+        });
+    if !has_default {
+        return None;
+    }
+    trigger(iii, GET_ID, json!({ "name": STORED_DEFAULT_PROMPT_NAME }))
+        .await?
+        .get("body")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+async fn trigger(iii: &IIIClient, function_id: &str, payload: Value) -> Option<Value> {
+    run_hidden(
         HIDDEN_FAMILY,
         iii.trigger(TriggerRequest {
-            function_id: GET_ID.into(),
-            payload: json!({ "name": STORED_DEFAULT_PROMPT_NAME }),
+            function_id: function_id.into(),
+            payload,
             action: None,
             timeout_ms: Some(TIMEOUT_MS),
         }),
     )
     .await
     .ok()
-    .and_then(|value| {
-        value
-            .get("body")
-            .and_then(|body| body.as_str())
-            .map(str::to_string)
-    });
-    choose_identity(stored)
 }
 
 /// Pure selection: a non-blank stored body wins; anything else is embedded.
