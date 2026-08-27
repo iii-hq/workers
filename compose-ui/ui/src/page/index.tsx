@@ -46,6 +46,7 @@ import {
   Server,
   ShieldCheck,
   Square,
+  X,
 } from './icons'
 import { Topology } from './Topology'
 import type { TopologyInput } from './topology-layout'
@@ -1018,151 +1019,152 @@ export function ComposePage({ host, onRequestClose, panelSide, commands, panelCo
             <>
               <StatusDot tone={styleFor(selectedContainer.state).dot} pulse={selectedContainer.state === 'starting'} />
               <span className="cu-mono">{selectedContainer.container}</span>
+              <Badge variant={styleFor(selectedContainer.state).badge}>{selectedContainer.state}</Badge>
             </>
           }
-          actions={<Badge variant={styleFor(selectedContainer.state).badge}>{selectedContainer.state}</Badge>}
+          actions={
+            <div className="cu-actions cu-detail-actions">
+              {running(selectedContainer.state) ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={!!busy}
+                  onClick={() => confirmLifecycle('down', selectedContainer.container)}
+                >
+                  <Square />
+                  Stop
+                </Button>
+              ) : (
+                <Button
+                  variant="primary"
+                  size="sm"
+                  disabled={!!busy}
+                  onClick={() => void lifecycle('up', selectedContainer.container)}
+                >
+                  <Play />
+                  Start
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={!!busy}
+                onClick={() => confirmLifecycle('restart', selectedContainer.container)}
+              >
+                <RotateCw />
+                Restart
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setSection('containers')
+                  setQuery('')
+                  setExpanded(selectedContainer.container)
+                  void loadLogs(selectedContainer.container)
+                }}
+              >
+                <FileText />
+                Log
+              </Button>
+              <IconButton label="Close details" variant="ghost" onClick={() => setSelectedNode(null)}>
+                <X />
+              </IconButton>
+            </div>
+          }
         >
-          <Facts
-            items={[
-              {
-                term: 'PID',
-                children: (
-                  <span className="cu-mono">
-                    {running(selectedContainer.state) ? (selectedContainer.pid ?? '–') : '–'}
-                  </span>
-                ),
-              },
-              { term: 'Supervision', children: supervision(selectedContainer) },
-              {
-                term: 'Source',
-                children: selectedDeclared ? (
-                  <span className="cu-mono">
-                    {selectedDeclared.source === 'package'
-                      ? `package://${selectedDeclared.ref}${selectedDeclared.version ? `@${selectedDeclared.version}` : ''}`
-                      : `${selectedDeclared.source}://${selectedDeclared.ref}`}
-                  </span>
-                ) : (
-                  '–'
-                ),
-                wide: true,
-              },
-              {
-                term: 'Ports',
-                children: selectedDeclared?.ports.length ? (
-                  <span className="cu-mono">
-                    {selectedDeclared.ports
+          <div className="cu-detail-grid">
+            <div className="cu-detail-fact">
+              <span className="cu-detail-term">PID</span>
+              <span className="cu-mono cu-detail-value">
+                {running(selectedContainer.state) ? (selectedContainer.pid ?? '–') : '–'}
+              </span>
+            </div>
+            <div className="cu-detail-fact">
+              <span className="cu-detail-term">Supervision</span>
+              <span className="cu-detail-value">{supervision(selectedContainer)}</span>
+            </div>
+            <div className="cu-detail-fact">
+              <span className="cu-detail-term">Listening</span>
+              <span className="cu-mono cu-detail-value">
+                {selectedDeclared?.ports.length
+                  ? selectedDeclared.ports
                       .map((port) => `${port.address === '*' ? '' : `${port.address}:`}${port.port}`)
-                      .join(', ')}
-                  </span>
-                ) : (
-                  <span className="cu-faint">none</span>
-                ),
-              },
-              {
-                term: 'Starts after',
-                children: selectedDeclared?.start_after.length ? (
+                      .join(', ')
+                  : '–'}
+              </span>
+            </div>
+            <div className="cu-detail-fact">
+              <span className="cu-detail-term">Source</span>
+              <span className="cu-mono cu-detail-value" title={selectedDeclared?.ref}>
+                {selectedDeclared
+                  ? selectedDeclared.source === 'package'
+                    ? `${selectedDeclared.ref.split('/').pop()}${selectedDeclared.version ? `@${selectedDeclared.version}` : ''}`
+                    : `${selectedDeclared.source}://${selectedDeclared.ref}`
+                  : '–'}
+              </span>
+            </div>
+          </div>
+          <div className="cu-detail-relations">
+            <div className="cu-detail-fact">
+              <span className="cu-detail-term">Starts after</span>
+              {selectedDeclared?.start_after.length ? (
+                <span className="cu-chips">
+                  {selectedDeclared.start_after.map((dep) => (
+                    <Chip key={dep} tone="neutral" onClick={() => setSelectedNode(dep)} role="button" tabIndex={0}>
+                      <span className="cu-mono">{dep}</span>
+                    </Chip>
+                  ))}
+                </span>
+              ) : (
+                <span className="cu-detail-value cu-faint">the engine only</span>
+              )}
+            </div>
+            <div className="cu-detail-fact">
+              <span className="cu-detail-term">Depended on by</span>
+              {(() => {
+                const dependents = (project?.containers ?? []).filter((d) =>
+                  d.start_after.includes(selectedContainer.container),
+                )
+                return dependents.length ? (
                   <span className="cu-chips">
-                    {selectedDeclared.start_after.map((dep) => (
-                      <Chip key={dep} tone="neutral" onClick={() => setSelectedNode(dep)} role="button" tabIndex={0}>
-                        <span className="cu-mono">{dep}</span>
+                    {dependents.map((d) => (
+                      <Chip
+                        key={d.name}
+                        tone="neutral"
+                        onClick={() => setSelectedNode(d.name)}
+                        role="button"
+                        tabIndex={0}
+                      >
+                        <span className="cu-mono">{d.name}</span>
                       </Chip>
                     ))}
                   </span>
                 ) : (
-                  <span className="cu-faint">engine only</span>
-                ),
-                wide: true,
-              },
-              {
-                term: 'Depended on by',
-                children: (() => {
-                  const dependents = (project?.containers ?? []).filter((d) =>
-                    d.start_after.includes(selectedContainer.container),
-                  )
-                  return dependents.length ? (
-                    <span className="cu-chips">
-                      {dependents.map((d) => (
-                        <Chip
-                          key={d.name}
-                          tone="neutral"
-                          onClick={() => setSelectedNode(d.name)}
-                          role="button"
-                          tabIndex={0}
-                        >
-                          <span className="cu-mono">{d.name}</span>
-                        </Chip>
-                      ))}
-                    </span>
-                  ) : (
-                    <span className="cu-faint">nothing</span>
-                  )
-                })(),
-                wide: true,
-              },
-              ...(selectedDeclared?.environment.length
-                ? [
-                    {
-                      term: 'Environment',
-                      children: <span className="cu-mono">{selectedDeclared.environment.join(', ')}</span>,
-                      wide: true,
-                    },
-                  ]
-                : []),
-              ...(selectedDeclared?.run
-                ? [{ term: 'Run', children: <span className="cu-mono">{selectedDeclared.run}</span>, wide: true }]
-                : []),
-              ...(selectedContainer.last_error
-                ? [
-                    {
-                      term: 'Last error',
-                      children: <span className="cu-last-error">{selectedContainer.last_error}</span>,
-                      wide: true,
-                    },
-                  ]
-                : []),
-            ]}
-          />
-          <div className="cu-actions">
-            {running(selectedContainer.state) ? (
-              <Button
-                variant="ghost"
-                disabled={!!busy}
-                onClick={() => confirmLifecycle('down', selectedContainer.container)}
-              >
-                <Square />
-                Stop
-              </Button>
-            ) : (
-              <Button
-                variant="primary"
-                disabled={!!busy}
-                onClick={() => void lifecycle('up', selectedContainer.container)}
-              >
-                <Play />
-                Start
-              </Button>
-            )}
-            <Button
-              variant="ghost"
-              disabled={!!busy}
-              onClick={() => confirmLifecycle('restart', selectedContainer.container)}
-            >
-              <RotateCw />
-              Restart
-            </Button>
-            <Button
-              variant="pill"
-              onClick={() => {
-                setSection('containers')
-                setQuery('')
-                setExpanded(selectedContainer.container)
-                void loadLogs(selectedContainer.container)
-              }}
-            >
-              <FileText />
-              Show log
-            </Button>
+                  <span className="cu-detail-value cu-faint">nothing</span>
+                )
+              })()}
+            </div>
           </div>
+          {selectedDeclared?.run || selectedDeclared?.environment.length ? (
+            <dl className="cu-detail-lines">
+              {selectedDeclared.run ? (
+                <div>
+                  <dt>run</dt>
+                  <dd className="cu-mono">{selectedDeclared.run}</dd>
+                </div>
+              ) : null}
+              {selectedDeclared.environment.length ? (
+                <div>
+                  <dt>environment</dt>
+                  <dd className="cu-mono">{selectedDeclared.environment.join('  ')}</dd>
+                </div>
+              ) : null}
+            </dl>
+          ) : null}
+          {selectedContainer.last_error ? (
+            <StatusPanel variant="alert" headline="Last error" detail={selectedContainer.last_error} />
+          ) : null}
         </SectionCard>
       ) : null}
     </>
