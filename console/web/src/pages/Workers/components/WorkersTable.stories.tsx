@@ -4,10 +4,12 @@ import { useMemo, useState } from 'react'
 import { TooltipProvider } from '@/components/ui/Tooltip'
 import {
   WORKER_SURFACE_FIXTURE,
+  WORKERS_FIXTURE_COMPOSE_ROWS,
   WORKERS_FIXTURE_EMPTY,
   WORKERS_FIXTURE_ROWS,
 } from '../fixtures/workers-fixtures'
-import type { WorkerRow } from '../types'
+import type { PendingComposeAction } from '../hooks/useWorkersLive'
+import type { ComposeAction, WorkerRow } from '../types'
 import { filterWorkerRows, type WorkersFilterState } from '../types'
 import { workerSurfaceKeys } from './WorkerSurface'
 import { WorkersFilters } from './WorkersFilters'
@@ -35,19 +37,26 @@ function WorkersHarness({
   rows,
   isLoading,
   initialTag,
+  initialManagement,
+  pendingCompose,
   onStop,
+  onComposeAction,
   onConfigure,
 }: {
   rows: WorkerRow[]
   isLoading?: boolean
   initialTag?: string | null
+  initialManagement?: WorkersFilterState['management']
+  pendingCompose?: PendingComposeAction | null
   onStop?: (name: string) => void
+  onComposeAction?: (action: ComposeAction, container: string) => void
   onConfigure?: (configurationId: string) => void
 }) {
   const [filters, setFilters] = useState<WorkersFilterState>({
     search: '',
     tag: initialTag ?? null,
     runtime: null,
+    management: initialManagement ?? null,
   })
   const filtered = useMemo(
     () => filterWorkerRows(rows, filters),
@@ -68,14 +77,21 @@ function WorkersHarness({
                 setFilters((cur) => ({ ...cur, ...next }))
               }
               onClear={() =>
-                setFilters({ search: '', tag: null, runtime: null })
+                setFilters({
+                  search: '',
+                  tag: null,
+                  runtime: null,
+                  management: null,
+                })
               }
             />
           ) : null}
           <WorkersTable
             rows={filtered}
             isLoading={isLoading}
+            pendingCompose={pendingCompose}
             onStop={onStop}
+            onComposeAction={onComposeAction}
             onConfigure={onConfigure}
           />
         </div>
@@ -136,6 +152,30 @@ export const StopEnabled: Story = {
 export const StandaloneNoStop: Story = {
   args: {
     rows: WORKERS_FIXTURE_ROWS.filter((r) => r.managementKind === 'standalone'),
+  },
+}
+
+/**
+ * A compose-supervised fleet: a ready container, one still starting, one the
+ * daemon reports as failed with its last error, and a declared container
+ * that is stopped and therefore absent from the engine. Start / stop /
+ * restart route through `compose::up` / `compose::down` / `compose::restart`;
+ * stop and restart confirm first because stop cascades to dependents.
+ */
+export const ComposeManaged: Story = {
+  args: {
+    rows: [...WORKERS_FIXTURE_COMPOSE_ROWS, ...WORKERS_FIXTURE_ROWS],
+    initialManagement: 'compose',
+    onComposeAction: () => undefined,
+    onConfigure: () => undefined,
+  },
+}
+
+export const ComposeActionPending: Story = {
+  args: {
+    rows: WORKERS_FIXTURE_COMPOSE_ROWS,
+    pendingCompose: { container: 'llm-router', action: 'restart' },
+    onComposeAction: () => undefined,
   },
 }
 

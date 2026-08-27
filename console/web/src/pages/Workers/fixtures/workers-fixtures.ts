@@ -15,6 +15,8 @@ export const WORKERS_FIXTURE_ROWS: WorkerRow[] = [
     stopEnabled: false,
     stopDisabledReason:
       'workers declared in config.yaml are managed by the engine',
+    composeState: null,
+    lastError: null,
   },
   {
     id: '00000000-0000-0000-0000-000000000aaa',
@@ -29,6 +31,8 @@ export const WORKERS_FIXTURE_ROWS: WorkerRow[] = [
     configurationId: null,
     stopEnabled: true,
     stopDisabledReason: null,
+    composeState: null,
+    lastError: null,
   },
   {
     id: '11111111-2222-3333-4444-555555555555',
@@ -44,6 +48,8 @@ export const WORKERS_FIXTURE_ROWS: WorkerRow[] = [
     stopEnabled: false,
     stopDisabledReason:
       'standalone workers must be stopped from the process that started them',
+    composeState: null,
+    lastError: null,
   },
   {
     id: '22222222-3333-4444-5555-666666666666',
@@ -59,6 +65,8 @@ export const WORKERS_FIXTURE_ROWS: WorkerRow[] = [
     stopEnabled: false,
     stopDisabledReason:
       'internal engine workers cannot be stopped from the console',
+    composeState: null,
+    lastError: null,
   },
   {
     id: '33333333-4444-5555-6666-777777777777',
@@ -73,6 +81,76 @@ export const WORKERS_FIXTURE_ROWS: WorkerRow[] = [
     configurationId: null,
     stopEnabled: false,
     stopDisabledReason: 'worker is not running',
+    composeState: null,
+    lastError: null,
+  },
+]
+
+export const WORKERS_FIXTURE_COMPOSE_ROWS: WorkerRow[] = [
+  {
+    id: '44444444-5555-6666-7777-888888888888',
+    name: 'llm-router',
+    runtime: 'rust',
+    ipAddress: '127.0.0.1',
+    version: '1.4.14',
+    pid: 27610,
+    tag: 'platform',
+    managementKind: 'compose',
+    status: 'connected',
+    configurationId: 'llm-router',
+    stopEnabled: false,
+    stopDisabledReason: null,
+    composeState: 'ready',
+    lastError: null,
+  },
+  {
+    id: '55555555-6666-7777-8888-999999999999',
+    name: 'provider-openai',
+    runtime: 'rust',
+    ipAddress: '127.0.0.1',
+    version: '1.2.8',
+    pid: 27638,
+    tag: 'provider',
+    managementKind: 'compose',
+    status: 'starting',
+    configurationId: null,
+    stopEnabled: false,
+    stopDisabledReason: null,
+    composeState: 'starting',
+    lastError: null,
+  },
+  {
+    id: 'compose:provider-anthropic',
+    name: 'provider-anthropic',
+    runtime: null,
+    ipAddress: null,
+    version: null,
+    pid: null,
+    tag: null,
+    managementKind: 'compose',
+    status: 'failed',
+    configurationId: null,
+    stopEnabled: false,
+    stopDisabledReason: null,
+    composeState: 'failed',
+    lastError:
+      'CHILD_EXITED_BEFORE_REGISTRATION: provider-anthropic exited with status 1 before registering',
+  },
+  {
+    id: 'compose:web',
+    name: 'web',
+    runtime: null,
+    ipAddress: null,
+    version: null,
+    pid: null,
+    tag: null,
+    managementKind: 'compose',
+    status: 'stopped',
+    configurationId: null,
+    stopEnabled: false,
+    stopDisabledReason: null,
+    composeState: 'stopped',
+    lastError: null,
   },
 ]
 

@@ -48,6 +48,10 @@ export default defineConfig({
         target: process.env.III_CONSOLE_URL ?? 'http://127.0.0.1:3113',
         changeOrigin: true,
       },
+      '/runtime': {
+        target: process.env.III_CONSOLE_URL ?? 'http://127.0.0.1:3113',
+        changeOrigin: true,
+      },
     },
   },
 })
