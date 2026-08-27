@@ -237,7 +237,7 @@ pub enum SessionEntry {
         /// Opaque writer-supplied correlation (e.g. `{ turn_id }`).
         #[serde(skip_serializing_if = "Option::is_none")]
         origin: Option<JsonMap>,
-        message: AgentMessage,
+        message: Box<AgentMessage>,
     },
     /// Bookkeeping *about* the conversation that is not a message at
     /// all (e.g. the harness's compaction record).

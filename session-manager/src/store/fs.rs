@@ -393,10 +393,10 @@ mod tests {
             timestamp: 1,
             revision,
             origin: None,
-            message: AgentMessage::User {
+            message: Box::new(AgentMessage::User {
                 content: vec![ContentBlock::Text { text: text.into() }],
                 timestamp: 1,
-            },
+            }),
         }
     }
 
