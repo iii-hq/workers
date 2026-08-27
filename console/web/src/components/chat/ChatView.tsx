@@ -1179,10 +1179,14 @@ export function ChatView({
       // prompt + skills itself; suppressing the client-side selection also
       // covers pre-upgrade drafts whose persisted namedBody would otherwise
       // collide with the agent field.
-      const agentId = agentIdForSend(effectiveSystemPrompt, {
-        turnEstablished,
-        willQueue,
-      })
+      const agentId = conversation.agentProfile
+        ? turnEstablished || willQueue
+          ? undefined
+          : conversation.agentProfile.id
+        : agentIdForSend(effectiveSystemPrompt, {
+            turnEstablished,
+            willQueue,
+          })
       const systemPrompt = agentId
         ? null
         : selectionForSend(effectiveSystemPrompt, turnEstablished)
@@ -1729,6 +1733,7 @@ export function ChatView({
     },
     [
       conversation.id,
+      conversation.agentProfile,
       conversation.mode,
       conversation.model,
       conversation.skills,
@@ -2239,7 +2244,9 @@ export function ChatView({
             {panelTitle ?? 'Chat'}
           </span>
           <span className="shrink-0 text-ink-ghost">·</span>
-          <span className="min-w-0 truncate">{effectiveModel}</span>
+          <span className="min-w-0 truncate">
+            {conversation.agentProfile?.name ?? effectiveModel}
+          </span>
         </div>
       </PageHeader>
 
@@ -2251,6 +2258,7 @@ export function ChatView({
 
       <MessageList
         messages={conversation.messages}
+        agentName={conversation.agentProfile?.name}
         spawnContext={{
           title: conversation.title,
           model: effectiveModel,
@@ -2353,6 +2361,7 @@ export function ChatView({
             modelOptions={modelOptions}
             catalogLoading={catalogLoading}
             modelPickerOpenRequest={modelPickerOpenRequest}
+            modelLocked={Boolean(conversation.agentProfile?.model)}
             functionEntries={functionEntries}
             permissionMode={approvalSettings.settings.mode}
             permissionModeLoading={!approvalSettings.loaded}

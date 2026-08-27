@@ -116,6 +116,29 @@ describe('applyCatalogModelFallback', () => {
     expect(next[0].model).toBeNull()
     expect(next).toBe(sessions)
   })
+
+  it('never replaces an agent profile model that left the live catalog', () => {
+    const profileModel = 'openai-codex::codex/gpt-retired'
+    const sessions = [
+      conversation({
+        model: profileModel,
+        agentProfile: {
+          id: 'reviewer',
+          name: 'Reviewer',
+          model: profileModel,
+        },
+      }),
+    ]
+
+    const next = applyCatalogModelFallback(
+      sessions,
+      new Set(['provider::current-model']),
+      'provider::current-model',
+    )
+
+    expect(next).toBe(sessions)
+    expect(next[0].model).toBe(profileModel)
+  })
 })
 
 describe('mergeConversationMeta', () => {
@@ -545,6 +568,41 @@ describe('reconnect hydration', () => {
 })
 
 describe('metadataFor', () => {
+  it('round-trips the frozen agent profile identity and configuration', () => {
+    const agentProfile = {
+      id: 'reviewer',
+      name: 'Code Reviewer',
+      model: 'openai-codex::codex/gpt-5.6-sol',
+      reasoningEffort: 'ultra',
+      icon: 'review' as const,
+      color: 'purple' as const,
+    }
+    const metadata = metadataFor(
+      conversation({
+        model: agentProfile.model,
+        thinkingLevel: agentProfile.reasoningEffort,
+        agentProfile,
+      }),
+    )
+
+    expect(metadata.agent_profile).toEqual({
+      id: 'reviewer',
+      name: 'Code Reviewer',
+      model: 'openai-codex::codex/gpt-5.6-sol',
+      reasoning_effort: 'ultra',
+      icon: 'review',
+      color: 'purple',
+    })
+
+    const restored = mergeConversationMeta(
+      undefined,
+      sessionMeta({ metadata, message_count: 2 }),
+    )
+    expect(restored.agentProfile).toEqual(agentProfile)
+    expect(restored.model).toBe(agentProfile.model)
+    expect(restored.thinkingLevel).toBe('ultra')
+  })
+
   it('preserves harness linkage and appearance across whole-object writes', () => {
     const next = metadataFor(
       conversation({

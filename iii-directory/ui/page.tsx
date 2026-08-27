@@ -11,7 +11,6 @@
  * - src/page/             — the skills, system prompts & agents browser/editor
  * - src/configuration/    — custom form for the `iii-directory` configuration entry
  * - src/function-trigger/ — how directory::* function triggers render in chat/traces
- * - src/session-chip/     — the chat header's system-prompt read-out + dialog
  *
  * Registrations go through `host` so the loader disposes them on hot
  * reload / worker disconnect.
@@ -23,7 +22,6 @@ import { createDirectoryTriggerRenderer } from './src/function-trigger'
 import { DirectoryPage } from './src/page'
 import { registerDirectoryPalette } from './src/page/palette'
 import { createSearchTriggerRenderer } from './src/search/search-card'
-import { createSystemPromptChip } from './src/session-chip'
 
 /**
  * The pre-generate hook's transcript annotations (`origin.directory`) stay
@@ -55,10 +53,4 @@ export default function setup(host: Host) {
     render: DirectoryPassLine,
   })
 
-  /* Optional chained: the slot postdates the published Host type, so a
-     console that predates session chips just skips this contribution. */
-  host.chat?.registerSessionChip({
-    id: 'system-prompt',
-    render: createSystemPromptChip(host),
-  })
 }

@@ -53,6 +53,8 @@ interface ChatSettingsSheetProps {
   defaultWorkingDir?: string | null
   worktreePicker?: WorktreePickerOptions
   disabled?: boolean
+  /** Disable only model/reasoning while leaving other chat settings usable. */
+  modelDisabled?: boolean
   onModeChange: (next: Mode) => void
   onModelChange: (next: ModelId) => void
   onMemoryBankChange?: (next: string | null) => void
@@ -117,6 +119,7 @@ export function ChatSettingsSheet({
   defaultWorkingDir,
   worktreePicker,
   disabled,
+  modelDisabled,
   onModeChange,
   onModelChange,
   onMemoryBankChange,
@@ -164,7 +167,7 @@ export function ChatSettingsSheet({
                   ) : undefined
                 }
                 icon={<Sparkles className="size-[18px]" aria-hidden />}
-                disabled={disabled || catalogLoading}
+                disabled={disabled || modelDisabled || catalogLoading}
                 onClick={() => navigation.push('model')}
               />
             </SettingsSection>
@@ -233,7 +236,7 @@ export function ChatSettingsSheet({
                 navigation.push('provider-config')
               }}
               onOpenReasoning={() => navigation.push('reasoning')}
-              disabled={disabled}
+              disabled={disabled || modelDisabled}
               loading={catalogLoading}
             />
           </SheetPage>
@@ -254,7 +257,7 @@ export function ChatSettingsSheet({
                 onThinkingLevelChange(next)
                 navigation.back()
               }}
-              disabled={disabled}
+              disabled={disabled || modelDisabled}
             />
           </SheetPage>
         ) : null}

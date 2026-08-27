@@ -9,7 +9,11 @@ import { type AgentEntry, listAgents } from '@/lib/backend/directory-prompts'
 import { getIiiClient } from '@/lib/iii-client'
 import { normalizeErrorMessage } from '@/lib/providers'
 import { cn } from '@/lib/utils'
-import type { SubagentColor, SubagentIcon } from '@/types/chat'
+import type {
+  AgentProfileSnapshot,
+  SubagentColor,
+  SubagentIcon,
+} from '@/types/chat'
 import { SUBAGENT_ICON_COMPONENTS } from './ActiveSubagentChips'
 import { DirectoryPicker, type WorktreePickerOptions } from './DirectoryPicker'
 import { SessionAddonsPicker } from './SessionAddonsPicker'
@@ -73,6 +77,9 @@ export interface EmptyStateProps {
   onSkillsChange?: (next: SkillSelection) => void
   /** Optional deterministic catalog for stories/tests; omitted loads Directory. */
   agentEntries?: AgentEntry[] | null
+  /** Frozen identity/configuration for the selected Directory agent. */
+  agentProfile?: AgentProfileSnapshot
+  onAgentProfileChange?: (next: AgentProfileSnapshot | undefined) => void
 }
 
 const HARNESS_INSTALL_COMMAND = 'iii trigger compose::add worker=harness'
@@ -99,6 +106,8 @@ export function EmptyState({
   skills,
   onSkillsChange,
   agentEntries,
+  agentProfile,
+  onAgentProfileChange,
 }: EmptyStateProps) {
   const emptyPad = density === 'dock' ? 'px-3 sm:px-4' : 'px-3 sm:px-6 lg:px-9'
   const eyebrow = variant === 'no-provider' ? 'New session' : 'Setup'
@@ -130,6 +139,8 @@ export function EmptyState({
             skills={skills}
             onSkillsChange={onSkillsChange}
             agentEntries={agentEntries}
+            agentProfile={agentProfile}
+            onAgentProfileChange={onAgentProfileChange}
           />
         ) : (
           <div className="font-sans text-base font-medium text-ink-faint sm:text-sm">
@@ -168,6 +179,8 @@ function ReadyBody({
   skills,
   onSkillsChange,
   agentEntries,
+  agentProfile,
+  onAgentProfileChange,
 }: {
   workingDir?: string | null
   onWorkingDirChange?: (next: string) => void
@@ -179,6 +192,8 @@ function ReadyBody({
   skills?: SkillSelection
   onSkillsChange?: (next: SkillSelection) => void
   agentEntries?: AgentEntry[] | null
+  agentProfile?: AgentProfileSnapshot
+  onAgentProfileChange?: (next: AgentProfileSnapshot | undefined) => void
 }) {
   const projectName = workingDir
     ? (workingDir.split('/').filter(Boolean).at(-1) ?? workingDir)
@@ -213,6 +228,8 @@ function ReadyBody({
             skills={skills}
             onSkillsChange={onSkillsChange}
             agentEntries={agentEntries}
+            agentProfile={agentProfile}
+            onAgentProfileChange={onAgentProfileChange}
           />
         ) : null}
       </div>
@@ -226,14 +243,19 @@ function SessionSetupControls({
   skills,
   onSkillsChange,
   agentEntries,
+  agentProfile,
+  onAgentProfileChange,
 }: {
   systemPrompt: SystemPromptState
   onSystemPromptChange: (next: SystemPromptState) => void
   skills?: SkillSelection
   onSkillsChange?: (next: SkillSelection) => void
   agentEntries?: AgentEntry[] | null
+  agentProfile?: AgentProfileSnapshot
+  onAgentProfileChange?: (next: AgentProfileSnapshot | undefined) => void
 }) {
-  const selectedAgentId = agentIdFromSystemPrompt(systemPrompt)
+  const selectedAgentId =
+    agentProfile?.id ?? agentIdFromSystemPrompt(systemPrompt)
   const [manualOpen, setManualOpen] = useState(
     () =>
       selectedAgentId === null &&
@@ -247,7 +269,10 @@ function SessionSetupControls({
     const next = !manualOpen
     setManualOpen(next)
     if (next && selectedAgentId !== null) {
-      onSystemPromptChange(withoutAgentChoice(systemPrompt))
+      if (agentIdFromSystemPrompt(systemPrompt) !== null) {
+        onSystemPromptChange(withoutAgentChoice(systemPrompt))
+      }
+      onAgentProfileChange?.(undefined)
     }
   }
 
@@ -268,9 +293,22 @@ function SessionSetupControls({
             loading={catalog.entries === null}
             error={catalog.error}
             selectedId={selectedAgentId}
-            onSelect={(agentId) =>
-              onSystemPromptChange(withAgentChoice(systemPrompt, agentId))
-            }
+            onSelect={(entry) => {
+              const profile: AgentProfileSnapshot = {
+                id: entry.id,
+                name: entry.name.trim() || entry.id,
+                ...(entry.model ? { model: entry.model } : {}),
+                ...(entry.reasoning_effort
+                  ? { reasoningEffort: entry.reasoning_effort }
+                  : {}),
+                ...(entry.icon ? { icon: entry.icon as SubagentIcon } : {}),
+                ...(entry.color ? { color: entry.color as SubagentColor } : {}),
+              }
+              if (onAgentProfileChange) onAgentProfileChange(profile)
+              else {
+                onSystemPromptChange(withAgentChoice(systemPrompt, entry.id))
+              }
+            }}
           />
         </div>
       </div>
@@ -361,7 +399,7 @@ function AgentGallery({
   loading: boolean
   error: boolean
   selectedId: string | null
-  onSelect: (agentId: string) => void
+  onSelect: (entry: AgentEntry) => void
 }) {
   return (
     <div className="pb-3 text-left">
@@ -400,7 +438,7 @@ function AgentGallery({
               <AgentChoiceCard
                 entry={entry}
                 selected={selectedId === entry.id}
-                onSelect={() => onSelect(entry.id)}
+                onSelect={() => onSelect(entry)}
               />
             </li>
           ))}

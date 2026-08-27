@@ -27,6 +27,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  agentIdFromSystemPrompt,
   DEFAULT_SYSTEM_PROMPT_STATE,
   type SystemPromptAddon,
   type SystemPromptState,
@@ -69,6 +70,7 @@ import {
 } from '@/lib/storage'
 import { releaseConsoleClaimIfAny } from '@/lib/worktree-claims'
 import {
+  type AgentProfileSnapshot,
   type Conversation,
   type ConversationMetadataEdits,
   DEFAULT_MODE,
@@ -264,15 +266,56 @@ function decodeSkills(v: unknown): string[] | undefined {
   return skills.length > 0 ? skills : undefined
 }
 
+function decodeAgentProfile(value: unknown): AgentProfileSnapshot | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const raw = value as Record<string, unknown>
+  const id = typeof raw.id === 'string' ? raw.id.trim() : ''
+  if (!id) return undefined
+  const name = typeof raw.name === 'string' ? raw.name.trim() : ''
+  const icon =
+    typeof raw.icon === 'string' &&
+    SUBAGENT_ICON_VALUES.has(raw.icon as SubagentIcon)
+      ? (raw.icon as SubagentIcon)
+      : undefined
+  const color =
+    typeof raw.color === 'string' &&
+    SUBAGENT_COLOR_VALUES.has(raw.color as SubagentColor)
+      ? (raw.color as SubagentColor)
+      : undefined
+  const model = typeof raw.model === 'string' ? raw.model.trim() : ''
+  const reasoningEffort =
+    typeof raw.reasoning_effort === 'string'
+      ? raw.reasoning_effort.trim()
+      : typeof raw.reasoningEffort === 'string'
+        ? raw.reasoningEffort.trim()
+        : ''
+  return {
+    id,
+    name: name || id,
+    ...(model ? { model } : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(icon ? { icon } : {}),
+    ...(color ? { color } : {}),
+  }
+}
+
 function decodeSessionSelections(
   md: Record<string, unknown>,
   started: boolean,
-): Pick<Conversation, 'systemPrompt' | 'skills' | 'legacySkillMigration'> {
+): Pick<
+  Conversation,
+  'systemPrompt' | 'agentProfile' | 'skills' | 'legacySkillMigration'
+> {
   const systemPrompt = decodeSystemPrompt(md.system_prompt)
+  const legacyAgentId = agentIdFromSystemPrompt(systemPrompt)
+  const agentProfile =
+    decodeAgentProfile(md.agent_profile) ??
+    (legacyAgentId ? { id: legacyAgentId, name: legacyAgentId } : undefined)
   const skills = decodeSkills(md.skills)
   const hasLegacySkills = systemPrompt.addons.length > 0
   return {
     systemPrompt,
+    agentProfile,
     skills,
     legacySkillMigration:
       !started && hasLegacySkills
@@ -391,11 +434,24 @@ export function metadataFor(
     | 'workingDir'
     | 'memoryBank'
     | 'systemPrompt'
+    | 'agentProfile'
     | 'skills'
     | 'sessionMetadata'
   >,
 ): Record<string, unknown> {
   const systemPrompt = encodeSystemPrompt(c.systemPrompt)
+  const agentProfile = c.agentProfile
+    ? {
+        id: c.agentProfile.id,
+        name: c.agentProfile.name,
+        ...(c.agentProfile.model ? { model: c.agentProfile.model } : {}),
+        ...(c.agentProfile.reasoningEffort
+          ? { reasoning_effort: c.agentProfile.reasoningEffort }
+          : {}),
+        ...(c.agentProfile.icon ? { icon: c.agentProfile.icon } : {}),
+        ...(c.agentProfile.color ? { color: c.agentProfile.color } : {}),
+      }
+    : undefined
   // session::set-meta replaces metadata wholesale. Keep keys owned by the
   // harness (parent linkage and sub-agent presentation) and other surfaces,
   // while rebuilding the console-owned keys below so clearing one really
@@ -409,6 +465,7 @@ export function metadataFor(
     fs_scope: _fsScope,
     memory_bank: _memoryBank,
     system_prompt: _systemPrompt,
+    agent_profile: _agentProfile,
     skills: _skills,
     ...preserved
   } = c.sessionMetadata ?? {}
@@ -424,6 +481,7 @@ export function metadataFor(
     ...(c.workingDir ? { fs_scope: { root: c.workingDir } } : {}),
     ...(c.memoryBank ? { memory_bank: c.memoryBank } : {}),
     ...(systemPrompt ? { system_prompt: systemPrompt } : {}),
+    ...(agentProfile ? { agent_profile: agentProfile } : {}),
     ...(c.skills?.length ? { skills: c.skills } : {}),
   }
 }
@@ -437,6 +495,7 @@ const CONSOLE_METADATA_KEYS = [
   'fs_scope',
   'memory_bank',
   'system_prompt',
+  'agent_profile',
   'skills',
 ] as const
 
@@ -513,18 +572,20 @@ function conversationFromMeta(
   migrationPending = false,
 ): Conversation {
   const md = meta.metadata ?? {}
-  const { systemPrompt, skills, legacySkillMigration } =
+  const { systemPrompt, agentProfile, skills, legacySkillMigration } =
     decodeSessionSelections(md, started && !migrationPending)
   return {
     id: meta.session_id,
     title: meta.title || meta.session_id,
     titleManual: md.title_manual === true,
     model:
-      typeof md.model === 'string' && md.model.length > 0 ? md.model : null,
+      typeof md.model === 'string' && md.model.length > 0
+        ? md.model
+        : (agentProfile?.model ?? null),
     thinkingLevel:
       typeof md.thinking_level === 'string' && md.thinking_level.length > 0
         ? md.thinking_level
-        : DEFAULT_THINKING_LEVEL,
+        : (agentProfile?.reasoningEffort ?? DEFAULT_THINKING_LEVEL),
     mode: isMode(md.mode) ? md.mode : DEFAULT_MODE,
     workingDir:
       typeof md.fs_scope === 'object' &&
@@ -538,6 +599,7 @@ function conversationFromMeta(
         ? md.memory_bank
         : null,
     systemPrompt,
+    agentProfile,
     skills,
     legacySkillMigration,
     started,
@@ -583,7 +645,7 @@ export function applyConversationMetadataEvent(
     return conversation
   }
   const md = event.metadata ?? {}
-  const { systemPrompt, skills, legacySkillMigration } =
+  const { systemPrompt, agentProfile, skills, legacySkillMigration } =
     decodeSessionSelections(
       md,
       conversation.started === true && !conversation.legacySkillMigration,
@@ -595,17 +657,18 @@ export function applyConversationMetadataEvent(
     model:
       typeof md.model === 'string' && md.model.length > 0
         ? md.model
-        : conversation.model,
+        : (agentProfile?.model ?? conversation.model),
     thinkingLevel:
       typeof md.thinking_level === 'string' && md.thinking_level.length > 0
         ? md.thinking_level
-        : DEFAULT_THINKING_LEVEL,
+        : (agentProfile?.reasoningEffort ?? DEFAULT_THINKING_LEVEL),
     mode: isMode(md.mode) ? md.mode : conversation.mode,
     memoryBank:
       typeof md.memory_bank === 'string' && md.memory_bank.length > 0
         ? md.memory_bank
         : null,
     systemPrompt,
+    agentProfile,
     skills,
     legacySkillMigration,
     sessionMetadata: md,
@@ -671,6 +734,11 @@ export function applyCatalogModelFallback(
   let changed = false
   const next = conversations.map((c) => {
     if (c.model && validModels.has(c.model)) return c
+    // A profile model is authoritative even when the live catalog no longer
+    // advertises it. Directory deliberately keeps retired ids loadable so
+    // the send path can surface the real resolution error; silently swapping
+    // in the first catalog model would run the profile on the wrong model.
+    if (c.agentProfile?.model) return c
     // A discovered session (sub-agent, other-surface) with no model choice
     // must stay null — inventing one here would misreport the model the
     // session actually runs; the chat view derives it from the transcript.
@@ -780,6 +848,7 @@ export function mergeConversationMeta(
       workingDir: existing.workingDir,
       memoryBank: existing.memoryBank,
       systemPrompt: existing.systemPrompt,
+      agentProfile: existing.agentProfile,
       skills: existing.skills,
       legacySkillMigration: existing.legacySkillMigration,
       sessionMetadata: existing.sessionMetadata,
@@ -915,6 +984,11 @@ export interface ConversationsApi {
   setMemoryBank: (id: string, memoryBank: string | null) => void
   /** This chat's system prompt, chosen on the new-session screen. */
   setSystemPrompt: (id: string, systemPrompt: SystemPromptState) => void
+  /** Select or clear the Directory agent profile frozen onto this session. */
+  setAgentProfile: (
+    id: string,
+    agentProfile: AgentProfileSnapshot | undefined,
+  ) => void
   setSkills: (id: string, skills: string[] | undefined) => void
   setMode: (id: string, mode: Mode) => void
   /** Per-session working directory; null clears a scope that is no longer usable. */
@@ -2103,6 +2177,36 @@ export function useConversations(
     [patchConversation, conversations, writeMeta],
   )
 
+  const setAgentProfile = useCallback(
+    (id: string, agentProfile: AgentProfileSnapshot | undefined) => {
+      const patch: ConversationMetadataEdits = {
+        agentProfile,
+        ...(agentProfile?.model ? { model: agentProfile.model } : {}),
+        ...(agentProfile
+          ? {
+              thinkingLevel:
+                agentProfile.reasoningEffort ?? DEFAULT_THINKING_LEVEL,
+            }
+          : {}),
+      }
+      patchConversation(id, (conversation) =>
+        applyConversationMetadataPatch(conversation, patch),
+      )
+      const conversation = conversations.find((item) => item.id === id)
+      if (conversation) {
+        const updated = applyConversationMetadataPatch(conversation, patch)
+        writeMeta(updated)
+        if (agentProfile?.model) saveLastModel(agentProfile.model)
+        if (agentProfile) {
+          saveLastThinkingLevel(
+            agentProfile.reasoningEffort ?? DEFAULT_THINKING_LEVEL,
+          )
+        }
+      }
+    },
+    [patchConversation, conversations, writeMeta],
+  )
+
   const setSkills = useCallback(
     (id: string, skills: string[] | undefined) => {
       const normalized = skills?.length ? skills : undefined
@@ -2310,6 +2414,7 @@ export function useConversations(
     setThinkingLevel,
     setMemoryBank,
     setSystemPrompt,
+    setAgentProfile,
     setSkills,
     setMode,
     setWorkingDir,

@@ -103,4 +103,26 @@ describe('EmptyState', () => {
     expect(html).not.toContain('Sub-agent')
     expect(html).not.toContain('ActivityMetadata')
   })
+
+  it('uses the frozen session profile to keep the selected card identified', () => {
+    const html = renderToStaticMarkup(
+      <EmptyState
+        variant="ready"
+        systemPrompt={DEFAULT_SYSTEM_PROMPT_STATE}
+        onSystemPromptChange={() => {}}
+        agentEntries={agents}
+        agentProfile={{
+          id: 'researcher',
+          name: 'Researcher',
+          model: 'openai-codex::codex/gpt-5.6-sol',
+          reasoningEffort: 'high',
+          icon: 'search',
+          color: 'teal',
+        }}
+      />,
+    )
+
+    expect(html).toContain('Use Researcher agent profile')
+    expect(html).toMatch(/Use Researcher agent profile[^>]*aria-pressed="true"/)
+  })
 })

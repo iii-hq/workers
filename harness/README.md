@@ -199,19 +199,22 @@ profile (`directory::agents::*`, one markdown file per profile). The harness
 resolves it ONCE via `directory::agents::get` and freezes the result onto the
 turn: `"You are <name>."` plus the file body becomes the enrich system prompt
 over the top-level identity, the profile's skill filter becomes the session's
-skill selection (an explicit `options.skills` wins), its `model` is the
-fallback when the send names none, and — when the send also omits
+skill selection (an explicit `options.skills` wins), its `model` and optional
+provider-native `reasoning_effort` are authoritative for the session, and —
+when the send also omits
 `options.functions` — the dispatch policy defaults to the configured
 `default_functions` baseline instead of deny-all (an identity picked to DO
 something must be able to dispatch; the ask-mode cap still applies). The
-frozen identity travels with the prompt-stickiness rule: bare later sends
+The frozen name/icon/color/model/effort snapshot is also written to session
+metadata for clients that render established sessions. The frozen identity
+travels with the prompt-stickiness rule: bare later sends
 inherit it, an explicit prompt field sheds it. Refused on an existing
 session or combined with either prompt field. Directory edits after
 resolution never reach a live session — start a new one to pick them up.
 
 `harness::spawn` takes the same id as a top-level `agent` field: the profile
-body enriches the sub-agent identity, its skills/model slot in the same way
-(model precedence `model` → profile → parent, without dragging the parent's
+body enriches the sub-agent identity, its skills/model/effort slot in the same way
+(model precedence profile → explicit `model` → parent, without dragging the parent's
 provider onto a foreign model), and its name and icon become the display
 defaults. Which agent profile a spawn names is the prompt's decision — the profile
 body steers it, nothing gates it. Spawning

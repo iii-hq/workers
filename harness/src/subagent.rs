@@ -259,10 +259,13 @@ async fn seed_child(
     };
     let display = normalize_display(merged_display(req.display.as_ref(), agent.as_ref()).as_ref())?;
 
-    let model = req
-        .model
-        .clone()
-        .or_else(|| agent.as_ref().and_then(|a| a.model.clone()))
+    let agent_route = agent
+        .as_ref()
+        .and_then(|profile| profile.model_and_provider());
+    let model = agent_route
+        .as_ref()
+        .map(|(model, _)| model.clone())
+        .or_else(|| req.model.clone())
         .or_else(|| parent_record.map(|p| p.options.model.clone()))
         .ok_or_else(|| {
             HarnessError::InvalidRequest(
@@ -272,9 +275,10 @@ async fn seed_child(
                     .into(),
             )
         })?;
-    let inherits_parent_model =
-        req.model.is_none() && agent.as_ref().is_none_or(|a| a.model.is_none());
-    let provider = child_provider(req, parent_record, inherits_parent_model);
+    let inherits_parent_model = req.model.is_none() && agent_route.is_none();
+    let provider = agent_route
+        .and_then(|(_, provider)| provider)
+        .or_else(|| child_provider(req, parent_record, inherits_parent_model));
     // Children get the embedded minimal sub-agent identity, never the
     // top-level orchestrator prompt: a child
     // knows its one task, its state destination, and nothing else — by
@@ -316,6 +320,15 @@ async fn seed_child(
     // session that a later call can reuse around the fan-out budget.
     let task = normalize_message(req.task.clone())?;
     let (entry_id, origin) = (Some(ids::spawn_entry_id()), Some(json!({ "spawn": true })));
+    let mut thinking_level = req.options.as_ref().and_then(|o| o.thinking_level);
+    let mut provider_options = None;
+    if let Some(agent) = agent.as_ref() {
+        agent.apply_reasoning(
+            provider.as_deref(),
+            &mut thinking_level,
+            &mut provider_options,
+        );
+    }
     let mut options = TurnOptions {
         model,
         provider,
@@ -351,8 +364,8 @@ async fn seed_child(
         max_cost_usd: parent_record.and_then(|p| p.options.max_cost_usd),
         budget_root_session_id: parent_record
             .and_then(|p| p.options.budget_root_session_id.clone()),
-        thinking_level: req.options.as_ref().and_then(|o| o.thinking_level),
-        provider_options: None,
+        thinking_level,
+        provider_options,
         output: req
             .options
             .as_ref()
@@ -384,11 +397,14 @@ async fn seed_child(
     // nests the child (no policy inheritance, no parent-call resolution).
     // `spawned_by` is always "agent": every spawn is a direct call now —
     // trigger delivery never creates an agent.
-    let linkage = child_session_metadata(
-        parent,
-        req.parent_session_id.as_deref(),
-        depth,
-        display.as_ref(),
+    let linkage = send::session_metadata_with_agent(
+        child_session_metadata(
+            parent,
+            req.parent_session_id.as_deref(),
+            depth,
+            display.as_ref(),
+        ),
+        agent.as_ref(),
     );
     let title = display.as_ref().map(|value| value.name.as_str());
     let mut reused = false;
@@ -1286,10 +1302,14 @@ mod tests {
         crate::agents::ResolvedAgent {
             identity: crate::types::turn::AgentIdentity {
                 id: name.to_lowercase(),
+                name: Some(name.to_string()),
+                icon: None,
+                color: None,
             },
             prompt: format!("You are {name}.\n\nWork."),
             skills: None,
             model: None,
+            reasoning_effort: None,
             name: name.to_string(),
             icon,
             color: None,

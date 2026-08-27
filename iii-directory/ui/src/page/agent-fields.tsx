@@ -767,14 +767,34 @@ export function AgentForm(ctx: FormContext) {
   } = ctx
   const skills = readFrontmatterStringList(draft, 'skills').values
   const model = readFrontmatterField(draft, ['model']).value.trim()
+  const reasoningEffort = readFrontmatterField(draft, ['reasoning_effort']).value.trim() || 'default'
   const icon = readFrontmatterField(draft, ['icon']).value.trim()
   const color = readFrontmatterField(draft, ['color']).value.trim()
   const skillCatalog = useCatalog(host, fetchSkills)
   const modelCatalog = useCatalog(host, fetchModels)
   const derived = useMemo(() => slugify(nameValue), [nameValue])
+  const draftRef = useRef(draft)
+  draftRef.current = draft
+  const commitDraft = (next: string) => {
+    draftRef.current = next
+    editDraft(next)
+  }
 
   const setModel = (next: string) => {
-    editDraft(next ? setFrontmatterField(draft, 'model', next) : withoutFrontmatterFields(draft, ['model']))
+    const current = draftRef.current
+    commitDraft(
+      next
+        ? setFrontmatterField(current, 'model', next)
+        : withoutFrontmatterFields(current, ['model', 'reasoning_effort']),
+    )
+  }
+  const setReasoningEffort = (next: string) => {
+    const current = draftRef.current
+    commitDraft(
+      next && next !== 'default'
+        ? setFrontmatterField(current, 'reasoning_effort', next)
+        : withoutFrontmatterFields(current, ['reasoning_effort']),
+    )
   }
   const setAvatar = (preset: { emoji: string; token: string } | null) => {
     if (preset === null) {
@@ -870,14 +890,14 @@ export function AgentForm(ctx: FormContext) {
                 <ModelPicker
                   value={model || null}
                   options={pickerOptions}
-                  thinkingLevel="default"
+                  thinkingLevel={reasoningEffort}
                   onChange={setModel}
-                  onThinkingLevelChange={() => undefined}
+                  onThinkingLevelChange={setReasoningEffort}
                   disabled={readOnly || modelCatalog.error}
                   loading={modelCatalog.items === null && !modelCatalog.error}
                   showRefresh={false}
                   showProviderConfiguration={false}
-                  showReasoningEffort={false}
+                  showReasoningEffort
                   placeholder="Session default"
                   className="dir-ui-af-model-picker"
                 />

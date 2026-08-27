@@ -720,7 +720,7 @@
         "description": "The incoming message; a string is sugar for a user text message. The role must be `user` or `custom`."
       },
       "model": {
-        "description": "Required to start a NEW session. Steering or waking an EXISTING session may omit it — the session's last turn's model (and provider, unless overridden) is inherited, the same rule the notification inject path uses.",
+        "description": "Required to start a NEW session unless `options.agent` supplies a model. Steering or waking an EXISTING session may omit it — the session's last turn's model (and provider, unless overridden) is inherited, the same rule the notification inject path uses. A model declared by the selected agent profile is authoritative.",
         "type": [
           "string",
           "null"

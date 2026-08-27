@@ -140,36 +140,41 @@ export function ConversationRow({
           />
         )
       ) : null}
-      {/* Sub-agent origin: ⚡ a trigger reaction spawned it, otherwise the
-          spawn's declared display identity (subagent_display icon + color)
-          when present, falling back to the generic 🤖. Absent on roots and
-          pre-stamp sessions. */}
-      {depth > 0 && conversation.spawnedBy ? (
+      {/* A selected agent profile owns the session glyph at every depth.
+          Sessions without one retain the child-origin presentation. */}
+      {conversation.agentProfile || (depth > 0 && conversation.spawnedBy) ? (
         <span
           className="subagent-tree-icon flex items-center shrink-0 text-ink-ghost"
           data-color={
-            conversation.spawnedBy === 'agent'
+            conversation.agentProfile?.color ??
+            (conversation.spawnedBy === 'agent'
               ? conversation.subagentAppearance?.color
-              : undefined
+              : undefined)
           }
           title={
-            conversation.spawnedBy === 'trigger'
+            conversation.agentProfile?.name ??
+            (conversation.spawnedBy === 'trigger'
               ? 'spawned by a trigger'
-              : (conversation.subagentAppearance?.name ?? 'spawned by an agent')
+              : (conversation.subagentAppearance?.name ??
+                'spawned by an agent'))
           }
         >
-          {conversation.spawnedBy === 'trigger' ? (
+          {!conversation.agentProfile &&
+          conversation.spawnedBy === 'trigger' ? (
             <TriggerIcon
               aria-label="spawned by a trigger"
               className="size-4 shrink-0 fill-ink-ghost"
             />
           ) : (
             (() => {
-              const icon = conversation.subagentAppearance?.icon
+              const icon =
+                conversation.agentProfile?.icon ??
+                conversation.subagentAppearance?.icon
               const Icon = (icon && SUBAGENT_ICON_COMPONENTS[icon]) || Bot
               return (
                 <Icon
                   aria-label={
+                    conversation.agentProfile?.name ??
                     conversation.subagentAppearance?.name ??
                     'spawned by an agent'
                   }

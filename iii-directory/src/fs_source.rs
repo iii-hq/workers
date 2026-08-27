@@ -449,12 +449,16 @@ pub struct FsAgent {
     pub logo: Option<String>,
     /// Skill-id filter. Empty = every skill.
     pub skills: Vec<String>,
-    /// Default model id for sessions running as this agent (a router
+    /// Model id for sessions running as this agent (a router
     /// model id, e.g. `codex/gpt-5.4-mini`). `None` = the send decides.
     /// Stored verbatim — whether the id resolves is checked where it is
     /// used (the harness / the UI's model catalog), not at scan time,
     /// so an agent never fails to load over a retired model.
     pub model: Option<String>,
+    /// Provider-native reasoning effort paired with `model` (for example
+    /// `high` or `ultra`). Stored verbatim for the same reason as the model:
+    /// the live model catalog is authoritative at use time.
+    pub reasoning_effort: Option<String>,
     /// Harness subagent icon token (one of [`AGENT_ICON_TOKENS`]) for
     /// spawn display identities. `None` = caller picks.
     pub icon: Option<String>,
@@ -476,6 +480,8 @@ pub struct AgentFrontmatter {
     pub skills: Vec<String>,
     #[serde(default)]
     pub model: Option<String>,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
     #[serde(default)]
     pub icon: Option<String>,
     #[serde(default)]
@@ -635,6 +641,12 @@ pub fn scan_agents(root: &Path) -> (Vec<FsAgent>, Vec<SkipReason>) {
                 .as_deref()
                 .map(str::trim)
                 .filter(|m| !m.is_empty())
+                .map(str::to_string),
+            reasoning_effort: fm
+                .reasoning_effort
+                .as_deref()
+                .map(str::trim)
+                .filter(|effort| !effort.is_empty())
                 .map(str::to_string),
             icon: fm
                 .icon

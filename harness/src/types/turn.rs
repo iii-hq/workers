@@ -94,6 +94,14 @@ pub struct SkillAck {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AgentIdentity {
     pub id: String,
+    /// Display name frozen with the profile so clients never need to resolve
+    /// the mutable Directory catalog to label an established session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
 }
 
 /// Per-send options frozen onto the turn record when it is created; they
@@ -610,6 +618,9 @@ mod tests {
             .contains_key("agent"));
         r.options.agent = Some(AgentIdentity {
             id: "tech-leader".into(),
+            name: Some("Tech Leader".into()),
+            icon: Some("agent".into()),
+            color: Some("purple".into()),
         });
         let back: TurnRecord = serde_json::from_value(serde_json::to_value(&r).unwrap()).unwrap();
         assert_eq!(back, r);

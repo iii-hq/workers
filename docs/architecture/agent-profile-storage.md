@@ -53,6 +53,13 @@ The current required frontmatter and non-empty body validation stays in
 place. Unknown frontmatter keys remain harmless, so fields that iii does not
 consume do not prevent a profile from loading.
 
+`model` and `reasoning_effort` are optional, verbatim catalog selections. A
+catalog key may include its provider (`provider::model`); the harness splits
+that key when routing. Directory deliberately does not reject a retired model
+or effort: resolution against the live catalog happens when the profile is
+used, so the profile remains editable and the send returns the authoritative
+resolution error instead of silently choosing another model.
+
 Agent-profile list/get/update/delete operations resolve against the merged project +
 user-global scan; only create is anchored to the project root:
 
@@ -112,9 +119,14 @@ events and suppress the corresponding external-write event.
 
 ## Compatibility with harness
 
-Harness remains storage-agnostic. `harness::send` and `harness::spawn` keep
-passing a flat agent profile id to `directory::agents::get`, so session resolution,
-spawn behavior, model selection, and frozen identity behavior do not change.
+Harness remains storage-agnostic. `harness::send` and `harness::spawn` pass a
+flat agent profile id to `directory::agents::get` and freeze its prompt,
+skills, model, reasoning effort, display name, icon, and color. When a profile
+declares a model, that model and its effort are authoritative for the session.
+The harness also writes the frozen display/configuration snapshot to
+`SessionMeta.metadata.agent_profile`, allowing the Console sidebar and panel
+header to identify the session without re-reading the mutable Directory
+catalog. Existing sessions are therefore unaffected by later profile edits.
 
 Tests must cover the default/configured root, exact scanner shape, CRUD
 destinations, lack of legacy fallback, bundle routing, root-aware watch

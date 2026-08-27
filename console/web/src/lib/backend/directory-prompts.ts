@@ -119,6 +119,7 @@ export interface AgentEntry {
   /** Semantic display color; absent on older Directory workers. */
   color?: string | null
   model: string | null
+  reasoning_effort?: string | null
   skill_count: number | null
   modified_at: string
 }

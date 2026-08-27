@@ -67,9 +67,12 @@ pub struct AgentEntry {
     /// Length of the agent profile's skill filter; `null` = no filter (every
     /// skill).
     pub skill_count: Option<usize>,
-    /// Default model id for sessions using this profile; `null` =
+    /// Model id for sessions using this profile; `null` =
     /// the send decides.
     pub model: Option<String>,
+    /// Provider-native reasoning effort paired with `model`; `null` = the
+    /// model/provider default.
+    pub reasoning_effort: Option<String>,
     /// Harness subagent icon token for spawn display identities;
     /// `null` = caller picks.
     pub icon: Option<String>,
@@ -108,10 +111,13 @@ pub struct AgentGetOutput {
     /// Filter entries that resolve to no currently visible skill.
     /// Warnings — the agent profile still loads.
     pub unknown_skills: Vec<String>,
-    /// Default model id for sessions using this profile; `null` =
+    /// Model id for sessions using this profile; `null` =
     /// the send decides. Served verbatim — resolution against the live
     /// model catalog happens where it is used.
     pub model: Option<String>,
+    /// Provider-native reasoning effort paired with `model`; `null` = the
+    /// model/provider default. Served verbatim and validated at use time.
+    pub reasoning_effort: Option<String>,
     /// Harness subagent icon token (closed set, validated at write
     /// time); `null` = caller picks.
     pub icon: Option<String>,
@@ -197,7 +203,7 @@ fn register_list(iii: &Arc<IIIClient>, cfg: &SharedConfig) {
         })
         .description(
             "List filesystem-backed agent profiles (id, display name, description, emoji \
-             logo, icon, color, model, skill_count, modified_at) from the configured \
+             logo, icon, color, model, reasoning_effort, skill_count, modified_at) from the configured \
              agents folder. An agent profile is a reusable session identity: its file body \
              is the system prompt. skill_count null = sessions using the profile can use \
              every skill.",
@@ -224,7 +230,7 @@ fn register_get(iii: &Arc<IIIClient>, cfg: &SharedConfig, cache: &Arc<Registered
             "Fetch one agent profile by id. Returns the system prompt (the file body, \
              frontmatter stripped), display name, description, emoji logo, the skill \
              filter plus unknown_skills (filter entries matching no visible skill — \
-             warnings, the profile still loads), \
+             warnings, the profile still loads), model, reasoning_effort, icon, color, \
              and modified_at. Pass raw: true to also get the exact on-disk file for \
              editing with directory::agents::update.",
         ),
@@ -336,6 +342,7 @@ pub fn list_agents(cfg: &SkillsConfig) -> ListAgentsOutput {
             modified_at: fs_modified_at(&a.abs_path),
             skill_count: (!a.skills.is_empty()).then_some(a.skills.len()),
             model: a.model,
+            reasoning_effort: a.reasoning_effort,
             icon: a.icon,
             color: a.color,
             id: a.name,
@@ -384,6 +391,7 @@ pub fn get_agent(
         skills: agent.skills,
         unknown_skills,
         model: agent.model,
+        reasoning_effort: agent.reasoning_effort,
         icon: agent.icon,
         color: agent.color,
         raw,
@@ -543,7 +551,7 @@ mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
 
-    const CAPTAIN: &str = "---\nname: Release Captain\ndescription: Cuts releases.\nlogo: \"🚢\"\nskills:\n  - iii-sandbox\n  - agent-memory/observe\nmodel: codex/gpt-5.4-mini\nicon: search\ncolor: purple\n---\nYou are the release captain.\n";
+    const CAPTAIN: &str = "---\nname: Release Captain\ndescription: Cuts releases.\nlogo: \"🚢\"\nskills:\n  - iii-sandbox\n  - agent-memory/observe\nmodel: codex/gpt-5.4-mini\nreasoning_effort: high\nicon: search\ncolor: purple\n---\nYou are the release captain.\n";
 
     fn write_fixture(dir: &Path, rel: &str, contents: &str) {
         let path = dir.join(rel);
@@ -590,6 +598,7 @@ mod tests {
         assert_eq!(row.logo.as_deref(), Some("🚢"));
         assert_eq!(row.skill_count, Some(2));
         assert_eq!(row.model.as_deref(), Some("codex/gpt-5.4-mini"));
+        assert_eq!(row.reasoning_effort.as_deref(), Some("high"));
         assert_eq!(row.icon.as_deref(), Some("search"));
         assert_eq!(row.color.as_deref(), Some("purple"));
 
@@ -608,6 +617,7 @@ mod tests {
         assert_eq!(got.system_prompt.trim(), "You are the release captain.");
         assert_eq!(got.unknown_skills, vec!["agent-memory/observe".to_string()]);
         assert_eq!(got.model.as_deref(), Some("codex/gpt-5.4-mini"));
+        assert_eq!(got.reasoning_effort.as_deref(), Some("high"));
         assert_eq!(got.icon.as_deref(), Some("search"));
         assert_eq!(got.color.as_deref(), Some("purple"));
         assert_eq!(got.raw.as_deref(), Some(CAPTAIN));

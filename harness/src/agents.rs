@@ -5,8 +5,10 @@
 //! later directory edits never reach a live session, matching the skills
 //! baseline freeze.
 
+use std::collections::BTreeMap;
+
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use iii_sdk::protocol::TriggerRequest;
 
@@ -14,6 +16,7 @@ use crate::config::WorkerConfig;
 use crate::deps::Deps;
 use crate::error::HarnessError;
 use crate::functions::spawn::{SubagentColor, SubagentIcon};
+use crate::types::model::ThinkingLevel;
 use crate::types::turn::AgentIdentity;
 
 const AGENTS_GET_ID: &str = "directory::agents::get";
@@ -29,6 +32,8 @@ struct AgentGetWire {
     #[serde(default)]
     model: Option<String>,
     #[serde(default)]
+    reasoning_effort: Option<String>,
+    #[serde(default)]
     icon: Option<String>,
     #[serde(default)]
     color: Option<String>,
@@ -43,8 +48,10 @@ pub struct ResolvedAgent {
     pub prompt: String,
     /// `None` when the profile filters nothing (every skill).
     pub skills: Option<Vec<String>>,
-    /// Default model for sessions running as this agent.
+    /// Authoritative model for sessions running as this agent when present.
     pub model: Option<String>,
+    /// Provider-native reasoning effort paired with the profile model.
+    pub reasoning_effort: Option<String>,
     /// Display name for spawn identity defaults.
     pub name: String,
     /// Harness display icon; `None` when the profile has none (the token set
@@ -95,18 +102,105 @@ fn normalize(id: &str, wire: AgentGetWire) -> ResolvedAgent {
     } else {
         wire.name.trim().to_string()
     };
+    let icon = wire
+        .icon
+        .and_then(|token| serde_json::from_value::<SubagentIcon>(Value::String(token)).ok());
+    let color = wire
+        .color
+        .and_then(|token| serde_json::from_value::<SubagentColor>(Value::String(token)).ok());
     ResolvedAgent {
-        identity: AgentIdentity { id: id.to_string() },
+        identity: AgentIdentity {
+            id: id.to_string(),
+            name: Some(name.clone()),
+            icon: icon.and_then(|value| {
+                serde_json::to_value(value)
+                    .ok()?
+                    .as_str()
+                    .map(str::to_string)
+            }),
+            color: color.and_then(|value| {
+                serde_json::to_value(value)
+                    .ok()?
+                    .as_str()
+                    .map(str::to_string)
+            }),
+        },
         prompt: format!("You are {name}.\n\n{}", wire.system_prompt),
         skills: (!wire.skills.is_empty()).then_some(wire.skills),
         model: wire.model,
+        reasoning_effort: wire.reasoning_effort,
         name,
-        icon: wire.icon.and_then(|t| {
-            serde_json::from_value::<SubagentIcon>(serde_json::Value::String(t)).ok()
-        }),
-        color: wire.color.and_then(|t| {
-            serde_json::from_value::<SubagentColor>(serde_json::Value::String(t)).ok()
-        }),
+        icon,
+        color,
+    }
+}
+
+impl ResolvedAgent {
+    /// Split the Console catalog key (`provider::model`) when present. Plain
+    /// router model ids remain valid and leave provider routing automatic.
+    pub fn model_and_provider(&self) -> Option<(String, Option<String>)> {
+        let model = self.model.as_deref()?.trim();
+        let split = model
+            .split_once("::")
+            .filter(|(provider, id)| !provider.is_empty() && !id.is_empty());
+        Some(match split {
+            Some((provider, id)) => (id.to_string(), Some(provider.to_string())),
+            None => (model.to_string(), None),
+        })
+    }
+
+    /// Apply the profile's effort as both the compatibility enum (when it is
+    /// one of the Harness levels) and the exact provider-native option. The
+    /// latter preserves catalog additions such as `ultra` without a Harness
+    /// enum release.
+    pub fn apply_reasoning(
+        &self,
+        provider: Option<&str>,
+        thinking_level: &mut Option<ThinkingLevel>,
+        provider_options: &mut Option<BTreeMap<String, Value>>,
+    ) {
+        let Some(effort) = self
+            .reasoning_effort
+            .as_deref()
+            .map(str::trim)
+            .filter(|effort| !effort.is_empty() && *effort != "default")
+        else {
+            return;
+        };
+        *thinking_level = serde_json::from_value(Value::String(effort.to_lowercase())).ok();
+        let Some(provider) = provider else {
+            return;
+        };
+        let options = provider_options.get_or_insert_with(BTreeMap::new);
+        let provider_value = options
+            .entry(provider.to_string())
+            .or_insert_with(|| json!({}));
+        if !provider_value.is_object() {
+            *provider_value = json!({});
+        }
+        provider_value
+            .as_object_mut()
+            .expect("provider options normalized to an object")
+            .insert("reasoning_effort".into(), Value::String(effort.to_string()));
+    }
+
+    /// Frozen session-manager metadata consumed by Console and other clients.
+    pub fn session_metadata(&self) -> Value {
+        let mut value =
+            serde_json::to_value(&self.identity).expect("agent identity always serializes");
+        let object = value
+            .as_object_mut()
+            .expect("agent identity serializes as an object");
+        if let Some(model) = &self.model {
+            object.insert("model".into(), Value::String(model.clone()));
+        }
+        if let Some(reasoning_effort) = &self.reasoning_effort {
+            object.insert(
+                "reasoning_effort".into(),
+                Value::String(reasoning_effort.clone()),
+            );
+        }
+        value
     }
 }
 
@@ -140,7 +234,8 @@ mod tests {
                 "name": "Tech Leader",
                 "system_prompt": "Delegate everything.",
                 "skills": [],
-                "model": "codex/gpt-5.4",
+                "model": "openai-codex::codex/gpt-5.4",
+                "reasoning_effort": "ultra",
                 "icon": "agent",
                 "color": "purple",
             })),
@@ -148,9 +243,36 @@ mod tests {
         assert_eq!(agent.prompt, "You are Tech Leader.\n\nDelegate everything.");
         assert_eq!(agent.skills, None, "empty filter means every skill");
         assert_eq!(agent.identity.id, "tech-leader");
+        assert_eq!(agent.identity.name.as_deref(), Some("Tech Leader"));
+        assert_eq!(agent.identity.icon.as_deref(), Some("agent"));
+        assert_eq!(agent.identity.color.as_deref(), Some("purple"));
         assert_eq!(agent.icon, Some(SubagentIcon::Agent));
         assert_eq!(agent.color, Some(SubagentColor::Purple));
-        assert_eq!(agent.model.as_deref(), Some("codex/gpt-5.4"));
+        assert_eq!(
+            agent.model_and_provider(),
+            Some(("codex/gpt-5.4".into(), Some("openai-codex".into())))
+        );
+        assert_eq!(agent.reasoning_effort.as_deref(), Some("ultra"));
+        assert_eq!(
+            agent.session_metadata(),
+            serde_json::json!({
+                "id": "tech-leader",
+                "name": "Tech Leader",
+                "icon": "agent",
+                "color": "purple",
+                "model": "openai-codex::codex/gpt-5.4",
+                "reasoning_effort": "ultra",
+            })
+        );
+
+        let mut thinking = Some(ThinkingLevel::Low);
+        let mut provider_options = None;
+        agent.apply_reasoning(Some("openai-codex"), &mut thinking, &mut provider_options);
+        assert_eq!(thinking, None, "native-only effort has no enum fallback");
+        assert_eq!(
+            provider_options.unwrap()["openai-codex"],
+            serde_json::json!({ "reasoning_effort": "ultra" })
+        );
     }
 
     #[test]

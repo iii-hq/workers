@@ -161,7 +161,7 @@ export const agentsAdapter: BrowserAdapter = {
   nameRequired: true,
   newTemplate: '---\nname: \ndescription: ""\n---\n\n',
   newTemplateStartsClean: true,
-  extraManagedKeys: ['logo', 'skills', 'model', 'icon', 'color'],
+  extraManagedKeys: ['logo', 'skills', 'model', 'reasoning_effort', 'icon', 'color'],
   customForm: (ctx) => <AgentForm {...ctx} />,
   customLoading: () => <AgentFormSkeleton />,
   customFormOwnsContent: true,

@@ -105,6 +105,8 @@ interface MessageListProps {
   onConfigureProvider?: () => void
   /** Current child-session identity shown by direct spawn seed messages. */
   spawnContext?: SpawnTaskContext
+  /** Session agent profile name shown on assistant message headers. */
+  agentName?: string
   workingDir?: string | null
   onWorkingDirChange?: (next: string) => void
   workingDirError?: string | null
@@ -300,6 +302,7 @@ export function MessageList({
   onManageFilesystemAccess,
   onConfigureProvider,
   spawnContext,
+  agentName,
   workingDir,
   onWorkingDirChange,
   workingDirError,
@@ -741,6 +744,7 @@ export function MessageList({
                     onResolveFilesystemAccess={onResolveFilesystemAccess}
                     onManageFilesystemAccess={onManageFilesystemAccess}
                     workingDir={workingDir}
+                    agentName={agentName}
                     summaryCopyText={
                       row.summary
                         ? (() => {
@@ -777,6 +781,7 @@ export function MessageList({
                 <Message
                   message={m}
                   spawnContext={spawnContext}
+                  agentName={agentName}
                   copyText={copyText}
                   defaultOpenCalls={defaultOpenCalls}
                   onResolveApproval={onResolveApproval}
@@ -831,6 +836,7 @@ interface FunctionTriggerGroupProps {
   onResolveFilesystemAccess?: MessageListProps['onResolveFilesystemAccess']
   onManageFilesystemAccess?: MessageListProps['onManageFilesystemAccess']
   workingDir?: string | null
+  agentName?: string
   /** External landing target — a hidden matching item expands the group. */
   focusMessageId?: string | null
 }
@@ -852,6 +858,7 @@ function FunctionTriggerGroup({
   onResolveFilesystemAccess,
   onManageFilesystemAccess,
   workingDir,
+  agentName,
   focusMessageId,
 }: FunctionTriggerGroupProps) {
   const [expanded, setExpanded] = useState(!!defaultOpenCalls)
@@ -938,6 +945,7 @@ function FunctionTriggerGroup({
               >
                 <Message
                   message={message}
+                  agentName={agentName}
                   triggerNotification={notification}
                   registration={
                     registrations.get(message.id) ??
@@ -959,7 +967,11 @@ function FunctionTriggerGroup({
       </div>
       {row.summary ? (
         <div data-message-row={row.summary.id}>
-          <Message message={row.summary} copyText={summaryCopyText} />
+          <Message
+            message={row.summary}
+            copyText={summaryCopyText}
+            agentName={agentName}
+          />
         </div>
       ) : null}
     </section>
@@ -1000,6 +1012,10 @@ function resolveEmptyState(
     systemPrompt: active?.systemPrompt ?? DEFAULT_SYSTEM_PROMPT_STATE,
     onSystemPromptChange: active
       ? (next: SystemPromptState) => ctx.setSystemPrompt(active.id, next)
+      : undefined,
+    agentProfile: active?.agentProfile,
+    onAgentProfileChange: active
+      ? (next) => ctx.setAgentProfile(active.id, next)
       : undefined,
     skills: active?.skills,
     onSkillsChange: active
