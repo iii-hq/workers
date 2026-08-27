@@ -16,7 +16,7 @@ def test_opengantry_uses_current_sdk_release() -> None:
         (REPO_ROOT / "opengantry" / "package.json").read_text(encoding="utf-8")
     )
 
-    assert package["dependencies"]["iii-sdk"] == "0.23.0-rc.2"
+    assert package["dependencies"]["iii-sdk"] == "0.22.1-alpha.25"
 
 
 def test_scrapling_install_does_not_replace_current_sdk_with_vendor_copy() -> None:
@@ -31,4 +31,4 @@ def test_scrapling_install_does_not_replace_current_sdk_with_vendor_copy() -> No
     pyproject = tomllib.loads(
         (REPO_ROOT / "scrapling" / "pyproject.toml").read_text(encoding="utf-8")
     )
-    assert "iii-sdk==0.23.0rc2" in pyproject["project"]["dependencies"]
+    assert "iii-sdk==0.22.1a25" in pyproject["project"]["dependencies"]

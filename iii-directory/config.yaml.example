@@ -14,7 +14,7 @@
 # Tunable fields hot-reload on change (registry_url, download_timeout_ms,
 # registry_cache_ttl_ms, filter_unregistered). Topology fields require a
 # worker restart (skills_folder, local_skills_folder, agents_folder,
-# agents_skills_folder,
+# global_agents_folder, agents_skills_folder, global_agents_skills_folder,
 # auto_download).
 #
 # When omitted entirely, the worker seeds the built-in defaults
@@ -33,10 +33,23 @@ skills_folder: ./skills
 # `<id>.md` file. Relative paths resolve like skills_folder.
 agents_folder: ./agents
 
+# USER-GLOBAL agent profile root, shared by every project on the machine.
+# Same direct <id>.md scan as agents_folder; an id present under
+# agents_folder shadows the same id here. Profiles resolved here are updated
+# and deleted in place; create still writes agents_folder only. A missing
+# directory is treated as empty and never materialized.
+# global_agents_folder: ~/.iii/agents
+
 # Read-only root for system-installed agent skills (one directory per
 # skill, each containing a SKILL.md). Scanned shallowly; a missing
 # directory is treated as empty and the worker never writes here.
 # agents_skills_folder: .agents/skills
+
+# Read-only USER-GLOBAL agent skills root — the home-directory side of the
+# ~/.agents/skills convention, shared by every project on the machine. Same
+# scan and read-only contract as agents_skills_folder; namespaces present in
+# the managed roots or the project agents root shadow the same namespace here.
+# global_agents_skills_folder: ~/.agents/skills
 
 # Workers registry base URL — used by `directory::skills::download` and
 # the `directory::registry::*` proxies when a `worker=` source is

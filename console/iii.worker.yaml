@@ -18,3 +18,8 @@ runtime:
 scripts:
   install: cargo build
   start: cargo run --bin console
+
+config:
+  http_port: 3113
+dependencies:
+  configuration: "0.x"

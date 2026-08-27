@@ -271,8 +271,10 @@ transitions. The Console host keeps a single stable `aside`, leaves children
 mounted while collapsed, synchronizes instances sharing a storage key, and
 owns motion plus reduced-motion behavior. Pass `narrow` when the page already
 has a drill-in state; use `narrowBelow` when only shared sidebar chrome needs
-to react to its parent width. Neither responsive mode overwrites the saved
-wide preference.
+to react to its parent width. With host-owned collapse state the narrow
+presentation is a rail whose toggle opens a drawer over `PageMain`; a page
+that controls `collapsed` gets the full-width aside and owns what shows
+beside it. Neither responsive mode overwrites the saved wide preference.
 
 The pieces own the surface hierarchy (header on `--color-panel-raised`
 with a hairline `--color-edge` border, sidebar on `--color-sidebar`, main

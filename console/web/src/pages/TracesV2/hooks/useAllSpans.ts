@@ -21,7 +21,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getIiiClient } from '@/lib/iii-client'
-import { startAllSpansFeed } from '@/lib/traces-stream'
+import { startTraceActivityFeed } from '@/lib/traces-activity'
 import { fetchTraces, type StoredSpan } from '../api/traces'
 import { isPendingSpan, toMs } from '../lib/traceTransform'
 
@@ -29,8 +29,12 @@ import { isPendingSpan, toMs } from '../lib/traceTransform'
 const RETENTION_MS = 120_000
 /** Seed read size — bounds a busy engine's history, not the live feed. */
 const SEED_LIMIT = 500
+/** Debounce over activity ticks before re-seeding the strip. */
+const ACTIVITY_RESEED_DEBOUNCE_MS = 300
 /** Hard ceiling on retained spans; oldest effective-end evicted first. */
 const MAX_SPANS = 1_500
+/** Let focus/visibility churn settle before the expensive seed read. */
+const VISIBILITY_RESEED_DELAY_MS = 1_000
 
 function effectiveEndMs(span: StoredSpan, now: number): number {
   return isPendingSpan(span) ? now : toMs(span.end_time_unix_nano)
@@ -84,6 +88,7 @@ export function isContextFreeInternalSpan(span: StoredSpan): boolean {
 
 export function useAllSpans(isPaused: boolean): readonly StoredSpan[] {
   const [spans, setSpans] = useState<ReadonlyMap<string, StoredSpan>>(new Map())
+  const seedInFlightRef = useRef<Promise<void> | null>(null)
 
   const isPausedRef = useRef(isPaused)
   useEffect(() => {
@@ -93,26 +98,34 @@ export function useAllSpans(isPaused: boolean): readonly StoredSpan[] {
   // Seed read — run on mount, and re-run on reconnect and on unpause (the
   // stream dropped frames while away). REPLACES the map; see the module
   // docstring.
-  const seed = useCallback(async () => {
-    try {
-      const res = await fetchTraces({
-        search_all_spans: true,
-        include_internal: true,
-        sort_by: 'start_time',
-        sort_order: 'desc',
-        limit: SEED_LIMIT,
-      })
-      setSpans(
-        mergeSpans(
-          new Map(),
-          res.spans.filter((s) => !isContextFreeInternalSpan(s)),
-          Date.now(),
-        ),
-      )
-    } catch {
-      // Traces unavailable (memory exporter off, transient error) — the
-      // strip simply renders empty until data arrives.
-    }
+  const seed = useCallback((): Promise<void> => {
+    if (seedInFlightRef.current) return seedInFlightRef.current
+
+    const request = (async () => {
+      try {
+        const res = await fetchTraces({
+          search_all_spans: true,
+          include_internal: true,
+          sort_by: 'start_time',
+          sort_order: 'desc',
+          limit: SEED_LIMIT,
+        })
+        setSpans(
+          mergeSpans(
+            new Map(),
+            res.spans.filter((s) => !isContextFreeInternalSpan(s)),
+            Date.now(),
+          ),
+        )
+      } catch {
+        // Traces unavailable (memory exporter off, transient error) — the
+        // strip simply renders empty until data arrives.
+      }
+    })().finally(() => {
+      if (seedInFlightRef.current === request) seedInFlightRef.current = null
+    })
+    seedInFlightRef.current = request
+    return request
   }, [])
   const seedRef = useRef(seed)
   useEffect(() => {
@@ -136,9 +149,18 @@ export function useAllSpans(isPaused: boolean): readonly StoredSpan[] {
     void (async () => {
       const client = await getIiiClient()
       if (disposed) return
-      const offFeed = startAllSpansFeed(client, (incoming) => {
+      // Notify-then-query: each activity tick re-seeds the strip's recent
+      // window (REPLACE semantics, same read as the initial seed), debounced
+      // so a burst of consecutive 300ms windows costs one read.
+      let reseedTimer: ReturnType<typeof setTimeout> | undefined
+      const offFeed = startTraceActivityFeed(client, () => {
         if (isPausedRef.current || isHidden()) return
-        setSpans((prev) => mergeSpans(prev, incoming, Date.now()))
+        if (reseedTimer !== undefined) return
+        reseedTimer = setTimeout(() => {
+          reseedTimer = undefined
+          if (disposed || isPausedRef.current || isHidden()) return
+          void seedRef.current()
+        }, ACTIVITY_RESEED_DEBOUNCE_MS)
       })
       const offConn = client.addConnectionStateListener((state) => {
         if (state === 'connected' && !isPausedRef.current) {
@@ -150,19 +172,35 @@ export function useAllSpans(isPaused: boolean): readonly StoredSpan[] {
       // `useTraceData`. (REPLACE semantics, see the module docstring.)
       let offVisibility: (() => void) | undefined
       if (typeof document !== 'undefined') {
+        let visibilitySeedTimer: ReturnType<typeof setTimeout> | undefined
         const onVisible = () => {
+          if (visibilitySeedTimer !== undefined) {
+            clearTimeout(visibilitySeedTimer)
+            visibilitySeedTimer = undefined
+          }
           if (document.visibilityState === 'visible' && !isPausedRef.current) {
-            void seedRef.current()
+            visibilitySeedTimer = setTimeout(() => {
+              visibilitySeedTimer = undefined
+              if (!isPausedRef.current) void seedRef.current()
+            }, VISIBILITY_RESEED_DELAY_MS)
           }
         }
         document.addEventListener('visibilitychange', onVisible)
-        offVisibility = () =>
+        offVisibility = () => {
           document.removeEventListener('visibilitychange', onVisible)
+          if (visibilitySeedTimer !== undefined) {
+            clearTimeout(visibilitySeedTimer)
+          }
+        }
       }
       stop = () => {
         offFeed()
         offConn()
         offVisibility?.()
+        if (reseedTimer !== undefined) {
+          clearTimeout(reseedTimer)
+          reseedTimer = undefined
+        }
       }
     })()
 

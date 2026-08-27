@@ -208,6 +208,25 @@ function removeStored(key: string) {
 
 const clampRatio = (n: number) => Math.min(0.75, Math.max(0.25, n))
 
+// Human text for a rejection of any shape. Worker calls reject with
+// `{ code, message, stacktrace }` objects; `String(e)` on those renders
+// "[object Object]" (the tech-leader Save-failed banner bug).
+function errorText(e: unknown): string {
+  if (e instanceof Error) return e.message
+  if (typeof e === 'string') return e
+  if (e && typeof e === 'object') {
+    const o = e as { message?: unknown; error?: { message?: unknown } }
+    if (typeof o.message === 'string') return o.message
+    if (o.error && typeof o.error.message === 'string') return o.error.message
+    try {
+      return JSON.stringify(e)
+    } catch {
+      return String(e)
+    }
+  }
+  return String(e)
+}
+
 /** Observe the browser root's own width. Returns a callback ref to put
  * on the root plus whether it is currently narrower than `threshold` —
  * container-driven, so the same page adapts inside any pane the console
@@ -355,7 +374,7 @@ export function CollectionBrowser({
         setRows(next)
         setListError(null)
       })
-      .catch((e) => setListError(String(e)))
+      .catch((e) => setListError(errorText(e)))
   }, [host, adapter])
 
   useEffect(() => {
@@ -404,7 +423,7 @@ export function CollectionBrowser({
         setLoaded({ key, content })
       })
       .catch((e) => {
-        if (selectedRef.current === key) setLoadError(String(e))
+        if (selectedRef.current === key) setLoadError(errorText(e))
       })
     // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only restore
   }, [])
@@ -450,7 +469,7 @@ export function CollectionBrowser({
             setDraft(content)
           })
           .catch((e) => {
-            if (selectedRef.current === key) setLoadError(String(e))
+            if (selectedRef.current === key) setLoadError(errorText(e))
           })
       }
       if (opts?.reload) {
@@ -581,7 +600,7 @@ export function CollectionBrowser({
           )
         })
         .catch((e) => {
-          if (creatingRef.current) setSaveError(String(e))
+          if (creatingRef.current) setSaveError(errorText(e))
         })
         .finally(() => setSaving(false))
       return
@@ -606,7 +625,7 @@ export function CollectionBrowser({
         flashTimer.current = window.setTimeout(() => setSavedFlash(false), 2400)
       })
       .catch((e) => {
-        if (selectedRef.current === key) setSaveError(String(e))
+        if (selectedRef.current === key) setSaveError(errorText(e))
       })
       .finally(() => setSaving(false))
   }, [host, adapter, loaded, draft, saving, deleting, creating, readOnly, refreshList])
@@ -641,7 +660,7 @@ export function CollectionBrowser({
         setStaleOnDisk(false)
       })
       .catch((error) => {
-        if (selectedRef.current === key) setDeleteError(String(error))
+        if (selectedRef.current === key) setDeleteError(errorText(error))
       })
       .finally(() => setDeleting(false))
   }, [host, adapter, loaded, creating, saving, deleting, dirty, readOnly, refreshList])

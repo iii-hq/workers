@@ -90,10 +90,12 @@ workers from the local source tree with `iii compose`.
 
 ## Working with iii
 
-iii is a WebSocket-routed worker mesh. One engine holds a live registry of every
-connected worker, their functions, and the triggers bound to them. Calls route
-worker to engine to worker, so the language, runtime, and location of a worker
-are invisible; the function id is the only contract.
+iii is a language agnostic runtime where services, agents, and tools are
+composed of the same things: workers, triggers, and functions. One engine
+holds a live registry of every connected worker, their functions, and the
+triggers bound to them. Calls route worker to engine to worker, so the
+language, runtime, and location of a worker are invisible; the function id is
+the only contract.
 
 **1. Discover what is already there (the engine is the source of truth)**
 - `engine::functions::list` — every function across all workers (filter with `prefix` / `search` / `worker`)
@@ -215,10 +217,9 @@ live session — start a new one to pick them up.
 skills/model slot in the same way (model precedence `model` → profile →
 parent, without dragging the parent's provider onto a foreign model), its
 name and icon become the display defaults, and an unset
-`options.orchestrator` defaults to `true` for a non-leaf profile. When the
-SPAWNING turn itself runs as an agent whose `delegates_to` frontmatter names
-specific ids, spawns naming an `agent` outside that list are rejected with
-`harness/delegation_denied`; profile-less spawns are never gated. Spawning
+`options.orchestrator` defaults to `true` for a non-leaf profile. Which
+agent a spawn names is the prompt's decision — the profile body steers it,
+nothing gates it. Spawning
 with `agent` into an already RUNNING session of the caller's own tree merges
 the task like any reuse and does not re-apply the profile.
 

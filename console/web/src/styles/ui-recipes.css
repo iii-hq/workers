@@ -617,6 +617,75 @@ a.iii-ui-list-item,
   animation-timing-function: var(--motion-ease-exit);
 }
 
+/* Compact menus share a directional scale/fade instead of the generic
+   overlay fade. Radix keeps content mounted while the closed animation runs,
+   so both the entrance and exit remain visible without consumer timers. */
+.iii-ui-motion-dropdown {
+  transform-origin: var(
+    --radix-select-content-transform-origin,
+    var(
+      --radix-dropdown-menu-content-transform-origin,
+      var(--radix-popover-content-transform-origin, top center)
+    )
+  );
+  animation: iii-ui-dropdown-enter var(--duration-fast) var(--ease-smooth-out)
+    both;
+  will-change: transform, opacity;
+}
+
+.iii-ui-motion-dropdown[data-state="closed"] {
+  pointer-events: none;
+  animation: iii-ui-dropdown-exit var(--duration-quick) var(--ease-smooth-out)
+    both;
+}
+
+/* Radix keeps dialog content mounted while its closed keyframe runs. This is
+   the panel-reveal recipe expressed as keyframes so every BottomSheet gets
+   the same enter and exit presence behavior without consumer-owned timers. */
+.iii-ui-motion-sheet {
+  animation: iii-ui-sheet-enter var(--duration-slow) var(--ease-smooth-out) both;
+  will-change: transform, opacity, filter;
+}
+
+.iii-ui-motion-sheet[data-state="closed"] {
+  pointer-events: none;
+  animation: iii-ui-sheet-exit var(--duration-medium) var(--ease-smooth-out)
+    both;
+}
+
+.iii-ui-motion-sheet-overlay {
+  animation: iii-ui-sheet-overlay-enter var(--duration-slow)
+    var(--ease-smooth-out) both;
+  will-change: opacity;
+}
+
+.iii-ui-motion-sheet-overlay[data-state="closed"] {
+  pointer-events: none;
+  animation: iii-ui-sheet-overlay-exit var(--duration-medium)
+    var(--ease-smooth-out) both;
+}
+
+/* Picker and sheet-detail views occupy the same panel and move in opposing
+   directions: the root page leaves left, while detail pages leave right. */
+.iii-ui-motion-picker-page {
+  opacity: 0;
+  pointer-events: none;
+  filter: blur(var(--blur-medium));
+  transform: translateX(var(--picker-page-offset, var(--distance-base)));
+  transition:
+    opacity var(--duration-fast) var(--ease-smooth-out),
+    transform var(--duration-fast) var(--ease-smooth-out),
+    filter var(--duration-fast) var(--ease-smooth-out);
+  will-change: transform, opacity, filter;
+}
+
+.iii-ui-motion-picker-page[data-active="true"] {
+  opacity: 1;
+  pointer-events: auto;
+  filter: blur(0);
+  transform: translateX(0);
+}
+
 @keyframes iii-ui-panel-enter {
   from {
     opacity: 0;
@@ -653,6 +722,72 @@ a.iii-ui-list-item,
   }
 }
 
+@keyframes iii-ui-dropdown-enter {
+  from {
+    opacity: 0;
+    transform: scale(var(--scale-medium));
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes iii-ui-dropdown-exit {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(var(--scale-tiny));
+  }
+}
+
+@keyframes iii-ui-sheet-enter {
+  from {
+    opacity: 0;
+    filter: blur(var(--blur-small));
+    transform: translateY(50%);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0);
+  }
+}
+
+@keyframes iii-ui-sheet-exit {
+  from {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    filter: blur(var(--blur-small));
+    transform: translateY(50%);
+  }
+}
+
+@keyframes iii-ui-sheet-overlay-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes iii-ui-sheet-overlay-exit {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
 @media (max-width: 640px) {
   .iii-ui-list-item {
     min-height: 3rem;
@@ -665,7 +800,14 @@ a.iii-ui-list-item,
 
 @media (prefers-reduced-motion: reduce) {
   .iii-ui-motion-panel,
-  .iii-ui-motion-overlay {
+  .iii-ui-motion-overlay,
+  .iii-ui-motion-dropdown,
+  .iii-ui-motion-sheet,
+  .iii-ui-motion-sheet-overlay {
     animation: none;
+  }
+
+  .iii-ui-motion-picker-page {
+    transition: none;
   }
 }

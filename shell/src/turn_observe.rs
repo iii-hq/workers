@@ -17,13 +17,14 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use notify::{RecursiveMode, Watcher};
 
-use crate::events::{is_git_internal, is_noise_kind, is_own_temp, kind_of, merge_kinds};
+use crate::events::{
+    git_ignored, is_git_internal, is_noise_kind, is_own_temp, kind_of, merge_kinds,
+};
 use crate::turns::TurnLog;
 
 /// Raw OS events batch this long before folding into the record.
@@ -236,38 +237,9 @@ async fn ignored_set<'a>(root: &Path, paths: impl Iterator<Item = &'a String>) -
                 .map(|rel| (rel.to_string_lossy().into_owned(), abs))
         })
         .collect();
-    if rels.is_empty() {
-        return HashSet::new();
-    }
-    let Ok(mut child) = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["check-ignore", "--stdin", "-z"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    else {
-        return HashSet::new();
-    };
-    if let Some(mut stdin) = child.stdin.take() {
-        use tokio::io::AsyncWriteExt;
-        let mut input = Vec::new();
-        for (rel, _) in &rels {
-            input.extend_from_slice(rel.as_bytes());
-            input.push(0);
-        }
-        let _ = stdin.write_all(&input).await;
-    }
-    let Ok(out) = child.wait_with_output().await else {
-        return HashSet::new();
-    };
-    let by_rel: HashMap<&str, &String> =
-        rels.iter().map(|(rel, abs)| (rel.as_str(), *abs)).collect();
-    out.stdout
-        .split(|b| *b == 0)
-        .filter_map(|chunk| std::str::from_utf8(chunk).ok())
-        .filter(|rel| !rel.is_empty())
-        .filter_map(|rel| by_rel.get(rel).map(|abs| (*abs).clone()))
+    let ignored = git_ignored(root, rels.iter().map(|(rel, _)| rel)).await;
+    rels.into_iter()
+        .filter(|(rel, _)| ignored.contains(rel))
+        .map(|(_, abs)| abs.clone())
         .collect()
 }

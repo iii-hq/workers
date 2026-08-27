@@ -8,6 +8,25 @@
  * so light/dark theming is free.
  */
 
+[data-iii-ui="harness"] {
+  --morph-open-dur: 350ms;
+  --morph-close-dur: 250ms;
+  --morph-ease: cubic-bezier(0.34, 1.25, 0.64, 1);
+  --morph-close-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --morph-r-closed: 40px;
+  --morph-r-open: 6px;
+  --morph-fade-dur: 200ms;
+  --morph-slide: 40px;
+  --morph-rotate: 45deg;
+  --morph-scale: 0.97;
+  --morph-blur: 2px;
+  --panel-open-dur: 400ms;
+  --panel-close-dur: 350ms;
+  --panel-translate-y: 50%;
+  --panel-blur: 2px;
+  --panel-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
 /* --- session chip (context) ------------------------------------------ */
 [data-iii-ui="harness"] .harness-ui-chip {
   position: relative;
@@ -20,6 +39,7 @@
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--color-ink-faint);
+  min-height: 24px;
 }
 [data-iii-ui="harness"] .harness-ui-chip-empty {
   color: var(--color-ink-ghost);
@@ -84,24 +104,111 @@
   color: var(--color-ink-ghost);
 }
 
-/* --- context popover -------------------------------------------------- */
-[data-iii-ui="harness"] .harness-ui-pop {
+/* --- context surface: desktop chip-to-popover morph ----------------- */
+[data-iii-ui="harness"] .harness-ui-chip-sizer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+[data-iii-ui="harness"] .t-morph {
   position: absolute;
-  top: calc(100% + 6px);
+  top: 0;
   right: 0;
   z-index: 1000;
+  width: 100%;
+  height: 100%;
+  min-height: 24px;
+  border-radius: var(--morph-r-closed);
+  overflow: hidden;
+  box-sizing: border-box;
+  background-color: transparent;
+  box-shadow: 0 0 0 rgb(0 0 0 / 0%);
+  transition:
+    width var(--morph-close-dur) var(--morph-close-ease),
+    height var(--morph-close-dur) var(--morph-close-ease),
+    border-radius var(--morph-close-dur) var(--morph-close-ease),
+    background-color var(--morph-close-dur) var(--morph-close-ease),
+    box-shadow var(--morph-close-dur) var(--morph-close-ease);
+}
+
+[data-iii-ui="harness"] .t-morph[data-open="true"] {
+  width: 300px;
+  height: var(--morph-open-height, 280px);
+  border-radius: var(--morph-r-open);
+  background-color: var(--color-panel-raised);
+  box-shadow: var(--shadow-floating);
+  color: var(--color-ink);
+  transition:
+    width var(--morph-open-dur) var(--morph-ease),
+    height var(--morph-open-dur) var(--morph-ease),
+    border-radius var(--morph-open-dur) var(--morph-ease),
+    background-color var(--morph-fade-dur) var(--morph-close-ease),
+    box-shadow var(--morph-fade-dur) var(--morph-close-ease);
+}
+
+[data-iii-ui="harness"] .t-morph-plus {
+  position: absolute;
+  inset: 0 0 auto auto;
+  width: 100%;
+  height: 100%;
+  transition:
+    opacity var(--morph-fade-dur) var(--morph-close-ease),
+    transform var(--morph-open-dur) var(--morph-close-ease),
+    filter var(--morph-fade-dur) var(--morph-close-ease);
+}
+
+[data-iii-ui="harness"] .t-morph-plus svg {
+  transition: transform var(--morph-open-dur) var(--morph-close-ease);
+}
+
+[data-iii-ui="harness"] .t-morph[data-open="true"] .t-morph-plus {
+  opacity: 0;
+  transform: translateX(calc(-1 * var(--morph-slide)));
+  filter: blur(var(--morph-blur));
+  pointer-events: none;
+}
+
+[data-iii-ui="harness"] .t-morph[data-open="true"] .t-morph-plus svg {
+  transform: scale(var(--morph-scale)) rotate(var(--morph-rotate));
+}
+
+[data-iii-ui="harness"] .t-morph-menu {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transform: translateX(var(--morph-slide)) scale(var(--morph-scale));
+  filter: blur(var(--morph-blur));
+  pointer-events: none;
+  transition:
+    opacity var(--morph-fade-dur) var(--morph-close-ease),
+    transform var(--morph-open-dur) var(--morph-close-ease),
+    filter var(--morph-fade-dur) var(--morph-close-ease);
+}
+
+[data-iii-ui="harness"] .t-morph[data-open="true"] .t-morph-menu {
+  opacity: 1;
+  transform: translateX(0) scale(1);
+  filter: blur(0);
+  pointer-events: auto;
+}
+
+[data-iii-ui="harness"] .harness-ui-morph-trigger {
+  justify-content: flex-end;
+  white-space: nowrap;
+}
+
+/* --- context popover -------------------------------------------------- */
+[data-iii-ui="harness"] .harness-ui-pop {
   width: 300px;
   padding: 12px;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  /* Floating surfaces in this system lift with a shadow, not a stroke — the
-     console's own DropdownMenu is `bg-panel-raised … shadow-floating`, and
-     the `1px solid var(--color-rule)` this had was transparent, so the
-     popover was reading flat against the panel behind it. */
-  background: var(--color-panel-raised);
-  border-radius: 6px;
-  box-shadow: var(--shadow-floating);
+  box-sizing: border-box;
+  font-family: var(--font-mono, ui-monospace, monospace);
   color: var(--color-ink);
   font-size: 12px;
   text-transform: none;
@@ -111,9 +218,42 @@
 }
 [data-iii-ui="harness"] .harness-ui-pop-head {
   display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+[data-iii-ui="harness"] .harness-ui-pop-head-copy {
+  display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+[data-iii-ui="harness"] .harness-ui-pop-close {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  flex: none;
+  margin: -6px -6px -6px 0;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+}
+[data-iii-ui="harness"] .harness-ui-pop-close:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
+}
+[data-iii-ui="harness"] .harness-ui-pop-close:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 1px;
+}
+[data-iii-ui="harness"] .harness-ui-pop-close svg {
+  width: 14px;
+  height: 14px;
 }
 [data-iii-ui="harness"] .harness-ui-pop-model {
   overflow: hidden;
@@ -246,6 +386,111 @@
 
 [data-iii-ui="harness"] .harness-ui-cache-hit[data-tone="warn"] {
   color: var(--color-warn);
+}
+
+/* --- context surface: mobile bottom sheet ---------------------------- */
+[data-iii-ui="harness"] .harness-ui-sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1090;
+  padding: 0;
+  border: 0;
+  background: rgb(0 0 0 / 55%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--panel-close-dur) var(--panel-ease);
+  will-change: opacity;
+}
+
+[data-iii-ui="harness"] .harness-ui-sheet-backdrop[data-open="true"] {
+  opacity: 1;
+  pointer-events: auto;
+  transition-duration: var(--panel-open-dur);
+}
+
+[data-iii-ui="harness"] .t-panel-slide {
+  transform: translateY(var(--panel-translate-y));
+  opacity: 0;
+  filter: blur(var(--panel-blur));
+  pointer-events: none;
+  transition:
+    transform var(--panel-close-dur) var(--panel-ease),
+    opacity var(--panel-close-dur) var(--panel-ease),
+    filter var(--panel-close-dur) var(--panel-ease);
+  will-change: transform, opacity, filter;
+}
+
+[data-iii-ui="harness"] .t-panel-slide[data-open="true"] {
+  transform: translateY(0);
+  opacity: 1;
+  filter: blur(0);
+  pointer-events: auto;
+  transition:
+    transform var(--panel-open-dur) var(--panel-ease),
+    opacity var(--panel-open-dur) var(--panel-ease),
+    filter var(--panel-open-dur) var(--panel-ease);
+}
+
+[data-iii-ui="harness"] .harness-ui-context-sheet {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  left: 12px;
+  z-index: 1100;
+  display: flex;
+  max-height: calc(100dvh - 24px);
+  flex-direction: column;
+  overflow: hidden;
+  overscroll-behavior: contain;
+  padding-bottom: max(12px, env(safe-area-inset-bottom));
+  border: 1px solid var(--color-edge, var(--color-rule));
+  border-radius: 8px;
+  background: var(--color-panel-raised);
+  box-shadow: var(--shadow-floating);
+  color: var(--color-ink);
+}
+
+[data-iii-ui="harness"] .harness-ui-sheet-handle {
+  display: flex;
+  height: 24px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+}
+
+[data-iii-ui="harness"] .harness-ui-sheet-handle span {
+  width: 40px;
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-ink-ghost) 60%, transparent);
+}
+
+[data-iii-ui="harness"] .harness-ui-context-sheet .harness-ui-pop {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px 16px 16px;
+}
+
+[data-iii-ui="harness"] .harness-ui-context-sheet .harness-ui-pop-close {
+  width: 48px;
+  height: 48px;
+  margin: -12px -8px -12px 0;
+}
+
+[data-iii-ui="harness"] .harness-ui-context-sheet .harness-ui-pop-close svg {
+  width: 20px;
+  height: 20px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-iii-ui="harness"] .t-morph,
+  [data-iii-ui="harness"] .t-morph-plus,
+  [data-iii-ui="harness"] .t-morph-menu,
+  [data-iii-ui="harness"] .t-panel-slide,
+  [data-iii-ui="harness"] .harness-ui-sheet-backdrop {
+    transition: none !important;
+  }
 }
 
 /* --- function-trigger message (chat / traces card) ------------------- */

@@ -9,6 +9,7 @@ import { cn } from '@/lib/utils'
 import { IconButton } from './IconButton'
 
 const COLLAPSED_WIDTH = 36
+const DRAWER_MAX_WIDTH = 320
 const DEFAULT_WIDTH = 280
 const DEFAULT_MIN_WIDTH = 160
 const DEFAULT_MAX_WIDTH = 560
@@ -62,8 +63,10 @@ export interface PageSidebarProps
    */
   storageKey?: string
   /**
-   * Full-width responsive presentation. It hides collapse/resize affordances
-   * without overwriting the saved wide-layout preference.
+   * Responsive presentation. With host-owned collapse state the sidebar
+   * becomes a rail that opens as a drawer over the main column; a page that
+   * controls `collapsed` gets the full-width aside and owns what shows beside
+   * it. Neither overwrites the saved wide-layout preference.
    */
   narrow?: boolean
   /**
@@ -200,19 +203,21 @@ export function PageSidebar({
 
   const asideRef = React.useRef<HTMLElement>(null)
   const [containerNarrow, setContainerNarrow] = React.useState(false)
+  const [containerWidth, setContainerWidth] = React.useState(0)
+  const [drawerOpen, setDrawerOpen] = React.useState(false)
 
   React.useLayoutEffect(() => {
-    if (narrow || narrowBelow === undefined) {
-      setContainerNarrow(false)
-      return
-    }
+    const breakpoint = narrow || narrowBelow === undefined ? null : narrowBelow
+    if (breakpoint === null) setContainerNarrow(false)
 
     const container = asideRef.current?.parentElement
     if (!container) return
 
-    const update = (containerWidth: number) => {
-      if (containerWidth <= 0) return
-      const next = containerWidth <= narrowBelow
+    const update = (width: number) => {
+      if (width <= 0) return
+      setContainerWidth((current) => (current === width ? current : width))
+      if (breakpoint === null) return
+      const next = width <= breakpoint
       setContainerNarrow((current) => (current === next ? current : next))
     }
 
@@ -227,18 +232,31 @@ export function PageSidebar({
   }, [narrow, narrowBelow])
 
   const effectiveNarrow = narrow || containerNarrow
+  const hostDrawer = effectiveNarrow && controlledCollapsed === undefined
   const expandedWidth = clampWidth(
     controlledWidth ?? internalWidth,
     bounds.min,
     bounds.max,
   )
   const preferredCollapsed = controlledCollapsed ?? internalCollapsed
-  const effectiveCollapsed =
-    collapsible && !effectiveNarrow && preferredCollapsed
-  const effectiveWidth: number | string = effectiveNarrow
-    ? '100%'
-    : effectiveCollapsed
-      ? COLLAPSED_WIDTH
+  const effectiveCollapsed = hostDrawer
+    ? !drawerOpen
+    : collapsible && !effectiveNarrow && preferredCollapsed
+  const effectiveWidth: number | string = hostDrawer
+    ? COLLAPSED_WIDTH
+    : effectiveNarrow
+      ? '100%'
+      : effectiveCollapsed
+        ? COLLAPSED_WIDTH
+        : expandedWidth
+  const drawerWidth =
+    containerWidth > 0
+      ? Math.min(DRAWER_MAX_WIDTH, containerWidth)
+      : DRAWER_MAX_WIDTH
+  const panelWidth: number | string = hostDrawer
+    ? drawerWidth
+    : effectiveNarrow
+      ? '100%'
       : expandedWidth
 
   const expandedRef = React.useRef<HTMLDivElement>(null)
@@ -403,7 +421,8 @@ export function PageSidebar({
     }
     if (
       active instanceof Node &&
-      collapsedActionsRef.current?.contains(active)
+      (collapsedActionsRef.current?.contains(active) ||
+        (hostDrawer && active === toggleRef.current))
     ) {
       const target = expandedRef.current
         ? (firstFocusable(expandedRef.current) ?? expandedRef.current)
@@ -411,14 +430,17 @@ export function PageSidebar({
       target?.focus({ preventScroll: true })
       chromeFocusRef.current = false
     }
-  }, [effectiveCollapsed])
+  }, [effectiveCollapsed, hostDrawer])
 
   const previousNarrowRef = React.useRef(effectiveNarrow)
   React.useLayoutEffect(() => {
     if (previousNarrowRef.current === effectiveNarrow) return
     previousNarrowRef.current = effectiveNarrow
     setAnimateToggle(false)
-    if (!effectiveNarrow) return
+    if (!effectiveNarrow) {
+      setDrawerOpen(false)
+      return
+    }
     const active = document.activeElement
     const chromeHadFocus =
       active === toggleRef.current ||
@@ -458,6 +480,18 @@ export function PageSidebar({
     if (controlledCollapsed === undefined) persist({ collapsed: next })
   }, [controlledCollapsed, onCollapsedChange, persist, preferredCollapsed])
 
+  const setDrawer = React.useCallback((next: boolean) => {
+    setAnimateToggle(true)
+    if (motionTimerRef.current !== null)
+      window.clearTimeout(motionTimerRef.current)
+    motionTimerRef.current = window.setTimeout(() => {
+      motionTimerRef.current = null
+      setAnimateToggle(false)
+    }, MOTION_CLEANUP_MS)
+    setDrawerOpen(next)
+    if (!next) toggleRef.current?.focus({ preventScroll: true })
+  }, [])
+
   // Preserve the original zero-behavior primitive for existing consumers.
   if (!managed) {
     return (
@@ -479,6 +513,9 @@ export function PageSidebar({
   }
 
   const showResize = resizable && !effectiveNarrow && !effectiveCollapsed
+  const showToggle = (collapsible && !effectiveNarrow) || hostDrawer
+  const drawerToggleOffset =
+    hostDrawer && drawerOpen ? drawerWidth - COLLAPSED_WIDTH : undefined
   const enterFrom = side === 'left' ? '-translate-x-1' : 'translate-x-1'
   const ExpandedIcon = side === 'left' ? PanelLeftClose : PanelRightClose
   const CollapsedIcon = side === 'left' ? PanelLeftOpen : PanelRightOpen
@@ -489,10 +526,14 @@ export function PageSidebar({
       aria-label={rest['aria-label'] ?? label}
       data-collapsed={effectiveCollapsed ? '' : undefined}
       data-resizing={isResizing ? '' : undefined}
+      data-narrow={effectiveNarrow ? '' : undefined}
+      data-drawer={hostDrawer ? (drawerOpen ? 'open' : 'closed') : undefined}
       style={{ ...style, width: effectiveWidth }}
       className={cn(
-        'relative shrink-0 min-h-0 overflow-hidden bg-sidebar',
-        effectiveNarrow && 'flex-1 min-w-0',
+        'relative shrink-0 min-h-0 bg-sidebar',
+        hostDrawer ? 'overflow-visible' : 'overflow-hidden',
+        hostDrawer && drawerOpen && 'z-10',
+        effectiveNarrow && !hostDrawer && 'flex-1 min-w-0',
         animateToggle && !isResizing && 'transition-[width]',
         animateToggle &&
           !isResizing &&
@@ -508,17 +549,42 @@ export function PageSidebar({
         }
         rest.onBlurCapture?.(event)
       }}
+      onKeyDown={(event) => {
+        if (hostDrawer && drawerOpen && event.key === 'Escape') {
+          event.stopPropagation()
+          setDrawer(false)
+        }
+        rest.onKeyDown?.(event)
+      }}
     >
+      {hostDrawer && drawerOpen ? (
+        <button
+          type="button"
+          tabIndex={-1}
+          aria-label={`close ${label}`}
+          className={cn(
+            'absolute inset-y-0 z-10 cursor-default bg-ink/25',
+            side === 'left' ? 'left-0' : 'right-0',
+          )}
+          style={{ width: containerWidth > 0 ? containerWidth : '100vw' }}
+          onClick={() => setDrawer(false)}
+        />
+      ) : null}
       <div
         ref={expandedRef}
         id={contentId}
         tabIndex={-1}
         inert={effectiveCollapsed || undefined}
         aria-hidden={effectiveCollapsed || undefined}
-        style={{ width: effectiveNarrow ? '100%' : expandedWidth }}
+        style={{ width: panelWidth }}
         className={cn(
           'absolute inset-y-0 flex min-h-0 flex-col overflow-hidden',
           side === 'left' ? 'left-0' : 'right-0',
+          hostDrawer &&
+            cn(
+              'z-20 bg-sidebar',
+              side === 'left' ? 'border-r border-edge' : 'border-l border-edge',
+            ),
           effectiveCollapsed
             ? cn('pointer-events-none opacity-0', enterFrom)
             : 'opacity-100 translate-x-0',
@@ -531,13 +597,23 @@ export function PageSidebar({
         onFocusCapture={() => {
           chromeFocusRef.current = false
         }}
+        onClickCapture={(event) => {
+          if (!hostDrawer || !drawerOpen) return
+          const target = event.target
+          if (
+            target instanceof Element &&
+            target.closest(
+              'button, a, [role="button"], [role="option"], [role="tab"]',
+            )
+          ) {
+            setDrawer(false)
+          }
+        }}
       >
         <div
           className={cn(
             'flex min-h-11 shrink-0 items-center gap-2 px-3',
-            collapsible &&
-              !effectiveNarrow &&
-              (side === 'left' ? 'pr-11' : 'pl-11'),
+            showToggle && (side === 'left' ? 'pr-11' : 'pl-11'),
           )}
         >
           {header ?? (
@@ -571,20 +647,28 @@ export function PageSidebar({
         {collapsedActions}
       </div>
 
-      {collapsible && !effectiveNarrow ? (
+      {showToggle ? (
         <IconButton
           ref={toggleRef}
           label={`${effectiveCollapsed ? 'expand' : 'collapse'} ${label}`}
           tooltipSide={side === 'left' ? 'right' : 'left'}
           aria-expanded={!effectiveCollapsed}
           aria-controls={contentId}
-          onClick={toggle}
+          onClick={hostDrawer ? () => setDrawer(!drawerOpen) : toggle}
           onFocus={() => {
             chromeFocusRef.current = true
           }}
+          style={
+            drawerToggleOffset === undefined
+              ? undefined
+              : side === 'left'
+                ? { left: drawerToggleOffset + 4 }
+                : { right: drawerToggleOffset + 4 }
+          }
           className={cn(
-            'absolute top-2 z-20 size-7',
-            side === 'left' ? 'right-1' : 'left-1',
+            'absolute top-2 z-30 size-7',
+            drawerToggleOffset === undefined &&
+              (side === 'left' ? 'right-1' : 'left-1'),
           )}
         >
           <span className="relative block size-4" aria-hidden>

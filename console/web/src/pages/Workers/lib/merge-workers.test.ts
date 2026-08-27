@@ -8,6 +8,7 @@ function snapshot(partial: Partial<RawWorkersSnapshot>): RawWorkersSnapshot {
     supervisorWorkers: [],
     configurations: [],
     infoByName: new Map(),
+    compose: null,
     ...partial,
   }
 }

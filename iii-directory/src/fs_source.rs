@@ -29,6 +29,8 @@
 //!   agents root (the `~/.agents/skills` convention).
 //! - [`scan_system_prompts`]          — name-keyed listing of `*/system-prompts/*.md`.
 //! - [`scan_agents`]                  — direct `<id>.md` listing of agent profiles.
+//! - [`scan_agents_merged`]           — the same across roots (project `agents_folder`
+//!   shadowing the read-only user-global `~/.iii/agents`), per id.
 //! - [`read_body`]                    — cap-checked body read with frontmatter stripped.
 //! - [`read_skill_with_frontmatter`]  — same caps as `read_body` plus a
 //!   parsed `SkillFrontmatter` (title + type) so the skills reader can
@@ -447,8 +449,6 @@ pub struct FsAgent {
     pub logo: Option<String>,
     /// Skill-id filter. Empty = every skill.
     pub skills: Vec<String>,
-    /// Delegation catalog filter. `None` = every agent.
-    pub delegates_to: Option<Vec<String>>,
     /// `true` = this agent may not delegate at all.
     pub leaf: bool,
     /// Default model id for sessions running as this agent (a router
@@ -474,8 +474,6 @@ pub struct AgentFrontmatter {
     #[serde(default)]
     pub skills: Vec<String>,
     #[serde(default)]
-    pub delegates_to: Option<Vec<String>>,
-    #[serde(default)]
     pub leaf: bool,
     #[serde(default)]
     pub model: Option<String>,
@@ -500,7 +498,7 @@ pub const AGENT_LOGO_MAX_BYTES: usize = 16;
 ///
 /// Hard rules: frontmatter present and valid YAML, non-empty `name`,
 /// valid emoji `logo` when present. `description` missing is an empty
-/// string; `skills` / `delegates_to` entries are NOT shape-checked here —
+/// string; `skills` entries are NOT shape-checked here —
 /// an id that matches nothing surfaces as `unknown_*` on `get`, a
 /// warning rather than a load failure.
 pub fn parse_agent_frontmatter(content: &str) -> Result<AgentFrontmatter, String> {
@@ -612,7 +610,6 @@ pub fn scan_agents(root: &Path) -> (Vec<FsAgent>, Vec<SkipReason>) {
                 .to_string(),
             logo: fm.logo.map(|l| l.trim().to_string()),
             skills: fm.skills,
-            delegates_to: fm.delegates_to,
             leaf: fm.leaf,
             model: fm
                 .model
@@ -632,6 +629,28 @@ pub fn scan_agents(root: &Path) -> (Vec<FsAgent>, Vec<SkipReason>) {
 
     agents.sort_by(|a, b| a.name.cmp(&b.name));
     (agents, skipped)
+}
+
+/// Merged agent-profile scan across roots in precedence order: an id served
+/// by an earlier root shadows the same id in the later ones (project
+/// `agents_folder` > user-global `~/.iii/agents`). A missing root scans as
+/// empty ([`walk_markdown`] contract), so the global root is purely
+/// opt-in-by-existence.
+pub fn scan_agents_merged(roots: &[PathBuf]) -> (Vec<FsAgent>, Vec<SkipReason>) {
+    let mut merged: Vec<FsAgent> = Vec::new();
+    let mut taken: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut all_skipped: Vec<SkipReason> = Vec::new();
+    for root in roots {
+        let (agents, skipped) = scan_agents(root);
+        for agent in agents {
+            if taken.insert(agent.name.clone()) {
+                merged.push(agent);
+            }
+        }
+        all_skipped.extend(skipped);
+    }
+    merged.sort_by(|a, b| a.name.cmp(&b.name));
+    (merged, all_skipped)
 }
 
 /// Read a fs entry's body fresh from disk, strip any leading
@@ -838,38 +857,54 @@ pub fn agents_namespaces(agents_root: &Path) -> Vec<String> {
 
 /// Append non-shadowed agents-root skills to an already-resolved visible
 /// set. Same whole-namespace override semantics as [`scan_skills_merged`],
-/// one tier lower: a top-level namespace directory present under either
-/// `local_root` or `global_root` shadows that namespace in the agents
-/// root entirely (local > global > agents).
-pub fn merge_agents_root(
+/// one tier lower, applied cumulatively across `agents_roots` in precedence
+/// order: a top-level namespace directory present under `local_root` or
+/// `global_root` shadows that namespace in every agents root, and a
+/// namespace SERVED by an earlier agents root shadows it in the later ones
+/// (local > global > project agents > user-global agents).
+pub fn merge_agents_roots(
     visible: Vec<FsSkill>,
     global_root: &Path,
     local_root: &Path,
-    agents_root: &Path,
+    agents_roots: &[PathBuf],
 ) -> (Vec<FsSkill>, Vec<SkipReason>) {
     let mut shadow_ns = top_level_namespaces(local_root);
     shadow_ns.extend(top_level_namespaces(global_root));
     shadow_ns.sort();
     shadow_ns.dedup();
 
-    let (agents_skills, mut skipped) = scan_agents_skills(agents_root);
     let mut merged = visible;
-    merged.extend(agents_skills.into_iter().filter(|s| {
-        let top_seg = s.id.split('/').next().unwrap_or("");
-        !shadow_ns.contains(&top_seg.to_string())
-    }));
-    skipped.retain(|s| {
-        let top_seg = s
-            .path
-            .strip_prefix(agents_root)
-            .ok()
-            .and_then(|p| p.components().next())
-            .and_then(|c| c.as_os_str().to_str())
-            .unwrap_or("");
-        !shadow_ns.contains(&top_seg.to_string())
-    });
+    let mut all_skipped: Vec<SkipReason> = Vec::new();
+    for agents_root in agents_roots {
+        let (agents_skills, mut skipped) = scan_agents_skills(agents_root);
+        let mut served: Vec<String> = Vec::new();
+        merged.extend(agents_skills.into_iter().filter(|s| {
+            let top_seg = s.id.split('/').next().unwrap_or("");
+            if shadow_ns.contains(&top_seg.to_string()) {
+                return false;
+            }
+            served.push(top_seg.to_string());
+            true
+        }));
+        skipped.retain(|s| {
+            let top_seg = s
+                .path
+                .strip_prefix(agents_root)
+                .ok()
+                .and_then(|p| p.components().next())
+                .and_then(|c| c.as_os_str().to_str())
+                .unwrap_or("");
+            !shadow_ns.contains(&top_seg.to_string())
+        });
+        all_skipped.extend(skipped);
+        // Namespaces this root serves shadow the remaining (lower-precedence)
+        // agents roots, mirroring the managed-root tiers above.
+        shadow_ns.extend(served);
+        shadow_ns.sort();
+        shadow_ns.dedup();
+    }
     merged.sort_by(|a, b| a.id.cmp(&b.id));
-    (merged, skipped)
+    (merged, all_skipped)
 }
 
 /// Merged scan of system prompts from a global root and a local root.
@@ -1532,11 +1567,53 @@ mod tests {
         std::fs::create_dir_all(local.path().join("localized")).unwrap();
 
         let (visible, _) = scan_skills_merged(global.path(), local.path());
-        let (merged, skipped) =
-            merge_agents_root(visible, global.path(), local.path(), agents.path());
+        let (merged, skipped) = merge_agents_roots(
+            visible,
+            global.path(),
+            local.path(),
+            &[agents.path().to_path_buf()],
+        );
         assert!(skipped.is_empty(), "unexpected skips: {skipped:?}");
         let ids: Vec<&str> = merged.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, vec!["solo/index"]);
+    }
+
+    /// Two agents roots, precedence order: a namespace served by the first
+    /// (project) root shadows the same namespace in the second (user-global)
+    /// root; namespaces unique to the global root stay visible.
+    #[test]
+    fn merge_agents_roots_earlier_root_shadows_later() {
+        let global = tempfile::tempdir().unwrap();
+        let local = tempfile::tempdir().unwrap();
+        let project_agents = tempfile::tempdir().unwrap();
+        let home_agents = tempfile::tempdir().unwrap();
+
+        write_fixture(project_agents.path(), "shared/SKILL.md", "# Project\n");
+        write_fixture(home_agents.path(), "shared/SKILL.md", "# Home\n");
+        write_fixture(home_agents.path(), "home-only/SKILL.md", "# Home only\n");
+
+        let (visible, _) = scan_skills_merged(global.path(), local.path());
+        let (merged, skipped) = merge_agents_roots(
+            visible,
+            global.path(),
+            local.path(),
+            &[
+                project_agents.path().to_path_buf(),
+                home_agents.path().to_path_buf(),
+            ],
+        );
+        assert!(skipped.is_empty(), "unexpected skips: {skipped:?}");
+        let by_id: Vec<(&str, &std::path::Path)> = merged
+            .iter()
+            .map(|s| (s.id.as_str(), s.abs_path.as_path()))
+            .collect();
+        assert_eq!(
+            by_id.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec!["home-only/index", "shared/index"]
+        );
+        // `shared` resolves to the PROJECT copy, not the home one.
+        let shared = by_id.iter().find(|(id, _)| *id == "shared/index").unwrap();
+        assert!(shared.1.starts_with(project_agents.path()));
     }
 
     #[test]
@@ -1565,7 +1642,12 @@ mod tests {
         write_fixture(agents.path(), "aaa-skill/SKILL.md", "# A\n");
 
         let (visible, _) = scan_skills_merged(global.path(), local.path());
-        let (merged, _) = merge_agents_root(visible, global.path(), local.path(), agents.path());
+        let (merged, _) = merge_agents_roots(
+            visible,
+            global.path(),
+            local.path(),
+            &[agents.path().to_path_buf()],
+        );
         let ids: Vec<&str> = merged.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, vec!["aaa-skill/index", "worker-z/index"]);
     }
@@ -1691,7 +1773,7 @@ mod tests {
         write_fixture(
             tmp.path(),
             "captain.md",
-            "---\nname: Release Captain\ndescription: Cuts releases.\nlogo: \"🚢\"\nskills:\n  - iii-sandbox\ndelegates_to: [frontend]\nleaf: true\nmodel: codex/gpt-5.4-mini\n---\nYou are the captain.\n",
+            "---\nname: Release Captain\ndescription: Cuts releases.\nlogo: \"🚢\"\nskills:\n  - iii-sandbox\nleaf: true\nmodel: codex/gpt-5.4-mini\n---\nYou are the captain.\n",
         );
         let (agents, skipped) = scan_agents(tmp.path());
         assert!(skipped.is_empty(), "unexpected skips: {skipped:?}");
@@ -1702,10 +1784,6 @@ mod tests {
         assert_eq!(a.description, "Cuts releases.");
         assert_eq!(a.logo.as_deref(), Some("🚢"));
         assert_eq!(a.skills, vec!["iii-sandbox".to_string()]);
-        assert_eq!(
-            a.delegates_to.as_deref(),
-            Some(&["frontend".to_string()][..])
-        );
         assert!(a.leaf);
         assert_eq!(a.model.as_deref(), Some("codex/gpt-5.4-mini"));
     }
@@ -1720,7 +1798,6 @@ mod tests {
         assert_eq!(a.description, "");
         assert!(a.logo.is_none());
         assert!(a.skills.is_empty());
-        assert!(a.delegates_to.is_none());
         assert!(!a.leaf);
         assert!(a.model.is_none());
     }

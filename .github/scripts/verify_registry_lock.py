@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Verify that iii.lock resolved the released worker and required stack."""
+"""Verify that the resolved worker file pins the released worker and stack.
+
+Accepts either shape a validator produces: an ``iii.lock`` (``workers:``
+mapping) or a ``worker-compose.yaml`` (``containers:`` mapping, one
+``version`` per container as written by ``compose::add``).
+"""
 
 from __future__ import annotations
 
@@ -29,12 +34,27 @@ def load_yaml(path: Path) -> dict:
     return value
 
 
+def resolved_workers(lock: dict) -> dict:
+    """The name → record mapping, whichever file shape carries it."""
+    if "workers" in lock:
+        workers = lock.get("workers") or {}
+        if not isinstance(workers, dict):
+            raise SystemExit("invalid_lock: workers must be a mapping")
+        return workers
+    containers = lock.get("containers")
+    if isinstance(containers, dict):
+        return {
+            name: entry
+            for name, entry in containers.items()
+            if isinstance(entry, dict)
+        }
+    raise SystemExit("invalid_lock: neither workers nor containers is a mapping")
+
+
 def main() -> None:
     args = parse_args()
     lock = load_yaml(args.lock)
-    workers = lock.get("workers") or {}
-    if not isinstance(workers, dict):
-        raise SystemExit("invalid_lock: workers must be a mapping")
+    workers = resolved_workers(lock)
 
     record = workers.get(args.worker)
     actual_version = record.get("version") if isinstance(record, dict) else None

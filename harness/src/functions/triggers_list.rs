@@ -140,6 +140,11 @@ fn row_from(binding: &Binding) -> TriggerRow {
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct TriggersUnregisterRequest {
+    /// `id` accepted as an alias: the sibling teardown contract
+    /// (`engine::unregister_trigger`) calls this field `id`, and models carry
+    /// that name over — verify-wake-fix-1 postmortem: the first unregister of
+    /// the run failed on a raw serde "missing field" for exactly this.
+    #[serde(alias = "id")]
     pub subscription_id: String,
     /// The binding's owner session — a correctness handshake, checked against
     /// the record. In-turn agent calls may omit it (the harness injects the
@@ -343,5 +348,17 @@ mod tests {
         assert_eq!(record["retired"], true);
         assert_eq!(record["fired_at"], 42);
         assert!(record.get("payload").is_none());
+    }
+
+    /// `id` is the field name the sibling engine contract uses; both spellings
+    /// must deserialize to the same request.
+    #[test]
+    fn unregister_accepts_id_alias_for_subscription_id() {
+        let canonical: TriggersUnregisterRequest =
+            serde_json::from_value(json!({ "subscription_id": "sub_a" })).unwrap();
+        assert_eq!(canonical.subscription_id, "sub_a");
+        let aliased: TriggersUnregisterRequest =
+            serde_json::from_value(json!({ "id": "sub_a" })).unwrap();
+        assert_eq!(aliased.subscription_id, "sub_a");
     }
 }

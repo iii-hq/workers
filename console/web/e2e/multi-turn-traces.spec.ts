@@ -35,6 +35,15 @@ test('shows two traces and exposes function arguments in trace events', async ({
   ).toHaveCount(1)
 
   const traces = page.getByRole('region', { name: 'traces' })
+  // The list follows the active chat (MOT-4479): scoped to this session,
+  // flat (grouping is suspended while scoped), with a dismissable chip.
+  // Assert the scoped arrival, then clear the scope to exercise the
+  // classic grouped flow below.
+  const clearScope = traces.getByRole('button', { name: 'show all sessions' })
+  await expect(clearScope).toBeVisible()
+  await expect(traces.locator('[data-trace-row-id]')).toHaveCount(2)
+  await clearScope.click()
+
   await traces.getByRole('button', { name: 'group traces by' }).click()
   await page
     .getByRole('listbox', { name: 'group traces by' })

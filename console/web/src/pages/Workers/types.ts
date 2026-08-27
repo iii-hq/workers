@@ -1,12 +1,22 @@
-/** How the worker is managed — drives badge copy and stop affordance. */
+/** How the worker is managed — drives badge copy and lifecycle affordances. */
 export type WorkerManagementKind =
+  | 'compose'
   | 'config'
   | 'supervisor'
   | 'standalone'
   | 'internal'
 
 /** Connection / liveness status shown in the table. */
-export type WorkerConnectionStatus = 'connected' | 'disconnected' | 'stopped'
+export type WorkerConnectionStatus =
+  | 'connected'
+  | 'starting'
+  | 'failed'
+  | 'disconnected'
+  | 'stopped'
+
+export type ComposeContainerState = 'starting' | 'ready' | 'failed' | 'stopped'
+
+export type ComposeAction = 'start' | 'stop' | 'restart'
 
 /** View-model row for the runtime workers table (no transport types). */
 export interface WorkerRow {
@@ -22,16 +32,46 @@ export interface WorkerRow {
   status: WorkerConnectionStatus
   /** Configuration registry id for rows with editable worker configuration. */
   configurationId: string | null
-  /** When true the stop action is enabled (supervisor-managed + running). */
+  /** When true the supervisor stop action is enabled (supervisor-managed + running). */
   stopEnabled: boolean
   /** Shown when stop is disabled. */
   stopDisabledReason: string | null
+  composeState: ComposeContainerState | null
+  lastError: string | null
 }
 
 export interface WorkersFilterState {
   search: string
   tag: string | null
   runtime: string | null
+  management: WorkerManagementKind | null
+}
+
+export const MANAGEMENT_ORDER: readonly WorkerManagementKind[] = [
+  'compose',
+  'config',
+  'supervisor',
+  'standalone',
+  'internal',
+]
+
+export const MANAGEMENT_LABEL: Record<WorkerManagementKind, string> = {
+  compose: 'compose',
+  config: 'config',
+  supervisor: 'managed',
+  standalone: 'standalone',
+  internal: 'internal',
+}
+
+export function isComposeRunning(state: ComposeContainerState): boolean {
+  return state === 'ready' || state === 'starting'
+}
+
+export function composeActions(row: WorkerRow): ComposeAction[] {
+  if (row.managementKind !== 'compose' || row.composeState === null) return []
+  return isComposeRunning(row.composeState)
+    ? ['stop', 'restart']
+    : ['start', 'restart']
 }
 
 export function filterWorkerRows(
@@ -42,6 +82,8 @@ export function filterWorkerRows(
   return rows.filter((row) => {
     if (filters.tag && row.tag !== filters.tag) return false
     if (filters.runtime && row.runtime !== filters.runtime) return false
+    if (filters.management && row.managementKind !== filters.management)
+      return false
     if (!q) return true
     const haystack = [
       row.name,
@@ -50,6 +92,7 @@ export function filterWorkerRows(
       row.version,
       row.tag,
       row.managementKind,
+      row.status,
       row.pid?.toString(),
     ]
       .filter(Boolean)
@@ -73,4 +116,9 @@ export function distinctRuntimes(rows: WorkerRow[]): string[] {
     if (row.runtime) runtimes.add(row.runtime)
   }
   return [...runtimes].sort()
+}
+
+export function distinctManagement(rows: WorkerRow[]): WorkerManagementKind[] {
+  const present = new Set(rows.map((row) => row.managementKind))
+  return MANAGEMENT_ORDER.filter((kind) => present.has(kind))
 }

@@ -30,6 +30,13 @@ describe('fallback function policy', () => {
   it('does not expose workspace picker functions to the agent', () => {
     expect(FALLBACK_FUNCTION_POLICY.deny).toContain('shell::workspace::*')
   })
+
+  it('allows configuration updates without exposing registration', () => {
+    expect(FALLBACK_FUNCTION_POLICY.deny).toContain('configuration::register')
+    expect(FALLBACK_FUNCTION_POLICY.deny).not.toContain('configuration::*')
+    expect(FALLBACK_FUNCTION_POLICY.deny).not.toContain('configuration::get')
+    expect(FALLBACK_FUNCTION_POLICY.deny).not.toContain('configuration::set')
+  })
 })
 
 describe('model reasoning effort forwarding', () => {

@@ -8,7 +8,8 @@ session and skipped on resume (already in the conversation history).
 
 III_CONTEXT_PROMPT = """# iii runtime
 
-This machine runs an iii engine: a WebSocket-routed worker mesh whose single engine process
+This machine runs an iii engine. iii is a language agnostic runtime where services, agents, and
+tools are composed of the same things: workers, triggers, and functions. The single engine process
 holds a live registry of every connected worker, every function those workers expose, and every
 trigger bound to them. Every call routes worker -> engine -> worker, so the language, runtime,
 and location of a worker are invisible to its callers. The function id is the ONLY contract

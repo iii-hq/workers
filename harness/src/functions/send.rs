@@ -933,7 +933,7 @@ fn prompt_fields_omitted(opts: Option<&SendOptions>) -> bool {
 /// Any explicit prompt field resolves fresh; a bare `system_prompt_strategy`
 /// is the reset-to-default escape hatch. The frozen agent identity travels
 /// with the prompt: inherited together, shed together (an explicit prompt
-/// field also drops the identity and its `delegates_to` spawn gate).
+/// field also drops the identity).
 fn inherit_prior_system_prompt(options: &mut TurnOptions, prev: &TurnOptions) {
     options.system_prompt = prev.system_prompt.clone();
     options.skills_prompt = prev.skills_prompt.clone();
@@ -2140,7 +2140,6 @@ mod tests {
         crate::agents::ResolvedAgent {
             identity: crate::types::turn::AgentIdentity {
                 id: "tech-leader".into(),
-                delegates_to: Some(vec!["coder".into()]),
             },
             prompt: "You are Tech Leader.\n\nDelegate everything.".into(),
             skills: Some(vec!["review".into()]),

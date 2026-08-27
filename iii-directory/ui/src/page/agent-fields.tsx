@@ -5,8 +5,8 @@
  * the form is the system prompt), Execution (default model), and
  * Delegation. Everything edits the draft's frontmatter through the same
  * guarded `editDraft` the built-in fields use; empty selections remove
- * their key (absent `skills` = every skill, absent `delegates_to` =
- * every agent), matching the worker's semantics.
+ * their key (absent `skills` = every skill), matching the worker's
+ * semantics.
  */
 
 import { Input, type Host } from '@iii-dev/console-ui'
@@ -67,27 +67,6 @@ const fetchSkills = (host: Host) =>
         label: s.title && s.title !== s.id ? s.title : s.id,
         sublabel: s.title && s.title !== s.id ? s.id : undefined,
         desc: s.description || undefined,
-      })),
-    )
-
-const fetchAgents = (host: Host) =>
-  host.iii
-    .trigger<{
-      agents: {
-        id: string
-        name: string
-        logo: string | null
-        icon: string | null
-        description: string
-      }[]
-    }>('directory::agents::list', {})
-    .then((out) =>
-      (out.agents ?? []).map((a) => ({
-        id: a.id,
-        label: a.name || a.id,
-        sublabel: a.name && a.name !== a.id ? a.id : undefined,
-        desc: a.description || undefined,
-        iconToken: a.icon,
       })),
     )
 
@@ -152,7 +131,7 @@ function Row({
 }
 
 /** Collapsed "N selected — click to edit" row expanding into a search +
- * checkbox list, the reference pattern for skills and delegates. */
+ * checkbox list, the reference pattern for skills. */
 function CollapsiblePicker({
   noun,
   emptyLabel,
@@ -305,7 +284,6 @@ export function AgentForm(ctx: FormContext) {
     editDraft,
     readOnly,
     fieldId,
-    entryKey,
     nameValue,
     descriptionValue,
     setName,
@@ -314,24 +292,18 @@ export function AgentForm(ctx: FormContext) {
   } = ctx
 
   const skills = readFrontmatterStringList(draft, 'skills').values
-  const delegates = readFrontmatterStringList(draft, 'delegates_to')
   const leaf = /^true$/i.test(readFrontmatterField(draft, ['leaf']).value)
   const model = readFrontmatterField(draft, ['model']).value.trim()
   const icon = readFrontmatterField(draft, ['icon']).value.trim()
 
   const skillCatalog = useCatalog(host, fetchSkills)
-  const agentCatalog = useCatalog(host, fetchAgents)
   const modelCatalog = useCatalog(host, fetchModels)
-  const delegateItems =
-    agentCatalog.items === null
-      ? null
-      : agentCatalog.items.filter((a) => a.id !== entryKey)
   const modelKnown =
     modelCatalog.items === null ||
     model === '' ||
     modelCatalog.items.some((m) => m.id === model)
 
-  const toggleIn = (key: 'skills' | 'delegates_to', current: string[]) => {
+  const toggleIn = (key: 'skills', current: string[]) => {
     return (id: string) => {
       const next = current.includes(id)
         ? current.filter((s) => s !== id)
@@ -375,10 +347,6 @@ export function AgentForm(ctx: FormContext) {
     skillCatalog.items === null
       ? []
       : skills.filter((id) => !knownIn(skillCatalog.items)(id))
-  const missingDelegates =
-    delegateItems === null
-      ? []
-      : delegates.values.filter((id) => !knownIn(delegateItems)(id))
 
   const derived = useMemo(() => slugify(nameValue), [nameValue])
 
@@ -507,7 +475,7 @@ export function AgentForm(ctx: FormContext) {
 
       <Section
         title="Delegation"
-        hint="Which agents this one may hand work to when orchestrating."
+        hint="Which agent to hand work to is the prompt's decision; a leaf agent may not delegate at all."
       >
         <Row label="Leaf">
           <label className="dir-ui-checkrow dir-ui-agent-leaf">
@@ -520,21 +488,6 @@ export function AgentForm(ctx: FormContext) {
             <span>May not delegate (leaf agent)</span>
           </label>
         </Row>
-        {leaf ? null : (
-          <Row label="Delegates">
-            <CollapsiblePicker
-              noun="agent"
-              emptyLabel="Add agents — none selected means every agent"
-              items={delegateItems}
-              error={agentCatalog.error}
-              selected={delegates.values}
-              missing={missingDelegates}
-              isChecked={(id) => delegates.values.includes(id)}
-              toggle={toggleIn('delegates_to', delegates.values)}
-              readOnly={readOnly}
-            />
-          </Row>
-        )}
       </Section>
     </div>
   )

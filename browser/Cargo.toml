@@ -21,7 +21,7 @@ name = "browser"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.23.0-rc.2"
+iii-sdk = "=0.22.1-alpha.25"
 iii-worker-paths = { path = "../crates/worker-paths" }
 iii-config-client = { path = "../crates/config-client" }
 iii-console-ui = { path = "../crates/console-ui" }

@@ -70,6 +70,7 @@ selection, tooltip, or selector behavior.
 | `state` | Neutral hierarchy navigation; shared motion tokens | Progressive scope/key/value browser |
 | `storage` | Neutral object/config navigation; shared motion tokens | Bucket/object browser |
 | `tailscale` | Shared page chrome with `PageSidebar` section navigation, `ListItem` rows, `IconButton` header and row actions, shared `Input`/`Select`/`SegmentedControl`, `Table` family, `Badge`/`Chip`/`StatusDot`, `EmptyState`/`Skeleton`, `ConfirmDialog` for public publishing; neutral selection; shared motion tokens | Tailnet device table with ping paths, QR link card, netcheck and DNS facts, preference rows |
+| `compose-ui` | Shared page chrome with `PageSidebar` section navigation, `ListItem` rows, `IconButton` row actions, ghost `Button` refresh with a live `StatusDot` in the header, `Input`, `Table` family, `Badge`/`Chip`/`StatusDot`, `EmptyState`/`Skeleton`, `TerminalStream` log tails, `ConfirmDialog` for stop/restart/remove/update/daemon stop; neutral selection; shared motion tokens; no section-switch animation | Topology graph (engine, namespace group, containers layered by `start_after`, upstream/downstream tracing on select, arrow-key node navigation), project health stats, container table with log tail rows, worker package declaration with selectable declared-worker chips, daemon projects table |
 | `web` | Minimal shared renderer audited; no selectable navigation | HTTP response payload |
 | `worktree` | Neutral graph node/edge selection; shared motion tokens | Worktree ownership and graph semantics |
 
@@ -98,7 +99,7 @@ owns; the registry refuses those at registration. See the injectable-UI SOP,
 | Page | Commands (render time unless noted) | Keys | Palette source |
 |---|---|---|---|
 | chat (first-party) | focus composer, next / previous message, approve / deny the pending call, expand, copy, latest, switch model, stop, new chat, search conversations | `I`, `J` / `K`, `A` / `D`, `O`, `Y`, `End`, `M`, `Escape`, `N`, `/` | chats (built in) |
-| workers (first-party) | refresh, search | `R`, `/` | workers, functions (built in) |
+| workers (first-party) | refresh, search, open Compose (when the compose-ui page is registered); start / stop / restart on compose-supervised rows | `R`, `/`, `C` | workers, functions (built in) |
 | traces (first-party) | search, follow turns, clear filters, close detail | `/`, `F`, `Escape` | |
 | shell | open file…, search in files, file tree, toggle sidebar, toggle terminal, next / previous tab, close tab, next / previous change; setup: open file…, open | `P`, `F`, `E`, `B`, `` ` ``, `Alt+←` / `Alt+→`, `W`, `J` / `K` | files (`coder::search`, `#`) |
 | database | focus SQL, refresh, focus tables; setup: open | `S`, `R`, `/` | tables (`database::listTables`) |
@@ -114,6 +115,7 @@ owns; the registry refuses those at registration. See the injectable-UI SOP,
 | computer | start, stop; setup: open | `N`, `X` | sessions (`computer::sessions::list`) |
 | worktree | refresh, close detail; setup: open | `R`, `Escape` | worktrees (`worktree::list`) |
 | tailscale | refresh, create link, copy link, open link, stop route, sections 1-7; setup: open | `R`, `N`, `C`, `O`, `X`, `1`-`7` | |
+| compose-ui (page `compose`) | refresh, filter containers, add worker…, validate compose file, sections 1-5 (Topology first); setup: open | `R`, `/`, `N`, `V`, `1`-`5` | containers (`compose::status`) |
 | console catalog (functions, triggers) | search, toggle internal, refresh, run function; setup: open | `/`, `I`, `R`, `Mod+Enter` | functions (built in) |
 | eval | new evaluation, refresh history; setup: open, new evaluation… | `N`, `R` | evaluations (`api.list`) |
 | github | toggle live, refresh, close detail; setup: open | `L`, `R`, `Escape` | (PR / issue data not wired in the UI yet) |

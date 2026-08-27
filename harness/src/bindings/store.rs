@@ -1,7 +1,7 @@
 //! Durable binding storage, in the state worker under `harness_binding`.
 //!
 //! No in-memory cache, deliberately. Workers registering the same id
-//! load-balance, so two harness instances can serve the same mesh; a cached
+//! load-balance, so two harness instances can serve the same engine; a cached
 //! "still live" binding in instance B after instance A retired it would
 //! double-fire a `once`. The store IS the authority, and every fire pays one
 //! private state read for it — the same round trip the fire already makes to
@@ -189,6 +189,48 @@ impl BindingStore {
         }
         Err(HarnessError::State(format!(
             "binding {} moved during {ATTEMPTS} trigger-id attach attempts",
+            binding.id
+        )))
+    }
+
+    /// Replay's attach: swap whatever engine id the record carries for the
+    /// freshly registered one. Distinct from [`Self::attach_trigger_id`],
+    /// which treats an existing id as a double-registration bug — on replay
+    /// the recorded id is a dead row from before the restart, so it is
+    /// replaced, not defended.
+    pub async fn rearm_trigger_id(
+        &self,
+        binding: &Binding,
+        trigger_id: &str,
+    ) -> Result<AttachOutcome, HarnessError> {
+        const ATTEMPTS: usize = 8;
+        let mut expected = binding.clone();
+        for _ in 0..ATTEMPTS {
+            if expected.trigger_id.as_deref() == Some(trigger_id) {
+                return Ok(AttachOutcome::Attached(Box::new(expected)));
+            }
+            let mut next = expected.clone();
+            next.trigger_id = Some(trigger_id.to_string());
+            match state::cas_binding(&self.iii, Some(&expected), &next, self.timeout_ms).await? {
+                None => {
+                    self.events
+                        .emit_triggers_changed(&binding.owner.session_id)
+                        .await;
+                    return Ok(AttachOutcome::Attached(Box::new(next)));
+                }
+                Some(current) if current.is_null() => return Ok(AttachOutcome::Gone),
+                Some(current) => {
+                    expected = serde_json::from_value(current).map_err(|e| {
+                        HarnessError::State(format!(
+                            "binding {} is unreadable while re-arming trigger id: {e}",
+                            binding.id
+                        ))
+                    })?;
+                }
+            }
+        }
+        Err(HarnessError::State(format!(
+            "binding {} moved during {ATTEMPTS} trigger-id re-arm attempts",
             binding.id
         )))
     }

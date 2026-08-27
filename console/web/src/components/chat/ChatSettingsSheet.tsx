@@ -146,7 +146,7 @@ export function ChatSettingsSheet({
 
   return (
     <BottomSheet open={open} onOpenChange={handleOpenChange}>
-      <BottomSheetContent className="mx-auto max-w-[460px] sm:hidden">
+      <BottomSheetContent className="mx-auto max-w-[460px]">
         {navigation.page === 'settings' ? (
           <SheetPage
             title="Chat settings"

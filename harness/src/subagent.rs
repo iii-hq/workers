@@ -48,7 +48,6 @@ pub async fn spawn_from_turn(
             format!("invalid spawn arguments: {e}"),
         )
     })?;
-    validate_delegation(parent, &req)?;
     // Depth budget.
     if parent.depth + 1 > cfg.max_depth {
         return Err(is_error(
@@ -89,32 +88,6 @@ pub async fn spawn_from_turn(
     )
     .await
     .map_err(|e| is_error(e.code(), e.to_string()))
-}
-
-/// The delegation gate: a turn running as an agent whose frozen
-/// `delegates_to` names specific ids may spawn with `agent:` only those ids.
-/// Profile-less spawns, identity-less parents, and `delegates_to: null`
-/// (= every agent) all pass — the gate narrows profile delegation, it never
-/// forbids plain spawning.
-fn validate_delegation(parent: &TurnRecord, req: &SpawnRequest) -> Result<(), ResultData> {
-    let (Some(child), Some(identity)) = (req.agent.as_deref(), parent.options.agent.as_ref())
-    else {
-        return Ok(());
-    };
-    let Some(allowed) = identity.delegates_to.as_deref() else {
-        return Ok(());
-    };
-    if allowed.iter().any(|id| id == child) {
-        return Ok(());
-    }
-    Err(is_error(
-        "harness/delegation_denied",
-        format!(
-            "agent `{}` may delegate only to {allowed:?}; this spawn named agent `{child}` — \
-             pick a listed agent or spawn without `agent`",
-            identity.id
-        ),
-    ))
 }
 
 /// At-capacity preflight for an explicitly named session. A successful result
@@ -393,8 +366,7 @@ async fn seed_child(
                 .and_then(|o| o.filesystem_root.as_deref()),
             parent_record,
         )?,
-        // The child's OWN identity (its `delegates_to` gates the child's
-        // spawns), never the parent's.
+        // The child's OWN identity, never the parent's.
         agent: agent.as_ref().map(|a| a.identity.clone()),
         max_validation_retries: req
             .options
@@ -1328,7 +1300,6 @@ mod tests {
         crate::agents::ResolvedAgent {
             identity: crate::types::turn::AgentIdentity {
                 id: name.to_lowercase(),
-                delegates_to: None,
             },
             prompt: format!("You are {name}.\n\nWork."),
             skills: None,
@@ -1337,42 +1308,6 @@ mod tests {
             icon,
             leaf,
         }
-    }
-
-    fn spawn_naming_agent(agent: Option<&str>) -> SpawnRequest {
-        SpawnRequest {
-            agent: agent.map(str::to_string),
-            ..spawn_request(None, None)
-        }
-    }
-
-    fn parent_running_as(delegates_to: Option<Vec<String>>) -> TurnRecord {
-        let mut parent = parent_record(None);
-        parent.options.agent = Some(crate::types::turn::AgentIdentity {
-            id: "tech-leader".into(),
-            delegates_to,
-        });
-        parent
-    }
-
-    #[test]
-    fn delegation_gate_matrix() {
-        let listed = parent_running_as(Some(vec!["coder".into(), "tester".into()]));
-        assert!(validate_delegation(&listed, &spawn_naming_agent(Some("coder"))).is_ok());
-        // Unlisted profile → denied with the allowed list in the message.
-        let err = validate_delegation(&listed, &spawn_naming_agent(Some("plumber"))).unwrap_err();
-        assert_eq!(err.details["error"], "harness/delegation_denied");
-        assert!(err.details["message"]
-            .as_str()
-            .is_some_and(|m| m.contains("coder") && m.contains("plumber")));
-        // Profile-less spawns are never gated.
-        assert!(validate_delegation(&listed, &spawn_naming_agent(None)).is_ok());
-        // `delegates_to: null` = every agent.
-        let open = parent_running_as(None);
-        assert!(validate_delegation(&open, &spawn_naming_agent(Some("plumber"))).is_ok());
-        // A parent with no identity is never gated.
-        let plain = parent_record(None);
-        assert!(validate_delegation(&plain, &spawn_naming_agent(Some("plumber"))).is_ok());
     }
 
     #[test]

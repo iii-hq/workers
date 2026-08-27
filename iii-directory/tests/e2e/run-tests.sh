@@ -155,7 +155,8 @@ out=$(trig directory::skills::get id=shell/index)
 has  "get shell/index -> LOCAL override body wins"               "$out" "LOCAL OVERRIDE"
 out=$(trig directory::skills::get id=iii/index)
 jtrue "get iii/index resolves (real SKILL.md alias), bare id"    "$out" '.id == "iii"'
-has  "get iii/index -> real iii body content"                    "$out" "worker mesh"
+has   "get iii/index -> real iii body content (registerWorker)"   "$out" "registerWorker"
+hasnt "get iii/index -> body says runtime, NOT \"mesh\""          "$out" "mesh"
 
 # the `iii` worker ships skills/SKILL.md → flattened on disk to iii/SKILL.md and
 # served under the `iii/index` id via the singular SKILL.md alias. Prove every
@@ -165,8 +166,8 @@ out=$(trig directory::skills::get id=iii)
 jtrue "get id=iii (bare name) -> resolves, returns bare id"      "$out" '.id == "iii"'
 jtrue "get id=iii -> title falls back to body H1 (\"iii\")"       "$out" '.title == "iii"'
 jtrue "get id=iii -> type is null (SKILL.md omits frontmatter type)" "$out" '.type == null'
-has   "get id=iii -> real SKILL.md body (\"worker mesh\")"        "$out" "worker mesh"
 has   "get id=iii -> real SKILL.md body (registerWorker snippet)" "$out" "registerWorker"
+hasnt "get id=iii -> body says runtime, NOT \"mesh\""            "$out" "mesh"
 iii_bare_body=$(printf '%s' "$out" | jq -r '.body')
 out=$(trig directory::skills::get id=iii/SKILL.md)
 jtrue "get id=iii/SKILL.md (explicit filename) -> bare iii"      "$out" '.id == "iii"'
@@ -185,7 +186,8 @@ fi
 [ ! -e "$GLOBAL/iii/index.md" ] && ok "on-disk: iii/index served from SKILL.md (no iii/index.md file)" || no "on-disk: iii/index served from SKILL.md (no iii/index.md file)"
 # the SKILL.md frontmatter description surfaces in list rows (get output has none)
 out=$(trig directory::skills::list --json '{}')
-jtrue "list: iii row carries the SKILL.md frontmatter description" "$out" '([.skills[]|select(.id=="iii")|.description][0] // "") | contains("WebSocket-routed worker mesh")'
+jtrue "list: iii row carries the SKILL.md frontmatter description" "$out" '([.skills[]|select(.id=="iii")|.description][0] // "") | length > 0'
+jtrue "list: iii description says runtime, NOT \"mesh\""           "$out" '([.skills[]|select(.id=="iii")|.description][0] // "") | ascii_downcase | contains("mesh") | not'
 
 out=$(trig directory::skills::get id=database/iii-database/query)
 jtrue "get database/iii-database/query -> real deep skill title" "$out" '.title == "Run a read-only SQL query and return rows"'

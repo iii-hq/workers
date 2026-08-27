@@ -1,12 +1,19 @@
-import { FunctionMentionPill } from '@/components/chat/lexical/FunctionMentionNode'
+import { X } from 'lucide-react'
 import { CopyCommandButton } from '@/components/chat/sandbox/terminal/CopyCommandButton'
 import { Terminal } from '@/components/chat/sandbox/terminal/Terminal'
 import { Button } from '@/components/ui/Button'
+import { Wordmark } from '@/components/ui/Wordmark'
 import type { InstallStage } from '@/hooks/use-harness-status'
 import { normalizeErrorMessage } from '@/lib/providers'
 import { cn } from '@/lib/utils'
-import { AgentPicker } from './AgentPicker'
-import type { SystemPromptState } from './system-prompt-selection'
+import { DirectoryPicker, type WorktreePickerOptions } from './DirectoryPicker'
+import { SessionAddonsPicker } from './SessionAddonsPicker'
+import { SystemPromptPicker } from './SystemPromptPicker'
+import {
+  type SkillSelection,
+  type SystemPromptState,
+  toggleSkillSelection,
+} from './system-prompt-selection'
 
 /**
  * The chat empty state, as a small set of presentational variants:
@@ -43,16 +50,21 @@ export interface EmptyStateProps {
   onRetryInstall?: () => void
   /** `no-provider` CTA (opens the model/provider picker). */
   onConfigureProvider?: () => void
-  /**
-   * `ready` system-prompt control. This screen is where the choice is made —
-   * once the chat has messages the composer only shows it read-only. Omitted
-   * (e.g. Storybook without a provider) renders no control at all.
-   */
+  /** `ready` project context and shared directory-picker behavior. */
+  workingDir?: string | null
+  onWorkingDirChange?: (next: string) => void
+  workingDirError?: string | null
+  defaultWorkingDir?: string | null
+  worktreePicker?: WorktreePickerOptions
+  /** Session instructions selected before the first message. */
   systemPrompt?: SystemPromptState
   onSystemPromptChange?: (next: SystemPromptState) => void
+  /** Exact model-invocable skill IDs curated for this session. */
+  skills?: SkillSelection
+  onSkillsChange?: (next: SkillSelection) => void
 }
 
-const HARNESS_INSTALL_COMMAND = 'iii worker add harness'
+const HARNESS_INSTALL_COMMAND = 'iii trigger compose::add worker=harness'
 
 const HEADING_CLASS =
   'text-balance font-sans text-3xl font-semibold tracking-tight text-ink'
@@ -66,12 +78,18 @@ export function EmptyState({
   onInstallHarness,
   onRetryInstall,
   onConfigureProvider,
+  workingDir,
+  onWorkingDirChange,
+  workingDirError,
+  defaultWorkingDir,
+  worktreePicker,
   systemPrompt,
   onSystemPromptChange,
+  skills,
+  onSkillsChange,
 }: EmptyStateProps) {
   const emptyPad = density === 'dock' ? 'px-3 sm:px-4' : 'px-3 sm:px-6 lg:px-9'
-  const eyebrow =
-    variant === 'ready' || variant === 'no-provider' ? 'new session' : 'setup'
+  const eyebrow = variant === 'no-provider' ? 'New session' : 'Setup'
 
   return (
     <div
@@ -80,17 +98,29 @@ export function EmptyState({
         emptyPad,
       )}
     >
-      <div className="my-auto flex w-full max-w-[520px] flex-col gap-6 py-6">
-        <div className="font-sans text-base font-medium text-ink-faint sm:text-sm">
-          {eyebrow === 'new session' ? 'New session' : 'Setup'}
-        </div>
-
+      <div
+        className={cn(
+          'my-auto flex w-full max-w-[520px] flex-col py-6',
+          variant === 'ready' ? 'items-center gap-5 text-center' : 'gap-6',
+        )}
+      >
         {variant === 'ready' ? (
           <ReadyBody
+            workingDir={workingDir}
+            onWorkingDirChange={onWorkingDirChange}
+            workingDirError={workingDirError}
+            defaultWorkingDir={defaultWorkingDir}
+            worktreePicker={worktreePicker}
             systemPrompt={systemPrompt}
             onSystemPromptChange={onSystemPromptChange}
+            skills={skills}
+            onSkillsChange={onSkillsChange}
           />
-        ) : null}
+        ) : (
+          <div className="font-sans text-base font-medium text-ink-faint sm:text-sm">
+            {eyebrow}
+          </div>
+        )}
         {variant === 'no-provider' ? (
           <NoProviderBody onConfigureProvider={onConfigureProvider} />
         ) : null}
@@ -112,80 +142,133 @@ export function EmptyState({
 
 /* ---------------- ready (welcome hero) ---------------- */
 
-const EXPLORE_FUNCTIONS = [
-  { id: 'engine::functions::list', hint: 'see all callable functions' },
-  { id: 'engine::workers::list', hint: 'check connected workers' },
-  { id: 'engine::triggers::list', hint: 'discover trigger types' },
-] as const
-
 function ReadyBody({
+  workingDir,
+  onWorkingDirChange,
+  workingDirError,
+  defaultWorkingDir,
+  worktreePicker,
   systemPrompt,
   onSystemPromptChange,
+  skills,
+  onSkillsChange,
 }: {
+  workingDir?: string | null
+  onWorkingDirChange?: (next: string) => void
+  workingDirError?: string | null
+  defaultWorkingDir?: string | null
+  worktreePicker?: WorktreePickerOptions
   systemPrompt?: SystemPromptState
   onSystemPromptChange?: (next: SystemPromptState) => void
+  skills?: SkillSelection
+  onSkillsChange?: (next: SkillSelection) => void
 }) {
+  const projectName = workingDir
+    ? (workingDir.split('/').filter(Boolean).at(-1) ?? workingDir)
+    : 'a project'
+
   return (
     <>
-      <h1 className={HEADING_CLASS}>Welcome to iii</h1>
-      <div className="flex flex-col gap-2">
-        <p className={BODY_CLASS}>
-          You're in an agent-oriented workspace where you can leverage the power
-          of a full-featured agentic system:
-        </p>
-        <ul className="flex flex-col gap-1 font-sans text-base/7 text-ink-faint">
-          <li>· trigger functions via the function registry</li>
-          <li>· spawn sub-agents for parallel/async work</li>
-          <li>· register triggers for callbacks &amp; automation</li>
-          <li>· query state and subscribe to events</li>
-        </ul>
+      <Wordmark appearance="inset" />
+      <div className="flex max-w-full flex-col items-center gap-2.5">
+        <div className="max-w-full font-sans text-xl font-medium text-ink-faint sm:text-lg">
+          What should we build in{' '}
+          {onWorkingDirChange ? (
+            <DirectoryPicker
+              value={workingDir ?? null}
+              onChange={onWorkingDirChange}
+              externalError={workingDirError}
+              defaultDir={defaultWorkingDir}
+              worktrees={worktreePicker}
+              triggerAppearance="inline"
+              emptyLabel="a project"
+              className="max-w-[min(18rem,70vw)] align-baseline"
+            />
+          ) : (
+            <span className="font-medium text-ink">{projectName}</span>
+          )}
+          {'?'}
+        </div>
+        {systemPrompt && onSystemPromptChange ? (
+          <SessionSetupControls
+            systemPrompt={systemPrompt}
+            onSystemPromptChange={onSystemPromptChange}
+            skills={skills}
+            onSkillsChange={onSkillsChange}
+          />
+        ) : null}
       </div>
-      <div className="flex flex-col gap-2">
-        <p className={BODY_CLASS}>Start by exploring what's available:</p>
-        <ul className="flex flex-col gap-1.5 font-sans text-base/7 text-ink-faint">
-          {EXPLORE_FUNCTIONS.map(({ id, hint }) => (
-            <li key={id}>
-              <FunctionMentionPill functionId={id} /> — {hint}
+    </>
+  )
+}
+
+function SessionSetupControls({
+  systemPrompt,
+  onSystemPromptChange,
+  skills,
+  onSkillsChange,
+}: {
+  systemPrompt: SystemPromptState
+  onSystemPromptChange: (next: SystemPromptState) => void
+  skills?: SkillSelection
+  onSkillsChange?: (next: SkillSelection) => void
+}) {
+  return (
+    <section
+      aria-label="session setup"
+      className="flex max-w-full flex-col items-center gap-2"
+    >
+      <div className="flex max-w-full min-w-0 items-baseline justify-center gap-1.5 font-sans text-base text-ink-faint sm:text-sm">
+        <span>System prompt</span>
+        <SystemPromptPicker
+          value={systemPrompt}
+          onChange={onSystemPromptChange}
+          allowCustom={false}
+          appearance="inline"
+          className="max-w-48"
+        />
+      </div>
+
+      {onSkillsChange ? (
+        <div className="flex justify-center font-sans text-base text-ink-faint sm:text-sm">
+          <SessionAddonsPicker
+            value={skills}
+            onChange={onSkillsChange}
+            appearance="inline"
+          />
+        </div>
+      ) : null}
+
+      {skills?.length && onSkillsChange ? (
+        <ul
+          // biome-ignore lint/a11y/noRedundantRoles: keep list semantics when CSS resets remove markers.
+          role="list"
+          aria-label="skills selected for this session"
+          className="flex max-w-full flex-wrap justify-center gap-1.5"
+        >
+          {skills.map((skill) => (
+            <li key={skill} className="min-w-0 max-w-full">
+              <button
+                type="button"
+                aria-label={`remove ${skill} from this session`}
+                title={`Remove ${skill}`}
+                onClick={() =>
+                  onSkillsChange(toggleSkillSelection(skills, skill))
+                }
+                className="relative inline-flex h-9 max-w-full items-center gap-1 rounded-full bg-surface py-1 pr-2 pl-3 font-sans text-base font-medium text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rule-focus sm:h-7 sm:text-[0.8125rem]"
+              >
+                <span className="truncate">{skill}</span>
+                <X className="size-4 shrink-0 text-ink-faint/80" aria-hidden />
+                <span
+                  className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+                  aria-hidden="true"
+                />
+              </button>
             </li>
           ))}
         </ul>
-      </div>
-      <p className={BODY_CLASS}>
-        need help? ask away. the agent will discover apis on the fly and show
-        you what's possible.
-      </p>
-      {/* Last, after the orientation arc: a compact preflight closest to the
-          composer that starts and locks the session. */}
-      {systemPrompt && onSystemPromptChange ? (
-        <section
-          aria-labelledby="session-agent"
-          className="rounded-sm bg-surface p-4 flex flex-col gap-3"
-        >
-          <div className="flex flex-col gap-1">
-            <h2
-              id="session-agent"
-              className="font-sans text-base font-semibold text-ink sm:text-sm"
-            >
-              Agent
-            </h2>
-            <p className="font-sans text-base/6 text-ink-faint sm:text-sm/6">
-              Choose who the agent is in this session.
-            </p>
-          </div>
-          <AgentPicker
-            value={systemPrompt}
-            onChange={onSystemPromptChange}
-            className="min-w-0"
-          />
-          <p className="font-sans text-base/6 text-ink-faint sm:text-sm/5">
-            {systemPrompt.choice === 'default'
-              ? "Default uses the provider's built-in prompt"
-              : "The agent's instructions and skill selection apply to this session"}
-            {' · Locked after your first message'}
-          </p>
-        </section>
       ) : null}
-    </>
+    </section>
   )
 }
 
@@ -291,7 +374,7 @@ function InstallingBody({
 
 /**
  * Live install console — `Terminal` chrome over the streamed `worker`
- * lifecycle stages, framed as the equivalent `iii worker add harness` run.
+ * lifecycle stages, framed as the equivalent `iii trigger compose::add worker=harness` run.
  */
 function InstallConsole({
   stages,

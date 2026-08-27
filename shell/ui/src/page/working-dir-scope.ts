@@ -17,6 +17,6 @@ export function workingDirectoryScopeMessage(
   workingDir: string | null | undefined,
 ): string {
   return workingDir
-    ? `Browsing ${root}; chat still works in ${workingDir}.`
-    : `Browsing ${root}; chat has no working directory.`
+    ? `Browsing ${root}. Chat still works in ${workingDir}.`
+    : `Browsing ${root}. Chat has no working directory yet.`
 }

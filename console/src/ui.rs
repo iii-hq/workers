@@ -6,9 +6,10 @@
 //!
 //! - a custom configuration form for the `console` entry
 //!   (`host.configForms`), replacing the schema-generated JSON editor with
-//!   the injectable-UI toggle board — one bordered card per worker (title +
-//!   description + switch) flipping `injectableUi.disabledWorkers`, which
-//!   [`crate::configuration::start_injectable_ui_sync`] applies live;
+//!   the live HTTP port control and injectable-UI toggle board — one bordered
+//!   card per worker (title + description + switch) flipping
+//!   `injectableUi.disabledWorkers`; both settings apply live through
+//!   [`crate::configuration::register_config_trigger`];
 //! - the engine-catalogue pages (`host.pages`): functions and triggers,
 //!   reading `engine::functions::*` / `engine::triggers::*` /
 //!   `engine::registered-triggers::list`. They are engine-level views no
@@ -80,6 +81,10 @@ mod tests {
         assert!(
             CONFIG_FORM_JS.contains("export"),
             "built config-form.js looks wrong"
+        );
+        assert!(
+            CONFIG_FORM_JS.contains("http_port"),
+            "built config-form.js is missing the live HTTP port field"
         );
     }
 

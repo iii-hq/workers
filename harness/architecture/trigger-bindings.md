@@ -127,7 +127,18 @@ irrelevant because nothing reads it.
 ## Registration
 
 `engine::register_trigger` stays the agent-facing call; the harness keeps
-intercepting it. The accepted shape:
+intercepting it. The engine-side trigger, though, is registered over the
+**worker channel** (`IIIClient::register_trigger`), never by dispatching the
+`engine::register_trigger` function: the function path pins the trigger's
+target, home, and provider namespaces to `default`, so in a namespaced
+deployment the binding parks as PENDING forever and a fire would resolve
+`harness::trigger::deliver` where this harness never registered it. The
+channel path stamps the connection's namespace on both ends, and the SDK
+replays the registration on reconnect. Channel registrations die with the
+connection — durability lives in the binding record: the startup sweep
+re-arms every surviving binding's engine trigger from the store and, for
+one-shot `state` wakes that never fired, reads the watched key and delivers
+the wake the dead trigger missed. The accepted shape:
 
 ```jsonc
 {

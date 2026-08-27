@@ -325,6 +325,9 @@ export const registerTriggerRequestSchema = z.object({
     .object({
       once: z.boolean().optional(),
       max_fires: z.number().optional(),
+      // Relative deadline (current contract); expires_at survives for
+      // transcript cards recorded before the absolute form was retired.
+      expires_in_ms: z.number().optional(),
       expires_at: z.number().optional(),
     })
     .optional(),

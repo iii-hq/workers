@@ -27,6 +27,43 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use crate::code::change_journal::{self, ChangeDiffInput};
 use crate::code::state::CodeCells;
 
+/// Tolerant batch input: the canonical shape is `{ "files": [...] }`, but a
+/// model that just wrote one file frequently sends the spec flat
+/// (`{ "path", "content", ... }`) — verify-wake-fix-3 postmortem: that shape
+/// bounced with a raw serde "missing field `files`". Accept it as a
+/// one-entry batch; anything else gets the contract named back. The
+/// published schema stays the canonical batch shape (goldens pin it).
+pub(crate) fn files_batch_or_single<T: serde::de::DeserializeOwned>(
+    value: serde_json::Value,
+    function_id: &str,
+) -> Result<(Vec<T>, Option<crate::fs::FsScope>), String> {
+    #[derive(serde::Deserialize)]
+    struct Batch<T> {
+        files: Vec<T>,
+        #[serde(default)]
+        fs_scope: Option<crate::fs::FsScope>,
+    }
+    if value.get("files").is_some() {
+        let batch: Batch<T> = serde_json::from_value(value)
+            .map_err(|e| format!("{function_id}: invalid `files` entry: {e}"))?;
+        return Ok((batch.files, batch.fs_scope));
+    }
+    if value.get("path").is_some() {
+        let fs_scope = match value.get("fs_scope") {
+            Some(v) => serde_json::from_value(v.clone())
+                .map_err(|e| format!("{function_id}: invalid `fs_scope`: {e}"))?,
+            None => None,
+        };
+        let spec: T = serde_json::from_value(value)
+            .map_err(|e| format!("{function_id}: invalid file entry: {e}"))?;
+        return Ok((vec![spec], fs_scope));
+    }
+    Err(format!(
+        "{function_id} takes {{ \"files\": [{{ \"path\", \"content\", ... }}] }}; a \
+         single file may also be passed flat as {{ \"path\", \"content\" }}."
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // Function ids + registration descriptions (ONE place).
 //

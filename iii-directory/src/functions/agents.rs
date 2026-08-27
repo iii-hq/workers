@@ -8,8 +8,8 @@
 //!
 //!   * `directory::agents::list`   — metadata-only listing.
 //!   * `directory::agents::get`    — one agent's system prompt + metadata,
-//!     plus `unknown_skills` / `unknown_delegates` (ids that resolve to
-//!     nothing — warnings, never load failures).
+//!     plus `unknown_skills` (ids that resolve to nothing — warnings,
+//!     never load failures).
 //!   * `directory::agents::create` / `update` / `delete` — full-file
 //!     writes, atomic, fanning out `directory::agents::on-change`.
 //!
@@ -105,12 +105,8 @@ pub struct AgentGetOutput {
     /// Filter entries that resolve to no currently visible skill.
     /// Warnings — the agent still loads and runs.
     pub unknown_skills: Vec<String>,
-    /// Agent ids this agent may delegate to; `null` = every agent.
-    pub delegates_to: Option<Vec<String>>,
     /// `true` = this agent may not delegate at all.
     pub leaf: bool,
-    /// `delegates_to` entries that name no existing agent. Warnings.
-    pub unknown_delegates: Vec<String>,
     /// Default model id for sessions running as this agent; `null` =
     /// the send decides. Served verbatim — resolution against the live
     /// model catalog happens where it is used.
@@ -223,7 +219,7 @@ fn register_get(iii: &Arc<IIIClient>, cfg: &SharedConfig, cache: &Arc<Registered
             "Fetch one agent profile by id. Returns the system prompt (the file body, \
              frontmatter stripped), display name, description, emoji logo, the skill \
              filter plus unknown_skills (filter entries matching no visible skill — \
-             warnings, the agent still runs), delegates_to/leaf plus unknown_delegates, \
+             warnings, the agent still runs), leaf, \
              and modified_at. Pass raw: true to also get the exact on-disk file for \
              editing with directory::agents::update.",
         ),
@@ -319,8 +315,14 @@ fn register_delete(iii: &Arc<IIIClient>, cfg: &SharedConfig, subs: &trigger_type
 // ---------- core helpers (engine-free, reusable in tests) ----------
 
 fn scan_profiles(cfg: &SkillsConfig) -> Vec<FsAgent> {
-    fs_source::scan_agents(&cfg.resolved_agents_folder()).0
+    fs_source::scan_agents_merged(&cfg.resolved_agents_roots()).0
 }
+
+// Unlike the skills roots (`.agents/skills` is owned by external agent
+// tooling and stays read-only), `~/.iii/agents` is iii's own directory:
+// update and delete resolve to whichever root holds the profile and write it
+// IN PLACE. Only create is anchored — it always writes `agents_folder`, and
+// never materializes the global root.
 
 pub fn list_agents(cfg: &SkillsConfig) -> ListAgentsOutput {
     let agents = scan_profiles(cfg)
@@ -367,14 +369,6 @@ pub fn get_agent(
         .filter(|id| find_fs_skill_in(visible_skills, id).is_none())
         .cloned()
         .collect();
-    let unknown_delegates = agent
-        .delegates_to
-        .as_deref()
-        .unwrap_or(&[])
-        .iter()
-        .filter(|id| !agents.iter().any(|a| &a.name == *id))
-        .cloned()
-        .collect();
     Ok(AgentGetOutput {
         modified_at: fs_modified_at(&agent.abs_path),
         id: agent.name,
@@ -384,9 +378,7 @@ pub fn get_agent(
         system_prompt: body,
         skills: agent.skills,
         unknown_skills,
-        delegates_to: agent.delegates_to,
         leaf: agent.leaf,
-        unknown_delegates,
         model: agent.model,
         icon: agent.icon,
         raw,
@@ -399,10 +391,20 @@ pub fn create_agent(
 ) -> Result<AgentWriteOutput, String> {
     validate_name(&req.id)?;
     let agents = scan_profiles(cfg);
-    if agents.iter().any(|a| a.name == req.id) {
+    if let Some(existing) = agents.iter().find(|a| a.name == req.id) {
+        // Name the root for global collisions: "already exists" alone sends
+        // the caller hunting agents_folder for a file that is not there.
+        let origin = if existing.abs_path.starts_with(cfg.resolved_agents_folder()) {
+            String::new()
+        } else {
+            format!(
+                " as a user-global profile ({})",
+                existing.abs_path.display()
+            )
+        };
         return Err(invalid_input_message(
             "D414",
-            &format!("agent {:?} already exists.", req.id),
+            &format!("agent {:?} already exists{origin}.", req.id),
             AGENT_CREATE_CONFLICT_NEXT,
         ));
     }
@@ -530,7 +532,7 @@ mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
 
-    const CAPTAIN: &str = "---\nname: Release Captain\ndescription: Cuts releases.\nlogo: \"🚢\"\nskills:\n  - iii-sandbox\n  - agent-memory/observe\ndelegates_to: [frontend-design]\nmodel: codex/gpt-5.4-mini\nicon: search\n---\nYou are the release captain.\n";
+    const CAPTAIN: &str = "---\nname: Release Captain\ndescription: Cuts releases.\nlogo: \"🚢\"\nskills:\n  - iii-sandbox\n  - agent-memory/observe\nmodel: codex/gpt-5.4-mini\nicon: search\n---\nYou are the release captain.\n";
 
     fn write_fixture(dir: &Path, rel: &str, contents: &str) {
         let path = dir.join(rel);
@@ -545,6 +547,13 @@ mod tests {
             skills_folder: dir.join("skills").to_string_lossy().into_owned(),
             local_skills_folder: dir.join("local-empty").to_string_lossy().into_owned(),
             agents_folder: dir.join("agents").to_string_lossy().into_owned(),
+            // Pinned inside the tempdir: the default resolves to the
+            // developer's REAL ~/.iii/agents, which would leak
+            // machine-dependent profiles into these tests.
+            global_agents_folder: dir
+                .join("global-agents-empty")
+                .to_string_lossy()
+                .into_owned(),
             ..SkillsConfig::default()
         }
     }
@@ -587,43 +596,22 @@ mod tests {
         .unwrap();
         assert_eq!(got.system_prompt.trim(), "You are the release captain.");
         assert_eq!(got.unknown_skills, vec!["agent-memory/observe".to_string()]);
-        assert_eq!(
-            got.delegates_to.as_deref(),
-            Some(&["frontend-design".to_string()][..])
-        );
         assert!(!got.leaf);
-        assert_eq!(got.unknown_delegates, vec!["frontend-design".to_string()]);
         assert_eq!(got.model.as_deref(), Some("codex/gpt-5.4-mini"));
         assert_eq!(got.icon.as_deref(), Some("search"));
         assert_eq!(got.raw.as_deref(), Some(CAPTAIN));
     }
 
     #[test]
-    fn get_reports_known_delegate_and_absent_lists() {
+    fn get_reports_absent_lists() {
         let tmp = tempfile::tempdir().unwrap();
-        write_fixture(tmp.path(), "agents/architect.md", CAPTAIN);
         write_fixture(
             tmp.path(),
             "agents/frontend-design.md",
             "---\nname: Frontend\ndescription: UI work.\n---\nYou do frontend.\n",
         );
         let cfg = cfg_for(tmp.path());
-        let got = get_agent(
-            &cfg,
-            AgentGetInput {
-                id: "architect".into(),
-                raw: None,
-            },
-            &[],
-        )
-        .unwrap();
-        assert!(
-            got.unknown_delegates.is_empty(),
-            "{:?}",
-            got.unknown_delegates
-        );
-
-        // Absent skills / delegates_to on the second agent.
+        // Absent skills on a minimal agent.
         let plain = get_agent(
             &cfg,
             AgentGetInput {
@@ -635,8 +623,6 @@ mod tests {
         .unwrap();
         assert!(plain.skills.is_empty());
         assert!(plain.unknown_skills.is_empty());
-        assert!(plain.delegates_to.is_none());
-        assert!(plain.unknown_delegates.is_empty());
     }
 
     #[test]
@@ -777,5 +763,93 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("already exists at"), "got: {err}");
+    }
+
+    /// A profile that only exists under the user-global root is listed and
+    /// gettable; the same id under the project root shadows it.
+    #[test]
+    fn global_profiles_list_and_project_shadows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_for(tmp.path());
+        write_fixture(tmp.path(), "global-agents-empty/captain.md", CAPTAIN);
+        write_fixture(
+            tmp.path(),
+            "global-agents-empty/scout.md",
+            "---\nname: Scout\ndescription: Scouts.\n---\nYou scout.\n",
+        );
+        // Project copy of `captain` wins over the global one.
+        write_fixture(
+            tmp.path(),
+            "agents/captain.md",
+            "---\nname: Local Captain\ndescription: Local.\n---\nYou are local.\n",
+        );
+
+        let out = list_agents(&cfg);
+        let names: Vec<(&str, &str)> = out
+            .agents
+            .iter()
+            .map(|a| (a.id.as_str(), a.name.as_str()))
+            .collect();
+        assert_eq!(
+            names,
+            vec![("captain", "Local Captain"), ("scout", "Scout")]
+        );
+
+        let got = get_agent(
+            &cfg,
+            AgentGetInput {
+                id: "scout".into(),
+                raw: None,
+            },
+            &[],
+        )
+        .unwrap();
+        assert_eq!(got.system_prompt.trim(), "You scout.");
+    }
+
+    /// Global profiles are EDITABLE in place (`~/.iii/agents` is iii's own
+    /// directory): update rewrites the global file, create on the same id
+    /// still reports the collision naming the global file (create only ever
+    /// writes `agents_folder`), and delete removes the global file.
+    #[test]
+    fn global_profiles_are_editable_in_place() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_for(tmp.path());
+        let global_file = tmp.path().join("global-agents-empty/captain.md");
+        write_fixture(tmp.path(), "global-agents-empty/captain.md", CAPTAIN);
+
+        let updated = CAPTAIN.replace("Release Captain", "Fleet Captain");
+        let out = update_agent(
+            &cfg,
+            &AgentUpdateInput {
+                id: "captain".into(),
+                content: updated.clone(),
+            },
+        )
+        .unwrap();
+        assert_eq!(out.name, "Fleet Captain");
+        assert_eq!(std::fs::read_to_string(&global_file).unwrap(), updated);
+        // The project root stays untouched — the write landed in place.
+        assert!(!tmp.path().join("agents/captain.md").exists());
+
+        let err = create_agent(
+            &cfg,
+            &AgentCreateInput {
+                id: "captain".into(),
+                content: CAPTAIN.into(),
+            },
+        )
+        .unwrap_err();
+        assert!(err.starts_with("D414 invalid_input:"), "got: {err}");
+        assert!(err.contains("user-global"), "got: {err}");
+
+        delete_agent(
+            &cfg,
+            &AgentDeleteInput {
+                id: "captain".into(),
+            },
+        )
+        .unwrap();
+        assert!(!global_file.exists());
     }
 }

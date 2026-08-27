@@ -230,12 +230,14 @@ silently.
 ### `lifecycle`
 
 ```jsonc
-"lifecycle": { "max_fires": 5, "expires_at": 1785029761878 }
+"lifecycle": { "max_fires": 5, "expires_in_ms": 3600000 }
 ```
 
 `once` (top level) retires the binding after its first *delivered* fire — a
 skipped fire does not consume it. `max_fires` is a lifetime delivery budget.
-`expires_at` is epoch-ms. Each retires the binding on both sides and records
+`expires_in_ms` is relative to registration, resolved to an absolute
+instant server-side (absolute `expires_at` was retired from the request —
+models kept guessing stale epochs). Each retires the binding on both sides and records
 `retired: true`. Default `once` is **by shape**: a WAKE (no target function)
 is once — it parks the session; a CALL binding is **standing** — per-event
 work until unregistered or its lifecycle ends (three of five discovery runs
@@ -311,7 +313,7 @@ on the raw engine path, because the engine has no notion of a session's policy.
 **Shaping, ownership and cleanup have nowhere else to live.** An event's schema
 is never the target's, so something must project it into the target's payload.
 Owner-scoped unregister, the per-session cap, the session-deleted sweep, and
-`once` / `max_fires` / `expires_at` are not engine concepts.
+`once` / `max_fires` / `expires_in_ms` are not engine concepts.
 
 ### Workers register directly, and should
 

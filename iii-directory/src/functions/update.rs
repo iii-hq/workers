@@ -34,7 +34,7 @@
 //! triggers with `{ op: "update", ... }` payloads.
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
@@ -261,7 +261,7 @@ fn register_update_skill(
             let cache = cache_inner.clone();
             async move {
                 let visible = resolve_visible_skills(&cfg, &cache, &iii, false).await;
-                let out = update_skill_in(&visible, &req, &cfg.resolved_agents_skills_folder())
+                let out = update_skill_in(&visible, &req, &cfg.resolved_agents_skills_roots())
                     .map_err(Error::Handler)?;
                 let namespace = out.id.split('/').next().unwrap_or("").to_string();
                 trigger_types::dispatch(
@@ -488,15 +488,18 @@ fn register_delete_system_prompt(
 
 // ---------- core helpers (engine-free, reusable in tests) ----------
 
-/// Refuse writes to a skill resolved into the read-only agents root.
+/// Refuse writes to a skill resolved into a read-only agents root.
 /// Checked on the RESOLVED `abs_path` (not the input id) so every input
 /// alias (`bare`, `<id>/index`, `SKILL.md`, `iii://…`) hits the guard.
-fn ensure_writable(fs: &FsSkill, agents_root: &Path) -> Result<(), String> {
-    if fs.abs_path.starts_with(agents_root) {
+fn ensure_writable(fs: &FsSkill, agents_roots: &[PathBuf]) -> Result<(), String> {
+    if let Some(agents_root) = agents_roots
+        .iter()
+        .find(|root| fs.abs_path.starts_with(root))
+    {
         return Err(invalid_input_message(
             "D116",
             &format!(
-                "skill {:?} is system-installed under agents_skills_folder ({}) and \
+                "skill {:?} is system-installed under an agents skills root ({}) and \
                  read-only; edit it with its owning tool, or copy it into skills_folder \
                  on disk to fork it.",
                 fs.id,
@@ -514,7 +517,7 @@ fn ensure_writable(fs: &FsSkill, agents_root: &Path) -> Result<(), String> {
 pub fn update_skill_in(
     visible: &[FsSkill],
     req: &SkillUpdateInput,
-    agents_root: &Path,
+    agents_roots: &[PathBuf],
 ) -> Result<SkillUpdateOutput, String> {
     let id = normalize_get_id(&req.id)?;
     reject_function_id_shaped(&id)?;
@@ -532,7 +535,7 @@ pub fn update_skill_in(
             SKILL_UPDATE_NOT_FOUND_NEXT,
         ));
     };
-    ensure_writable(&fs, agents_root)?;
+    ensure_writable(&fs, agents_roots)?;
 
     write_file_atomic(&fs.abs_path, req.content.as_bytes())?;
 
@@ -617,20 +620,24 @@ pub fn create_skill_in(
         unreachable!("non-skill source kinds are handled above");
     }
 
-    let agents_root = cfg.resolved_agents_skills_folder();
-    let agents_ns = fs_source::agents_namespaces(&agents_root);
+    let agents_roots = cfg.resolved_agents_skills_roots();
     let top_seg = id.split('/').next().unwrap_or("");
-    if id.contains('/') && agents_ns.iter().any(|ns| ns == top_seg) {
-        return Err(invalid_input_message(
-            "D115",
-            &format!(
-                "namespace {top_seg:?} is reserved by a system-installed skill under \
-                 agents_skills_folder ({}); edit it with its owning tool, or copy it \
-                 into skills_folder on disk to fork it.",
-                agents_root.display()
-            ),
-            &[],
-        ));
+    let mut agents_ns: Vec<String> = Vec::new();
+    for agents_root in &agents_roots {
+        let ns = fs_source::agents_namespaces(agents_root);
+        if id.contains('/') && ns.iter().any(|ns| ns == top_seg) {
+            return Err(invalid_input_message(
+                "D115",
+                &format!(
+                    "namespace {top_seg:?} is reserved by a system-installed skill under \
+                     an agents skills root ({}); edit it with its owning tool, or copy it \
+                     into skills_folder on disk to fork it.",
+                    agents_root.display()
+                ),
+                &[],
+            ));
+        }
+        agents_ns.extend(ns);
     }
     if let Some(registered) = registered {
         let candidate = FsSkill {
@@ -714,7 +721,7 @@ pub fn delete_skill_in(
             SKILL_UPDATE_NOT_FOUND_NEXT,
         ));
     };
-    ensure_writable(&fs, &cfg.resolved_agents_skills_folder())?;
+    ensure_writable(&fs, &cfg.resolved_agents_skills_roots())?;
 
     // Deletes have no atomic write to piggyback the self-write mark on;
     // mark explicitly so the watcher doesn't fire a spurious
@@ -1021,14 +1028,18 @@ mod tests {
             // REAL ~/.agents/skills, which would leak into these tests.
             local_skills_folder: dir.join("local-empty").to_string_lossy().into_owned(),
             agents_skills_folder: dir.join("agents-empty").to_string_lossy().into_owned(),
+            global_agents_skills_folder: dir
+                .join("global-agents-empty")
+                .to_string_lossy()
+                .into_owned(),
             ..SkillsConfig::default()
         }
     }
 
-    /// An agents root that matches nothing — for tests that only need
+    /// Agents roots that match nothing — for tests that only need
     /// `update_skill_in`'s read-only guard to stay out of the way.
-    fn no_agents() -> std::path::PathBuf {
-        std::path::PathBuf::from("/nonexistent-agents-root")
+    fn no_agents() -> Vec<std::path::PathBuf> {
+        vec![std::path::PathBuf::from("/nonexistent-agents-root")]
     }
 
     // ── skills ───────────────────────────────────────────────────────
@@ -1753,11 +1764,11 @@ mod tests {
             &cfg.resolved_skills_folder(),
             &cfg.local_skills_folder(),
         );
-        let (visible, _) = fs_source::merge_agents_root(
+        let (visible, _) = fs_source::merge_agents_roots(
             merged,
             &cfg.resolved_skills_folder(),
             &cfg.local_skills_folder(),
-            &cfg.resolved_agents_skills_folder(),
+            &cfg.resolved_agents_skills_roots(),
         );
         let err = create_skill_in(
             &cfg,
@@ -1853,7 +1864,7 @@ mod tests {
                     id: id.into(),
                     content: "# Hacked\n\nbody\n".into(),
                 },
-                &cfg.resolved_agents_skills_folder(),
+                &cfg.resolved_agents_skills_roots(),
             )
             .unwrap_err();
             assert!(err.starts_with("D116 invalid_input:"), "id {id}: {err}");

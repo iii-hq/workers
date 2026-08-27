@@ -54,6 +54,18 @@ interface RegisterTriggerViewProps {
  * binding's meaning is legible at a glance. Raw payloads stay one tab away in
  * RAW JSON; this view is the readable one.
  */
+/** "45s" / "12m" / "3h" / "2d" — coarse duration for the relative deadline
+ * stat; mirrors formatElapsed's buckets without the timestamp semantics. */
+function formatDurationMs(ms: number): string {
+  const seconds = Math.max(1, Math.round(ms / 1000))
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.round(minutes / 60)
+  if (hours < 24) return `${hours}h`
+  return `${Math.round(hours / 24)}d`
+}
+
 export function RegisterTriggerView({
   messageId,
   input,
@@ -118,6 +130,16 @@ export function RegisterTriggerView({
     ...(req.lifecycle?.max_fires !== undefined
       ? [{ label: 'Fire limit', value: String(req.lifecycle.max_fires) }]
       : []),
+    ...(req.lifecycle?.expires_in_ms !== undefined
+      ? [
+          {
+            label: 'Expires',
+            value: `in ${formatDurationMs(req.lifecycle.expires_in_ms)}`,
+
+          },
+        ]
+      : []),
+    // Legacy cards: requests recorded before `expires_at` was retired.
     ...(req.lifecycle?.expires_at !== undefined
       ? [
           {

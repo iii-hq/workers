@@ -60,9 +60,7 @@ export function ModePicker({ value, onChange, className }: ModePickerProps) {
           position="popper"
           sideOffset={4}
           className={cn(
-            'z-50 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-md border border-rule-2 bg-panel-raised font-sans text-base text-ink shadow-floating sm:text-[13px]',
-            'data-[state=open]:animate-in data-[state=closed]:animate-out',
-            'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
+            'iii-ui-motion-dropdown z-50 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-md border border-rule-2 bg-panel-raised font-sans text-base text-ink shadow-floating sm:text-[13px]',
           )}
         >
           <SelectPrimitive.Viewport className="p-1">
