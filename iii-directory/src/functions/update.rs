@@ -768,6 +768,34 @@ pub fn update_system_prompt(
         &cfg.local_skills_folder(),
     );
     let Some(fs) = prompts.iter().find(|p| p.name == req.name) else {
+        // A bundled prompt has no file until first edited: updating it
+        // copy-on-writes the local file, which shadows the bundled copy
+        // from then on (deleting that file falls back to it again).
+        if crate::bundled::bundled_system_prompt(&req.name).is_some() {
+            let dest = cfg
+                .resolved_skills_folder()
+                .join("system-prompts")
+                .join(format!("{}.md", req.name));
+            if dest.exists() {
+                return Err(invalid_input_message(
+                    "D214",
+                    &format!(
+                        "a file already exists at {} (currently skipped by the scanner); \
+                         edit or remove it on disk.",
+                        dest.display()
+                    ),
+                    SYSTEM_PROMPT_CREATE_CONFLICT_NEXT,
+                ));
+            }
+            let description = validate_new_prompt_content(&req.name, &req.content)?;
+            write_file_atomic(&dest, req.content.as_bytes())?;
+            return Ok(SystemPromptUpdateOutput {
+                name: req.name.clone(),
+                description,
+                bytes: req.content.len(),
+                modified_at: fs_modified_at(&dest),
+            });
+        }
         let names: Vec<String> = prompts.iter().map(|p| p.name.clone()).collect();
         let candidates = closest_ids(&names, &req.name, 3);
         return Err(not_found_message(
@@ -1239,6 +1267,39 @@ mod tests {
         .unwrap_err();
         assert!(err.starts_with("D210 not_found:"), "got: {err}");
         assert!(err.contains("real"), "got: {err}");
+    }
+
+    /// Editing a bundled prompt that has no file yet copy-on-writes the
+    /// local file; the next update goes through the ordinary path.
+    #[test]
+    fn update_bundled_prompt_creates_the_local_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_for(tmp.path());
+        let out = update_system_prompt(
+            &cfg,
+            &SystemPromptUpdateInput {
+                name: "iii-minimal".into(),
+                content: "---\nname: iii-minimal\ndescription: mine\n---\nEdited.\n".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(out.name, "iii-minimal");
+        let path = tmp.path().join("system-prompts/iii-minimal.md");
+        assert!(path.exists());
+        assert!(std::fs::read_to_string(&path).unwrap().contains("Edited."));
+
+        // Now a real file exists: the ordinary update path overwrites it.
+        update_system_prompt(
+            &cfg,
+            &SystemPromptUpdateInput {
+                name: "iii-minimal".into(),
+                content: "---\nname: iii-minimal\ndescription: mine\n---\nEdited twice.\n".into(),
+            },
+        )
+        .unwrap();
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("Edited twice."));
     }
 
     // ── prompt create ────────────────────────────────────────────────

@@ -29,6 +29,9 @@ interface SystemPromptRow {
   name: string
   description: string
   modified_at: string
+  /** Bundled with the worker, no file behind it yet: editing creates the
+   * local file; nothing to delete. */
+  builtin?: boolean
 }
 
 interface AgentRow {
@@ -131,12 +134,22 @@ export const systemPromptsAdapter: BrowserAdapter = {
               noDelete: true,
             },
           ]),
-      ...prompts.map((p) => ({
-        key: p.name,
-        title: '',
-        description: p.description,
-        fine: formatRelativeTime(p.modified_at),
-      })),
+      ...prompts.map((p) =>
+        p.builtin
+          ? {
+              key: p.name,
+              title: '',
+              description: p.description,
+              fine: 'Built-in · edits save a local override',
+              noDelete: true,
+            }
+          : {
+              key: p.name,
+              title: '',
+              description: p.description,
+              fine: formatRelativeTime(p.modified_at),
+            },
+      ),
     ]
   },
   async load(host, name) {

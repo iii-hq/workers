@@ -165,7 +165,6 @@ async fn main() -> Result<()> {
         registry_cache.clone(),
     );
     functions::log_fs_health(&cfg_handle.load_full());
-    iii_directory::seed::seed_bundled_system_prompts(&cfg_handle.load_full());
 
     // Function search: seed the engine-catalog snapshot (best effort — the
     // functions-available push refreshes it), register
