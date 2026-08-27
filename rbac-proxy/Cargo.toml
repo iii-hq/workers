@@ -2,7 +2,7 @@
 
 [package]
 name = "rbac-proxy"
-version = "1.0.3"
+version = "1.0.4-rc.2"
 edition = "2021"
 publish = false
 
