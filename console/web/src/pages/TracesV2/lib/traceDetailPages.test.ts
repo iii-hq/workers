@@ -87,12 +87,17 @@ describe('collectTraceDetailSpans', () => {
   it('reports each merged page so callers can render progressively', async () => {
     const all = spans(0, 700)
     const calls: Array<[number, number]> = []
-    const seen: number[] = []
+    const seen: Array<[number, number]> = []
     const out = await collectTraceDetailSpans(pagedFetch(all, calls), {
-      onPage: (accumulated) => seen.push(accumulated.size),
+      onPage: (accumulated, total) => seen.push([accumulated.size, total]),
     })
 
-    expect(seen).toEqual([50, 300, 550, 700])
+    expect(seen).toEqual([
+      [50, 700],
+      [300, 700],
+      [550, 700],
+      [700, 700],
+    ])
     expect(out.size).toBe(700)
   })
 

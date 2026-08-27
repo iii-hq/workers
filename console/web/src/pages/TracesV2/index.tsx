@@ -146,6 +146,13 @@ export function TracesV2({
   }, [selectedSpan, waterfallData])
   const [isLoadingSpans, setIsLoadingSpans] = useState(false)
   const [spansError, setSpansError] = useState<string | null>(null)
+  // Non-null while the paged seed still sweeps: the detail is painted but
+  // incomplete. Drives the header's live span counter so "still filling in"
+  // is legible after the skeleton is gone.
+  const [seedProgress, setSeedProgress] = useState<{
+    loaded: number
+    total: number
+  } | null>(null)
 
   const {
     filters: filterState,
@@ -411,6 +418,9 @@ export function TracesV2({
       const seq = ++seedSeqRef.current
       const stale = () => seedSeqRef.current !== seq
       const silent = opts?.silent ?? false
+      // Newest seed owns the progress chip from the start — a superseded
+      // sweep's last reading must not survive the switch.
+      setSeedProgress(null)
       if (!silent) {
         setIsLoadingSpans(true)
         setSpansError(null)
@@ -437,9 +447,10 @@ export function TracesV2({
             // Paint from the first page: a large trace fills in page by page
             // (the shape live appends already have) instead of holding the
             // skeleton through the whole multi-second sweep.
-            onPage: (accumulated) => {
+            onPage: (accumulated, total) => {
               if (stale()) return
               detailSpansRef.current = accumulated
+              setSeedProgress({ loaded: accumulated.size, total })
               const wf = rebuildDetail(traceId)
               if (!silent && !revealed && wf) {
                 revealed = true
@@ -463,7 +474,10 @@ export function TracesV2({
           )
         }
       } finally {
-        if (!stale() && !silent) setIsLoadingSpans(false)
+        if (!stale()) {
+          setSeedProgress(null)
+          if (!silent) setIsLoadingSpans(false)
+        }
       }
     },
     [rebuildDetail],
@@ -732,6 +746,7 @@ export function TracesV2({
               onSpanClick={setSelectedSpan}
               chatLink={chatLink}
               onOpenMessage={handleOpenMessage}
+              loadingSpans={seedProgress}
             />
             <div className="border-b border-rule-2 px-3 py-2">
               <ViewSwitcher

@@ -4,6 +4,7 @@ import {
   Clock,
   Copy,
   Layers,
+  Loader2,
   LocateFixed,
   X,
 } from 'lucide-react'
@@ -28,6 +29,9 @@ interface TraceHeaderProps {
   chatLink?: TraceChatLink | null
   /** Open the linked conversation AND land on this trace's turn. */
   onOpenMessage?: (link: TraceChatLink) => void
+  /** Non-null while the paged seed still sweeps — the painted detail is
+   *  incomplete and the span chip counts up instead of stating a total. */
+  loadingSpans?: { loaded: number; total: number } | null
 }
 
 export function TraceHeader({
@@ -37,6 +41,7 @@ export function TraceHeader({
   onSpanClick,
   chatLink,
   onOpenMessage,
+  loadingSpans,
 }: TraceHeaderProps) {
   const { copiedKey, copy } = useCopyToClipboard()
   const copied = copiedKey === 'traceId'
@@ -140,12 +145,29 @@ export function TraceHeader({
           </span>
         </span>
 
-        <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
-          <Layers className="size-4 text-ink-faint" />
-          <span className="text-[11px] font-mono text-ink-faint tabular-nums">
-            {data.span_count} spans
+        {loadingSpans ? (
+          <span
+            role="status"
+            title="spans still loading — the waterfall is filling in"
+            className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface"
+          >
+            <Loader2
+              aria-hidden
+              className="size-4 animate-spin text-ink-faint motion-reduce:animate-none"
+            />
+            <span className="text-[11px] font-mono text-ink-faint tabular-nums">
+              {Math.min(loadingSpans.loaded, loadingSpans.total)}/
+              {loadingSpans.total} spans
+            </span>
           </span>
-        </span>
+        ) : (
+          <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
+            <Layers className="size-4 text-ink-faint" />
+            <span className="text-[11px] font-mono text-ink-faint tabular-nums">
+              {data.span_count} spans
+            </span>
+          </span>
+        )}
 
         <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
           <span className="text-[11px] font-mono text-ink-faint tabular-nums">
