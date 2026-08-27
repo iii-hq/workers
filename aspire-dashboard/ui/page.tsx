@@ -14,7 +14,7 @@ import {
   PageShell,
   StatusPanel,
 } from '@iii-dev/console-ui'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useState } from 'react'
 
 type DashboardState = 'stopped' | 'starting' | 'running' | 'failed'
 
@@ -59,6 +59,14 @@ type Props = PageRenderProps & { host: Host }
 type Phase = 'loading' | 'ready' | 'error'
 
 const timeoutMs = 130_000
+
+/**
+ * Base id for this page's browser-local change handler. The `iii::` prefix
+ * keeps the per-event invocations span-suppressed, so a busy dashboard does
+ * not fill the trace feed with its own change notifications.
+ */
+const EVENTS_FN = 'iii::aspire-dashboard-ui::changed'
+const EVENT_DEBOUNCE_MS = 80
 
 function IconGauge({ className }: { className?: string }) {
   return (
@@ -112,15 +120,26 @@ function configExample(endpoint: string, includeMetrics = false) {
   return `iii trigger configuration::set --json "$(iii trigger configuration::get id=iii-observability | jq --arg endpoint '${endpoint}' '.value | .enabled=true | .endpoint=$endpoint | .exporter="both" | .logs_enabled=true | .logs_exporter="both"${metricsPatch} | {id:"iii-observability", value:.}')"`
 }
 
+/**
+ * Status feed for the page: one seed read, then a re-read only when the worker
+ * says something moved. `aspire-dashboard::changed` fires on dashboard process
+ * transitions, on this worker's own configuration changes, and on
+ * iii-observability configuration changes, which the worker relays so no tab
+ * has to hold a `configuration` trigger of its own.
+ *
+ * There is no interval anywhere. Reconnects and tab-visibility changes re-seed
+ * instead, because those are the two moments a page can have missed an event.
+ */
 function useStatus(host: Host) {
   const [phase, setPhase] = useState<Phase>('loading')
   const [status, setStatus] = useState<Status | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [bound, setBound] = useState(false)
 
   // `status` must stay out of these deps. `refresh` sets it, so depending on it
-  // gave every response a new callback identity, which re-ran the effect below,
-  // which cleared the interval and fired another `refresh()` at once — a poll
-  // paced by round-trip latency instead of by the 5s interval.
+  // would give every response a new callback identity, re-running every effect
+  // below on each read — which is what turned the old interval into a poll
+  // paced by round-trip latency.
   const refresh = useCallback(async () => {
     try {
       const next = await host.iii.trigger<Status>('aspire-dashboard::status', {}, { timeoutMs: 10_000 })
@@ -135,14 +154,61 @@ function useStatus(host: Host) {
 
   useEffect(() => {
     void refresh()
-    const timer = window.setInterval(() => {
-      if (document.hidden) return
-      void refresh()
-    }, 5_000)
-    return () => window.clearInterval(timer)
   }, [refresh])
 
-  return { phase, status, error, refresh, setStatus, setError }
+  const instanceId = useId().replace(/[^a-zA-Z0-9]/g, '')
+
+  useEffect(() => {
+    const localFnId = `${EVENTS_FN}::${instanceId}`
+    const offs: Array<() => void> = []
+    let timer: number | undefined
+    // Lifecycle events arrive in bursts — a start emits `starting` then
+    // `running` — and one re-read serves the whole burst.
+    const ping = () => {
+      if (timer !== undefined) window.clearTimeout(timer)
+      timer = window.setTimeout(() => void refresh(), EVENT_DEBOUNCE_MS)
+    }
+    try {
+      offs.push(host.iii.on(localFnId, ping))
+      offs.push(
+        host.iii.registerTrigger({
+          type: 'aspire-dashboard::changed',
+          function_id: `${localFnId}::${host.iii.browserId}`,
+          config: {},
+        }),
+      )
+      setBound(true)
+    } catch {
+      for (const off of offs) off()
+      offs.length = 0
+      setBound(false)
+    }
+    return () => {
+      if (timer !== undefined) window.clearTimeout(timer)
+      setBound(false)
+      for (const off of offs) off()
+    }
+  }, [host, refresh, instanceId])
+
+  useEffect(() => {
+    try {
+      return host.iii.addConnectionStateListener((state) => {
+        if (state === 'connected') void refresh()
+      })
+    } catch {
+      return undefined
+    }
+  }, [host, refresh])
+
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void refresh()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [refresh])
+
+  return { phase, status, error, bound, refresh, setStatus, setError }
 }
 
 function StatusBadge({ status }: { status: Status | null }) {
@@ -171,7 +237,7 @@ export default function setup(host: Host) {
 }
 
 function AspireDashboardPage({ host, onRequestClose, commands }: Props) {
-  const { phase, status, error, refresh, setStatus, setError } = useStatus(host)
+  const { phase, status, error, bound, refresh, setStatus, setError } = useStatus(host)
   const [busy, setBusy] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
@@ -309,6 +375,13 @@ function AspireDashboardPage({ host, onRequestClose, commands }: Props) {
               />
             )}
             {notice && !busy && <StatusPanel variant="info" headline="Restart the engine to apply" detail={notice} />}
+            {!bound && phase !== 'loading' && (
+              <StatusPanel
+                variant="warn"
+                headline="Live updates are not bound"
+                detail="This page could not subscribe to aspire-dashboard::changed, so it will not notice changes on its own. Use Refresh, or reopen the page once the worker is up."
+              />
+            )}
             {!running && status && <StartCard status={status} onStart={() => void start()} />}
             {running && !configured && status && (
               <ConfigureCard status={status} onConfigure={configure} disabled={Boolean(busy)} />

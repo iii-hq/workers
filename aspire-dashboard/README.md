@@ -56,6 +56,30 @@ loopback in either case.
 
 The Aspire Dashboard response blocks cross-origin iframes with CSP and `X-Frame-Options`. The worker's Console page therefore embeds the local proxy port, which forwards the dashboard and strips those frame-blocking headers.
 
+## Live updates
+
+The Console page never polls. It reads `aspire-dashboard::status` once, then
+re-reads only when `aspire-dashboard::changed` fires. Bind that trigger type
+with an empty config; the payload carries `reason` (`dashboard` or
+`observability`) and the same dashboard snapshot `aspire-dashboard::status`
+reports.
+
+The worker emits it on dashboard process transitions, on its own configuration
+changes, and on `iii-observability` configuration changes. It holds one
+process-lifetime `configuration` trigger on `iii-observability` and relays
+those events, so no page has to hold one itself — a `configuration` trigger
+participates in the entry's TTL refcount, which is no place for a binding that
+comes and goes with a browser tab.
+
+`dashboard` events are deduplicated against the last snapshot sent, because
+the lifecycle transitions overlap. A page also re-reads when the engine
+connection returns and when the tab becomes visible again, which are the two
+moments it can have missed an event.
+
+`dashboard_healthy` is probed when `aspire-dashboard::status` runs, so a
+dashboard that wedges without exiting is reported at the next read rather than
+the moment it wedges. The process exit event covers a dashboard that dies.
+
 ## Functions
 
 | Function | Description |
@@ -64,6 +88,10 @@ The Aspire Dashboard response blocks cross-origin iframes with CSP and `X-Frame-
 | `aspire-dashboard::stop` | Stop the managed dashboard process. |
 | `aspire-dashboard::status` | Report dashboard health and iii-observability export status. |
 | `aspire-dashboard::configure-observability` | Update `iii-observability` to export to this dashboard. |
+
+| Trigger type | Description |
+|---|---|
+| `aspire-dashboard::changed` | Fires on dashboard process transitions and on `iii-observability` configuration updates. Empty config. |
 
 Manual configuration equivalent for traces and logs, preserving the rest of the
 current `iii-observability` value:

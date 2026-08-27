@@ -8,8 +8,15 @@ import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { uiPage, uiStyles } from 'virtual:aspire-dashboard-ui'
 import { type IIIClient, registerWorker } from 'iii-sdk'
+import { type ChangedReason, createChangedFeed } from './changed.js'
 import { type Config, loadConfig, otlpApiKey, toRuntime } from './config.js'
-import { bindConfigTrigger, CONFIG_ID, fetchRuntime, registerAspireDashboardConfig } from './configuration.js'
+import {
+  bindConfigTrigger,
+  CONFIG_ID,
+  fetchRuntime,
+  registerAspireDashboardConfig,
+  watchConfiguration,
+} from './configuration.js'
 import { assertPortsFree, processExited, waitForHttp } from './lifecycle.js'
 
 const { values } = parseArgs({
@@ -95,6 +102,41 @@ function publicDashboard() {
     last_error: dashboard?.last_error ?? null,
   }
 }
+
+const CHANGED_TRIGGER = 'aspire-dashboard::changed'
+
+/**
+ * Console pages subscribe to this instead of polling `aspire-dashboard::status`,
+ * so a page re-reads only when there is something new to read.
+ */
+const changed = createChangedFeed(publicDashboard, (binding, event) => {
+  void iii
+    .trigger({
+      function_id: binding.function_id,
+      payload: event,
+      timeoutMs: 10_000,
+      ...(binding.namespace ? { namespace: binding.namespace } : {}),
+    })
+    .catch((err) => console.error(`[aspire-dashboard] ${binding.function_id} rejected a change event: ${String(err)}`))
+})
+
+const emitChanged = (reason: ChangedReason) => changed.emit(reason)
+
+iii.registerTriggerType<Record<string, never>>(
+  {
+    id: CHANGED_TRIGGER,
+    description:
+      'Fires when the Aspire Dashboard process changes state or when iii-observability configuration is updated. Payload: reason (dashboard|observability) and the dashboard snapshot that aspire-dashboard::status also reports. Bind with an empty config.',
+  },
+  {
+    async registerTrigger({ id, function_id, namespace }) {
+      changed.bind(id, { function_id, namespace })
+    },
+    async unregisterTrigger({ id }) {
+      changed.unbind(id)
+    },
+  },
+)
 
 type ProxyState = {
   server: http.Server
@@ -257,17 +299,21 @@ async function startDashboard() {
     last_error: null,
   }
 
+  emitChanged('dashboard')
+
   let spawnFailed = false
   child.once('error', (err) => {
     spawnFailed = true
     if (!dashboard || dashboard.process !== child) return
     dashboard.state = 'failed'
     dashboard.last_error = `Failed to start Aspire Dashboard: ${String(err)}`
+    emitChanged('dashboard')
   })
   child.once('exit', (code) => {
     if (!dashboard || dashboard.process !== child) return
     dashboard.exit_code = code
     dashboard.state = code === 0 ? 'stopped' : 'failed'
+    emitChanged('dashboard')
   })
   pipeWithBackpressure(child.stderr, process.stderr, '[aspire-dashboard] ')
   pipeWithBackpressure(child.stdout, process.stdout, '[aspire-dashboard] ')
@@ -286,10 +332,12 @@ async function startDashboard() {
     dashboard.state = 'failed'
     dashboard.last_error = message
     await killProcess(child, config.stop_grace_ms)
+    emitChanged('dashboard')
     throw new Error(message)
   }
 
   dashboard.state = 'running'
+  emitChanged('dashboard')
   return publicDashboard()
 }
 
@@ -299,6 +347,7 @@ async function stopDashboard() {
     dashboard.state = 'stopped'
     dashboard.exit_code = dashboard.exit_code ?? 0
   }
+  emitChanged('dashboard')
   return publicDashboard()
 }
 
@@ -550,7 +599,20 @@ try {
 await bindConfigTrigger(iii, async () => {
   const runtime = await fetchRuntime(iii)
   if (runtime) holder.current = { engine_url: url, ...runtime }
+  // The ports and secure_otlp all show up in the status a page renders.
+  emitChanged('dashboard')
 })
+
+// One process-lifetime watch on iii-observability, relayed into the page's
+// single subscription. The pages get their observability updates from this
+// worker rather than binding a `configuration` trigger per tab.
+watchConfiguration(
+  iii,
+  'iii-observability',
+  'aspire-dashboard::on-observability-config-change',
+  'Internal: tell bound Console pages that iii-observability configuration changed.',
+  async () => emitChanged('observability'),
+)
 
 // otlp_api_key is optional in the schema, so a first boot registers it
 // unset. otlpApiKey() then falls back to a per-process random value that a

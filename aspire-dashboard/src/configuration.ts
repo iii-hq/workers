@@ -40,16 +40,28 @@ export async function fetchRuntime(iii: IIIClient): Promise<RuntimeConfig | null
   }
 }
 
-export async function bindConfigTrigger(iii: IIIClient, onChange: () => Promise<void>): Promise<void> {
-  await onChange()
+/**
+ * Run `onChange` whenever a configuration entry is updated. The worker holds
+ * the trigger for the life of the process, so tabs never register one of these
+ * themselves: a `configuration` trigger participates in the entry's TTL
+ * refcount, and a browser binding that comes and goes with a tab has no
+ * business in it.
+ */
+export function watchConfiguration(
+  iii: IIIClient,
+  configurationId: string,
+  functionId: string,
+  description: string,
+  onChange: () => Promise<void>,
+): void {
   iii.registerFunction(
-    CONFIG_FN_ID,
+    functionId,
     async () => {
       await onChange()
       return null
     },
     {
-      description: 'Internal: reload the Aspire Dashboard worker configuration when it changes.',
+      description,
       metadata: { internal: true },
       request_format: { type: 'object', properties: {} },
       response_format: { type: 'null' },
@@ -57,7 +69,18 @@ export async function bindConfigTrigger(iii: IIIClient, onChange: () => Promise<
   )
   iii.registerTrigger({
     type: 'configuration',
-    function_id: CONFIG_FN_ID,
-    config: { configuration_id: CONFIG_ID, event_types: ['configuration:updated'] },
+    function_id: functionId,
+    config: { configuration_id: configurationId, event_types: ['configuration:updated'] },
   })
+}
+
+export async function bindConfigTrigger(iii: IIIClient, onChange: () => Promise<void>): Promise<void> {
+  await onChange()
+  watchConfiguration(
+    iii,
+    CONFIG_ID,
+    CONFIG_FN_ID,
+    'Internal: reload the Aspire Dashboard worker configuration when it changes.',
+    onChange,
+  )
 }
