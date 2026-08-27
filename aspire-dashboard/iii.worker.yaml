@@ -1,0 +1,22 @@
+iii: v1
+name: aspire-dashboard
+language: javascript
+deploy: bundle
+manifest: package.json
+license: Apache-2.0
+tags:
+  - observability
+  - opentelemetry
+  - otel
+  - logs
+  - traces
+  - metrics
+  - dashboard
+description: Microsoft Aspire Dashboard for iii observability — starts an OTLP-compatible dashboard and injects it into the Console with iii-observability setup helpers.
+runtime:
+  kind: javascript
+scripts:
+  start: node ./index.mjs
+
+dependencies:
+  configuration: "0.x"

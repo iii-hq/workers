@@ -1,0 +1,98 @@
+[data-iii-ui=aspire-dashboard] .aspire-dashboard-main {
+  position: relative;
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  overflow: auto;
+}
+
+[data-iii-ui=aspire-dashboard] .aspire-dashboard-frame {
+  width: 100%;
+  min-height: 0;
+  flex: 1;
+  border: 1px solid var(--color-edge);
+  border-radius: 12px;
+  background: var(--color-panel-raised);
+}
+
+[data-iii-ui=aspire-dashboard] .aspire-dashboard-setup {
+  display: grid;
+  gap: 12px;
+  max-width: 980px;
+  width: 100%;
+}
+
+[data-iii-ui=aspire-dashboard] .aspire-dashboard-card h2 {
+  margin: 0;
+  color: var(--color-ink);
+  font: 600 14px/1.4 var(--font-sans);
+}
+
+[data-iii-ui=aspire-dashboard] .aspire-dashboard-card p {
+  margin: 4px 0 0;
+  color: var(--color-ink-muted);
+  font: 400 13px/1.5 var(--font-sans);
+}
+
+[data-iii-ui=aspire-dashboard] .aspire-dashboard-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+[data-iii-ui=aspire-dashboard] .aspire-dashboard-note {
+  color: var(--color-ink-muted);
+  font: 400 13px/1.55 var(--font-sans);
+}
+
+[data-iii-ui=aspire-dashboard] .aspire-dashboard-note code,
+[data-iii-ui=aspire-dashboard] .aspire-dashboard-facts code {
+  font-family: var(--font-mono);
+  color: var(--color-ink);
+}
+
+[data-iii-ui=aspire-dashboard] .aspire-dashboard-warnings {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  color: var(--color-warn-ink, var(--color-ink));
+  font: 400 13px/1.5 var(--font-sans);
+}
+
+[data-iii-ui=aspire-dashboard] .aspire-dashboard-facts {
+  display: grid;
+  grid-template-columns: minmax(120px, max-content) minmax(0, 1fr);
+  gap: 8px 14px;
+  margin: 0 0 14px;
+}
+
+[data-iii-ui=aspire-dashboard] .aspire-dashboard-facts div {
+  display: contents;
+}
+
+[data-iii-ui=aspire-dashboard] .aspire-dashboard-facts dt {
+  color: var(--color-ink-muted);
+  font: 500 12px/1.4 var(--font-sans);
+}
+
+[data-iii-ui=aspire-dashboard] .aspire-dashboard-facts dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--color-ink);
+  overflow-wrap: anywhere;
+  font: 400 12px/1.4 var(--font-mono);
+}
+
+@media (max-width: 640px) {
+  [data-iii-ui=aspire-dashboard] .aspire-dashboard-main {
+    padding: 8px;
+  }
+
+  [data-iii-ui=aspire-dashboard] .aspire-dashboard-facts {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
+}
