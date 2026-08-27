@@ -170,7 +170,7 @@ fn fn_pill_syntax() {
 }
 
 #[test]
-fn mesh_model() {
+fn runtime_model() {
     let out = default_prompt();
     assert!(out.contains("worker → engine → worker"));
     assert!(out.contains("Workers never talk to each other directly"));
