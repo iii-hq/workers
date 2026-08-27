@@ -385,7 +385,8 @@ INTEGRATION_ARTIFACTS ?= $(REPO_ROOT)/target/integration
 INTEGRATION_PLAYGROUND_SCENARIO ?= console-streamed-text
 INTEGRATION_PLAYGROUND_ARTIFACTS ?= $(REPO_ROOT)/target/console-e2e
 
-integration-test: integration-build integration-run
+integration-test: integration-build
+	@$(MAKE) --no-print-directory integration-run
 
 integration-build:
 	@for w in $(INTEGRATION_WORKERS) harness; do \

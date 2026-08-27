@@ -214,7 +214,8 @@ jobs:
           archive="$RUNNER_TEMP/$asset"
           destination="$GITHUB_WORKSPACE/target/integration-compose-release"
           url="https://github.com/$REPOSITORY/releases/download/$TAG/$asset"
-          curl --proto '=https' --tlsv1.2 --retry 3 --retry-all-errors -fsSLo "$archive" "$url"
+          curl --location --proto-redir '=https' --proto '=https' --tlsv1.2 \
+            --retry 3 --retry-all-errors -fsSLo "$archive" "$url"
           printf '%s  %s\n' "$expected" "$archive" | sha256sum --check
           [[ "$(tar -tzf "$archive")" == "$BINARY" ]] || {
             echo "release archive must contain only $BINARY"

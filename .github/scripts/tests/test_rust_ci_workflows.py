@@ -119,6 +119,7 @@ def test_harness_integration_installs_checksum_pinned_compose_release() -> None:
     assert len(lock["x86_64_sha256"]) == 64
     assert len(lock["aarch64_sha256"]) == 64
     assert "--proto '=https' --tlsv1.2" in install["run"]
+    assert "--location --proto-redir '=https'" in install["run"]
     assert "sha256sum --check" in install["run"]
     assert '[[ "$(tar -tzf "$archive")" == "$BINARY" ]]' in install["run"]
     assert "expected_version=${TAG#iii/v}" in install["run"]
@@ -197,7 +198,8 @@ def test_harness_integration_restores_and_saves_final_component_binaries() -> No
 
 def test_makefile_can_build_and_run_the_integration_stack_separately() -> None:
     makefile = (REPOSITORY / "harness" / "Makefile").read_text()
-    assert "integration-test: integration-build integration-run" in makefile
+    assert "integration-test: integration-build\n" in makefile
+    assert "\t@$(MAKE) --no-print-directory integration-run" in makefile
     assert "integration-build:" in makefile
     assert "integration-run:" in makefile
 
