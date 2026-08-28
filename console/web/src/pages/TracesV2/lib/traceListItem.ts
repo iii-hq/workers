@@ -4,7 +4,7 @@
 // same mapping in non-React contexts (e.g. tests, server-side render,
 // a different SDK transport that emits the same span shape).
 
-import type { StoredSpan } from '../api/traces'
+import type { StoredSpan, TraceSummary } from '../api/traces'
 import type { TraceListItem } from '../hooks/useTraceData'
 import { isPendingSpan, toMs } from './traceTransform'
 
@@ -93,6 +93,30 @@ export function mapSpanToListItem(span: StoredSpan): TraceListItem {
   }
 }
 
+/** Map the compact `engine::traces::list` contract directly to the row
+ *  view-model. Full span payloads are intentionally absent from this path. */
+export function mapTraceSummaryToListItem(trace: TraceSummary): TraceListItem {
+  const startTime = toMs(trace.start_time_unix_nano)
+  const endTime =
+    trace.end_time_unix_nano == null
+      ? undefined
+      : toMs(trace.end_time_unix_nano)
+  return {
+    traceId: trace.trace_id,
+    rootOperation: trace.name,
+    functionId: trace.function_id,
+    topic: trace.topic,
+    status: trace.status,
+    startTime,
+    endTime,
+    duration: endTime === undefined ? undefined : endTime - startTime,
+    spanCount: trace.span_count,
+    workers: [trace.service_name || 'unknown'],
+    attributes: trace.attributes,
+    traceTags: trace.trace_tags,
+  }
+}
+
 /** How a list row is labelled — mirrors `RowLabelConfig` in tracesViews. */
 export interface RowLabelConfig {
   mode: 'function' | 'span-name' | 'attribute'
@@ -136,12 +160,9 @@ export function resolveRowLabel(
  * Collapse a span list to one representative span per `trace_id` — the root
  * (no parent) when present, else the earliest-started span.
  *
- * The flat-list TRACES view is one row per trace. A plain `engine::traces::list`
- * already returns root spans only, but the SEARCH path passes
- * `search_all_spans: true`, which returns EVERY span of each matching trace
- * (so a query like `harness::send` matches a child span and the engine
- * hands back the whole turn). Collapsing here keeps the list one-row-per-trace
- * regardless, and is a no-op for the non-search response (already roots).
+ * Full-span fixtures and legacy `engine::traces::spans` consumers can still
+ * need a representative root. The compact `engine::traces::list` contract is
+ * already one-row-per-trace and does not use this helper.
  */
 export function dedupeToTraceRoots(
   spans: ReadonlyArray<StoredSpan>,
@@ -172,10 +193,9 @@ export function dedupeToTraceRoots(
  * the hook to dedupe back-to-back fetches that return the same rows.
  *
  * Joins all trace IDs in order, plus the row-visible fields that can
- * change for an UNCHANGED set of ids — status (pending→final) and the
- * trace tags (they arrive late, when a tag-bearing child span closes
- * after the root row was seeded/streamed). An id-only fingerprint
- * would swallow those in-place updates. Earlier versions sampled only
+ * change for an UNCHANGED set of ids — aggregate status/count/end time and
+ * projected attributes/tags can all change as child spans close. An id-only
+ * fingerprint would swallow those in-place updates. Earlier versions sampled only
  * first + last + count, which would have missed middle-only churn if
  * the sort order ever flipped. At the 500-trace ceiling the
  * fingerprint stays tens-of-KB — cheap to compare.
@@ -184,11 +204,24 @@ export function fingerprintTraceList(
   traces: ReadonlyArray<TraceListItem>,
 ): string {
   return `${traces.length}:${traces
-    .map(
-      (t) =>
-        `${t.traceId}/${t.status}/${
-          t.traceTags ? Object.entries(t.traceTags).flat().join('') : ''
-        }`,
-    )
+    .map((trace) => {
+      const tags = trace.traceTags
+        ? Object.entries(trace.traceTags).flat().join('|')
+        : ''
+      const attributes = trace.attributes
+        ? Object.entries(trace.attributes).flat().join('|')
+        : ''
+      return [
+        trace.traceId,
+        trace.status,
+        trace.startTime,
+        trace.endTime ?? '',
+        trace.spanCount,
+        trace.functionId ?? '',
+        trace.topic ?? '',
+        tags,
+        attributes,
+      ].join('/')
+    })
     .join(',')}`
 }

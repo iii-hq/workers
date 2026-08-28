@@ -24,7 +24,7 @@ import {
   __resetIiiClientForTests,
   __setIiiClientDepsForTests,
 } from '@/lib/iii-client'
-import type { SpanTreeNode, StoredSpan } from '../api/traces'
+import type { SpanTreeNode, StoredSpan, TraceSummary } from '../api/traces'
 import {
   ALL_SPANS,
   LIST_SPANS,
@@ -50,6 +50,41 @@ function buildTraceTree(traceId: string): SpanTreeNode[] {
   return roots
 }
 
+function toSummary(root: StoredSpan): TraceSummary {
+  const spans = ALL_SPANS.filter((span) => span.trace_id === root.trace_id)
+  const errors = spans.filter(
+    (span) => span.status.toLowerCase() === 'error',
+  ).length
+  const pending = spans.some((span) => span.pending)
+  const attributes = Object.fromEntries(
+    root.attributes.map(([key, value]) => [key, String(value)]),
+  )
+  return {
+    trace_id: root.trace_id,
+    name: root.name,
+    start_time_unix_nano: Math.min(
+      ...spans.map((span) => span.start_time_unix_nano),
+    ),
+    ...(pending
+      ? {}
+      : {
+          end_time_unix_nano: Math.max(
+            ...spans.map((span) => span.end_time_unix_nano),
+          ),
+        }),
+    status: errors > 0 ? 'error' : pending ? 'pending' : 'ok',
+    service_name: root.service_name,
+    function_id:
+      String(attributes['faas.invoked_name'] ?? attributes.function_id ?? '') ||
+      undefined,
+    topic: attributes['messaging.destination.name'] as string | undefined,
+    trace_tags: root.trace_tags,
+    attributes,
+    span_count: spans.length,
+    error_count: errors,
+  }
+}
+
 /** Route a bus trigger to a canned, fixture-backed response. */
 async function fakeTrigger({
   function_id,
@@ -58,35 +93,51 @@ async function fakeTrigger({
   const p = payload ?? {}
   switch (function_id) {
     case 'engine::traces::list': {
-      const traceId = p.trace_id as string | undefined
-      // A trace-scoped read (the detail seed) returns every span of that trace.
-      if (traceId) {
-        const spans = ALL_SPANS.filter((s) => s.trace_id === traceId)
-        return { spans, total: spans.length, offset: 0, limit: 10000 }
-      }
-      // The list read returns roots, with lightweight filter/search support so
+      // The list read returns summaries, with lightweight filter/search support so
       // the filter bar and search box visibly do something in the playground.
-      let spans: StoredSpan[] = LIST_SPANS
+      let traces = LIST_SPANS.map(toSummary)
       const name = p.name as string | undefined
       const worker = p.service_name as string | undefined
       const status = p.status as string | undefined
       if (name) {
         const q = name.toLowerCase()
-        spans = spans.filter((s) => s.name.toLowerCase().includes(q))
+        traces = traces.filter((trace) => trace.name.toLowerCase().includes(q))
       }
-      if (worker) spans = spans.filter((s) => s.service_name === worker)
+      if (worker)
+        traces = traces.filter((trace) => trace.service_name === worker)
       if (status) {
-        spans = spans.filter(
-          (s) =>
-            (s.status.toLowerCase() === 'error' ? 'error' : 'ok') === status,
+        traces = traces.filter((trace) => trace.status === status)
+      }
+      const excluded = p.exclude_attributes as
+        | Array<[string, string]>
+        | undefined
+      if (excluded?.length) {
+        traces = traces.filter(
+          (trace) =>
+            !excluded.some(([key, value]) => {
+              if (key === 'faas.invoked_name' || key === 'function_id') {
+                return trace.function_id === value
+              }
+              return trace.attributes?.[key] === value
+            }),
         )
       }
+      const total = traces.length
+      const offset = (p.offset as number) ?? 0
+      const limit = (p.limit as number) ?? 50
       return {
-        spans,
-        total: spans.length,
-        offset: (p.offset as number) ?? 0,
-        limit: (p.limit as number) ?? 500,
+        traces: traces.slice(offset, offset + limit),
+        total,
+        offset,
+        limit,
       }
+    }
+    case 'engine::traces::spans': {
+      const traceId = p.trace_id as string | undefined
+      const spans = traceId
+        ? ALL_SPANS.filter((span) => span.trace_id === traceId)
+        : ALL_SPANS
+      return { spans, total: spans.length, offset: 0, limit: 10000 }
     }
     case 'engine::traces::tree':
       return { roots: buildTraceTree((p.trace_id as string) ?? '') }
