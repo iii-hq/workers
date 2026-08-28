@@ -38,12 +38,22 @@ def test_explicit_subsets_are_canonicalized_and_non_binary_has_one_build() -> No
 
 def test_matrix_routes_apple_and_linux_targets_to_the_release_runner_group() -> None:
     assert release_targets.matrix_targets(
-        ["x86_64-apple-darwin", "x86_64-unknown-linux-gnu"], deploy="binary"
+        [
+            "x86_64-apple-darwin",
+            "aarch64-apple-darwin",
+            "x86_64-unknown-linux-gnu",
+        ],
+        deploy="binary",
     ) == [
         {
             "target": "x86_64-apple-darwin",
             "os": "macos-latest",
             "runner": "workers-release-macos-12core",
+        },
+        {
+            "target": "aarch64-apple-darwin",
+            "os": "macos-latest",
+            "runner": "workers-release-macos-arm-5core",
         },
         {
             "target": "x86_64-unknown-linux-gnu",

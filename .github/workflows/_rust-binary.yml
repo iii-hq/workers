@@ -49,7 +49,7 @@ jobs:
           import json, os, sys
           all_targets = [
               {"target": "x86_64-apple-darwin",            "os": "macos-latest", "runner": "workers-release-macos-12core"},
-              {"target": "aarch64-apple-darwin",           "os": "macos-latest", "runner": "workers-release-macos-12core"},
+              {"target": "aarch64-apple-darwin",           "os": "macos-latest", "runner": "workers-release-macos-arm-5core"},
               {"target": "x86_64-unknown-linux-gnu",       "os": "ubuntu-22.04", "runner": "workers-release-linux-8core"},
               {"target": "x86_64-unknown-linux-musl",      "os": "ubuntu-latest", "runner": "workers-release-linux-8core"},
               {"target": "aarch64-unknown-linux-gnu",      "os": "ubuntu-22.04", "runner": "workers-release-linux-8core"},

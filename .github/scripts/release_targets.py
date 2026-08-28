@@ -28,7 +28,9 @@ TARGET_RUNNERS = {
 # Release Control path uses the same isolated GitHub-hosted capacity.
 TARGET_LARGER_RUNNERS = {
     "x86_64-apple-darwin": "workers-release-macos-12core",
-    "aarch64-apple-darwin": "workers-release-macos-12core",
+    # Build Apple Silicon artifacts on a dedicated native M2 pool. This keeps
+    # the Intel and ARM macOS targets independently schedulable.
+    "aarch64-apple-darwin": "workers-release-macos-arm-5core",
     "x86_64-unknown-linux-gnu": "workers-release-linux-8core",
     "x86_64-unknown-linux-musl": "workers-release-linux-8core",
     "aarch64-unknown-linux-gnu": "workers-release-linux-8core",

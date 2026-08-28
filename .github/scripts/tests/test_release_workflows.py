@@ -324,6 +324,15 @@ def test_release_builds_use_the_dedicated_github_hosted_runners() -> None:
     assert binary["build"]["runs-on"] == "${{ matrix.runner }}"
 
 
+def test_rust_binary_routes_apple_targets_to_independent_runner_pools() -> None:
+    lines = (WORKFLOWS / "_rust-binary.yml").read_text().splitlines()
+    intel = next(line for line in lines if '"target": "x86_64-apple-darwin"' in line)
+    arm = next(line for line in lines if '"target": "aarch64-apple-darwin"' in line)
+
+    assert '"runner": "workers-release-macos-12core"' in intel
+    assert '"runner": "workers-release-macos-arm-5core"' in arm
+
+
 def test_release_matrix_and_build_jobs_install_manifest_tooling() -> None:
     for filename in ("prepare-release.yml", "publish-stable.yml"):
         jobs = workflow(WORKFLOWS / filename)["jobs"]
