@@ -31,7 +31,10 @@ import {
   type HarnessImageBlock,
   predictedUserEntryId,
 } from '@/lib/backend/harness-send'
-import { serialRefresh } from '@/lib/backend/serial-refresh'
+import {
+  type SessionTriggerLoader,
+  startSessionTriggerLoader,
+} from '@/lib/backend/session-trigger-loader'
 import {
   mergeFiredTriggers,
   type SessionTriggerInfo,
@@ -102,6 +105,7 @@ import { Composer, type ComposerSubmitPayload } from './Composer'
 import { ContextUsage } from './ContextUsage'
 import { isSessionSubmitBlockedByHydration } from './chat-submit-blocking'
 import { MessageList } from './MessageList'
+import { RegisteredTriggerStatusProvider } from './RegisteredTriggerStatus'
 import { SessionTriggers } from './SessionTriggers'
 import {
   agentIdForSend,
@@ -381,6 +385,9 @@ export function ChatView({
   const [sessionTriggers, setSessionTriggers] = useState<SessionTriggerInfo[]>(
     [],
   )
+  const [triggersSnapshotSessionId, setTriggersSnapshotSessionId] = useState<
+    string | null
+  >(null)
   // Every full row this tab has EVER fetched, by subscription id. When a once
   // binding fires and retires, the refetch drops it — this cache lets the
   // fired ghost keep its full config/conditions after retirement.
@@ -388,28 +395,27 @@ export function ChatView({
   // The current conversation's serialized list loader. Doorbells arrive
   // at-least-once and burst on rapid fires; serialRefresh coalesces them
   // behind one in-flight read so snapshots never apply out of order.
-  const triggersLoaderRef = useRef<{ refresh: () => void } | null>(null)
+  const triggersLoaderRef = useRef<SessionTriggerLoader | null>(null)
   const refreshTriggers = useCallback(() => {
     triggersLoaderRef.current?.refresh()
   }, [])
   useEffect(() => {
-    const listTriggers = backend.listTriggers
-    if (!listTriggers) return
     seenTriggersRef.current = new Map()
     setSessionTriggers([])
-    const loader = serialRefresh(
-      () => listTriggers(conversation.id),
-      (rows) => {
+    setTriggersSnapshotSessionId(null)
+    const listTriggers = backend.listTriggers
+    if (!listTriggers) return
+    const loader = startSessionTriggerLoader({
+      sessionId: conversation.id,
+      listTriggers,
+      onTriggersChanged: backend.onTriggersChanged,
+      onSnapshot: (rows) => {
         for (const row of rows) seenTriggersRef.current.set(row.id, row)
         setSessionTriggers(rows)
+        setTriggersSnapshotSessionId(conversation.id)
       },
-    )
+    })
     triggersLoaderRef.current = loader
-    // Subscribe BEFORE the first snapshot so a mutation in the setup gap
-    // rings instead of being missed (both ride the same client bootstrap, so
-    // the registration frames are queued ahead of the list read).
-    const off = backend.onTriggersChanged?.(conversation.id, loader.refresh)
-    loader.refresh()
     // Catch-up for doorbells missed while hidden (throttled tab). Missed
     // doorbells across a socket outage are reseeded by the backend's
     // reconnect listener.
@@ -418,11 +424,10 @@ export function ChatView({
     }
     document.addEventListener('visibilitychange', onVisible)
     return () => {
-      off?.()
       document.removeEventListener('visibilitychange', onVisible)
       // Discard any in-flight snapshot so the old conversation's rows can't
       // land in the next conversation's state.
-      loader.reset()
+      loader.dispose()
       if (triggersLoaderRef.current === loader) triggersLoaderRef.current = null
     }
   }, [backend.listTriggers, backend.onTriggersChanged, conversation.id])
@@ -2256,42 +2261,47 @@ export function ChatView({
         />
       ) : null}
 
-      <MessageList
-        messages={conversation.messages}
-        agentName={conversation.agentProfile?.name}
-        spawnContext={{
-          title: conversation.title,
-          model: effectiveModel,
-          appearance: conversation.subagentAppearance,
-        }}
-        transcriptHydrated={conversation.hydrated !== false}
-        isThinking={isThinking}
-        thinkingDetail={
-          conversation.status === 'working' && conversation.statusReason
-            ? conversation.statusReason
-            : (phaseDetail ??
-              (effectiveModel ? `dispatching ${effectiveModel}` : undefined))
-        }
-        density={density}
-        onResolveApproval={resolveApproval}
-        onAlwaysAllow={handleAlwaysAllow}
-        onResolveFilesystemAccess={handleFilesystemResolve}
-        onManageFilesystemAccess={handleManageFilesystemAccess}
-        onConfigureProvider={handleOpenModelPicker}
-        workingDir={conversation.workingDir ?? null}
-        onWorkingDirChange={
-          workingDirEnabled ? handleWorkingDirChange : undefined
-        }
-        defaultWorkingDir={defaultWorkingDir}
-        worktreePicker={
-          worktreeEnabled
-            ? { enabled: true, onPick: handlePickWorktree }
-            : undefined
-        }
+      <RegisteredTriggerStatusProvider
+        loaded={triggersSnapshotSessionId === conversation.id}
         triggersById={triggersById}
-        focusMessageId={focusMessageId}
-        onFocusMessageHandled={handleFocusMessageHandled}
-      />
+      >
+        <MessageList
+          messages={conversation.messages}
+          agentName={conversation.agentProfile?.name}
+          spawnContext={{
+            title: conversation.title,
+            model: effectiveModel,
+            appearance: conversation.subagentAppearance,
+          }}
+          transcriptHydrated={conversation.hydrated !== false}
+          isThinking={isThinking}
+          thinkingDetail={
+            conversation.status === 'working' && conversation.statusReason
+              ? conversation.statusReason
+              : (phaseDetail ??
+                (effectiveModel ? `dispatching ${effectiveModel}` : undefined))
+          }
+          density={density}
+          onResolveApproval={resolveApproval}
+          onAlwaysAllow={handleAlwaysAllow}
+          onResolveFilesystemAccess={handleFilesystemResolve}
+          onManageFilesystemAccess={handleManageFilesystemAccess}
+          onConfigureProvider={handleOpenModelPicker}
+          workingDir={conversation.workingDir ?? null}
+          onWorkingDirChange={
+            workingDirEnabled ? handleWorkingDirChange : undefined
+          }
+          defaultWorkingDir={defaultWorkingDir}
+          worktreePicker={
+            worktreeEnabled
+              ? { enabled: true, onPick: handlePickWorktree }
+              : undefined
+          }
+          triggersById={triggersById}
+          focusMessageId={focusMessageId}
+          onFocusMessageHandled={handleFocusMessageHandled}
+        />
+      </RegisteredTriggerStatusProvider>
       <LiveRegion announcement={announcer.announcement} />
 
       <footer className={footerPad}>

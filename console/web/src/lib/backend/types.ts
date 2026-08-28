@@ -333,6 +333,8 @@ export interface ChatBackend {
    * The session's registered trigger subscriptions — the harness's durable
    * binding rows (`harness::triggers::list`), source-generic: raw trigger
    * type + config, delivery = notify-this-chat or call-a-function.
+   * Rejects when the snapshot is unavailable; `[]` is a successful empty
+   * snapshot.
    */
   listTriggers?(sessionId: string): Promise<SessionTriggerInfo[]>
   /**
