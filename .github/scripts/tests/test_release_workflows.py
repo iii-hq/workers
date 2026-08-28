@@ -290,6 +290,26 @@ def test_release_target_policy_excludes_windows_and_requires_complete_assets() -
     assert "missing binary artefacts for targets" in resolver
 
 
+def test_prepare_release_expands_the_computed_target_list_with_matrix_include() -> None:
+    jobs = workflow(WORKFLOWS / "prepare-release.yml")["jobs"]
+    strategy = jobs["build"]["strategy"]
+
+    assert strategy["fail-fast"] == "false"
+    assert strategy["matrix"] == {
+        "include": "${{ fromJSON(needs.matrix.outputs.include) }}",
+    }
+
+
+def test_publish_stable_expands_the_computed_target_list_with_matrix_include() -> None:
+    jobs = workflow(WORKFLOWS / "publish-stable.yml")["jobs"]
+    strategy = jobs["build"]["strategy"]
+
+    assert strategy["fail-fast"] == "false"
+    assert strategy["matrix"] == {
+        "include": "${{ fromJSON(needs.matrix.outputs.include) }}",
+    }
+
+
 def test_registry_publish_keeps_stdio_workers_alive_for_interface_collection() -> None:
     body = (WORKFLOWS / "_publish-registry.yml").read_text()
     assert "start_worker_with_open_stdin" in body
