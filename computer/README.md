@@ -30,14 +30,14 @@ worker, persist with `state`, schedule with `cron`.
 ## Install
 
 ```bash
-iii worker add computer
+iii trigger compose::add worker=computer
 ```
 
 To drive a throwaway desktop instead of your own machine, add the sandbox worker
 too — it boots the microVM the `image` driver runs in:
 
 ```bash
-iii worker add iii-sandbox
+iii trigger compose::add worker=iii-sandbox
 ```
 
 **macOS, native driver only.** Capture and input are permission-gated and macOS

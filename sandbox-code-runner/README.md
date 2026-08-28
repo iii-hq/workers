@@ -17,14 +17,14 @@ sandbox-code-runner itself executes nothing and touches no host filesystem.
 ## Install
 
 ```bash
-iii worker add sandbox-code-runner
+iii trigger compose::add worker=sandbox-code-runner
 ```
 
 sandbox-code-runner delegates every execution to the iii-sandbox daemon, so
 install that too:
 
 ```bash
-iii worker add iii-sandbox
+iii trigger compose::add worker=iii-sandbox
 ```
 
 Missing iii-sandbox is not fatal — sandbox-code-runner warns loudly at boot

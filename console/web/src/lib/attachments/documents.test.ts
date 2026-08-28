@@ -176,7 +176,9 @@ describe('expandDocumentAttachments', () => {
     const result = await expandDocumentAttachments([doc()], trigger)
 
     expect(result.blocks[0]).toContain('error=')
-    expect(result.blocks[0]).toContain('iii worker add document')
+    expect(result.blocks[0]).toContain(
+      'iii trigger compose::add worker=document',
+    )
     expect(result.failures).toHaveLength(1)
   })
 

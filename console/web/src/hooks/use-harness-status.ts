@@ -12,7 +12,7 @@ import { useWorkerLifecycle } from './use-worker-lifecycle'
  *   1. An initial `engine::workers::list` read on mount.
  *   2. A real-time `worker` lifecycle trigger (operations: ['add']) so the UI
  *      reacts the instant harness is added — whether from the in-app CTA or a
- *      `iii worker add harness` run in the operator's own terminal (this is the
+ *      `iii trigger compose::add worker=harness` run in the operator's own terminal (this is the
  *      educational, "you can do this in the CLI too" angle).
  *
  * `install()` triggers `worker::add` for the registry `harness` source. It
@@ -176,7 +176,7 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
   })
 
   // One-time presence probe on mount. Live changes — the in-app CTA or a CLI
-  // `iii worker add harness` — arrive purely through the `worker` add trigger
+  // `iii trigger compose::add worker=harness` — arrive through the worker add trigger
   // above (the engine's push channel). No polling, no focus re-checks.
   useEffect(() => {
     if (!enabled) {

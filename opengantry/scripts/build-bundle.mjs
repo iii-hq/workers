@@ -53,5 +53,5 @@ await build({
 });
 
 // dist/ is bind-mounted empty inside libkrun. Copy next to iii.worker.yaml so
-// `iii worker add` can run `node ./index.mjs` after `cp sandbox.mjs index.mjs`.
+// `compose::add` can run `node ./index.mjs` after `cp sandbox.mjs index.mjs`.
 await copyFile(join(root, 'dist/bundle/index.mjs'), join(root, 'sandbox.mjs'));

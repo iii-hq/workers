@@ -5,7 +5,7 @@ Durable cross-session agent memory. Named **banks** hold two kinds of content: *
 ## Install
 
 ```
-iii worker add memory
+iii trigger compose::add worker=memory
 ```
 
 The default bank `main` materializes on first use. No configuration required; without `llm-router` extraction degrades to explicit `memory::save` calls, and without the harness the worker still serves its full RPC surface.

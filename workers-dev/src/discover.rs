@@ -153,7 +153,9 @@ fn classify_spawn(dir: &Path, yaml: &WorkerYaml) -> SpawnKind {
         SpawnKind::CargoRun
     } else {
         SpawnKind::Unsupported {
-            reason: format!("{language}/{deploy} (use iii worker add for non-Rust workers)"),
+            reason: format!(
+                "{language}/{deploy} (use iii trigger compose::add worker=<name> for non-Rust workers)"
+            ),
         }
     }
 }

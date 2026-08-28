@@ -38,12 +38,11 @@ bind is silently dropped.
 ## Install
 
 ```bash
-iii worker add web
+iii trigger compose::add worker=web
 ```
 
-`iii worker add` fetches the binary (`web`), writes a config block into
-`~/.iii/config.yaml`, and the engine starts the worker the next time it
-boots.
+`iii trigger compose::add` resolves the worker and its dependencies, writes
+exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 
 ---
 

@@ -5,7 +5,7 @@ A high-performance image resizing worker built for production workloads.
 ## Installation
 
 ```bash
-iii worker add image-resize
+iii trigger compose::add worker=image-resize
 ```
 
 ## Configuration

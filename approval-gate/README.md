@@ -49,7 +49,7 @@ surface against in-process fakes until harness 1.0 lands.
 ## Install
 
 ```bash
-iii worker add approval-gate
+iii trigger compose::add worker=approval-gate
 ```
 
 ## Quickstart

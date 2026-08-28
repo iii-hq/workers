@@ -22,7 +22,7 @@ bind is silently dropped.
 ## Install
 
 ```bash
-iii worker add scrapling
+iii trigger compose::add worker=scrapling
 ```
 
 The worker is a `deploy: image` Python worker. The image build runs

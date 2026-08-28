@@ -30,7 +30,7 @@ explicit.
 
 ## Standalone use
 
-`iii worker add memory`. The default bank materializes on first use. Without `llm-router`,
+`iii trigger compose::add worker=memory`. The default bank materializes on first use. Without `llm-router`,
 extraction degrades to explicit `memory::save` calls; without the harness, the full RPC surface
 still works (the hook bindings just never fire). Every public function doubles as a REST route via
 the `http` worker.

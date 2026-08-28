@@ -23,7 +23,7 @@ ln -sfn $(pwd)/target/release/iii-shell ~/.iii/workers/shell
 iii -c ./config.yaml
 ```
 
-`iii worker add shell` does not currently pull `iii-sandbox` along — run `iii worker add iii-sandbox` separately before using `shell::exec { target: sandbox }` or any `shell::fs::*` sandbox-target path. Plain host-targeted `shell::exec` works without it.
+`iii trigger compose::add worker=shell` does not currently pull `iii-sandbox` along — run `iii trigger compose::add worker=iii-sandbox` separately before using `shell::exec { target: sandbox }` or any `shell::fs::*` sandbox-target path. Plain host-targeted `shell::exec` works without it.
 
 ## Injected console UI (`ui/`, `src/ui.rs`)
 

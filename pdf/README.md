@@ -15,7 +15,7 @@ the verdict, the per-page OCR decision, and the extracted markdown.
 ## Install
 
 ```bash
-iii worker add pdf
+iii trigger compose::add worker=pdf
 ```
 
 ## Quickstart

@@ -170,7 +170,7 @@ export function SandboxPage({
         <EmptyState
           icon={BoxIcon}
           title="no sandbox daemon on this engine"
-          description="sandbox::list is not registered. Add the iii-sandbox daemon (`iii worker add iii-sandbox`) and the fleet appears here — this page keeps checking."
+          description="sandbox::list is not registered. Add the iii-sandbox daemon (`iii trigger compose::add worker=iii-sandbox`) and the fleet appears here — this page keeps checking."
         />
       )
     }

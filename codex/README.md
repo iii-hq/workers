@@ -5,7 +5,7 @@ OpenAI Codex as an iii worker: the Codex API exposed as functions and streams on
 ## Install
 
 ```bash
-iii worker add codex
+iii trigger compose::add worker=codex
 ```
 
 Requires the [Codex CLI](https://github.com/openai/codex) on the host (`npm i -g @openai/codex`) and either an existing `codex login` or `OPENAI_API_KEY` in the worker environment.
@@ -24,7 +24,7 @@ From zero to a Codex turn over the bus:
 
 ```bash
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
-iii worker add codex
+iii trigger compose::add worker=codex
 iii   # starts the engine + worker
 ```
 

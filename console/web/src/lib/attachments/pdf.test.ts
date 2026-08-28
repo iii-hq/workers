@@ -179,7 +179,7 @@ describe('expandPdfAttachments', () => {
     const { blocks, failures } = await expandPdfAttachments([pdf()], fn)
 
     expect(failures).toHaveLength(1)
-    expect(failures[0].reason).toContain('iii worker add pdf')
+    expect(failures[0].reason).toContain('iii trigger compose::add worker=pdf')
     expect(blocks[0]).toContain('error=')
   })
 

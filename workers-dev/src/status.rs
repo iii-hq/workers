@@ -117,7 +117,7 @@ pub fn print_status_table(views: &[WorkerView], stack_name: &str) {
         let name = if v.spawnable {
             v.name.clone()
         } else {
-            format!("{} (iii worker add)", v.name)
+            format!("{} (compose::add)", v.name)
         };
         println!(
             "{:<28} {:<12} {:<12} {:<6} {:<8} {:<8}",

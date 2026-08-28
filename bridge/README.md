@@ -9,11 +9,11 @@ engine. There are no trigger types.
 ## Install
 
 ```bash
-iii worker add bridge
+iii trigger compose::add worker=bridge
 ```
 
-`iii worker add` fetches the binary, writes a config block into
-`~/.iii/config.yaml`, and the engine starts the worker the next time it boots.
+`iii trigger compose::add` resolves the worker and its dependencies, writes
+exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 
 ## Function surface
 

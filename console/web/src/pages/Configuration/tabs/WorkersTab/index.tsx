@@ -56,7 +56,7 @@ export function WorkersTab({
   // read as a second, editable filesystem config.
   const entries = (listQuery.data ?? []).filter((e) => e.id !== 'coder')
 
-  // React to workers added/removed out of band (CLI `iii worker add/remove`)
+  // React to workers added/removed out of band (`compose::add`/`compose::remove`)
   // by invalidating the list so a freshly-installed worker's config appears
   // without a manual reload.
   useWorkerRegistryReactivity()

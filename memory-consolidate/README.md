@@ -5,7 +5,7 @@ Scheduled hygiene sibling of the [`memory`](https://github.com/iii-hq/workers/tr
 ## Install
 
 ```
-iii worker add memory-consolidate
+iii trigger compose::add worker=memory-consolidate
 ```
 
 Requires the `memory` worker. Scheduling reuses the engine's cron trigger infrastructure: an hourly heartbeat binds `memory-consolidate::on-tick`, and the tick runs a pass only when `interval_hours` (default 24) have elapsed since the last one — the last completed pass persists in the state worker. **Catch-up-on-boot**: a pass missed while this worker was down runs shortly after boot instead of waiting for the next heartbeat; a slim backstop loop also keeps the schedule alive on rigs with no cron trigger owner.

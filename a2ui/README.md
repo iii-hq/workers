@@ -5,7 +5,7 @@ The A2UI worker turns compact agent intent into validated A2UI v0.9.1 surfaces, 
 ## Install
 
 ```bash
-iii worker add a2ui
+iii trigger compose::add worker=a2ui
 ```
 
 ## Quickstart

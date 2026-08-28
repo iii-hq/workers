@@ -29,7 +29,7 @@ export const WORKERS: Record<string, WorkerInfo> = {
     role: 'a thin, durable turn loop that wires the other three together — sequencing, and nothing else.',
     standalone:
       'the "assemble the agent" worker. any concern that grows real logic becomes a sibling worker, never harness code.',
-    install: 'iii worker add harness',
+    install: 'iii trigger compose::add worker=harness',
     functions: [
       { id: 'harness::send', desc: 'accept a message, ensure the session, enqueue the first turn step. returns fast.' },
       { id: 'harness::run', desc: 'send, held open until the turn ends — call an agent like a function.' },
@@ -56,7 +56,7 @@ export const WORKERS: Record<string, WorkerInfo> = {
     role: 'the durable, reactive store of typed conversation entries — every mutation emits an event.',
     standalone:
       'a real-time conversation store any app can subscribe to, with or without the loop around it.',
-    install: 'iii worker add session-manager',
+    install: 'iii trigger compose::add worker=session-manager',
     functions: [
       { id: 'session::append', desc: 'append one entry; fires session::message-added.' },
       { id: 'session::update-message', desc: 'stream deltas into an entry; fires session::message-updated.' },
@@ -85,7 +85,7 @@ export const WORKERS: Record<string, WorkerInfo> = {
     role: 'turns raw history plus a target model into a model-ready context that fits the window.',
     standalone:
       'context budgeting for any ai feature — it owns no storage; callers pass message arrays in and persist the results.',
-    install: 'iii worker add context-manager',
+    install: 'iii trigger compose::add worker=context-manager',
     functions: [
       { id: 'context::assemble', desc: 'system prompt + budgeted messages: count, prune, compact, fit.' },
       { id: 'context::compact', desc: 'summarise older history into one compaction summary.' },
@@ -104,7 +104,7 @@ export const WORKERS: Record<string, WorkerInfo> = {
     role: 'one front door in front of every llm provider — and the protocol provider workers implement.',
     standalone:
       'provider-agnostic completions through one stable surface; swap providers with zero call-site changes.',
-    install: 'iii worker add llm-router',
+    install: 'iii trigger compose::add worker=llm-router',
     functions: [
       { id: 'router::chat', desc: 'stream one assistant turn into a caller-supplied channel.' },
       { id: 'router::complete', desc: 'non-streaming one-shot; returns the final message.' },
@@ -126,7 +126,7 @@ export const WORKERS: Record<string, WorkerInfo> = {
     role: 'the policy + decision surface for human-held function calls. plugs into the loop; never changes it.',
     standalone:
       'optional by design — the four core workers run with or without it. installing the worker is installing the policy.',
-    install: 'iii worker add approval-gate',
+    install: 'iii trigger compose::add worker=approval-gate',
     functions: [
       { id: 'approval::gate', desc: 'the pre_trigger hook: answer continue, deny, or hold.' },
       { id: 'approval::resolve', desc: 'apply a human decision — release the call or answer it with a denial.' },

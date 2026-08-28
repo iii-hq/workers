@@ -30,7 +30,7 @@ domain: `shell::exec`, `session::append` (session-manager), `shell::fs::read`.
 | Context | How workers are found |
 |---|---|
 | In-repo development | Folder at repo root with `iii.worker.yaml` |
-| Production install | Workers registry API — `iii worker add <name>` |
+| Production install | Workers registry API — `iii trigger compose::add worker=<name>` |
 | Runtime catalogue | `engine::workers::list`, `engine::functions::list` |
 
 Published workers ship a collected **interface** (functions + trigger types)

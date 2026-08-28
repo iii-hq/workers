@@ -13,11 +13,11 @@ it is independently useful as a real-time chat store for any app.
 ## Install
 
 ```bash
-iii worker add session-manager
+iii trigger compose::add worker=session-manager
 ```
 
-`iii worker add` fetches the binary, writes a config block into
-`~/.iii/config.yaml`, and the engine starts the worker the next time it boots.
+`iii trigger compose::add` resolves the worker and its dependencies, writes
+exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 
 ## Quickstart
 

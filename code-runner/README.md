@@ -11,7 +11,7 @@ that worker needs no changes — but no microVM, no daemon, and **no
 to WebAssembly inside wasmtime.
 
 ```bash
-iii worker add code-runner
+iii trigger compose::add worker=code-runner
 ```
 
 ## Quickstart
