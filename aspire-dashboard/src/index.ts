@@ -233,7 +233,7 @@ async function closeProxy() {
   proxy = null
 }
 
-async function ensureProxy() {
+async function openProxy() {
   const config = holder.current
   if (proxy && proxy.host === config.bind_host && proxy.port === config.proxy_port) return
   await closeProxy()
@@ -248,6 +248,12 @@ async function ensureProxy() {
   })
   proxy = { server, host: config.bind_host, port: config.proxy_port }
 }
+
+// Boot, a dashboard start, and every `aspire-dashboard::status` read all call
+// this. The `proxy` guard above is followed by an await, so two overlapping
+// calls could both reach listen() on the same port and the loser's EADDRINUSE
+// would surface as a failed status read.
+const ensureProxy = singleFlight(openProxy)
 
 function pipeWithBackpressure(source: NodeJS.ReadableStream | null, dest: NodeJS.WritableStream, prefix: string) {
   source?.on('data', (chunk) => {
