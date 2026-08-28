@@ -13,4 +13,6 @@ runtime:
 
 scripts:
   install: cargo build --release
-  start: ./target/release/email --config ./config.yaml
+  start: ./target/release/email
+dependencies:
+  configuration: "0.x"
