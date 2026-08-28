@@ -300,6 +300,26 @@ def test_prepare_release_expands_the_computed_target_list_with_matrix_include() 
     }
 
 
+def test_prepare_release_announces_only_successful_first_attempts() -> None:
+    notification = workflow(WORKFLOWS / "prepare-release.yml")["jobs"]["notify-success"]
+
+    assert notification["needs"] == ["prepare", "matrix", "build", "assemble", "evidence"]
+    assert notification["continue-on-error"] == "true"
+    assert "github.run_attempt == 1" in notification["if"]
+    for job in ("prepare", "matrix", "build", "assemble", "evidence"):
+        assert f"needs.{job}.result == 'success'" in notification["if"]
+
+    step = notification["steps"][0]
+    assert step["env"] == {
+        "CHANNEL": "${{ vars.RELEASE_STATUS_SLACK_CHANNEL_ID }}",
+        "SLACK_BOT_TOKEN": "${{ secrets.SLACK_BOT_TOKEN }}",
+        "WORKER": "${{ inputs.worker }}",
+        "VERSION": "${{ inputs.candidate_version }}",
+    }
+    assert 'text "$WORKER@$VERSION :white_check_mark:"' in step["run"]
+    assert "https://slack.com/api/chat.postMessage" in step["run"]
+
+
 def test_publish_stable_expands_the_computed_target_list_with_matrix_include() -> None:
     jobs = workflow(WORKFLOWS / "publish-stable.yml")["jobs"]
     strategy = jobs["build"]["strategy"]

@@ -274,3 +274,30 @@ jobs:
           path: execution-result.json
           retention-days: 30
           if-no-files-found: error
+
+  notify-success:
+    name: Announce successful worker preparation
+    needs: [prepare, matrix, build, assemble, evidence]
+    if: >-
+      ${{ github.run_attempt == 1 && needs.prepare.result == 'success' &&
+          needs.matrix.result == 'success' && needs.build.result == 'success' &&
+          needs.assemble.result == 'success' && needs.evidence.result == 'success' }}
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Send success to project-iii
+        env:
+          CHANNEL: ${{ vars.RELEASE_STATUS_SLACK_CHANNEL_ID }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          WORKER: ${{ inputs.worker }}
+          VERSION: ${{ inputs.candidate_version }}
+        run: |
+          set -euo pipefail
+          test -n "$CHANNEL"
+          payload=$(jq -cn --arg channel "$CHANNEL" --arg text "$WORKER@$VERSION :white_check_mark:" \
+            '{channel:$channel,text:$text}')
+          curl --fail-with-body --silent --show-error \
+            --request POST https://slack.com/api/chat.postMessage \
+            --header "Authorization: Bearer $SLACK_BOT_TOKEN" \
+            --header 'Content-Type: application/json; charset=utf-8' \
+            --data "$payload" | jq -e '.ok == true' >/dev/null
