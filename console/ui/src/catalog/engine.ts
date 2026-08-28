@@ -82,6 +82,12 @@ function rows(value: unknown, key: string): unknown[] {
   return Array.isArray(list) ? list : []
 }
 
+function isFunctionUnavailable(err: unknown): boolean {
+  return /function_not_found|function .*not (?:found|registered)|not registered/i.test(
+    errorMessage(err),
+  )
+}
+
 function functionSummary(row: unknown): FunctionSummary | null {
   if (!isRecord(row)) return null
   const function_id = str(row.function_id)
@@ -296,7 +302,7 @@ let hubSeq = 0
  * - `engine::workers-available` fires when a worker connects or disconnects
  * - `trace` is a coalesced "spans changed" tick carrying the affected trace
  *   ids; it is a refetch beat, not a span feed, so a live view re-reads
- *   `engine::traces::list` when it ticks
+ *   `engine::traces::spans` when it ticks
  */
 export type LiveSignal =
   | 'engine::functions-available'
@@ -404,11 +410,18 @@ export async function listCalls(
   functionId: string,
   limit = 25,
 ): Promise<CallRecord[]> {
-  const out = await host.iii.trigger('engine::traces::list', {
+  const payload = {
     name: `execute ${functionId}`,
     limit,
     include_internal: true,
-  })
+  }
+  let out: unknown
+  try {
+    out = await host.iii.trigger('engine::traces::spans', payload)
+  } catch (err) {
+    if (!isFunctionUnavailable(err)) throw err
+    out = await host.iii.trigger('engine::traces::list', payload)
+  }
   return rows(out, 'spans')
     .map((span): CallRecord | null => {
       if (!isRecord(span)) return null

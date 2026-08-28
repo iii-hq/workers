@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       iii-sdk:
-        specifier: 0.23.0-rc.2
-        version: 0.23.0-rc.2
+        specifier: 0.22.1-alpha.25
+        version: 0.22.1-alpha.25
       yaml:
         specifier: ^2.6.0
         version: 2.9.0
@@ -404,8 +404,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@iii-dev/helpers@0.23.0-rc.2':
-    resolution: {integrity: sha512-/DgN6p7lv+FGaFwIkW/uyf9pe6STfVQpJviMY41AEv9HUSlFj2tAo0nqlSKj2RIs1SqsCUo0RlT3mzN5TnLb7Q==}
+  '@iii-dev/helpers@0.22.1-alpha.25':
+    resolution: {integrity: sha512-q3XQZ4i+eMA4mi1iRaNHlTcIGJVvhCYkmfiIPn0rvlFjLYU32vEqjbxKeNsy9YyRbAhGbjF+kzXp2cUpycVhJw==}
 
   '@jridgewell/sourcemap-codec@1.5.5':
     resolution: {integrity: sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==}
@@ -781,8 +781,8 @@ packages:
     resolution: {integrity: sha512-T2UbfbBEF32wiepXIsMlTW9+dDYC6wMh/t/vYA4tuOMKqWz/n3vr1NFSxQiyP+zk2mXsoMA/i/7qV6LKut1t1A==}
     engines: {node: '>= 0.4'}
 
-  iii-sdk@0.23.0-rc.2:
-    resolution: {integrity: sha512-HiPIeXh9n6EU53NsTQrFi7FgouB5o0kHrQtCuvF7JfS0epypxoGzgiyZ6mamrPSRfUN8sG9K0YFq5KjXV/fcNQ==}
+  iii-sdk@0.22.1-alpha.25:
+    resolution: {integrity: sha512-WUDzAydJacutn5IQz3Tcx296fAn88UnUt8S5/2slRsZK7WCadMS9o3qXmkgKAUAmPHsdCOAwVolBWNnAz4imqQ==}
 
   import-in-the-middle@1.15.0:
     resolution: {integrity: sha512-bpQy+CrsRmYmoPMAE/0G33iwRqwW4ouqdRg8jgbH3aKuCtOc8lxgmYXg2dMM92CRiGP660EtBcymH/eVUpCSaA==}
@@ -1207,7 +1207,7 @@ snapshots:
   '@esbuild/win32-x64@0.28.2':
     optional: true
 
-  '@iii-dev/helpers@0.23.0-rc.2':
+  '@iii-dev/helpers@0.22.1-alpha.25':
     dependencies:
       '@opentelemetry/api': 1.9.1
       '@opentelemetry/api-logs': 0.57.2
@@ -1580,9 +1580,9 @@ snapshots:
     dependencies:
       function-bind: 1.1.2
 
-  iii-sdk@0.23.0-rc.2:
+  iii-sdk@0.22.1-alpha.25:
     dependencies:
-      '@iii-dev/helpers': 0.23.0-rc.2
+      '@iii-dev/helpers': 0.22.1-alpha.25
       '@opentelemetry/api': 1.9.1
       ws: 8.21.3
     transitivePeerDependencies:

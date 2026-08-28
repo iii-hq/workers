@@ -315,6 +315,8 @@ jobs:
     name: "llm-router: live engine integration"
     needs: discover
     if: needs.discover.outputs.llm_router_integration == 'true'
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -329,16 +331,32 @@ jobs:
         with:
           shared-key: llm-router-integration
           save-if: false
-          workspaces: llm-router -> target
+          workspaces: |
+            llm-router -> target
+            state -> target
+
+      - name: Setup pnpm (state UI)
+        uses: pnpm/action-setup@v5
+
+      - name: Setup Node (state UI)
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: '**/pnpm-lock.yaml'
+
+      - name: Pre-build state UI
+        working-directory: state/ui
+        run: pnpm install --frozen-lockfile && pnpm build
 
       - name: Install pinned iii engine
         env:
-          VERSION: '0.23.0-rc.2'
+          III_RELEASE_TAG: 'iii-alpha/v0.22.1-alpha.25'
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
-          sh /tmp/install-iii.sh --rc
+          sh /tmp/install-iii.sh
           {
             echo "$HOME/.local/bin"
             echo "$HOME/.iii/bin"
@@ -348,6 +366,14 @@ jobs:
           [[ -x "$engine_bin" ]] || { echo "::error::iii engine is not executable"; exit 3; }
           echo "III_ENGINE_BIN=$engine_bin" >> "$GITHUB_ENV"
           iii --version
+
+      - name: Build standalone state worker
+        run: |
+          set -euo pipefail
+          cargo build --locked --manifest-path state/Cargo.toml --bin state
+          state_bin="$GITHUB_WORKSPACE/state/target/debug/state"
+          [[ -x "$state_bin" ]] || { echo "::error::state worker is unavailable"; exit 3; }
+          echo "III_STATE_BIN=$state_bin" >> "$GITHUB_ENV"
 
       - name: Run real-engine router lifecycle suite
         run: |
@@ -370,6 +396,8 @@ jobs:
     name: "${{ matrix.provider }}: provider contract"
     needs: discover
     if: needs.discover.outputs.provider_contract != '[]'
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -388,22 +416,25 @@ jobs:
         with:
           shared-key: provider-contract-${{ matrix.provider }}
           save-if: false
-          workspaces: crates/provider-integration-testkit -> target
+          workspaces: |
+            crates/provider-integration-testkit -> target
+            state -> target
 
-      # provider-openai-codex embeds a small console UI. The integration
-      # testkit enables every provider feature in its Rust gate, so build the
-      # UI before Cargo reaches that provider's build.rs.
-      - name: Setup pnpm (providers with bundled UI)
-        if: hashFiles(format('{0}/ui/package.json', matrix.provider)) != ''
+      # The state worker always embeds its UI. provider-openai-codex also
+      # embeds a UI, so build that bundle when its contract is selected.
+      - name: Setup pnpm (bundled UIs)
         uses: pnpm/action-setup@v5
 
-      - name: Setup Node (providers with bundled UI)
-        if: hashFiles(format('{0}/ui/package.json', matrix.provider)) != ''
+      - name: Setup Node (bundled UIs)
         uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: pnpm
           cache-dependency-path: '**/pnpm-lock.yaml'
+
+      - name: Pre-build state UI
+        working-directory: state/ui
+        run: pnpm install --frozen-lockfile && pnpm build
 
       - name: Pre-build provider UI
         if: hashFiles(format('{0}/ui/package.json', matrix.provider)) != ''
@@ -412,12 +443,12 @@ jobs:
 
       - name: Install pinned iii engine
         env:
-          VERSION: '0.23.0-rc.2'
+          III_RELEASE_TAG: 'iii-alpha/v0.22.1-alpha.25'
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
-          sh /tmp/install-iii.sh --rc
+          sh /tmp/install-iii.sh
           {
             echo "$HOME/.local/bin"
             echo "$HOME/.iii/bin"
@@ -427,6 +458,14 @@ jobs:
           [[ -x "$engine_bin" ]] || { echo "::error::iii engine is not executable"; exit 3; }
           echo "III_ENGINE_BIN=$engine_bin" >> "$GITHUB_ENV"
           iii --version
+
+      - name: Build standalone state worker
+        run: |
+          set -euo pipefail
+          cargo build --locked --manifest-path state/Cargo.toml --bin state
+          state_bin="$GITHUB_WORKSPACE/state/target/debug/state"
+          [[ -x "$state_bin" ]] || { echo "::error::state worker is unavailable"; exit 3; }
+          echo "III_STATE_BIN=$state_bin" >> "$GITHUB_ENV"
 
       - name: Run hermetic provider contract
         env:
@@ -497,6 +536,8 @@ jobs:
     name: "${{ matrix.worker }}: interface boot smoke"
     needs: discover
     if: github.event_name == 'pull_request' && needs.discover.outputs.rust != '[]'
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -589,12 +630,12 @@ jobs:
           # Must be a tag that still exists on iii-hq/iii (old releases get
           # pruned — 0.17.0 vanished and broke every boot smoke). Keep aligned
           # with the workers' iii-sdk protocol line.
-          VERSION: '0.23.0-rc.2'
+          III_RELEASE_TAG: 'iii-alpha/v0.22.1-alpha.25'
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
-          sh /tmp/install-iii.sh --rc
+          sh /tmp/install-iii.sh
           {
             echo "$HOME/.local/bin"
             echo "$HOME/.iii/bin"

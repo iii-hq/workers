@@ -5,6 +5,7 @@ import {
   TriggerRegisteredDisplay,
 } from '@/components/chat/engine/RegisterTriggerView'
 import { SpawnActivityCard } from '@/components/chat/harness/SpawnView'
+import { RegisteredTriggerStatusProvider } from '@/components/chat/RegisteredTriggerStatus'
 import {
   engineFunctionsListEmpty,
   engineRegisterTriggerSubscribe,
@@ -205,6 +206,69 @@ describe('trigger registration display', () => {
     expect(html).toContain('bg-ok-muted')
     expect(html).toContain('stroke-ok')
     expect(html).toContain('animate-pulse')
+  })
+
+  it('derives every receipt state from one shared trigger snapshot', () => {
+    const html = renderToStaticMarkup(
+      <RegisteredTriggerStatusProvider
+        loaded
+        triggersById={
+          new Map([
+            [
+              'sub-active',
+              {
+                id: 'sub-active',
+                triggerType: 'state',
+                delivery: { kind: 'notify' as const },
+                fired: false,
+              },
+            ],
+            [
+              'sub-fired',
+              {
+                id: 'sub-fired',
+                triggerType: 'state',
+                delivery: { kind: 'notify' as const },
+                fired: true,
+              },
+            ],
+          ])
+        }
+      >
+        <TriggerRegisteredDisplay
+          input={{ trigger_type: 'state', label: 'active trigger' }}
+          output={{ subscription_id: 'sub-active' }}
+        />
+        <TriggerRegisteredDisplay
+          input={{ trigger_type: 'state', label: 'fired trigger' }}
+          output={{ subscription_id: 'sub-fired' }}
+        />
+        <TriggerRegisteredDisplay
+          input={{ trigger_type: 'state', label: 'removed trigger' }}
+          output={{ subscription_id: 'sub-removed' }}
+        />
+      </RegisteredTriggerStatusProvider>,
+    )
+
+    expect(
+      html.match(/data-trigger-registration-state="active"/g),
+    ).toHaveLength(1)
+    expect(
+      html.match(/data-trigger-registration-state="inactive"/g),
+    ).toHaveLength(2)
+  })
+
+  it('keeps a receipt active until the shared snapshot is loaded', () => {
+    const html = renderToStaticMarkup(
+      <RegisteredTriggerStatusProvider loaded={false} triggersById={new Map()}>
+        <TriggerRegisteredDisplay
+          input={{ trigger_type: 'state', label: 'loading trigger' }}
+          output={{ subscription_id: 'sub-loading' }}
+        />
+      </RegisteredTriggerStatusProvider>,
+    )
+
+    expect(html).toContain('data-trigger-registration-state="active"')
   })
 
   it('keeps action hidden until the trigger fires', () => {

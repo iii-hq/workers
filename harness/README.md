@@ -90,10 +90,12 @@ workers from the local source tree with `iii compose`.
 
 ## Working with iii
 
-iii is a WebSocket-routed worker mesh. One engine holds a live registry of every
-connected worker, their functions, and the triggers bound to them. Calls route
-worker to engine to worker, so the language, runtime, and location of a worker
-are invisible; the function id is the only contract.
+iii is a language agnostic runtime where services, agents, and tools are
+composed of the same things: workers, triggers, and functions. One engine
+holds a live registry of every connected worker, their functions, and the
+triggers bound to them. Calls route worker to engine to worker, so the
+language, runtime, and location of a worker are invisible; the function id is
+the only contract.
 
 **1. Discover what is already there (the engine is the source of truth)**
 - `engine::functions::list` — every function across all workers (filter with `prefix` / `search` / `worker`)
@@ -142,16 +144,21 @@ retries) and their defaults live in [`src/config.rs`](src/config.rs).
 
 ## System prompt
 
-The identity prompt is assembled once at send/spawn time. A TOP-LEVEL turn
-(`harness::send`) always uses the embedded step-by-step default prompt
-([`prompts/default.txt`](prompts/default.txt)). Spawned
-CHILDREN never get the top-level prompt: every child is seeded with the
-embedded minimal sub-agent identity
-([`prompts/subagent.txt`](prompts/subagent.txt)) — do the one task, record
-the result where the task says, stop — and is capability-walled out of the
-orchestration surface (`harness::spawn`, `harness::send`, trigger
-registration) unless spawned with `options: { orchestrator: true }`; spawn
-`options.system_prompt` remains the identity escape hatch.
+The identity prompt is assembled once at send/spawn time. EVERY agent —
+top-level turns (`harness::send`) and spawned children alike — is seeded with
+the same single identity
+([`prompts/default.txt`](prompts/default.txt)): a deliberately minimal prompt
+carrying only the basic engine functions and the discovery loop (list, info,
+call). A `default` entry in the directory's system-prompt store
+(`<skills_folder>/system-prompts/default.md`, served by
+`directory::system-prompts::get`) overrides the embedded prompt for every new
+composition — edit or delete it and the next send picks that up, no restart;
+any store failure (directory absent, entry missing, blank body) falls back to
+the embedded prompt. What makes a child a leaf is its POLICY, not its prompt: children are
+capability-walled out of the orchestration surface (`harness::spawn`,
+`harness::send`, trigger registration) unless spawned with
+`options: { orchestrator: true }`; spawn `options.system_prompt` remains the
+identity escape hatch.
 
 A spawn may also give its child a display-only identity with
 `display: { name, icon?, color? }`. `name` is trimmed, limited to 48 characters,
@@ -195,29 +202,29 @@ operating-mode paragraph — resend the prompt fields to re-resolve.
 ### Agent profiles
 
 `options.agent` on a session-creating `harness::send` names a directory agent
-profile (`directory::agents::*`, one markdown file per agent). The harness
+profile (`directory::agents::*`, one markdown file per profile). The harness
 resolves it ONCE via `directory::agents::get` and freezes the result onto the
 turn: `"You are <name>."` plus the file body becomes the enrich system prompt
 over the top-level identity, the profile's skill filter becomes the session's
-skill selection (an explicit `options.skills` wins), its `model` is the
-fallback when the send names none, and — when the send also omits
+skill selection (an explicit `options.skills` wins), its `model` and optional
+provider-native `reasoning_effort` are authoritative for the session, and —
+when the send also omits
 `options.functions` — the dispatch policy defaults to the configured
 `default_functions` baseline instead of deny-all (an identity picked to DO
 something must be able to dispatch; the ask-mode cap still applies). The
-frozen identity travels with the prompt-stickiness rule: bare later sends
+The frozen name/icon/color/model/effort snapshot is also written to session
+metadata for clients that render established sessions. The frozen identity
+travels with the prompt-stickiness rule: bare later sends
 inherit it, an explicit prompt field sheds it. Refused on an existing
-session, combined with either prompt field, or naming a `leaf: true` profile
-(leaves are spawn targets). Directory edits after resolution never reach a
-live session — start a new one to pick them up.
+session or combined with either prompt field. Directory edits after
+resolution never reach a live session — start a new one to pick them up.
 
-`harness::spawn` takes the same id as a top-level `agent` field, typically a
-`leaf` specialist: the profile body enriches the sub-agent identity, its
-skills/model slot in the same way (model precedence `model` → profile →
-parent, without dragging the parent's provider onto a foreign model), its
-name and icon become the display defaults, and an unset
-`options.orchestrator` defaults to `true` for a non-leaf profile. Which
-agent a spawn names is the prompt's decision — the profile body steers it,
-nothing gates it. Spawning
+`harness::spawn` takes the same id as a top-level `agent` field: the profile
+body enriches the sub-agent identity, its skills/model/effort slot in the same way
+(model precedence profile → explicit `model` → parent, without dragging the parent's
+provider onto a foreign model), and its name and icon become the display
+defaults. Which agent profile a spawn names is the prompt's decision — the profile
+body steers it, nothing gates it. Spawning
 with `agent` into an already RUNNING session of the caller's own tree merges
 the task like any reuse and does not re-apply the profile.
 

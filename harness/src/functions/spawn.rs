@@ -98,8 +98,7 @@ pub struct SpawnOptions {
     /// and `engine::registered-triggers::*`, so it performs its assignment and
     /// updates shared state without spawning, messaging sessions, or touching
     /// trigger registrations. `true` skips those denies; the child still never
-    /// exceeds its parent's policy. When the spawn names an `agent` profile
-    /// and this field is omitted, a non-leaf profile defaults it to `true`.
+    /// exceeds its parent's policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub orchestrator: Option<bool>,
     /// Fan-out guard for the child's own spawns.
@@ -121,11 +120,11 @@ pub struct SpawnRequest {
     /// db: "primary"`); the child cannot infer resources from the parent.
     pub task: MessageInput,
     /// Run the child as a directory agent profile (`directory::agents::*`
-    /// id) — typically a `leaf` specialist. The profile's body becomes the
-    /// child's enrich system prompt (over the sub-agent identity), its skill
+    /// id). The profile's body becomes the child's enrich system prompt
+    /// (over the shared identity), its skill
     /// filter applies when `options.skills` is omitted, its `model` slots
     /// between an explicit `model` and the parent's, and its name/icon become
-    /// the display defaults. Which agent to name is the prompt's decision.
+    /// the display defaults. Which agent profile to name is the prompt's decision.
     /// Refused combined with `options.system_prompt`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,

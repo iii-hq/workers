@@ -1,10 +1,9 @@
 use anyhow::Result;
 use clap::Parser;
-use iii_sdk::{
-    errors::Error, protocol::RegisterTriggerInput, register_worker, runtime::WorkerMetadata,
-    InitOptions, RegisterTriggerType,
-};
+use iii_sdk::{register_worker, runtime::WorkerMetadata, InitOptions, RegisterTriggerType};
 use std::sync::Arc;
+
+use email::configuration::{self, AppState};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -12,8 +11,8 @@ use std::sync::Arc;
     about = "Email worker — SMTP send and real-time IMAP read with IDLE push"
 )]
 struct Cli {
-    #[arg(long, default_value = "./config.yaml")]
-    config: String,
+    #[arg(long)]
+    config: Option<String>,
 
     #[arg(long, env = "III_URL", default_value = "ws://127.0.0.1:49134")]
     url: String,
@@ -33,8 +32,6 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    // rustls 0.23 requires explicit CryptoProvider install before any
-    // ClientConfig::builder() call. Idempotent — safe to call once at startup.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     if cli.manifest {
@@ -45,21 +42,21 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let cfg = match email::config::WorkerConfig::from_file(&cli.config) {
-        Ok(c) => {
+    let seed = match cli.config.as_deref() {
+        Some(path) => {
+            let cfg = email::config::WorkerConfig::from_file(path)
+                .map_err(|e| anyhow::anyhow!("seed config {path}: {e}"))?;
+            cfg.validate()
+                .map_err(|e| anyhow::anyhow!("seed config {path}: {e}"))?;
             tracing::info!(
-                accounts = c.accounts.len(),
-                "loaded config from {}",
-                cli.config
+                accounts = cfg.accounts.len(),
+                path,
+                "seeding configuration from file"
             );
-            c
+            Some(cfg)
         }
-        Err(e) => {
-            tracing::warn!(error = %e, path = %cli.config, "config load failed, using defaults");
-            email::config::WorkerConfig::default()
-        }
+        None => None,
     };
-    let cfg = Arc::new(cfg);
 
     tracing::info!(url = %cli.url, "connecting to iii engine");
     let iii = register_worker(
@@ -77,15 +74,29 @@ async fn main() -> Result<()> {
         },
     );
     let iii = Arc::new(iii);
-    email::provider::imap::connection::install_iii_handle(iii.clone());
 
-    let imap_pool = Arc::new(email::provider::imap::ImapPool::new(cfg.clone()));
+    configuration::register_config(&iii, seed.as_ref())
+        .await
+        .map_err(|e| anyhow::anyhow!("configuration::register failed: {e}"))?;
+    let cfg = configuration::fetch_config(&iii)
+        .await
+        .map_err(|e| anyhow::anyhow!("configuration::get failed: {e}"))?;
+    cfg.validate()
+        .map_err(|e| anyhow::anyhow!("configuration `{}`: {e}", configuration::config_id()))?;
+    tracing::info!(
+        accounts = cfg.accounts.len(),
+        entry = configuration::config_id(),
+        "loaded configuration from the configuration worker"
+    );
+
+    email::provider::imap::connection::install_iii_handle(iii.clone());
     let trig_registry = Arc::new(email::triggers::registry::TriggerRegistry::new());
     let dispatcher: Arc<dyn email::triggers::dispatcher::EventDispatcher> = Arc::new(
         email::triggers::dispatcher::EngineDispatcher::new(iii.clone(), trig_registry.clone()),
     );
+    let state = AppState::new(cfg, dispatcher);
 
-    email::handlers::register_all(&iii, &cfg, &imap_pool);
+    email::handlers::register_all(&iii, &state);
 
     let _new_mail_ref = iii.register_trigger_type(
         RegisterTriggerType::new(
@@ -100,43 +111,22 @@ async fn main() -> Result<()> {
         .trigger_request_format::<email::triggers::new_mail::NewMailBindingConfig>(),
     );
 
-    // Spawn one persistent IMAP+IDLE connection per (account, folder).
-    // E610 here is fatal — we refuse to silently degrade to polling.
-    let mut idle_handles = Vec::new();
-    for (acct_name, acct_cfg) in cfg.accounts.iter() {
-        if acct_cfg.provider != email::config::Provider::Imap {
-            continue;
-        }
-        let Some(imap) = acct_cfg.imap.clone() else {
-            tracing::warn!(account = %acct_name, "provider=imap but imap config missing, skipping");
-            continue;
-        };
-        for folder in imap.folders.iter().cloned() {
-            let name = acct_name.clone();
-            let cfg_clone = cfg.clone();
-            let dispatcher = dispatcher.clone();
-            let h = tokio::spawn(async move {
-                email::provider::imap::connection::run_until_shutdown(
-                    name, folder, cfg_clone, dispatcher,
-                )
-                .await
-            });
-            idle_handles.push(h);
-        }
-    }
+    let supervised = state.start_idle().await;
+
+    configuration::register_config_trigger(&iii, state.clone())
+        .map_err(|e| anyhow::anyhow!("configuration trigger binding failed: {e}"))?;
+    configuration::register_config_status(&iii, state.clone());
 
     tracing::info!(
         "email registered {} functions and 1 trigger type; {} IMAP connections supervised",
         email::handlers::REGISTERED_FN_COUNT,
-        idle_handles.len(),
+        supervised,
     );
 
     wait_for_shutdown_signal().await?;
     tracing::info!("email shutting down");
     iii.shutdown_async().await;
-    for h in idle_handles {
-        h.abort();
-    }
+    state.stop_idle().await;
     Ok(())
 }
 
@@ -155,6 +145,3 @@ async fn wait_for_shutdown_signal() -> std::io::Result<()> {
         tokio::signal::ctrl_c().await
     }
 }
-
-#[allow(dead_code)]
-fn _suppress_unused(_: Error, _: RegisterTriggerInput) {}

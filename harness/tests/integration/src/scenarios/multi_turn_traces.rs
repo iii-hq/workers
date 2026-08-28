@@ -99,6 +99,7 @@ pub(super) fn scenario() -> ScenarioFixture {
                 3,
             )),
     )
+    .scenario_timeout_ms(60_000)
     .verify(|run| {
         run.expect_assistant_texts([FIRST_TEXT, SECOND_TEXT])?;
         run.expect_message_counts(2, 3, 1)?;
@@ -133,5 +134,6 @@ mod tests {
         assert!(patterns[1].ends_with(":1$"), "{}", patterns[1]);
         assert!(patterns[2].ends_with(":0$"), "{}", patterns[2]);
         assert_eq!(fixture.expected_terminal_turns, 2);
+        assert_eq!(fixture.scenario.deadlines.scenario_ms, 60_000);
     }
 }

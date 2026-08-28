@@ -114,7 +114,7 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
 
       <TextField
         field="agents_skills_folder"
-        label="Agents skills folder"
+        label="External agent skills folder"
         placeholder=".agents/skills"
         hint="Read-only root relative to III_COMPOSE_DIR (process cwd when standalone), scanned shallowly as <skill>/SKILL.md"
         value={asString(value.agents_skills_folder)}

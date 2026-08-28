@@ -27,11 +27,16 @@ use serde_json::{json, Value};
 struct Engine {
     url: String,
     child: std::process::Child,
+    state_child: Option<std::process::Child>,
     dir: std::path::PathBuf,
 }
 
 impl Drop for Engine {
     fn drop(&mut self) {
+        if let Some(state_child) = self.state_child.as_mut() {
+            let _ = state_child.kill();
+            let _ = state_child.wait();
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
         let _ = std::fs::remove_dir_all(&self.dir);
@@ -50,6 +55,10 @@ fn engine_bin() -> Option<std::path::PathBuf> {
         .map(|s| s.success())
         .unwrap_or(false);
     on_path.then(|| "iii".into())
+}
+
+fn state_bin() -> Option<std::path::PathBuf> {
+    std::env::var_os("III_STATE_BIN").map(Into::into)
 }
 
 fn free_port() -> u16 {
@@ -72,7 +81,7 @@ fn test_init_options() -> InitOptions {
 }
 
 /// Bare engine mirroring CI's interface-boot smoke (`workers: []`): builtin
-/// daemons only — no `iii-state`, no `iii-pubsub`. Port pinned through
+/// daemons only — no external state worker. Port pinned through
 /// iii-worker-manager so parallel tests don't collide on the default port.
 async fn spawn_bare_engine() -> Option<Engine> {
     let config_for = |port: u16, _dir: &std::path::Path| {
@@ -87,39 +96,54 @@ async fn spawn_bare_engine() -> Option<Engine> {
     spawn_engine_with(config_for).await
 }
 
-/// Spawn a minimal engine in a temp dir; poll until WS-reachable.
-/// None = no engine available on this host → the caller self-skips.
+/// Spawn a minimal engine plus the standalone state worker; poll until both
+/// are reachable. None = a required binary is unavailable → self-skip.
 async fn spawn_engine() -> Option<Engine> {
-    let config_for = |port: u16, dir: &std::path::Path| {
-        format!(
-            r#"workers:
-  - name: iii-worker-manager
-    config:
-      port: {port}
-  - name: iii-pubsub
-    config:
-      adapter:
-        name: local
-  - name: configuration
-    config:
-      adapter:
-        name: fs
-        config:
-          directory: {dir}/configuration
-      ttl_seconds: 0
-  - name: iii-state
-    config:
-      adapter:
-        name: kv
-        config:
-          file_path: {dir}/state_store.db
-          store_method: file_based
-"#,
-            port = port,
-            dir = dir.display(),
-        )
-    };
-    spawn_engine_with(config_for).await
+    let state_bin = state_bin()?;
+    let mut engine = spawn_bare_engine().await?;
+    let state_config_path = engine.dir.join("state-config.yaml");
+    std::fs::write(
+        &state_config_path,
+        "adapter:\n  name: kv\n  config:\n    store_method: in_memory\n",
+    )
+    .expect("write state config");
+
+    let state_child = std::process::Command::new(&state_bin)
+        .arg("--url")
+        .arg(&engine.url)
+        .arg("--config")
+        .arg(&state_config_path)
+        .current_dir(&engine.dir)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap_or_else(|error| panic!("spawn state worker {}: {error}", state_bin.display()));
+    engine.state_child = Some(state_child);
+
+    let probe = register_worker(&engine.url, test_init_options());
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let ready = probe
+            .trigger(TriggerRequest {
+                function_id: "state::get".into(),
+                payload: json!({ "scope": "llm-router-test", "key": "ready" }),
+                action: None,
+                timeout_ms: Some(1000),
+            })
+            .await
+            .is_ok();
+        if ready {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "state worker did not become ready in 15s"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    probe.shutdown();
+
+    Some(engine)
 }
 
 /// Shared engine bootstrap: pick a port + temp dir, write the config the
@@ -172,7 +196,12 @@ async fn spawn_engine_with(
     }
     probe.shutdown();
 
-    Some(Engine { url, child, dir })
+    Some(Engine {
+        url,
+        child,
+        state_child: None,
+        dir,
+    })
 }
 
 /// Self-skip macro: returns from the test when no engine is available.
@@ -181,14 +210,16 @@ macro_rules! engine_or_skip {
         match spawn_engine().await {
             Some(e) => e,
             None => {
-                eprintln!("skipping: no iii engine (set III_ENGINE_BIN or put `iii` on PATH)");
+                eprintln!(
+                    "skipping: no iii engine/state worker (set III_ENGINE_BIN and III_STATE_BIN)"
+                );
                 return;
             }
         }
     };
 }
 
-/// Same self-skip, for the bare (no iii-state / no iii-pubsub) engine.
+/// Same self-skip, for the bare engine without an external state worker.
 macro_rules! bare_engine_or_skip {
     () => {
         match spawn_bare_engine().await {

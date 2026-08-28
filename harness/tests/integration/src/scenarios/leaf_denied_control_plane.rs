@@ -95,7 +95,7 @@ pub(super) fn scenario() -> ScenarioFixture {
             .expect(
                 Request::new()
                     .turn_request_step(0)
-                    .system_prompt_regex("You are an iii sub-agent")
+                    .system_prompt_regex("You are an iii agent")
                     .messages_subset([json!({ "role": "user" })])
                     .tools_exact([record.tool()]),
             )
@@ -134,7 +134,7 @@ pub(super) fn scenario() -> ScenarioFixture {
             .expect(
                 Request::new()
                     .turn_request_step(1)
-                    .system_prompt_regex("You are an iii sub-agent")
+                    .system_prompt_regex("You are an iii agent")
                     .messages_subset([
                         json!({ "role": "user" }),
                         json!({ "role": "assistant", "content": [
@@ -158,7 +158,7 @@ pub(super) fn scenario() -> ScenarioFixture {
             .expect(
                 Request::new()
                     .turn_request_step(2)
-                    .system_prompt_regex("You are an iii sub-agent")
+                    .system_prompt_regex("You are an iii agent")
                     .messages_subset([
                         json!({ "role": "user" }),
                         json!({ "role": "assistant" }),
@@ -184,7 +184,7 @@ pub(super) fn scenario() -> ScenarioFixture {
             .expect(
                 Request::new()
                     .turn_request_step(3)
-                    .system_prompt_regex("You are an iii sub-agent")
+                    .system_prompt_regex("You are an iii agent")
                     .messages_subset([json!({ "role": "user" })])
                     .tools_exact([record.tool()]),
             )

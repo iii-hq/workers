@@ -64,7 +64,7 @@
     "properties": {
       "default_only": {
         "default": false,
-        "description": "Return only the embedded Harness default, without session, runtime, registry, or hook layers.",
+        "description": "Return only the built-in default layer — the stored `system-prompts/default` override when one is active, else the embedded Harness default — without session, runtime, registry, or hook layers. The part's `name` states which source served it.",
         "type": "boolean"
       },
       "filesystem_root": {

@@ -16,7 +16,12 @@ const INITIAL_FILTERS: TraceFilterState = {
   pageSize: 50,
 }
 
-const STATS = { totalTraces: 4, errorCount: 1, avgDuration: 377 }
+const STATS = {
+  totalTraces: 2_601,
+  pageTraceCount: 50,
+  errorCount: 1,
+  avgDuration: 377,
+}
 
 // TraceFilters is a controlled component: `filters` + `onFilterChange` and
 // `searchQuery` + `onSearchChange` are value/onChange pairs that Storybook
@@ -24,7 +29,12 @@ const STATS = { totalTraces: 4, errorCount: 1, avgDuration: 377 }
 // actually interactive in the story. Only the passthrough props (stats,
 // isLoading) come through as args.
 interface HarnessProps {
-  stats?: { totalTraces: number; errorCount: number; avgDuration: number }
+  stats?: {
+    totalTraces: number
+    pageTraceCount: number
+    errorCount: number
+    avgDuration: number
+  }
   isLoading?: boolean
 }
 

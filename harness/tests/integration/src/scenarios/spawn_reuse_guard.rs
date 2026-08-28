@@ -32,7 +32,7 @@ use crate::fixtures::ScenarioFixture;
 
 const ENSURE: &str = "session::ensure";
 const SPAWN: &str = "harness::spawn";
-const SUBAGENT_PROMPT: &str = "You are an iii sub-agent";
+const SUBAGENT_PROMPT: &str = "You are an iii agent";
 
 const TASK_ONE: &str = "First assignment: reply done.";
 const TASK_TWO: &str = "Second assignment: record the value retasked, then reply done.";

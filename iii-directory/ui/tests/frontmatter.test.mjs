@@ -5,9 +5,21 @@ import {
   frontmatterFieldIsSimpleBoolean,
   readFrontmatterField,
   restoreFrontmatterFields,
+  setFrontmatterBody,
   setFrontmatterField,
   withoutFrontmatterFields,
 } from '../src/page/frontmatter.ts'
+
+test('replaces an agent body without changing its frontmatter or EOL style', () => {
+  const source = '---\r\nname: Agent\r\nskills: [review]\r\n---\r\n\r\nOld prompt.\r\n'
+  const next = setFrontmatterBody(source, '\r\nNew prompt.\r\nMore detail.\r\n')
+
+  assert.equal(
+    next,
+    '---\r\nname: Agent\r\nskills: [review]\r\n---\r\n\r\nNew prompt.\r\nMore detail.\r\n',
+  )
+  assert.equal(frontmatterBody(next), '\r\nNew prompt.\r\nMore detail.\r\n')
+})
 
 test('structured fields round-trip without dropping advanced metadata', () => {
   const content = `---

@@ -8,7 +8,6 @@ import {
   RadioTower,
   ShieldCheck,
 } from 'lucide-react'
-import { useEffect, useState } from 'react'
 import { registrationFromCall } from '@/components/trigger-activity/model'
 import {
   firstRenderedTriggerActivitySlot,
@@ -26,9 +25,9 @@ import { ActivityStatus } from '@/components/ui/ActivityStatus'
 import { OpenDetailsAffordance } from '@/components/ui/OpenDetailsAffordance'
 import { CardHighlight } from '@/components/ui/Surface'
 import { useRelativeClock } from '@/hooks/use-relative-clock'
-import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { formatElapsed, timestampMilliseconds } from '@/lib/relative-time'
 import { cn } from '@/lib/utils'
+import { useRegisteredTriggerActive } from '../RegisteredTriggerStatus'
 import {
   type RegisterTriggerRequest,
   type RegisterTriggerResponse,
@@ -135,7 +134,6 @@ export function RegisterTriggerView({
           {
             label: 'Expires',
             value: `in ${formatDurationMs(req.lifecycle.expires_in_ms)}`,
-
           },
         ]
       : []),
@@ -297,7 +295,6 @@ interface TriggerRegisteredDisplayProps {
   messageId?: string
   input: unknown
   output: unknown
-  sessionId?: string
   createdAt?: number
   now?: number
 }
@@ -308,7 +305,6 @@ export function TriggerRegisteredDisplay({
   messageId,
   input,
   output,
-  sessionId,
   createdAt,
   now,
 }: TriggerRegisteredDisplayProps) {
@@ -323,8 +319,7 @@ export function TriggerRegisteredDisplay({
   )
   const registrationId = resp?.subscription_id ?? resp?.id
   const active = useRegisteredTriggerActive({
-    sessionId,
-    subscriptionId: resp?.subscription_id,
+    subscriptionId: registrationId,
     registered: Boolean(registrationId),
   })
   const clock = useRelativeClock(createdAt)
@@ -416,46 +411,6 @@ export function TriggerRegisteredDisplay({
       </div>
     </div>
   )
-}
-
-function useRegisteredTriggerActive({
-  sessionId,
-  subscriptionId,
-  registered,
-}: {
-  sessionId?: string
-  subscriptionId?: string
-  registered: boolean
-}): boolean {
-  const ctx = useConversationsCtxOptional()
-  const [active, setActive] = useState(registered)
-
-  useEffect(() => {
-    setActive(registered)
-    const listTriggers = ctx?.backend.listTriggers
-    if (!registered || !sessionId || !subscriptionId || !listTriggers) {
-      return
-    }
-    let cancelled = false
-    const refresh = () => {
-      void listTriggers(sessionId)
-        .then((rows) => {
-          if (cancelled) return
-          setActive(
-            rows.some((row) => row.id === subscriptionId && row.fired !== true),
-          )
-        })
-        .catch(() => {})
-    }
-    refresh()
-    const off = ctx.backend.onTriggersChanged?.(sessionId, refresh)
-    return () => {
-      cancelled = true
-      off?.()
-    }
-  }, [ctx?.backend, registered, sessionId, subscriptionId])
-
-  return active
 }
 
 const isScalar = (v: unknown) =>

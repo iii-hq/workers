@@ -2,7 +2,7 @@
 
 [package]
 name = "storage"
-version = "0.1.13"
+version = "0.1.14-rc.2"
 edition = "2021"
 publish = false
 
@@ -14,7 +14,7 @@ path = "src/main.rs"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.23.0-rc.2"
+iii-sdk = "=0.22.1-alpha.25"
 iii-worker-paths = { path = "../crates/worker-paths" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "process", "io-util", "net", "fs"] }
 tokio-util = { version = "0.7", features = ["io"] }

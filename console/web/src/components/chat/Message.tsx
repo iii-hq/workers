@@ -55,6 +55,8 @@ interface MessageProps {
   triggerNotification?: UserMessageType
   /** Current child-session identity for a direct spawn seed message. */
   spawnContext?: SpawnTaskContext
+  /** Session agent profile name shown on assistant message headers. */
+  agentName?: string
 }
 
 export interface SpawnTaskContext {
@@ -75,6 +77,7 @@ export function Message({
   registration,
   triggerNotification,
   spawnContext,
+  agentName,
 }: MessageProps) {
   switch (message.role) {
     case 'user':
@@ -94,7 +97,13 @@ export function Message({
         <UserMessage message={message} />
       )
     case 'assistant':
-      return <AssistantMessage message={message} copyText={copyText} />
+      return (
+        <AssistantMessage
+          message={message}
+          copyText={copyText}
+          agentName={agentName}
+        />
+      )
     case 'thought':
       return <ThoughtMessage message={message} />
     case 'function-trigger': {
@@ -396,7 +405,10 @@ function SpawnTaskMessage({
           </div>
         </div>
 
-        <div className="h-px bg-edge/40" style={{ width: 'calc(100% + 24px)', marginLeft: '-12px' }}></div>
+        <div
+          className="h-px bg-edge/40"
+          style={{ width: 'calc(100% + 24px)', marginLeft: '-12px' }}
+        ></div>
 
         <CardBody className="p-0">
           <div className="break-words p-4 text-ink-faint sm:p-3">
@@ -500,9 +512,11 @@ function UserMessage({ message }: { message: UserMessageType }) {
 function AssistantMessage({
   message,
   copyText,
+  agentName,
 }: {
   message: AssistantMessageType
   copyText?: string | (() => string)
+  agentName?: string
 }) {
   const showCaret = !!message.streaming
   // A tool-only turn has no prose but still carries a copy payload (its
@@ -515,7 +529,9 @@ function AssistantMessage({
       data-message-role="assistant"
     >
       <header className="flex flex-wrap items-center gap-2 font-sans text-base text-ink-ghost sm:text-sm">
-        <span className="font-medium text-ink-faint">Agent</span>
+        <span className="font-medium text-ink-faint">
+          {agentName ?? 'Agent'}
+        </span>
         {copySource !== undefined && !message.streaming ? (
           <CopyMessageButton
             text={copySource}

@@ -1,6 +1,7 @@
-import { ChevronRight, Clock, Layers, X } from 'lucide-react'
+import { ChevronRight, Clock, Layers, LocateFixed, X } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Skeleton } from '@/components/ui/Skeleton'
+import type { TraceChatLink } from '../lib/traceChatLink'
 
 /**
  * Loading placeholder for the trace detail — mirrors the real composition
@@ -26,9 +27,17 @@ const TIMELINE_BARS: ReadonlyArray<readonly [number, number]> = [
 interface TraceDetailSkeletonProps {
   /** wired to the real close affordance so a slow load can be backed out of */
   onClose: () => void
+  /** chat linkage already resolved from the row's trace tags — live like the
+   *  close button, so the jump to the conversation never waits on the spans */
+  chatLink?: TraceChatLink | null
+  onOpenMessage?: (link: TraceChatLink) => void
 }
 
-export function TraceDetailSkeleton({ onClose }: TraceDetailSkeletonProps) {
+export function TraceDetailSkeleton({
+  onClose,
+  chatLink,
+  onOpenMessage,
+}: TraceDetailSkeletonProps) {
   return (
     <div className="flex flex-col overflow-hidden">
       {/* ── TraceHeader ── */}
@@ -67,6 +76,21 @@ export function TraceDetailSkeleton({ onClose }: TraceDetailSkeletonProps) {
           <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
             <Skeleton className="h-3 w-16" />
           </span>
+
+          {chatLink?.turnId && onOpenMessage ? (
+            <>
+              <span aria-hidden className="w-px h-3 bg-edge" />
+              <button
+                type="button"
+                onClick={() => onOpenMessage(chatLink)}
+                aria-label="go to message"
+                title="open the chat at this trace's message"
+                className="flex items-center px-1.5 py-0.5 rounded-xs bg-surface text-ink-faint hover:text-ink hover:bg-surface-hover transition-colors"
+              >
+                <LocateFixed className="size-4" />
+              </button>
+            </>
+          ) : null}
         </div>
 
         {/* worker share bar + names */}

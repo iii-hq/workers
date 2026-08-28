@@ -11,7 +11,7 @@ use tokio::net::TcpStream;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio_rustls::client::TlsStream;
 
-use crate::config::WorkerConfig;
+use crate::configuration::ConfigCell;
 
 /// Pool of ad-hoc IMAP sessions, one per (account, folder), used by
 /// list/get/search/flag/move/attachment::get. The IDLE listener runs in a
@@ -19,27 +19,32 @@ use crate::config::WorkerConfig;
 /// pool entries are for synchronous request/response work only.
 pub struct ImapPool {
     sessions: DashMap<(String, String), Arc<Mutex<Option<Session>>>>,
-    cfg: Arc<WorkerConfig>,
+    cfg: ConfigCell,
 }
 
 pub type Session = async_imap::Session<TlsStream<TcpStream>>;
 
 impl ImapPool {
-    pub fn new(cfg: Arc<WorkerConfig>) -> Self {
+    pub fn new(cfg: ConfigCell) -> Self {
         Self {
             sessions: DashMap::new(),
             cfg,
         }
     }
 
+    pub fn reset(&self) {
+        self.sessions.clear();
+    }
+
     /// Acquire (or open) a connection for the given (account, folder). Returns
     /// an owned guard that holds the lock for the duration of the IMAP
     /// exchange. Reconnects transparently on first acquire after a drop.
     pub async fn acquire(&self, account: &str, folder: &str) -> Result<SessionGuard, Error> {
+        let cfg = self.cfg.read().await.clone();
         // Validate FIRST — invalid (account, folder) tuples must never reach
         // the DashMap, otherwise a malformed-payload flood from a hostile
         // caller can balloon `self.sessions` without bound.
-        let acct = self.cfg.accounts.get(account).ok_or_else(|| {
+        let acct = cfg.accounts.get(account).ok_or_else(|| {
             Error::Handler(
                 json!({"code":"E600","message":format!("unknown account `{account}`")}).to_string(),
             )
@@ -74,7 +79,7 @@ impl ImapPool {
                     account,
                     folder,
                     imap_cfg,
-                    self.cfg.limits.imap_connect_timeout_ms,
+                    cfg.limits.imap_connect_timeout_ms,
                 )
                 .await?,
             );

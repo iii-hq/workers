@@ -175,6 +175,11 @@ export function frontmatterBody(content: string): string {
   return splitFrontmatter(content).body
 }
 
+/** Replace only the markdown body, preserving frontmatter bytes and EOLs. */
+export function setFrontmatterBody(content: string, body: string): string {
+  return joinFrontmatter({ ...splitFrontmatter(content), body })
+}
+
 /** Decode one list item scalar (bare, quoted, or ~/null). */
 function decodeItem(raw: string): string {
   return decodeScalar(raw, [])

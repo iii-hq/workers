@@ -4,7 +4,7 @@
  *
  * The old console could not show this. It exists here because the console
  * worker already streams: the `trace` trigger is a coalesced "spans changed"
- * tick, so the feed re-reads `engine::traces::list` filtered to this
+ * tick, so the feed re-reads `engine::traces::spans` filtered to this
  * function's span name on each beat instead of polling a timer.
  *
  * Every row is replayable — the recorded input becomes the invoke editor's
@@ -87,7 +87,7 @@ export function ActivityFeed({
   if (calls.error) {
     return (
       <div className="console-catalog-error">
-        engine::traces::list failed — {calls.error}
+        engine::traces::spans failed — {calls.error}
       </div>
     )
   }

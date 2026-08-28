@@ -31,7 +31,10 @@ import {
   type HarnessImageBlock,
   predictedUserEntryId,
 } from '@/lib/backend/harness-send'
-import { serialRefresh } from '@/lib/backend/serial-refresh'
+import {
+  type SessionTriggerLoader,
+  startSessionTriggerLoader,
+} from '@/lib/backend/session-trigger-loader'
 import {
   mergeFiredTriggers,
   type SessionTriggerInfo,
@@ -52,6 +55,13 @@ import {
   loadedSkillIds,
   slashChip,
 } from '@/lib/slash-commands'
+import {
+  CHAT_FOCUS_DROP_GRACE_MS,
+  clearChatMessageFocus,
+  shouldDropChatFocus,
+  useChatMessageFocus,
+} from '@/lib/trace-links'
+import { turnAnchorMessageId } from '@/lib/turn-anchor'
 import { useExtSessionChips, useExtSessionTurnSummaries } from '@/lib/ui-slots'
 import {
   activateWorkingDir,
@@ -95,6 +105,7 @@ import { Composer, type ComposerSubmitPayload } from './Composer'
 import { ContextUsage } from './ContextUsage'
 import { isSessionSubmitBlockedByHydration } from './chat-submit-blocking'
 import { MessageList } from './MessageList'
+import { RegisteredTriggerStatusProvider } from './RegisteredTriggerStatus'
 import { SessionTriggers } from './SessionTriggers'
 import {
   agentIdForSend,
@@ -374,6 +385,9 @@ export function ChatView({
   const [sessionTriggers, setSessionTriggers] = useState<SessionTriggerInfo[]>(
     [],
   )
+  const [triggersSnapshotSessionId, setTriggersSnapshotSessionId] = useState<
+    string | null
+  >(null)
   // Every full row this tab has EVER fetched, by subscription id. When a once
   // binding fires and retires, the refetch drops it — this cache lets the
   // fired ghost keep its full config/conditions after retirement.
@@ -381,28 +395,27 @@ export function ChatView({
   // The current conversation's serialized list loader. Doorbells arrive
   // at-least-once and burst on rapid fires; serialRefresh coalesces them
   // behind one in-flight read so snapshots never apply out of order.
-  const triggersLoaderRef = useRef<{ refresh: () => void } | null>(null)
+  const triggersLoaderRef = useRef<SessionTriggerLoader | null>(null)
   const refreshTriggers = useCallback(() => {
     triggersLoaderRef.current?.refresh()
   }, [])
   useEffect(() => {
-    const listTriggers = backend.listTriggers
-    if (!listTriggers) return
     seenTriggersRef.current = new Map()
     setSessionTriggers([])
-    const loader = serialRefresh(
-      () => listTriggers(conversation.id),
-      (rows) => {
+    setTriggersSnapshotSessionId(null)
+    const listTriggers = backend.listTriggers
+    if (!listTriggers) return
+    const loader = startSessionTriggerLoader({
+      sessionId: conversation.id,
+      listTriggers,
+      onTriggersChanged: backend.onTriggersChanged,
+      onSnapshot: (rows) => {
         for (const row of rows) seenTriggersRef.current.set(row.id, row)
         setSessionTriggers(rows)
+        setTriggersSnapshotSessionId(conversation.id)
       },
-    )
+    })
     triggersLoaderRef.current = loader
-    // Subscribe BEFORE the first snapshot so a mutation in the setup gap
-    // rings instead of being missed (both ride the same client bootstrap, so
-    // the registration frames are queued ahead of the list read).
-    const off = backend.onTriggersChanged?.(conversation.id, loader.refresh)
-    loader.refresh()
     // Catch-up for doorbells missed while hidden (throttled tab). Missed
     // doorbells across a socket outage are reseeded by the backend's
     // reconnect listener.
@@ -411,11 +424,10 @@ export function ChatView({
     }
     document.addEventListener('visibilitychange', onVisible)
     return () => {
-      off?.()
       document.removeEventListener('visibilitychange', onVisible)
       // Discard any in-flight snapshot so the old conversation's rows can't
       // land in the next conversation's state.
-      loader.reset()
+      loader.dispose()
       if (triggersLoaderRef.current === loader) triggersLoaderRef.current = null
     }
   }, [backend.listTriggers, backend.onTriggersChanged, conversation.id])
@@ -1172,10 +1184,14 @@ export function ChatView({
       // prompt + skills itself; suppressing the client-side selection also
       // covers pre-upgrade drafts whose persisted namedBody would otherwise
       // collide with the agent field.
-      const agentId = agentIdForSend(effectiveSystemPrompt, {
-        turnEstablished,
-        willQueue,
-      })
+      const agentId = conversation.agentProfile
+        ? turnEstablished || willQueue
+          ? undefined
+          : conversation.agentProfile.id
+        : agentIdForSend(effectiveSystemPrompt, {
+            turnEstablished,
+            willQueue,
+          })
       const systemPrompt = agentId
         ? null
         : selectionForSend(effectiveSystemPrompt, turnEstablished)
@@ -1722,6 +1738,7 @@ export function ChatView({
     },
     [
       conversation.id,
+      conversation.agentProfile,
       conversation.mode,
       conversation.model,
       conversation.skills,
@@ -1810,6 +1827,55 @@ export function ChatView({
         return null
     }
   })()
+
+  /* Trace → message landing: a pending turn-focus for THIS session resolves
+     to the transcript row to center (see lib/turn-anchor), recomputed as the
+     transcript hydrates. Consumed when MessageList lands on it. A missing
+     anchor drops the request only when nothing can still produce it — the
+     transcript is hydrated AND no turn is running (a live turn writes its
+     durable rows as it goes, so the click means "land there once it
+     exists") — and only after a grace, because completion flips the status
+     idle before the turn's last rows reach the transcript. So a stale
+     request still can't fire on a later visit. */
+  const chatFocusEvent = useChatMessageFocus()
+  const chatFocus =
+    chatFocusEvent && chatFocusEvent.sessionId === conversation.id
+      ? chatFocusEvent
+      : undefined
+  const focusMessageId = useMemo(
+    () =>
+      chatFocus
+        ? turnAnchorMessageId(conversation.messages, chatFocus.turnId)
+        : null,
+    [chatFocus, conversation.messages],
+  )
+  useEffect(() => {
+    if (!chatFocus) return
+    if (
+      !shouldDropChatFocus({
+        hydrated: conversation.hydrated,
+        working: conversation.status === 'working',
+        anchored: focusMessageId !== null,
+      })
+    ) {
+      return
+    }
+    // Any dep change — anchor resolved, a turn (re)started, a new request —
+    // cancels the pending drop; the id guard in clearChatMessageFocus keeps
+    // a stale timer from ever dropping a newer request.
+    const timer = window.setTimeout(
+      () => clearChatMessageFocus(chatFocus.id),
+      CHAT_FOCUS_DROP_GRACE_MS,
+    )
+    return () => window.clearTimeout(timer)
+  }, [chatFocus, conversation.hydrated, conversation.status, focusMessageId])
+  const chatFocusIdRef = useRef<number | null>(null)
+  chatFocusIdRef.current = chatFocus?.id ?? null
+  const handleFocusMessageHandled = useCallback(() => {
+    if (chatFocusIdRef.current !== null) {
+      clearChatMessageFocus(chatFocusIdRef.current)
+    }
+  }, [])
 
   const isDock = density === 'dock'
   const compact = isDock || onBack !== undefined
@@ -2183,7 +2249,9 @@ export function ChatView({
             {panelTitle ?? 'Chat'}
           </span>
           <span className="shrink-0 text-ink-ghost">·</span>
-          <span className="min-w-0 truncate">{effectiveModel}</span>
+          <span className="min-w-0 truncate">
+            {conversation.agentProfile?.name ?? effectiveModel}
+          </span>
         </div>
       </PageHeader>
 
@@ -2193,39 +2261,47 @@ export function ChatView({
         />
       ) : null}
 
-      <MessageList
-        messages={conversation.messages}
-        spawnContext={{
-          title: conversation.title,
-          model: effectiveModel,
-          appearance: conversation.subagentAppearance,
-        }}
-        transcriptHydrated={conversation.hydrated !== false}
-        isThinking={isThinking}
-        thinkingDetail={
-          conversation.status === 'working' && conversation.statusReason
-            ? conversation.statusReason
-            : (phaseDetail ??
-              (effectiveModel ? `dispatching ${effectiveModel}` : undefined))
-        }
-        density={density}
-        onResolveApproval={resolveApproval}
-        onAlwaysAllow={handleAlwaysAllow}
-        onResolveFilesystemAccess={handleFilesystemResolve}
-        onManageFilesystemAccess={handleManageFilesystemAccess}
-        onConfigureProvider={handleOpenModelPicker}
-        workingDir={conversation.workingDir ?? null}
-        onWorkingDirChange={
-          workingDirEnabled ? handleWorkingDirChange : undefined
-        }
-        defaultWorkingDir={defaultWorkingDir}
-        worktreePicker={
-          worktreeEnabled
-            ? { enabled: true, onPick: handlePickWorktree }
-            : undefined
-        }
+      <RegisteredTriggerStatusProvider
+        loaded={triggersSnapshotSessionId === conversation.id}
         triggersById={triggersById}
-      />
+      >
+        <MessageList
+          messages={conversation.messages}
+          agentName={conversation.agentProfile?.name}
+          spawnContext={{
+            title: conversation.title,
+            model: effectiveModel,
+            appearance: conversation.subagentAppearance,
+          }}
+          transcriptHydrated={conversation.hydrated !== false}
+          isThinking={isThinking}
+          thinkingDetail={
+            conversation.status === 'working' && conversation.statusReason
+              ? conversation.statusReason
+              : (phaseDetail ??
+                (effectiveModel ? `dispatching ${effectiveModel}` : undefined))
+          }
+          density={density}
+          onResolveApproval={resolveApproval}
+          onAlwaysAllow={handleAlwaysAllow}
+          onResolveFilesystemAccess={handleFilesystemResolve}
+          onManageFilesystemAccess={handleManageFilesystemAccess}
+          onConfigureProvider={handleOpenModelPicker}
+          workingDir={conversation.workingDir ?? null}
+          onWorkingDirChange={
+            workingDirEnabled ? handleWorkingDirChange : undefined
+          }
+          defaultWorkingDir={defaultWorkingDir}
+          worktreePicker={
+            worktreeEnabled
+              ? { enabled: true, onPick: handlePickWorktree }
+              : undefined
+          }
+          triggersById={triggersById}
+          focusMessageId={focusMessageId}
+          onFocusMessageHandled={handleFocusMessageHandled}
+        />
+      </RegisteredTriggerStatusProvider>
       <LiveRegion announcement={announcer.announcement} />
 
       <footer className={footerPad}>
@@ -2295,6 +2371,7 @@ export function ChatView({
             modelOptions={modelOptions}
             catalogLoading={catalogLoading}
             modelPickerOpenRequest={modelPickerOpenRequest}
+            modelLocked={Boolean(conversation.agentProfile?.model)}
             functionEntries={functionEntries}
             permissionMode={approvalSettings.settings.mode}
             permissionModeLoading={!approvalSettings.loaded}

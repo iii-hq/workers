@@ -46,7 +46,10 @@ import {
   Server,
   ShieldCheck,
   Square,
+  X,
 } from './icons'
+import { Topology } from './Topology'
+import type { TopologyInput } from './topology-layout'
 
 type Props = PageRenderProps & { host: Host }
 
@@ -115,7 +118,7 @@ type Validation = { namespace?: string; start_order?: string[]; deferred_package
 type LogTail = { container: string; path: string; lines: string[]; size: number; truncated: boolean; missing: boolean }
 type ChangedEvent = { kind?: string; file?: string; namespace?: string; state_dir?: string; path?: string }
 
-type Section = 'overview' | 'containers' | 'workers' | 'daemon'
+type Section = 'topology' | 'overview' | 'containers' | 'workers' | 'daemon'
 
 type Confirm = { title: string; description: string; confirmLabel: string; run: () => void }
 
@@ -128,6 +131,7 @@ const sections: {
   description: string
   icon: (props: { className?: string }) => ReactNode
 }[] = [
+  { id: 'topology', label: 'Topology', description: 'Engine, namespace, dependencies', icon: Layers },
   { id: 'overview', label: 'Overview', description: 'Project health, lifecycle', icon: Activity },
   { id: 'containers', label: 'Containers', description: 'State, PIDs, logs', icon: Boxes },
   { id: 'workers', label: 'Workers', description: 'Add, update, remove packages', icon: Package },
@@ -259,6 +263,25 @@ function portSummary(project: Project | null): ReactNode {
   )
 }
 
+function NodeChip({ name, onPick }: { name: string; onPick: (name: string) => void }) {
+  return (
+    <Chip
+      tone="neutral"
+      role="button"
+      tabIndex={0}
+      onClick={() => onPick(name)}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          onPick(name)
+        }
+      }}
+    >
+      <span className="cu-mono">{name}</span>
+    </Chip>
+  )
+}
+
 function Field({ id, label, hint, children }: { id: string; label: string; hint?: string; children: ReactNode }) {
   return (
     <div className={uiClasses.field}>
@@ -316,7 +339,8 @@ function Stat({ value, label, tone }: { value: ReactNode; label: string; tone?: 
 }
 
 export function ComposePage({ host, onRequestClose, panelSide, commands, panelContext }: Props) {
-  const [section, setSection] = useState<Section>('overview')
+  const [section, setSection] = useState<Section>('topology')
+  const [selectedNode, setSelectedNode] = useState<string | null>(null)
   const [status, setStatus] = useState<Status | null>(null)
   const [projects, setProjects] = useState<ProjectList | null>(null)
   const [project, setProject] = useState<Project | null>(null)
@@ -421,11 +445,9 @@ export function ComposePage({ host, onRequestClose, panelSide, commands, panelCo
         ? (context as { container?: unknown }).container
         : null
     if (typeof container !== 'string' || !container) return
-    setSection('containers')
-    setQuery('')
-    setExpanded(container)
-    void loadLogs(container)
-  }, [panelContext?.id, panelContext?.context, loadLogs])
+    setSection('topology')
+    setSelectedNode(container)
+  }, [panelContext?.id, panelContext?.context])
 
   const act = useCallback(
     async <T,>(key: string, run: () => Promise<T>, summarize: (result: T) => string) => {
@@ -589,6 +611,38 @@ export function ComposePage({ host, onRequestClose, panelSide, commands, panelCo
 
   const all = status?.containers ?? []
   const declared = useMemo(() => new Map((project?.containers ?? []).map((c) => [c.name, c])), [project])
+  const topology = useMemo<TopologyInput>(
+    () => ({
+      namespace: status?.namespace ?? project?.namespace ?? null,
+      file: status?.file ?? project?.file ?? null,
+      engine: {
+        url: project?.engine_url ?? null,
+        host: project?.engine_host ?? null,
+        port: project?.engine_port ?? null,
+        pid: status?.daemon_pid ?? null,
+      },
+      containers: all.map((c) => {
+        const d = declared.get(c.container)
+        return {
+          name: c.container,
+          state: c.state,
+          pid: running(c.state) ? (c.pid ?? null) : null,
+          source: d?.source ?? null,
+          ref: d?.ref ?? null,
+          version: d?.version ?? null,
+          ports: d?.ports.map((port) => port.port) ?? [],
+          startAfter: d?.start_after ?? [],
+          lastError: c.last_error ?? null,
+        }
+      }),
+    }),
+    [all, declared, project, status],
+  )
+  const selectedContainer = selectedNode ? (all.find((c) => c.container === selectedNode) ?? null) : null
+  const selectedDeclared = selectedNode ? declared.get(selectedNode) : undefined
+  useEffect(() => {
+    if (loaded && selectedNode && !all.some((c) => c.container === selectedNode)) setSelectedNode(null)
+  }, [loaded, selectedNode, all])
   const counts = useMemo(() => {
     const next = { ready: 0, starting: 0, failed: 0, stopped: 0 }
     for (const c of all) if (c.state in next) next[c.state as ContainerState] += 1
@@ -603,6 +657,7 @@ export function ComposePage({ host, onRequestClose, panelSide, commands, panelCo
 
   const sectionMeta = (id: Section): ReactNode => {
     if (!loaded) return null
+    if (id === 'topology' && counts.failed) return <Chip tone="danger">{counts.failed} failing</Chip>
     if (id === 'overview' && health) return <Chip tone={health.tone}>{health.label}</Chip>
     if (id === 'containers') return <Chip tone={counts.failed ? 'danger' : 'neutral'}>{all.length}</Chip>
     if (id === 'daemon' && projects?.projects?.length) return <Chip tone="neutral">{projects.projects.length}</Chip>
@@ -950,6 +1005,183 @@ export function ComposePage({ host, onRequestClose, panelSide, commands, panelCo
     </SectionCard>
   )
 
+  const topologySection = (
+    <>
+      <SectionCard
+        title={
+          <>
+            Topology
+            {loaded ? <span className="cu-count">{all.length}</span> : null}
+          </>
+        }
+        actions={health ? <Chip tone={health.tone}>{health.label}</Chip> : null}
+      >
+        {!loaded ? (
+          <LoadingRows rows={5} />
+        ) : all.length === 0 ? (
+          <EmptyState
+            icon={Boxes}
+            title="Nothing to draw"
+            description="This compose file declares no containers yet. Add a worker to start one."
+            action={{ label: 'Add worker', onClick: focusWorker }}
+          />
+        ) : (
+          <>
+            <p className="cu-note">
+              Ordered by <span className="cu-mono">start_after</span>. Pick a container to trace what it needs and what
+              depends on it.
+            </p>
+            <Topology input={topology} selected={selectedNode} onSelect={setSelectedNode} />
+          </>
+        )}
+      </SectionCard>
+      {selectedContainer ? (
+        <SectionCard
+          title={
+            <>
+              <StatusDot tone={styleFor(selectedContainer.state).dot} pulse={selectedContainer.state === 'starting'} />
+              <span className="cu-mono">{selectedContainer.container}</span>
+              <Badge variant={styleFor(selectedContainer.state).badge}>{selectedContainer.state}</Badge>
+            </>
+          }
+          actions={
+            <div className="cu-actions cu-detail-actions">
+              {running(selectedContainer.state) ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={!!busy}
+                  onClick={() => confirmLifecycle('down', selectedContainer.container)}
+                >
+                  <Square />
+                  Stop
+                </Button>
+              ) : (
+                <Button
+                  variant="primary"
+                  size="sm"
+                  disabled={!!busy}
+                  onClick={() => void lifecycle('up', selectedContainer.container)}
+                >
+                  <Play />
+                  Start
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={!!busy}
+                onClick={() => confirmLifecycle('restart', selectedContainer.container)}
+              >
+                <RotateCw />
+                Restart
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setSection('containers')
+                  setQuery('')
+                  setExpanded(selectedContainer.container)
+                  void loadLogs(selectedContainer.container)
+                }}
+              >
+                <FileText />
+                Log
+              </Button>
+              <IconButton label="Close details" variant="ghost" onClick={() => setSelectedNode(null)}>
+                <X />
+              </IconButton>
+            </div>
+          }
+        >
+          <div className="cu-detail-grid">
+            <div className="cu-detail-fact">
+              <span className="cu-detail-term">PID</span>
+              <span className="cu-mono cu-detail-value">
+                {running(selectedContainer.state) ? (selectedContainer.pid ?? '–') : '–'}
+              </span>
+            </div>
+            <div className="cu-detail-fact">
+              <span className="cu-detail-term">Supervision</span>
+              <span className="cu-detail-value">{supervision(selectedContainer)}</span>
+            </div>
+            <div className="cu-detail-fact">
+              <span className="cu-detail-term">Listening</span>
+              <span className="cu-mono cu-detail-value">
+                {selectedDeclared?.ports.length
+                  ? selectedDeclared.ports
+                      .map((port) => `${port.address === '*' ? '' : `${port.address}:`}${port.port}`)
+                      .join(', ')
+                  : '–'}
+              </span>
+            </div>
+            <div className="cu-detail-fact">
+              <span className="cu-detail-term">Source</span>
+              <span className="cu-mono cu-detail-value" title={selectedDeclared?.ref}>
+                {selectedDeclared
+                  ? selectedDeclared.source === 'package'
+                    ? `${selectedDeclared.ref.split('/').pop()}${selectedDeclared.version ? `@${selectedDeclared.version}` : ''}`
+                    : `${selectedDeclared.source}://${selectedDeclared.ref}`
+                  : '–'}
+              </span>
+            </div>
+          </div>
+          <div className="cu-detail-relations">
+            <div className="cu-detail-fact">
+              <span className="cu-detail-term">Starts after</span>
+              {selectedDeclared?.start_after.length ? (
+                <span className="cu-chips">
+                  {selectedDeclared.start_after.map((dep) => (
+                    <NodeChip key={dep} name={dep} onPick={setSelectedNode} />
+                  ))}
+                </span>
+              ) : (
+                <span className="cu-detail-value cu-faint">the engine only</span>
+              )}
+            </div>
+            <div className="cu-detail-fact">
+              <span className="cu-detail-term">Depended on by</span>
+              {(() => {
+                const dependents = (project?.containers ?? []).filter((d) =>
+                  d.start_after.includes(selectedContainer.container),
+                )
+                return dependents.length ? (
+                  <span className="cu-chips">
+                    {dependents.map((d) => (
+                      <NodeChip key={d.name} name={d.name} onPick={setSelectedNode} />
+                    ))}
+                  </span>
+                ) : (
+                  <span className="cu-detail-value cu-faint">nothing</span>
+                )
+              })()}
+            </div>
+          </div>
+          {selectedDeclared?.run || selectedDeclared?.environment.length ? (
+            <dl className="cu-detail-lines">
+              {selectedDeclared.run ? (
+                <div>
+                  <dt>run</dt>
+                  <dd className="cu-mono">{selectedDeclared.run}</dd>
+                </div>
+              ) : null}
+              {selectedDeclared.environment.length ? (
+                <div>
+                  <dt>environment</dt>
+                  <dd className="cu-mono">{selectedDeclared.environment.join('  ')}</dd>
+                </div>
+              ) : null}
+            </dl>
+          ) : null}
+          {selectedContainer.last_error ? (
+            <StatusPanel variant="alert" headline="Last error" detail={selectedContainer.last_error} />
+          ) : null}
+        </SectionCard>
+      ) : null}
+    </>
+  )
+
   const daemon = (
     <SectionCard title="Daemon">
       {!loaded ? (
@@ -1017,7 +1249,7 @@ export function ComposePage({ host, onRequestClose, panelSide, commands, panelCo
     </SectionCard>
   )
 
-  const content = { overview, containers, workers, daemon }[section]
+  const content = { topology: topologySection, overview, containers, workers, daemon }[section]
 
   return (
     <PageShell className="cu-shell">

@@ -184,9 +184,11 @@ pub struct SkillsConfig {
     pub auto_download: bool,
 
     /// Bind the `directory::pre-generate` hook so the conditional search
-    /// hint can be injected into agent generations. On by default; turning
-    /// it off unbinds the hook entirely (hot, no restart) — the model then
-    /// only finds `directory::search_functions` through normal discovery.
+    /// hint can be injected into agent generations. Off by default: the
+    /// harness identity prompt already teaches `directory::search_functions`
+    /// as the default discovery path, so the per-generation hint is
+    /// redundant. Turning it on binds the hook (hot, no restart) for
+    /// deployments running a custom identity prompt without that doctrine.
     #[serde(default = "default_inject_hint")]
     pub inject_hint: bool,
 
@@ -207,7 +209,7 @@ pub struct SkillsConfig {
 }
 
 fn default_inject_hint() -> bool {
-    true
+    false
 }
 
 fn default_hint_min_workers() -> usize {

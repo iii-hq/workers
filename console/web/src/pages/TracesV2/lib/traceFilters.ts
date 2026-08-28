@@ -7,6 +7,7 @@
 
 import type { TracesFilterParams } from '../api/traces'
 import type { TraceFilterState } from '../hooks/useTraceFilters'
+import { SESSION_ID_ATTR } from './followTurn'
 
 export interface FilterValidationWarnings {
   durationSwapped?: boolean
@@ -85,6 +86,55 @@ export function buildFilterParams(
   if (filters.sortOrder) params.sort_order = filters.sortOrder
 
   return { params, warnings }
+}
+
+/**
+ * Layer the automatic active-session scope onto built filter params.
+ *
+ * The session identity attributes (`iii.session.id`) live on WORKER child
+ * spans, never on a trace's root — a roots-only attribute filter matches
+ * nothing (verified against a live engine: 0 rows without
+ * `search_all_spans`, the session's real traces with it). So the scope
+ * rides the same wire shape as text search: match across all spans, and
+ * the engine still returns one compact summary per matching trace. Appended
+ * after any user attribute filters, so both apply.
+ */
+export function withSessionScope(
+  params: TracesFilterParams,
+  sessionId: string | null,
+): TracesFilterParams {
+  if (!sessionId) return params
+  return {
+    ...params,
+    attributes: [
+      ...(params.attributes ?? []),
+      [SESSION_ID_ATTR, sessionId] as [string, string],
+    ],
+    search_all_spans: true,
+  }
+}
+
+/**
+ * Move hidden root functions into the engine query so server pagination and
+ * `total` describe the same visible result set as the list. Both attribute
+ * spellings are supported because iii spans may carry the OTel-standard
+ * `faas.invoked_name` or the engine-specific `function_id` fallback.
+ */
+export function withHiddenFunctionExclusions(
+  params: TracesFilterParams,
+  hiddenFunctions: readonly string[] | undefined,
+): TracesFilterParams {
+  if (!hiddenFunctions || hiddenFunctions.length === 0) return params
+  return {
+    ...params,
+    exclude_attributes: [
+      ...(params.exclude_attributes ?? []),
+      ...hiddenFunctions.flatMap((functionId) => [
+        ['faas.invoked_name', functionId] as [string, string],
+        ['function_id', functionId] as [string, string],
+      ]),
+    ],
+  }
 }
 
 /**

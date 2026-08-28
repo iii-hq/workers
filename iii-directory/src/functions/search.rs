@@ -225,8 +225,11 @@ satisfied or already represented needs. If a selected id is rejected, fall back 
 normal discovery.";
 
 const SEARCH_REFINE_GUIDANCE: &str =
-    "No functions matched these capabilities. At the next decision \
-point, call directory::search_functions once with all unmet \
+    "No functions matched these capabilities. When the need is to BUILD something no function \
+covers — authoring a worker, registering a new engine function, running custom code — the \
+how-to lives in the shipped skills, not in a function: call directory::skills::list, then \
+directory::skills::get { id: \"<id>\" } for the matching how-to, and follow it. Otherwise, at \
+the next decision point, call directory::search_functions once with all unmet \
 external capabilities in `capabilities`. Do not search for intrinsic reasoning, summarization, \
 planning, or formatting, and do not repeat needs already represented in the conversation or \
 already satisfied. Always write every `capabilities` entry in English, even when the \
@@ -239,7 +242,10 @@ use one, run its `install` call exactly as given (compose::add), wait for it to 
 new worker ready, then call directory::search_functions again \
 for the newly registered candidates and fetch selected contracts with one batched \
 engine::functions::info call. If none fit, search once more with concrete unmet \
-`capabilities`. Do not search for intrinsic reasoning, summarization, planning, or \
+`capabilities`; for a need no function covers — authoring a worker, registering a new \
+engine function — read the shipped how-to instead: directory::skills::list, then \
+directory::skills::get { id: \"<id>\" }. Do not search for intrinsic reasoning, \
+summarization, planning, or \
 formatting. Always write every `capabilities` entry in English, even when the user \
 writes in another language; preserve proper names, URLs, and function IDs.";
 

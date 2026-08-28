@@ -22,8 +22,8 @@ export interface TraceFilterState {
   groupBy?: GroupByOption
   /**
    * Root functions hidden from the list (exact `function_id` match).
-   * Applied client-side over the seed + streamed rows, so toggling never
-   * refetches and the live-append path stays intact.
+   * Sent as engine exclusions so totals and server pages stay accurate;
+   * the loaded page also applies the same check defensively.
    */
   hiddenFunctions?: string[]
   /** How each list row is labelled. Default 'function'. */

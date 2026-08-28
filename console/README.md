@@ -188,25 +188,37 @@ proxies `/ws` to the iii engine. The browser only ever talks to one origin.
 
 ## Configuration
 
-### `config.yaml`
+Console registers a `console` entry with the central `configuration` worker.
+Its `http_port` value is authoritative after first registration: Console reads
+it before binding, watches `configuration:updated`, and moves the listener live
+when the port changes. The replacement port is bound and started before the old
+listener is gracefully drained; a failed bind keeps the previous listener and
+port active.
+
+The local `config.yaml` is a first-registration seed and a fallback for direct
+runs where the configuration worker is unavailable:
 
 ```yaml
-http_port: 3113       # port the UI + /ws are served on (default: 3113)
+http_port: 3113       # initial port seed for the UI + /ws (default: 3113)
 injectable_ui: true   # kill switch for runtime-injected worker UI (default: true)
 ```
 
 | Key | Default | Description |
 |---|---|---|
-| `http_port` | `3113` | TCP port the worker binds for `/`, `/assets/*`, and `/ws` |
+| `http_port` | `3113` | Initial TCP port seed for `/`, `/assets/*`, and `/ws`; the stored `console.http_port` wins thereafter |
 | `injectable_ui` | `true` | When `false`, skips the `console:script` / `console:style` / `console:assets` trigger types, the `/ui` + `/vendor` routes, and the SPA loader (`console::ui-manifest` answers `disabled: true`) |
+
+The configuration entry also stores UI preferences and
+`injectableUi.disabledWorkers`. Port and per-worker UI changes apply without a
+Console restart; the local `injectable_ui` kill switch remains startup-only.
 
 ### CLI flags
 
 | Flag | Default | Description |
 |---|---|---|
-| `--config <path>` | `./config.yaml` | Path to the YAML config |
+| `--config <path>` | `./config.yaml` | Path to the first-registration YAML seed/fallback |
 | `--url <ws://…>` | `ws://127.0.0.1:49134` | iii engine WebSocket URL (`DEFAULT_ENGINE_URL` in [`src/config.rs`](src/config.rs)) |
-| `--http-port <port>` | from config | Overrides `http_port` from the config file |
+| `--http-port <port>` | from seed | Overrides the YAML port seed; an existing configuration-worker value still wins |
 | `--manifest` | — | Print the publish manifest as JSON and exit (used by the registry pipeline) |
 
 ## Routes

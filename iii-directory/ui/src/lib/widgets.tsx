@@ -140,6 +140,15 @@ export function PlusIcon({ className }: { className?: string }) {
   )
 }
 
+export function PencilIcon({ className }: { className?: string }) {
+  return (
+    <svg {...iconProps(className)} aria-hidden="true">
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L8 18l-4 1 1-4Z" />
+    </svg>
+  )
+}
+
 export function ChevronLeftIcon({ className }: { className?: string }) {
   return (
     <svg {...iconProps(className)} aria-hidden="true">
