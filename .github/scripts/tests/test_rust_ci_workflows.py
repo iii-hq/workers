@@ -60,7 +60,12 @@ def test_actionlint_knows_the_repository_runner_pool_labels() -> None:
     config = yaml.load(
         (GITHUB / "actionlint.yaml").read_text(), Loader=yaml.BaseLoader
     )
-    assert config["self-hosted-runner"]["labels"] == ["general", "rust"]
+    assert config["self-hosted-runner"]["labels"] == [
+        "general",
+        "rust",
+        "workers-release-linux-8core",
+        "workers-release-macos-12core",
+    ]
 
 
 def test_interface_smoke_bounds_each_engine_readiness_probe() -> None:

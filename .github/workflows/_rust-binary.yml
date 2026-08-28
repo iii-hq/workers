@@ -48,12 +48,12 @@ jobs:
           python3 - <<'PY'
           import json, os, sys
           all_targets = [
-              {"target": "x86_64-apple-darwin",            "os": "macos-latest"},
-              {"target": "aarch64-apple-darwin",           "os": "macos-latest"},
-              {"target": "x86_64-unknown-linux-gnu",       "os": "ubuntu-22.04"},
-              {"target": "x86_64-unknown-linux-musl",      "os": "ubuntu-latest"},
-              {"target": "aarch64-unknown-linux-gnu",      "os": "ubuntu-22.04"},
-              {"target": "armv7-unknown-linux-gnueabihf",  "os": "ubuntu-22.04"},
+              {"target": "x86_64-apple-darwin",            "os": "macos-latest", "runner": "workers-release-macos-12core"},
+              {"target": "aarch64-apple-darwin",           "os": "macos-latest", "runner": "workers-release-macos-12core"},
+              {"target": "x86_64-unknown-linux-gnu",       "os": "ubuntu-22.04", "runner": "workers-release-linux-8core"},
+              {"target": "x86_64-unknown-linux-musl",      "os": "ubuntu-latest", "runner": "workers-release-linux-8core"},
+              {"target": "aarch64-unknown-linux-gnu",      "os": "ubuntu-22.04", "runner": "workers-release-linux-8core"},
+              {"target": "armv7-unknown-linux-gnueabihf",  "os": "ubuntu-22.04", "runner": "workers-release-linux-8core"},
           ]
           raw = (os.environ.get("TARGETS") or "").strip()
           if raw:
@@ -84,7 +84,7 @@ jobs:
     name: Pre-build SPA bundle
     needs: [matrix]
     if: inputs.web_bundle
-    runs-on: ubuntu-latest
+    runs-on: workers-release-linux-8core
     outputs:
       frontend_digest: ${{ steps.stage.outputs.frontend_digest }}
       frontends: ${{ steps.dirs.outputs.frontends }}
@@ -209,7 +209,7 @@ jobs:
     # succeeded", which would cascade-skip every matrix shard and leak
     # downstream as an empty GitHub Release — see #66 (database/v0.1.0).
     if: ${{ !failure() && !cancelled() }}
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: write
     strategy:

@@ -80,7 +80,7 @@ jobs:
   prepare:
     name: Prepare ${{ inputs.worker }} ${{ inputs.stable_version }}
     if: inputs.recovery_run_id == '0'
-    runs-on: ubuntu-latest
+    runs-on: workers-release-linux-8core
     timeout-minutes: 45
     outputs:
       prepared_sha: ${{ steps.meta.outputs.prepared_sha }}
@@ -170,7 +170,7 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.matrix.outputs.include) }}
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     steps:
       - name: Generate token
