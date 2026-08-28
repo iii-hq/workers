@@ -151,7 +151,7 @@ jobs:
         with:
           ref: ${{ inputs.source_sha }}
       - name: Install manifest tooling
-        run: python3 -m pip install --quiet pyyaml
+        run: python3 -m pip install --user --break-system-packages --quiet pyyaml
       - name: Compute exact target matrix
         id: compute
         env:
@@ -191,7 +191,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: '**/pnpm-lock.yaml'
       - name: Install manifest tooling
-        run: python3 -m pip install --quiet pyyaml
+        run: python3 -m pip install --user --break-system-packages --quiet pyyaml
       - name: Install Linux cross compiler
         if: runner.os == 'Linux' && matrix.target != 'none'
         run: |
