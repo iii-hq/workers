@@ -7,32 +7,29 @@ import {
   type TracesFilterParams,
   type TracesResponse,
 } from '../api/traces'
-import { collectRecentSpanWindow } from '../lib/traceDetailPages'
+import { withHiddenFunctionExclusions } from '../lib/traceFilters'
 import {
-  dedupeToTraceRoots,
   fingerprintTraceList,
-  mapSpanToListItem,
+  mapTraceSummaryToListItem,
 } from '../lib/traceListItem'
 
-const DEFAULT_TRACE_LIMIT = 500
-/**
- * Span budget for `search_all_spans` seeds. Full-fat spans run 30-80KB and
- * the server-side scan costs ~3.4s PER CALL regardless of limit/offset
- * (measured live), so the window has to stay small: 250 recent spans cover a
- * session's recent turns in 2-3 parallel reads. Deeper history stays
- * reachable through the pager and text search.
- */
-const SEARCH_SEED_MAX_SPANS = 250
+const DEFAULT_TRACE_PAGE_SIZE = 50
 
 /** Client-side debounce over activity ticks before refetching. The engine
  *  already coalesces to ~one tick per 300ms window; this only collapses the
  *  invalidate → POST round-trips of a burst of consecutive windows. */
 const ACTIVITY_REFETCH_DEBOUNCE_MS = 250
 /** Minimum gap between activity-driven reseeds of a filtered/searched list.
- *  That seed sweeps parallel multi-MB windows (see the queryFn); riding the
- *  short tick debounce alone would re-run it back-to-back under a busy
- *  session and saturate the main thread with payload parses. */
+ *  The response is compact, but child-span search still scans the engine's
+ *  store; riding the short tick debounce would re-run that scan back-to-back. */
 const FILTERED_RESEED_COOLDOWN_MS = 10_000
+
+export function shouldDeferTraceUpdate(
+  isHovered: boolean,
+  hadPreviousRows: boolean,
+): boolean {
+  return isHovered && hadPreviousRows
+}
 
 export interface TraceListItem {
   traceId: string
@@ -58,15 +55,19 @@ export interface UseTraceDataOptions {
   isPaused: boolean
   /**
    * Root functions to drop from the list (exact `function_id` /
-   * `faas.invoked_name` match on the row). Applied client-side over both
-   * the seed read and streamed rows, so toggling is instant and the
-   * live-append cache path stays intact.
+   * `faas.invoked_name` match on the row). Sent to the engine so `total`
+   * and server pages describe the same result set; retained client-side as
+   * a defensive check for older engines.
    */
   hiddenFunctions?: string[]
+  /** Arbitrary attributes required by the active row-label view. */
+  attributeProjection?: string[]
 }
 
 export interface UseTraceDataReturn {
   traceGroups: TraceListItem[]
+  /** Total matching traces before server pagination. */
+  totalTraceCount: number
   newTraceIds: Set<string>
   setNewTraceIds: React.Dispatch<React.SetStateAction<Set<string>>>
   /** `false` ONLY on the engine's definitive "memory exporter not enabled"
@@ -80,14 +81,64 @@ export interface UseTraceDataReturn {
   flushPendingTraces: () => void
 }
 
+export function hiddenFunctionsKey(hiddenFunctions?: string[]): string {
+  return JSON.stringify(hiddenFunctions ?? [])
+}
+
+export function filterHiddenTraceRows(
+  traces: TraceListItem[],
+  serializedHiddenFunctions: string,
+): TraceListItem[] {
+  const hidden = JSON.parse(serializedHiddenFunctions) as string[]
+  if (hidden.length === 0) return traces
+  return traces.filter(
+    (trace) => !(trace.functionId && hidden.includes(trace.functionId)),
+  )
+}
+
+export function traceTotalForResponse(
+  response: TracesResponse,
+  filteredTraceCount: number,
+): number {
+  return response.legacyContract ? filteredTraceCount : response.total
+}
+
+export function buildTraceListRequestParams({
+  filterParams,
+  showSystem,
+  debouncedSearch,
+  hiddenFunctions,
+  attributeProjection,
+}: Omit<UseTraceDataOptions, 'isPaused'>): TracesFilterParams {
+  const engineFilters = withHiddenFunctionExclusions(
+    filterParams,
+    hiddenFunctions,
+  )
+  const params = {
+    ...engineFilters,
+    ...(debouncedSearch && !engineFilters.name
+      ? { name: debouncedSearch, search_all_spans: true }
+      : {}),
+    include_internal: showSystem,
+    attribute_projection: attributeProjection,
+  }
+  return {
+    ...params,
+    offset: params.offset ?? 0,
+    limit: params.limit ?? DEFAULT_TRACE_PAGE_SIZE,
+  }
+}
+
 export function useTraceData({
   filterParams,
   showSystem,
   debouncedSearch,
   isPaused,
   hiddenFunctions,
+  attributeProjection,
 }: UseTraceDataOptions): UseTraceDataReturn {
   const [traceGroups, setTraceListItems] = useState<TraceListItem[]>([])
+  const [totalTraceCount, setTotalTraceCount] = useState(0)
   const [hasOtelConfigured, setHasOtelConfigured] = useState<boolean | null>(
     null,
   )
@@ -98,48 +149,34 @@ export function useTraceData({
 
   const isHoveredRef = useRef(false)
   const pendingTracesRef = useRef<TraceListItem[] | null>(null)
+  const hiddenKey = hiddenFunctionsKey(hiddenFunctions)
 
   const {
     data: tracesData,
     isLoading: isQueryLoading,
     refetch,
   } = useQuery({
-    queryKey: ['traces', filterParams, showSystem, debouncedSearch],
+    queryKey: [
+      'traces',
+      filterParams,
+      showSystem,
+      debouncedSearch,
+      attributeProjection,
+      hiddenKey,
+    ],
     queryFn: async (): Promise<TracesResponse> => {
-      const params = {
-        ...filterParams,
-        ...(debouncedSearch && !filterParams.name
-          ? { name: debouncedSearch, search_all_spans: true }
-          : {}),
-        include_internal: showSystem,
-      }
-      if (params.search_all_spans !== true) {
-        // Roots-only responses carry thin spans — one read is light & safe.
-        return fetchTraces({ ...params, offset: 0, limit: DEFAULT_TRACE_LIMIT })
-      }
-      // A search_all_spans seed (session scope, text search) returns FULL
-      // spans: one big read can exceed the transport's ~16MiB delivery cap
-      // and hang forever — no error. Collect a byte-priced recency window
-      // instead, windows in parallel because the server-side scan costs
-      // seconds per call regardless of limit/offset.
-      let exporterDisabled = false
-      const { spans, total } = await collectRecentSpanWindow(
-        async (offset, limit) => {
-          const page = await fetchTraces({ ...params, offset, limit })
-          if (page.memoryExporterDisabled) exporterDisabled = true
-          return page
-        },
-        SEARCH_SEED_MAX_SPANS,
+      // The engine returns one compact summary per trace even when child
+      // spans are searched. Preserve the caller's offset/limit so the list
+      // pages in the engine instead of retaining an arbitrary 500-row window.
+      return fetchTraces(
+        buildTraceListRequestParams({
+          filterParams,
+          showSystem,
+          debouncedSearch,
+          hiddenFunctions,
+          attributeProjection,
+        }),
       )
-      return exporterDisabled
-        ? {
-            spans: [],
-            total: 0,
-            offset: 0,
-            limit: SEARCH_SEED_MAX_SPANS,
-            memoryExporterDisabled: true,
-          }
-        : { spans, total, offset: 0, limit: SEARCH_SEED_MAX_SPANS }
     },
     // This query is the SEED read, re-run on demand: the `trace` trigger's
     // coalesced `{trace_ids}` tick invalidates it (notify-then-query, see
@@ -152,57 +189,77 @@ export function useTraceData({
     retry: 1,
   })
 
-  const hiddenKey = hiddenFunctions?.join(',') ?? ''
-
   // A scope/filter change is a DIFFERENT question — the previous answer's
   // rows must not linger under the new scope (measured live: the old
   // session's trace stayed on screen, under the new session's chip, for the
   // whole slow fetch). Dropping them also re-arms the loading skeleton.
-  const scopeKey = JSON.stringify([filterParams, showSystem, debouncedSearch])
+  const scopeKey = JSON.stringify([
+    filterParams,
+    showSystem,
+    debouncedSearch,
+    attributeProjection,
+    hiddenKey,
+  ])
+  // Pagination changes the page but not the result set. Keep the known total
+  // while a new page loads; reset it only when filters/scope actually change.
+  const resultSetKey = JSON.stringify([
+    Object.entries(filterParams).filter(
+      ([key]) => key !== 'offset' && key !== 'limit',
+    ),
+    showSystem,
+    debouncedSearch,
+    hiddenKey,
+  ])
   const scopeKeyRef = useRef(scopeKey)
+  const resultSetKeyRef = useRef(resultSetKey)
   useEffect(() => {
     if (scopeKeyRef.current === scopeKey) return
+    const resultSetChanged = resultSetKeyRef.current !== resultSetKey
     scopeKeyRef.current = scopeKey
+    resultSetKeyRef.current = resultSetKey
     setTraceListItems([])
+    if (resultSetChanged) setTotalTraceCount(0)
     fingerprintRef.current = ''
     prevTraceIdsRef.current = new Set()
     pendingTracesRef.current = null
     setNewTraceIds(new Set())
-  }, [scopeKey])
+  }, [scopeKey, resultSetKey])
 
   useEffect(() => {
     if (!tracesData) return
     if (tracesData.memoryExporterDisabled) {
       setTraceListItems([])
+      setTotalTraceCount(0)
       setHasOtelConfigured(false)
       return
     }
+    let traces: TraceListItem[] = (tracesData.traces ?? []).map(
+      mapTraceSummaryToListItem,
+    )
 
-    if (tracesData.spans && tracesData.spans.length > 0) {
-      // Search uses `search_all_spans`, which returns every span of each
-      // matching trace; collapse to one row per trace so the flat list stays
-      // trace-per-row (no-op for the non-search roots-only response).
-      let traces: TraceListItem[] = dedupeToTraceRoots(tracesData.spans).map(
-        mapSpanToListItem,
-      )
+    // Defensive compatibility for engines that ignore exclude_attributes.
+    // JSON preserves commas and other valid characters inside function IDs.
+    traces = filterHiddenTraceRows(traces, hiddenKey)
 
-      // Hidden functions: root-match only, applied after mapping so both the
-      // seed read and streamed cache merges pass through the same gate.
-      const hidden = hiddenKey ? hiddenKey.split(',') : []
-      if (hidden.length > 0) {
-        traces = traces.filter(
-          (t) => !(t.functionId && hidden.includes(t.functionId)),
-        )
-      }
+    // New Engines already exclude hidden rows before pagination and own the
+    // global total. A legacy response was aggregated and filtered locally, so
+    // its only honest total is the number of compatible rows on this page.
+    setTotalTraceCount(traceTotalForResponse(tracesData, traces.length))
 
+    if (traces.length > 0) {
       traces.sort((a, b) => b.startTime - a.startTime)
 
-      const fingerprint = fingerprintTraceList(traces)
+      // The same rows can answer two different questions (for example the
+      // unfiltered list followed by a text search that matches its only
+      // row). Scope changes clear the rendered list, so a fingerprint from
+      // the previous scope must never suppress the new scope's first answer.
+      const fingerprint = `${scopeKey}\0${fingerprintTraceList(traces)}`
       if (fingerprint === fingerprintRef.current) return
       fingerprintRef.current = fingerprint
 
       const currentIds = new Set(traces.map((t) => t.traceId))
-      if (prevTraceIdsRef.current.size > 0) {
+      const hadPreviousRows = prevTraceIdsRef.current.size > 0
+      if (hadPreviousRows) {
         const freshIds = new Set<string>()
         for (const id of currentIds) {
           if (!prevTraceIdsRef.current.has(id)) freshIds.add(id)
@@ -211,7 +268,12 @@ export function useTraceData({
       }
       prevTraceIdsRef.current = currentIds
 
-      if (isHoveredRef.current) {
+      // Freeze churn only when there is already a rendered list whose row
+      // positions must stay stable under the pointer. A scope/search change
+      // clears the list first; deferring that scope's first answer while the
+      // user is still hovering the search field would leave an empty screen
+      // until the pointer happened to leave the traces pane.
+      if (shouldDeferTraceUpdate(isHoveredRef.current, hadPreviousRows)) {
         pendingTracesRef.current = traces
         return
       }
@@ -224,7 +286,7 @@ export function useTraceData({
       setTraceListItems([])
       setHasOtelConfigured(true)
     }
-  }, [tracesData, hiddenKey])
+  }, [tracesData, hiddenKey, scopeKey])
 
   // ── Trigger-driven refetch (notify-then-query) ──────────────────────────
   // The engine coalesces span activity into one `{ trace_ids }` tick per
@@ -255,9 +317,8 @@ export function useTraceData({
 
     const isHidden = () =>
       typeof document !== 'undefined' && document.visibilityState === 'hidden'
-    // The search_all_spans seed is EXPENSIVE (parallel multi-MB windows —
-    // see the queryFn): its reseed rides a trailing cooldown instead of the
-    // short tick debounce, so a busy session cannot re-run it back-to-back.
+    // A search_all_spans seed still performs an engine-side scan. Its reseed
+    // rides a trailing cooldown so a busy session cannot re-run it back-to-back.
     let reseedCooldownTimer: ReturnType<typeof setTimeout> | undefined
     let lastTracesReseed = 0
     const reseedTraces = () => {
@@ -359,6 +420,7 @@ export function useTraceData({
 
   return {
     traceGroups,
+    totalTraceCount,
     newTraceIds,
     setNewTraceIds,
     hasOtelConfigured,

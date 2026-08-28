@@ -25,6 +25,11 @@ struct SystemPromptEntry {
     name: String,
     description: String,
     modified_at: String,
+    /// Bundled with the worker, no file behind it: editing it creates the
+    /// local file (which then shadows this entry); there is nothing to
+    /// delete.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    builtin: bool,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -50,6 +55,10 @@ pub struct SystemPromptGetOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw: Option<String>,
     pub modified_at: String,
+    /// Served from the copy bundled with the worker (no local file yet):
+    /// an update creates the local file.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub builtin: bool,
 }
 
 pub fn register(iii: &Arc<IIIClient>, cfg: &SharedConfig) {
@@ -63,19 +72,32 @@ pub fn register(iii: &Arc<IIIClient>, cfg: &SharedConfig) {
                     &cfg.resolved_skills_folder(),
                     &cfg.local_skills_folder(),
                 );
-                Ok::<_, Error>(ListSystemPromptsOutput {
-                    prompts: prompts
-                        .into_iter()
-                        .map(|p| SystemPromptEntry {
-                            modified_at: fs_modified_at(&p.abs_path),
-                            name: p.name,
-                            description: p.description,
-                        })
-                        .collect(),
-                })
+                let mut entries: Vec<SystemPromptEntry> = prompts
+                    .into_iter()
+                    .map(|p| SystemPromptEntry {
+                        modified_at: fs_modified_at(&p.abs_path),
+                        name: p.name,
+                        description: p.description,
+                        builtin: false,
+                    })
+                    .collect();
+                // Bundled prompts are always visible; a local file with the
+                // same name shadows its bundled copy.
+                for bundled in crate::bundled::bundled_system_prompts() {
+                    if !entries.iter().any(|entry| entry.name == bundled.name) {
+                        entries.push(SystemPromptEntry {
+                            name: bundled.name.to_string(),
+                            description: bundled.description,
+                            modified_at: String::new(),
+                            builtin: true,
+                        });
+                    }
+                }
+                entries.sort_by(|a, b| a.name.cmp(&b.name));
+                Ok::<_, Error>(ListSystemPromptsOutput { prompts: entries })
             }
         })
-        .description("List filesystem-backed system prompts (name, description, modified_at) from skills_folder (`system-prompts/` path segment)."),
+        .description("List system prompts (name, description, modified_at): filesystem-backed entries from skills_folder (`system-prompts/` path segment) plus the prompts bundled with this worker. A bundled prompt with no local file carries `builtin: true` — editing it via directory::system-prompts::update creates the local file, which then shadows the bundled copy."),
     );
 
     let cfg_inner = cfg.clone();
@@ -85,7 +107,7 @@ pub fn register(iii: &Arc<IIIClient>, cfg: &SharedConfig) {
             let cfg = cfg_inner.load_full();
             async move { get_system_prompt(&cfg, req).await.map_err(Error::Handler) }
         })
-        .description("Fetch one filesystem-backed system prompt by name. Returns the raw markdown body plus name, description, and modified_at — no envelope, no templating."),
+        .description("Fetch one system prompt by name — a filesystem-backed entry, or a worker-bundled one (`builtin: true`) when no local file shadows it. Returns the raw markdown body plus name, description, and modified_at — no envelope, no templating."),
     );
 }
 
@@ -99,7 +121,20 @@ pub async fn get_system_prompt(
         &cfg.local_skills_folder(),
     );
     let Some(fs) = prompts.iter().find(|p| p.name == req.name).cloned() else {
-        let names: Vec<String> = prompts.into_iter().map(|p| p.name).collect();
+        // No local file — a bundled copy still serves (and `raw` round-trips
+        // the full file form an update would copy-on-write to disk).
+        if let Some(bundled) = crate::bundled::bundled_system_prompt(&req.name) {
+            return Ok(SystemPromptGetOutput {
+                name: bundled.name.to_string(),
+                description: bundled.description,
+                body: bundled.body,
+                raw: req.raw.filter(|raw| *raw).map(|_| bundled.raw.to_string()),
+                modified_at: String::new(),
+                builtin: true,
+            });
+        }
+        let mut names: Vec<String> = prompts.into_iter().map(|p| p.name).collect();
+        names.extend(crate::bundled::bundled_system_prompts().map(|b| b.name.to_string()));
         return Err(not_found_message(
             "D210",
             "system prompt",
@@ -118,6 +153,7 @@ pub async fn get_system_prompt(
             .map(|_| fs_source::read_raw(&fs.abs_path))
             .transpose()?,
         modified_at: fs_modified_at(&fs.abs_path),
+        builtin: false,
     })
 }
 
@@ -178,6 +214,48 @@ mod tests {
     fn name_validation_rejects_bad_chars() {
         assert!(validate_name("send-email").is_ok());
         assert!(validate_name("Send-Email").is_err());
+    }
+
+    #[tokio::test]
+    async fn get_serves_the_bundled_prompt_until_a_local_file_shadows_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = SkillsConfig {
+            skills_folder: tmp.path().to_string_lossy().into_owned(),
+            local_skills_folder: tmp.path().join("local").to_string_lossy().into_owned(),
+            ..SkillsConfig::default()
+        };
+        // No file: the bundled copy serves, raw round-trips the full form.
+        let out = get_system_prompt(
+            &cfg,
+            SystemPromptGetInput {
+                name: "iii-minimal".into(),
+                raw: Some(true),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(out.builtin);
+        assert!(out.body.starts_with("You are an iii agent."));
+        assert!(out.raw.unwrap().starts_with("---\n"));
+
+        // A local file with the same name shadows the bundled copy.
+        std::fs::create_dir_all(tmp.path().join("system-prompts")).unwrap();
+        std::fs::write(
+            tmp.path().join("system-prompts/iii-minimal.md"),
+            "---\ndescription: mine\n---\nShadowed.\n",
+        )
+        .unwrap();
+        let out = get_system_prompt(
+            &cfg,
+            SystemPromptGetInput {
+                name: "iii-minimal".into(),
+                raw: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!out.builtin);
+        assert_eq!(out.body.trim(), "Shadowed.");
     }
 
     #[tokio::test]

@@ -24,8 +24,7 @@ import {
   summarizeGroup,
 } from '../lib/groupTraces'
 import {
-  dedupeToTraceRoots,
-  mapSpanToListItem,
+  mapTraceSummaryToListItem,
   type RowLabelConfig,
 } from '../lib/traceListItem'
 import { TraceListRow } from './TraceListRow'
@@ -279,14 +278,20 @@ function GroupMembers({
       group.value,
       group.trace_ids.length,
       showSystem,
+      label?.mode,
+      label?.attribute,
     ],
     queryFn: async () => {
-      const { spans } = await fetchTraces({
+      const { traces } = await fetchTraces({
         trace_ids: group.trace_ids.slice(0, MEMBER_FETCH_LIMIT),
         include_internal: showSystem,
         limit: MEMBER_FETCH_LIMIT,
+        attribute_projection:
+          label?.mode === 'attribute' && label.attribute
+            ? [label.attribute]
+            : undefined,
       })
-      const rows = dedupeToTraceRoots(spans).map(mapSpanToListItem)
+      const rows = traces.map(mapTraceSummaryToListItem)
       rows.sort((a, b) => b.startTime - a.startTime)
       return rows
     },

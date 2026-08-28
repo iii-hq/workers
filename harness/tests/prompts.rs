@@ -1,8 +1,9 @@
 //! Every shipped identity prompt must describe the surface the harness
 //! actually serves.
 //!
-//! Top-level agents see `harness/prompts/default.txt`; sub-agents see
-//! `harness/prompts/subagent.txt`.
+//! Every agent — top-level and spawned children alike — sees
+//! `harness/prompts/default.txt`; the separate sub-agent identity is retired
+//! (children differ by policy and enrich layers, never by embedded prompt).
 
 use std::path::{Path, PathBuf};
 
@@ -27,13 +28,9 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// The two prompt files that the harness owns and sends to agents.
+/// The single prompt file that the harness owns and sends to agents.
 fn shipped_prompts() -> Vec<PathBuf> {
-    let root = repo_root();
-    vec![
-        root.join("harness/prompts/default.txt"),
-        root.join("harness/prompts/subagent.txt"),
-    ]
+    vec![repo_root().join("harness/prompts/default.txt")]
 }
 
 fn label(path: &Path) -> String {
@@ -46,17 +43,15 @@ fn label(path: &Path) -> String {
 #[test]
 fn harness_owns_the_only_shipped_prompts() {
     let prompts = shipped_prompts();
+    assert!(prompts.iter().all(|path| path.is_file()));
+
+    // The separate sub-agent identity is retired: one prompt for every agent.
+    let retired = repo_root().join("harness/prompts/subagent.txt");
     assert!(
-        prompts.iter().all(|path| path.is_file()),
-        "expected the two harness prompts, found: {:?}",
-        prompts.iter().map(|p| label(p)).collect::<Vec<_>>()
+        !retired.exists(),
+        "the sub-agent prompt must stay removed: {}",
+        label(&retired)
     );
-    assert!(prompts
-        .iter()
-        .any(|p| label(p).ends_with("harness/prompts/default.txt")));
-    assert!(prompts
-        .iter()
-        .any(|p| label(p).ends_with("harness/prompts/subagent.txt")));
 
     let provider_prompts: Vec<PathBuf> = std::fs::read_dir(repo_root())
         .expect("repo root is readable")

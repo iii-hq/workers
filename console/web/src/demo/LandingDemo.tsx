@@ -333,6 +333,7 @@ export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
               onClearWarnings={traceFilters.clearValidationWarnings}
               stats={{
                 totalTraces: 1,
+                pageTraceCount: 1,
                 errorCount: player.waterfall
                   ? player.waterfall.spans.filter((s) => s.status === 'error')
                       .length

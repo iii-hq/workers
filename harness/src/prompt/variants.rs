@@ -1,8 +1,7 @@
-//! The embedded identity prompts. `DEFAULT` is the top-level orchestrator
-//! identity (engine-grounded capability ladder).
-//! `SUBAGENT` is the minimal identity EVERY spawned child gets (never the
-//! orchestrator prompt): do the one task, write the named state destination,
-//! stop — no spawning, no triggers, no workflow knowledge.
+//! The embedded identity prompt. `DEFAULT` is the single identity EVERY
+//! agent gets — top-level sessions and spawned children alike: the basic
+//! engine surface and how to discover functions (list, info, call). Roles
+//! differ by policy and by the enrich layers (mode paragraph, agent profile,
+//! caller prompt), never by a separate embedded identity.
 
 pub const DEFAULT: &str = include_str!("../../prompts/default.txt");
-pub const SUBAGENT: &str = include_str!("../../prompts/subagent.txt");

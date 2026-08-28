@@ -1,6 +1,6 @@
 /**
  * Live feed of ALL spans across all traces for the masthead strip: one seed
- * read (`engine::traces::list` with `search_all_spans` and no name filter —
+ * read (`engine::traces::spans` with `search_all_spans` and no name filter —
  * which returns every stored span, newest first) then live appends from the
  * engine's `iii:devtools:all-spans` stream, keyed by `span_id` so a pending
  * live snapshot is replaced in place by its final close frame (never the
@@ -22,7 +22,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getIiiClient } from '@/lib/iii-client'
 import { startTraceActivityFeed } from '@/lib/traces-activity'
-import { fetchTraces, type StoredSpan } from '../api/traces'
+import { fetchTraceSpans, type StoredSpan } from '../api/traces'
 import { isPendingSpan, toMs } from '../lib/traceTransform'
 
 /** Forget spans that ended this long ago (strip window + wide slack). */
@@ -103,7 +103,7 @@ export function useAllSpans(isPaused: boolean): readonly StoredSpan[] {
 
     const request = (async () => {
       try {
-        const res = await fetchTraces({
+        const res = await fetchTraceSpans({
           search_all_spans: true,
           include_internal: true,
           sort_by: 'start_time',

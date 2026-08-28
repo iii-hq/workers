@@ -118,7 +118,7 @@ registry_url: https://api.workers.iii.dev   # workers registry base URL
 download_timeout_ms: 60000                   # per git-clone / HTTP request timeout (ms)
 registry_cache_ttl_ms: 60000                 # in-process TTL for registry::workers::* responses
 filter_unregistered: true                    # hide skills whose namespace isn't an installed worker
-inject_hint: true                            # bind the directory::pre-generate search-hint hook
+inject_hint: false                           # bind the directory::pre-generate search-hint hook (off: the harness identity prompt already teaches directory-first discovery)
 hint_min_workers: 2                          # minimum surface width before the hint fires (0 = always)
 registry_search: true                        # include installable registry workers in every search
 ```
@@ -444,9 +444,12 @@ current task window yet, the surface spans at least `hint_min_workers` distinct
 workers, the current task (from the latest user message) has no real function
 results yet, and it does not already name a callable function id. Measured on
 26 pre-existing e2e scenarios: an unconditional hint *induces* redundant
-discovery on guided tasks (up to +110% tokens); the gates are what make
-default-on affordable. The hook's transcript annotations (`origin.directory`)
-carry only coarse outcome/reason and counts.
+discovery on guided tasks (up to +110% tokens). The hook ships OFF by default
+(`inject_hint: false`): the harness identity prompt already teaches
+`directory::search_functions` as the default discovery path, so the hint is
+for deployments running a custom identity prompt without that doctrine. The
+hook's transcript annotations (`origin.directory`) carry only coarse
+outcome/reason and counts.
 
 Knobs (`inject_hint`, `hint_min_workers`, `registry_search`) live in the
 `iii-directory` configuration entry and hot-apply — see Configuration.

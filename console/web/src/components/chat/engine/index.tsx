@@ -163,7 +163,6 @@ function tryRenderRegisterTriggerDisplay(
           ? coerceJsonObject(unwrapEnvelope(message.output))
           : undefined
       }
-      sessionId={message.sessionId}
       createdAt={message.createdAt}
     />
   )

@@ -22,6 +22,8 @@ rules:
   - '!state::delete'
   - '!stream::set'
   - '!iii::durable::publish'
+  - '!email::on-config-change'
+  - '!email::config-status'
   # Provider credentials live in the `llm-router` configuration entry. Agents
   # must never resolve a secret through router internals, self-register a
   # provider, poison the model catalog, or rewrite the configuration value

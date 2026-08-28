@@ -16,7 +16,7 @@
 //   • Time range presets.
 //   • Attribute key/value editor (via AttributesFilter).
 //   • Active-filter chips for one-click removal.
-//   • Stats summary (totalTraces, errorCount, avgDuration).
+//   • Stats summary (global total, current-page errors and average).
 
 import {
   AlertTriangle,
@@ -40,7 +40,7 @@ import type { GroupByOption } from '../lib/groupTraces'
 import { AttributesFilter } from './AttributesFilter'
 import { GroupByPicker } from './GroupByPicker'
 
-interface TraceFiltersProps {
+export interface TraceFiltersProps {
   filters: TraceFilterState
   onFilterChange: (key: keyof TraceFilterState, value: unknown) => void
   onClear: () => void
@@ -54,6 +54,7 @@ interface TraceFiltersProps {
   onSearchChange?: (value: string) => void
   stats?: {
     totalTraces: number
+    pageTraceCount: number
     errorCount: number
     avgDuration: number
   }
@@ -331,11 +332,14 @@ function SearchInput({
   )
 }
 
-function StatsBlock({ stats }: { stats: TraceFiltersProps['stats'] }) {
+export function StatsBlock({ stats }: { stats: TraceFiltersProps['stats'] }) {
   if (!stats) return null
   return (
     <div className="flex items-stretch rounded-md bg-surface">
-      <div className="flex items-center gap-1.5 px-2.5 py-1 font-mono text-[11px] text-ink-faint lowercase">
+      <div
+        className="flex items-center gap-1.5 px-2.5 py-1 font-mono text-[11px] text-ink-faint lowercase"
+        title={`${stats.pageTraceCount} traces on this page, ${stats.totalTraces} total matching traces`}
+      >
         <Hash className="size-4 text-ink-faint" />
         <span className="text-ink tabular-nums">{stats.totalTraces}</span>
         <span className="text-ink-ghost">Traces</span>
@@ -348,14 +352,14 @@ function StatsBlock({ stats }: { stats: TraceFiltersProps['stats'] }) {
       >
         <XCircle className="size-4" />
         <span className="tabular-nums">{stats.errorCount}</span>
-        <span className="text-ink-ghost">Errors</span>
+        <span className="text-ink-ghost">Page errors</span>
       </div>
       <div className="flex items-center gap-1.5 px-2.5 py-1 font-mono text-[11px] text-ink-faint lowercase">
         <Timer className="size-4" />
         <span className="text-ink tabular-nums">
           {formatDurationMs(stats.avgDuration)}
         </span>
-        <span className="text-ink-ghost">Avg</span>
+        <span className="text-ink-ghost">Page avg</span>
       </div>
     </div>
   )

@@ -56,6 +56,7 @@
 //! skills and system-prompts browser/editor page, a `directory::*`
 //! function-trigger renderer, and a custom configuration form.
 
+pub mod bundled;
 pub mod config;
 pub mod configuration;
 pub mod fs_source;

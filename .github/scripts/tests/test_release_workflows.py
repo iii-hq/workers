@@ -209,12 +209,40 @@ def test_every_dispatch_is_actor_gated_and_emits_factual_evidence() -> None:
         assert ("--mutating" in body) == (name in MUTATING), name
 
 
+def test_harness_shadow_uses_the_general_self_hosted_pool() -> None:
+    observe = workflow(WORKFLOWS / "harness-e2e-shadow.yml")["jobs"]["observe"]
+    assert observe["runs-on"] == ["self-hosted", "Linux", "X64", "general"]
+    assert observe["environment"] == "harness-e2e-trusted"
+
+
 def test_candidate_smoke_prepares_kvm_only_for_scrapling() -> None:
     steps = workflow(WORKFLOWS / "candidate-smoke.yml")["jobs"]["smoke"]["steps"]
     prepare = next(step for step in steps if step.get("name") == "Prepare KVM for Scrapling sandbox")
     assert prepare["if"] == "inputs.worker == 'scrapling'"
     assert "test -c /dev/kvm" in prepare["run"]
     assert "sudo chmod 0666 /dev/kvm" in prepare["run"]
+
+
+def test_candidate_publish_retries_and_safely_joins_prepared_commits() -> None:
+    path = WORKFLOWS / "publish-candidate.yml"
+    value = workflow(path)
+    publish = value["jobs"]["publish"]
+    assert "concurrency" not in publish
+
+    steps = publish["steps"]
+    verify = next(step for step in steps if step.get("name") == "Verify prepared artifact and release metadata")
+    push = next(step for step in steps if step.get("name") == "Push candidate commit and annotated tag atomically")
+
+    assert 'git merge-base --is-ancestor "$SOURCE_SHA" "$PREPARED_SHA"' in verify["run"]
+    assert 'git diff --quiet "$SOURCE_SHA" "$main_sha" -- "$WORKER"' in verify["run"]
+    assert 'case "$changed" in' in verify["run"]
+    assert '"$WORKER"/*)' in verify["run"]
+    assert "prepare_main_target()" in push["run"]
+    assert "publish_git_refs()" in push["run"]
+    assert 'git merge --no-ff --no-edit "$PREPARED_SHA"' in push["run"]
+    assert "for attempt in $(seq 1 60)" in push["run"]
+    assert "main advanced during candidate publication; retrying CAS" in push["run"]
+    assert 'git push --atomic origin' in push["run"]
 
 
 def test_reusable_harness_executor_has_no_implicit_inputs() -> None:

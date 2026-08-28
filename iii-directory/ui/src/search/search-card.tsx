@@ -104,7 +104,7 @@ function InstallableSection({ worker }: { worker: DiscoverInstallableView }) {
         <span aria-hidden="true" className="sym">
           $
         </span>
-        <code>{`worker::add { "source": { "kind": "registry", "name": "${worker.name}" }, "wait": false }`}</code>
+        <code>{`compose::add { "worker": "${worker.name}" }`}</code>
       </div>
     </section>
   )
