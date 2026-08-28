@@ -267,7 +267,7 @@ impl Orchestrator {
 
     pub async fn start_all_managed(&self, wait_connected: bool) -> Result<()> {
         // "All" means all spawnable workers; external ones (non-Rust, managed
-        // via `iii worker add`) are not an error here.
+        // via `compose::add`) are not an error here.
         let spawnable: Vec<String> = self
             .config
             .workers
@@ -306,7 +306,7 @@ impl Orchestrator {
                 continue;
             }
             // Non-spawnable workers pulled in as dependencies run externally
-            // (`iii worker add`); skip them. Bail only when the user asked for
+            // (`compose::add`); skip them. Bail only when the user asked for
             // that worker by name.
             if let Some(reason) = self.unsupported_reason(&worker) {
                 if names.contains(&worker) {

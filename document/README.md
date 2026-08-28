@@ -13,14 +13,14 @@ the answer.
 ## Install
 
 ```bash
-iii worker add document
+iii trigger compose::add worker=document
 ```
 
 Reading a scanned document also needs something to turn its pages into pixels
 and something to read them, neither of which ships here:
 
 ```bash
-iii worker add browser
+iii trigger compose::add worker=browser
 ```
 
 With [browser](https://github.com/iii-hq/workers/tree/main/browser) installed and a vision model configured through

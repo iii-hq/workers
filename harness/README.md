@@ -5,7 +5,7 @@
 **A thin, durable turn loop that turns a model plus a few iii workers into an agent.**
 
 <p>
-  <a href="#install"><img alt="Install: iii worker add harness" src="https://img.shields.io/badge/install-iii%20worker%20add%20harness-0a84ff?style=flat-square"></a>
+  <a href="#install"><img alt="Install: iii trigger compose::add worker=harness" src="https://img.shields.io/badge/install-iii%20trigger%20compose%3A%3Aadd%20worker%3Dharness-0a84ff?style=flat-square"></a>
   <a href="../LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg?style=flat-square"></a>
   <a href="https://www.rust-lang.org"><img alt="Built with Rust" src="https://img.shields.io/badge/built%20with-rust-orange?style=flat-square&logo=rust&logoColor=white"></a>
   <a href="https://workers.iii.dev/workers/harness"><img alt="harness on the workers registry" src="https://workers.iii.dev/workers/harness/badge.svg"></a>
@@ -33,14 +33,13 @@ curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 export ANTHROPIC_API_KEY='<your-anthropic-api-key>'
 export OPENAI_API_KEY='<your-openai-api-key>'
 iii project init iii-app && cd iii-app
-iii
+iii compose --up
 ```
 
 ```bash
-# New terminal, same folder. `iii worker add` targets the running engine's
-# config.yaml, so it has to match the directory the engine runs in.
+# New terminal, same folder. `compose::add` updates this Compose project.
 cd iii-app
-iii worker add harness console
+iii trigger compose::add worker=harness worker=console
 ```
 
 ```bash
@@ -54,7 +53,7 @@ providers read `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` from the engine
 environment, so credentials do not need to be pasted into or stored by the
 Console.
 
-`iii worker add harness` installs every worker the loop needs (see the badges
+`iii trigger compose::add worker=harness` installs every worker the loop needs (see the badges
 above); you do not add them one by one. During bootstrap, the harness asks the
 `queue` worker to define a dedicated `harness-turn` queue before it reports
 ready. That queue is FIFO within each `session_id` and processes separate

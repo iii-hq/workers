@@ -5,7 +5,7 @@ Claude Code as an iii worker: the Claude Code API exposed as functions and strea
 ## Install
 
 ```bash
-iii worker add claude-code
+iii trigger compose::add worker=claude-code
 ```
 
 Requires the `claude` CLI on the host (the Agent SDK shells out to it) and either `ANTHROPIC_API_KEY` in the worker environment or an existing `claude` login.
@@ -24,7 +24,7 @@ From zero to a Claude Code turn over the bus:
 
 ```bash
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
-iii worker add claude-code
+iii trigger compose::add worker=claude-code
 iii   # starts the engine + worker
 ```
 

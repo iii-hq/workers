@@ -13,16 +13,16 @@ harness can react when a sibling's branch merges.
 ## Install
 
 ```bash
-iii worker add worktree
+iii trigger compose::add worker=worktree
 ```
 
-`iii worker add` fetches the binary, writes a config block into
-`~/.iii/config.yaml`, and the engine starts the worker on the next `iii`
-boot. The land test gate delegates to `shell::exec`, so install the shell
+`iii trigger compose::add` resolves the worker and its dependencies, writes
+exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
+The land test gate delegates to `shell::exec`, so install the shell
 worker alongside it:
 
 ```bash
-iii worker add shell
+iii trigger compose::add worker=shell
 ```
 
 ## Quickstart

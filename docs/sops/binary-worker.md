@@ -104,8 +104,9 @@ Field-by-field rules:
 
 - `iii: v1` — manifest schema version. Always `v1` today.
 - `name` — **must equal the folder name** (regex `^[a-z0-9][a-z0-9_-]*$`). It
-  is the registry record key, the consumer install command (`iii worker add
-  <name>`), and the git tag prefix (`<name>/v<X.Y.Z>`).
+  is the registry record key, the consumer install command
+  (`iii trigger compose::add worker=<name>`), and the git tag prefix
+  (`<name>/v<X.Y.Z>`).
 - `language: rust` — fixed.
 - `deploy: binary` — fixed for this scaffold. Drives the multi-target
   cross-compile path in CD.
@@ -1447,7 +1448,7 @@ most important thing it gives you.
 ## Install
 
 ```bash
-iii worker add <worker>
+iii trigger compose::add worker=<worker>
 ```
 
 ## Run

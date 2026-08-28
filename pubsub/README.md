@@ -9,11 +9,11 @@ all of a topic's subscribers as fire-and-forget invocations.
 ## Install
 
 ```bash
-iii worker add pubsub
+iii trigger compose::add worker=pubsub
 ```
 
-`iii worker add` fetches the binary, writes a config block into
-`~/.iii/config.yaml`, and the engine starts the worker the next time it boots.
+`iii trigger compose::add` resolves the worker and its dependencies, writes
+exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 
 ## Quickstart
 

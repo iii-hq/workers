@@ -82,10 +82,10 @@ pub fn describe_bus_failure(function_id: &str, err: &str) -> String {
     }
     match worker {
         "browser" => "reading a scanned PDF needs the browser worker to render its pages; \
-                      install it with `iii worker add browser`"
+                      install it with `iii trigger compose::add worker=browser`"
             .to_string(),
         "router" => "transcribing needs a model through llm-router; install it with \
-                     `iii worker add llm-router` and configure a provider"
+                     `iii trigger compose::add worker=llm-router` and configure a provider"
             .to_string(),
         "state" => format!("{function_id} is unavailable: {err}"),
         _ => format!("{function_id} is not available: {err}"),
@@ -195,7 +195,10 @@ mod tests {
             "browser::screenshot",
             "remote error (NOT_FOUND): browser::screenshot not registered",
         );
-        assert!(browser.contains("iii worker add browser"), "{browser}");
+        assert!(
+            browser.contains("iii trigger compose::add worker=browser"),
+            "{browser}"
+        );
 
         let router = describe_bus_failure(
             "router::complete",
@@ -213,6 +216,9 @@ mod tests {
             described.contains("scheme `file` is not allowed"),
             "{described}"
         );
-        assert!(!described.contains("iii worker add"), "{described}");
+        assert!(
+            !described.contains("iii trigger compose::add"),
+            "{described}"
+        );
     }
 }

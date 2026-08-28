@@ -9,7 +9,7 @@ When and how to add deep architecture documentation inside a worker folder.
 | [`docs/architecture/`](../architecture/) | Concepts shared by all workers | Contributors adding any worker |
 | `<worker>/architecture/` | One worker's design + integration contract | Maintainers + integrators of that worker |
 | [`tech-specs/`](../../tech-specs/) | Product-level specs (may predate implementation) | Design review, cross-repo readers |
-| `<worker>/README.md` | Consumer how-to (install, quickstart, config) | Operators after `iii worker add` |
+| `<worker>/README.md` | Consumer how-to (install, quickstart, config) | Operators after `compose::add` |
 
 Consumer READMEs are **not** architecture docs. See [`worker-readme.md`](../../worker-readme.md).
 

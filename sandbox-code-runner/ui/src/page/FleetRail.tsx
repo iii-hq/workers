@@ -253,7 +253,7 @@ export function FleetRail({
           <EmptyState
             icon={BoxIcon}
             title="no sandbox daemon"
-            description="sandbox::list is not on this engine — add it with `iii worker add iii-sandbox`, then sandboxes appear here."
+            description="sandbox::list is not on this engine — add it with `iii trigger compose::add worker=iii-sandbox`, then sandboxes appear here."
           />
         </div>
       ) : sandboxes.length === 0 && tombstones.length === 0 ? (

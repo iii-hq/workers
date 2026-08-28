@@ -20,8 +20,8 @@ VERSION = re.compile(
 )
 
 # These workers are hosted by the pinned iii engine rather than installed from
-# the Registry. `iii worker add` intentionally reports them as built-in, so a
-# Registry resolution of a transitive dependency cannot force their internal
+# the Registry. `compose::add` treats them as engine workers, so a Registry
+# resolution of a transitive dependency cannot force their internal
 # version. Their observed lock entries remain evidence, while the exact CLI
 # pin is the reproducibility boundary for their runtime implementation.
 ENGINE_MANAGED_WORKERS = frozenset(

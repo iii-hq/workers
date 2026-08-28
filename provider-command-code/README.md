@@ -16,12 +16,11 @@ directly.
 ## Install
 
 ```bash
-iii worker add provider-command-code
-iii worker add llm-router
+iii trigger compose::add worker=provider-command-code worker=llm-router
 ```
 
-`iii worker add` fetches each binary, writes its engine config block, and the
-engine starts the workers on its next boot.
+`iii trigger compose::add` resolves the workers and their dependencies, writes
+exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 
 ## Quickstart
 

@@ -59,7 +59,7 @@ pub(super) async fn call(
         err_to_str(DbError::ConfigError {
             message: format!(
                 "{function_id} failed: {e}. Saved queries and history need the `state` \
-                 worker — run `iii worker add state`."
+                 worker — run `iii trigger compose::add worker=state`."
             ),
         })
     })

@@ -154,8 +154,8 @@ Ship `skills/SKILL.md` when agents should discover **when** to use the worker
 ## 9. First release
 
 Follow [`release.md`](release.md). For a brand-new worker, prefer
-**registry tag `next`** on the first publish so `iii worker add` users on
-`latest` are not surprised.
+**registry tag `next`** on the first publish so `compose::add` users on `latest`
+are not surprised.
 
 Recommended preflight:
 

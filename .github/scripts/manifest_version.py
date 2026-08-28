@@ -104,7 +104,7 @@ def cmd_deploy_mode(args: argparse.Namespace) -> int:
     for interface collection. Output is one of:
       release-binary  -> download binary tarball from GitHub Release
       release-bundle  -> download bundle tar.gz from GitHub Release
-      iii-add         -> `iii worker add ./<dir>` (worker is self-bootstrapping)
+      iii-add         -> `iii trigger compose::add worker=./<dir>`
       cargo-run       -> `cargo run` from source
       unsupported     -> can't collect locally
     """

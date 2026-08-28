@@ -17,13 +17,11 @@ guessing dialect details.
 ## Install
 
 ```bash
-iii worker add canvas
-iii worker add state   # required — canvas records live here
+iii trigger compose::add worker=canvas worker=state # state stores canvas records
 ```
 
-`iii worker add` fetches the binary, writes a config block into
-`~/.iii/config.yaml`, and the engine starts the worker the next time it
-boots.
+`iii trigger compose::add` resolves the workers and their dependencies, writes
+exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 
 ### Companion workers
 

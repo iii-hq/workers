@@ -5,10 +5,10 @@ Tailscale as an iii worker. It drives the `tailscale` CLI on the Console host an
 ## Install
 
 ```bash
-iii worker add tailscale
+iii trigger compose::add worker=tailscale
 ```
 
-`iii worker add` fetches the binary, writes a config block into `~/.iii/config.yaml`, and the engine starts the worker the next time it boots. The host needs [Tailscale](https://tailscale.com/download) installed; most functions also need the node signed in (`tailscale::login` returns the sign-in URL, `tailscale::connect` brings it up). Publishing needs MagicDNS and HTTPS certificates enabled for the tailnet; Funnel additionally needs a one-time tailnet-admin approval.
+`iii trigger compose::add` declares the worker in `worker-compose.yaml` and starts it as part of the Compose project. The host needs [Tailscale](https://tailscale.com/download) installed; most functions also need the node signed in (`tailscale::login` returns the sign-in URL, `tailscale::connect` brings it up). Publishing needs MagicDNS and HTTPS certificates enabled for the tailnet; Funnel additionally needs a one-time tailnet-admin approval.
 
 ## Quickstart
 

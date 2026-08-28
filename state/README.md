@@ -14,12 +14,11 @@ is the standalone migration of the engine's legacy built-in state service.
 ## Install
 
 ```bash
-iii worker add state
+iii trigger compose::add worker=state
 ```
 
-`iii worker add` fetches the binary, writes a config block into
-`~/.iii/config.yaml`, and the engine starts the worker on the next
-`iii start`.
+`iii trigger compose::add` resolves the worker and its dependencies, writes
+exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 
 ## Functions
 

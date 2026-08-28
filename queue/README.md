@@ -7,11 +7,11 @@ replace the legacy built-in queue worker.
 ## Install
 
 ```bash
-iii worker add queue
+iii trigger compose::add worker=queue
 ```
 
-`iii worker add` fetches the binary, writes a config block into
-`~/.iii/config.yaml`, and the engine starts the worker the next time it boots.
+`iii trigger compose::add` resolves the worker and its dependencies, writes
+exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 
 ## Trigger Type
 

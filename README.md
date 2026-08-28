@@ -5,8 +5,8 @@ directory is a self-contained worker module: a process that connects to the
 engine over WebSocket, registers functions + triggers, and does something
 useful.
 
-Workers are installed via `iii worker add <name>`, which resolves the matching
-asset for the host from the workers registry API.
+Workers are installed via `iii trigger compose::add worker=<name>`, which
+resolves the matching asset for the host from the workers registry API.
 
 ## Skills
 
@@ -162,8 +162,8 @@ Workers are discovered through the workers registry API at
 `https://api.workers.iii.dev`. Each release publishes a manifest entry
 declaring the worker kind (`binary` / container image), supported targets,
 download URLs, and the worker's collected function + trigger interface.
-`iii worker add <name>` queries this API to locate the right asset for the
-host.
+`iii trigger compose::add worker=<name>` queries this API to locate the right
+asset for the host.
 
 ## Add a new worker
 
@@ -172,7 +172,8 @@ cross-cutting checklist (naming, required files, CI gates, release wiring).
 For the inside of a Rust `deploy: binary` worker, continue with
 [`docs/sops/binary-worker.md`](docs/sops/binary-worker.md). Each worker ships
 a consumer `README.md` per the [`worker-readme.md`](worker-readme.md)
-contract (install via `iii worker add`, quickstart, configuration).
+contract (install via `iii trigger compose::add worker=<name>`, quickstart,
+configuration).
 [`docs/README.md`](docs/README.md) indexes all shared docs.
 
 ## CI

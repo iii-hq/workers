@@ -95,21 +95,23 @@ binary, set the `IIIACP_*` env vars below.
 # 1. Workers acp uses directly. state holds session
 #    records + history; iii-stream carries the agent::events tape;
 #    queue backs durable cancel topics.
-iii worker add state iii-stream queue
+iii trigger compose::add worker=state worker=iii-stream worker=queue
 
 # 2. acp itself.
-iii worker add acp
+iii trigger compose::add worker=acp
 
 # 3. The brain stack. turn-orchestrator drives the loop;
 #    provider-router routes assistant turns to provider-anthropic
 #    (or any other provider worker); auth-credentials stores the
 #    Anthropic API key. session-inbox / llm-budget / hook-fanout
 #    are pulled in transitively.
-iii worker add turn-orchestrator provider-router provider-anthropic auth-credentials \
-                session-inbox llm-budget hook-fanout
+iii trigger compose::add worker=turn-orchestrator worker=provider-router \
+  worker=provider-anthropic worker=auth-credentials worker=session-inbox \
+  worker=llm-budget worker=hook-fanout
 
 # 4. (Optional but recommended) — iii's distinctive primitives.
-iii worker add guardrails dlp-scrubber audit-log policy-denylist context-compaction
+iii trigger compose::add worker=guardrails worker=dlp-scrubber worker=audit-log \
+  worker=policy-denylist worker=context-compaction
 ```
 
 Store the Anthropic API key once:

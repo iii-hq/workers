@@ -11,7 +11,7 @@ prompts when `mcp` is installed.
 ## Install
 
 ```bash
-iii worker add mcp
+iii trigger compose::add worker=mcp
 ```
 
 ## Quickstart

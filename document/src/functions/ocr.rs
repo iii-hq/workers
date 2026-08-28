@@ -831,7 +831,10 @@ mod tests {
             max_chars: None,
         };
         let err = handle(req, cfg(), bus).await.expect_err("no browser");
-        assert!(err.contains("iii worker add browser"), "{err}");
+        assert!(
+            err.contains("iii trigger compose::add worker=browser"),
+            "{err}"
+        );
     }
 
     #[tokio::test]

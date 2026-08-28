@@ -5,14 +5,13 @@
 ## Install
 
 ```bash
-iii worker add security-scan
+iii trigger compose::add worker=security-scan
 ```
 
 Analysis requires the Harness stack. GitHub issue and draft fix-PR actions also require `approval-gate` to be live; those mutations stay closed until a user approves each one.
 
 ```bash
-iii worker add harness
-iii worker add approval-gate
+iii trigger compose::add worker=harness worker=approval-gate
 ```
 
 The worker composes existing iii infrastructure rather than implementing local substitutes: private compare-and-set records live in `state`, durable steps run through `queue`, exact checkouts come from `worktree`, configured schedules bind through the `cron` dependency, analysis runs through `harness`, and GitHub publication is held by `approval-gate`.
@@ -139,7 +138,7 @@ buckets:
     bucket: security-scan
 ```
 
-The local provider spawns a rustfs sidecar (`iii worker add storage`). Set `$RUSTFS_BIN` or put `rustfs` on `PATH`. JSON copies are a backup; the Console Scan runs list still comes from `state`.
+The local provider spawns a rustfs sidecar (`iii trigger compose::add worker=storage`). Set `$RUSTFS_BIN` or put `rustfs` on `PATH`. JSON copies are a backup; the Console Scan runs list still comes from `state`.
 
 ## Safety boundary
 

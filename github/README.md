@@ -10,11 +10,11 @@ instead of raw shell.
 ## Install
 
 ```bash
-iii worker add github
+iii trigger compose::add worker=github
 ```
 
-`iii worker add` fetches the binary, writes a config block into
-`~/.iii/config.yaml`, and the engine starts the worker the next time it boots.
+`iii trigger compose::add` resolves the worker and its dependencies, writes
+exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 
 The worker shells out to the [GitHub CLI](https://cli.github.com) — install
 a current `gh` (the typed field sets are validated against gh 2.94) and give

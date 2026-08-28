@@ -6,14 +6,14 @@ and a single failure contract — consumers call one chat surface and never talk
 to a provider directly.
 
 llm-router is a standalone iii worker. Providers plug in as separate workers
-at runtime through a self-registration protocol (`iii worker add
-provider-<x>`); the router never compiles against a provider, and removing a
+at runtime through a self-registration protocol
+(`iii trigger compose::add worker=provider-<x>`); the router never compiles against a provider, and removing a
 provider worker removes the provider.
 
 ## Install
 
 ```bash
-iii worker add llm-router
+iii trigger compose::add worker=llm-router
 ```
 
 ## Quickstart

@@ -27,7 +27,7 @@ in-process, honor `fs.host_roots` when it's configured, and return
 structured results.
 
 Sandbox forwarding (and `shell::fs::*` into a VM) requires the `iii-sandbox`
-worker; `iii worker add shell` does not pull it in. To surface `shell::*` to LLM
+worker; `iii trigger compose::add worker=shell` does not pull it in. To surface `shell::*` to LLM
 agents, pair with the `skills` worker.
 
 ## When to Use

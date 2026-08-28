@@ -45,8 +45,8 @@ fn worker_manifest_declares_runtime_dependencies() {
 ///
 /// Declaring it made `eval`'s resolved install graph six levels deep
 /// (eval -> harness -> context-manager -> llm-router -> state ->
-/// configuration), which `iii worker add` rejects: its resolver caps a
-/// graph at five. eval still calls `harness::*` at run time, so the
+/// configuration), which the former worker installer rejected because its
+/// resolver capped a graph at five. eval still calls `harness::*` at run time, so the
 /// harness worker must be present in the engine — it is simply not pulled
 /// in by eval's own install.
 #[test]

@@ -41,12 +41,12 @@ composer as an actionable ref:
 ## Install
 
 ```bash
-iii worker add browser
+iii trigger compose::add worker=browser
 ```
 
-`iii worker add` fetches the binary, writes a config block into
-`~/.iii/config.yaml`, and the engine starts the worker the next time it
-boots. The worker drives a Chromium/Chrome already installed on the
+`iii trigger compose::add` resolves the worker and its dependencies, writes
+exact declarations to `worker-compose.yaml`, and reconciles the Compose
+project. The worker drives a Chromium/Chrome already installed on the
 machine; point `executable` at a specific binary if auto-detection picks the
 wrong one.
 
@@ -54,7 +54,7 @@ To watch sessions live, pick elements into chat, and follow the agent's
 browsing from a UI, add the [console](https://github.com/iii-hq/workers/tree/main/console) worker as well:
 
 ```bash
-iii worker add console
+iii trigger compose::add worker=console
 ```
 
 ## Quickstart

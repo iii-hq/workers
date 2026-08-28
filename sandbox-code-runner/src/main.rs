@@ -146,7 +146,7 @@ async fn main() -> Result<()> {
                 if classify_probe_error(&raw, "sandbox::create") == ProbeOutcome::Free {
                     tracing::warn!(
                         "iii-sandbox is NOT installed on this engine — every sandbox-code-runner \
-                         call will fail until an operator runs `iii worker add iii-sandbox`"
+                         call will fail until an operator runs `iii trigger compose::add worker=iii-sandbox`"
                     );
                 } else {
                     tracing::warn!(error = %raw, "could not verify iii-sandbox presence");

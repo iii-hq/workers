@@ -59,11 +59,11 @@ registry view also surfaces publication metadata (`type`, `config`,
 ## Install
 
 ```bash
-iii worker add iii-directory
+iii trigger compose::add worker=iii-directory
 ```
 
-`iii worker add` fetches the binary, writes a config block into
-`~/.iii/config.yaml`, and the engine starts the worker the next time it boots.
+`iii trigger compose::add` resolves the worker and its dependencies, writes
+exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 
 ---
 

@@ -6,7 +6,7 @@ through the model.
 
 ## Install
 
-    iii worker add fp
+    iii trigger compose::add worker=fp
 
 The worker is a `deploy: binary` Rust worker with no configuration.
 

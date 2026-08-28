@@ -25,7 +25,7 @@ Release dispatcher: [`release.yml`](../../.github/workflows/release.yml) reads
 ## Image
 
 - **Build:** multi-arch Docker image pushed to GHCR.
-- **Publish boot:** from local source via `iii worker add ./<worker>` (the
+- **Publish boot:** from local source via `iii trigger compose::add worker=./<worker>` (the
   image itself is not booted; `runtime`/`scripts.start` drive the local run).
 - **Registry payload:** the built image reference (`image_tag` output).
 
@@ -50,7 +50,7 @@ selects how `_publish-registry.yml` starts the worker:
 |---|---|---|
 | `release-binary` | `deploy: binary` | Download + run Linux gnu binary from Release |
 | `release-bundle` | `deploy: bundle` | Extract tarball, `node ./index.mjs` |
-| `iii-add` | Other deploys with `runtime` or `scripts.start` | `iii worker add ./<worker>` |
+| `iii-add` | Other deploys with `runtime` or `scripts.start` | `iii trigger compose::add worker=./<worker>` |
 | `cargo-run` | Other deploys, Rust, no `runtime`/`scripts.start` | `cargo run` (+ `config.collect.yaml` if present) |
 
 ## config.collect.yaml
