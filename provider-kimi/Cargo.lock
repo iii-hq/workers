@@ -1209,7 +1209,7 @@ dependencies = [
 
 [[package]]
 name = "provider-kimi"
-version = "1.1.7-rc.2"
+version = "1.1.7-rc.3"
 dependencies = [
  "clap",
  "futures",
