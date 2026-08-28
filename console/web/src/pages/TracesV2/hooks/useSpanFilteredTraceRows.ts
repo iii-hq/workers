@@ -22,6 +22,11 @@
 //    rows the feed doesn't cover (the feed retains ~2min; the list's 500
 //    rows reach much further back).
 //
+// Failed rows always survive this composition filter even when every span is
+// hidden. Otherwise an early failure in a producer-default-hidden root (for
+// example `harness::send` failing before it creates a child) disappears from
+// the only surface where the user can diagnose it.
+//
 // Both span sources count only what the DETAIL views can render: engine
 // builtin spans (`include_internal: false` drops them from the detail
 // read) never keep a row alive, so a kept row always opens to a non-empty
@@ -168,7 +173,10 @@ export function reconcileTraceVisibility(
     }
   }
   const kept = rows.filter(
-    (r) => verdicts.get(r.traceId) !== false || liveTraces.has(r.traceId),
+    (r) =>
+      r.status === 'error' ||
+      verdicts.get(r.traceId) !== false ||
+      liveTraces.has(r.traceId),
   )
   // Identity-stable when nothing is hidden, so downstream memos hold.
   return kept.length === rows.length ? rows : kept
