@@ -31,6 +31,10 @@ on:
       source_sha:
         required: true
         type: string
+      targets:
+        description: Exact comma-separated Unix target list from Release Control
+        required: true
+        type: string
       expected_next_version:
         description: Exact current next version, or none during Registry bootstrap
         required: true
@@ -69,6 +73,7 @@ jobs:
       tag: ${{ steps.meta.outputs.tag }}
       deploy: ${{ steps.meta.outputs.deploy }}
       bin: ${{ steps.meta.outputs.bin }}
+      targets: ${{ steps.meta.outputs.targets }}
       image_tag: ${{ steps.image.outputs.image_tag }}
     steps:
       - name: Generate token
@@ -118,18 +123,23 @@ jobs:
           CANDIDATE: ${{ inputs.candidate_version }}
           SOURCE_SHA: ${{ inputs.source_sha }}
           PREPARED_SHA: ${{ inputs.prepared_sha }}
+          TARGETS: ${{ inputs.targets }}
         run: |
           set -euo pipefail
           jq -e --arg sha "$PREPARED_SHA" --arg worker "$WORKER" --arg version "$CANDIDATE" \
-            '.prepared_sha == $sha and .worker == $worker and .candidate_version == $version' \
+            --arg targets "$TARGETS" \
+            '.prepared_sha == $sha and .worker == $worker and .candidate_version == $version and ((.targets // []) | join(",")) == $targets' \
             release-prepared/prepared.json
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import os, yaml
+          import json, os, yaml
           worker = os.environ["WORKER"]
           manifest = yaml.safe_load(open(f"{worker}/iii.worker.yaml", encoding="utf-8"))
+          prepared = json.load(open("release-prepared/prepared.json", encoding="utf-8"))
+          prepared_targets = prepared.get("targets", [])
           print(f"tag={worker}/v{os.environ['CANDIDATE']}")
           print(f"deploy={manifest['deploy']}")
           print(f"bin={manifest.get('bin') or worker}")
+          print(f"targets={','.join(prepared_targets)}")
           PY
           test "$(git rev-parse HEAD)" = "$PREPARED_SHA"
           git merge-base --is-ancestor "$SOURCE_SHA" "$PREPARED_SHA"
@@ -298,6 +308,7 @@ jobs:
       tag: ${{ needs.publish.outputs.tag }}
       bin: ${{ needs.publish.outputs.bin }}
       image_tag: ${{ needs.publish.outputs.image_tag }}
+      targets: ${{ needs.publish.outputs.targets }}
       experimental: false
     secrets: inherit
 

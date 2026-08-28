@@ -36,6 +36,10 @@ on:
         description: 'Cargo binary name (binary deploy only)'
         required: true
         type: string
+      targets:
+        description: 'Exact comma-separated Unix target list (binary deploy only)'
+        required: true
+        type: string
       image_tag:
         description: 'Fully-qualified image reference (image deploy only)'
         required: true
@@ -323,11 +327,13 @@ jobs:
           BIN: ${{ inputs.bin }}
           WORKER: ${{ inputs.worker }}
           REPO_URL: ${{ format('https://github.com/{0}', github.repository) }}
+          TARGETS: ${{ inputs.targets }}
         run: |
           python3 .github/scripts/resolve_binary_artifacts.py \
             --repo-url "$REPO_URL" \
             --tag "$TAG" \
             --bin "${BIN:-$WORKER}" \
+            --targets "$TARGETS" \
             --out binaries.json
 
       - name: Create empty binary artifacts

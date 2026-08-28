@@ -178,6 +178,7 @@ jobs:
       tag: ${{ needs.setup.outputs.tag }}
       bin: ${{ needs.setup.outputs.bin }}
       image_tag: ${{ needs.container-build.outputs.image_tag }}
+      targets: ${{ needs.setup.outputs.targets }}
       experimental: ${{ needs.setup.outputs.experimental == 'true' }}
     secrets: inherit
 

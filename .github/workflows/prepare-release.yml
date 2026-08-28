@@ -4,42 +4,24 @@ run-name: RC · prepare_release · ${{ inputs.operation_id }} · ${{ inputs.step
 on:
   workflow_dispatch:
     inputs:
-      operation_id:
-        description: Release Control operation UUID
-        required: true
-        type: string
-      step_id:
-        description: Release Control step UUID
-        required: true
-        type: string
-      release_intent_id:
-        required: true
-        type: string
-      candidate_id:
-        required: true
-        type: string
-      release_attempt_id:
-        required: true
-        type: string
-      worker:
-        required: true
-        type: string
-      stable_version:
-        required: true
-        type: string
-      candidate_version:
-        required: true
-        type: string
+      operation_id: { required: true, type: string }
+      step_id: { required: true, type: string }
+      release_intent_id: { required: true, type: string }
+      candidate_id: { required: true, type: string }
+      release_attempt_id: { required: true, type: string }
+      worker: { required: true, type: string }
+      stable_version: { required: true, type: string }
+      candidate_version: { required: true, type: string }
       source_sha:
         description: Immutable source commit used by the plan
         required: true
         type: string
-      plan_hash:
+      targets:
+        description: Exact comma-separated Unix target list from Release Control
         required: true
         type: string
-      dispatch_nonce:
-        required: true
-        type: string
+      plan_hash: { required: true, type: string }
+      dispatch_nonce: { required: true, type: string }
 
 permissions:
   contents: write
@@ -48,11 +30,18 @@ concurrency:
   group: release-prepare-${{ inputs.worker }}
   cancel-in-progress: false
 
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+  CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+
 jobs:
   prepare:
-    name: Build ${{ inputs.worker }} ${{ inputs.candidate_version }}
+    name: Prepare ${{ inputs.worker }} ${{ inputs.candidate_version }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    outputs:
+      prepared_sha: ${{ steps.meta.outputs.prepared_sha }}
     steps:
       - name: Generate token
         id: token
@@ -60,24 +49,18 @@ jobs:
         with:
           app-id: ${{ secrets.III_CI_APP_ID }}
           private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
-
       - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.source_sha }}
           fetch-depth: 0
           fetch-tags: true
           token: ${{ steps.token.outputs.token }}
-
-      # pnpm before setup-node so the pnpm cache resolves the binary — the
-      # worker build.rs compiles its UI with pnpm (same setup as _rust-binary).
       - uses: pnpm/action-setup@v5
-
       - uses: actions/setup-node@v5
         with:
           node-version: 22
-          cache: 'pnpm'
+          cache: pnpm
           cache-dependency-path: '**/pnpm-lock.yaml'
-
       - name: Validate exact dispatch and inputs
         env:
           RELEASE_CONTROL_BOT_LOGIN: ${{ vars.RELEASE_CONTROL_BOT_LOGIN }}
@@ -91,34 +74,166 @@ jobs:
           --stable-version '${{ inputs.stable_version }}'
           --source-sha '${{ inputs.source_sha }}'
           --mutating
-
-      - name: Prepare, test and package without publishing
+      - name: Prepare and test exact source commit
         env:
           RELEASE_ATTEMPT_ID: ${{ inputs.release_attempt_id }}
         run: >-
-          python3 .github/scripts/release_train.py
+          python3 .github/scripts/release_train.py prepare
           --worker '${{ inputs.worker }}'
           --source-sha '${{ inputs.source_sha }}'
           --candidate-version '${{ inputs.candidate_version }}'
           --intent-id '${{ inputs.release_intent_id }}'
           --attempt-id '${{ inputs.release_attempt_id }}'
+          --targets '${{ inputs.targets }}'
           --branch 'refs/heads/release-control/${{ inputs.release_intent_id }}/${{ inputs.release_attempt_id }}'
-          --out release-prepared
+          --out release-identity
+      - name: Expose prepared commit
+        id: meta
+        run: echo "prepared_sha=$(jq -r .prepared_sha release-identity/identity.json)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release-identity-${{ inputs.operation_id }}-${{ inputs.step_id }}
+          path: release-identity/identity.json
+          retention-days: 30
+          if-no-files-found: error
 
-      - name: Upload prepared artifacts
-        if: always()
-        uses: actions/upload-artifact@v6
+  matrix:
+    name: Compute Unix target matrix
+    needs: prepare
+    runs-on: ubuntu-latest
+    outputs:
+      include: ${{ steps.compute.outputs.include }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_sha }}
+      - name: Install manifest tooling
+        run: python3 -m pip install --quiet pyyaml
+      - name: Compute exact target matrix
+        id: compute
+        env:
+          TARGETS: ${{ inputs.targets }}
+          WORKER: ${{ inputs.worker }}
+        run: |
+          set -euo pipefail
+          matrix=$(python3 .github/scripts/release_train.py print-targets --worker "$WORKER" --targets "$TARGETS")
+          echo "include=$matrix" >> "$GITHUB_OUTPUT"
+          echo "$matrix"
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: [prepare, matrix]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.matrix.outputs.include) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - name: Generate token
+        id: token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.III_CI_APP_ID }}
+          private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.prepared_sha }}
+          fetch-depth: 0
+          token: ${{ steps.token.outputs.token }}
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: '**/pnpm-lock.yaml'
+      - name: Install Linux cross compiler
+        if: runner.os == 'Linux' && matrix.target != 'none'
+        run: |
+          set -euo pipefail
+          case '${{ matrix.target }}' in
+            x86_64-unknown-linux-musl) sudo apt-get update && sudo apt-get install -y musl-tools ;;
+            aarch64-unknown-linux-gnu) sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu ;;
+            armv7-unknown-linux-gnueabihf) sudo apt-get update && sudo apt-get install -y gcc-arm-linux-gnueabihf ;;
+          esac
+      - name: Install Rust target
+        if: matrix.target != 'none'
+        run: rustup target add '${{ matrix.target }}'
+      - name: Build exact target artifact
+        env:
+          RELEASE_ATTEMPT_ID: ${{ inputs.release_attempt_id }}
+        run: >-
+          python3 .github/scripts/release_train.py build
+          --worker '${{ inputs.worker }}'
+          --prepared-sha '${{ needs.prepare.outputs.prepared_sha }}'
+          --targets '${{ inputs.targets }}'
+          --target '${{ matrix.target }}'
+          --out release-target
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release-target-${{ inputs.operation_id }}-${{ inputs.step_id }}-${{ matrix.target }}
+          path: |
+            release-target/*.tar*
+            release-target/*.sha256
+          retention-days: 30
+          if-no-files-found: error
+
+  assemble:
+    name: Assemble prepared release
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: release-identity-${{ inputs.operation_id }}-${{ inputs.step_id }}
+          path: release-identity
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: release-target-${{ inputs.operation_id }}-${{ inputs.step_id }}-*
+          path: release-targets
+          merge-multiple: true
+          github-token: ${{ github.token }}
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.prepared_sha }}
+      - name: Assemble exact artifact set
+        run: >-
+          python3 .github/scripts/release_train.py assemble
+          --identity release-identity/identity.json
+          --artifacts-dir release-targets
+          --out release-prepared
+      - uses: actions/upload-artifact@v6
         with:
           name: release-prepared-${{ inputs.operation_id }}-${{ inputs.step_id }}
           path: release-prepared/
           retention-days: 30
-          if-no-files-found: warn
+          if-no-files-found: error
 
-      - name: Write factual preparation result
-        if: always()
+  evidence:
+    name: Record factual preparation result
+    needs: [prepare, matrix, build, assemble]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate token
+        id: token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.III_CI_APP_ID }}
+          private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          token: ${{ steps.token.outputs.token }}
+      - uses: actions/download-artifact@v7
+        continue-on-error: true
+        with:
+          name: release-prepared-${{ inputs.operation_id }}-${{ inputs.step_id }}
+          path: release-prepared
+          github-token: ${{ steps.token.outputs.token }}
+      - name: Write factual result
         env:
           JOB_STATUS: ${{ job.status }}
-          PREPARED: ${{ inputs.candidate_version }}
         run: |
           set -euo pipefail
           prepared_sha=$(jq -r '.prepared_sha // empty' release-prepared/prepared.json 2>/dev/null || true)
@@ -145,10 +260,7 @@ jobs:
             --candidate-version '${{ inputs.candidate_version }}' --stable-version '${{ inputs.stable_version }}' \
             --source-sha '${{ inputs.source_sha }}' --prepared-sha "$prepared_sha" \
             --digests-json "$artifact_sha" --output execution-result.json
-
-      - name: Upload factual result
-        if: always()
-        uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v6
         with:
           name: execution-result-${{ inputs.operation_id }}-${{ inputs.step_id }}
           path: execution-result.json
