@@ -180,6 +180,37 @@ describe('applyHiddenSpanFilters', () => {
     ])
   })
 
+  it('keeps a failed harness::send span visible when its group is hidden', () => {
+    const failedSend = waterfall([
+      vis({
+        span_id: 'send',
+        name: 'execute harness::send',
+        service_name: 'harness',
+        status: 'error',
+      }),
+      vis({
+        span_id: 'ensure',
+        name: 'execute session::ensure',
+        service_name: 'session-manager',
+        parent_span_id: 'send',
+        depth: 1,
+      }),
+    ])
+
+    const out = applyHiddenSpanFilters(
+      failedSend,
+      byName,
+      selection({
+        hiddenGroups: ['execute harness::send'],
+        hiddenWorkers: ['harness', 'session-manager'],
+      }),
+    )
+
+    expect(out.spans.map((s) => s.span_id)).toEqual(['send'])
+    expect(out.spans[0].status).toBe('error')
+    expect(out.span_count).toBe(1)
+  })
+
   it('survives malformed parent cycles without self-parenting', () => {
     const cyclic = waterfall([
       vis({ span_id: 'a', name: 'noise', parent_span_id: 'b' }),

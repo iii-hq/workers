@@ -339,7 +339,10 @@ async fn start_with_delivery_lock(
         }
         None => session.create(title.as_deref(), metadata.as_ref()).await?,
     };
-    crate::budget::prepare_root(deps, &session_id, &mut options, prev.as_ref()).await?;
+    tag_failed_send_with_session(
+        &session_id,
+        crate::budget::prepare_root(deps, &session_id, &mut options, prev.as_ref()).await,
+    )?;
 
     // Entry id: idempotent when a dedupe key is set.
     let entry_id = req
@@ -350,24 +353,27 @@ async fn start_with_delivery_lock(
     // Queue path: a `Running` step may be streaming — park the message as a
     // durable queue row the loop drains after the stream ends, instead of
     // appending mid-transcript.
-    let (outcome, entry) = deliver(
-        deps,
-        &cfg,
+    let (outcome, entry) = tag_failed_send_with_session(
         &session_id,
-        options,
-        Delivery {
-            message: &message,
-            entry_id: entry_id.as_deref(),
-            origin: None,
-            lineage: &TurnLineage::default(),
-            caller_holds_session_lock: caller_holds_target_session_lock,
-            skills_explicit: req
-                .options
-                .as_ref()
-                .is_some_and(|options| options.skills.is_some()),
-        },
-    )
-    .await?;
+        deliver(
+            deps,
+            &cfg,
+            &session_id,
+            options,
+            Delivery {
+                message: &message,
+                entry_id: entry_id.as_deref(),
+                origin: None,
+                lineage: &TurnLineage::default(),
+                caller_holds_session_lock: caller_holds_target_session_lock,
+                skills_explicit: req
+                    .options
+                    .as_ref()
+                    .is_some_and(|options| options.skills.is_some()),
+            },
+        )
+        .await,
+    )?;
 
     // Record the idempotency mapping (TTL-bound by contract).
     if let Some(key) = &req.idempotency_key {
@@ -381,6 +387,23 @@ async fn start_with_delivery_lock(
     }
 
     Ok(outcome)
+}
+
+/// Attribute failures that happen after session creation but before the turn
+/// trace exists. Successful sends deliberately stay untagged here: their
+/// `harness::turn step` trace is the one the session-scoped Console should
+/// list, without a duplicate `harness::send` row.
+fn tag_failed_send_with_session<T>(
+    session_id: &str,
+    result: Result<T, HarnessError>,
+) -> Result<T, HarnessError> {
+    if result.is_err() {
+        iii_helpers::observability::set_current_span_attribute(
+            "iii.session.id",
+            session_id.to_string(),
+        );
+    }
+    result
 }
 
 fn caller_holds_target_session_lock(
@@ -1270,7 +1293,48 @@ pub(crate) async fn seed_new(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iii_helpers::observability::opentelemetry::trace::{
+        TraceContextExt, Tracer, TracerProvider,
+    };
+    use iii_helpers::observability::opentelemetry::Context;
+    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SimpleSpanProcessor};
     use std::sync::Arc;
+
+    fn failed_send_session_attribute(result: Result<(), HarnessError>) -> Option<String> {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_span_processor(SimpleSpanProcessor::new(exporter.clone()))
+            .build();
+        let tracer = provider.tracer("harness-send-test");
+        let span = tracer.start("execute harness::send");
+        let guard = Context::new().with_span(span).attach();
+
+        let _ = tag_failed_send_with_session("session-filter-test", result);
+
+        drop(guard);
+        exporter
+            .get_finished_spans()
+            .expect("exporter")
+            .into_iter()
+            .next()
+            .and_then(|span| {
+                span.attributes
+                    .into_iter()
+                    .find(|attribute| attribute.key.as_str() == "iii.session.id")
+                    .map(|attribute| attribute.value.as_str().to_string())
+            })
+    }
+
+    #[test]
+    fn failed_send_is_attributed_to_its_session_without_tagging_successes() {
+        assert_eq!(failed_send_session_attribute(Ok(())), None);
+        assert_eq!(
+            failed_send_session_attribute(Err(HarnessError::Dependency(
+                "enqueue harness::turn failed".into(),
+            ))),
+            Some("session-filter-test".into()),
+        );
+    }
 
     #[tokio::test]
     async fn omitted_delivery_cannot_overwrite_an_explicit_filter_writer() {
