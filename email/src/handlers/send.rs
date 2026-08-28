@@ -1,9 +1,10 @@
-use iii_sdk::{errors::Error, protocol::TriggerRequest, IIIClient, RegisterFunction};
+use iii_sdk::{errors::Error, IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 
+use crate::configuration::ConfigCell;
 use crate::provider::smtp::{Attachment, AttachmentSource};
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -34,15 +35,16 @@ struct SendResp {
     message_id: String,
 }
 
-pub fn register(iii: &Arc<IIIClient>, cfg: &Arc<crate::config::WorkerConfig>) {
-    let cfg = cfg.clone();
+pub fn register(iii: &Arc<IIIClient>, cell: &ConfigCell) {
+    let cell = cell.clone();
     let iii_inner = iii.clone();
     iii.register_function(
         "email::send",
         RegisterFunction::new_async(move |req: SendReq| {
-            let cfg = cfg.clone();
+            let cell = cell.clone();
             let iii = iii_inner.clone();
             async move {
+                let cfg = cell.read().await.clone();
                 if req.to.is_empty() {
                     return Err(Error::Handler(
                         json!({"code":"E601","message":"at least one recipient required in `to`"})
@@ -94,30 +96,10 @@ pub fn register(iii: &Arc<IIIClient>, cfg: &Arc<crate::config::WorkerConfig>) {
                     }
                 }
 
-                let cred = iii
-                    .trigger(TriggerRequest {
-                        function_id: "auth::get_token".to_string(),
-                        payload: json!({ "provider": format!("email::{}", req.account) }),
-                        action: None,
-                        timeout_ms: Some(5_000),
-                    })
-                    .await
-                    .map_err(|e| {
-                        Error::Handler(
-                            json!({
-                                "code":"E606",
-                                "message":format!("auth::get_token failed for `email::{}`: {e}", req.account)
-                            }).to_string(),
-                        )
-                    })?;
-                if cred.is_null() {
-                    return Err(Error::Handler(
-                        json!({
-                            "code":"E607",
-                            "message":format!("no credential stored for `email::{}` — call auth::set_token first", req.account)
-                        }).to_string(),
-                    ));
-                }
+                let cred = match smtp_cfg.credential() {
+                    Some(cred) => cred,
+                    None => crate::provider::fetch_vault_credential(&iii, &req.account, "smtp").await?,
+                };
 
                 let message_id = crate::provider::smtp::send(
                     &acct.from, smtp_cfg, &cred, req, cfg.limits.send_timeout_ms,
@@ -133,9 +115,10 @@ pub fn register(iii: &Arc<IIIClient>, cfg: &Arc<crate::config::WorkerConfig>) {
              text?: string, reply_to?: string, in_reply_to?: string (Message-ID), \
              references?: string[], attachments?: [{ filename, content_type, \
              source: { kind: 'base64', data } }] }. Returns { message_id }. \
-             Credentials are fetched from auth-credentials under provider key \
-             `email::<account>` ({ username, password }). Provide html OR text \
-             (or both); at least one body is required.",
+             The SMTP login comes from the account's `smtp.username` / `smtp.password` \
+             configuration, or from `auth::get_token` under provider key `email::<account>` \
+             when the configuration carries none. Provide html OR text (or both); at least \
+             one body is required.",
         ),
     );
 }

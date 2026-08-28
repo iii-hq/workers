@@ -6,15 +6,21 @@ without `IDLE` fails fast at startup with `E610`. Inbound messages flow
 through the `email::new-mail` trigger type, fanned out the moment the
 server pushes `EXISTS`.
 
-Credentials live in `harness/auth-credentials` under provider key
-`email::<account>`. Pair both workers in any real deployment.
+Accounts, limits, and logins live in the worker's `configuration` entry
+(hot-reloaded; see Configuration below), so a compose file is the whole
+deployment.
 
 ## Install
 
-```bash
-iii worker add harness/auth-credentials
-iii worker add email
+```yaml
+# worker-compose.yaml
+containers:
+  email:
+    worker: package://api.workers.iii.dev/email
+    version: "0.2.0"
 ```
+
+Accounts go in the container's `config_override` (see Configuration).
 
 ## Skills
 
@@ -91,44 +97,78 @@ Other entry points: `email::accounts::list`, `email::list`, `email::get`,
 
 ## Configuration
 
+The worker owns one entry in the `configuration` worker (id `email`, or
+`III_CONFIG_NAME` when a supervisor sets it). Under `iii compose` the
+daemon writes that entry from the manifest defaults merged with the
+container's `config_override`; on a bare engine the built-in default
+(no accounts) is seeded on first boot, and `configuration::set` or the
+console config panel edit it afterwards. The worker hot-reloads on every
+`configuration:updated`: limit changes swap the snapshot, account changes
+respawn the IMAP supervisors and drop pooled sessions. A value that fails
+validation is rejected and the previous accounts stay live;
+`email::config-status` reports `last_outcome`, `last_error`, and
+`rejected_reloads`.
+
 ```yaml
-accounts:
-  # Send-only: only smtp:, provider: smtp.
-  support:
-    provider: smtp
-    from: "Support <support@example.com>"
-    smtp:
-      host: smtp.example.com
-      port: 587
-      starttls: true
-
-  # Two-way: smtp: + imap:, provider: imap.
-  inbox:
-    provider: imap
-    from: "Inbox <inbox@example.com>"
-    smtp:
-      host: smtp.example.com
-      port: 587
-      starttls: true
-    imap:
-      host: imap.example.com
-      port: 993
-      tls: true
-      folders: ["INBOX"]
-
-limits:
-  max_attachment_bytes: 26214400        # 25 MiB
-  max_recipients: 100                   # to + cc + bcc combined
-  send_timeout_ms: 30000
-  imap_connect_timeout_ms: 15000
+# worker-compose.yaml
+containers:
+  email:
+    worker: package://api.workers.iii.dev/email
+    version: "0.2.0"
+    config_name: email
+    config_override:
+      accounts:
+        # Send-only: only smtp:, provider: smtp.
+        support:
+          provider: smtp
+          from: "Support <support@example.com>"
+          smtp:
+            host: smtp.example.com
+            port: 587
+            starttls: true
+            username: ${SMTP_USERNAME}
+            password: ${SMTP_PASSWORD}
+        # Two-way: smtp: + imap:, provider: imap.
+        inbox:
+          provider: imap
+          from: "Inbox <inbox@example.com>"
+          smtp:
+            host: smtp.example.com
+            port: 587
+            starttls: true
+            username: ${SMTP_USERNAME}
+            password: ${SMTP_PASSWORD}
+          imap:
+            host: imap.example.com
+            port: 993
+            tls: true
+            folders: ["INBOX"]
+            username: ${SMTP_USERNAME}
+            password: ${SMTP_PASSWORD}
+      limits:
+        max_attachment_bytes: 26214400        # 25 MiB
+        max_recipients: 100                   # to + cc + bcc combined
+        send_timeout_ms: 30000
+        imap_connect_timeout_ms: 15000
 ```
 
-Credentials are fetched on every connect from `harness/auth-credentials`
-under provider key `email::<account>` with shape
-`{ "type": "api_key", "username": "...", "password": "..." }`. For Gmail,
-generate an app password at https://myaccount.google.com/apppasswords —
-the worker accepts both spaced (`abcd efgh ijkl mnop`) and joined
-(`abcdefghijklmnop`) formats.
+`${NAME}` placeholders are expanded by the configuration worker against the
+engine's environment on every read (under `iii compose` that is the daemon's
+environment, which the managed engine inherits), so secrets stay out of the
+stored value. The same file shape works as a one-time seed for a bare engine:
+`email --config ./config.yaml` installs it as the entry's initial value
+([docs/examples/config.yaml](docs/examples/config.yaml)).
+
+### Credentials
+
+An account logs in with its own `smtp.username` / `smtp.password`
+(`imap.username` / `imap.password` for the IMAP side). When an account carries
+no login, the worker falls back to `auth::get_token` under provider key
+`email::<account>` with shape
+`{ "type": "api_key", "username": "...", "password": "..." }`, for deployments
+that run a credentials vault. For Gmail, generate an app password at
+https://myaccount.google.com/apppasswords — the worker accepts both spaced
+(`abcd efgh ijkl mnop`) and joined (`abcdefghijklmnop`) formats.
 
 ## Triggers
 
@@ -173,7 +213,7 @@ milliseconds of a new message landing in the watched folder.
 iii
 
 # In another: build & run the worker
-cargo run --release -- --url ws://127.0.0.1:49134 --config ./config.yaml
+cargo run --release -- --url ws://127.0.0.1:49134 --config ./docs/examples/config.yaml
 ```
 
 The worker registers 8 functions + 1 trigger type, then spawns one
@@ -182,7 +222,9 @@ persistent IMAP+IDLE supervisor per `(account, folder)` configured with
 borrow an on-demand session from a separate pool so the half-duplex IMAP
 socket is never shared with the supervisor.
 
-Seed credentials before exercising `email::send` or any IMAP function:
+Give the accounts a login before exercising `email::send` or any IMAP
+function: `smtp.username` / `smtp.password` (and the `imap.*` pair) in the
+configuration, or, when a vault worker serves `auth::get_token`, seed it with:
 
 ```bash
 iii trigger auth::set_token \
@@ -229,8 +271,8 @@ cargo test --all-features
 | `E603` | Account missing the required transport block |
 | `E604` | `email::send` with neither `html` nor `text` |
 | `E605` | Attachment over `limits.max_attachment_bytes` |
-| `E606` | `auth::get_token` upstream call failed |
-| `E607` | No credential stored for the account |
+| `E606` | Account has no configured login and the `auth::get_token` fallback failed |
+| `E607` | Account has no configured login and no credential is stored for it |
 | `E608` | Credential payload missing `username` / `password` |
 | `E609` | Address parse / MIME build failure |
 | `E610` | IMAP server lacks IDLE — refusing to fall back to polling |

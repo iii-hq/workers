@@ -3,7 +3,7 @@
 //! pool (`mod.rs::ImapPool`). The two paths must NEVER share a session — IMAP
 //! is half-duplex once a command is in flight.
 
-use iii_sdk::{errors::Error, protocol::TriggerRequest, IIIClient};
+use iii_sdk::{errors::Error, IIIClient};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,7 +24,10 @@ pub async fn open_and_select(
     cfg: &ImapConfig,
     connect_timeout_ms: u64,
 ) -> Result<Session, Error> {
-    let cred = fetch_credential(account).await?;
+    let cred = match cfg.credential() {
+        Some(cred) => cred,
+        None => fetch_credential(account).await?,
+    };
     open_and_select_with_cred(account, folder, cfg, connect_timeout_ms, &cred).await
 }
 
@@ -192,27 +195,7 @@ async fn fetch_credential(account: &str) -> Result<Value, Error> {
             "internal: iii handle not initialized for credential fetch",
         )
     })?;
-    let cred = iii
-        .trigger(TriggerRequest {
-            function_id: "auth::get_token".to_string(),
-            payload: json!({ "provider": format!("email::{}", account) }),
-            action: None,
-            timeout_ms: Some(5_000),
-        })
-        .await
-        .map_err(|e| {
-            handler_err(
-                "E606",
-                &format!("auth::get_token failed for `email::{account}`: {e}"),
-            )
-        })?;
-    if cred.is_null() {
-        return Err(handler_err(
-            "E607",
-            &format!("no credential stored for `email::{account}` — call auth::set_token first"),
-        ));
-    }
-    Ok(cred)
+    crate::provider::fetch_vault_credential(&iii, account, "imap").await
 }
 
 fn build_tls_connector() -> Result<TlsConnector, Error> {
