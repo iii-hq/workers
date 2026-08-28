@@ -310,6 +310,13 @@ def test_publish_stable_expands_the_computed_target_list_with_matrix_include() -
     }
 
 
+def test_cross_platform_build_jobs_install_manifest_tooling() -> None:
+    for filename in ("prepare-release.yml", "publish-stable.yml"):
+        steps = workflow(WORKFLOWS / filename)["jobs"]["build"]["steps"]
+        tooling = next(step for step in steps if step.get("name") == "Install manifest tooling")
+        assert tooling["run"] == "python3 -m pip install --quiet pyyaml"
+
+
 def test_registry_publish_keeps_stdio_workers_alive_for_interface_collection() -> None:
     body = (WORKFLOWS / "_publish-registry.yml").read_text()
     assert "start_worker_with_open_stdin" in body
