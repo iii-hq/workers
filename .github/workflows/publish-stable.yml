@@ -35,8 +35,9 @@ on:
         required: true
         type: string
       targets:
-        description: Exact comma-separated Unix target list from Release Control
-        required: true
+        description: Exact comma-separated Unix target list; empty for non-binary workers
+        required: false
+        default: ''
         type: string
       plan_hash:
         required: true
