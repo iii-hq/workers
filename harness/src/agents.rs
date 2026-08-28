@@ -3,7 +3,9 @@
 //! profile served by the iii-directory worker. The profile is fetched ONCE
 //! here and frozen onto the turn (identity, prompt, skills, model, display) —
 //! later directory edits never reach a live session, matching the skills
-//! baseline freeze.
+//! baseline freeze. The directory serves the prompt already resolved
+//! (`extends` chains composed root-first), and under a profile that prompt
+//! IS the session identity: nothing built-in sits underneath it.
 
 use std::collections::BTreeMap;
 
@@ -37,6 +39,10 @@ struct AgentGetWire {
     icon: Option<String>,
     #[serde(default)]
     color: Option<String>,
+    /// Set by the directory when the profile's `extends` chain does not
+    /// resolve; the served prompt is then the file's own body only.
+    #[serde(default)]
+    inheritance_error: Option<String>,
 }
 
 /// A profile resolved and normalized for turn seeding.
@@ -44,7 +50,9 @@ struct AgentGetWire {
 pub struct ResolvedAgent {
     /// Frozen onto `TurnOptions.agent`.
     pub identity: AgentIdentity,
-    /// `"You are <name>.\n\n<body>"` — the enrich payload.
+    /// The profile's resolved system prompt, verbatim — the whole identity
+    /// of a session running as this agent (the mode paragraph is the only
+    /// layer the harness puts in front of it).
     pub prompt: String,
     /// `None` when the profile filters nothing (every skill).
     pub skills: Option<Vec<String>>,
@@ -62,9 +70,10 @@ pub struct ResolvedAgent {
     pub color: Option<SubagentColor>,
 }
 
-/// Fetch and normalize one agent profile. An unknown id maps to
-/// `InvalidRequest` (the directory's D410 message already carries the
-/// did-you-mean and next-action hints); any other failure is `Dependency`.
+/// Fetch and normalize one agent profile. An unknown id or a profile whose
+/// `extends` chain does not resolve maps to `InvalidRequest` (the directory's
+/// D41x messages already carry the did-you-mean and next-action hints); any
+/// other failure is `Dependency`.
 pub async fn resolve(
     deps: &Deps,
     cfg: &WorkerConfig,
@@ -83,13 +92,33 @@ pub async fn resolve(
     let wire: AgentGetWire = serde_json::from_value(value).map_err(|e| {
         HarnessError::Dependency(format!("{AGENTS_GET_ID}: malformed response: {e}"))
     })?;
+    check_resolvable(&wire)?;
     Ok(normalize(id, wire))
 }
 
-/// D410 is the directory's not-found code for agent profiles — the caller named a
-/// bad id, not a broken dependency.
+/// A profile whose `extends` chain is broken is served with its own body
+/// only, plus the directory's D415 explanation. Running it would silently
+/// drop the identity it was written to build on, so it is refused as the
+/// caller's error — the message names the fix.
+fn check_resolvable(wire: &AgentGetWire) -> Result<(), HarnessError> {
+    match wire
+        .inheritance_error
+        .as_deref()
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+    {
+        Some(message) => Err(HarnessError::InvalidRequest(format!(
+            "agent profile resolution failed: {message}"
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// D41x is the directory's agent-profile error family (D410 not found, D414
+/// write conflicts) — the caller named a bad profile, not a broken
+/// dependency.
 fn classify_fetch_error(message: &str) -> HarnessError {
-    if message.contains("D410") {
+    if message.contains("D41") {
         HarnessError::InvalidRequest(format!("agent profile resolution failed: {message}"))
     } else {
         HarnessError::Dependency(format!("{AGENTS_GET_ID}: {message}"))
@@ -125,7 +154,7 @@ fn normalize(id: &str, wire: AgentGetWire) -> ResolvedAgent {
                     .map(str::to_string)
             }),
         },
-        prompt: format!("You are {name}.\n\n{}", wire.system_prompt),
+        prompt: wire.system_prompt,
         skills: (!wire.skills.is_empty()).then_some(wire.skills),
         model: wire.model,
         reasoning_effort: wire.reasoning_effort,
@@ -221,13 +250,43 @@ mod tests {
         assert_eq!(err.code(), "harness/invalid_request");
         assert!(err.to_string().contains("directory::agents::list"));
 
+        let err = classify_fetch_error(
+            "handler error: D415 invalid_input: agent profile \"lead\" extends unknown agent \
+             profile \"nope\". Next: call directory::agents::list to browse agent profile ids.",
+        );
+        assert_eq!(err.code(), "harness/invalid_request");
+
         let err = classify_fetch_error("dispatch timed out");
         assert_eq!(err.code(), "harness/dependency");
         assert!(err.to_string().contains(AGENTS_GET_ID));
     }
 
+    /// The directory serves a broken chain fail-soft (own body + D415) so its
+    /// editor can open the profile; the harness must not run that half
+    /// identity.
     #[test]
-    fn normalize_builds_the_you_are_prompt_and_optionalizes_fields() {
+    fn broken_inheritance_chain_is_refused_as_invalid_request() {
+        let broken = wire(serde_json::json!({
+            "name": "Lead",
+            "system_prompt": "Own body only.",
+            "inheritance_error": "D415 invalid_input: agent profile \"lead\" extends unknown agent profile \"nope\".",
+        }));
+        let err = check_resolvable(&broken).unwrap_err();
+        assert_eq!(err.code(), "harness/invalid_request");
+        assert!(err.to_string().contains("extends unknown agent profile"));
+
+        let fine = wire(serde_json::json!({ "name": "Lead", "system_prompt": "Body." }));
+        assert!(check_resolvable(&fine).is_ok());
+        let blank = wire(serde_json::json!({
+            "name": "Lead",
+            "system_prompt": "Body.",
+            "inheritance_error": "  ",
+        }));
+        assert!(check_resolvable(&blank).is_ok());
+    }
+
+    #[test]
+    fn normalize_keeps_the_resolved_prompt_verbatim_and_optionalizes_fields() {
         let agent = normalize(
             "tech-leader",
             wire(serde_json::json!({
@@ -240,7 +299,10 @@ mod tests {
                 "color": "purple",
             })),
         );
-        assert_eq!(agent.prompt, "You are Tech Leader.\n\nDelegate everything.");
+        assert_eq!(
+            agent.prompt, "Delegate everything.",
+            "the directory's resolved prompt is the identity — no prefix"
+        );
         assert_eq!(agent.skills, None, "empty filter means every skill");
         assert_eq!(agent.identity.id, "tech-leader");
         assert_eq!(agent.identity.name.as_deref(), Some("Tech Leader"));
@@ -291,7 +353,8 @@ mod tests {
             agent.name, "coder",
             "blank display name falls back to the id"
         );
-        assert_eq!(agent.prompt, "You are coder.\n\nWrite code.");
+        assert_eq!(agent.prompt, "Write code.");
+        assert_eq!(agent.identity.name.as_deref(), Some("coder"));
         assert_eq!(agent.skills.as_deref(), Some(&["review".to_string()][..]));
         assert_eq!(agent.icon, None, "unknown token degrades, never errors");
         assert_eq!(agent.color, None, "unknown color degrades, never errors");

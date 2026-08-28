@@ -238,11 +238,11 @@ fn parse_observation(value: &Value) -> Result<Vec<Skill>, String> {
         if row.id.trim().is_empty() {
             return Err("directory::skills::list returned a blank skill id".to_string());
         }
+        // The directory's merged scan owns id uniqueness; a duplicate here
+        // is its bug, not a reason to drop the whole catalog — keep the
+        // first row.
         if !seen.insert(row.id.clone()) {
-            return Err(format!(
-                "directory::skills::list returned duplicate skill id {:?}",
-                row.id
-            ));
+            continue;
         }
         if row.disable_model_invocation {
             continue;
@@ -602,11 +602,18 @@ mod tests {
             "id": " ", "title": "x", "description": "x", "disable_model_invocation": false
         }]}))
         .is_err());
-        assert!(parse_observation(&json!({"skills": [
-            {"id": "same", "title": "x", "description": "x", "disable_model_invocation": false},
-            {"id": "same", "title": "y", "description": "y", "disable_model_invocation": false}
-        ]}))
-        .is_err());
+        assert_eq!(
+            parse_observation(&json!({"skills": [
+                {"id": "same", "title": "x", "description": "x", "disable_model_invocation": false},
+                {"id": "same", "title": "y", "description": "y", "disable_model_invocation": false}
+            ]}))
+            .unwrap(),
+            vec![Skill {
+                id: "same".into(),
+                description: "x".into(),
+            }],
+            "a duplicate id keeps the first row instead of failing the reload"
+        );
         assert!(parse_observation(&json!({"skills": [{
             "id": "x", "title": "x", "disable_model_invocation": false
         }]}))

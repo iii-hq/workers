@@ -2,8 +2,10 @@
 //! actually serves.
 //!
 //! Every agent — top-level and spawned children alike — sees
-//! `harness/prompts/default.txt`; the separate sub-agent identity is retired
-//! (children differ by policy and enrich layers, never by embedded prompt).
+//! `harness/prompts/default.txt` unless it runs as a directory agent profile,
+//! whose resolved prompt replaces it; the separate sub-agent identity is
+//! retired (children differ by policy, enrich layers or profile, never by
+//! embedded prompt).
 
 use std::path::{Path, PathBuf};
 

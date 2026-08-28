@@ -4,12 +4,23 @@
 //! (the file body), a display name, a description, an emoji logo, and a
 //! skill filter — one direct `<agents_folder>/<id>.md` file with required
 //! YAML frontmatter (see `docs/architecture/agent-profile-storage.md`).
-//! Five filesystem-backed verbs:
 //!
-//!   * `directory::agents::list`   — metadata-only listing.
-//!   * `directory::agents::get`    — one agent profile's system prompt + metadata,
-//!     plus `unknown_skills` (ids that resolve to nothing — warnings,
-//!     never load failures).
+//! Profiles compose: `extends: <id>` makes a profile's resolved system
+//! prompt its parent's resolved prompt followed by its own body, with
+//! `skills` / `model` / `reasoning_effort` falling back up the chain when
+//! omitted (display fields never inherit). The chain is resolved here, on
+//! every read, so the harness always receives a finished prompt. The base
+//! of most chains is a bundled profile embedded in this binary — `iii` (the
+//! harness default identity) or `iii-minimal` (the minimal directory-first
+//! identity): always listed, `builtin: true` until a local file with the
+//! same id shadows it. Five filesystem-backed verbs:
+//!
+//!   * `directory::agents::list`   — metadata-only listing, chain-resolved.
+//!   * `directory::agents::get`    — one agent profile's resolved system
+//!     prompt + metadata, plus `unknown_skills` (ids that resolve to nothing
+//!     — warnings, never load failures) and `inheritance_error` (a chain that
+//!     does not resolve — the profile still serves from its own file so it
+//!     can be fixed; the harness refuses to run it).
 //!   * `directory::agents::create` / `update` / `delete` — full-file
 //!     writes, atomic, fanning out `directory::agents::on-change`.
 //!
@@ -64,14 +75,14 @@ pub struct AgentEntry {
     pub description: String,
     /// Emoji logo, `null` when the agent profile has none.
     pub logo: Option<String>,
-    /// Length of the agent profile's skill filter; `null` = no filter (every
-    /// skill).
+    /// Length of the agent profile's skill filter, resolved through
+    /// `extends`; `null` = no filter (every skill).
     pub skill_count: Option<usize>,
-    /// Model id for sessions using this profile; `null` =
-    /// the send decides.
+    /// Model id for sessions using this profile, resolved through
+    /// `extends`; `null` = the send decides.
     pub model: Option<String>,
-    /// Provider-native reasoning effort paired with `model`; `null` = the
-    /// model/provider default.
+    /// Provider-native reasoning effort paired with `model`, resolved
+    /// through `extends`; `null` = the model/provider default.
     pub reasoning_effort: Option<String>,
     /// Harness subagent icon token for spawn display identities;
     /// `null` = caller picks.
@@ -79,7 +90,19 @@ pub struct AgentEntry {
     /// Harness subagent color token for display identities; `null` =
     /// neutral.
     pub color: Option<String>,
-    /// File mtime as RFC 3339.
+    /// Parent profile id (`extends:`), as declared; `null` = none.
+    pub extends: Option<String>,
+    /// Bundled with the worker, no file behind it: editing it creates the
+    /// local file (which then shadows this entry); there is nothing to
+    /// delete.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub builtin: bool,
+    /// Set when the `extends` chain does not resolve (unknown parent, loop,
+    /// too deep): the row carries the profile's own fields only, and the
+    /// harness refuses to run it until the chain is fixed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inheritance_error: Option<String>,
+    /// File mtime as RFC 3339; empty for a bundled profile.
     pub modified_at: String,
 }
 
@@ -104,19 +127,23 @@ pub struct AgentGetOutput {
     pub name: String,
     pub description: String,
     pub logo: Option<String>,
-    /// The file body, frontmatter stripped — the identity, verbatim.
+    /// The RESOLVED identity: every ancestor's body root-first, then this
+    /// file's body, frontmatter stripped, joined by a blank line. A profile
+    /// without `extends` serves its own body verbatim.
     pub system_prompt: String,
-    /// The frontmatter skill filter. Empty = every skill.
+    /// The skill filter, resolved through `extends` (the nearest profile
+    /// with a non-empty filter). Empty = every skill.
     pub skills: Vec<String>,
     /// Filter entries that resolve to no currently visible skill.
     /// Warnings — the agent profile still loads.
     pub unknown_skills: Vec<String>,
-    /// Model id for sessions using this profile; `null` =
-    /// the send decides. Served verbatim — resolution against the live
-    /// model catalog happens where it is used.
+    /// Model id for sessions using this profile, resolved through `extends`;
+    /// `null` = the send decides. Served verbatim — resolution against the
+    /// live model catalog happens where it is used.
     pub model: Option<String>,
-    /// Provider-native reasoning effort paired with `model`; `null` = the
-    /// model/provider default. Served verbatim and validated at use time.
+    /// Provider-native reasoning effort paired with `model`, resolved
+    /// through `extends`; `null` = the model/provider default. Served
+    /// verbatim and validated at use time.
     pub reasoning_effort: Option<String>,
     /// Harness subagent icon token (closed set, validated at write
     /// time); `null` = caller picks.
@@ -124,11 +151,22 @@ pub struct AgentGetOutput {
     /// Harness subagent color token (closed set, validated at write
     /// time); `null` = neutral.
     pub color: Option<String>,
-    /// FULL on-disk file content. Present only when the request set
-    /// `raw: true`.
+    /// Parent profile id (`extends:`), as declared; `null` = none.
+    pub extends: Option<String>,
+    /// Bundled with the worker, no file behind it (see `list`).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub builtin: bool,
+    /// Set when the `extends` chain does not resolve (unknown parent, loop,
+    /// deeper than 8): `system_prompt` and the inherited fields then come
+    /// from this file alone, `raw` still round-trips so the chain can be
+    /// fixed, and the harness refuses to run the profile meanwhile.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inheritance_error: Option<String>,
+    /// FULL on-disk file content (this profile's own file, ancestors
+    /// excluded). Present only when the request set `raw: true`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw: Option<String>,
-    /// File mtime as RFC 3339.
+    /// File mtime as RFC 3339; empty for a bundled profile.
     pub modified_at: String,
 }
 
@@ -141,7 +179,8 @@ pub struct AgentCreateInput {
     pub id: String,
     /// FULL file content, frontmatter block included. Frontmatter must
     /// carry a non-empty `name`; the body is the system prompt and must
-    /// be non-empty.
+    /// be non-empty. An `extends:` that does not resolve is reported by
+    /// `list`/`get` as `inheritance_error`, never a write error.
     pub content: String,
 }
 
@@ -202,11 +241,15 @@ fn register_list(iii: &Arc<IIIClient>, cfg: &SharedConfig) {
             async move { Ok::<_, Error>(list_agents(&cfg)) }
         })
         .description(
-            "List filesystem-backed agent profiles (id, display name, description, emoji \
-             logo, icon, color, model, reasoning_effort, skill_count, modified_at) from the configured \
-             agents folder. An agent profile is a reusable session identity: its file body \
-             is the system prompt. skill_count null = sessions using the profile can use \
-             every skill.",
+            "List agent profiles (id, display name, description, emoji logo, icon, color, \
+             model, reasoning_effort, skill_count, extends, modified_at) from the configured \
+             agents folder plus the profiles bundled with this worker (`builtin: true` until a \
+             local file shadows one — `iii` is the base identity most profiles extend). An \
+             agent profile is a reusable session identity: its file body is the system \
+             prompt. model / reasoning_effort / skill_count are resolved through `extends` \
+             (a profile inherits what it omits from its parent chain); skill_count null = \
+             sessions using the profile can use every skill. A row whose `extends` chain \
+             does not resolve carries `inheritance_error`.",
         ),
     );
 }
@@ -227,12 +270,16 @@ fn register_get(iii: &Arc<IIIClient>, cfg: &SharedConfig, cache: &Arc<Registered
             }
         })
         .description(
-            "Fetch one agent profile by id. Returns the system prompt (the file body, \
-             frontmatter stripped), display name, description, emoji logo, the skill \
-             filter plus unknown_skills (filter entries matching no visible skill — \
-             warnings, the profile still loads), model, reasoning_effort, icon, color, \
-             and modified_at. Pass raw: true to also get the exact on-disk file for \
-             editing with directory::agents::update.",
+            "Fetch one agent profile by id. Returns the RESOLVED system prompt (each \
+             ancestor's body root-first, then this file's body), display name, \
+             description, emoji logo, the skill filter resolved \
+             through `extends` plus unknown_skills (filter entries matching no visible \
+             skill — warnings, the profile still loads), model, reasoning_effort, icon, \
+             color, extends, builtin, and modified_at. `inheritance_error` is set when the \
+             `extends` chain names an unknown profile, loops, or is deeper than 8 levels: \
+             the profile then serves from its own file only and the harness refuses to \
+             run it. Pass raw: true to also get the exact on-disk file (this profile's \
+             own, ancestors excluded) for editing with directory::agents::update.",
         ),
     );
 }
@@ -258,8 +305,10 @@ fn register_create(iii: &Arc<IIIClient>, cfg: &SharedConfig, subs: &trigger_type
             "Create a NEW agent profile at <agents_folder>/<id>.md from full-file \
              markdown content (frontmatter block included; a non-empty `name` is \
              required, `logo` is emoji-only, and the body — the system prompt — must be \
-             non-empty). Rejects ids that already exist in the configured agents folder, \
-             or a target path that already exists on disk. The write is atomic and \
+             non-empty; an `extends: <id>` that does not resolve is reported by list/get \
+             as `inheritance_error`). Rejects ids that already exist in the \
+             configured agents folder, or a target path that already exists on disk; \
+             creating a bundled id shadows the bundled copy. The write is atomic and \
              fans out directory::agents::on-change with { op: \"create\" }.",
         )
         .metadata(json!({"tool": {"label": "Create agent profile"}})),
@@ -286,10 +335,12 @@ fn register_update(iii: &Arc<IIIClient>, cfg: &SharedConfig, subs: &trigger_type
         .description(
             "Overwrite one EXISTING agent profile with new full-file markdown content — \
              the same rules the scanner enforces (required frontmatter with a non-empty \
-             `name`, emoji-only `logo`, non-empty body), so an update can never produce \
-             a file the next directory::agents::list would skip. The agent profile id stays the \
-             file stem; frontmatter `name` is only the display name. The write is atomic \
-             and fans out directory::agents::on-change with { op: \"update\" }.",
+             `name`, emoji-only `logo`, non-empty body), so an \
+             update can never produce a file the next directory::agents::list would skip. \
+             The agent profile id stays the file stem; frontmatter `name` is only the \
+             display name. Updating a bundled profile (`builtin: true`) creates the local \
+             file, which then shadows the bundled copy. The write is atomic and fans out \
+             directory::agents::on-change with { op: \"update\" }.",
         )
         .metadata(json!({"tool": {"label": "Update agent profile"}})),
     );
@@ -316,8 +367,10 @@ fn register_delete(iii: &Arc<IIIClient>, cfg: &SharedConfig, subs: &trigger_type
             "Permanently delete one EXISTING agent profile by id. Resolves against the \
              same merged scan as directory::agents::list, removes only that profile's \
              markdown file, and fans out directory::agents::on-change with \
-             { op: \"delete\" }. Sessions already using this profile are not \
-             affected; the id just stops resolving for new sends.",
+             { op: \"delete\" }. Deleting the local shadow of a bundled profile falls \
+             back to the bundled copy; a bundled profile with no local file has nothing \
+             to delete. Sessions already using this profile are not affected; profiles \
+             that extend it stop resolving until their `extends` is fixed.",
         )
         .metadata(json!({"tool": {"label": "Delete agent profile"}})),
     );
@@ -325,30 +378,163 @@ fn register_delete(iii: &Arc<IIIClient>, cfg: &SharedConfig, subs: &trigger_type
 
 // ---------- core helpers (engine-free, reusable in tests) ----------
 
+/// Max `extends` hops. Enough for any sane hierarchy; small enough that a
+/// runaway chain is an error instead of a slow read.
+const MAX_EXTENDS_DEPTH: usize = 8;
+
+/// Filesystem-only scan (both roots). The write verbs resolve FILES through
+/// this; everything served goes through [`catalog`].
 fn scan_profiles(cfg: &SkillsConfig) -> Vec<FsAgent> {
     fs_source::scan_agents_merged(&cfg.resolved_agents_roots()).0
+}
+
+/// The merged view every read serves: the scanned roots plus each bundled
+/// profile no root shadows (`builtin: true`), sorted by id — the contract
+/// the bundled system prompts already follow.
+fn catalog(cfg: &SkillsConfig) -> Vec<FsAgent> {
+    let mut agents = scan_profiles(cfg);
+    for bundled in crate::bundled::bundled_agents() {
+        if !agents.iter().any(|a| a.name == bundled.name) {
+            agents.push(bundled);
+        }
+    }
+    agents.sort_by(|a, b| a.name.cmp(&b.name));
+    agents
 }
 
 // Unlike the skills roots (`.agents/skills` is owned by external agent
 // tooling and stays read-only), `~/.iii/agents` is iii's own directory:
 // update and delete resolve to whichever root holds the profile and write it
 // IN PLACE. Only create is anchored — it always writes `agents_folder`, and
-// never materializes the global root.
+// never materializes the global root. A bundled profile has no file until an
+// update copy-on-writes the local shadow into `agents_folder`.
+
+/// D415: `child`'s `extends` chain does not resolve. Carried by `list`/`get`
+/// as `inheritance_error`; the harness refuses to run the profile on it.
+fn inheritance_error(child: &str, problem: &str) -> String {
+    invalid_input_message(
+        "D415",
+        &format!("agent profile {child:?} {problem}"),
+        AGENT_NOT_FOUND_NEXT,
+    )
+}
+
+/// The `extends` chain for `child`, nearest first: `[child, parent, …]`.
+/// A chain that does not resolve — unknown parent, loop, more than
+/// [`MAX_EXTENDS_DEPTH`] hops — yields `([child], Some(D415))`: the profile
+/// still serves from its own file (the editor must be able to open it to
+/// fix the chain), the error rides along, and the harness refuses to run it.
+fn resolve_chain<'a>(
+    catalog: &'a [FsAgent],
+    child: &'a FsAgent,
+) -> (Vec<&'a FsAgent>, Option<String>) {
+    let mut chain = vec![child];
+    while let Some(parent_id) = chain.last().and_then(|a| a.extends.as_deref()) {
+        let trail = chain
+            .iter()
+            .map(|a| a.name.as_str())
+            .chain([parent_id])
+            .collect::<Vec<_>>()
+            .join(" → ");
+        let problem = if chain.iter().any(|a| a.name == parent_id) {
+            format!("has an extends loop: {trail}.")
+        } else if chain.len() > MAX_EXTENDS_DEPTH {
+            format!("extends chain is deeper than {MAX_EXTENDS_DEPTH} levels: {trail}.")
+        } else if let Some(parent) = catalog.iter().find(|a| a.name == parent_id) {
+            chain.push(parent);
+            continue;
+        } else {
+            format!("extends unknown agent profile {parent_id:?}.")
+        };
+        return (vec![child], Some(inheritance_error(&child.name, &problem)));
+    }
+    (chain, None)
+}
+
+/// What a profile inherits when it omits a field: the nearest chain member
+/// that sets it wins. `skills` is the first NON-EMPTY filter — an empty
+/// list means "not narrowed here", never "no skills".
+struct Inherited {
+    skills: Vec<String>,
+    model: Option<String>,
+    reasoning_effort: Option<String>,
+}
+
+fn inherit(chain: &[&FsAgent]) -> Inherited {
+    Inherited {
+        skills: chain
+            .iter()
+            .find(|a| !a.skills.is_empty())
+            .map(|a| a.skills.clone())
+            .unwrap_or_default(),
+        model: chain.iter().find_map(|a| a.model.clone()),
+        reasoning_effort: chain.iter().find_map(|a| a.reasoning_effort.clone()),
+    }
+}
+
+fn bundled_raw(agent: &FsAgent) -> Result<&'static str, String> {
+    crate::bundled::bundled_agent_raw(&agent.name).ok_or_else(|| {
+        format!(
+            "bundled agent profile {:?} has no embedded copy",
+            agent.name
+        )
+    })
+}
+
+/// A profile's OWN body: the embedded copy for a bundled row, the file
+/// otherwise.
+fn read_agent_body(agent: &FsAgent) -> Result<String, String> {
+    if agent.builtin {
+        return bundled_raw(agent).map(|raw| fs_source::split_frontmatter(raw).1.to_string());
+    }
+    fs_source::read_body(&agent.abs_path)
+}
+
+fn read_agent_raw(agent: &FsAgent) -> Result<String, String> {
+    if agent.builtin {
+        return bundled_raw(agent).map(str::to_string);
+    }
+    fs_source::read_raw(&agent.abs_path)
+}
+
+/// The resolved system prompt, root first: each ancestor's body with its
+/// trailing newlines trimmed, a blank line, then the next body — the
+/// profile's own body last and verbatim, so a profile without `extends`
+/// serves byte-identical to a plain read.
+fn compose_prompt(chain: &[&FsAgent]) -> Result<String, String> {
+    let mut prompt: Option<String> = None;
+    for agent in chain.iter().rev() {
+        let body = read_agent_body(agent)?;
+        prompt = Some(match prompt {
+            None => body,
+            Some(parent) => format!("{}\n\n{body}", parent.trim_end_matches('\n')),
+        });
+    }
+    Ok(prompt.unwrap_or_default())
+}
 
 pub fn list_agents(cfg: &SkillsConfig) -> ListAgentsOutput {
-    let agents = scan_profiles(cfg)
-        .into_iter()
-        .map(|a| AgentEntry {
-            modified_at: fs_modified_at(&a.abs_path),
-            skill_count: (!a.skills.is_empty()).then_some(a.skills.len()),
-            model: a.model,
-            reasoning_effort: a.reasoning_effort,
-            icon: a.icon,
-            color: a.color,
-            id: a.name,
-            name: a.display_name,
-            description: a.description,
-            logo: a.logo,
+    let catalog = catalog(cfg);
+    let agents = catalog
+        .iter()
+        .map(|a| {
+            let (chain, inheritance_error) = resolve_chain(&catalog, a);
+            let inherited = inherit(&chain);
+            AgentEntry {
+                modified_at: fs_modified_at(&a.abs_path),
+                skill_count: (!inherited.skills.is_empty()).then_some(inherited.skills.len()),
+                model: inherited.model,
+                reasoning_effort: inherited.reasoning_effort,
+                icon: a.icon.clone(),
+                color: a.color.clone(),
+                id: a.name.clone(),
+                name: a.display_name.clone(),
+                description: a.description.clone(),
+                logo: a.logo.clone(),
+                extends: a.extends.clone(),
+                builtin: a.builtin,
+                inheritance_error,
+            }
         })
         .collect();
     ListAgentsOutput { agents }
@@ -363,19 +549,21 @@ pub fn get_agent(
     visible_skills: &[FsSkill],
 ) -> Result<AgentGetOutput, String> {
     validate_name(&req.id)?;
-    let agents = scan_profiles(cfg);
-    let Some(agent) = agents.iter().find(|a| a.name == req.id).cloned() else {
-        return Err(agent_not_found(&agents, &req.id));
+    let catalog = catalog(cfg);
+    let Some(agent) = catalog.iter().find(|a| a.name == req.id) else {
+        return Err(agent_not_found(&catalog, &req.id));
     };
-    let body = fs_source::read_body(&agent.abs_path)?;
+    let (chain, inheritance_error) = resolve_chain(&catalog, agent);
+    let inherited = inherit(&chain);
+    let system_prompt = compose_prompt(&chain)?;
     let raw = if req.raw.unwrap_or(false) {
-        Some(fs_source::read_raw(&agent.abs_path)?)
+        Some(read_agent_raw(agent)?)
     } else {
         None
     };
     // `find_fs_skill_in` resolves the `<ns>` ↔ `<ns>/index` overview
     // alias, so both id forms an author might write count as known.
-    let unknown_skills = agent
+    let unknown_skills = inherited
         .skills
         .iter()
         .filter(|id| find_fs_skill_in(visible_skills, id).is_none())
@@ -383,17 +571,20 @@ pub fn get_agent(
         .collect();
     Ok(AgentGetOutput {
         modified_at: fs_modified_at(&agent.abs_path),
-        id: agent.name,
-        name: agent.display_name,
-        description: agent.description,
-        logo: agent.logo,
-        system_prompt: body,
-        skills: agent.skills,
+        id: agent.name.clone(),
+        name: agent.display_name.clone(),
+        description: agent.description.clone(),
+        logo: agent.logo.clone(),
+        system_prompt,
+        skills: inherited.skills,
         unknown_skills,
-        model: agent.model,
-        reasoning_effort: agent.reasoning_effort,
-        icon: agent.icon,
-        color: agent.color,
+        model: inherited.model,
+        reasoning_effort: inherited.reasoning_effort,
+        icon: agent.icon.clone(),
+        color: agent.color.clone(),
+        extends: agent.extends.clone(),
+        builtin: agent.builtin,
+        inheritance_error,
         raw,
     })
 }
@@ -403,8 +594,10 @@ pub fn create_agent(
     req: &AgentCreateInput,
 ) -> Result<AgentWriteOutput, String> {
     validate_name(&req.id)?;
-    let agents = scan_profiles(cfg);
-    if let Some(existing) = agents.iter().find(|a| a.name == req.id) {
+    let catalog = catalog(cfg);
+    // Only a FILE collides: creating a bundled id writes the local shadow,
+    // exactly like creating a bundled system prompt.
+    if let Some(existing) = catalog.iter().find(|a| a.name == req.id && !a.builtin) {
         // Name the root for global collisions: "already exists" alone sends
         // the caller hunting agents_folder for a file that is not there.
         let origin = if existing.abs_path.starts_with(cfg.resolved_agents_folder()) {
@@ -423,19 +616,11 @@ pub fn create_agent(
     }
     let dest = cfg.resolved_agents_folder().join(format!("{}.md", req.id));
     if dest.exists() {
-        return Err(invalid_input_message(
-            "D414",
-            &format!(
-                "a file already exists at {} (currently skipped by the scanner); edit or \
-                 remove it on disk.",
-                dest.display()
-            ),
-            AGENT_CREATE_CONFLICT_NEXT,
-        ));
+        return Err(skipped_file_conflict(&dest));
     }
-    let fm = validate_agent_content(&req.content)?;
+    let agent = validate_agent_content(&req.id, &req.content, &dest)?;
     write_file_atomic(&dest, req.content.as_bytes())?;
-    Ok(write_output(req.id.clone(), fm, req.content.len(), &dest))
+    Ok(write_output(&agent, req.content.len()))
 }
 
 pub fn update_agent(
@@ -443,18 +628,25 @@ pub fn update_agent(
     req: &AgentUpdateInput,
 ) -> Result<AgentWriteOutput, String> {
     validate_name(&req.id)?;
-    let agents = scan_profiles(cfg);
-    let Some(agent) = agents.iter().find(|a| a.name == req.id) else {
-        return Err(agent_not_found(&agents, &req.id));
+    let catalog = catalog(cfg);
+    let Some(existing) = catalog.iter().find(|a| a.name == req.id) else {
+        return Err(agent_not_found(&catalog, &req.id));
     };
-    let fm = validate_agent_content(&req.content)?;
-    write_file_atomic(&agent.abs_path, req.content.as_bytes())?;
-    Ok(write_output(
-        req.id.clone(),
-        fm,
-        req.content.len(),
-        &agent.abs_path,
-    ))
+    let dest = if existing.builtin {
+        // A bundled profile has no file until first edited: updating it
+        // copy-on-writes the local file, which shadows the bundled copy from
+        // then on (deleting that file falls back to it again).
+        let dest = cfg.resolved_agents_folder().join(format!("{}.md", req.id));
+        if dest.exists() {
+            return Err(skipped_file_conflict(&dest));
+        }
+        dest
+    } else {
+        existing.abs_path.clone()
+    };
+    let agent = validate_agent_content(&req.id, &req.content, &dest)?;
+    write_file_atomic(&dest, req.content.as_bytes())?;
+    Ok(write_output(&agent, req.content.len()))
 }
 
 pub fn delete_agent(
@@ -462,10 +654,21 @@ pub fn delete_agent(
     req: &AgentDeleteInput,
 ) -> Result<AgentDeleteOutput, String> {
     validate_name(&req.id)?;
-    let agents = scan_profiles(cfg);
-    let Some(agent) = agents.iter().find(|a| a.name == req.id) else {
-        return Err(agent_not_found(&agents, &req.id));
+    let catalog = catalog(cfg);
+    let Some(agent) = catalog.iter().find(|a| a.name == req.id) else {
+        return Err(agent_not_found(&catalog, &req.id));
     };
+    if agent.builtin {
+        return Err(invalid_input_message(
+            "D414",
+            &format!(
+                "agent profile {:?} is bundled with the worker and has no local file to \
+                 delete.",
+                req.id
+            ),
+            AGENT_CREATE_CONFLICT_NEXT,
+        ));
+    }
     // Suppress the watcher's `{ op: "external" }` for our own delete —
     // the precise `{ op: "delete" }` fan-out already covers it.
     mark_self_write(&agent.abs_path);
@@ -478,8 +681,14 @@ pub fn delete_agent(
 
 /// Write-time content check, byte-identical to what the scanner
 /// enforces: size cap on the raw file, required valid frontmatter
-/// ([`fs_source::parse_agent_frontmatter`]), non-empty body.
-fn validate_agent_content(content: &str) -> Result<fs_source::AgentFrontmatter, String> {
+/// ([`fs_source::parse_agent_frontmatter`]), non-empty body. Returns the
+/// row the next scan will serve for `dest` (the write receipt reads from
+/// it).
+fn validate_agent_content(
+    id: &str,
+    content: &str,
+    dest: &std::path::Path,
+) -> Result<FsAgent, String> {
     if content.len() > SKILL_BODY_MAX_BYTES {
         return Err(format!(
             "content too large ({} bytes; max {SKILL_BODY_MAX_BYTES})",
@@ -491,7 +700,24 @@ fn validate_agent_content(content: &str) -> Result<fs_source::AgentFrontmatter, 
     if body.trim().is_empty() {
         return Err("body (the system prompt) must be non-empty".into());
     }
-    Ok(fm)
+    Ok(fs_source::agent_from_frontmatter(
+        id.to_string(),
+        fm,
+        dest.to_path_buf(),
+        false,
+    ))
+}
+
+fn skipped_file_conflict(dest: &std::path::Path) -> String {
+    invalid_input_message(
+        "D414",
+        &format!(
+            "a file already exists at {} (currently skipped by the scanner); edit or \
+             remove it on disk.",
+            dest.display()
+        ),
+        AGENT_CREATE_CONFLICT_NEXT,
+    )
 }
 
 fn agent_not_found(agents: &[FsAgent], missed: &str) -> String {
@@ -517,23 +743,13 @@ fn agent_not_found(agents: &[FsAgent], missed: &str) -> String {
     )
 }
 
-fn write_output(
-    id: String,
-    fm: fs_source::AgentFrontmatter,
-    bytes: usize,
-    path: &std::path::Path,
-) -> AgentWriteOutput {
+fn write_output(agent: &FsAgent, bytes: usize) -> AgentWriteOutput {
     AgentWriteOutput {
-        modified_at: fs_modified_at(path),
-        id,
-        name: fm.name.as_deref().unwrap_or("").trim().to_string(),
-        description: fm
-            .description
-            .as_deref()
-            .map(str::trim)
-            .unwrap_or("")
-            .to_string(),
-        logo: fm.logo.map(|l| l.trim().to_string()),
+        modified_at: fs_modified_at(&agent.abs_path),
+        id: agent.name.clone(),
+        name: agent.display_name.clone(),
+        description: agent.description.clone(),
+        logo: agent.logo.clone(),
         bytes,
     }
 }
@@ -591,9 +807,13 @@ mod tests {
         let cfg = cfg_for(tmp.path());
 
         let listed = list_agents(&cfg);
-        assert_eq!(listed.agents.len(), 1);
-        let row = &listed.agents[0];
+        // The bundled `iii` base is always listed alongside the files.
+        let rows: Vec<&AgentEntry> = listed.agents.iter().filter(|r| !r.builtin).collect();
+        assert_eq!(rows.len(), 1);
+        let row = rows[0];
         assert_eq!(row.id, "release-captain");
+        assert!(row.extends.is_none());
+        assert!(row.inheritance_error.is_none());
         assert_eq!(row.name, "Release Captain");
         assert_eq!(row.logo.as_deref(), Some("🚢"));
         assert_eq!(row.skill_count, Some(2));
@@ -621,6 +841,9 @@ mod tests {
         assert_eq!(got.icon.as_deref(), Some("search"));
         assert_eq!(got.color.as_deref(), Some("purple"));
         assert_eq!(got.raw.as_deref(), Some(CAPTAIN));
+        assert!(got.extends.is_none());
+        assert!(!got.builtin);
+        assert!(got.inheritance_error.is_none());
     }
 
     #[test]
@@ -680,7 +903,7 @@ mod tests {
             .into_iter()
             .map(|agent| agent.id)
             .collect::<Vec<_>>();
-        assert_eq!(ids, vec!["current"]);
+        assert_eq!(ids, vec!["current", "iii", "iii-minimal"]);
     }
 
     #[test]
@@ -823,7 +1046,12 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            vec![("captain", "Local Captain"), ("scout", "Scout")]
+            vec![
+                ("captain", "Local Captain"),
+                ("iii", "iii"),
+                ("iii-minimal", "iii-minimal"),
+                ("scout", "Scout")
+            ]
         );
 
         let got = get_agent(
@@ -882,5 +1110,319 @@ mod tests {
         )
         .unwrap();
         assert!(!global_file.exists());
+    }
+
+    const III_DOCTRINE_OPENER: &str = "You are an iii agent worker.";
+
+    fn get(cfg: &SkillsConfig, id: &str, raw: bool) -> Result<AgentGetOutput, String> {
+        get_agent(
+            cfg,
+            AgentGetInput {
+                id: id.into(),
+                raw: Some(raw),
+            },
+            &[],
+        )
+    }
+
+    #[test]
+    fn extends_composes_parent_first_and_inherits_omitted_fields() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture(
+            tmp.path(),
+            "agents/base.md",
+            "---\nname: Base\nskills:\n  - a\n  - b\nmodel: m1\nreasoning_effort: high\nicon: code\ncolor: blue\n---\nBase body.\n\n",
+        );
+        write_fixture(
+            tmp.path(),
+            "agents/child.md",
+            "---\nname: Child\ndescription: Adds.\nextends: base\n---\nChild body.\n",
+        );
+        write_fixture(
+            tmp.path(),
+            "agents/narrow.md",
+            "---\nname: Narrow\nextends: child\nskills:\n  - c\nmodel: m2\n---\nNarrow body.\n",
+        );
+        let cfg = cfg_for(tmp.path());
+
+        let child = get(&cfg, "child", true).unwrap();
+        // Parent trailing newlines trimmed, one blank line, own body verbatim.
+        assert_eq!(child.system_prompt, "Base body.\n\nChild body.\n");
+        assert_eq!(child.extends.as_deref(), Some("base"));
+        assert_eq!(child.skills, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(child.model.as_deref(), Some("m1"));
+        assert_eq!(child.reasoning_effort.as_deref(), Some("high"));
+        // Display fields never inherit.
+        assert_eq!(child.name, "Child");
+        assert_eq!(child.description, "Adds.");
+        assert!(child.icon.is_none() && child.color.is_none());
+        assert!(child.inheritance_error.is_none());
+        assert!(
+            child.raw.unwrap().starts_with("---\nname: Child"),
+            "raw is the profile's own file"
+        );
+
+        let narrow = get(&cfg, "narrow", false).unwrap();
+        assert_eq!(
+            narrow.system_prompt,
+            "Base body.\n\nChild body.\n\nNarrow body.\n"
+        );
+        assert_eq!(
+            narrow.skills,
+            vec!["c".to_string()],
+            "a non-empty filter replaces, no union"
+        );
+        assert_eq!(narrow.model.as_deref(), Some("m2"));
+        assert_eq!(
+            narrow.reasoning_effort.as_deref(),
+            Some("high"),
+            "effort inherits independently of model"
+        );
+
+        let rows = list_agents(&cfg).agents;
+        let row = rows.iter().find(|r| r.id == "child").unwrap();
+        assert_eq!(row.model.as_deref(), Some("m1"));
+        assert_eq!(row.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(row.skill_count, Some(2));
+        assert_eq!(row.extends.as_deref(), Some("base"));
+        assert!(row.inheritance_error.is_none());
+    }
+
+    #[test]
+    fn extends_bundled_iii_without_shadow() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture(
+            tmp.path(),
+            "agents/lead.md",
+            "---\nname: Lead\nextends: iii\n---\nYou lead.\n",
+        );
+        let cfg = cfg_for(tmp.path());
+        let lead = get(&cfg, "lead", false).unwrap();
+        assert!(lead.system_prompt.starts_with(III_DOCTRINE_OPENER));
+        assert!(lead.system_prompt.ends_with("\n\nYou lead.\n"));
+        assert!(!lead.builtin);
+        assert!(lead.inheritance_error.is_none());
+    }
+
+    #[test]
+    fn broken_chain_is_soft_on_read_and_writes_do_not_gate_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture(
+            tmp.path(),
+            "agents/orphan.md",
+            "---\nname: Orphan\nmodel: own\nextends: nope\n---\nOwn body.\n",
+        );
+        let cfg = cfg_for(tmp.path());
+
+        let got = get(&cfg, "orphan", true).unwrap();
+        let err = got
+            .inheritance_error
+            .clone()
+            .expect("broken chain reported");
+        assert!(
+            err.starts_with(
+                "D415 invalid_input: agent profile \"orphan\" extends unknown agent profile \"nope\"."
+            ),
+            "got: {err}"
+        );
+        assert!(err.contains("directory::agents::list"), "got: {err}");
+        assert_eq!(got.system_prompt, "Own body.\n");
+        assert_eq!(got.model.as_deref(), Some("own"));
+        assert!(got.raw.is_some(), "the editor can still open it");
+        let row = list_agents(&cfg)
+            .agents
+            .into_iter()
+            .find(|r| r.id == "orphan")
+            .unwrap();
+        assert_eq!(row.inheritance_error.as_deref(), Some(err.as_str()));
+
+        // Writes do not gate the chain: the file lands, the next read reports it.
+        let content = std::fs::read_to_string(tmp.path().join("agents/orphan.md")).unwrap();
+        create_agent(
+            &cfg,
+            &AgentCreateInput {
+                id: "orphan2".into(),
+                content,
+            },
+        )
+        .unwrap();
+        assert!(get(&cfg, "orphan2", false)
+            .unwrap()
+            .inheritance_error
+            .is_some());
+    }
+
+    #[test]
+    fn extends_loops_and_self_are_detected() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture(
+            tmp.path(),
+            "agents/a.md",
+            "---\nname: A\nextends: b\n---\nA.\n",
+        );
+        write_fixture(
+            tmp.path(),
+            "agents/b.md",
+            "---\nname: B\nextends: a\n---\nB.\n",
+        );
+        let cfg = cfg_for(tmp.path());
+
+        let a = get(&cfg, "a", false).unwrap();
+        let err = a.inheritance_error.as_deref().unwrap();
+        assert!(
+            err.contains("has an extends loop: a → b → a."),
+            "got: {err}"
+        );
+        assert_eq!(a.system_prompt, "A.\n");
+        let b = get(&cfg, "b", false).unwrap();
+        assert!(
+            b.inheritance_error
+                .as_deref()
+                .unwrap()
+                .contains("b → a → b"),
+            "{:?}",
+            b.inheritance_error
+        );
+
+        // Self-extends, including a local `iii` "extending" the bundled `iii`
+        // it shadows (the shadowed copy is not in the catalog to extend).
+        write_fixture(
+            tmp.path(),
+            "agents/c.md",
+            "---\nname: C\nextends: c\n---\nC.\n",
+        );
+        write_fixture(
+            tmp.path(),
+            "agents/iii.md",
+            "---\nname: iii\nextends: iii\n---\nMine.\n",
+        );
+        for (id, trail) in [("c", "c → c"), ("iii", "iii → iii")] {
+            let got = get(&cfg, id, false).unwrap();
+            let err = got.inheritance_error.as_deref().unwrap();
+            assert!(
+                err.contains(&format!("has an extends loop: {trail}.")),
+                "got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn extends_depth_cap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_for(tmp.path());
+        // p0 ← p1 ← … ← p9: p8 is eight hops from the root, p9 nine.
+        write_fixture(tmp.path(), "agents/p0.md", "---\nname: P0\n---\nP0.\n");
+        for i in 1..=9 {
+            write_fixture(
+                tmp.path(),
+                &format!("agents/p{i}.md"),
+                &format!("---\nname: P{i}\nextends: p{}\n---\nP{i}.\n", i - 1),
+            );
+        }
+        let eight = get(&cfg, "p8", false).unwrap();
+        assert!(
+            eight.inheritance_error.is_none(),
+            "{:?}",
+            eight.inheritance_error
+        );
+        assert!(eight.system_prompt.starts_with("P0.\n\nP1.\n"));
+        assert!(eight.system_prompt.ends_with("P7.\n\nP8.\n"));
+        let nine = get(&cfg, "p9", false).unwrap();
+        assert!(
+            nine.inheritance_error
+                .as_deref()
+                .unwrap()
+                .contains("deeper than 8 levels"),
+            "{:?}",
+            nine.inheritance_error
+        );
+        assert_eq!(nine.system_prompt, "P9.\n");
+    }
+
+    #[test]
+    fn bundled_iii_lists_gets_copy_on_writes_and_falls_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_for(tmp.path());
+
+        let rows = list_agents(&cfg).agents;
+        let row = rows
+            .iter()
+            .find(|r| r.id == "iii")
+            .expect("bundled base listed");
+        assert!(row.builtin);
+        assert_eq!(row.modified_at, "");
+        assert!(row.inheritance_error.is_none());
+
+        let got = get(&cfg, "iii", true).unwrap();
+        assert!(got.builtin);
+        assert!(got.system_prompt.starts_with(III_DOCTRINE_OPENER));
+        assert_eq!(got.raw.as_deref(), crate::bundled::bundled_agent_raw("iii"));
+        assert_eq!(got.modified_at, "");
+
+        // Nothing on disk to delete yet.
+        let err = delete_agent(&cfg, &AgentDeleteInput { id: "iii".into() }).unwrap_err();
+        assert!(
+            err.starts_with("D414 invalid_input:") && err.contains("bundled"),
+            "got: {err}"
+        );
+
+        // Update copy-on-writes the local shadow …
+        let local = tmp.path().join("agents/iii.md");
+        let out = update_agent(
+            &cfg,
+            &AgentUpdateInput {
+                id: "iii".into(),
+                content: "---\nname: iii\ndescription: Mine.\n---\nMy own base.\n".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(out.description, "Mine.");
+        assert!(local.is_file());
+        let got = get(&cfg, "iii", false).unwrap();
+        assert!(!got.builtin);
+        assert_eq!(got.system_prompt, "My own base.\n");
+        assert!(
+            !list_agents(&cfg)
+                .agents
+                .iter()
+                .find(|r| r.id == "iii")
+                .unwrap()
+                .builtin
+        );
+
+        // … and deleting the shadow falls back to the bundled copy.
+        delete_agent(&cfg, &AgentDeleteInput { id: "iii".into() }).unwrap();
+        assert!(!local.exists());
+        assert!(get(&cfg, "iii", false).unwrap().builtin);
+    }
+
+    #[test]
+    fn unknown_skills_checks_the_inherited_filter() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fixture(
+            tmp.path(),
+            "agents/base.md",
+            "---\nname: Base\nskills:\n  - known/index\n  - ghost\n---\nBase.\n",
+        );
+        write_fixture(
+            tmp.path(),
+            "agents/kid.md",
+            "---\nname: Kid\nextends: base\n---\nKid.\n",
+        );
+        let cfg = cfg_for(tmp.path());
+        let kid = get_agent(
+            &cfg,
+            AgentGetInput {
+                id: "kid".into(),
+                raw: None,
+            },
+            &[skill("known/index")],
+        )
+        .unwrap();
+        assert_eq!(
+            kid.skills,
+            vec!["known/index".to_string(), "ghost".to_string()]
+        );
+        assert_eq!(kid.unknown_skills, vec!["ghost".to_string()]);
     }
 }
