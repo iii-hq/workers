@@ -74,9 +74,9 @@ function toSummary(root: StoredSpan): TraceSummary {
         }),
     status: errors > 0 ? 'error' : pending ? 'pending' : 'ok',
     service_name: root.service_name,
-    function_id: String(
-      attributes['faas.invoked_name'] ?? attributes.function_id ?? '',
-    ),
+    function_id:
+      String(attributes['faas.invoked_name'] ?? attributes.function_id ?? '') ||
+      undefined,
     topic: attributes['messaging.destination.name'] as string | undefined,
     trace_tags: root.trace_tags,
     attributes,

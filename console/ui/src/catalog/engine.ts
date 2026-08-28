@@ -82,6 +82,12 @@ function rows(value: unknown, key: string): unknown[] {
   return Array.isArray(list) ? list : []
 }
 
+function isFunctionUnavailable(err: unknown): boolean {
+  return /function_not_found|function .*not (?:found|registered)|not registered/i.test(
+    errorMessage(err),
+  )
+}
+
 function functionSummary(row: unknown): FunctionSummary | null {
   if (!isRecord(row)) return null
   const function_id = str(row.function_id)
@@ -404,11 +410,18 @@ export async function listCalls(
   functionId: string,
   limit = 25,
 ): Promise<CallRecord[]> {
-  const out = await host.iii.trigger('engine::traces::spans', {
+  const payload = {
     name: `execute ${functionId}`,
     limit,
     include_internal: true,
-  })
+  }
+  let out: unknown
+  try {
+    out = await host.iii.trigger('engine::traces::spans', payload)
+  } catch (err) {
+    if (!isFunctionUnavailable(err)) throw err
+    out = await host.iii.trigger('engine::traces::list', payload)
+  }
   return rows(out, 'spans')
     .map((span): CallRecord | null => {
       if (!isRecord(span)) return null

@@ -75,6 +75,9 @@ export interface TracesResponse {
   total: number
   offset: number
   limit: number
+  /** Client-side marker: `engine::traces::list` answered with the legacy
+   *  full-span contract and was aggregated into summaries in the browser. */
+  legacyContract?: true
   /** Client-side marker: the engine answered "memory exporter not enabled".
    *  Set only by `fetchTraces`, never by the wire — it is what separates
    *  "observability is off" from an ordinary empty result, so the UI can
@@ -322,6 +325,26 @@ export function normalizeTracesResponse(
     total: traces.length,
     offset: response.offset,
     limit: response.limit,
+    legacyContract: true,
+  }
+}
+
+function normalizeTraceSpansResponse(
+  response: TracesWireResponse,
+  offset: number,
+  limit: number,
+): TraceSpansResponse {
+  if ('spans' in response && Array.isArray(response.spans)) return response
+
+  // A mixed-version Engine may expose the spans RPC but still answer with the
+  // compact list shape. Summaries cannot safely be treated as StoredSpan
+  // records (events and links would be lost), so keep the full-span contract
+  // valid and let the consumer render an empty detail instead of crashing.
+  return {
+    spans: [],
+    total: 0,
+    offset: response.offset ?? offset,
+    limit: response.limit ?? limit,
   }
 }
 
@@ -368,16 +391,18 @@ export async function fetchTraceSpans(
   try {
     const client = await getIiiClient()
     try {
-      return await client.trigger<TraceSpansResponse>(
+      const response = await client.trigger<TracesWireResponse>(
         TRACES_RPC_FUNCTIONS.spans,
         payload,
       )
+      return normalizeTraceSpansResponse(response, offset, limit)
     } catch (err) {
       if (!isFunctionUnavailable(err)) throw err
-      return await client.trigger<TraceSpansResponse>(
+      const response = await client.trigger<TracesWireResponse>(
         TRACES_RPC_FUNCTIONS.list,
         payload,
       )
+      return normalizeTraceSpansResponse(response, offset, limit)
     }
   } catch (err) {
     if (isMemoryExporterNotEnabled(err)) {

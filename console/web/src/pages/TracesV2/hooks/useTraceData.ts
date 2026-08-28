@@ -81,6 +81,28 @@ export interface UseTraceDataReturn {
   flushPendingTraces: () => void
 }
 
+export function hiddenFunctionsKey(hiddenFunctions?: string[]): string {
+  return JSON.stringify(hiddenFunctions ?? [])
+}
+
+export function filterHiddenTraceRows(
+  traces: TraceListItem[],
+  serializedHiddenFunctions: string,
+): TraceListItem[] {
+  const hidden = JSON.parse(serializedHiddenFunctions) as string[]
+  if (hidden.length === 0) return traces
+  return traces.filter(
+    (trace) => !(trace.functionId && hidden.includes(trace.functionId)),
+  )
+}
+
+export function traceTotalForResponse(
+  response: TracesResponse,
+  filteredTraceCount: number,
+): number {
+  return response.legacyContract ? filteredTraceCount : response.total
+}
+
 export function buildTraceListRequestParams({
   filterParams,
   showSystem,
@@ -127,7 +149,7 @@ export function useTraceData({
 
   const isHoveredRef = useRef(false)
   const pendingTracesRef = useRef<TraceListItem[] | null>(null)
-  const hiddenKey = hiddenFunctions?.join(',') ?? ''
+  const hiddenKey = hiddenFunctionsKey(hiddenFunctions)
 
   const {
     data: tracesData,
@@ -211,21 +233,20 @@ export function useTraceData({
       setHasOtelConfigured(false)
       return
     }
-    setTotalTraceCount(tracesData.total)
+    let traces: TraceListItem[] = (tracesData.traces ?? []).map(
+      mapTraceSummaryToListItem,
+    )
 
-    if (tracesData.traces && tracesData.traces.length > 0) {
-      let traces: TraceListItem[] = tracesData.traces.map(
-        mapTraceSummaryToListItem,
-      )
+    // Defensive compatibility for engines that ignore exclude_attributes.
+    // JSON preserves commas and other valid characters inside function IDs.
+    traces = filterHiddenTraceRows(traces, hiddenKey)
 
-      // Defensive compatibility for engines that ignore exclude_attributes.
-      const hidden = hiddenKey ? hiddenKey.split(',') : []
-      if (hidden.length > 0) {
-        traces = traces.filter(
-          (t) => !(t.functionId && hidden.includes(t.functionId)),
-        )
-      }
+    // New Engines already exclude hidden rows before pagination and own the
+    // global total. A legacy response was aggregated and filtered locally, so
+    // its only honest total is the number of compatible rows on this page.
+    setTotalTraceCount(traceTotalForResponse(tracesData, traces.length))
 
+    if (traces.length > 0) {
       traces.sort((a, b) => b.startTime - a.startTime)
 
       // The same rows can answer two different questions (for example the

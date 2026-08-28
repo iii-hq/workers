@@ -86,6 +86,7 @@ describe('normalizeTracesResponse', () => {
       total: 1,
       offset: 0,
       limit: 50,
+      legacyContract: true,
     })
   })
 })
@@ -121,5 +122,26 @@ describe('fetchTraceSpans', () => {
 
     await expect(fetchTraceSpans()).rejects.toThrow('archive read failed')
     expect(triggerMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the full-span contract safe when a mixed-version fallback returns summaries', async () => {
+    triggerMock
+      .mockRejectedValueOnce({
+        code: 'function_not_found',
+        message: "Function 'engine::traces::spans' is not registered.",
+      })
+      .mockResolvedValueOnce({
+        traces: [],
+        total: 3,
+        offset: 0,
+        limit: 100,
+      })
+
+    await expect(fetchTraceSpans()).resolves.toEqual({
+      spans: [],
+      total: 0,
+      offset: 0,
+      limit: 100,
+    })
   })
 })
