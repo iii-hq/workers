@@ -333,6 +333,15 @@ def test_release_matrix_and_build_jobs_install_manifest_tooling() -> None:
             assert tooling["run"] == "python -m pip install --quiet pyyaml"
 
 
+def test_cross_platform_release_builds_disable_pnpm_cache() -> None:
+    for filename in ("prepare-release.yml", "publish-stable.yml"):
+        steps = workflow(WORKFLOWS / filename)["jobs"]["build"]["steps"]
+        setup_node = next(step for step in steps if step.get("uses") == "actions/setup-node@v5")
+        assert setup_node["with"]["package-manager-cache"] == "false"
+        assert "cache" not in setup_node["with"]
+        assert "cache-dependency-path" not in setup_node["with"]
+
+
 def test_registry_publish_keeps_stdio_workers_alive_for_interface_collection() -> None:
     body = (WORKFLOWS / "_publish-registry.yml").read_text()
     assert "start_worker_with_open_stdin" in body
