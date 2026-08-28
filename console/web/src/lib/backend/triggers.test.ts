@@ -116,13 +116,13 @@ describe('listSessionTriggers', () => {
     })
   })
 
-  it('returns empty on a failed call', async () => {
+  it('preserves a failed call as an error instead of an empty snapshot', async () => {
     const client = {
       trigger: async () => {
         throw new Error('down')
       },
     }
-    expect(await listSessionTriggers(client, 's')).toEqual([])
+    await expect(listSessionTriggers(client, 's')).rejects.toThrow('down')
   })
 })
 

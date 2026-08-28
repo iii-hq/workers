@@ -31,7 +31,10 @@ import {
   type HarnessImageBlock,
   predictedUserEntryId,
 } from '@/lib/backend/harness-send'
-import { serialRefresh } from '@/lib/backend/serial-refresh'
+import {
+  type SessionTriggerLoader,
+  startSessionTriggerLoader,
+} from '@/lib/backend/session-trigger-loader'
 import {
   mergeFiredTriggers,
   type SessionTriggerInfo,
@@ -392,7 +395,7 @@ export function ChatView({
   // The current conversation's serialized list loader. Doorbells arrive
   // at-least-once and burst on rapid fires; serialRefresh coalesces them
   // behind one in-flight read so snapshots never apply out of order.
-  const triggersLoaderRef = useRef<{ refresh: () => void } | null>(null)
+  const triggersLoaderRef = useRef<SessionTriggerLoader | null>(null)
   const refreshTriggers = useCallback(() => {
     triggersLoaderRef.current?.refresh()
   }, [])
@@ -402,20 +405,17 @@ export function ChatView({
     setTriggersSnapshotSessionId(null)
     const listTriggers = backend.listTriggers
     if (!listTriggers) return
-    const loader = serialRefresh(
-      () => listTriggers(conversation.id),
-      (rows) => {
+    const loader = startSessionTriggerLoader({
+      sessionId: conversation.id,
+      listTriggers,
+      onTriggersChanged: backend.onTriggersChanged,
+      onSnapshot: (rows) => {
         for (const row of rows) seenTriggersRef.current.set(row.id, row)
         setSessionTriggers(rows)
         setTriggersSnapshotSessionId(conversation.id)
       },
-    )
+    })
     triggersLoaderRef.current = loader
-    // Subscribe BEFORE the first snapshot so a mutation in the setup gap
-    // rings instead of being missed (both ride the same client bootstrap, so
-    // the registration frames are queued ahead of the list read).
-    const off = backend.onTriggersChanged?.(conversation.id, loader.refresh)
-    loader.refresh()
     // Catch-up for doorbells missed while hidden (throttled tab). Missed
     // doorbells across a socket outage are reseeded by the backend's
     // reconnect listener.
@@ -424,11 +424,10 @@ export function ChatView({
     }
     document.addEventListener('visibilitychange', onVisible)
     return () => {
-      off?.()
       document.removeEventListener('visibilitychange', onVisible)
       // Discard any in-flight snapshot so the old conversation's rows can't
       // land in the next conversation's state.
-      loader.reset()
+      loader.dispose()
       if (triggersLoaderRef.current === loader) triggersLoaderRef.current = null
     }
   }, [backend.listTriggers, backend.onTriggersChanged, conversation.id])
