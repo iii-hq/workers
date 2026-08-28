@@ -15,8 +15,8 @@ Release dispatcher: [`release.yml`](../../.github/workflows/release.yml) reads
 
 ## Binary
 
-- **Build:** up to 9 cross-compiled targets (or `targets:` subset).
-- **Assets:** `<bin>-<triple>.tar.gz` / `.zip` + `.sha256` checksums.
+- **Build:** up to 6 Unix cross-compiled targets (or `targets:` subset); Windows is excluded.
+- **Assets:** `<bin>-<triple>.tar.gz` + `.sha256` checksums for every Unix target.
 - **Publish boot:** downloads `*-x86_64-unknown-linux-gnu.tar.gz` from the
   Release, runs the binary for interface collection.
 - **Registry payload:** per-target download URLs resolved by

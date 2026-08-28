@@ -21,9 +21,9 @@ release routing, and registry publish all read this file.
 | `bin` | Cargo binary name (defaults to `name`) | `_rust-binary.yml`, publish boot |
 | `targets` | Optional list of Rust triples to build | `_rust-binary.yml` matrix subset; `supported_targets` in manifest |
 
-When `targets` is omitted, all nine default triples are built: macOS
-x86_64/aarch64, Windows x86_64/i686/aarch64, Linux x86_64 gnu/musl,
-aarch64 gnu, and armv7 gnueabihf (the matrix lives in
+When `targets` is omitted, all six default Unix triples are built: macOS
+x86_64/aarch64, Linux x86_64 gnu/musl, aarch64 gnu, and armv7 gnueabihf.
+Windows targets are not part of the release matrix (the matrix lives in
 [`_rust-binary.yml`](../../.github/workflows/_rust-binary.yml)).
 
 ## Opt-outs and runtime

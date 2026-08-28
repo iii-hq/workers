@@ -20,6 +20,7 @@ EXPECTED_INPUTS = {
         "stable_version",
         "candidate_version",
         "source_sha",
+        "targets",
         "plan_hash",
         "dispatch_nonce",
     },
@@ -32,6 +33,7 @@ EXPECTED_INPUTS = {
         "stable_version",
         "candidate_version",
         "source_sha",
+        "targets",
         "prepared_sha",
         "prepared_run_id",
         "prepared_artifact",
@@ -49,6 +51,7 @@ EXPECTED_INPUTS = {
         "stable_version",
         "source_operation_id",
         "source_sha",
+        "targets",
         "plan_hash",
         "expected_next_version",
         "expected_latest_version",
@@ -276,6 +279,15 @@ def test_reusable_release_executors_have_no_implicit_inputs() -> None:
 def test_registry_publish_authenticates_iii_installer() -> None:
     body = (WORKFLOWS / "_publish-registry.yml").read_text()
     assert "GITHUB_TOKEN: ${{ github.token }}" in body
+
+
+def test_release_target_policy_excludes_windows_and_requires_complete_assets() -> None:
+    body = (WORKFLOWS / "_rust-binary.yml").read_text()
+    assert "windows-latest" not in body
+    assert "x86_64-pc-windows-msvc" not in body
+
+    resolver = (WORKFLOWS.parent / "scripts" / "resolve_binary_artifacts.py").read_text()
+    assert "missing binary artefacts for targets" in resolver
 
 
 def test_registry_publish_keeps_stdio_workers_alive_for_interface_collection() -> None:
