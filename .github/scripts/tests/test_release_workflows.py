@@ -342,6 +342,17 @@ def test_cross_platform_release_builds_disable_pnpm_cache() -> None:
         assert "cache-dependency-path" not in setup_node["with"]
 
 
+def test_release_assembly_downloads_artifacts_after_checkout() -> None:
+    for filename in ("prepare-release.yml", "publish-stable.yml"):
+        steps = workflow(WORKFLOWS / filename)["jobs"]["assemble"]["steps"]
+        checkout_index = next(index for index, step in enumerate(steps) if step.get("uses") == "actions/checkout@v5")
+        download_indexes = [
+            index for index, step in enumerate(steps) if step.get("uses") == "actions/download-artifact@v7"
+        ]
+        assert download_indexes
+        assert checkout_index < min(download_indexes)
+
+
 def test_registry_publish_keeps_stdio_workers_alive_for_interface_collection() -> None:
     body = (WORKFLOWS / "_publish-registry.yml").read_text()
     assert "start_worker_with_open_stdin" in body

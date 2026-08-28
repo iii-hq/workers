@@ -234,6 +234,9 @@ jobs:
     if: inputs.recovery_run_id == '0'
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.prepared_sha }}
       - uses: actions/download-artifact@v7
         with:
           name: release-identity-${{ inputs.operation_id }}-${{ inputs.step_id }}
@@ -245,9 +248,6 @@ jobs:
           path: release-targets
           merge-multiple: true
           github-token: ${{ github.token }}
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ needs.prepare.outputs.prepared_sha }}
       - name: Assemble exact artifact set
         run: >-
           python3 .github/scripts/release_train.py assemble
