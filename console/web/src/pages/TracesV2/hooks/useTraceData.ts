@@ -34,6 +34,13 @@ const ACTIVITY_REFETCH_DEBOUNCE_MS = 250
  *  session and saturate the main thread with payload parses. */
 const FILTERED_RESEED_COOLDOWN_MS = 10_000
 
+export function shouldDeferTraceUpdate(
+  isHovered: boolean,
+  hadPreviousRows: boolean,
+): boolean {
+  return isHovered && hadPreviousRows
+}
+
 export interface TraceListItem {
   traceId: string
   rootOperation: string
@@ -197,12 +204,17 @@ export function useTraceData({
 
       traces.sort((a, b) => b.startTime - a.startTime)
 
-      const fingerprint = fingerprintTraceList(traces)
+      // The same rows can answer two different questions (for example the
+      // unfiltered list followed by a text search that matches its only
+      // row). Scope changes clear the rendered list, so a fingerprint from
+      // the previous scope must never suppress the new scope's first answer.
+      const fingerprint = `${scopeKey}\0${fingerprintTraceList(traces)}`
       if (fingerprint === fingerprintRef.current) return
       fingerprintRef.current = fingerprint
 
       const currentIds = new Set(traces.map((t) => t.traceId))
-      if (prevTraceIdsRef.current.size > 0) {
+      const hadPreviousRows = prevTraceIdsRef.current.size > 0
+      if (hadPreviousRows) {
         const freshIds = new Set<string>()
         for (const id of currentIds) {
           if (!prevTraceIdsRef.current.has(id)) freshIds.add(id)
@@ -211,7 +223,12 @@ export function useTraceData({
       }
       prevTraceIdsRef.current = currentIds
 
-      if (isHoveredRef.current) {
+      // Freeze churn only when there is already a rendered list whose row
+      // positions must stay stable under the pointer. A scope/search change
+      // clears the list first; deferring that scope's first answer while the
+      // user is still hovering the search field would leave an empty screen
+      // until the pointer happened to leave the traces pane.
+      if (shouldDeferTraceUpdate(isHoveredRef.current, hadPreviousRows)) {
         pendingTracesRef.current = traces
         return
       }
@@ -224,7 +241,7 @@ export function useTraceData({
       setTraceListItems([])
       setHasOtelConfigured(true)
     }
-  }, [tracesData, hiddenKey])
+  }, [tracesData, hiddenKey, scopeKey])
 
   // ── Trigger-driven refetch (notify-then-query) ──────────────────────────
   // The engine coalesces span activity into one `{ trace_ids }` tick per
