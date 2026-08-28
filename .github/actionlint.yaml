@@ -4,3 +4,4 @@ self-hosted-runner:
     - rust
     - workers-release-linux-8core
     - workers-release-macos-12core
+    - workers-release-macos-arm-5core

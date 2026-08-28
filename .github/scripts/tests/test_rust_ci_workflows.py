@@ -65,6 +65,7 @@ def test_actionlint_knows_the_repository_runner_pool_labels() -> None:
         "rust",
         "workers-release-linux-8core",
         "workers-release-macos-12core",
+        "workers-release-macos-arm-5core",
     ]
 
 
