@@ -4,7 +4,7 @@ exclude = ["vendor/cssselect", "vendor/curl_impersonate_sys", "vendor/rustpython
 
 [package]
 name = "browser"
-version = "0.2.6-rc.2"
+version = "0.2.7-rc.1"
 edition = "2021"
 publish = false
 
