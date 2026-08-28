@@ -1,0 +1,20 @@
+iii: v1
+name: kanban
+language: javascript
+deploy: bundle
+manifest: package.json
+license: Apache-2.0
+tags: [kanban, workers, tasks, runs, console, ui]
+description: Repository-aware multi-worker runs with Harness sessions, isolated worktrees, and Git review.
+
+runtime:
+  kind: javascript
+
+scripts:
+  start: node ./index.mjs
+
+dependencies:
+  console: "^1.9.11"
+  state: "^0.22.3"
+  harness: "^1.8.8"
+  worktree: "^0.3.4-rc.1"

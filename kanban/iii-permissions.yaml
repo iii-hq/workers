@@ -1,0 +1,11 @@
+version: 1
+
+rules:
+  - '!kanban::ui-content'
+  - '!kanban::on-agent-task'
+  - '!kanban::on-harness-completed'
+  - '!kanban::on-session-changed'
+  - '!kanban::on-worktree-changed'
+  - kanban::board
+  - kanban::executors::list
+  - kanban::models::list
