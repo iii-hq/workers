@@ -93,6 +93,8 @@ export interface TraceSpansResponse {
   memoryExporterDisabled?: true
 }
 
+type TracesWireResponse = TracesResponse | TraceSpansResponse
+
 export interface TracesFilterParams {
   trace_id?: string
   /** Fetch a specific set of traces (grouped-view member expansion).
@@ -191,6 +193,139 @@ function isMemoryExporterNotEnabled(err: unknown): boolean {
   return /memory exporter (is )?not enabled/i.test(msg)
 }
 
+function isFunctionUnavailable(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  return /function_not_found|function .*not (?:found|registered)|not registered/i.test(
+    msg,
+  )
+}
+
+function spanAttributes(span: StoredSpan): Record<string, unknown> {
+  if (Array.isArray(span.attributes)) {
+    return Object.fromEntries(span.attributes)
+  }
+  if (span.attributes && typeof span.attributes === 'object') {
+    return span.attributes as unknown as Record<string, unknown>
+  }
+  return {}
+}
+
+function summarizeLegacySpans(
+  spans: StoredSpan[],
+  attributeProjection: string[] = [],
+): TraceSummary[] {
+  const byTrace = new Map<string, StoredSpan[]>()
+  for (const span of spans) {
+    const trace = byTrace.get(span.trace_id)
+    if (trace) trace.push(span)
+    else byTrace.set(span.trace_id, [span])
+  }
+
+  return [...byTrace.values()].flatMap((traceSpans) => {
+    const ordered = [...traceSpans].sort(
+      (a, b) =>
+        a.start_time_unix_nano - b.start_time_unix_nano ||
+        a.span_id.localeCompare(b.span_id),
+    )
+    const presentSpanIds = new Set(ordered.map((span) => span.span_id))
+    const representative =
+      ordered.find(
+        (span) =>
+          !span.parent_span_id || !presentSpanIds.has(span.parent_span_id),
+      ) ?? ordered[0]
+    if (!representative) return []
+
+    const traceTags: Record<string, string> = {}
+    const projectedAttributes: Record<string, string> = {}
+    for (const span of ordered) {
+      Object.assign(traceTags, span.trace_tags)
+      for (const [key, rawValue] of Object.entries(spanAttributes(span))) {
+        const value = String(rawValue)
+        if (
+          key.startsWith('iii.tag.') ||
+          key === 'iii.session.id' ||
+          key === 'iii.session.name' ||
+          key === 'iii.message.id'
+        ) {
+          traceTags[key] = value
+        }
+        if (attributeProjection.includes(key)) {
+          projectedAttributes[key] = value
+        }
+      }
+    }
+
+    const representativeAttributes = spanAttributes(representative)
+    const errorCount = ordered.filter(
+      (span) => span.status.toLowerCase() === 'error',
+    ).length
+    const pending = ordered.some(
+      (span) => span.pending === true || span.end_time_unix_nano === 0,
+    )
+    const outcome = traceTags['iii.tag.outcome']
+
+    return [
+      {
+        trace_id: representative.trace_id,
+        name: representative.name,
+        start_time_unix_nano: Math.min(
+          ...ordered.map((span) => span.start_time_unix_nano),
+        ),
+        end_time_unix_nano: pending
+          ? undefined
+          : Math.max(...ordered.map((span) => span.end_time_unix_nano)),
+        status:
+          errorCount > 0 || outcome === 'failed' || outcome === 'error'
+            ? 'error'
+            : pending
+              ? 'pending'
+              : 'ok',
+        service_name: representative.service_name || undefined,
+        function_id:
+          String(
+            representativeAttributes['faas.invoked_name'] ??
+              representativeAttributes.function_id ??
+              '',
+          ) || undefined,
+        topic:
+          String(
+            representativeAttributes['messaging.destination.name'] ?? '',
+          ) || undefined,
+        trace_tags: Object.keys(traceTags).length > 0 ? traceTags : undefined,
+        attributes:
+          Object.keys(projectedAttributes).length > 0
+            ? projectedAttributes
+            : undefined,
+        span_count: ordered.length,
+        error_count: errorCount,
+      } satisfies TraceSummary,
+    ]
+  })
+}
+
+/** Normalize the pre-summary `{ spans }` contract only when an older Engine
+ * answers the list RPC. New Engines return `{ traces }` unchanged, so the
+ * compact transport and server-side totals remain the normal path. */
+export function normalizeTracesResponse(
+  response: TracesWireResponse,
+  options?: TracesFilterParams,
+): TracesResponse {
+  if ('traces' in response) return response
+
+  const traces = summarizeLegacySpans(
+    response.spans,
+    options?.attribute_projection,
+  )
+  return {
+    traces,
+    // Legacy pagination is span-based. Report the unique rows actually known
+    // to this compatibility page instead of presenting a false trace total.
+    total: traces.length,
+    offset: response.offset,
+    limit: response.limit,
+  }
+}
+
 function asError(err: unknown, fallback: string): Error {
   if (err instanceof Error) return err
   return new Error(typeof err === 'string' ? err : fallback)
@@ -205,10 +340,11 @@ export async function fetchTraces(
 
   try {
     const client = await getIiiClient()
-    return await client.trigger<TracesResponse>(
+    const response = await client.trigger<TracesWireResponse>(
       TRACES_RPC_FUNCTIONS.list,
       payload,
     )
+    return normalizeTracesResponse(response, options)
   } catch (err) {
     if (isMemoryExporterNotEnabled(err)) {
       return {
@@ -232,10 +368,18 @@ export async function fetchTraceSpans(
 
   try {
     const client = await getIiiClient()
-    return await client.trigger<TraceSpansResponse>(
-      TRACES_RPC_FUNCTIONS.spans,
-      payload,
-    )
+    try {
+      return await client.trigger<TraceSpansResponse>(
+        TRACES_RPC_FUNCTIONS.spans,
+        payload,
+      )
+    } catch (err) {
+      if (!isFunctionUnavailable(err)) throw err
+      return await client.trigger<TraceSpansResponse>(
+        TRACES_RPC_FUNCTIONS.list,
+        payload,
+      )
+    }
   } catch (err) {
     if (isMemoryExporterNotEnabled(err)) {
       return {
