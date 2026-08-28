@@ -125,7 +125,8 @@ jobs:
     needs: [prepare, matrix]
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.matrix.outputs.include) }}
+      matrix:
+        include: ${{ fromJSON(needs.matrix.outputs.include) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     steps:
