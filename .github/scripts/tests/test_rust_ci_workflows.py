@@ -51,12 +51,9 @@ def test_prs_restore_rust_caches_and_main_pushes_publish_them() -> None:
     assert ci["jobs"]["harness-integration"]["with"]["save-cache"] == expected
 
 
-def test_only_trusted_main_pushes_use_the_rust_self_hosted_runner() -> None:
+def test_harness_integration_uses_the_rust_self_hosted_runner() -> None:
     integration = workflow("_harness-integration.yml")["jobs"]["integration"]
-    assert integration["runs-on"] == (
-        "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' "
-        "&& 'rust' || 'ubuntu-latest' }}"
-    )
+    assert integration["runs-on"] == ["self-hosted", "Linux", "X64", "rust"]
 
 
 def test_actionlint_knows_the_repository_runner_pool_labels() -> None:
