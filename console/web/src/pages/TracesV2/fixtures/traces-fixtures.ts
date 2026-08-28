@@ -333,7 +333,7 @@ export const ALL_SPANS: StoredSpan[] = [
   ...TRACE_4_SPANS,
 ]
 
-/** Root-only spans (what an unscoped `engine::traces::list` returns). */
+/** Root-only spans used to derive compact list summaries in stories. */
 export const LIST_SPANS: StoredSpan[] = [
   TRACE_1_SPANS[0],
   TRACE_2_SPANS[0],

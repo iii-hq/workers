@@ -51,7 +51,7 @@ import { requestChatMessageFocus } from '@/lib/trace-links'
 import { startTraceActivityFeed } from '@/lib/traces-activity'
 import { cn } from '@/lib/utils'
 import type { PageCommandsApi } from '@/types/injectable-ui'
-import { fetchTraces, type StoredSpan } from './api/traces'
+import { fetchTraceSpans, type StoredSpan } from './api/traces'
 import { GroupedTraceList } from './components/GroupedTraceList'
 import { SpanPanel } from './components/SpanPanel'
 import { TraceDetailSkeleton } from './components/TraceDetailSkeleton'
@@ -79,6 +79,7 @@ import { type TraceChatLink, traceChatLink } from './lib/traceChatLink'
 import { collectTraceDetailSpans } from './lib/traceDetailPages'
 import { withSessionScope } from './lib/traceFilters'
 import type { RowLabelConfig } from './lib/traceListItem'
+import { buildTracePageStats, tracePageCount } from './lib/tracePagination'
 import {
   applyViewConfig,
   captureViewConfig,
@@ -158,7 +159,7 @@ export function TracesV2({
     updateFilter,
     resetFilters,
     replaceFilters,
-    getFilterOnlyParams,
+    getApiParams,
     validationWarnings,
     clearValidationWarnings,
   } = useTraceFilters()
@@ -184,12 +185,13 @@ export function TracesV2({
       : null
 
   const filterParams = useMemo(
-    () => withSessionScope(getFilterOnlyParams(), sessionScope),
-    [getFilterOnlyParams, sessionScope],
+    () => withSessionScope(getApiParams(), sessionScope),
+    [getApiParams, sessionScope],
   )
 
   const {
     traceGroups,
+    totalTraceCount,
     newTraceIds,
     setNewTraceIds,
     hasOtelConfigured,
@@ -202,6 +204,10 @@ export function TracesV2({
     debouncedSearch,
     isPaused,
     hiddenFunctions: filterState.hiddenFunctions,
+    attributeProjection:
+      filterState.labelMode === 'attribute' && filterState.labelAttribute
+        ? [filterState.labelAttribute]
+        : undefined,
   })
 
   // ── Saved views (server-persisted via the `console` configuration entry) ──
@@ -330,12 +336,10 @@ export function TracesV2({
     spanFilter,
   )
 
-  const totalPages = Math.max(
-    1,
-    Math.ceil(visibleTraceGroups.length / filterState.pageSize),
-  )
-  const start = (filterState.page - 1) * filterState.pageSize
-  const paged = visibleTraceGroups.slice(start, start + filterState.pageSize)
+  const totalPages = tracePageCount(totalTraceCount, filterState.pageSize)
+  // `traceGroups` is already one server page. The local span-visibility pass
+  // may hide rows from that page, but it must never slice/paginate again.
+  const paged = visibleTraceGroups
 
   // Liveness evaluation instant for the list rows' pulsing dot — only ticked
   // while a visible row is actually live, mirroring the strip's clock
@@ -359,20 +363,14 @@ export function TracesV2({
   }, [anyRowLive])
 
   useEffect(() => {
-    if (filterState.page > totalPages) updateFilter('page', totalPages)
-  }, [filterState.page, totalPages, updateFilter])
+    if (!isQueryLoading && filterState.page > totalPages) {
+      updateFilter('page', totalPages)
+    }
+  }, [filterState.page, totalPages, updateFilter, isQueryLoading])
 
   const stats = useMemo(
-    () => ({
-      totalTraces: visibleTraceGroups.length,
-      errorCount: visibleTraceGroups.filter((t) => t.status === 'error').length,
-      avgDuration:
-        visibleTraceGroups.length > 0
-          ? visibleTraceGroups.reduce((sum, t) => sum + (t.duration ?? 0), 0) /
-            visibleTraceGroups.length
-          : 0,
-    }),
-    [visibleTraceGroups],
+    () => buildTracePageStats(visibleTraceGroups, totalTraceCount),
+    [visibleTraceGroups, totalTraceCount],
   )
 
   const containerRef = useRef<HTMLDivElement>(null)
@@ -433,7 +431,7 @@ export function TracesV2({
         const detailSpans = await collectTraceDetailSpans(
           (offset, limit) => {
             if (stale()) throw superseded
-            return fetchTraces({
+            return fetchTraceSpans({
               trace_id: traceId,
               search_all_spans: true,
               include_internal: false,
@@ -1028,7 +1026,7 @@ export function TracesV2({
                       <Pagination
                         currentPage={filterState.page}
                         totalPages={totalPages}
-                        totalItems={visibleTraceGroups.length}
+                        totalItems={totalTraceCount}
                         pageSize={filterState.pageSize}
                         onPageChange={(p) => updateFilter('page', p)}
                         onPageSizeChange={(s) => {

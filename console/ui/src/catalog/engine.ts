@@ -296,7 +296,7 @@ let hubSeq = 0
  * - `engine::workers-available` fires when a worker connects or disconnects
  * - `trace` is a coalesced "spans changed" tick carrying the affected trace
  *   ids; it is a refetch beat, not a span feed, so a live view re-reads
- *   `engine::traces::list` when it ticks
+ *   `engine::traces::spans` when it ticks
  */
 export type LiveSignal =
   | 'engine::functions-available'
@@ -404,7 +404,7 @@ export async function listCalls(
   functionId: string,
   limit = 25,
 ): Promise<CallRecord[]> {
-  const out = await host.iii.trigger('engine::traces::list', {
+  const out = await host.iii.trigger('engine::traces::spans', {
     name: `execute ${functionId}`,
     limit,
     include_internal: true,

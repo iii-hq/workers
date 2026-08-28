@@ -3,14 +3,16 @@
  *
  * Mirrors `motia/console/.../api/observability/traces.ts`, but resolves
  * the iii-browser-sdk client from the shared `getIiiClient()` singleton
- * instead of taking the SDK as a parameter. Engine RPC paths are
- * identical, so the engine contract is unchanged.
+ * instead of taking the SDK as a parameter. The transport remains shared,
+ * while list summaries and full-span detail use separate RPC contracts.
  *
  * Timeout note: motia passes per-RPC timeouts to `sdk.trigger`. Our
  * `IiiClient.trigger` wrapper does not yet expose `timeoutMs`, so calls
  * here use the SDK's default invocation timeout (30s). If this becomes
  * a latency problem (long list requests, slow tree requests), extend
- * the wrapper rather than reaching past it.
+ * the wrapper rather than reaching past it. The list and detail contracts
+ * intentionally differ: list returns compact trace summaries, while spans
+ * returns complete stored records.
  */
 
 import { getIiiClient } from '@/lib/iii-client'
@@ -47,18 +49,45 @@ export interface StoredSpan {
    *  serialized when true. */
   pending?: boolean
   /** Trace-level tags (`iii.tag.*` + session/message identity attributes)
-   *  merged from every span of the trace by `engine::traces::list`. Only
-   *  present on list rows; live-streamed rows don't carry it. */
+   *  merged from every span of the trace by `engine::traces::spans`. */
   trace_tags?: Record<string, string>
 }
 
+export interface TraceSummary {
+  trace_id: string
+  name: string
+  start_time_unix_nano: number
+  end_time_unix_nano?: number
+  status: 'ok' | 'error' | 'pending'
+  service_name?: string
+  function_id?: string
+  topic?: string
+  trace_tags?: Record<string, string>
+  /** Only keys requested through `attribute_projection` are present. */
+  attributes?: Record<string, string>
+  span_count: number
+  error_count: number
+}
+
 export interface TracesResponse {
-  spans: StoredSpan[]
+  traces: TraceSummary[]
   total: number
   offset: number
   limit: number
   /** Client-side marker: the engine answered "memory exporter not enabled".
    *  Set only by `fetchTraces`, never by the wire — it is what separates
+   *  "observability is off" from an ordinary empty result, so the UI can
+   *  reserve its no-observability message for the real thing. */
+  memoryExporterDisabled?: true
+}
+
+export interface TraceSpansResponse {
+  spans: StoredSpan[]
+  total: number
+  offset: number
+  limit: number
+  /** Client-side marker: the engine answered "memory exporter not enabled".
+   *  Set only by `fetchTraceSpans`, never by the wire — it is what separates
    *  "observability is off" from an ordinary empty result, so the UI can
    *  reserve its no-observability message for the real thing. */
   memoryExporterDisabled?: true
@@ -71,7 +100,7 @@ export interface TracesFilterParams {
   trace_ids?: string[]
   service_name?: string
   name?: string
-  status?: 'ok' | 'error' | 'unset'
+  status?: 'ok' | 'error' | 'pending' | 'unset'
   span_id?: string
   parent_span_id?: string | null
   min_duration_ms?: number
@@ -89,6 +118,8 @@ export interface TracesFilterParams {
   limit?: number
   include_internal?: boolean
   search_all_spans?: boolean
+  /** Arbitrary attributes needed by the current list view. */
+  attribute_projection?: string[]
 }
 
 export interface SpanTreeNode {
@@ -143,6 +174,7 @@ export interface TracesGroupByResponse {
 
 export const TRACES_RPC_FUNCTIONS = {
   list: 'engine::traces::list',
+  spans: 'engine::traces::spans',
   tree: 'engine::traces::tree',
   clear: 'engine::traces::clear',
   groupBy: 'engine::traces::group_by',
@@ -179,9 +211,42 @@ export async function fetchTraces(
     )
   } catch (err) {
     if (isMemoryExporterNotEnabled(err)) {
-      return { spans: [], total: 0, offset, limit, memoryExporterDisabled: true }
+      return {
+        traces: [],
+        total: 0,
+        offset,
+        limit,
+        memoryExporterDisabled: true,
+      }
     }
     throw asError(err, 'Failed to fetch traces')
+  }
+}
+
+export async function fetchTraceSpans(
+  options?: TracesFilterParams,
+): Promise<TraceSpansResponse> {
+  const offset = options?.offset ?? 0
+  const limit = options?.limit ?? 100
+  const payload = stripUndefined({ ...options, offset, limit })
+
+  try {
+    const client = await getIiiClient()
+    return await client.trigger<TraceSpansResponse>(
+      TRACES_RPC_FUNCTIONS.spans,
+      payload,
+    )
+  } catch (err) {
+    if (isMemoryExporterNotEnabled(err)) {
+      return {
+        spans: [],
+        total: 0,
+        offset,
+        limit,
+        memoryExporterDisabled: true,
+      }
+    }
+    throw asError(err, 'Failed to fetch trace spans')
   }
 }
 
