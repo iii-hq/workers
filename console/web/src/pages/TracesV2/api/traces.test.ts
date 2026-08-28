@@ -99,7 +99,10 @@ describe('fetchTraceSpans', () => {
       limit: 100,
     }
     triggerMock
-      .mockRejectedValueOnce(new Error('function_not_found: not registered'))
+      .mockRejectedValueOnce({
+        code: 'function_not_found',
+        message: "Function 'engine::traces::spans' is not registered.",
+      })
       .mockResolvedValueOnce(legacy)
 
     await expect(fetchTraceSpans()).resolves.toEqual(legacy)

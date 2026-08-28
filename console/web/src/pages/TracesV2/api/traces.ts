@@ -15,6 +15,7 @@
  * returns complete stored records.
  */
 
+import { errText } from '@/lib/errors'
 import { getIiiClient } from '@/lib/iii-client'
 
 export interface SpanEvent {
@@ -189,14 +190,12 @@ function stripUndefined<T extends Record<string, unknown>>(obj: T): T {
 }
 
 function isMemoryExporterNotEnabled(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err)
-  return /memory exporter (is )?not enabled/i.test(msg)
+  return /memory exporter (is )?not enabled/i.test(errText(err))
 }
 
 function isFunctionUnavailable(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err)
   return /function_not_found|function .*not (?:found|registered)|not registered/i.test(
-    msg,
+    errText(err),
   )
 }
 
@@ -328,7 +327,7 @@ export function normalizeTracesResponse(
 
 function asError(err: unknown, fallback: string): Error {
   if (err instanceof Error) return err
-  return new Error(typeof err === 'string' ? err : fallback)
+  return new Error(errText(err) || fallback)
 }
 
 export async function fetchTraces(
