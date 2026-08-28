@@ -78,16 +78,19 @@ export function deliveryOf(target: string | undefined | null): TriggerDelivery {
   return { kind: 'call', functionId: target }
 }
 
-/** List the subscriptions `sessionId` owns — one call, straight from the store. */
+/**
+ * List the subscriptions `sessionId` owns — one call, straight from the
+ * store. Transport failures reject; an empty array means the store was read
+ * successfully and the session owns no subscriptions.
+ */
 export async function listSessionTriggers(
   client: Pick<IiiClient, 'trigger'>,
   sessionId: string,
 ): Promise<SessionTriggerInfo[]> {
-  const response = await client
-    .trigger<{ subscriptions: TriggerRow[] }>('harness::triggers::list', {
-      session_id: sessionId,
-    })
-    .catch(() => null)
+  const response = await client.trigger<{ subscriptions: TriggerRow[] }>(
+    'harness::triggers::list',
+    { session_id: sessionId },
+  )
   return (response?.subscriptions ?? []).map((row) => ({
     id: row.subscription_id,
     triggerId: row.trigger_id ?? undefined,
