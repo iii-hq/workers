@@ -190,6 +190,8 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: '**/pnpm-lock.yaml'
+      - name: Install manifest tooling
+        run: python3 -m pip install --quiet pyyaml
       - name: Install Linux cross compiler
         if: runner.os == 'Linux' && matrix.target != 'none'
         run: |

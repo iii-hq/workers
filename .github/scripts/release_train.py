@@ -84,11 +84,12 @@ def prepare(args: argparse.Namespace) -> int:
     run("python3", ".github/scripts/manifest_version.py", "sync-lock", str(root / manifest.manifest))
     if manifest.deploy == "binary":
         cargo = root / manifest.manifest
-        test_command = ["cargo", "test"]
-        if (root / "Cargo.lock").exists():
-            test_command.append("--locked")
-        test_command += ["--manifest-path", str(cargo)]
-        run(*test_command)
+        # Bumping a worker can also change the versions of path dependencies
+        # recorded in its lockfile (for example, an RC may depend on another
+        # worker that was prepared earlier in the train).  Allow Cargo to
+        # refresh those local package entries before the prepared commit is
+        # created; build() will use that committed lockfile with --locked.
+        run("cargo", "test", "--manifest-path", str(cargo))
     run("git", "config", "user.name", "workers-ci[bot]")
     run("git", "config", "user.email", "workers-ci[bot]@users.noreply.github.com")
     run("git", "add", str(root))
