@@ -2,3 +2,5 @@ self-hosted-runner:
   labels:
     - general
     - rust
+    - workers-release-linux-8core
+    - workers-release-macos-12core

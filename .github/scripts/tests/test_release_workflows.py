@@ -310,6 +310,17 @@ def test_publish_stable_expands_the_computed_target_list_with_matrix_include() -
     }
 
 
+def test_release_builds_use_the_dedicated_github_hosted_runners() -> None:
+    for filename in ("prepare-release.yml", "publish-stable.yml"):
+        jobs = workflow(WORKFLOWS / filename)["jobs"]
+        assert jobs["prepare"]["runs-on"] == "workers-release-linux-8core"
+        assert jobs["build"]["runs-on"] == "${{ matrix.runner }}"
+
+    binary = workflow(WORKFLOWS / "_rust-binary.yml")["jobs"]
+    assert binary["web-build"]["runs-on"] == "workers-release-linux-8core"
+    assert binary["build"]["runs-on"] == "${{ matrix.runner }}"
+
+
 def test_cross_platform_build_jobs_install_manifest_tooling() -> None:
     for filename in ("prepare-release.yml", "publish-stable.yml"):
         steps = workflow(WORKFLOWS / filename)["jobs"]["build"]["steps"]

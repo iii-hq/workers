@@ -23,6 +23,18 @@ TARGET_RUNNERS = {
     "armv7-unknown-linux-gnueabihf": "ubuntu-22.04",
 }
 
+# The release runner group is restricted to the release workflows on main.
+# Keep the execution label alongside the target-to-OS policy so every
+# Release Control path uses the same isolated GitHub-hosted capacity.
+TARGET_LARGER_RUNNERS = {
+    "x86_64-apple-darwin": "workers-release-macos-12core",
+    "aarch64-apple-darwin": "workers-release-macos-12core",
+    "x86_64-unknown-linux-gnu": "workers-release-linux-8core",
+    "x86_64-unknown-linux-musl": "workers-release-linux-8core",
+    "aarch64-unknown-linux-gnu": "workers-release-linux-8core",
+    "armv7-unknown-linux-gnueabihf": "workers-release-linux-8core",
+}
+
 
 def normalize_targets(raw: object, *, deploy: str | None = "binary") -> list[str]:
     """Return canonical targets, rejecting Windows and unknown triples.
@@ -62,5 +74,18 @@ def normalize_targets(raw: object, *, deploy: str | None = "binary") -> list[str
 def matrix_targets(raw: object, *, deploy: str | None) -> list[dict[str, str]]:
     targets = normalize_targets(raw, deploy=deploy)
     if deploy != "binary":
-        return [{"target": "none", "os": "ubuntu-latest"}]
-    return [{"target": target, "os": TARGET_RUNNERS[target]} for target in targets]
+        return [
+            {
+                "target": "none",
+                "os": "ubuntu-latest",
+                "runner": "workers-release-linux-8core",
+            }
+        ]
+    return [
+        {
+            "target": target,
+            "os": TARGET_RUNNERS[target],
+            "runner": TARGET_LARGER_RUNNERS[target],
+        }
+        for target in targets
+    ]
