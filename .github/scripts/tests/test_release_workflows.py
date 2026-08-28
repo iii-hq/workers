@@ -185,7 +185,10 @@ def test_release_control_workflow_input_contract_is_exact() -> None:
         inputs = dispatch.get("inputs", {}) if isinstance(dispatch, dict) else {}
         assert set(inputs) == expected, name
         optional_defaults = {
+            "prepare-release.yml": {"targets": ""},
+            "publish-candidate.yml": {"targets": ""},
             "publish-stable.yml": {
+                "targets": "",
                 "recovery_run_id": "0",
                 "recovery_operation_id": "none",
                 "recovery_step_id": "none",
