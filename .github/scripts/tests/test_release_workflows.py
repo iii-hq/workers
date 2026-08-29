@@ -225,7 +225,7 @@ def test_bundle_caches_are_scoped_by_descriptor_lock_runtime_and_architecture():
     assert "python-version: ${{ steps.metadata.outputs.runtime_version }}" in reusable
     assert "version: ${{ steps.metadata.outputs.package_manager_version }}" in reusable
     assert "${{ runner.os }}-${{ runner.arch }}-${{ steps.metadata.outputs.lock_sha256 }}" in reusable
-    assert "package_json_file" not in reusable
+    assert "package_json_file: ${{ steps.metadata.outputs.source_path }}/package.json" in reusable
     assert "python-version: '3.12.13'" not in reusable
     assert "lockfile=\"$source_path" not in reusable
     assert "package-manager-cache" not in reusable

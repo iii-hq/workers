@@ -144,6 +144,7 @@ jobs:
         uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
         with:
           version: ${{ steps.metadata.outputs.package_manager_version }}
+          package_json_file: ${{ steps.metadata.outputs.source_path }}/package.json
 
       - name: Install descriptor-pinned Node.js
         if: inputs.kind == 'javascript-bundle'
