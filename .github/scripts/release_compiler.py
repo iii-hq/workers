@@ -44,8 +44,31 @@ def fail(message: str) -> None:
     raise ValueError(message)
 
 
+def canonical_value(value: Any) -> Any:
+    """Normalize JSON numbers to the representation used by JSON.stringify.
+
+    YAML and TOML preserve ``2.0`` as a float, while JavaScript has one Number
+    type and serializes that value as ``2``. Descriptors are verified by the
+    TypeScript coordinator, so integral floats (including negative zero) must
+    not create a digest that cannot be reproduced after JSON parsing.
+    """
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, list):
+        return [canonical_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: canonical_value(item) for key, item in value.items()}
+    return value
+
+
 def canonical_bytes(value: Any) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return json.dumps(
+        canonical_value(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
 
 
 def json_sha256(value: Any) -> str:

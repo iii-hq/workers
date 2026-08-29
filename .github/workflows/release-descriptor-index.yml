@@ -39,7 +39,7 @@ jobs:
 
       - name: Verify approved compiler bytes
         env:
-          APPROVED_COMPILER_DIGEST: 72b4a2c33f293d57235ad527f6f74c8d4bc2067e381554c94eb360250c2256f7
+          APPROVED_COMPILER_DIGEST: eb14d729ec032f62f356b9d3fa4f49f3cab4638b4391b0e8cca39c2be2fe32ce
         run: |
           set -euo pipefail
           python3 - <<'PY'

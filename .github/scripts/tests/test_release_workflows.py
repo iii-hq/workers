@@ -120,7 +120,7 @@ def test_descriptor_index_independently_verifies_approved_compiler_bytes():
     assert "Verify approved compiler bytes" in text
     assert (
         "APPROVED_COMPILER_DIGEST: "
-        "72b4a2c33f293d57235ad527f6f74c8d4bc2067e381554c94eb360250c2256f7"
+        "eb14d729ec032f62f356b9d3fa4f49f3cab4638b4391b0e8cca39c2be2fe32ce"
     ) in text
     assert 'digest.update(b"iii-workers-release-compiler\\0")' in text
     assert 'Path(".github/scripts/release_compiler.py").read_bytes()' in text
