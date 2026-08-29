@@ -289,6 +289,7 @@ def build_payload(
     repo_url: str,
     interface: dict[str, Any],
     artifacts: dict[str, Any],
+    registry_tag: str,
     readme: str | None = None,
 ) -> dict[str, Any]:
     """Merge the immutable compiler projection with current Registry fields."""
@@ -309,6 +310,7 @@ def build_payload(
         raise ValueError("prepared artifacts differ from the public deploy type")
     payload: dict[str, Any] = {
         **registry_projection,
+        "tag": registry_tag,
         "repo": repo_url,
         "functions": [
             _normalize_registry_function(function)
@@ -346,6 +348,7 @@ def main() -> int:
     parser.add_argument("--repo-url", required=True)
     parser.add_argument("--interface-json", required=True)
     parser.add_argument("--artifacts-json", required=True)
+    parser.add_argument("--registry-tag", required=True)
     parser.add_argument("--readme")
     parser.add_argument("--out", default="payload.json")
     args = parser.parse_args()
@@ -360,6 +363,7 @@ def main() -> int:
         repo_url=args.repo_url,
         interface=interface,
         artifacts=artifacts,
+        registry_tag=args.registry_tag,
         readme=readme,
     )
     pathlib.Path(args.out).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")

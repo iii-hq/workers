@@ -186,7 +186,7 @@ def test_mutating_phases_are_retry_safe_and_effect_states_are_probe_derived():
 def test_candidate_registry_publish_owns_next_atomically():
     reusable = body("_release-registry.yml")
     candidate = body("release-candidate-publish.yml")
-    assert "assign-channel" in reusable
+    assert "assign-channel" not in reusable
     assert "--registry-tag next" in reusable
     assert '"tag": None' not in reusable
     assert "expected_current_version" not in reusable

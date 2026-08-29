@@ -31,6 +31,7 @@ binary worker the request has this shape:
   "worker_name": "state",
   "version": "0.22.3-rc.3",
   "type": "binary",
+  "tag": "next",
   "description": "...",
   "license": "Apache-2.0",
   "tags": [],
@@ -43,8 +44,8 @@ binary worker the request has this shape:
 }
 ```
 
-The immutable publish omits a Registry tag; channel assignment happens only
-after exact readback. Descriptor-only fields such as `package_descriptor` and
-`descriptor_sha256` are never sent to the current Registry. Publish, smoke,
-promotion, finalize, and verify never read the private catalog, public
-manifest, or package source.
+Candidate publication assigns `next` atomically in `POST /publish` and proves
+both the exact version and channel through current Registry read surfaces.
+Descriptor-only fields such as `package_descriptor` and `descriptor_sha256`
+are never sent to the current Registry. Publish, smoke, promotion, finalize,
+and verify never read the private catalog, public manifest, or package source.

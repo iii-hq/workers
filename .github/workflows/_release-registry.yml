@@ -101,13 +101,15 @@ jobs:
             --repo-url "https://github.com/$GITHUB_REPOSITORY" \
             --interface-json interface.json \
             --artifacts-json registry-artifacts.json \
+            --registry-tag next \
             --out payload.json
           if jq -e 'has("package_descriptor") or has("descriptor_sha256") or has("channel")' payload.json >/dev/null; then
             echo 'descriptor-native fields must never reach the current Registry' >&2
             exit 1
           fi
+          test "$(jq -r .tag payload.json)" = next
 
-      - name: Publish immutable version and assign next with readback
+      - name: Publish candidate and next atomically with readback
         env:
           WORKERS_REGISTRY_API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
           WORKER: ${{ inputs.worker }}
@@ -118,10 +120,6 @@ jobs:
             --api-url https://api.workers.iii.dev \
             --worker "$WORKER" --version "$VERSION" \
             --payload payload.json --out registry-version-receipt.json
-          python3 .github/scripts/registry_publication.py assign-channel \
-            --api-url https://api.workers.iii.dev \
-            --worker "$WORKER" --version "$VERSION" \
-            --registry-tag next --out registry-next-receipt.json
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
@@ -129,6 +127,5 @@ jobs:
           path: |
             payload.json
             registry-version-receipt.json
-            registry-next-receipt.json
           if-no-files-found: error
           retention-days: 30

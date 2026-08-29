@@ -20,6 +20,7 @@ def build_binary_payload() -> dict[str, object]:
         repo_url="https://github.com/iii-hq/workers",
         interface={"functions": [], "triggers": []},
         artifacts={"kind": "rust-binary", "binaries": {"x86_64-unknown-linux-gnu": {"url": "https://example.test/smoke.tgz", "sha256": "b" * 64}}},
+        registry_tag="next",
     )
 
 
@@ -28,13 +29,14 @@ def test_payload_contains_only_current_registry_contract() -> None:
     assert set(payload) == {
         "worker_name", "version", "type", "description", "license", "tags",
         "dependencies", "config", "experimental", "readme", "repo",
-        "functions", "triggers", "binaries",
+        "functions", "triggers", "binaries", "tag",
     }
     assert payload["license"] == "Apache-2.0"
     assert payload["binaries"]["x86_64-unknown-linux-gnu"]["sha256"] == "b" * 64
     assert "package_descriptor" not in payload
     assert "descriptor_sha256" not in payload
     assert "channel" not in payload
+    assert payload["tag"] == "next"
 
 
 def test_engine_builtins_are_not_release_targets() -> None:

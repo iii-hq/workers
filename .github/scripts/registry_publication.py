@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Publish a Registry version, its skills, and its channel without partial visibility.
+"""Publish Registry versions and verify every requested effect by readback.
 
-The mutable Registry tag is the commit point and is intentionally handled by a
-separate command so the workflow can keep it after immutable publication and
-skills verification. Mutating requests retry at most three times. A timeout or
-5xx is always followed by an exact readback before another write is attempted.
+Candidate publication may atomically assign its release tag in ``POST
+/publish``. Stable promotion remains a separate compare-and-swap operation.
+Mutating requests retry at most three times. A timeout or 5xx is always
+followed by exact version and channel readback before another write.
 """
 
 from __future__ import annotations
@@ -138,6 +138,7 @@ def _validate_publish_payload(payload: dict[str, Any], worker: str, version: str
     allowed = {
         "worker_name",
         "version",
+        "tag",
         "type",
         "readme",
         "repo",
@@ -162,7 +163,22 @@ def _validate_publish_payload(payload: dict[str, Any], worker: str, version: str
     if payload.get("type") not in {"binary", "image", "bundle"}:
         raise RegistryPublicationError("publish payload type must be binary, image, or bundle")
     if "tag" in payload:
-        raise RegistryPublicationError("immutable publish payload must not assign a Registry tag")
+        _required_string(payload["tag"], "payload.tag")
+
+
+def prove_publication(api_url: str, worker: str, version: str, payload: dict[str, Any]) -> Readback:
+    version_proof = prove_version(api_url, worker, version, payload)
+    if version_proof.state != "equivalent":
+        return version_proof
+    tag = payload.get("tag")
+    if tag is None:
+        return version_proof
+    channel = read_channel(api_url, worker, str(tag))
+    if channel.state == "equivalent" and channel.detail == version:
+        return Readback("equivalent", f"{version_proof.detail}; raw {tag} pointer equals {version}")
+    if channel.state == "equivalent":
+        return Readback("divergent", f"channel {tag} points to {channel.detail}, expected {version}")
+    return channel
 
 
 def _expected_detail(payload: dict[str, Any]) -> dict[str, Any]:
@@ -372,14 +388,14 @@ def publish_version(
             if response_version.get("version") != version:
                 raise RegistryPublicationError("publish response returned a different version")
         elif status == 409:
-            proof = prove_version(api_url, worker, version, payload)
+            proof = prove_publication(api_url, worker, version, payload)
             if proof.state == "equivalent":
                 return {"state": "unchanged", "attempt": attempt, "proof": proof.detail}
             raise RegistryPublicationError(f"409 duplicate publish is not provably equivalent: {proof.detail}")
         elif status != 0 and not 500 <= status <= 599:
             raise RegistryPublicationError(f"publish failed with HTTP {status}: {json.dumps(body, sort_keys=True)}")
 
-        proof = prove_version(api_url, worker, version, payload)
+        proof = prove_publication(api_url, worker, version, payload)
         if proof.state == "equivalent":
             return {
                 "state": "changed" if status == 200 else "recovered",
