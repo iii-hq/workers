@@ -18,6 +18,10 @@ use crate::policy::CompiledPolicy;
 use crate::types::content::ContentBlock;
 use crate::types::turn::FunctionContractLedgerEntry;
 
+pub const MAX_MODEL_RESULT_CHARS: usize = 12_000;
+const RESULT_TRUNCATED_SUFFIX: &str =
+    "\n…[function result truncated; request a narrower result or use a diagnostic function]";
+
 /// A normalised function result ready to become a `function_result` entry.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResultData {
@@ -345,6 +349,8 @@ pub async fn invoke_target(
                 post_filter_discovery(&mut value, policy);
             } else if function_id == "engine::functions::info" {
                 post_filter_info(&mut value, policy);
+            } else if function_id == "compose::schema" {
+                overlay_compose_schema(&mut value, arguments);
             }
             normalized_result(value)
         }
@@ -357,15 +363,22 @@ pub async fn invoke_target(
 pub(crate) fn normalized_result(value: Value) -> ResultData {
     let (content, is_error) = normalize(&value);
     ResultData {
-        content,
+        content: bound_model_content(content),
         is_error,
         details: value,
     }
 }
 
+pub(crate) fn persisted_result_details(data: &ResultData) -> Value {
+    if !data.is_error {
+        return Value::Null;
+    }
+    compact_json_value(&data.details, 2_000)
+}
+
 pub(crate) fn invocation_error_result(code: Option<String>, message: String) -> ResultData {
     ResultData {
-        content: vec![ContentBlock::text(message.clone())],
+        content: bound_model_content(vec![ContentBlock::text(message.clone())]),
         is_error: true,
         details: json!({ "error": { "code": code, "message": message } }),
     }
@@ -413,6 +426,55 @@ fn post_filter_info(value: &mut Value, policy: &CompiledPolicy) {
 /// `once`/`lifecycle`/`conditions`) is NOT the contract an agent calls.
 /// Discovery must describe the intercept, or an agent that reads
 /// `functions::info` "learns" its tool schema is wrong.
+fn overlay_compose_schema(value: &mut Value, arguments: &Value) {
+    let Some(function_id) = arguments.get("function_id").and_then(Value::as_str) else {
+        return;
+    };
+    if !matches!(
+        function_id,
+        "compose::add"
+            | "compose::remove"
+            | "compose::update"
+            | "compose::up"
+            | "compose::down"
+            | "compose::restart"
+    ) {
+        return;
+    }
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    let key = if object.contains_key("response_schema") {
+        "response_schema"
+    } else if object.contains_key("response_format") {
+        "response_format"
+    } else {
+        return;
+    };
+    object.insert(key.into(), json!({
+        "type": "object",
+        "description": "Concise Compose mutation outcome; full reconciliation diagnostics remain in Compose logs.",
+        "properties": {
+            "status": { "type": "string" },
+            "changed": { "type": "boolean" },
+            "container": { "type": "string" },
+            "workers": { "type": "array", "items": { "type": "string" } },
+            "declared": { "type": "array", "items": { "type": "string" } },
+            "detail": { "type": "string", "maxLength": 1001 },
+            "errors": { "type": "array", "maxItems": 8, "items": {
+                "type": "object",
+                "properties": {
+                    "container": { "type": "string" },
+                    "code": { "type": "string" },
+                    "message": { "type": "string", "maxLength": 1001 }
+                },
+                "additionalProperties": false
+            }}
+        },
+        "additionalProperties": false
+    }));
+}
+
 fn overlay_control_contract(item: &mut Value, id: &str) {
     let Some((description, schema)) = crate::functions::subscribe::control_contract(id) else {
         return;
@@ -502,7 +564,6 @@ fn normalize(value: &Value) -> (Vec<ContentBlock>, bool) {
         .get("is_error")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-
     if let Value::String(s) = value {
         return (vec![ContentBlock::text(s.clone())], is_error);
     }
@@ -515,6 +576,47 @@ fn normalize(value: &Value) -> (Vec<ContentBlock>, bool) {
     }
     let rendered = serde_json::to_string(value).unwrap_or_else(|_| "<unserializable>".to_string());
     (vec![ContentBlock::text(rendered)], is_error)
+}
+
+pub(crate) fn bound_model_content(content: Vec<ContentBlock>) -> Vec<ContentBlock> {
+    let text_chars: usize = content
+        .iter()
+        .map(|block| match block {
+            ContentBlock::Text { text } => text.chars().count(),
+            _ => 0,
+        })
+        .sum();
+    if text_chars <= MAX_MODEL_RESULT_CHARS {
+        return content;
+    }
+    let marker_chars = RESULT_TRUNCATED_SUFFIX.chars().count();
+    let mut remaining = MAX_MODEL_RESULT_CHARS.saturating_sub(marker_chars + 1);
+    let mut bounded = Vec::with_capacity(content.len() + 1);
+    for block in content {
+        match block {
+            ContentBlock::Text { text } => {
+                if remaining > 0 {
+                    let kept: String = text.chars().take(remaining).collect();
+                    remaining = remaining.saturating_sub(kept.chars().count());
+                    bounded.push(ContentBlock::text(kept));
+                }
+            }
+            other => bounded.push(other),
+        }
+    }
+    bounded.push(ContentBlock::text(RESULT_TRUNCATED_SUFFIX));
+    bounded
+}
+
+fn compact_json_value(value: &Value, max_chars: usize) -> Value {
+    let rendered = serde_json::to_string(value).unwrap_or_else(|_| "null".to_string());
+    if rendered.chars().count() <= max_chars {
+        return value.clone();
+    }
+    json!({
+        "truncated": true,
+        "preview": rendered.chars().take(max_chars).collect::<String>()
+    })
 }
 
 /// Drop functions the agent cannot call from an `engine::functions::list`
@@ -1289,5 +1391,33 @@ mod tests {
         let mut denied = json!({ "function_id": "fs::read", "request_schema": {} });
         post_filter_info(&mut denied, &policy);
         assert!(denied.is_null());
+    }
+
+    #[test]
+    fn large_generic_results_are_bounded_for_the_model() {
+        let value = json!({ "rows": ["x".repeat(MAX_MODEL_RESULT_CHARS * 2)] });
+        let result = normalized_result(value.clone());
+        let rendered = ContentBlock::join_text(&result.content);
+        assert!(rendered.contains("function result truncated"));
+        assert!(rendered.chars().count() <= MAX_MODEL_RESULT_CHARS);
+        assert_eq!(result.details, value);
+    }
+
+    #[test]
+    fn successful_results_do_not_duplicate_raw_details_in_transcripts() {
+        let result = normalized_result(json!({ "large": "x".repeat(5_000) }));
+        assert_eq!(persisted_result_details(&result), Value::Null);
+    }
+
+    #[test]
+    fn failed_transcript_details_are_bounded() {
+        let result = ResultData {
+            content: vec![ContentBlock::text("failed")],
+            is_error: true,
+            details: json!({ "error": { "message": "x".repeat(5_000) } }),
+        };
+        let details = persisted_result_details(&result);
+        assert_eq!(details["truncated"], true);
+        assert!(details["preview"].as_str().unwrap().chars().count() <= 2_000);
     }
 }

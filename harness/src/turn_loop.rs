@@ -2499,7 +2499,7 @@ async fn append_function_result(
         function_call_id: call.id.clone(),
         function_id: call.function_id.clone(),
         content: data.content.clone(),
-        details: data.details.clone(),
+        details: trigger::persisted_result_details(data),
         is_error: data.is_error,
         timestamp: AgentMessage::now_ms(),
     });
@@ -2685,7 +2685,16 @@ async fn assemble_context(
 
     let candidate_values: Vec<Value> = candidate
         .iter()
-        .map(|(_, m)| serde_json::to_value(m).unwrap_or(Value::Null))
+        .map(|(_, message)| {
+            let mut model_message = message.clone();
+            if let AgentMessage::FunctionResult(result) = &mut model_message {
+                let denied = result.details.get("status").and_then(Value::as_str) == Some("denied");
+                if !denied {
+                    result.details = Value::Null;
+                }
+            }
+            serde_json::to_value(model_message).unwrap_or(Value::Null)
+        })
         .collect();
 
     let context = deps.context().await;

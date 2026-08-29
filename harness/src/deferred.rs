@@ -57,16 +57,22 @@ pub async fn resolve(
         "deliver" => {
             let function_id = checkpoint.function_id.clone().unwrap_or_default();
             let entry_id = ids::function_result_entry_id(&record.turn_id, &req.function_call_id);
+            let data = crate::trigger::ResultData {
+                content: crate::trigger::bound_model_content(
+                    req.content
+                        .clone()
+                        .unwrap_or_else(|| vec![ContentBlock::text("")]),
+                ),
+                details: req.details.clone().unwrap_or(Value::Null),
+                is_error: req.is_error.unwrap_or(false),
+            };
             let message = AgentMessage::FunctionResult(FunctionResultMessage {
                 role: FunctionResultRoleTag::FunctionResult,
                 function_call_id: req.function_call_id.clone(),
                 function_id,
-                content: req
-                    .content
-                    .clone()
-                    .unwrap_or_else(|| vec![ContentBlock::text("")]),
-                details: req.details.clone().unwrap_or(Value::Null),
-                is_error: req.is_error.unwrap_or(false),
+                content: data.content.clone(),
+                details: crate::trigger::persisted_result_details(&data),
+                is_error: data.is_error,
                 timestamp: AgentMessage::now_ms(),
             });
             // Idempotent on the deterministic entry id.
@@ -144,8 +150,8 @@ pub async fn resolve(
                         role: FunctionResultRoleTag::FunctionResult,
                         function_call_id: req.function_call_id.clone(),
                         function_id,
-                        content: data.content,
-                        details: data.details,
+                        content: data.content.clone(),
+                        details: crate::trigger::persisted_result_details(&data),
                         is_error: data.is_error,
                         timestamp: AgentMessage::now_ms(),
                     });
@@ -226,8 +232,8 @@ pub async fn resolve(
                     role: FunctionResultRoleTag::FunctionResult,
                     function_call_id: req.function_call_id.clone(),
                     function_id,
-                    content: data.content,
-                    details: data.details,
+                    content: data.content.clone(),
+                    details: crate::trigger::persisted_result_details(&data),
                     is_error: data.is_error,
                     timestamp: AgentMessage::now_ms(),
                 });
@@ -368,8 +374,8 @@ pub async fn resolve(
                 role: FunctionResultRoleTag::FunctionResult,
                 function_call_id: req.function_call_id.clone(),
                 function_id,
-                content: data.content,
-                details: data.details,
+                content: data.content.clone(),
+                details: crate::trigger::persisted_result_details(&data),
                 is_error: data.is_error,
                 timestamp: AgentMessage::now_ms(),
             });
