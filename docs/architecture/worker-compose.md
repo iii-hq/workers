@@ -1,8 +1,14 @@
-# Root worker catalog
+# Release worker catalog
 
 [`worker-compose.yaml`](../../worker-compose.yaml) is the single source of
-truth for first-party workers, release packages, runtime defaults, and named
-stacks. There are no per-worker release manifests or compatibility parser.
+truth for the first-party release train: release packages, prepared runtime
+defaults, build units and named stacks. Release Control and release workflows
+never read `iii.worker.yaml` and have no fallback parser.
+
+Per-worker `iii.worker.yaml` files remain the public contract used by local
+development, `iii worker`, scaffolding and legacy package consumers. Normal CI
+validates those manifests and the overlapping fields below, but they are not
+release inputs.
 
 ## Top level
 
@@ -14,8 +20,8 @@ stacks:
 ```
 
 Worker keys are stable Registry identities. A worker entry contains exactly
-`source`, `artifact`, `runtime`, `registry`, and `validation`; fields from the
-retired per-directory format are rejected.
+`source`, `artifact`, `runtime`, `registry`, and `validation`; public-manifest
+fields placed directly inside a Compose entry are rejected.
 
 ## Worker shape
 
@@ -92,5 +98,5 @@ iii compose descriptor --file worker-compose.yaml --worker session-manager \
 ```
 
 CI uses [`validate_worker.py`](../../.github/scripts/validate_worker.py) for
-repository conventions and the iii compiler for the canonical package shape
-and digest.
+repository conventions and parity with `iii.worker.yaml`, then uses the iii
+compiler for the canonical release package shape and digest.

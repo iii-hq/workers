@@ -5,6 +5,7 @@ import yaml
 
 import _lib
 import discover_changed_workers
+import validate_worker
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -30,9 +31,14 @@ def test_catalog_has_only_new_worker_contract_and_explicit_bundle_files():
             )
 
 
-def test_catalog_is_the_only_worker_definition_source():
-    removed_manifest = "iii" + ".worker.yaml"
-    assert not list(ROOT.rglob(removed_manifest))
+def test_public_worker_manifests_remain_valid_and_match_release_catalog():
+    errors: list[str] = []
+    workers = _lib.read_worker_catalog(CATALOG)
+    for worker_id, worker in workers.items():
+        assert (worker.path / "iii.worker.yaml").is_file(), worker_id
+        if worker.publish:
+            validate_worker.validate_public_manifest(worker_id, worker, errors.append)
+    assert errors == []
 
 
 def test_harness_stack_uses_catalog_references_only():

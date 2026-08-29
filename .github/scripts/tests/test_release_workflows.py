@@ -104,6 +104,14 @@ def test_post_prepare_workflows_consume_only_descriptor_and_prepared_artifacts()
         assert "iii compose descriptor" not in text, name
 
 
+def test_release_train_never_reads_public_worker_manifests():
+    release_files = [WORKFLOWS / name for name in set(ENTRYPOINTS) | REUSABLE]
+    release_files.append(WORKFLOWS / "release-descriptor-index.yml")
+    release_files.extend((ROOT / ".github" / "scripts").glob("release_*.py"))
+    for path in release_files:
+        assert "iii.worker.yaml" not in path.read_text(encoding="utf-8"), path
+
+
 def test_release_prepare_fans_one_job_per_compiled_build_unit():
     text = body("release-prepare.yml")
     assert "descriptor_run_id" in text

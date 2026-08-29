@@ -1,0 +1,17 @@
+iii: v1
+name: vscode
+language: javascript
+deploy: bundle
+manifest: package.json
+license: Apache-2.0
+tags: [vscode, ide, editor, workbench, development]
+description: VS Code as an iii worker — vscode::* functions run the VS Code Server through the code CLI per workspace, and a Console page embeds the Workbench for the working directory.
+
+runtime:
+  kind: javascript
+
+scripts:
+  start: node ./index.mjs
+
+dependencies:
+  configuration: "0.x"

@@ -1,0 +1,10 @@
+# The e2e harness is run as a host node process by run-tests.sh (not deployed
+# by the engine). This manifest documents how to start it standalone.
+name: rbac-proxy-tests-harness
+runtime:
+  language: typescript
+  package_manager: npm
+  entry: src/worker.ts
+scripts:
+  install: 'npm install'
+  start: 'npm run dev'

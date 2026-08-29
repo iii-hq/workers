@@ -366,6 +366,43 @@ class WorkerSpec:
     raw: dict[str, object]
 
 
+@dataclass(frozen=True)
+class WorkerManifest:
+    """Parsed view of the public `<worker>/iii.worker.yaml` contract.
+
+    Release workflows must use :class:`WorkerSpec` instead. This reader exists
+    for normal CI, scaffolding and the `iii worker` development surface.
+    """
+
+    name: str
+    language: str | None
+    deploy: str | None
+    manifest: str | None
+    bin: str | None
+    raw: dict[str, object]
+
+
+def read_iii_worker_yaml(worker_dir: Path) -> WorkerManifest:
+    """Load a public worker manifest without making it a release input."""
+    import yaml
+
+    path = worker_dir / "iii.worker.yaml"
+    if not path.is_file():
+        raise FileNotFoundError(f"{path} does not exist")
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path}: expected a mapping at top level")
+    name = raw.get("name") or worker_dir.name
+    return WorkerManifest(
+        name=str(name),
+        language=raw.get("language"),
+        deploy=raw.get("deploy"),
+        manifest=raw.get("manifest"),
+        bin=raw.get("bin"),
+        raw=raw,
+    )
+
+
 def worker_catalog_path() -> Path:
     return Path(__file__).resolve().parents[2] / "worker-compose.yaml"
 

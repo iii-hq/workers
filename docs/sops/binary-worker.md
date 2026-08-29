@@ -6,6 +6,20 @@ cross-cutting checklist.
 
 ## Catalog entry
 
+Keep the public worker contract in `<worker>/iii.worker.yaml` for local
+installation and development:
+
+```yaml
+iii: v1
+name: <worker>
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: <worker>
+license: Apache-2.0
+tags: [<discovery-tag>]
+```
+
 Add the worker to the root [`worker-compose.yaml`](../../worker-compose.yaml):
 
 ```yaml

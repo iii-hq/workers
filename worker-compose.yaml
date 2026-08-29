@@ -293,6 +293,7 @@ workers:
       - build:bundle
       include:
       - dist/bundle/index.mjs
+      - iii.worker.yaml
     runtime:
       base_image: docker.io/library/node:22.20.0-slim@sha256:b21fe589dfbe5cc39365d0544b9be3f1f33f55f3c86c87a76ff65a02f8f5848e
       exec:
@@ -405,6 +406,7 @@ workers:
       - src/runner.ts
       - src/worker.ts
       - tsconfig.json
+      - iii.worker.yaml
     runtime:
       base_image: docker.io/library/node:22.20.0-slim@sha256:b21fe589dfbe5cc39365d0544b9be3f1f33f55f3c86c87a76ff65a02f8f5848e
       exec:
@@ -477,6 +479,7 @@ workers:
       - build:bundle
       include:
       - dist/bundle/index.mjs
+      - iii.worker.yaml
     runtime:
       base_image: docker.io/library/node:22.20.0-slim@sha256:b21fe589dfbe5cc39365d0544b9be3f1f33f55f3c86c87a76ff65a02f8f5848e
       exec:
@@ -739,6 +742,7 @@ workers:
       - build:bundle
       include:
       - dist/bundle/index.mjs
+      - iii.worker.yaml
     runtime:
       base_image: docker.io/library/node:22.20.0-slim@sha256:b21fe589dfbe5cc39365d0544b9be3f1f33f55f3c86c87a76ff65a02f8f5848e
       exec:
@@ -857,6 +861,7 @@ workers:
       - src/test.ts
       - src/worker.ts
       - tsconfig.json
+      - iii.worker.yaml
     runtime:
       base_image: docker.io/library/node:22.20.0-slim@sha256:b21fe589dfbe5cc39365d0544b9be3f1f33f55f3c86c87a76ff65a02f8f5848e
       exec:
@@ -1407,6 +1412,7 @@ workers:
       - src/iii.ts
       - src/index.ts
       - tsconfig.json
+      - iii.worker.yaml
     runtime:
       base_image: docker.io/library/node:22.20.0-slim@sha256:b21fe589dfbe5cc39365d0544b9be3f1f33f55f3c86c87a76ff65a02f8f5848e
       exec:
@@ -1673,6 +1679,7 @@ workers:
       - build:bundle
       include:
       - dist/bundle/index.mjs
+      - iii.worker.yaml
     runtime:
       base_image: docker.io/library/node:22.20.0-slim@sha256:b21fe589dfbe5cc39365d0544b9be3f1f33f55f3c86c87a76ff65a02f8f5848e
       exec:
@@ -1721,6 +1728,7 @@ workers:
       - build:bundle
       include:
       - dist/bundle/index.mjs
+      - iii.worker.yaml
     runtime:
       base_image: docker.io/library/node:22.20.0-slim@sha256:b21fe589dfbe5cc39365d0544b9be3f1f33f55f3c86c87a76ff65a02f8f5848e
       exec:
@@ -1764,6 +1772,7 @@ workers:
       - build:bundle
       include:
       - dist/bundle/index.mjs
+      - iii.worker.yaml
     runtime:
       base_image: docker.io/library/node:22.20.0-slim@sha256:b21fe589dfbe5cc39365d0544b9be3f1f33f55f3c86c87a76ff65a02f8f5848e
       exec:
@@ -1862,6 +1871,7 @@ workers:
       - build:bundle
       include:
       - dist/bundle/index.mjs
+      - iii.worker.yaml
     runtime:
       base_image: docker.io/library/node:22.20.0-slim@sha256:b21fe589dfbe5cc39365d0544b9be3f1f33f55f3c86c87a76ff65a02f8f5848e
       exec:
@@ -2679,6 +2689,7 @@ workers:
       - src/support.ts
       - src/worker.ts
       - tsconfig.json
+      - iii.worker.yaml
     runtime:
       base_image: docker.io/library/node:22.20.0-slim@sha256:b21fe589dfbe5cc39365d0544b9be3f1f33f55f3c86c87a76ff65a02f8f5848e
       exec:
@@ -2786,6 +2797,7 @@ workers:
       - src/sessions.py
       - src/storage.py
       - uv.lock
+      - iii.worker.yaml
     runtime:
       base_image: mcr.microsoft.com/playwright/python:v1.60.0-noble@sha256:8ff591d613b01c884cc488339ed4318b4513eaf0c57a164a878ba49e70e3f384
       exec:
@@ -3015,6 +3027,7 @@ workers:
       - src/runner.ts
       - src/worker.ts
       - tsconfig.json
+      - iii.worker.yaml
     runtime:
       base_image: docker.io/library/node:22.20.0-slim@sha256:b21fe589dfbe5cc39365d0544b9be3f1f33f55f3c86c87a76ff65a02f8f5848e
       exec:
@@ -3199,6 +3212,7 @@ workers:
       - src/runner.ts
       - src/worker.ts
       - tsconfig.json
+      - iii.worker.yaml
     runtime:
       base_image: docker.io/library/node:22.20.0-slim@sha256:b21fe589dfbe5cc39365d0544b9be3f1f33f55f3c86c87a76ff65a02f8f5848e
       exec:
@@ -3328,6 +3342,7 @@ workers:
       - build:bundle
       include:
       - dist/bundle/index.mjs
+      - iii.worker.yaml
     runtime:
       base_image: docker.io/library/node:22.20.0-slim@sha256:b21fe589dfbe5cc39365d0544b9be3f1f33f55f3c86c87a76ff65a02f8f5848e
       exec:

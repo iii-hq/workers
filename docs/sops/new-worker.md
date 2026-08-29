@@ -10,13 +10,15 @@ details are in [`binary-worker.md`](binary-worker.md).
 - Add the package manifest that owns the version: `Cargo.toml`, `package.json`,
   or `pyproject.toml`.
 - Add a consumer-facing `README.md` and a non-empty `tests/` directory.
+- Add `iii.worker.yaml` for local development, scaffolding and `iii worker`.
 - Add an entry to the repository-root
-  [`worker-compose.yaml`](../../worker-compose.yaml). Do not add a per-worker
-  release manifest.
+  [`worker-compose.yaml`](../../worker-compose.yaml) for the release train.
 
 The catalog entry contains exactly `source`, `artifact`, `runtime`, `registry`,
 and `validation`. See [`worker-compose.md`](../architecture/worker-compose.md)
 for the canonical shapes.
+Release Control reads only the root catalog and compiled descriptor. Keep the
+public manifest aligned through CI; do not add a release-time fallback to it.
 
 ## Registry metadata
 

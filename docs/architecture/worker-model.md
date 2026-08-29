@@ -29,8 +29,8 @@ domain: `shell::exec`, `session::append` (session-manager), `shell::fs::read`.
 
 | Context | How workers are found |
 |---|---|
-| In-repo development | Folder at repo root with `worker-compose.yaml` |
-| Production install | Workers registry API — `iii trigger compose::add worker=<name>` |
+| In-repo development | Folder with `iii.worker.yaml`; the release repo also maps it through root `worker-compose.yaml` |
+| Production install | Workers registry API — `iii worker add <name>` or `package://<name>` in Compose |
 | Runtime catalogue | `engine::workers::list`, `engine::functions::list` |
 
 Published workers ship a collected **interface** (functions + trigger types)
@@ -44,11 +44,13 @@ Workers ship as one of three deploy kinds (see [`deploy-modes.md`](deploy-modes.
 - **image** — OCI container (Node/Python daemons)
 - **bundle** — single-file archive (esbuild bundle for Node monorepos like harness)
 
-The kind is declared in `worker-compose.yaml` `deploy` and routes CI smoke + release
-build jobs.
+The public kind is declared by `deploy` in `iii.worker.yaml`. The release
+catalog maps it to `artifact.kind`; CI rejects mismatches before release build
+jobs can run.
 
 ## Related
 
 - Scaffold: [`../sops/binary-worker.md`](../sops/binary-worker.md)
-- Manifest fields: [`worker-compose.md`](worker-compose.md)
+- Public manifest fields: [`iii-worker-yaml.md`](iii-worker-yaml.md)
+- Release catalog fields: [`worker-compose.md`](worker-compose.md)
 - Release: [`../sops/release.md`](../sops/release.md)
