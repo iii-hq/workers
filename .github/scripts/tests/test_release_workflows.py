@@ -164,6 +164,14 @@ def test_prepare_runs_adapter_from_prepared_bytes_and_records_interface():
     assert "worker-compose.yaml" not in adapter_text
 
 
+def test_release_runtime_uses_the_current_engine_config_shape():
+    expected = "workers:\\n  - name: iii-worker-manager\\n    config:"
+    for name in ("release-prepare.yml", "release-candidate-smoke.yml"):
+        text = body(name)
+        assert expected in text
+        assert "printf 'engine:" not in text
+
+
 def test_candidate_smoke_boots_registry_candidate_and_compares_prepared_interface():
     text = body("release-candidate-smoke.yml")
     assert '"worker": f"package://{worker}", "version": "next"' in text
