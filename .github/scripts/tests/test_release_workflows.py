@@ -144,6 +144,12 @@ def test_release_prepare_fans_one_job_per_compiled_build_unit():
     assert "unit: ${{ matrix.unit }}" in text
 
 
+def test_release_prepare_reports_failed_source_snapshots_as_absent():
+    text = body("release-prepare.yml")
+    assert 'state=absent; [[ "$outcome" == succeeded ]] && state=present' in text
+    assert 'state=unknown; [[ "$outcome" == succeeded ]] && state=present' not in text
+
+
 def test_release_build_validates_rust_targets_and_oci_platforms():
     text = body("_release-build.yml")
     assert '(.target // .platform // "none") == $target' in text
