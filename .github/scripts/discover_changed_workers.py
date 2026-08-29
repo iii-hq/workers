@@ -166,7 +166,7 @@ def suite_changed(
             not f.startswith(excluded_prefixes)
             and f.split("/", 1)[0] in workers
             and len(f.split("/", 1)) == 2
-            and not is_integration_doc(f.split("/", 1)[1])
+            and not is_metadata(f.split("/", 1)[1])
         )
         for f in files
     )
