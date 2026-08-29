@@ -79,6 +79,9 @@ pub(super) fn scenario() -> ScenarioFixture {
             .allow_id("state::barrier")
             .allow_id("state::set"),
     )
+    // Parent and child turns are independently scheduled. Match each request
+    // by its strict contract instead of relying on queue arrival order.
+    .match_any_dispatch()
     // The arm-and-spawn turn completes PARKED (the barrier wake is armed);
     // the woken turn is the single terminal one.
     .terminal_turn_statuses(["completed", "completed"])
@@ -125,9 +128,9 @@ pub(super) fn scenario() -> ScenarioFixture {
                 4,
             )),
     )
-    // The leaf's opening step arrives BEFORE the parent's post-spawn step:
-    // the child's turn job is enqueued during the spawn dispatch, ahead of
-    // the parent's own re-enqueued next step (FIFO harness-turn queue).
+    // The leaf's opening step and the parent's post-spawn step may arrive in
+    // either order; match-any dispatch keeps both strict without inventing a
+    // scheduler guarantee.
     .generation(
         Generation::new(3)
             .expect(
@@ -333,6 +336,10 @@ mod tests {
         assert_eq!(fixture.expected_turn_statuses.len(), 2);
         assert_eq!(fixture.expected_terminal_turns, 1);
         assert_eq!(fixture.expected_traces(), 2);
+        assert_eq!(
+            fixture.script.dispatch,
+            crate::types::script::RouterDispatchV1::MatchAny
+        );
         // Seven generations: three parent, three leaf, one woken parent. The
         // leaf's are consumed in its own session — the floor's
         // all-generations-consumed check is what proves the leaf ran.

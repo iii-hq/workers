@@ -70,6 +70,9 @@ pub(super) fn scenario() -> ScenarioFixture {
             .allow_function(&record)
             .allow_id(ENSURE),
     )
+    // Parent and child turns are independently scheduled. Match each request
+    // by its strict contract instead of relying on queue arrival order.
+    .match_any_dispatch()
     // Only the parent's turn is tracked; the child's recorder call is the
     // whole-run completion signal for its second (re-tasked) turn.
     .await_target_calls(1)
@@ -156,9 +159,8 @@ pub(super) fn scenario() -> ScenarioFixture {
                 4,
             )),
     )
-    // The fresh child's opening step arrives BEFORE the parent's post-spawn
-    // step (its turn job is enqueued during the spawn dispatch, ahead of the
-    // parent's re-enqueued next step).
+    // The fresh child's opening step and the parent's post-spawn step may
+    // arrive in either order; match-any dispatch keeps both contracts strict.
     .generation(
         Generation::new(4)
             .expect(
@@ -327,6 +329,10 @@ mod tests {
         assert_eq!(fixture.await_target_calls, Some(1));
         assert_eq!(fixture.expected_traces(), 1);
         assert_eq!(fixture.script.generations.len(), 8);
+        assert_eq!(
+            fixture.script.dispatch,
+            crate::types::script::RouterDispatchV1::MatchAny
+        );
 
         // The collision gate is load-bearing: silent reuse answers
         // `is_error: false` and can never satisfy generation 3.
