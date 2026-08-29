@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -70,14 +71,13 @@ def _warn_untyped_triggers(triggers: list[dict[str, object]], source: str) -> No
 
 
 def run_iii(function_path: str, payload: dict[str, object]) -> dict[str, object]:
+    command = ["iii", "trigger", function_path, "--json", json.dumps(payload)]
+    if port := os.environ.get("III_TRIGGER_PORT"):
+        if not port.isdigit() or not (1 <= int(port) <= 65535):
+            raise ValueError("III_TRIGGER_PORT must be an integer from 1 to 65535")
+        command.extend(["--port", port])
     completed = subprocess.run(
-        [
-            "iii",
-            "trigger",
-            function_path,
-            "--json",
-            json.dumps(payload),
-        ],
+        command,
         check=True,
         text=True,
         capture_output=True,
@@ -249,7 +249,7 @@ def main() -> int:
     parser.add_argument(
         "--assert-non-empty",
         action="store_true",
-        help="after writing --out, assert payload['functions'] is non-empty",
+        help="after writing --out, assert functions or triggers is non-empty",
     )
     parser.add_argument(
         "--assert-typed-schemas",
@@ -277,9 +277,10 @@ def main() -> int:
             print(f"could not read {args.assert_file}: {e}", file=sys.stderr)
             return 1
         functions = data.get("functions") or []
-        if args.assert_non_empty and not functions:
+        triggers = data.get("triggers") or []
+        if args.assert_non_empty and not functions and not triggers:
             print(
-                f"::error::no worker functions in {args.assert_file} (empty)",
+                f"::error::no worker functions or triggers in {args.assert_file} (empty)",
                 file=sys.stderr,
             )
             return 1
@@ -385,8 +386,9 @@ def main() -> int:
         with open(args.out) as f:
             data = json.load(f)
         functions = data.get("functions") or []
-        if args.assert_non_empty and not functions:
-            print(f"::error::no worker functions in {args.out} (empty)", file=sys.stderr)
+        triggers = data.get("triggers") or []
+        if args.assert_non_empty and not functions and not triggers:
+            print(f"::error::no worker functions or triggers in {args.out} (empty)", file=sys.stderr)
             return 1
         if args.assert_typed_schemas:
             violations = _typed_schema_violations(functions)

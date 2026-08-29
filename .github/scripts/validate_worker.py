@@ -1,15 +1,6 @@
 #!/usr/bin/env python3
-"""Per-worker pr-checks validation.
+"""Validate one publishable entry from the root worker-compose catalog."""
 
-Enforces:
-    1. README.md exists and is non-empty.
-    2. iii.worker.yaml parses and has required fields + valid enum values.
-    3. The manifest version on this ref is greater than or equal to on --base-ref.
-    4. tests/ exists and is non-empty.
-
-If `--worker` is not in `--source-changed`, requirements 1, 3, and 4 are
-downgraded to GitHub Actions notices instead of hard errors.
-"""
 from __future__ import annotations
 
 import argparse
@@ -23,157 +14,84 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import _lib  # noqa: E402
 
 
-# `iii trigger compose::add worker=<worker>` downloads the release archive and looks for a
-# binary named after the WORKER (see iii crates/iii-worker binary_download.rs:
-# extract_binary_from_targz(worker_name, ...)). The registry payload carries
-# only the worker name, never the cargo [[bin]] name, so the packaged binary
-# MUST be named after the worker or the resolver fails with
-# "Binary '<worker>' not found in archive" (web/v1.1.x shipped this bug).
-# Workers below intentionally ship a differently-named, user-facing binary and
-# are known-broken on fresh `compose::add` until the resolver carries the
-# bin name through the registry; do not silently extend this list.
-BINARY_NAME_EXCEPTIONS = frozenset({
-    "acp",  # editors launch the `iii-acp` binary by name (ACP subprocess)
-})
-
-# The engine's bundle validator (iii-worker/src/cli/bundle_download.rs) only
-# accepts runtime.base_image values that name a sandbox-catalog preset ref
-# verbatim (sandbox_daemon/catalog.rs PRESETS); that selects the rootfs for a
-# non-node bundle.
-BUNDLE_PRESET_IMAGES = frozenset({
-    "docker.io/iiidev/python:latest",
-    "docker.io/iiidev/node:latest",
-})
-
-
+BINARY_NAME_EXCEPTIONS = frozenset({"acp"})
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser()
-    p.add_argument("--worker", required=True, help="worker folder name")
-    p.add_argument("--base-ref", required=True, help="base branch ref, e.g. 'main'")
-    p.add_argument(
-        "--source-changed", required=True,
-        help="JSON array of workers that had non-metadata source changes",
-    )
-    args = p.parse_args(argv)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--worker", required=True)
+    parser.add_argument("--base-ref", required=True)
+    parser.add_argument("--source-changed", required=True)
+    args = parser.parse_args(argv)
 
     worker = args.worker
-    source_changed = set(json.loads(args.source_changed))
-    strict = worker in source_changed
-    root = pathlib.Path(worker)
-    errs: list[str] = []
+    strict = worker in set(json.loads(args.source_changed))
+    errors: list[str] = []
 
-    def hard(msg: str) -> None:
-        errs.append(msg)
+    def hard(message: str) -> None:
+        errors.append(message)
 
-    def soft(msg: str) -> None:
+    def soft(message: str) -> None:
         if strict:
-            errs.append(msg)
+            errors.append(message)
         else:
-            print(f"::notice::{msg} (skipped: {worker} only changed metadata)")
+            print(f"::notice::{message} (skipped: {worker} only changed metadata)")
 
-    # 1. README.md present and non-empty
-    readme = root / "README.md"
-    if not readme.exists():
-        soft(f"{worker}/README.md is missing")
-    elif readme.stat().st_size == 0:
-        soft(f"{worker}/README.md is empty")
-
-    # 2. iii.worker.yaml — always strict
-    m = None
     try:
-        m = _lib.read_iii_worker_yaml(root)
-    except FileNotFoundError:
-        hard(f"{worker}/iii.worker.yaml is missing")
-    except ValueError as e:
-        hard(f"{worker}/iii.worker.yaml: {e}")
+        spec = _lib.read_worker(worker)
+    except (FileNotFoundError, ValueError) as error:
+        hard(str(error))
+        spec = None
 
-    if m is not None:
-        # Use raw dict, not WorkerManifest attrs: _lib silently fills `name`
-        # with the folder name when the yaml omits it, so getattr(m, "name")
-        # would hide a missing key.
-        for key in ("name", "language", "deploy", "manifest"):
-            if not m.raw.get(key):
-                hard(f"{worker}/iii.worker.yaml is missing key: {key}")
-        if m.name != worker:
-            hard(f"{worker}/iii.worker.yaml name={m.name!r} does not match folder")
-        if m.deploy not in ("binary", "image", "bundle"):
-            hard(f"{worker}/iii.worker.yaml deploy must be 'binary', 'image', or 'bundle'")
-        if m.language not in ("rust", "node", "python", "javascript"):
-            hard(
-                f"{worker}/iii.worker.yaml language must be 'rust' | 'node' | 'python' | 'javascript'"
-            )
-        # Registry discovery/collections index workers by their `tags:` list, so
-        # a publishable worker must ship a non-empty one. A worker opts out of
-        # publishing with `interface_smoke: false` (mirror the publish gate in
-        # .github/workflows/release.yml: publish runs when interface_smoke is not
-        # False); those keep tags optional. Shape (list of strings) is enforced
-        # for every worker regardless.
-        publishable = m.raw.get("interface_smoke") is not False
-        tags = m.raw.get("tags")
-        if tags is not None and not isinstance(tags, list):
-            hard(f"{worker}/iii.worker.yaml tags must be a list")
-        elif isinstance(tags, list) and any(not isinstance(tag, str) for tag in tags):
-            hard(f"{worker}/iii.worker.yaml tags entries must be strings")
-        elif publishable and not tags:
-            hard(
-                f"{worker}/iii.worker.yaml must set a non-empty tags: list for "
-                f"registry discovery (see docs/sops/new-worker.md)"
-            )
-        # The release archive's binary is named after `bin` (defaulting to the
-        # worker name); the resolver looks it up by worker name. They must match
-        # or `iii trigger compose::add worker={worker}` fails with
-        # "Binary not found in archive".
-        if m.deploy == "binary":
-            effective_bin = m.bin or m.name
-            if effective_bin != worker and worker not in BINARY_NAME_EXCEPTIONS:
-                hard(
-                    f"{worker}/iii.worker.yaml bin={effective_bin!r} must equal the "
-                    f"worker name {worker!r} for binary deploys: `compose::add` "
-                    f"extracts the release archive by worker name and would fail "
-                    f"with \"Binary '{worker}' not found in archive\""
-                )
-        # Mirror the engine's bundle-manifest validator
-        # (iii-worker/src/cli/bundle_download.rs): scripts.install runs
-        # once in the sandbox (prepared-marker guarded), scripts.setup is
-        # rejected, and runtime.base_image must name an engine-preset ref.
-        # Catch violations at PR time instead of at the user's install.
-        if m.deploy == "bundle":
-            scripts = m.raw.get("scripts") or {}
-            if str(scripts.get("setup") or "").strip():
-                hard(f"{worker}/iii.worker.yaml: bundle workers must not declare scripts.setup (engine rejects it)")
-            if not str(scripts.get("start") or "").strip():
-                hard(f"{worker}/iii.worker.yaml: bundle workers must declare a non-empty scripts.start")
-            base_image = (m.raw.get("runtime") or {}).get("base_image")
-            if base_image is not None and base_image not in BUNDLE_PRESET_IMAGES:
-                hard(
-                    f"{worker}/iii.worker.yaml: bundle runtime.base_image must be one of "
-                    f"{sorted(BUNDLE_PRESET_IMAGES)} (engine rejects anything else)"
-                )
+    if spec is not None:
+        if not spec.publish:
+            hard(f"{worker}: first-party CI workers must set registry.publish=true")
+        expected_path = pathlib.Path(worker).resolve()
+        if spec.path != expected_path:
+            hard(f"{worker}: source.path must be {worker!r}, got {spec.source.get('path')!r}")
+        readme = spec.path / "README.md"
+        if not readme.exists():
+            soft(f"{worker}/README.md is missing")
+        elif readme.stat().st_size == 0:
+            soft(f"{worker}/README.md is empty")
 
-    # 3. Manifest version >= base
-    if m is not None and m.manifest:
-        manifest_path = root / m.manifest
-        if not manifest_path.exists():
-            hard(f"{worker}/{m.manifest} not found")
-        else:
-            try:
-                pr_ver = _lib.read_version(manifest_path)
-            except (ValueError, FileNotFoundError) as e:
-                hard(f"could not read version from {worker}/{m.manifest}: {e}")
-                pr_ver = None
-            if pr_ver is not None:
+        tags = spec.registry.get("tags")
+        if tags is not None and (
+            not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags)
+        ):
+            hard(f"{worker}: registry.tags must be an array of strings")
+        elif spec.validation.get("interface") == "required" and not tags:
+            hard(f"{worker}: registry.tags must be non-empty when interface validation is enabled")
+
+        if spec.validation.get("interface") not in {"required", "skipped"}:
+            hard(f"{worker}: validation.interface must be required or skipped")
+
+        if spec.artifact_kind == "rust-binary":
+            executable = spec.binary or worker
+            if executable != worker and worker not in BINARY_NAME_EXCEPTIONS:
+                hard(
+                    f"{worker}: artifact.binary={executable!r} must match the worker ID "
+                    "because Registry extraction addresses the worker by ID"
+                )
+        if spec.artifact_kind != "oci-image":
+            command = spec.runtime.get("exec")
+            if not isinstance(command, list) or not command or not all(isinstance(part, str) and part for part in command):
+                hard(f"{worker}: runtime.exec must be a non-empty string array")
+
+        if spec.manifest:
+            manifest_path = spec.path / spec.manifest
+            if not manifest_path.is_file():
+                hard(f"{manifest_path} not found")
+            else:
+                try:
+                    current_version = _lib.read_version(manifest_path)
+                except (ValueError, FileNotFoundError) as error:
+                    hard(f"could not read version from {manifest_path}: {error}")
+                    current_version = None
                 try:
                     base_blob = subprocess.check_output(
-                        ["git", "show", f"{args.base_ref}:{worker}/{m.manifest}"],
+                        ["git", "show", f"{args.base_ref}:{worker}/{spec.manifest}"],
                         text=True,
                         stderr=subprocess.DEVNULL,
                     )
-                except subprocess.CalledProcessError:
-                    base_blob = None
-                # Only enforce when base resolves to a commit distinct from
-                # HEAD. With a single-commit repo (e.g. brand-new branch on
-                # this PR), base == HEAD and comparing to base is meaningless.
-                try:
                     base_sha = subprocess.check_output(
                         ["git", "rev-parse", args.base_ref],
                         text=True,
@@ -185,32 +103,32 @@ def main(argv: list[str] | None = None) -> int:
                         stderr=subprocess.DEVNULL,
                     ).strip()
                 except subprocess.CalledProcessError:
+                    base_blob = None
                     base_sha = head_sha = ""
-                if base_blob is not None and base_sha != head_sha:
-                    with tempfile.TemporaryDirectory() as td:
-                        tmp = pathlib.Path(td) / m.manifest
-                        tmp.write_text(base_blob)
+                if current_version and base_blob is not None and base_sha != head_sha:
+                    with tempfile.TemporaryDirectory() as directory:
+                        temporary = pathlib.Path(directory) / spec.manifest
+                        temporary.write_text(base_blob, encoding="utf-8")
                         try:
-                            base_ver = _lib.read_version(tmp)
+                            base_version = _lib.read_version(temporary)
                         except (ValueError, FileNotFoundError):
-                            base_ver = None
-                    if base_ver is not None and _lib.parse_semver(pr_ver) < _lib.parse_semver(base_ver):
+                            base_version = None
+                    if base_version and _lib.parse_semver(current_version) < _lib.parse_semver(base_version):
                         soft(
-                            f"{worker}/{m.manifest} version {pr_ver} is less "
-                            f"than base {base_ver}"
+                            f"{worker}/{spec.manifest} version {current_version} "
+                            f"is less than base {base_version}"
                         )
 
-    # 4. tests/ exists and is non-empty
-    tests_dir = root / "tests"
-    if not tests_dir.exists():
-        soft(f"{worker}/tests/ is missing")
-    elif not any(tests_dir.iterdir()):
-        soft(f"{worker}/tests/ is empty")
+        tests = spec.path / "tests"
+        if not tests.exists():
+            soft(f"{worker}/tests/ is missing")
+        elif not any(tests.iterdir()):
+            soft(f"{worker}/tests/ is empty")
 
-    for e in errs:
-        print(f"::error::{e}")
-    return 1 if errs else 0
+    for error in errors:
+        print(f"::error::{error}")
+    return 1 if errors else 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

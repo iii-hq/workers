@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://release-control.iii.dev/contracts/release-execution.schema.json",
+  "title": "Release execution result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "identity", "executor", "subject", "outcome", "effects", "artifacts", "error", "completed_at"],
+  "properties": {
+    "contract": { "const": "release-execution" },
+    "identity": { "$ref": "#/$defs/identity" },
+    "executor": { "$ref": "#/$defs/executor" },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["worker", "phase", "source_sha", "prepared_sha", "candidate_version", "stable_version", "descriptor_sha256"],
+      "properties": {
+        "worker": { "$ref": "#/$defs/worker" },
+        "phase": { "enum": ["prepare", "candidate_publish", "candidate_smoke", "stable_publish", "image_alias", "finalize", "verify", "harness_release"] },
+        "source_sha": { "$ref": "#/$defs/sha" },
+        "prepared_sha": { "oneOf": [{ "$ref": "#/$defs/sha" }, { "type": "null" }] },
+        "candidate_version": { "type": ["string", "null"], "minLength": 1 },
+        "stable_version": { "type": ["string", "null"], "minLength": 1 },
+        "descriptor_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "outcome": { "enum": ["succeeded", "failed", "canceled"] },
+    "effects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["surface", "state"],
+        "properties": {
+          "surface": { "type": "string", "minLength": 1 },
+          "state": { "enum": ["absent", "present", "unknown"] },
+          "immutable_id": { "type": "string", "minLength": 1 },
+          "before": true,
+          "after": true
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "role", "sha256", "size"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "role": { "type": "string", "minLength": 1 },
+          "sha256": { "$ref": "#/$defs/sha256" },
+          "size": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "error": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "category", "retryable", "message"],
+          "properties": {
+            "code": { "type": "string", "minLength": 1 },
+            "category": { "type": "string", "minLength": 1 },
+            "retryable": { "type": "boolean" },
+            "message": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
+    },
+    "completed_at": { "type": "string", "format": "date-time" }
+  },
+  "allOf": [
+    { "if": { "properties": { "outcome": { "const": "succeeded" } }, "required": ["outcome"] }, "then": { "properties": { "error": { "type": "null" } } } },
+    { "if": { "properties": { "outcome": { "enum": ["failed", "canceled"] } }, "required": ["outcome"] }, "then": { "properties": { "error": { "type": "object" } } } },
+    { "if": { "properties": { "executor": { "properties": { "repository": { "const": "iii-hq/harness-e2e" } }, "required": ["repository"] } } }, "then": { "properties": { "subject": { "properties": { "phase": { "const": "harness_release" } } } } } },
+    { "if": { "properties": { "subject": { "properties": { "phase": { "const": "harness_release" } }, "required": ["phase"] } } }, "then": { "properties": { "executor": { "properties": { "repository": { "const": "iii-hq/harness-e2e" } } } } } }
+  ],
+  "$defs": {
+    "uuid": { "type": "string", "format": "uuid" },
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "worker": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$" },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation_id", "step_id", "release_intent_id", "candidate_id", "attempt_id", "dispatch_nonce", "plan_hash"],
+      "properties": {
+        "operation_id": { "$ref": "#/$defs/uuid" },
+        "step_id": { "$ref": "#/$defs/uuid" },
+        "release_intent_id": { "$ref": "#/$defs/uuid" },
+        "candidate_id": { "$ref": "#/$defs/uuid" },
+        "attempt_id": { "$ref": "#/$defs/uuid" },
+        "dispatch_nonce": { "$ref": "#/$defs/uuid" },
+        "plan_hash": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "executor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "workflow", "sha", "run_id", "run_attempt", "event"],
+      "properties": {
+        "repository": { "enum": ["iii-hq/workers", "iii-hq/harness-e2e"] },
+        "workflow": { "type": "string", "pattern": "^(?:\\.github/workflows/)?[a-zA-Z0-9_.-]+\\.ya?ml$" },
+        "sha": { "$ref": "#/$defs/sha" },
+        "run_id": { "type": "integer", "minimum": 1 },
+        "run_attempt": { "type": "integer", "minimum": 1 },
+        "event": { "const": "workflow_dispatch" }
+      }
+    }
+  }
+}

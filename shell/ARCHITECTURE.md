@@ -12,7 +12,7 @@ curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 cargo build --release --bin iii-shell
 
 # 3. Wire the binary where the engine looks (registered worker name = `shell`,
-#    per iii.worker.yaml — fall back to ~/.iii/workers/iii-shell if your
+#    per worker-compose.yaml — fall back to ~/.iii/workers/iii-shell if your
 #    engine resolves by binary name).
 mkdir -p ~/.iii/workers
 ln -sfn $(pwd)/target/release/iii-shell ~/.iii/workers/shell

@@ -1,0 +1,510 @@
+name: Release Prepare
+run-name: RC prepare · ${{ inputs.worker }} · ${{ fromJSON(inputs.identity).operation_id }} · ${{ fromJSON(inputs.identity).step_id }} · ${{ fromJSON(inputs.identity).dispatch_nonce }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      identity: {required: true, type: string}
+      worker: {required: true, type: string}
+      stable_version: {required: true, type: string}
+      candidate_version: {required: true, type: string}
+      source_sha: {required: true, type: string}
+      descriptor_sha256: {required: true, type: string}
+      descriptor_run_id: {required: true, type: string}
+      descriptor_artifact: {required: true, type: string}
+
+env:
+  RELEASE_IDENTITY: ${{ inputs.identity }}
+  OPERATION_ID: ${{ fromJSON(inputs.identity).operation_id }}
+  STEP_ID: ${{ fromJSON(inputs.identity).step_id }}
+  RELEASE_INTENT_ID: ${{ fromJSON(inputs.identity).release_intent_id }}
+  CANDIDATE_ID: ${{ fromJSON(inputs.identity).candidate_id }}
+  ATTEMPT_ID: ${{ fromJSON(inputs.identity).attempt_id }}
+  DISPATCH_NONCE: ${{ fromJSON(inputs.identity).dispatch_nonce }}
+  PLAN_HASH: ${{ fromJSON(inputs.identity).plan_hash }}
+  WORKER: ${{ inputs.worker }}
+  STABLE_VERSION: ${{ inputs.stable_version }}
+  CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+  SOURCE_SHA: ${{ inputs.source_sha }}
+  DESCRIPTOR_SHA256: ${{ inputs.descriptor_sha256 }}
+  DESCRIPTOR_RUN_ID: ${{ inputs.descriptor_run_id }}
+  DESCRIPTOR_ARTIFACT: ${{ inputs.descriptor_artifact }}
+
+permissions: {}
+
+jobs:
+  prepare:
+    runs-on: workers-release-linux-8core
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    outputs:
+      prepared_sha: ${{ steps.descriptor.outputs.prepared_sha }}
+      matrix: ${{ steps.descriptor.outputs.matrix }}
+      descriptor_artifact: ${{ steps.descriptor.outputs.artifact }}
+      frontend_artifact: ${{ steps.descriptor.outputs.frontend_artifact }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+
+      - name: Download Release Control-selected descriptor index
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ${{ inputs.descriptor_artifact }}
+          path: release-descriptor-index
+          run-id: ${{ inputs.descriptor_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Select byte-exact descriptor from immutable index
+        run: |
+          set -euo pipefail
+          [[ "$DESCRIPTOR_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          test "$DESCRIPTOR_ARTIFACT" = "release-descriptor-index-$SOURCE_SHA"
+          compiler_sha=$(jq -er .commit .github/release-compiler.json)
+          python3 .github/scripts/release_train.py select-descriptor \
+            --index-dir release-descriptor-index \
+            --worker "$WORKER" \
+            --source-sha "$SOURCE_SHA" \
+            --compiler-sha "$compiler_sha" \
+            --candidate-version "$CANDIDATE_VERSION" \
+            --descriptor-sha256 "$DESCRIPTOR_SHA256" \
+            --out release-input/release-descriptor.json
+
+      - name: Validate and authorize immutable dispatch
+        env:
+          RELEASE_CONTROL_API_URL: ${{ vars.RELEASE_CONTROL_API_URL }}
+        run: |
+          set -euo pipefail
+          pip install --quiet pyyaml
+          python3 .github/scripts/release_control_contract.py validate-identity --identity "$RELEASE_IDENTITY"
+          python3 .github/scripts/release_control_contract.py validate-dispatch \
+            --operation-id "$OPERATION_ID" \
+            --step-id "$STEP_ID" \
+            --dispatch-nonce "$DISPATCH_NONCE" \
+            --descriptor-sha256 "$DESCRIPTOR_SHA256" \
+            --plan-hash "$PLAN_HASH" \
+            --source-sha "$SOURCE_SHA" \
+            --mutating
+          python3 .github/scripts/release_control_contract.py authorize-dispatch \
+            --api-url "$RELEASE_CONTROL_API_URL" \
+            --operation-id "$OPERATION_ID" \
+            --step-id "$STEP_ID" \
+            --dispatch-nonce "$DISPATCH_NONCE" \
+            --release-intent-id "$RELEASE_INTENT_ID" \
+            --candidate-id "$CANDIDATE_ID" \
+            --attempt-id "$ATTEMPT_ID" \
+            --plan-hash "$PLAN_HASH" \
+            --worker "$WORKER" \
+            --source-sha "$SOURCE_SHA" \
+            --descriptor-sha256 "$DESCRIPTOR_SHA256" \
+            --repository '${{ github.repository }}' \
+            --workflow 'release-prepare.yml' \
+            --run-id '${{ github.run_id }}' \
+            --run-attempt '${{ github.run_attempt }}' \
+            --event '${{ github.event_name }}' \
+            --sha '${{ github.sha }}'
+
+      - name: Validate immutable source against selected descriptor
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/release_train.py prepare \
+            --worker "$WORKER" \
+            --source-sha "$SOURCE_SHA" \
+            --candidate-version "$CANDIDATE_VERSION" \
+            --stable-version "$STABLE_VERSION" \
+            --descriptor-sha256 "$DESCRIPTOR_SHA256" \
+            --descriptor release-input/release-descriptor.json
+
+      - name: Resolve descriptor-owned frontend metadata
+        id: frontend
+        run: >-
+          python3 .github/scripts/release_train.py frontend-metadata
+          --descriptor release-input/release-descriptor.json
+          --github-output "$GITHUB_OUTPUT"
+
+      - name: Install descriptor-pinned pnpm
+        if: steps.frontend.outputs.count != '0'
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+        with:
+          version: ${{ steps.frontend.outputs.package_manager_version }}
+
+      - name: Install descriptor-pinned Node.js
+        if: steps.frontend.outputs.count != '0'
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: ${{ steps.frontend.outputs.runtime_version }}
+
+      - name: Resolve frontend pnpm store
+        if: steps.frontend.outputs.count != '0'
+        id: frontend-pnpm
+        run: echo "store_path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache descriptor-pinned frontend dependencies
+        if: steps.frontend.outputs.count != '0'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ steps.frontend-pnpm.outputs.store_path }}
+          key: release-frontend-${{ steps.frontend.outputs.package_manager_version }}-node${{ steps.frontend.outputs.runtime_version }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.frontend.outputs.lock_sha256 }}
+
+      - name: Build embedded frontends once
+        run: >-
+          python3 .github/scripts/release_train.py build-frontends
+          --descriptor release-input/release-descriptor.json
+          --out .release-frontend
+
+      - name: Export descriptor
+        id: descriptor
+        run: |
+          set -euo pipefail
+          echo "prepared_sha=$(jq -r .source_sha release-input/release-descriptor.json)" >> "$GITHUB_OUTPUT"
+          echo "matrix=$(python3 .github/scripts/release_train.py matrix --descriptor release-input/release-descriptor.json)" >> "$GITHUB_OUTPUT"
+          echo "artifact=release-descriptor-$OPERATION_ID-$STEP_ID" >> "$GITHUB_OUTPUT"
+          echo "frontend_artifact=release-frontend-$OPERATION_ID-$STEP_ID" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: release-descriptor-${{ env.OPERATION_ID }}-${{ env.STEP_ID }}
+          path: release-input/release-descriptor.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: release-frontend-${{ env.OPERATION_ID }}-${{ env.STEP_ID }}
+          path: .release-frontend/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 7
+
+  build:
+    needs: prepare
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    uses: ./.github/workflows/_release-build.yml
+    with:
+      worker: ${{ inputs.worker }}
+      prepared_sha: ${{ needs.prepare.outputs.prepared_sha }}
+      descriptor_artifact: ${{ needs.prepare.outputs.descriptor_artifact }}
+      frontend_artifact: ${{ needs.prepare.outputs.frontend_artifact }}
+      target: ${{ matrix.target }}
+      unit: ${{ matrix.unit }}
+      kind: ${{ matrix.kind }}
+      runner: ${{ matrix.runner }}
+
+  assemble:
+    needs: [prepare, build]
+    runs-on: workers-release-linux-8core
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.prepared_sha }}
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ${{ needs.prepare.outputs.descriptor_artifact }}
+          path: release-input
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: release-build-${{ inputs.worker }}-*
+          path: release-builds
+
+      - name: Assemble immutable release
+        run: |
+          set -euo pipefail
+          pip install --quiet pyyaml
+          python3 .github/scripts/release_train.py assemble \
+            --descriptor release-input/release-descriptor.json \
+            --artifacts-dir release-builds \
+            --out release-prepared
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: release-assembled-${{ env.CANDIDATE_ID }}
+          path: release-prepared/
+          if-no-files-found: error
+          retention-days: 7
+
+  adapter:
+    needs: [prepare, assemble]
+    runs-on: workers-release-linux-8core
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          sparse-checkout: |
+            .github/scripts
+            .github/release-compiler.json
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: release-assembled-${{ env.CANDIDATE_ID }}
+          path: release-prepared
+
+      - name: Stage prepared bytes through the descriptor adapter
+        id: interface
+        run: >-
+          python3 .github/scripts/release_interface.py stage
+          --descriptor release-prepared/release-descriptor.json
+          --prepared release-prepared/prepared-artifacts.json
+          --out interface-work/stage.json
+          --github-output "$GITHUB_OUTPUT"
+
+      - name: Validate immutable compiler pin
+        if: steps.interface.outputs.validation == 'required'
+        id: compiler
+        run: python3 .github/scripts/release_compiler.py --github-output "$GITHUB_OUTPUT"
+
+      - name: Checkout pinned iii runtime
+        if: steps.interface.outputs.validation == 'required'
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          repository: ${{ steps.compiler.outputs.repository }}
+          ref: ${{ steps.compiler.outputs.commit }}
+          path: release-compiler
+
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        if: steps.interface.outputs.validation == 'required'
+        with:
+          toolchain: 1.97.1
+
+      - name: Authorize compiler cache with GitHub OIDC
+        if: steps.interface.outputs.validation == 'required'
+        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
+        with:
+          role-to-assume: ${{ vars.SCCACHE_ROLE_ARN }}
+          aws-region: ${{ vars.SCCACHE_REGION }}
+
+      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+        if: steps.interface.outputs.validation == 'required'
+
+      - name: Build pinned iii runtime
+        if: steps.interface.outputs.validation == 'required'
+        env:
+          MANIFEST: ${{ steps.compiler.outputs.cargo_manifest }}
+          BINARY: ${{ steps.compiler.outputs.binary }}
+          SCCACHE_BUCKET: ${{ vars.SCCACHE_BUCKET }}
+          SCCACHE_REGION: ${{ vars.SCCACHE_REGION }}
+          SCCACHE_S3_KEY_PREFIX: sccache/1.97.1/compiler
+          RUSTC_WRAPPER: sccache
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --manifest-path "release-compiler/$MANIFEST" --bin "$BINARY"
+          echo "$GITHUB_WORKSPACE/release-compiler/target/release" >> "$GITHUB_PATH"
+          sccache --show-stats | tee interface-compiler-sccache-stats.txt
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        if: steps.interface.outputs.kind == 'javascript-bundle' && steps.interface.outputs.validation == 'required'
+        with:
+          node-version: ${{ steps.interface.outputs.runtime_version }}
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        if: steps.interface.outputs.kind == 'python-bundle' && steps.interface.outputs.validation == 'required'
+        with:
+          python-version: ${{ steps.interface.outputs.runtime_version }}
+
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        if: steps.interface.outputs.kind == 'python-bundle' && steps.interface.outputs.validation == 'required'
+        with:
+          version: ${{ steps.interface.outputs.package_manager_version }}
+          enable-cache: false
+
+      - name: Install OCI adapter
+        if: steps.interface.outputs.kind == 'oci-image' && steps.interface.outputs.validation == 'required'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y skopeo
+
+      - name: Boot prepared artifact and collect immutable interface
+        env:
+          VALIDATION: ${{ steps.interface.outputs.validation }}
+          KIND: ${{ steps.interface.outputs.kind }}
+        run: |
+          set -euo pipefail
+          if [[ "$VALIDATION" == skipped ]]; then
+            python3 .github/scripts/release_interface.py snapshot \
+              --descriptor release-prepared/release-descriptor.json \
+              --out release-prepared/release-interface.json
+            python3 .github/scripts/release_interface.py build-evidence \
+              --descriptor release-prepared/release-descriptor.json \
+              --prepared release-prepared/prepared-artifacts.json \
+              --interface release-prepared/release-interface.json \
+              --out release-prepared/release-evidence.json
+            exit 0
+          fi
+
+          engine_pid= adapter_pid= container_name= image_name=
+          cleanup() {
+            if [[ -n "$container_name" ]]; then docker rm -f "$container_name" >/dev/null 2>&1 || true; fi
+            if [[ -n "$image_name" ]]; then docker image rm "$image_name" >/dev/null 2>&1 || true; fi
+            if [[ -n "$adapter_pid" ]]; then kill -- "-$adapter_pid" >/dev/null 2>&1 || true; fi
+            if [[ -n "$engine_pid" ]]; then kill -- "-$engine_pid" >/dev/null 2>&1 || true; fi
+          }
+          trap cleanup EXIT
+          engine_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
+          engine_url="ws://127.0.0.1:$engine_port"
+          printf 'engine:\n  workers:\n    iii-worker-manager:\n      host: 127.0.0.1\n      port: %s\nworkers: []\n' "$engine_port" >interface-work/engine.yaml
+          setsid iii --config interface-work/engine.yaml --no-update-check >interface-work/engine.log 2>&1 &
+          engine_pid=$!
+          for _ in $(seq 1 60); do
+            kill -0 "$engine_pid" 2>/dev/null || { cat interface-work/engine.log; exit 1; }
+            iii trigger --port "$engine_port" 'engine::workers::list' --json '{}' >/dev/null 2>&1 && break
+            sleep 1
+          done
+          iii trigger --port "$engine_port" 'engine::workers::list' --json '{}' >interface-work/workers-baseline.json
+          iii trigger --port "$engine_port" 'engine::triggers::list' --json '{"include_internal":false}' >interface-work/triggers-baseline.json
+
+          if [[ "$KIND" == oci-image ]]; then
+            container_name="release-interface-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            image_name="$container_name:prepared"
+            oci_archive=$(jq -er .oci_archive interface-work/stage.json)
+            skopeo copy "oci-archive:$oci_archive" "docker-daemon:$image_name"
+            docker_env=(--env "III_URL=$engine_url")
+            while IFS= read -r encoded; do
+              docker_env+=(--env "$(printf '%s' "$encoded" | base64 --decode)")
+            done < <(jq -r '.environment | to_entries[] | (.key + "=" + .value) | @base64' interface-work/stage.json)
+            docker run --rm --network host --name "$container_name" "${docker_env[@]}" "$image_name" \
+              >interface-work/worker.log 2>&1 &
+            adapter_pid=$!
+          else
+            setsid python3 .github/scripts/release_interface.py run-adapter \
+              --metadata interface-work/stage.json --engine-url "$engine_url" \
+              --log interface-work/worker.log &
+            adapter_pid=$!
+          fi
+
+          export III_TRIGGER_PORT="$engine_port"
+          python3 .github/scripts/collect_worker_interface.py \
+            --worker "$WORKER" --out interface-work/worker-interface.json \
+            --wait-seconds 600 \
+            --trigger-types-baseline interface-work/triggers-baseline.json \
+            --workers-baseline interface-work/workers-baseline.json
+          python3 .github/scripts/collect_worker_interface.py \
+            --assert-non-empty --assert-typed-schemas \
+            --assert-file interface-work/worker-interface.json
+          python3 .github/scripts/release_interface.py snapshot \
+            --descriptor release-prepared/release-descriptor.json \
+            --interface interface-work/worker-interface.json \
+            --out release-prepared/release-interface.json
+          python3 .github/scripts/release_interface.py build-evidence \
+            --descriptor release-prepared/release-descriptor.json \
+            --prepared release-prepared/prepared-artifacts.json \
+            --interface release-prepared/release-interface.json \
+            --out release-prepared/release-evidence.json
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: release-prepared-${{ env.CANDIDATE_ID }}
+          path: release-prepared/
+          if-no-files-found: error
+          retention-days: 7
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always() && steps.interface.outputs.validation == 'required'
+        with:
+          name: release-interface-sccache-${{ env.CANDIDATE_ID }}
+          path: interface-compiler-sccache-stats.txt
+          if-no-files-found: warn
+          retention-days: 7
+
+  report:
+    if: always()
+    needs: [prepare, build, assemble, adapter]
+    runs-on: workers-release-linux-8core
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        continue-on-error: true
+        with:
+          name: release-prepared-${{ env.CANDIDATE_ID }}
+          path: release-prepared
+
+      - name: Write release result
+        if: always()
+        env:
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          ASSEMBLE_RESULT: ${{ needs.assemble.result }}
+          ADAPTER_RESULT: ${{ needs.adapter.result }}
+        run: |
+          set -euo pipefail
+          outcome=succeeded; error=null
+          if [[ "$PREPARE_RESULT" == cancelled || "$BUILD_RESULT" == cancelled || "$ASSEMBLE_RESULT" == cancelled || "$ADAPTER_RESULT" == cancelled ]]; then
+            outcome=canceled; error='{"code":"prepare_canceled","category":"build","retryable":true,"message":"release preparation was canceled"}'
+          elif [[ "$PREPARE_RESULT" != success || "$BUILD_RESULT" != success || "$ASSEMBLE_RESULT" != success || "$ADAPTER_RESULT" != success ]]; then
+            outcome=failed; error='{"code":"prepare_failed","category":"build","retryable":true,"message":"release preparation did not complete"}'
+          fi
+          artifacts='[]'
+          if [[ -f release-prepared/release-evidence.json ]]; then artifacts=$(jq -c '[.artifacts[] | del(.unit)]' release-prepared/release-evidence.json); fi
+          state=unknown; [[ "$outcome" == succeeded ]] && state=present
+          effects=$(jq -nc --arg id "$SOURCE_SHA" --arg state "$state" '[{surface:"source-snapshot",state:$state,immutable_id:$id}]')
+          python3 .github/scripts/release_control_contract.py write-result \
+            --repository '${{ github.repository }}' \
+            --operation-id "$OPERATION_ID" \
+            --step-id "$STEP_ID" \
+            --run-id '${{ github.run_id }}' \
+            --run-attempt '${{ github.run_attempt }}' \
+            --workflow 'release-prepare.yml' \
+            --event '${{ github.event_name }}' \
+            --sha '${{ github.sha }}' \
+            --release-intent-id "$RELEASE_INTENT_ID" \
+            --candidate-id "$CANDIDATE_ID" \
+            --attempt-id "$ATTEMPT_ID" \
+            --dispatch-nonce "$DISPATCH_NONCE" \
+            --plan-hash "$PLAN_HASH" \
+            --worker "$WORKER" \
+            --phase prepare \
+            --source-sha "$SOURCE_SHA" \
+            --prepared-sha "$SOURCE_SHA" \
+            --candidate-version "$CANDIDATE_VERSION" \
+            --stable-version "$STABLE_VERSION" \
+            --descriptor-sha256 "$DESCRIPTOR_SHA256" \
+            --outcome "$outcome" \
+            --effects "$effects" \
+            --artifacts-json "$artifacts" \
+            --error-json "$error" \
+            --output release-result.json
+
+      - if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: release-result-${{ env.CANDIDATE_ID }}-${{ env.STEP_ID }}-attempt-${{ github.run_attempt }}
+          path: release-result.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Report byte-exact result to Release Control
+        if: always()
+        env:
+          RELEASE_CONTROL_API_URL: ${{ vars.RELEASE_CONTROL_API_URL }}
+        run: |
+          python3 .github/scripts/release_control_contract.py post-result \
+            --api-url "$RELEASE_CONTROL_API_URL" \
+            --result release-result.json

@@ -77,7 +77,7 @@ iii trigger compose::add worker=<name>
 ```
 ````
 
-Where `<name>` is the value of `iii.worker.yaml.name` (which equals the
+Where `<name>` is the value of `worker-compose.yaml.name` (which equals the
 folder name; see [`docs/sops/new-worker.md`](docs/sops/new-worker.md) §1).
 That is the whole user-facing install — no source build, no
 `sudo install`, no `--manifest | jq` verification step. The

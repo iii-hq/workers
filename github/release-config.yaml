@@ -1,0 +1,4 @@
+gh_executable: ""
+default_timeout_ms: 30000
+max_timeout_ms: 120000
+max_output_bytes: 1048576

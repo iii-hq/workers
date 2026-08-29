@@ -169,7 +169,7 @@ asset for the host.
 
 Start with [`docs/sops/new-worker.md`](docs/sops/new-worker.md) — the
 cross-cutting checklist (naming, required files, CI gates, release wiring).
-For the inside of a Rust `deploy: binary` worker, continue with
+For the inside of a Rust `artifact.kind: rust-binary` worker, continue with
 [`docs/sops/binary-worker.md`](docs/sops/binary-worker.md). Each worker ships
 a consumer `README.md` per the [`worker-readme.md`](worker-readme.md)
 contract (install via `iii trigger compose::add worker=<name>`, quickstart,
@@ -179,18 +179,17 @@ configuration).
 ## CI
 
 Pull requests trigger per-worker lint + tests for the changed worker(s).
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) discovers changes by
-reading each worker's `iii.worker.yaml`, then routes:
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) discovers changes from
+the repository-root [`worker-compose.yaml`](worker-compose.yaml), then routes:
 
 - Rust → `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test --all-features`
 - Node → `biome ci` against [`biome.json`](biome.json) and `npm test`
 - Python → `ruff check` + `ruff format --check` against [`ruff.toml`](ruff.toml) and `pytest`
 
 The `pr-checks` job additionally enforces, per changed worker: `README.md`
-present, `iii.worker.yaml` valid, `tests/` non-empty, and the manifest
-version is greater than the version on the PR's base branch. It also requires
-a non-empty `tags:` list on every publishable worker for registry discovery
-(workers with `interface_smoke: false` are exempt) — see the
+present, the catalog entry valid, `tests/` non-empty, and the package version
+not behind the PR base. It also requires non-empty `registry.tags` on workers
+whose `validation.interface` is `required` — see the
 [Discovery tags step](docs/sops/new-worker.md#discovery-tags-required).
 
 Full reference (discovery buckets, interface boot smoke, e2e workflows):
@@ -198,21 +197,23 @@ Full reference (discovery buckets, interface boot smoke, e2e workflows):
 
 ## CD
 
-Releases are cut manually via the **Create Tag** workflow
-([`.github/workflows/create-tag.yml`](.github/workflows/create-tag.yml)) —
-pick a worker, a bump type, and a registry tag (`latest` / `next`). The
-resulting `<worker>/v<X.Y.Z>` tag drives a single dispatcher
-([`.github/workflows/release.yml`](.github/workflows/release.yml)) that:
+Release Control is the only supported release interface. For each source SHA,
+[`release-descriptor-index.yml`](.github/workflows/release-descriptor-index.yml)
+uses the pinned iii compiler to publish the worker descriptor index. Release
+Control selects those immutable bytes and dispatches the bounded phases:
 
-1. Routes on `deploy` from `iii.worker.yaml`:
-   - `binary` → cross-compile via
-     [`_rust-binary.yml`](.github/workflows/_rust-binary.yml).
-   - `image` → multi-arch image to `ghcr.io/<owner>/<worker>` via
-     [`_container.yml`](.github/workflows/_container.yml).
-   - `bundle` → single-file archive via
-     [`_bundle.yml`](.github/workflows/_bundle.yml).
-2. Calls `POST /publish` against the workers registry API via
-   [`_publish-registry.yml`](.github/workflows/_publish-registry.yml).
+1. [`release-prepare.yml`](.github/workflows/release-prepare.yml) validates the
+   already-versioned source, compiles the selected descriptor, and builds one
+   independent job per build unit through
+   [`_release-build.yml`](.github/workflows/_release-build.yml).
+2. [`release-candidate-publish.yml`](.github/workflows/release-candidate-publish.yml)
+   publishes the immutable candidate to `@next`.
+3. Candidate smoke, stable CAS to `@latest`, optional OCI alias, finalize, and
+   verify run as separate authorized workflows.
+
+Every phase uploads `release-result.json` and posts the same bytes to Release
+Control. Candidate and stable use one package version and one descriptor; no
+phase rebuilds or rereads the catalog after prepare.
 
 Step-by-step (variants, troubleshooting, rollback):
 [`docs/sops/release.md`](docs/sops/release.md).

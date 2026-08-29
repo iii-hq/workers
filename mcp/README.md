@@ -4,7 +4,7 @@ Model Context Protocol (MCP) bridge for the [iii engine](https://iii.dev),
 shipped as a single self-contained Rust binary worker. Registers an HTTP
 endpoint (default `POST /mcp`) that speaks MCP 2025-06-18 JSON-RPC and maps
 each method onto an `iii.trigger` call. [`skills`](https://workers.iii.dev/workers/skills) is listed as a
-worker dependency in [`iii.worker.yaml`](iii.worker.yaml), so MCP clients see
+worker dependency in [`worker-compose.yaml`](worker-compose.yaml), so MCP clients see
 registered skills as `iii://{id}` resources and slash-commands as MCP
 prompts when `mcp` is installed.
 

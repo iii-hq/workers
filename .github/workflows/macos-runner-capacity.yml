@@ -1,0 +1,166 @@
+name: macOS Runner Capacity Diagnostic
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+# This diagnostic proves that the runner group can schedule three independent
+# jobs. Physical capacity, autoscaling and runner-group access remain external
+# infrastructure gates; this workflow does not provision AWS resources.
+jobs:
+  macos-slot-1:
+    runs-on: workers-release-macos-12core
+    timeout-minutes: 5
+    outputs:
+      started: ${{ steps.measure.outputs.started }}
+      finished: ${{ steps.measure.outputs.finished }}
+      runner: ${{ steps.measure.outputs.runner }}
+    steps:
+      - id: measure
+        run: |
+          set -euo pipefail
+          started=$(date -u +%s)
+          echo "slot=1 runner=$RUNNER_NAME arch=$(uname -m) started=$started"
+          sleep 60
+          finished=$(date -u +%s)
+          echo "started=$started" >> "$GITHUB_OUTPUT"
+          echo "finished=$finished" >> "$GITHUB_OUTPUT"
+          echo "runner=$RUNNER_NAME" >> "$GITHUB_OUTPUT"
+  macos-slot-2:
+    runs-on: workers-release-macos-12core
+    timeout-minutes: 5
+    outputs:
+      started: ${{ steps.measure.outputs.started }}
+      finished: ${{ steps.measure.outputs.finished }}
+      runner: ${{ steps.measure.outputs.runner }}
+    steps:
+      - id: measure
+        run: |
+          set -euo pipefail
+          started=$(date -u +%s)
+          echo "slot=2 runner=$RUNNER_NAME arch=$(uname -m) started=$started"
+          sleep 60
+          finished=$(date -u +%s)
+          echo "started=$started" >> "$GITHUB_OUTPUT"
+          echo "finished=$finished" >> "$GITHUB_OUTPUT"
+          echo "runner=$RUNNER_NAME" >> "$GITHUB_OUTPUT"
+  macos-slot-3:
+    runs-on: workers-release-macos-12core
+    timeout-minutes: 5
+    outputs:
+      started: ${{ steps.measure.outputs.started }}
+      finished: ${{ steps.measure.outputs.finished }}
+      runner: ${{ steps.measure.outputs.runner }}
+    steps:
+      - id: measure
+        run: |
+          set -euo pipefail
+          started=$(date -u +%s)
+          echo "slot=3 runner=$RUNNER_NAME arch=$(uname -m) started=$started"
+          sleep 60
+          finished=$(date -u +%s)
+          echo "started=$started" >> "$GITHUB_OUTPUT"
+          echo "finished=$finished" >> "$GITHUB_OUTPUT"
+          echo "runner=$RUNNER_NAME" >> "$GITHUB_OUTPUT"
+
+  prove-overlap:
+    needs: [macos-slot-1, macos-slot-2, macos-slot-3]
+    runs-on: ubuntu-latest
+    env:
+      SLOT_1: ${{ toJSON(needs.macos-slot-1.outputs) }}
+      SLOT_2: ${{ toJSON(needs.macos-slot-2.outputs) }}
+      SLOT_3: ${{ toJSON(needs.macos-slot-3.outputs) }}
+    steps:
+      - name: Require three distinct concurrent runners
+        run: |
+          python3 - <<'PY'
+          import json, os
+          slots = [json.loads(os.environ[f"SLOT_{index}"]) for index in (1, 2, 3)]
+          runners = {slot["runner"] for slot in slots}
+          if len(runners) != 3:
+              raise SystemExit(f"expected 3 distinct macOS runners, got {sorted(runners)}")
+          overlap = min(int(slot["finished"]) for slot in slots) - max(int(slot["started"]) for slot in slots)
+          if overlap < 10:
+              raise SystemExit(f"macOS jobs did not overlap for at least 10s (overlap={overlap}s)")
+          print(f"capacity gate passed: runners={sorted(runners)} overlap={overlap}s")
+          PY
+
+  macos-arm-slot-1:
+    runs-on: workers-release-macos-arm-5core
+    timeout-minutes: 5
+    outputs:
+      started: ${{ steps.measure.outputs.started }}
+      finished: ${{ steps.measure.outputs.finished }}
+      runner: ${{ steps.measure.outputs.runner }}
+    steps:
+      - id: measure
+        run: |
+          set -euo pipefail
+          started=$(date -u +%s)
+          echo "slot=arm-1 runner=$RUNNER_NAME arch=$(uname -m) started=$started"
+          sleep 60
+          finished=$(date -u +%s)
+          echo "started=$started" >> "$GITHUB_OUTPUT"
+          echo "finished=$finished" >> "$GITHUB_OUTPUT"
+          echo "runner=$RUNNER_NAME" >> "$GITHUB_OUTPUT"
+
+  macos-arm-slot-2:
+    runs-on: workers-release-macos-arm-5core
+    timeout-minutes: 5
+    outputs:
+      started: ${{ steps.measure.outputs.started }}
+      finished: ${{ steps.measure.outputs.finished }}
+      runner: ${{ steps.measure.outputs.runner }}
+    steps:
+      - id: measure
+        run: |
+          set -euo pipefail
+          started=$(date -u +%s)
+          echo "slot=arm-2 runner=$RUNNER_NAME arch=$(uname -m) started=$started"
+          sleep 60
+          finished=$(date -u +%s)
+          echo "started=$started" >> "$GITHUB_OUTPUT"
+          echo "finished=$finished" >> "$GITHUB_OUTPUT"
+          echo "runner=$RUNNER_NAME" >> "$GITHUB_OUTPUT"
+
+  macos-arm-slot-3:
+    runs-on: workers-release-macos-arm-5core
+    timeout-minutes: 5
+    outputs:
+      started: ${{ steps.measure.outputs.started }}
+      finished: ${{ steps.measure.outputs.finished }}
+      runner: ${{ steps.measure.outputs.runner }}
+    steps:
+      - id: measure
+        run: |
+          set -euo pipefail
+          started=$(date -u +%s)
+          echo "slot=arm-3 runner=$RUNNER_NAME arch=$(uname -m) started=$started"
+          sleep 60
+          finished=$(date -u +%s)
+          echo "started=$started" >> "$GITHUB_OUTPUT"
+          echo "finished=$finished" >> "$GITHUB_OUTPUT"
+          echo "runner=$RUNNER_NAME" >> "$GITHUB_OUTPUT"
+
+  prove-arm-overlap:
+    needs: [macos-arm-slot-1, macos-arm-slot-2, macos-arm-slot-3]
+    runs-on: ubuntu-latest
+    env:
+      SLOT_1: ${{ toJSON(needs.macos-arm-slot-1.outputs) }}
+      SLOT_2: ${{ toJSON(needs.macos-arm-slot-2.outputs) }}
+      SLOT_3: ${{ toJSON(needs.macos-arm-slot-3.outputs) }}
+    steps:
+      - name: Require three distinct concurrent Apple Silicon runners
+        run: |
+          python3 - <<'PY'
+          import json, os
+          slots = [json.loads(os.environ[f"SLOT_{index}"]) for index in (1, 2, 3)]
+          runners = {slot["runner"] for slot in slots}
+          if len(runners) != 3:
+              raise SystemExit(f"expected 3 distinct ARM macOS runners, got {sorted(runners)}")
+          overlap = min(int(slot["finished"]) for slot in slots) - max(int(slot["started"]) for slot in slots)
+          if overlap < 10:
+              raise SystemExit(f"ARM macOS jobs did not overlap for at least 10s (overlap={overlap}s)")
+          print(f"ARM capacity gate passed: runners={sorted(runners)} overlap={overlap}s")
+          PY

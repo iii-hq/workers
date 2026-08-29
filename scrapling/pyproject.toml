@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 # NOT "scrapling": this project depends on the PyPI `scrapling`; a same-named
 # project is a self-dependency and breaks `pip install`. The iii worker name
-# (folder + iii.worker.yaml) is still `scrapling` — CI validates that, not this.
+# (folder + worker-compose.yaml) is still `scrapling` — CI validates that, not this.
 name = "scrapling-worker"
 version = "0.2.9-rc.3"
 description = "Scrapling as an iii worker: HTTP / anti-bot / browser fetch + CSS/XPath/regex/adaptive extraction as scrapling::* functions."

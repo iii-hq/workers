@@ -5,6 +5,8 @@ import pathlib
 import sys
 from typing import Any
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import _lib  # noqa: E402
 
 def normalize_dependencies(raw_deps: Any) -> list[dict[str, Any]]:
     if raw_deps in (None, ""):
@@ -283,138 +285,76 @@ def normalize_worker_interface(
 
 def build_payload(
     *,
-    repo_root: pathlib.Path,
-    worker: str,
-    version: str,
-    registry_tag: str,
-    deploy: str,
+    package_descriptor: dict[str, Any],
+    descriptor_sha256: str,
+    channel: str,
     repo_url: str,
     interface: dict[str, Any],
-    binaries: dict[str, Any],
-    image_tag: str,
-    bundle: dict[str, Any] | None = None,
-    experimental: bool = False,
+    artifacts: dict[str, Any],
+    readme: str | None = None,
 ) -> dict[str, Any]:
-    root = repo_root / worker
-    meta = _read_yaml(root / "iii.worker.yaml") or {}
+    """Build only the strict descriptor-native Registry request.
 
-    readme_path = root / "README.md"
-    readme = readme_path.read_text(encoding="utf-8") if readme_path.exists() else ""
-
-    if "config" in meta and meta["config"] is not None:
-        config = meta["config"]
-    else:
-        config_path = root / "config.yaml"
-        config = _read_yaml(config_path) if config_path.exists() else {}
-    if config is None:
-        config = {}
-    if not isinstance(config, dict):
-        raise ValueError("worker config must be an object")
-
+    Publication callers must consume the immutable compiler output and
+    prepared artifact inventory.  This helper deliberately has no catalog,
+    source-tree, or legacy manifest fallback.
+    """
+    if not isinstance(package_descriptor, dict):
+        raise ValueError("package_descriptor must be an object")
+    if not isinstance(descriptor_sha256, str) or len(descriptor_sha256) != 64:
+        raise ValueError("descriptor_sha256 must be a 64-character digest")
+    if channel != "next":
+        raise ValueError("candidate publication channel must be next")
+    kind = (package_descriptor.get("artifact") or {}).get("kind")
+    if artifacts.get("kind") != kind:
+        raise ValueError("artifacts.kind must match package_descriptor.artifact.kind")
     payload: dict[str, Any] = {
-        "worker_name": worker,
-        "version": version,
-        "type": deploy,
-        "readme": readme,
+        "package_descriptor": package_descriptor,
+        "descriptor_sha256": descriptor_sha256,
+        "channel": channel,
         "repo": repo_url,
-        "description": meta.get("description", ""),
-        "license": meta.get("license", ""),
-        "dependencies": normalize_dependencies(meta.get("dependencies")),
-        "config": config,
-        "functions": [
-            _normalize_registry_function(function)
-            for function in interface.get("functions") or []
-        ],
-        "triggers": [
-            _normalize_registry_trigger(trigger)
-            for trigger in interface.get("triggers") or []
-        ],
-        # Always sent, never omitted: the registry treats a missing flag as
-        # "not experimental" and clears the badge, so leaving it out on a
-        # still-experimental release would silently promote the worker. The
-        # registry rejects a string here, hence the explicit bool.
-        "experimental": bool(experimental),
+        "interface": {
+            "functions": [
+                _normalize_registry_function(function)
+                for function in interface.get("functions") or []
+            ],
+            "triggers": [
+                _normalize_registry_trigger(trigger)
+                for trigger in interface.get("triggers") or []
+            ],
+        },
+        "artifacts": artifacts,
     }
-    # Stable finalization first creates an immutable version without moving a
-    # channel. The Registry distinguishes that bootstrap-safe state from a
-    # mutable `next`/`latest` assignment, so `none` must omit the tag field.
-    if registry_tag and registry_tag != "none":
-        payload["tag"] = registry_tag
-
-    tags = normalize_tags(meta.get("tags"))
-    if tags:
-        payload["tags"] = tags
-
-    if deploy == "binary":
-        if not binaries:
-            raise ValueError("deploy=binary requires non-empty binaries")
-        payload["binaries"] = binaries
-    elif deploy == "image":
-        if not image_tag:
-            raise ValueError("deploy=image requires image_tag")
-        payload["image_tag"] = image_tag
-    elif deploy == "bundle":
-        # `PublishRequestBundle` requires both `archive_url` and `sha256`.
-        # See tmp/openapi.yaml#PublishRequestBundle (lines 286-347).
-        if not bundle:
-            raise ValueError("deploy=bundle requires non-empty bundle artefact")
-        archive_url = bundle.get("archive_url")
-        sha256 = bundle.get("sha256")
-        if not isinstance(archive_url, str) or not archive_url:
-            raise ValueError("deploy=bundle requires bundle.archive_url")
-        if not isinstance(sha256, str) or not sha256:
-            raise ValueError("deploy=bundle requires bundle.sha256")
-        payload["archive_url"] = archive_url
-        payload["sha256"] = sha256
-    else:
-        raise ValueError(f"unsupported deploy={deploy}")
-
+    if readme is not None:
+        payload["readme"] = readme
     return payload
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--worker", required=True)
-    parser.add_argument("--version", required=True)
-    parser.add_argument("--registry-tag", default="latest")
-    parser.add_argument("--deploy", required=True, choices=["binary", "image", "bundle"])
+    parser.add_argument("--descriptor", required=True)
+    parser.add_argument("--descriptor-sha256", required=True)
+    parser.add_argument("--channel", choices=("next",), default="next")
     parser.add_argument("--repo-url", required=True)
     parser.add_argument("--interface-json", required=True)
-    parser.add_argument("--binaries-json", default="")
-    parser.add_argument("--bundle-json", default="")
-    parser.add_argument("--image-tag", default="")
-    parser.add_argument("--repo-root", default=".")
+    parser.add_argument("--artifacts-json", required=True)
+    parser.add_argument("--readme")
     parser.add_argument("--out", default="payload.json")
-    # Workflow inputs arrive as strings; anything but a literal `true` is
-    # false, so a missing or malformed value publishes as stable rather than
-    # marking a worker experimental by accident.
-    parser.add_argument(
-        "--experimental",
-        default="false",
-        help="'true' marks the published worker experimental in the registry",
-    )
     args = parser.parse_args()
 
+    package_descriptor = json.loads(pathlib.Path(args.descriptor).read_text(encoding="utf-8"))
     interface = json.loads(pathlib.Path(args.interface_json).read_text(encoding="utf-8"))
-    binaries = {}
-    if args.binaries_json:
-        binaries = json.loads(pathlib.Path(args.binaries_json).read_text(encoding="utf-8"))
-    bundle: dict[str, Any] | None = None
-    if args.bundle_json:
-        bundle = json.loads(pathlib.Path(args.bundle_json).read_text(encoding="utf-8"))
+    artifacts = json.loads(pathlib.Path(args.artifacts_json).read_text(encoding="utf-8"))
+    readme = pathlib.Path(args.readme).read_text(encoding="utf-8") if args.readme else None
 
     payload = build_payload(
-        repo_root=pathlib.Path(args.repo_root),
-        worker=args.worker,
-        version=args.version,
-        registry_tag=args.registry_tag,
-        deploy=args.deploy,
+        package_descriptor=package_descriptor,
+        descriptor_sha256=args.descriptor_sha256,
+        channel=args.channel,
         repo_url=args.repo_url,
         interface=interface,
-        binaries=binaries,
-        image_tag=args.image_tag,
-        bundle=bundle,
-        experimental=args.experimental.strip().lower() == "true",
+        artifacts=artifacts,
+        readme=readme,
     )
     pathlib.Path(args.out).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({k: v for k, v in payload.items() if k != "readme"}, indent=2))

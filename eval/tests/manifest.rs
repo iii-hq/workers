@@ -26,11 +26,9 @@ fn manifest_subcommand_emits_valid_json() {
 }
 
 #[test]
-fn worker_manifest_declares_runtime_dependencies() {
-    let source = std::fs::read_to_string(format!("{}/iii.worker.yaml", env!("CARGO_MANIFEST_DIR")))
-        .expect("read iii.worker.yaml");
-    let manifest: serde_yaml::Value = serde_yaml::from_str(&source).expect("parse worker manifest");
-    let dependencies = manifest["dependencies"]
+fn worker_catalog_declares_runtime_dependencies() {
+    let catalog: serde_yaml::Value = serde_yaml::from_str(include_str!("../../worker-compose.yaml")).expect("parse worker catalog");
+    let dependencies = catalog["workers"]["eval"]["registry"]["dependencies"]
         .as_mapping()
         .expect("dependencies map");
     for dependency in ["state", "queue", "cron", "iii-observability"] {
@@ -50,15 +48,13 @@ fn worker_manifest_declares_runtime_dependencies() {
 /// harness worker must be present in the engine — it is simply not pulled
 /// in by eval's own install.
 #[test]
-fn worker_manifest_omits_harness_to_stay_within_install_graph_depth() {
-    let source = std::fs::read_to_string(format!("{}/iii.worker.yaml", env!("CARGO_MANIFEST_DIR")))
-        .expect("read iii.worker.yaml");
-    let manifest: serde_yaml::Value = serde_yaml::from_str(&source).expect("parse worker manifest");
-    let dependencies = manifest["dependencies"]
+fn worker_catalog_omits_harness_to_stay_within_install_graph_depth() {
+    let catalog: serde_yaml::Value = serde_yaml::from_str(include_str!("../../worker-compose.yaml")).expect("parse worker catalog");
+    let dependencies = catalog["workers"]["eval"]["registry"]["dependencies"]
         .as_mapping()
         .expect("dependencies map");
     assert!(
         !dependencies.contains_key(serde_yaml::Value::String("harness".into())),
-        "harness must stay out of the manifest: it pushes the install graph past the depth cap"
+        "harness must stay out of the catalog entry: it pushes the install graph past the depth cap"
     );
 }

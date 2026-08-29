@@ -55,21 +55,6 @@ def pyproject_manifest(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def iii_worker_yaml_dir(tmp_path: Path) -> Path:
-    """Returns a tmp dir containing a minimal iii.worker.yaml (rust binary)."""
-    (tmp_path / "iii.worker.yaml").write_text(
-        'iii: v1\n'
-        'name: smoke\n'
-        'language: rust\n'
-        'deploy: binary\n'
-        'manifest: Cargo.toml\n'
-        'bin: smoke-bin\n'
-        'description: smoke test worker\n'
-    )
-    return tmp_path
-
-
-@pytest.fixture
 def github_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Captures writes to $GITHUB_OUTPUT into a tmp file the test can read."""
     f = tmp_path / "github_output"

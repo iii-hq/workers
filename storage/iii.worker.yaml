@@ -1,9 +1,0 @@
-iii: v1
-name: storage
-language: rust
-deploy: binary
-manifest: Cargo.toml
-license: Apache-2.0
-bin: storage
-tags: [s3, object-storage, gcs, r2, blob]
-description: Object storage across AWS S3, GCS, Cloudflare R2, and a native local filesystem backend. Streamed uploads, signed URLs, and object change triggers.

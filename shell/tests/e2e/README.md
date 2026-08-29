@@ -53,7 +53,7 @@ any FAIL.
 | `WORKER_SRC` | `../..` (the `shell/` crate) | Where to `cargo build` |
 | `III_BIN` | `$(command -v iii)` then `$HOME/.local/bin/iii` | Engine binary |
 | `WORKER_BIN_TARGET` | `$WORKER_SRC/target/release/iii-shell` | Built worker |
-| `WORKER_BIN_LINK` | `$HOME/.iii/workers/shell` | Symlink the engine reads (registered worker name from `iii.worker.yaml`). Set to `$HOME/.iii/workers/iii-shell` if your engine resolves by binary name instead. |
+| `WORKER_BIN_LINK` | `$HOME/.iii/workers/shell` | Symlink the engine reads (registered worker name from `worker-compose.yaml`). Set to `$HOME/.iii/workers/iii-shell` if your engine resolves by binary name instead. |
 | `HARNESS_TIMEOUT` | `90` | Seconds to wait for the test sentinel |
 
 ## Layout

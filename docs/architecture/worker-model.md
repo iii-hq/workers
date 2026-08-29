@@ -29,7 +29,7 @@ domain: `shell::exec`, `session::append` (session-manager), `shell::fs::read`.
 
 | Context | How workers are found |
 |---|---|
-| In-repo development | Folder at repo root with `iii.worker.yaml` |
+| In-repo development | Folder at repo root with `worker-compose.yaml` |
 | Production install | Workers registry API — `iii trigger compose::add worker=<name>` |
 | Runtime catalogue | `engine::workers::list`, `engine::functions::list` |
 
@@ -44,11 +44,11 @@ Workers ship as one of three deploy kinds (see [`deploy-modes.md`](deploy-modes.
 - **image** — OCI container (Node/Python daemons)
 - **bundle** — single-file archive (esbuild bundle for Node monorepos like harness)
 
-The kind is declared in `iii.worker.yaml` `deploy` and routes CI smoke + release
+The kind is declared in `worker-compose.yaml` `deploy` and routes CI smoke + release
 build jobs.
 
 ## Related
 
 - Scaffold: [`../sops/binary-worker.md`](../sops/binary-worker.md)
-- Manifest fields: [`iii-worker-yaml.md`](iii-worker-yaml.md)
+- Manifest fields: [`worker-compose.md`](worker-compose.md)
 - Release: [`../sops/release.md`](../sops/release.md)

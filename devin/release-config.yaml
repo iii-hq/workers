@@ -1,0 +1,7 @@
+base_url: https://api.devin.ai/v1
+request_timeout_secs: 120
+devin_executable: ""
+cli_extra_args: ["--permission-mode", "dangerous"]
+events_stream: agent::events
+raw_events_stream: devin::events
+iii_context: true

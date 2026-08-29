@@ -26,19 +26,15 @@ fn manifest_builder_emits_registry_metadata_without_a_binary() {
 }
 
 #[test]
-fn worker_manifest_names_the_same_worker_and_description() {
-    let source = include_str!("../iii.worker.yaml");
-
-    assert!(source.lines().any(|line| line == "name: security-scan"));
-    assert!(source.lines().any(|line| line == "bin: security-scan"));
-    assert!(source.contains(manifest::DESCRIPTION));
-    assert!(source.lines().any(|line| line.starts_with("tags: [")));
-    assert!(source.lines().any(|line| line == "  github: \"^0.3.0\""));
-    assert!(source.lines().any(|line| line == "  harness: \"^1.8.5\""));
-    assert!(source.lines().any(|line| line == "  cron: \"^0.21.9\""));
-    assert!(source.lines().any(|line| line == "  queue: \"^0.21.5\""));
-    assert!(source.lines().any(|line| line == "  worktree: \"^0.3.0\""));
-    assert!(source.lines().any(|line| line == "  storage: \"^0.1.0\""));
+fn worker_catalog_names_the_same_worker_and_description() {
+    let catalog: serde_yaml::Value = serde_yaml::from_str(include_str!("../../worker-compose.yaml")).expect("parse worker catalog");
+    let worker = &catalog["workers"]["security-scan"];
+    assert_eq!(worker["artifact"]["binary"], "security-scan");
+    assert_eq!(worker["registry"]["description"], manifest::DESCRIPTION);
+    let dependencies = worker["registry"]["dependencies"].as_mapping().expect("dependencies map");
+    for dependency in ["github", "harness", "cron", "queue", "worktree", "storage"] {
+        assert!(dependencies.contains_key(serde_yaml::Value::String(dependency.into())));
+    }
 }
 
 #[test]

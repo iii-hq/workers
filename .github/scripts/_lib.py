@@ -307,25 +307,6 @@ def read_cargo_package_name(manifest_path: Path) -> str:
     raise ValueError(f"no name field in [package] section of {manifest_path}")
 
 
-def frontend_bundle_dirs(manifest_path: Path) -> list[Path]:
-    """Return repo-relative frontend dirs required by a Rust manifest."""
-    manifest_path = manifest_path.resolve()
-    worker_dir = manifest_path.parent
-    repo_root = worker_dir.parent
-    candidates = [worker_dir / "web", worker_dir / "ui"]
-
-    for relative in re.findall(r'path\s*=\s*"([^"]+)"', manifest_path.read_text()):
-        dependency_dir = (worker_dir / relative).resolve()
-        candidates.append(dependency_dir / "ui")
-
-    found = {
-        candidate.relative_to(repo_root)
-        for candidate in candidates
-        if (candidate / "package.json").is_file()
-    }
-    return sorted(found, key=lambda path: path.as_posix())
-
-
 def sync_cargo_lock_self_version(lock_path: Path, name: str, new_version: str) -> bool:
     """Update a worker's own `[[package]]` version in its Cargo.lock to match
     its bumped Cargo.toml.
@@ -368,36 +349,146 @@ def sync_cargo_lock_self_version(lock_path: Path, name: str, new_version: str) -
 
 
 @dataclass(frozen=True)
-class WorkerManifest:
-    """Parsed view of a `<worker>/iii.worker.yaml` file."""
+class WorkerSpec:
+    """One worker entry from the repository-root worker-compose catalog."""
 
-    name: str
-    language: str | None
-    deploy: str | None
+    catalog_id: str
+    path: Path
+    publish: bool
     manifest: str | None
-    bin: str | None
+    artifact_kind: str
+    binary: str | None
+    source: dict[str, object]
+    artifact: dict[str, object]
+    runtime: dict[str, object]
+    registry: dict[str, object]
+    validation: dict[str, object]
     raw: dict[str, object]
 
 
-def read_iii_worker_yaml(worker_dir: Path) -> WorkerManifest:
-    """Loads `<worker_dir>/iii.worker.yaml` and returns a `WorkerManifest`."""
-    import yaml  # imported here so `_lib` is usable without pyyaml at import time
+def worker_catalog_path() -> Path:
+    return Path(__file__).resolve().parents[2] / "worker-compose.yaml"
 
-    path = worker_dir / "iii.worker.yaml"
-    if not path.exists():
-        raise FileNotFoundError(f"{path} does not exist")
-    raw = yaml.safe_load(path.read_text()) or {}
-    if not isinstance(raw, dict):
-        raise ValueError(f"{path}: expected a mapping at top level")
-    name = raw.get("name") or worker_dir.name
-    return WorkerManifest(
-        name=str(name),
-        language=raw.get("language"),
-        deploy=raw.get("deploy"),
-        manifest=raw.get("manifest"),
-        bin=raw.get("bin"),
-        raw=raw,
-    )
+
+def read_worker_catalog(path: Path | None = None) -> dict[str, WorkerSpec]:
+    """Load the canonical catalog; no directory manifest fallback exists."""
+    import yaml  # imported lazily so version-only helpers need no PyYAML
+
+    catalog_path = (path or worker_catalog_path()).resolve()
+    if not catalog_path.is_file():
+        raise FileNotFoundError(f"{catalog_path} does not exist")
+    document = yaml.safe_load(catalog_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(document, dict):
+        raise ValueError(f"{catalog_path}: expected a mapping at top level")
+    unknown = set(document) - {"workers", "stacks"}
+    if unknown:
+        raise ValueError(f"{catalog_path}: unknown top-level keys: {sorted(unknown)}")
+    workers = document.get("workers")
+    stacks = document.get("stacks")
+    if not isinstance(workers, dict) or not workers:
+        raise ValueError(f"{catalog_path}: workers must be a non-empty mapping")
+    if not isinstance(stacks, dict):
+        raise ValueError(f"{catalog_path}: stacks must be a mapping")
+
+    root = catalog_path.parent
+    parsed: dict[str, WorkerSpec] = {}
+    paths: set[Path] = set()
+    publish_names: set[str] = set()
+    for catalog_id, value in workers.items():
+        if not isinstance(catalog_id, str) or not catalog_id.strip():
+            raise ValueError(f"{catalog_path}: worker IDs must be non-empty strings")
+        if not isinstance(value, dict):
+            raise ValueError(f"{catalog_path}: workers.{catalog_id} must be a mapping")
+        raw = dict(value)
+        expected_sections = {"source", "artifact", "runtime", "registry", "validation"}
+        legacy = {"language", "deploy", "manifest", "bin", "scripts", "interface_smoke"} & set(raw)
+        if legacy:
+            raise ValueError(f"{catalog_path}: workers.{catalog_id} uses legacy fields: {sorted(legacy)}")
+        unknown_sections = set(raw) - expected_sections
+        missing_sections = expected_sections - set(raw)
+        if unknown_sections or missing_sections:
+            raise ValueError(
+                f"{catalog_path}: workers.{catalog_id} sections differ; "
+                f"missing={sorted(missing_sections)} unknown={sorted(unknown_sections)}"
+            )
+        source = raw["source"]
+        artifact = raw["artifact"]
+        runtime = raw["runtime"]
+        registry = raw["registry"]
+        validation = raw["validation"]
+        for section_name, section in (
+            ("source", source),
+            ("artifact", artifact),
+            ("runtime", runtime),
+            ("registry", registry),
+            ("validation", validation),
+        ):
+            if not isinstance(section, dict):
+                raise ValueError(f"{catalog_path}: workers.{catalog_id}.{section_name} must be a mapping")
+        relative = source.get("path")
+        if not isinstance(relative, str) or not relative.strip():
+            raise ValueError(f"{catalog_path}: workers.{catalog_id}.path must be a non-empty string")
+        worker_path = (root / relative).resolve()
+        try:
+            worker_path.relative_to(root)
+        except ValueError as error:
+            raise ValueError(f"{catalog_path}: workers.{catalog_id}.path escapes the repository") from error
+        if worker_path in paths:
+            raise ValueError(f"{catalog_path}: duplicate worker path {relative!r}")
+        paths.add(worker_path)
+        publish = registry.get("publish")
+        if not isinstance(publish, bool):
+            raise ValueError(f"{catalog_path}: workers.{catalog_id}.registry.publish must be a boolean")
+        if publish:
+            if catalog_id in publish_names:
+                raise ValueError(f"{catalog_path}: duplicate publishable worker name {catalog_id!r}")
+            publish_names.add(catalog_id)
+        artifact_kind = artifact.get("kind")
+        if artifact_kind not in {"rust-binary", "javascript-bundle", "python-bundle", "oci-image"}:
+            raise ValueError(f"{catalog_path}: workers.{catalog_id}.artifact.kind is unsupported")
+        manifest = source.get("package_manifest")
+        binary = artifact.get("binary")
+        if not isinstance(manifest, str) or not manifest:
+            raise ValueError(f"{catalog_path}: workers.{catalog_id}.source.package_manifest is required")
+        if artifact_kind == "rust-binary":
+            targets = artifact.get("targets")
+            if not isinstance(targets, list) or not targets or not all(isinstance(target, str) for target in targets):
+                raise ValueError(f"{catalog_path}: workers.{catalog_id}.artifact.targets must be non-empty")
+            if not isinstance(binary, str) or not binary:
+                raise ValueError(f"{catalog_path}: workers.{catalog_id}.artifact.binary is required")
+        parsed[catalog_id] = WorkerSpec(
+            catalog_id=catalog_id,
+            path=worker_path,
+            publish=publish,
+            manifest=manifest if isinstance(manifest, str) else None,
+            artifact_kind=artifact_kind,
+            binary=binary if isinstance(binary, str) else None,
+            source=source,
+            artifact=artifact,
+            runtime=runtime,
+            registry=registry,
+            validation=validation,
+            raw=raw,
+        )
+    return parsed
+
+
+def read_worker(worker: str, path: Path | None = None) -> WorkerSpec:
+    """Return one canonical catalog entry by its exact catalog ID."""
+    workers = read_worker_catalog(path)
+    try:
+        return workers[worker]
+    except KeyError as error:
+        raise ValueError(f"worker {worker!r} is not declared in {path or worker_catalog_path()}") from error
+
+
+def read_worker_by_path(worker_dir: Path, path: Path | None = None) -> WorkerSpec:
+    """Return the catalog entry owning an exact repository directory."""
+    wanted = worker_dir.resolve()
+    matches = [worker for worker in read_worker_catalog(path).values() if worker.path == wanted]
+    if len(matches) != 1:
+        raise ValueError(f"worker path {worker_dir} is not declared exactly once in {path or worker_catalog_path()}")
+    return matches[0]
 
 
 def read_tag_annotation(tag: str) -> dict[str, str]:

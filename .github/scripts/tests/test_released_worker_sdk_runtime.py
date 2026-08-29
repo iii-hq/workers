@@ -5,7 +5,6 @@ import json
 import tomllib
 from pathlib import Path
 
-import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -20,10 +19,9 @@ def test_opengantry_uses_current_sdk_release() -> None:
 
 
 def test_scrapling_install_does_not_replace_current_sdk_with_vendor_copy() -> None:
-    manifest = yaml.safe_load(
-        (REPO_ROOT / "scrapling" / "iii.worker.yaml").read_text(encoding="utf-8")
-    )
-    install = manifest["scripts"]["install"]
+    import yaml
+    catalog = yaml.safe_load((REPO_ROOT / "worker-compose.yaml").read_text(encoding="utf-8"))
+    install = " ".join(catalog["workers"]["scrapling"]["runtime"]["prepare"][0])
 
     assert "vendor/iii_sdk" not in install
     assert "vendor/iii_helpers" not in install

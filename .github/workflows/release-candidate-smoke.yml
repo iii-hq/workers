@@ -1,0 +1,252 @@
+name: Release Candidate Smoke
+run-name: RC candidate smoke · ${{ inputs.worker }} · ${{ fromJSON(inputs.identity).operation_id }} · ${{ fromJSON(inputs.identity).step_id }} · ${{ fromJSON(inputs.identity).dispatch_nonce }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      identity: {required: true, type: string}
+      worker: {required: true, type: string}
+      source_sha: {required: true, type: string}
+      prepared_sha: {required: true, type: string}
+      candidate_version: {required: true, type: string}
+      stable_version: {required: true, type: string}
+      descriptor_sha256: {required: true, type: string}
+      prepared_run_id: {required: true, type: string}
+      expected_image_digest: {required: false, default: none, type: string}
+
+env:
+  RELEASE_IDENTITY: ${{ inputs.identity }}
+  OPERATION_ID: ${{ fromJSON(inputs.identity).operation_id }}
+  STEP_ID: ${{ fromJSON(inputs.identity).step_id }}
+  RELEASE_INTENT_ID: ${{ fromJSON(inputs.identity).release_intent_id }}
+  CANDIDATE_ID: ${{ fromJSON(inputs.identity).candidate_id }}
+  ATTEMPT_ID: ${{ fromJSON(inputs.identity).attempt_id }}
+  DISPATCH_NONCE: ${{ fromJSON(inputs.identity).dispatch_nonce }}
+  PLAN_HASH: ${{ fromJSON(inputs.identity).plan_hash }}
+  WORKER: ${{ inputs.worker }}
+  SOURCE_SHA: ${{ inputs.source_sha }}
+  PREPARED_SHA: ${{ inputs.prepared_sha }}
+  CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+  STABLE_VERSION: ${{ inputs.stable_version }}
+  DESCRIPTOR_SHA256: ${{ inputs.descriptor_sha256 }}
+  PREPARED_RUN_ID: ${{ inputs.prepared_run_id }}
+  EXPECTED_IMAGE_DIGEST: ${{ inputs.expected_image_digest }}
+
+permissions: {}
+
+jobs:
+  smoke:
+    runs-on: workers-release-linux-8core
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: release-prepared-${{ env.CANDIDATE_ID }}
+          path: release-prepared
+          run-id: ${{ inputs.prepared_run_id }}
+          github-token: ${{ github.token }}
+      - name: Authorize immutable smoke
+        env:
+          RELEASE_CONTROL_API_URL: ${{ vars.RELEASE_CONTROL_API_URL }}
+        run: |
+          set -euo pipefail
+          test "$(jq -r .descriptor_sha256 release-prepared/release-descriptor.json)" = "$DESCRIPTOR_SHA256"
+          python3 .github/scripts/release_control_contract.py validate-identity --identity "$RELEASE_IDENTITY"
+          python3 .github/scripts/release_control_contract.py validate-dispatch --operation-id "$OPERATION_ID" --step-id "$STEP_ID" --dispatch-nonce "$DISPATCH_NONCE" --descriptor-sha256 "$DESCRIPTOR_SHA256" --plan-hash "$PLAN_HASH" --source-sha "$SOURCE_SHA"
+          python3 .github/scripts/release_control_contract.py authorize-dispatch --api-url "$RELEASE_CONTROL_API_URL" --repository '${{ github.repository }}' --operation-id "$OPERATION_ID" --step-id "$STEP_ID" --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' --workflow 'release-candidate-smoke.yml' --event '${{ github.event_name }}' --sha '${{ github.sha }}' --release-intent-id "$RELEASE_INTENT_ID" --candidate-id "$CANDIDATE_ID" --attempt-id "$ATTEMPT_ID" --dispatch-nonce "$DISPATCH_NONCE" --plan-hash "$PLAN_HASH" --worker "$WORKER" --source-sha "$SOURCE_SHA" --descriptor-sha256 "$DESCRIPTOR_SHA256"
+      - name: Validate immutable compiler pin
+        id: compiler
+        run: python3 .github/scripts/release_compiler.py --github-output "$GITHUB_OUTPUT"
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          repository: ${{ steps.compiler.outputs.repository }}
+          ref: ${{ steps.compiler.outputs.commit }}
+          path: release-compiler
+
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: 1.97.1
+
+      - name: Authorize compiler cache with GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
+        with:
+          role-to-assume: ${{ vars.SCCACHE_ROLE_ARN }}
+          aws-region: ${{ vars.SCCACHE_REGION }}
+
+      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+
+      - name: Build pinned iii CLI
+        env:
+          MANIFEST: ${{ steps.compiler.outputs.cargo_manifest }}
+          BINARY: ${{ steps.compiler.outputs.binary }}
+          SCCACHE_BUCKET: ${{ vars.SCCACHE_BUCKET }}
+          SCCACHE_REGION: ${{ vars.SCCACHE_REGION }}
+          SCCACHE_S3_KEY_PREFIX: sccache/1.97.1/compiler
+          RUSTC_WRAPPER: sccache
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --manifest-path "release-compiler/$MANIFEST" --bin "$BINARY"
+          echo "$GITHUB_WORKSPACE/release-compiler/target/release" >> "$GITHUB_PATH"
+          sccache --show-stats | tee smoke-compiler-sccache-stats.txt
+
+      - name: Boot and verify exact published candidate
+        id: validation
+        run: |
+          set -euo pipefail
+          test "$(jq -r .worker release-prepared/release-descriptor.json)" = "$WORKER"
+          test "$(jq -r .source_sha release-prepared/release-descriptor.json)" = "$SOURCE_SHA"
+          test "$(jq -r .version release-prepared/release-descriptor.json)" = "$CANDIDATE_VERSION"
+          test "$(jq -r .descriptor_sha256 release-prepared/release-descriptor.json)" = "$DESCRIPTOR_SHA256"
+          test "$(jq -r .descriptor_sha256 release-prepared/prepared-artifacts.json)" = "$DESCRIPTOR_SHA256"
+          test -f release-prepared/release-interface.json
+          python3 .github/scripts/release_interface.py verify-evidence \
+            --descriptor release-prepared/release-descriptor.json \
+            --evidence release-prepared/release-evidence.json
+
+          body=$(jq -nc --arg worker "$WORKER" '{worker:$worker,version:"next"}')
+          curl -fsS -H 'Content-Type: application/json' -X POST \
+            'https://api.workers.iii.dev/resolve' --data "$body" >smoke-resolution.json
+          test "$(jq -r .root.version smoke-resolution.json)" = "$CANDIDATE_VERSION"
+          jq -e --slurpfile descriptor release-prepared/release-descriptor.json \
+            --arg worker "$WORKER" --arg digest "$DESCRIPTOR_SHA256" '
+              [.graph[] | select(.package_descriptor.name == $worker)] as $matches
+              | ($matches | length) == 1
+              and $matches[0].package_descriptor == $descriptor[0].package
+              and $matches[0].descriptor_sha256 == $digest
+            ' smoke-resolution.json >/dev/null
+
+          kind=$(jq -r .package.artifact.kind release-prepared/release-descriptor.json)
+          if [[ "$kind" == oci-image ]]; then
+            [[ "$EXPECTED_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+            image=$(jq -er --arg worker "$WORKER" '
+              .graph[] | select(.package_descriptor.name == $worker) | .artifacts.image_tag
+            ' smoke-resolution.json)
+            test "${image##*@}" = "$EXPECTED_IMAGE_DIGEST"
+          else
+            test "$EXPECTED_IMAGE_DIGEST" = none
+          fi
+
+          mkdir -p smoke
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          worker = os.environ["WORKER"]
+          document = {
+              "workers": {},
+              "stacks": {
+                  "smoke": {
+                      "namespace": "release-candidate-smoke",
+                      "containers": {
+                          worker: {"worker": f"package://{worker}@next"},
+                      },
+                  },
+              },
+          }
+          Path("smoke/worker-compose.yaml").write_text(
+              json.dumps(document, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          engine_pid= compose_pid=
+          cleanup() {
+            if [[ -n "$compose_pid" ]]; then
+              kill -TERM "$compose_pid" >/dev/null 2>&1 || true
+              for _ in $(seq 1 20); do kill -0 "$compose_pid" 2>/dev/null || break; sleep 1; done
+              kill -- "-$compose_pid" >/dev/null 2>&1 || true
+            fi
+            if [[ -n "$engine_pid" ]]; then kill -- "-$engine_pid" >/dev/null 2>&1 || true; fi
+          }
+          trap cleanup EXIT
+          engine_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
+          engine_url="ws://127.0.0.1:$engine_port"
+          printf 'engine:\n  workers:\n    iii-worker-manager:\n      host: 127.0.0.1\n      port: %s\nworkers: []\n' "$engine_port" >smoke/engine.yaml
+          setsid iii --config smoke/engine.yaml --no-update-check >smoke/engine.log 2>&1 &
+          engine_pid=$!
+          for _ in $(seq 1 60); do
+            kill -0 "$engine_pid" 2>/dev/null || { cat smoke/engine.log; exit 1; }
+            iii trigger --port "$engine_port" 'engine::workers::list' --json '{}' >/dev/null 2>&1 && break
+            sleep 1
+          done
+          iii trigger --port "$engine_port" 'engine::workers::list' --json '{}' >smoke/workers-baseline.json
+          iii trigger --port "$engine_port" 'engine::triggers::list' --json '{"include_internal":false}' >smoke/triggers-baseline.json
+
+          setsid iii compose --engine "$engine_url" --namespace release-candidate-smoke \
+            --file smoke/worker-compose.yaml --up >smoke/compose.log 2>&1 &
+          compose_pid=$!
+
+          validation=$(jq -r .package.validation.interface release-prepared/release-descriptor.json)
+          if [[ "$validation" == required ]]; then
+            export III_TRIGGER_PORT="$engine_port"
+            python3 .github/scripts/collect_worker_interface.py \
+              --worker "$WORKER" --out smoke/worker-interface.json \
+              --wait-seconds 600 \
+              --trigger-types-baseline smoke/triggers-baseline.json \
+              --workers-baseline smoke/workers-baseline.json
+            python3 .github/scripts/collect_worker_interface.py \
+              --assert-non-empty --assert-typed-schemas \
+              --assert-file smoke/worker-interface.json
+            python3 .github/scripts/release_interface.py compare \
+              --descriptor release-prepared/release-descriptor.json \
+              --expected release-prepared/release-interface.json \
+              --actual smoke/worker-interface.json
+          elif [[ "$validation" == skipped ]]; then
+            for _ in $(seq 1 600); do
+              kill -0 "$compose_pid" 2>/dev/null || { cat smoke/compose.log; exit 1; }
+              grep -F 'up:' smoke/compose.log >/dev/null 2>&1 && break
+              sleep 1
+            done
+            kill -0 "$compose_pid"
+            grep -F 'up:' smoke/compose.log
+            python3 .github/scripts/release_interface.py compare \
+              --descriptor release-prepared/release-descriptor.json \
+              --expected release-prepared/release-interface.json
+          else
+            echo "unsupported validation.interface: $validation"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always()
+        with:
+          name: release-smoke-evidence-${{ env.CANDIDATE_ID }}-${{ env.STEP_ID }}
+          path: |
+            smoke-resolution.json
+            smoke/*.json
+            smoke/*.log
+            smoke-compiler-sccache-stats.txt
+          retention-days: 7
+          if-no-files-found: warn
+      - name: Write result
+        if: always()
+        env:
+          STATUS: ${{ steps.validation.outcome }}
+        run: |
+          set -euo pipefail
+          outcome=succeeded; error=null
+          if [[ "$STATUS" == cancelled ]]; then outcome=canceled; error='{"code":"candidate_smoke_canceled","category":"validation","retryable":true,"message":"candidate smoke was canceled"}'
+          elif [[ "$STATUS" != success ]]; then outcome=failed; error='{"code":"candidate_smoke_failed","category":"validation","retryable":true,"message":"candidate smoke did not complete"}'; fi
+          artifacts='[]'
+          if [[ -f release-prepared/release-evidence.json ]]; then artifacts=$(jq -c '[.artifacts[] | del(.unit)]' release-prepared/release-evidence.json); fi
+          python3 .github/scripts/release_control_contract.py write-result --repository '${{ github.repository }}' --operation-id "$OPERATION_ID" --step-id "$STEP_ID" --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' --workflow 'release-candidate-smoke.yml' --event '${{ github.event_name }}' --sha '${{ github.sha }}' --release-intent-id "$RELEASE_INTENT_ID" --candidate-id "$CANDIDATE_ID" --attempt-id "$ATTEMPT_ID" --dispatch-nonce "$DISPATCH_NONCE" --plan-hash "$PLAN_HASH" --worker "$WORKER" --phase candidate_smoke --source-sha "$SOURCE_SHA" --prepared-sha "$PREPARED_SHA" --candidate-version "$CANDIDATE_VERSION" --stable-version "$STABLE_VERSION" --descriptor-sha256 "$DESCRIPTOR_SHA256" --outcome "$outcome" --effects '[]' --artifacts-json "$artifacts" --error-json "$error" --output release-result.json
+      - if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: release-result-${{ env.CANDIDATE_ID }}-${{ env.STEP_ID }}-attempt-${{ github.run_attempt }}
+          path: release-result.json
+          retention-days: 30
+          if-no-files-found: error
+      - if: always()
+        env:
+          RELEASE_CONTROL_API_URL: ${{ vars.RELEASE_CONTROL_API_URL }}
+        run: python3 .github/scripts/release_control_contract.py post-result --api-url "$RELEASE_CONTROL_API_URL" --result release-result.json

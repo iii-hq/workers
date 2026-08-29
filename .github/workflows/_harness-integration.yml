@@ -24,8 +24,9 @@ jobs:
     name: harness integration
     runs-on: [self-hosted, Linux, X64, rust]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          persist-credentials: false
           ref: ${{ inputs.source_ref }}
 
       - name: Read and validate engine.lock
@@ -77,25 +78,26 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Checkout pinned engine source
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          persist-credentials: false
           repository: ${{ steps.lock.outputs.repository }}
           ref: ${{ steps.lock.outputs.revision }}
           path: target/integration-engine-src
 
-      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # 1.97.1
         with:
+          toolchain: 1.97.1
           components: ${{ inputs.coverage && 'llvm-tools' || '' }}
 
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
         with:
           version: 11.13.1
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           # setup-node v5 auto-caches when package.json declares packageManager.
           # This step never cached; the repository is already over its cache budget.
-          package-manager-cache: false
           node-version: 22
 
       # The engine source is immutable at the locked revision. Cache the final
@@ -104,7 +106,7 @@ jobs:
       # cold.
       - name: Restore pinned engine binary
         id: engine-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: target/integration-engine-src/${{ steps.lock.outputs.binary }}
           key: integration-engine-bin-rust-1.97.1-${{ runner.os }}-${{ runner.arch }}-${{ steps.lock.outputs.revision }}-${{ hashFiles('harness/tests/integration/engine.lock') }}-${{ hashFiles('target/integration-engine-src/Cargo.lock') }}
@@ -116,7 +118,7 @@ jobs:
 
       - name: Save pinned engine binary
         if: inputs.save-cache && steps.engine-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: target/integration-engine-src/${{ steps.lock.outputs.binary }}
           key: ${{ steps.engine-cache.outputs.cache-primary-key }}
@@ -132,7 +134,7 @@ jobs:
 
       - name: Restore integration Rust cache
         id: stack-cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           # Instrumented builds have different fingerprints; keep them on their
           # own key so coverage runs never poison the normal cache.
@@ -245,7 +247,7 @@ jobs:
 
       - name: Upload coverage report
         if: always() && inputs.coverage
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: harness-integration-coverage
           path: |
@@ -272,7 +274,7 @@ jobs:
 
       - name: Upload Rust build timings
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: harness-integration-rust-timings
           path: |
@@ -283,7 +285,7 @@ jobs:
 
       - name: Upload compact results
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: integration-results
           path: |
@@ -294,7 +296,7 @@ jobs:
 
       - name: Upload full non-pass artifacts
         if: failure()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: integration-artifacts
           path: target/integration/
@@ -303,7 +305,7 @@ jobs:
 
       - name: Upload Console E2E artifacts
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: console-e2e-artifacts
           path: target/console-e2e/

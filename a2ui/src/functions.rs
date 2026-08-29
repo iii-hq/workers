@@ -1307,8 +1307,8 @@ pub async fn export_code(deps: &Deps, req: ExportCodeRequest) -> Result<CodeExpo
         ],
         CodeTarget::Worker => vec![
             CodeFile {
-                path: "iii.worker.yaml".into(),
-                content: worker_manifest(),
+                path: "worker-compose.yaml".into(),
+                content: worker_compose(),
             },
             CodeFile {
                 path: "package.json".into(),
@@ -1603,8 +1603,8 @@ export default function GeneratedSurface({ onAction }: Props) {
 "#
     .into()
 }
-fn worker_manifest() -> String {
-    "iii: v1\nname: generated-a2ui\nlanguage: javascript\ndeploy: bundle\nmanifest: package.json\nlicense: Apache-2.0\ntags: [a2ui, generated-ui]\ndescription: Serve one exported A2UI surface as a iii function.\n\nruntime:\n  kind: javascript\n\nscripts:\n  start: node ./src/index.mjs\n"
+fn worker_compose() -> String {
+    "workers:\n  generated-a2ui:\n    source:\n      path: .\n      package_manifest: package.json\n    artifact:\n      kind: javascript-bundle\n      build_command: [node, --check, src/index.mjs]\n      include: [package.json, surface.json, src/index.mjs]\n    runtime:\n      exec: [node, src/index.mjs]\n    registry:\n      description: Serve one exported A2UI surface as an iii function.\n      license: Apache-2.0\n      tags: [a2ui, generated-ui]\n      dependencies: {}\n      publish: true\n    validation:\n      interface: required\nstacks: {}\n"
         .into()
 }
 fn worker_package() -> String {
@@ -2037,8 +2037,8 @@ mod tests {
 
     #[test]
     fn exported_worker_uses_the_current_javascript_contract() {
-        assert!(worker_manifest().contains("language: javascript"));
-        assert!(worker_manifest().contains("deploy: bundle"));
+        assert!(worker_compose().contains("kind: javascript-bundle"));
+        assert!(worker_compose().contains("package_manifest: package.json"));
         assert!(worker_package().contains("\"iii-sdk\": \"^0.21.6\""));
         assert!(worker_source().contains("registerWorker(url"));
         assert!(worker_source().contains("process.env.III_URL"));

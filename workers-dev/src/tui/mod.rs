@@ -2511,7 +2511,7 @@ mod tests {
     #[test]
     fn marked_worker_name_at_the_column_budget_is_not_truncated() {
         // Longest real worker name (provider-openai-codex, verified against
-        // the */iii.worker.yaml directories) is 21 chars. Plus the 3-char
+        // the */worker-compose.yaml directories) is 21 chars. Plus the 3-char
         // mark+icon+space prefix, that's exactly `Constraint::Length(24)` on
         // the Worker column — zero margin. Rendered at the table's real pane
         // width (TABLE_PANE_WIDTH), not a narrow test backend, so this

@@ -950,21 +950,11 @@ mod tests {
     #[test]
     fn unsupported_reason_flags_non_rust_dep() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let write = |name: &str, body: &str| {
-            let dir = tmp.path().join(name);
-            std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(dir.join("iii.worker.yaml"), body).unwrap();
-            dir
-        };
-        let harness_dir = write(
-            "harness",
-            "iii: v1\nname: harness\nlanguage: rust\ndeploy: binary\ndependencies:\n  scrapling: \"^0.2.4\"\n",
-        );
+        std::fs::write(tmp.path().join("worker-compose.yaml"), "workers:\n  harness:\n    source: {path: harness}\n    artifact: {kind: rust-binary}\n    registry:\n      dependencies: {scrapling: \"^0.2.4\"}\n  scrapling:\n    source: {path: scrapling}\n    artifact: {kind: python-bundle}\n    registry: {dependencies: {}}\n").unwrap();
+        let harness_dir = tmp.path().join("harness");
+        std::fs::create_dir_all(&harness_dir).unwrap();
         std::fs::write(harness_dir.join("Cargo.toml"), "[workspace]\n").unwrap();
-        write(
-            "scrapling",
-            "iii: v1\nname: scrapling\nlanguage: python\ndeploy: bundle\n",
-        );
+        std::fs::create_dir_all(tmp.path().join("scrapling")).unwrap();
 
         let worker_specs = crate::discover::discover_repo_workers(tmp.path()).unwrap();
         let workers = crate::discover::order_worker_names(&worker_specs);
@@ -1003,16 +993,9 @@ mod tests {
     /// outlive the `Orchestrator`.
     fn test_orchestrator() -> (tempfile::TempDir, Orchestrator) {
         let tmp = tempfile::TempDir::new().unwrap();
-        let write = |name: &str, body: &str| {
-            let dir = tmp.path().join(name);
-            std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(dir.join("iii.worker.yaml"), body).unwrap();
-            dir
-        };
-        let harness_dir = write(
-            "harness",
-            "iii: v1\nname: harness\nlanguage: rust\ndeploy: binary\n",
-        );
+        std::fs::write(tmp.path().join("worker-compose.yaml"), "workers:\n  harness:\n    source: {path: harness}\n    artifact: {kind: rust-binary}\n    registry: {dependencies: {}}\n").unwrap();
+        let harness_dir = tmp.path().join("harness");
+        std::fs::create_dir_all(&harness_dir).unwrap();
         std::fs::write(harness_dir.join("Cargo.toml"), "[workspace]\n").unwrap();
 
         let worker_specs = crate::discover::discover_repo_workers(tmp.path()).unwrap();

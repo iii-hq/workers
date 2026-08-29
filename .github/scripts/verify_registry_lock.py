@@ -20,7 +20,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lock", type=Path, required=True)
     parser.add_argument("--worker", required=True)
     parser.add_argument("--version", required=True)
-    parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--catalog", type=Path)
     parser.add_argument("--required", action="append", default=[])
     parser.add_argument("--expected-versions-json", default="{}")
     parser.add_argument("--output", type=Path)
@@ -65,11 +65,13 @@ def main() -> None:
         )
 
     required = set(args.required)
-    if args.manifest:
-        manifest = load_yaml(args.manifest)
-        dependencies = manifest.get("dependencies") or {}
+    if args.catalog:
+        catalog = load_yaml(args.catalog)
+        worker_definition = (catalog.get("workers") or {}).get(args.worker) or {}
+        registry = worker_definition.get("registry") or {}
+        dependencies = registry.get("dependencies") or {}
         if not isinstance(dependencies, dict):
-            raise SystemExit("invalid_manifest: dependencies must be a mapping")
+            raise SystemExit("invalid_catalog: registry.dependencies must be a mapping")
         required.update(dependencies)
 
     missing = sorted(required - workers.keys())
