@@ -5,6 +5,8 @@ import pathlib
 import sys
 from typing import Any
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import _lib  # noqa: E402
 
 def normalize_dependencies(raw_deps: Any) -> list[dict[str, Any]]:
     if raw_deps in (None, ""):
@@ -283,44 +285,33 @@ def normalize_worker_interface(
 
 def build_payload(
     *,
-    repo_root: pathlib.Path,
-    worker: str,
-    version: str,
-    registry_tag: str,
-    deploy: str,
+    registry_projection: dict[str, Any],
     repo_url: str,
     interface: dict[str, Any],
-    binaries: dict[str, Any],
-    image_tag: str,
-    bundle: dict[str, Any] | None = None,
-    experimental: bool = False,
+    artifacts: dict[str, Any],
+    registry_tag: str,
+    readme: str | None = None,
 ) -> dict[str, Any]:
-    root = repo_root / worker
-    meta = _read_yaml(root / "iii.worker.yaml") or {}
-
-    readme_path = root / "README.md"
-    readme = readme_path.read_text(encoding="utf-8") if readme_path.exists() else ""
-
-    if "config" in meta and meta["config"] is not None:
-        config = meta["config"]
-    else:
-        config_path = root / "config.yaml"
-        config = _read_yaml(config_path) if config_path.exists() else {}
-    if config is None:
-        config = {}
-    if not isinstance(config, dict):
-        raise ValueError("worker config must be an object")
-
+    """Merge the immutable compiler projection with current Registry fields."""
+    required = {
+        "worker_name", "version", "type", "description", "license", "tags",
+        "dependencies", "config", "experimental", "readme",
+    }
+    if not isinstance(registry_projection, dict) or set(registry_projection) != required:
+        raise ValueError("registry_projection differs from the current Registry metadata contract")
+    deploy = registry_projection["type"]
+    kind = artifacts.get("kind")
+    expected_kind = {
+        "binary": "rust-binary",
+        "bundle": {"javascript-bundle", "python-bundle"},
+        "image": "oci-image",
+    }.get(deploy)
+    if (kind not in expected_kind) if isinstance(expected_kind, set) else (kind != expected_kind):
+        raise ValueError("prepared artifacts differ from the public deploy type")
     payload: dict[str, Any] = {
-        "worker_name": worker,
-        "version": version,
-        "type": deploy,
-        "readme": readme,
+        **registry_projection,
+        "tag": registry_tag,
         "repo": repo_url,
-        "description": meta.get("description", ""),
-        "license": meta.get("license", ""),
-        "dependencies": normalize_dependencies(meta.get("dependencies")),
-        "config": config,
         "functions": [
             _normalize_registry_function(function)
             for function in interface.get("functions") or []
@@ -329,92 +320,51 @@ def build_payload(
             _normalize_registry_trigger(trigger)
             for trigger in interface.get("triggers") or []
         ],
-        # Always sent, never omitted: the registry treats a missing flag as
-        # "not experimental" and clears the badge, so leaving it out on a
-        # still-experimental release would silently promote the worker. The
-        # registry rejects a string here, hence the explicit bool.
-        "experimental": bool(experimental),
     }
-    # Stable finalization first creates an immutable version without moving a
-    # channel. The Registry distinguishes that bootstrap-safe state from a
-    # mutable `next`/`latest` assignment, so `none` must omit the tag field.
-    if registry_tag and registry_tag != "none":
-        payload["tag"] = registry_tag
-
-    tags = normalize_tags(meta.get("tags"))
-    if tags:
-        payload["tags"] = tags
-
     if deploy == "binary":
-        if not binaries:
-            raise ValueError("deploy=binary requires non-empty binaries")
+        binaries = artifacts.get("binaries")
+        if not isinstance(binaries, dict) or not binaries:
+            raise ValueError("binary publication requires prepared binaries")
         payload["binaries"] = binaries
-    elif deploy == "image":
-        if not image_tag:
-            raise ValueError("deploy=image requires image_tag")
-        payload["image_tag"] = image_tag
     elif deploy == "bundle":
-        # `PublishRequestBundle` requires both `archive_url` and `sha256`.
-        # See tmp/openapi.yaml#PublishRequestBundle (lines 286-347).
-        if not bundle:
-            raise ValueError("deploy=bundle requires non-empty bundle artefact")
-        archive_url = bundle.get("archive_url")
-        sha256 = bundle.get("sha256")
-        if not isinstance(archive_url, str) or not archive_url:
-            raise ValueError("deploy=bundle requires bundle.archive_url")
-        if not isinstance(sha256, str) or not sha256:
-            raise ValueError("deploy=bundle requires bundle.sha256")
-        payload["archive_url"] = archive_url
-        payload["sha256"] = sha256
-    else:
-        raise ValueError(f"unsupported deploy={deploy}")
-
+        archive_url = artifacts.get("archive_url")
+        digest = artifacts.get("sha256")
+        if not isinstance(archive_url, str) or not archive_url or not isinstance(digest, str) or not digest:
+            raise ValueError("bundle publication requires archive_url and sha256")
+        payload.update(archive_url=archive_url, sha256=digest)
+    elif deploy == "image":
+        image_tag = artifacts.get("image_tag")
+        if not isinstance(image_tag, str) or "@sha256:" not in image_tag:
+            raise ValueError("image publication requires a digest-pinned image_tag")
+        payload["image_tag"] = image_tag
+    if readme is not None and readme != payload["readme"]:
+        raise ValueError("external readme differs from the compiled Registry projection")
     return payload
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--worker", required=True)
-    parser.add_argument("--version", required=True)
-    parser.add_argument("--registry-tag", default="latest")
-    parser.add_argument("--deploy", required=True, choices=["binary", "image", "bundle"])
+    parser.add_argument("--descriptor", required=True)
     parser.add_argument("--repo-url", required=True)
     parser.add_argument("--interface-json", required=True)
-    parser.add_argument("--binaries-json", default="")
-    parser.add_argument("--bundle-json", default="")
-    parser.add_argument("--image-tag", default="")
-    parser.add_argument("--repo-root", default=".")
+    parser.add_argument("--artifacts-json", required=True)
+    parser.add_argument("--registry-tag", required=True)
+    parser.add_argument("--readme")
     parser.add_argument("--out", default="payload.json")
-    # Workflow inputs arrive as strings; anything but a literal `true` is
-    # false, so a missing or malformed value publishes as stable rather than
-    # marking a worker experimental by accident.
-    parser.add_argument(
-        "--experimental",
-        default="false",
-        help="'true' marks the published worker experimental in the registry",
-    )
     args = parser.parse_args()
 
+    descriptor = json.loads(pathlib.Path(args.descriptor).read_text(encoding="utf-8"))
     interface = json.loads(pathlib.Path(args.interface_json).read_text(encoding="utf-8"))
-    binaries = {}
-    if args.binaries_json:
-        binaries = json.loads(pathlib.Path(args.binaries_json).read_text(encoding="utf-8"))
-    bundle: dict[str, Any] | None = None
-    if args.bundle_json:
-        bundle = json.loads(pathlib.Path(args.bundle_json).read_text(encoding="utf-8"))
+    artifacts = json.loads(pathlib.Path(args.artifacts_json).read_text(encoding="utf-8"))
+    readme = pathlib.Path(args.readme).read_text(encoding="utf-8") if args.readme else None
 
     payload = build_payload(
-        repo_root=pathlib.Path(args.repo_root),
-        worker=args.worker,
-        version=args.version,
-        registry_tag=args.registry_tag,
-        deploy=args.deploy,
+        registry_projection=descriptor["registry_projection"],
         repo_url=args.repo_url,
         interface=interface,
-        binaries=binaries,
-        image_tag=args.image_tag,
-        bundle=bundle,
-        experimental=args.experimental.strip().lower() == "true",
+        artifacts=artifacts,
+        registry_tag=args.registry_tag,
+        readme=readme,
     )
     pathlib.Path(args.out).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({k: v for k, v in payload.items() if k != "readme"}, indent=2))

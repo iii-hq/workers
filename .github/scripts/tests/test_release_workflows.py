@@ -1,423 +1,314 @@
-from __future__ import annotations
-
+import re
 from pathlib import Path
 
 import yaml
 
 
-ROOT = Path(__file__).parents[2]
-WORKFLOWS = ROOT / "workflows"
-COMMON = {"operation_id", "step_id"}
-
-EXPECTED_INPUTS = {
-    "harness-e2e-shadow.yml": {"campaign_id", "execution_id", "attempt", "execution_contract"},
-    "prepare-release.yml": COMMON
-    | {
-        "release_intent_id",
-        "candidate_id",
-        "release_attempt_id",
-        "worker",
-        "stable_version",
-        "candidate_version",
-        "source_sha",
-        "targets",
-        "plan_hash",
-        "dispatch_nonce",
-    },
-    "publish-candidate.yml": COMMON
-    | {
-        "release_intent_id",
-        "candidate_id",
-        "release_attempt_id",
-        "worker",
-        "stable_version",
-        "candidate_version",
-        "source_sha",
-        "targets",
-        "prepared_sha",
-        "prepared_run_id",
-        "prepared_artifact",
-        "plan_hash",
-        "expected_next_version",
-        "dispatch_nonce",
-    },
-    "publish-stable.yml": COMMON
-    | {
-        "release_intent_id",
-        "candidate_id",
-        "release_attempt_id",
-        "worker",
-        "candidate_version",
-        "stable_version",
-        "source_operation_id",
-        "source_sha",
-        "targets",
-        "plan_hash",
-        "expected_next_version",
-        "expected_latest_version",
-        "recovery_run_id",
-        "recovery_operation_id",
-        "recovery_step_id",
-        "dispatch_nonce",
-    },
-    "finalize-registry.yml": COMMON
-    | {
-        "release_intent_id",
-        "candidate_id",
-        "release_attempt_id",
-        "worker",
-        "candidate_version",
-        "stable_version",
-        "source_sha",
-        "plan_hash",
-        "expected_next_version",
-        "expected_latest_version",
-        "dispatch_nonce",
-    },
-    "create-tag.yml": COMMON | {"worker", "target_version", "registry_tag", "experimental", "expected_current_version", "source_sha"},
-    "create-prerelease-tag.yml": COMMON | {"worker", "target_version", "source_sha", "experimental"},
-    "release.yml": COMMON | {"source_tag_step_id", "tag", "publish_registry"},
-    "candidate-smoke.yml": COMMON | {"tag", "worker", "version", "release_run_id", "release_run_attempt"},
-    "container-alias.yml": COMMON | {"worker", "version", "channel", "expected_digest"},
-    "promote-registry.yml": COMMON
-    | {
-        "worker",
-        "version",
-        "expected_next_version",
-        "expected_latest_version",
-        "release_run_id",
-        "release_run_attempt",
-        "candidate_evidence_run_id",
-        "candidate_evidence_run_attempt",
-        "e2e_run_id",
-        "e2e_run_attempt",
-    },
-    "reconcile-github-release.yml": COMMON | {"worker", "version", "tag", "state"},
-    "verify-release.yml": COMMON
-    | {"worker", "version", "channel", "tag", "deploy", "expected_digest", "verify_registry"},
-    "harness-e2e-registry.yml": COMMON
-    | {
-        "source_sha",
-        "lane",
-        "channel",
-        "release_worker",
-        "release_version",
-        "release_tag",
-        "release_run_id",
-        "release_run_attempt",
-        "stack_versions",
-        "validation_profile",
-        "scenarios_json",
-        "required_scenarios_json",
-        "policy_digest",
-        "policy_version",
-        "subjects",
-        "judge_model",
-        "judge_provider",
-        "runs",
-    },
-    "harness-e2e-source.yml": COMMON
-    | {
-        "source_sha",
-        "scenarios_json",
-        "required_scenarios_json",
-        "policy_digest",
-        "policy_version",
-        "subjects",
-        "judge_model",
-        "judge_provider",
-        "runs",
-    },
-    "harness-quickstart.yml": COMMON
-    | {
-        "source_sha",
-        "cli_channel",
-        "registry_tag",
-        "release_worker",
-        "release_version",
-        "release_tag",
-        "release_run_id",
-        "release_run_attempt",
-    },
-    "database-e2e.yml": COMMON | {"source_sha"},
-    "rbac-proxy-e2e.yml": COMMON | {"source_sha"},
-    "shell-e2e.yml": COMMON | {"source_sha"},
-    "storage-e2e.yml": COMMON | {"source_sha"},
+ROOT = Path(__file__).resolve().parents[3]
+WORKFLOWS = ROOT / ".github" / "workflows"
+ENTRYPOINTS = {
+    "release-prepare.yml": "prepare",
+    "release-candidate-publish.yml": "candidate_publish",
+    "release-candidate-smoke.yml": "candidate_smoke",
+    "release-stable-publish.yml": "stable_publish",
+    "release-image-alias.yml": "image_alias",
+    "release-finalize.yml": "finalize",
+    "release-verify.yml": "verify",
 }
-
-MUTATING = {
-    "prepare-release.yml",
-    "publish-candidate.yml",
-    "publish-stable.yml",
-    "finalize-registry.yml",
-    "create-tag.yml",
-    "create-prerelease-tag.yml",
-    "release.yml",
-    "container-alias.yml",
-    "promote-registry.yml",
-    "reconcile-github-release.yml",
-}
-
-RELEASE_EXECUTORS = {
-    "_bundle.yml",
-    "_container.yml",
-    "_publish-registry.yml",
-    "_rust-binary.yml",
-}
+REUSABLE = {"_release-build.yml", "_release-registry.yml", "_worker-e2e.yml"}
 
 
-def workflow(path: Path) -> dict:
-    value = yaml.load(path.read_text(), Loader=yaml.BaseLoader)
-    assert isinstance(value, dict)
-    return value
+def body(name: str) -> str:
+    return (WORKFLOWS / name).read_text(encoding="utf-8")
 
 
-def test_release_control_workflow_input_contract_is_exact() -> None:
-    dispatch_files = set()
-    for path in WORKFLOWS.glob("*.yml"):
-        value = workflow(path)
-        triggers = value.get("on")
-        if isinstance(triggers, dict) and "workflow_dispatch" in triggers:
-            dispatch_files.add(path.name)
-    assert dispatch_files == set(EXPECTED_INPUTS)
-    for name, expected in EXPECTED_INPUTS.items():
-        dispatch = workflow(WORKFLOWS / name)["on"]["workflow_dispatch"]
-        inputs = dispatch.get("inputs", {}) if isinstance(dispatch, dict) else {}
-        assert set(inputs) == expected, name
-        optional_defaults = {
-            "prepare-release.yml": {"targets": ""},
-            "publish-candidate.yml": {"targets": ""},
-            "publish-stable.yml": {
-                "targets": "",
-                "recovery_run_id": "0",
-                "recovery_operation_id": "none",
-                "recovery_step_id": "none",
-            },
-        }
-        for input_name, definition in inputs.items():
-            if input_name in optional_defaults.get(name, {}):
-                assert definition.get("required") == "false", (name, input_name)
-                assert definition.get("default") == optional_defaults[name][input_name], (name, input_name)
-            else:
-                assert definition.get("required") == "true", (name, input_name)
+def test_exact_release_topology_and_no_legacy_wrappers():
+    for name in set(ENTRYPOINTS) | REUSABLE:
+        assert (WORKFLOWS / name).is_file(), name
+    old = {"prepare-release.yml", "publish-candidate.yml", "candidate-smoke.yml", "publish-stable.yml",
+           "container-alias.yml", "finalize-registry.yml", "verify-release.yml", "release.yml",
+           "_rust-binary.yml", "_publish-registry.yml", "_harness-e2e.yml", "_bundle.yml", "_container.yml"}
+    assert not {path.name for path in WORKFLOWS.glob("*.yml")}.intersection(old)
 
 
-def test_every_dispatch_is_actor_gated_and_emits_factual_evidence() -> None:
-    for name in EXPECTED_INPUTS:
-        body = (WORKFLOWS / name).read_text()
-        assert "release_control_contract.py validate-dispatch" in body, name
-        assert "RELEASE_CONTROL_BOT_LOGIN" in body, name
-        if name == "harness-e2e-shadow.yml":
-            assert "e2e-observation-${{ inputs.campaign_id }}-${{ inputs.execution_id }}" in body, name
-            assert "ACTIONS_ID_TOKEN_REQUEST_TOKEN" in body, name
-        else:
-            assert "execution-result-${{ inputs.operation_id }}-${{ inputs.step_id }}" in body, name
-        assert ("--mutating" in body) == (name in MUTATING), name
+def test_every_entrypoint_authorizes_and_posts_nominal_release_result():
+    for name, phase in ENTRYPOINTS.items():
+        text = body(name)
+        assert "authorize-dispatch" in text, name
+        assert "post-result" in text, name
+        assert "--output release-result.json" in text, name
+        assert f"--phase {phase}" in text, name
+        assert "release-result-${{ env.CANDIDATE_ID }}-${{ env.STEP_ID }}-attempt-${{ github.run_attempt }}" in text
+        assert f"--workflow '{name}'" in text
+        assert "${{ fromJSON(inputs.identity).operation_id }} · ${{ fromJSON(inputs.identity).step_id }} · ${{ fromJSON(inputs.identity).dispatch_nonce }}" in text
+        assert "validate-identity --identity \"$RELEASE_IDENTITY\"" in text
 
 
-def test_harness_shadow_uses_the_general_self_hosted_pool() -> None:
-    observe = workflow(WORKFLOWS / "harness-e2e-shadow.yml")["jobs"]["observe"]
-    assert observe["runs-on"] == ["self-hosted", "Linux", "X64", "general"]
-    assert observe["environment"] == "harness-e2e-trusted"
-
-
-def test_candidate_smoke_prepares_kvm_only_for_scrapling() -> None:
-    steps = workflow(WORKFLOWS / "candidate-smoke.yml")["jobs"]["smoke"]["steps"]
-    prepare = next(step for step in steps if step.get("name") == "Prepare KVM for Scrapling sandbox")
-    assert prepare["if"] == "inputs.worker == 'scrapling'"
-    assert "test -c /dev/kvm" in prepare["run"]
-    assert "sudo chmod 0666 /dev/kvm" in prepare["run"]
-
-
-def test_candidate_publish_retries_and_safely_joins_prepared_commits() -> None:
-    path = WORKFLOWS / "publish-candidate.yml"
-    value = workflow(path)
-    publish = value["jobs"]["publish"]
-    assert "concurrency" not in publish
-
-    steps = publish["steps"]
-    verify = next(step for step in steps if step.get("name") == "Verify prepared artifact and release metadata")
-    push = next(step for step in steps if step.get("name") == "Push candidate commit and annotated tag atomically")
-
-    assert 'git merge-base --is-ancestor "$SOURCE_SHA" "$PREPARED_SHA"' in verify["run"]
-    assert 'git diff --quiet "$SOURCE_SHA" "$main_sha" -- "$WORKER"' in verify["run"]
-    assert 'case "$changed" in' in verify["run"]
-    assert '"$WORKER"/*)' in verify["run"]
-    assert "prepare_main_target()" in push["run"]
-    assert "publish_git_refs()" in push["run"]
-    assert 'git merge --no-ff --no-edit "$PREPARED_SHA"' in push["run"]
-    assert "for attempt in $(seq 1 60)" in push["run"]
-    assert "main advanced during candidate publication; retrying CAS" in push["run"]
-    assert 'git push --atomic origin' in push["run"]
-
-
-def test_reusable_harness_executor_has_no_implicit_inputs() -> None:
-    inputs = workflow(WORKFLOWS / "_harness-e2e.yml")["on"]["workflow_call"]["inputs"]
-    assert inputs
-    assert all(definition.get("required") == "true" for definition in inputs.values())
-    assert all("default" not in definition for definition in inputs.values())
-
-
-def test_reusable_release_executors_have_no_implicit_inputs() -> None:
-    for name in RELEASE_EXECUTORS:
-        inputs = workflow(WORKFLOWS / name)["on"]["workflow_call"]["inputs"]
-        assert inputs, name
-        optional_defaults = {
-            "_publish-registry.yml": {"expected_current_version": ""},
-            "publish-stable.yml": {
-                "recovery_run_id": "0",
-                "recovery_operation_id": "none",
-                "recovery_step_id": "none",
-            },
-        }
-        for input_name, definition in inputs.items():
-            if input_name in optional_defaults.get(name, {}):
-                assert definition.get("required") == "false", (name, input_name)
-                assert definition.get("default") == optional_defaults[name][input_name], (name, input_name)
-            else:
-                assert definition.get("required") == "true", (name, input_name)
-                assert "default" not in definition, (name, input_name)
-
-
-def test_registry_publish_authenticates_iii_installer() -> None:
-    body = (WORKFLOWS / "_publish-registry.yml").read_text()
-    assert "GITHUB_TOKEN: ${{ github.token }}" in body
-
-
-def test_release_target_policy_excludes_windows_and_requires_complete_assets() -> None:
-    body = (WORKFLOWS / "_rust-binary.yml").read_text()
-    assert "windows-latest" not in body
-    assert "x86_64-pc-windows-msvc" not in body
-
-    resolver = (WORKFLOWS.parent / "scripts" / "resolve_binary_artifacts.py").read_text()
-    assert "missing binary artefacts for targets" in resolver
-
-
-def test_prepare_release_expands_the_computed_target_list_with_matrix_include() -> None:
-    jobs = workflow(WORKFLOWS / "prepare-release.yml")["jobs"]
-    strategy = jobs["build"]["strategy"]
-
-    assert strategy["fail-fast"] == "false"
-    assert strategy["matrix"] == {
-        "include": "${{ fromJSON(needs.matrix.outputs.include) }}",
-    }
-
-
-def test_publish_stable_expands_the_computed_target_list_with_matrix_include() -> None:
-    jobs = workflow(WORKFLOWS / "publish-stable.yml")["jobs"]
-    strategy = jobs["build"]["strategy"]
-
-    assert strategy["fail-fast"] == "false"
-    assert strategy["matrix"] == {
-        "include": "${{ fromJSON(needs.matrix.outputs.include) }}",
-    }
-
-
-def test_release_builds_use_the_dedicated_github_hosted_runners() -> None:
-    for filename in ("prepare-release.yml", "publish-stable.yml"):
-        jobs = workflow(WORKFLOWS / filename)["jobs"]
-        assert jobs["prepare"]["runs-on"] == "workers-release-linux-8core"
-        assert jobs["build"]["runs-on"] == "${{ matrix.runner }}"
-
-    binary = workflow(WORKFLOWS / "_rust-binary.yml")["jobs"]
-    assert binary["web-build"]["runs-on"] == "workers-release-linux-8core"
-    assert binary["build"]["runs-on"] == "${{ matrix.runner }}"
-
-
-def test_rust_binary_routes_apple_targets_to_independent_runner_pools() -> None:
-    lines = (WORKFLOWS / "_rust-binary.yml").read_text().splitlines()
-    intel = next(line for line in lines if '"target": "x86_64-apple-darwin"' in line)
-    arm = next(line for line in lines if '"target": "aarch64-apple-darwin"' in line)
-
-    assert '"runner": "workers-release-macos-12core"' in intel
-    assert '"runner": "workers-release-macos-arm-5core"' in arm
-
-
-def test_release_matrix_and_build_jobs_install_manifest_tooling() -> None:
-    for filename in ("prepare-release.yml", "publish-stable.yml"):
-        jobs = workflow(WORKFLOWS / filename)["jobs"]
-        for job_name in ("matrix", "build"):
-            steps = jobs[job_name]["steps"]
-            setup = next(step for step in steps if step.get("uses") == "actions/setup-python@v6")
-            tooling = next(step for step in steps if step.get("name") == "Install manifest tooling")
-            assert setup["with"]["python-version"] == "3.12"
-            assert steps.index(setup) < steps.index(tooling)
-            assert tooling["run"] == "python -m pip install --quiet pyyaml"
-
-
-def test_cross_platform_release_builds_disable_pnpm_cache() -> None:
-    for filename in ("prepare-release.yml", "publish-stable.yml"):
-        steps = workflow(WORKFLOWS / filename)["jobs"]["build"]["steps"]
-        setup_node = next(step for step in steps if step.get("uses") == "actions/setup-node@v5")
-        assert setup_node["with"]["package-manager-cache"] == "false"
-        assert "cache" not in setup_node["with"]
-        assert "cache-dependency-path" not in setup_node["with"]
-
-
-def test_release_assembly_downloads_artifacts_after_checkout() -> None:
-    for filename in ("prepare-release.yml", "publish-stable.yml"):
-        steps = workflow(WORKFLOWS / filename)["jobs"]["assemble"]["steps"]
-        checkout_index = next(index for index, step in enumerate(steps) if step.get("uses") == "actions/checkout@v5")
-        download_indexes = [
-            index for index, step in enumerate(steps) if step.get("uses") == "actions/download-artifact@v7"
+def test_every_entrypoint_reports_and_uploads_result_even_after_effect_failure():
+    for name in ENTRYPOINTS:
+        workflow = yaml.safe_load(body(name))
+        result_steps = [
+            step
+            for job in workflow["jobs"].values()
+            for step in job.get("steps", [])
+            if "release-result.json" in str(step)
+            and (
+                "write-result" in step.get("run", "")
+                or "post-result" in step.get("run", "")
+                or str(step.get("uses", "")).startswith("actions/upload-artifact@")
+            )
         ]
-        assert download_indexes
-        assert checkout_index < min(download_indexes)
+        assert len(result_steps) == 3, name
+        assert all(step.get("if") == "always()" for step in result_steps), name
 
 
-def test_registry_publish_keeps_stdio_workers_alive_for_interface_collection() -> None:
-    body = (WORKFLOWS / "_publish-registry.yml").read_text()
-    assert "start_worker_with_open_stdin" in body
-    assert "stdin=subprocess.PIPE" in body
-    assert "signal.signal(signal.SIGTERM" in body
+def test_dispatch_inputs_use_one_identity_object_and_fit_github_limit():
+    legacy_identity_inputs = {
+        "operation_id", "step_id", "release_intent_id", "candidate_id",
+        "release_attempt_id", "dispatch_nonce", "plan_hash",
+    }
+    for name in ENTRYPOINTS:
+        workflow = yaml.safe_load(body(name))
+        inputs = workflow[True]["workflow_dispatch"]["inputs"]
+        assert len(inputs) <= 10, name
+        assert inputs["identity"] == {"required": True, "type": "string"}
+        assert legacy_identity_inputs.isdisjoint(inputs), name
+        assert "prepared_artifact" not in inputs, name
 
 
-def test_registry_publication_builds_every_payload_before_commit_last_writes() -> None:
-    path = WORKFLOWS / "_publish-registry.yml"
-    body = path.read_text()
-    steps = workflow(path)["jobs"]["publish"]["steps"]
-    names = [step.get("name") for step in steps]
-
-    build_payload = names.index("Build payload")
-    build_skills = names.index("Build skills payload")
-    publish_version = names.index("Publish and verify immutable Registry version")
-    publish_skills = names.index("Publish and verify exact Registry skills")
-    commit_channel = names.index("Commit and verify Registry channel with exact CAS")
-
-    assert build_payload < publish_version
-    assert build_skills < publish_version < publish_skills < commit_channel
-    assert steps[commit_channel]["if"] == "inputs.registry_tag != 'none'"
-    assert body.count("registry_publication.py") == 3
-    assert '-X POST "$API_URL/publish"' not in body
-    assert '-X POST "$API_URL/w/$WORKER/skills"' not in body
-    assert '-X PUT "$API_URL/w/$WORKER/tags/$REGISTRY_TAG"' not in body
+def test_dispatch_values_are_never_rendered_into_shell_source():
+    for name in set(ENTRYPOINTS) | {"_release-build.yml", "_release-registry.yml"}:
+        workflow = yaml.safe_load(body(name))
+        for job in workflow["jobs"].values():
+            for step in job.get("steps", []):
+                command = step.get("run", "")
+                assert "${{ inputs." not in command, f"{name}: {step.get('name', 'unnamed')}"
+                assert "fromJSON(inputs.identity)" not in command, f"{name}: {step.get('name', 'unnamed')}"
 
 
-def test_rust_binary_cache_is_keyed_by_frontend_bundle_digest() -> None:
-    jobs = workflow(WORKFLOWS / "_rust-binary.yml")["jobs"]
-    web_build = jobs["web-build"]
-    assert web_build["outputs"]["frontend_digest"] == "${{ steps.stage.outputs.frontend_digest }}"
-    assert web_build["outputs"]["frontends"] == "${{ steps.dirs.outputs.frontends }}"
-
-    stage = next(step for step in web_build["steps"] if step.get("name") == "Stage frontend bundles")
-    assert stage["id"] == "stage"
-    assert "frontend_digest=$digest" in stage["run"]
-    assert "git hash-object" in stage["run"]
-
-    build_steps = jobs["build"]["steps"]
-    cache = next(step for step in build_steps if step.get("uses") == "Swatinem/rust-cache@v2")
-    assert "needs.web-build.outputs.frontend_digest" in cache["with"]["key"]
-
-    verify = next(step for step in build_steps if step.get("name") == "Verify frontend bundle digest")
-    assert verify["if"] == "inputs.web_bundle"
-    assert verify["env"]["EXPECTED_DIGEST"] == "${{ needs.web-build.outputs.frontend_digest }}"
-    assert "git hash-object" in verify["run"]
-    assert '[[ "$actual" == "$EXPECTED_DIGEST" ]]' in verify["run"]
+def test_new_release_workflows_pin_third_party_actions_by_sha():
+    for name in set(ENTRYPOINTS) | REUSABLE:
+        for line in body(name).splitlines():
+            if "uses:" not in line or "./.github/" in line:
+                continue
+            reference = line.split("uses:", 1)[1].strip().split()[0]
+            assert re.search(r"@[0-9a-f]{40}$", reference), f"{name}: mutable action {reference}"
 
 
-def test_release_detects_frontends_from_path_dependencies() -> None:
-    steps = workflow(WORKFLOWS / "release.yml")["jobs"]["setup"]["steps"]
-    detect = next(step for step in steps if step.get("name") == "Detect web bundle")
+def test_post_prepare_workflows_consume_only_descriptor_and_prepared_artifacts():
+    for name in set(ENTRYPOINTS) - {"release-prepare.yml"}:
+        text = body(name)
+        if name != "release-candidate-smoke.yml":
+            assert "worker-compose.yaml" not in text, name
+        assert "package_manifest" not in text, name
+        assert "iii compose descriptor" not in text, name
 
-    assert detect["env"]["MANIFEST"] == "${{ steps.meta.outputs.manifest }}"
-    assert "manifest_version.py frontend-bundles" in detect["run"]
+
+def test_release_train_never_reads_public_worker_manifests():
+    release_files = [WORKFLOWS / name for name in set(ENTRYPOINTS) | REUSABLE]
+    release_files.append(WORKFLOWS / "release-descriptor-index.yml")
+    release_files.extend(
+        path for path in (ROOT / ".github" / "scripts").glob("release_*.py")
+        if path.name != "release_compiler.py"
+    )
+    for path in release_files:
+        assert "iii.worker.yaml" not in path.read_text(encoding="utf-8"), path
+
+
+def test_descriptor_index_independently_verifies_approved_compiler_bytes():
+    text = body("release-descriptor-index.yml")
+    assert "Verify approved compiler bytes" in text
+    assert (
+        "APPROVED_COMPILER_DIGEST: "
+        "72b4a2c33f293d57235ad527f6f74c8d4bc2067e381554c94eb360250c2256f7"
+    ) in text
+    assert 'digest.update(b"iii-workers-release-compiler\\0")' in text
+    assert 'Path(".github/scripts/release_compiler.py").read_bytes()' in text
+    assert 'digest.update(b"\\0release-descriptor-schema\\0")' in text
+    assert 'Path(".github/contracts/release-descriptor.schema.json").read_bytes()' in text
+    assert "unapproved release compiler bytes" in text
+
+
+def test_release_prepare_fans_one_job_per_compiled_build_unit():
+    text = body("release-prepare.yml")
+    assert "descriptor_run_id" in text
+    assert "descriptor_artifact" in text
+    assert "release_train.py select-descriptor" in text
+    assert "iii compose descriptor" not in text
+    assert "Build pinned iii compiler" not in text
+    assert "frontend-bundles" not in text
+    assert "release_train.py frontend-metadata" in text
+    assert "release_train.py build-frontends" in text
+    assert "release_train.py matrix" in text
+    assert "matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}" in text
+    assert "unit: ${{ matrix.unit }}" in text
+
+
+def test_prepare_runs_adapter_from_prepared_bytes_and_records_interface():
+    text = body("release-prepare.yml")
+    workflow = yaml.safe_load(text)
+    assert "adapter" in workflow["jobs"]
+    assert workflow["jobs"]["adapter"]["needs"] == ["prepare", "assemble"]
+    assert "release_interface.py stage" in text
+    assert "release_interface.py run-adapter" in text
+    assert "release_interface.py snapshot" in text
+    assert "release_interface.py build-evidence" in text
+    assert "release-prepared-${{ env.CANDIDATE_ID }}" in text
+    adapter_text = str(workflow["jobs"]["adapter"])
+    assert "inputs.source_sha" not in adapter_text
+    assert "worker-compose.yaml" not in adapter_text
+
+
+def test_candidate_smoke_boots_registry_candidate_and_compares_prepared_interface():
+    text = body("release-candidate-smoke.yml")
+    assert '"worker": f"package://{worker}", "version": "next"' in text
+    assert "iii compose --engine \"$engine_url\"" in text
+    assert "collect_worker_interface.py" in text
+    assert "release_interface.py compare" in text
+    assert "release_interface.py verify-evidence" in text
+    assert ".registry_projection.type" in text
+    assert ".registry_projection.dependencies" in text
+    assert "EXPECTED_IMAGE_DIGEST" in text
+    assert ".image' smoke-resolution.json" in text
+    assert "iii worker add" not in text
+    assert "ref: ${{ inputs.source_sha }}" not in text
+    assert "ref: ${{ inputs.prepared_sha }}" not in text
+
+
+def test_all_post_prepare_phases_verify_final_evidence_and_report_it():
+    for name in set(ENTRYPOINTS) - {"release-prepare.yml"}:
+        text = body(name)
+        assert "release_interface.py verify-evidence" in text, name
+        assert "release-evidence.json" in text, name
+
+
+def test_mutating_phases_are_retry_safe_and_effect_states_are_probe_derived():
+    candidate = body("release-candidate-publish.yml")
+    stable = body("release-stable-publish.yml")
+    alias = body("release-image-alias.yml")
+    finalize = body("release-finalize.yml")
+    assert "release_effects.py classify" in candidate
+    assert "release_effects.py plan" in stable
+    assert "latest changed outside the authorized compare-and-swap" in stable
+    assert "release_effects.py classify" in stable
+    assert "release_effects.py plan" in alias
+    assert "release_effects.py classify" in alias
+    assert "release_effects.py classify" in finalize
+    assert "--clobber" not in candidate
+
+
+def test_candidate_registry_publish_owns_next_atomically():
+    reusable = body("_release-registry.yml")
+    candidate = body("release-candidate-publish.yml")
+    assert "assign-channel" not in reusable
+    assert "--registry-tag next" in reusable
+    assert '"tag": None' not in reusable
+    assert "expected_current_version" not in reusable
+    assert "/tags/" not in reusable
+    assert "expected_next_version" not in candidate
+    assert "--clobber" not in candidate
+    assert "verify_release_assets" in candidate
+    assert 'has("package_descriptor") or has("descriptor_sha256") or has("channel")' in reusable
+    assert "registry_publication.py publish-version" in reusable
+    assert "build_publish_payload.py" in reusable
+
+
+def test_bundle_caches_are_scoped_by_descriptor_lock_runtime_and_architecture():
+    reusable = body("_release-build.yml")
+    assert "release_train.py build-metadata" in reusable
+    assert "node-version: ${{ steps.metadata.outputs.runtime_version }}" in reusable
+    assert "python-version: ${{ steps.metadata.outputs.runtime_version }}" in reusable
+    assert "version: ${{ steps.metadata.outputs.package_manager_version }}" in reusable
+    assert "${{ runner.os }}-${{ runner.arch }}-${{ steps.metadata.outputs.lock_sha256 }}" in reusable
+    assert "package_json_file" not in reusable
+    assert "python-version: '3.12.13'" not in reusable
+    assert "lockfile=\"$source_path" not in reusable
+    assert "package-manager-cache" not in reusable
+
+
+def test_release_build_shards_do_not_persist_checkout_or_git_credentials():
+    reusable = body("_release-build.yml")
+    prepare = yaml.safe_load(body("release-prepare.yml"))
+    build = yaml.safe_load(reusable)
+
+    checkout = next(
+        step for step in build["jobs"]["build"]["steps"]
+        if str(step.get("uses", "")).startswith("actions/checkout@")
+    )
+    assert checkout["with"]["persist-credentials"] is False
+    assert "git config --global" not in reusable
+    assert "git config --local" in reusable
+    assert "III_CI_APP_ID" not in reusable
+    assert "III_CI_APP_PRIVATE_KEY" not in reusable
+    assert "WORKERS_REGISTRY_API_KEY" not in reusable
+
+    for job_name in ("prepare", "assemble"):
+        checkout = next(
+            step for step in prepare["jobs"][job_name]["steps"]
+            if str(step.get("uses", "")).startswith("actions/checkout@")
+        )
+        assert checkout["with"]["persist-credentials"] is False
+
+
+def test_release_control_app_credentials_are_isolated_to_contract_drift_job():
+    workflow = yaml.safe_load(body("ci.yml"))
+    drift = workflow["jobs"]["release-contract-drift"]
+    assert drift["permissions"] == {"contents": "read"}
+    assert drift["runs-on"] == "ubuntu-latest"
+
+    drift_text = str(drift)
+    assert "III_CI_APP_ID" in drift_text
+    assert "III_CI_APP_PRIVATE_KEY" in drift_text
+    assert "release_contract_pin.py" in drift_text
+    assert "release-execution.schema.json" in drift_text
+
+    for job_name, job in workflow["jobs"].items():
+        if job_name == "release-contract-drift":
+            continue
+        job_text = str(job)
+        assert "III_CI_APP_ID" not in job_text, job_name
+        assert "III_CI_APP_PRIVATE_KEY" not in job_text, job_name
+
+
+def test_release_permissions_are_job_scoped_and_reports_cannot_mutate():
+    candidate = yaml.safe_load(body("release-candidate-publish.yml"))
+    assert candidate["permissions"] == {"contents": "read"}
+    assert candidate["jobs"]["publish"]["permissions"] == {
+        "actions": "read",
+        "contents": "write",
+        "id-token": "write",
+        "packages": "write",
+    }
+    assert candidate["jobs"]["registry"]["permissions"] == {
+        "actions": "read",
+        "contents": "read",
+    }
+    assert candidate["jobs"]["report"]["permissions"] == {
+        "actions": "read",
+        "contents": "read",
+        "id-token": "write",
+    }
+
+    for name in set(ENTRYPOINTS) - {"release-candidate-publish.yml"}:
+        workflow = yaml.safe_load(body(name))
+        assert workflow["permissions"] == {}, name
+        assert all("permissions" in job for job in workflow["jobs"].values()), name
+
+
+def test_workflows_parse_as_yaml():
+    names = set(ENTRYPOINTS) | REUSABLE | {"release-descriptor-index.yml", "macos-runner-capacity.yml"}
+    for name in names:
+        assert isinstance(yaml.safe_load(body(name)), dict), name
+
+
+def test_macos_capacity_gate_proves_three_slots_in_both_release_pools():
+    workflow = yaml.safe_load(body("macos-runner-capacity.yml"))
+    jobs = workflow["jobs"]
+    x64 = [job for job in jobs.values() if job.get("runs-on") == "workers-release-macos-12core"]
+    arm = [job for job in jobs.values() if job.get("runs-on") == "workers-release-macos-arm-5core"]
+    assert len(x64) == 3
+    assert len(arm) == 3
+    assert set(jobs["prove-overlap"]["needs"]) == {"macos-slot-1", "macos-slot-2", "macos-slot-3"}
+    assert set(jobs["prove-arm-overlap"]["needs"]) == {
+        "macos-arm-slot-1", "macos-arm-slot-2", "macos-arm-slot-3",
+    }

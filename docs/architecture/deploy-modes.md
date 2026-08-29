@@ -1,67 +1,51 @@
-# Deploy modes
+# Release artifact modes
 
-How `iii.worker.yaml` `deploy` routes CI interface smoke and release builds.
+The Workers-owned compiler translates one private build entry plus its public
+manifest into an immutable release descriptor and independent build units.
+The release train consumes only that descriptor after prepare.
 
-## Overview
-
-| `deploy` | Artifact | Build workflow | Typical language |
-|---|---|---|---|
-| `binary` | Per-target CLI archives on GitHub Release | `_rust-binary.yml` | Rust |
-| `image` | `ghcr.io/<owner>/<worker>:<version>` | `_container.yml` | Node, Python |
-| `bundle` | `<worker>.tar.gz` on GitHub Release | `_bundle.yml` | Node (esbuild) |
-
-Release dispatcher: [`release.yml`](../../.github/workflows/release.yml) reads
-`deploy` from `iii.worker.yaml` via `parse_release_tag.py`.
-
-## Binary
-
-- **Build:** up to 6 Unix cross-compiled targets (or `targets:` subset); Windows is excluded.
-- **Assets:** `<bin>-<triple>.tar.gz` + `.sha256` checksums for every Unix target.
-- **Publish boot:** downloads `*-x86_64-unknown-linux-gnu.tar.gz` from the
-  Release, runs the binary for interface collection.
-- **Registry payload:** per-target download URLs resolved by
-  `resolve_binary_artifacts.py`.
-
-## Image
-
-- **Build:** multi-arch Docker image pushed to GHCR.
-- **Publish boot:** from local source via `iii trigger compose::add worker=./<worker>` (the
-  image itself is not booted; `runtime`/`scripts.start` drive the local run).
-- **Registry payload:** the built image reference (`image_tag` output).
-
-## Bundle
-
-- **Build:** esbuild single-file `index.mjs` + `iii.worker.yaml` packed into
-  `<worker>.tar.gz`.
-- **Asset URL:** `https://github.com/<repo>/releases/download/<tag>/<worker>.tar.gz`
-- **Publish boot:** extracts bundle, runs `node ./index.mjs`.
-- **Dependencies:** bundled worker may declare in-repo deps in `iii.worker.yaml`
-  `dependencies`; when the bundle worker's source changes, those deps join the
-  CI matrix (see [`testing-and-ci.md`](testing-and-ci.md)).
-
-Example: [`harness/`](../../harness/).
-
-## Publish boot modes
-
-[`manifest_version.py deploy-mode`](../../.github/scripts/manifest_version.py)
-selects how `_publish-registry.yml` starts the worker:
-
-| Mode | When | Boot |
+| `artifact.kind` | Prepared artifact | Publication |
 |---|---|---|
-| `release-binary` | `deploy: binary` | Download + run Linux gnu binary from Release |
-| `release-bundle` | `deploy: bundle` | Extract tarball, `node ./index.mjs` |
-| `iii-add` | Other deploys with `runtime` or `scripts.start` | `iii trigger compose::add worker=./<worker>` |
-| `cargo-run` | Other deploys, Rust, no `runtime`/`scripts.start` | `cargo run` (+ `config.collect.yaml` if present) |
+| `rust-binary` | one deterministic `tar.gz` and checksum per target | GitHub Release URLs and digests keyed by Rust target |
+| `javascript-bundle` | one deterministic archive from explicit files | GitHub Release archive URL and digest |
+| `python-bundle` | one deterministic archive from explicit files | GitHub Release archive URL and digest |
+| `oci-image` | deterministic OCI-layout archive | digest-pinned GHCR image |
 
-## config.collect.yaml
+[`release-prepare.yml`](../../.github/workflows/release-prepare.yml) builds one
+matrix job per descriptor build unit. Embedded frontends are built once before
+the Rust target fan-out. Rust units share remote sccache objects by toolchain
+and target, but artifact bytes remain target-specific.
 
-Workers whose default `config.yaml` spawns sidecars or requires local paths
-unavailable on CI ship `config.collect.yaml` — a lighter config used only for
-interface collection at publish time and in the `interface-smoke` CI job.
+[`release-candidate-publish.yml`](../../.github/workflows/release-candidate-publish.yml)
+publishes one immutable candidate version and assigns Registry `next` with an
+idempotent, verified update. [`release-stable-publish.yml`](../../.github/workflows/release-stable-publish.yml)
+assigns `latest` to that same version and descriptor; it does not rebuild or
+create a second package version. OCI channel aliases are a separate digest-CAS
+phase.
 
-Precedents: `storage`, `shell`, `coder`, `database`.
+Registry publication projects the descriptor onto the current API. For a
+binary worker the request has this shape:
 
-## Related
+```json
+{
+  "worker_name": "state",
+  "version": "0.22.3-rc.3",
+  "type": "binary",
+  "tag": "next",
+  "description": "...",
+  "license": "Apache-2.0",
+  "tags": [],
+  "dependencies": [],
+  "config": {},
+  "functions": [],
+  "triggers": [],
+  "repo": "https://github.com/iii-hq/workers",
+  "binaries": {}
+}
+```
 
-- Release SOP: [`../sops/release.md`](../sops/release.md)
-- Testing: [`testing-and-ci.md`](testing-and-ci.md)
+Candidate publication assigns `next` atomically in `POST /publish` and proves
+both the exact version and channel through current Registry read surfaces.
+Descriptor-only fields such as `package_descriptor` and `descriptor_sha256`
+are never sent to the current Registry. Publish, smoke, promotion, finalize,
+and verify never read the private catalog, public manifest, or package source.

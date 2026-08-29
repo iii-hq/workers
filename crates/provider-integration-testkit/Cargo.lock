@@ -1048,7 +1048,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "llm-router"
-version = "1.4.15-rc.3"
+version = "1.4.15-rc.4"
 dependencies = [
  "async-trait",
  "clap",
@@ -1326,7 +1326,7 @@ dependencies = [
 
 [[package]]
 name = "provider-anthropic"
-version = "1.2.11-rc.2"
+version = "1.2.12-rc.1"
 dependencies = [
  "clap",
  "futures",
@@ -1436,7 +1436,7 @@ dependencies = [
 
 [[package]]
 name = "provider-openai"
-version = "1.2.9-rc.2"
+version = "1.2.9-rc.3"
 dependencies = [
  "clap",
  "futures",
@@ -1453,7 +1453,7 @@ dependencies = [
 
 [[package]]
 name = "provider-openai-codex"
-version = "0.4.6-rc.3"
+version = "0.4.6-rc.4"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -1506,7 +1506,7 @@ dependencies = [
 
 [[package]]
 name = "provider-zai"
-version = "0.5.7-rc.2"
+version = "0.5.7-rc.3"
 dependencies = [
  "clap",
  "futures",

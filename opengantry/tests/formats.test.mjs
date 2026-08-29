@@ -1,5 +1,5 @@
 /**
- * Publish gate, enforced locally. `_publish-registry.yml` boots the released
+ * Publish gate, enforced locally. Candidate smoke boots the released
  * bundle and runs `collect_worker_interface.py --assert-typed-schemas`, which
  * fails the release if any registered function's request or response schema
  * lacks a schema-defining keyword — `z.unknown()` compiles to `{}` and trips it.

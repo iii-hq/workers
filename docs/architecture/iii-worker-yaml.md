@@ -1,7 +1,9 @@
 # iii.worker.yaml contract
 
-Every worker folder ships `iii.worker.yaml` at its root. CI discovery,
-release routing, and registry publish all read this file.
+Every worker folder ships `iii.worker.yaml` at its root. It is the public iii
+contract for local development, scaffolding, installation, and package
+consumers. The Workers release compiler reads it once to produce an immutable
+descriptor; Release Control and post-prepare workflows never read it.
 
 ## Required fields
 
@@ -18,27 +20,27 @@ release routing, and registry publish all read this file.
 
 | Field | Purpose | Consumer |
 |---|---|---|
-| `bin` | Cargo binary name (defaults to `name`) | `_rust-binary.yml`, publish boot |
-| `targets` | Optional list of Rust triples to build | `_rust-binary.yml` matrix subset; `supported_targets` in manifest |
+| `bin` | Cargo binary name (defaults to `name`) | private release parity, local boot |
+| `targets` | Optional public Rust target list | parity with `.release/workers.yaml` when present |
 
 When `targets` is omitted, all six default Unix triples are built: macOS
 x86_64/aarch64, Linux x86_64 gnu/musl, aarch64 gnu, and armv7 gnueabihf.
-Windows targets are not part of the release matrix (the matrix lives in
-[`_rust-binary.yml`](../../.github/workflows/_rust-binary.yml)).
+The authoritative release matrix lives in `.release/workers.yaml`; when this
+public field is present the compiler requires the two lists to match.
 
 ## Opt-outs and runtime
 
 | Field | Purpose | Consumer |
 |---|---|---|
-| `interface_smoke: false` | Skip interface boot smoke + registry publish | `ci.yml`, `release.yml` |
-| `runtime` / `scripts.start` | Local boot definition; presence routes publish boot to `iii-add` for non-binary/bundle deploys | `manifest_version.py deploy-mode`, `compose::add` |
+| `interface_smoke: false` | Mirror private `validation.interface: skipped` | compiler, `ci.yml` |
+| `runtime` / `scripts.start` | Public local and installed runtime definition | `iii worker`, Compose, release compiler |
 | `scripts.install` | Build command for local install | `compose::add` (local source) |
-| `tags` | Optional discovery aliases included in `POST /publish` | `build_publish_payload.py` |
+| `tags` | Discovery aliases included in the compiled Registry projection | release compiler |
 
 `tags` must be a list of strings. The publish pipeline trims values, converts them to lowercase,
 removes duplicates, and omits the field when no non-empty tags remain.
-Workers with `interface_smoke: false` skip registry publishing entirely, so their manifests do not
-declare tags.
+`interface_smoke: false` skips interface collection, not publication. Private
+`publish` controls whether a worker appears in the release index.
 
 ```yaml
 tags:
@@ -94,7 +96,7 @@ See [`shell/iii.worker.yaml`](../../shell/iii.worker.yaml).
 ## Validation
 
 - `pr-checks` parses the file via [`validate_worker.py`](../../.github/scripts/validate_worker.py).
-- `parse_release_tag.py` rejects unknown `deploy` values at release time.
+- `release_compiler.py` rejects public/private deploy-shape mismatches.
 
 ## Related
 

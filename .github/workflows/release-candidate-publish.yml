@@ -1,0 +1,426 @@
+name: Release Candidate Publish
+run-name: RC candidate publish · ${{ inputs.worker }} · ${{ fromJSON(inputs.identity).operation_id }} · ${{ fromJSON(inputs.identity).step_id }} · ${{ fromJSON(inputs.identity).dispatch_nonce }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      identity: {required: true, type: string}
+      worker: {required: true, type: string}
+      source_sha: {required: true, type: string}
+      prepared_sha: {required: true, type: string}
+      candidate_version: {required: true, type: string}
+      stable_version: {required: true, type: string}
+      descriptor_sha256: {required: true, type: string}
+      prepared_run_id: {required: true, type: string}
+
+env:
+  RELEASE_IDENTITY: ${{ inputs.identity }}
+  OPERATION_ID: ${{ fromJSON(inputs.identity).operation_id }}
+  STEP_ID: ${{ fromJSON(inputs.identity).step_id }}
+  RELEASE_INTENT_ID: ${{ fromJSON(inputs.identity).release_intent_id }}
+  CANDIDATE_ID: ${{ fromJSON(inputs.identity).candidate_id }}
+  ATTEMPT_ID: ${{ fromJSON(inputs.identity).attempt_id }}
+  DISPATCH_NONCE: ${{ fromJSON(inputs.identity).dispatch_nonce }}
+  PLAN_HASH: ${{ fromJSON(inputs.identity).plan_hash }}
+  WORKER: ${{ inputs.worker }}
+  SOURCE_SHA: ${{ inputs.source_sha }}
+  PREPARED_SHA: ${{ inputs.prepared_sha }}
+  CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+  STABLE_VERSION: ${{ inputs.stable_version }}
+  DESCRIPTOR_SHA256: ${{ inputs.descriptor_sha256 }}
+  PREPARED_RUN_ID: ${{ inputs.prepared_run_id }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-candidate-${{ inputs.worker }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: workers-release-linux-8core
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+      packages: write
+    outputs:
+      tag: ${{ steps.identity.outputs.tag }}
+      image_tag: ${{ steps.image.outputs.image_tag }}
+      image_digest: ${{ steps.image.outputs.image_digest }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.prepared_sha }}
+          fetch-depth: 0
+          sparse-checkout: .github/scripts
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: release-prepared-${{ env.CANDIDATE_ID }}
+          path: release-prepared
+          run-id: ${{ inputs.prepared_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Authorize exact dispatch and prepared bytes
+        env:
+          RELEASE_CONTROL_API_URL: ${{ vars.RELEASE_CONTROL_API_URL }}
+        run: |
+          set -euo pipefail
+          test "$(jq -r .worker release-prepared/release-descriptor.json)" = "$WORKER"
+          test "$(jq -r .version release-prepared/release-descriptor.json)" = "$CANDIDATE_VERSION"
+          test "$(jq -r .source_sha release-prepared/release-descriptor.json)" = "$PREPARED_SHA"
+          test "$(jq -r .descriptor_sha256 release-prepared/release-descriptor.json)" = "$DESCRIPTOR_SHA256"
+          test "$(jq -r .descriptor_sha256 release-prepared/prepared-artifacts.json)" = "$DESCRIPTOR_SHA256"
+          python3 .github/scripts/release_interface.py verify-evidence \
+            --descriptor release-prepared/release-descriptor.json \
+            --evidence release-prepared/release-evidence.json
+          python3 .github/scripts/release_control_contract.py validate-identity --identity "$RELEASE_IDENTITY"
+          python3 .github/scripts/release_control_contract.py validate-dispatch --operation-id "$OPERATION_ID" --step-id "$STEP_ID" --dispatch-nonce "$DISPATCH_NONCE" --descriptor-sha256 "$DESCRIPTOR_SHA256" --plan-hash "$PLAN_HASH" --source-sha "$SOURCE_SHA" --prepared-sha "$PREPARED_SHA" --mutating
+          python3 .github/scripts/release_control_contract.py authorize-dispatch --api-url "$RELEASE_CONTROL_API_URL" --repository '${{ github.repository }}' --operation-id "$OPERATION_ID" --step-id "$STEP_ID" --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' --workflow 'release-candidate-publish.yml' --event '${{ github.event_name }}' --sha '${{ github.sha }}' --release-intent-id "$RELEASE_INTENT_ID" --candidate-id "$CANDIDATE_ID" --attempt-id "$ATTEMPT_ID" --dispatch-nonce "$DISPATCH_NONCE" --plan-hash "$PLAN_HASH" --worker "$WORKER" --source-sha "$SOURCE_SHA" --descriptor-sha256 "$DESCRIPTOR_SHA256"
+
+      - name: Resolve immutable tag
+        id: identity
+        run: echo "tag=$WORKER/v$CANDIDATE_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Publish candidate assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.identity.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+            git fetch --no-tags origin "refs/tags/$TAG:refs/tags/$TAG"
+            test "$(git cat-file -t "refs/tags/$TAG")" = tag
+            test "$(git rev-list -n1 "$TAG")" = "$PREPARED_SHA"
+            tag_message=$(git for-each-ref "refs/tags/$TAG" --format='%(contents)')
+            grep -Fx "worker: $WORKER" <<<"$tag_message"
+            grep -Fx "version: $CANDIDATE_VERSION" <<<"$tag_message"
+            grep -Fx "descriptor-sha256: $DESCRIPTOR_SHA256" <<<"$tag_message"
+          else
+            tag_message=$(printf 'worker: %s\n\nversion: %s\n\ndescriptor-sha256: %s\n' \
+              "$WORKER" "$CANDIDATE_VERSION" "$DESCRIPTOR_SHA256")
+            tag_object=$(gh api --method POST "/repos/${GITHUB_REPOSITORY}/git/tags" \
+              -f tag="$TAG" -f message="$tag_message" -f object="$PREPARED_SHA" -f type=commit \
+              --jq .sha)
+            [[ "$tag_object" =~ ^[0-9a-f]{40}$ ]]
+            gh api --method POST "/repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/tags/$TAG" -f sha="$tag_object" >/dev/null
+          fi
+          mapfile -t assets < <(find release-prepared -maxdepth 1 -type f ! -name '*.json' | sort)
+          ((${#assets[@]} > 0))
+
+          verify_release_assets() {
+            local release_json=$1 allow_missing=$2 asset name size id remote_sha local_sha
+            find release-prepared -maxdepth 1 -type f ! -name '*.json' -printf '%f\n' | sort > expected-assets.txt
+            jq -r '.assets[].name' "$release_json" | sort > remote-assets.txt
+            extra=$(comm -13 expected-assets.txt remote-assets.txt)
+            [[ -z "$extra" ]] || { echo "unexpected immutable release assets: $extra"; return 1; }
+            mkdir -p remote-assets
+            for asset in "${assets[@]}"; do
+              name=$(basename "$asset")
+              if ! jq -e --arg name "$name" '[.assets[] | select(.name == $name)] | length == 1' "$release_json" >/dev/null; then
+                [[ "$allow_missing" == true ]] || { echo "release asset missing after upload: $name"; return 1; }
+                continue
+              fi
+              size=$(jq -er --arg name "$name" '.assets[] | select(.name == $name) | .size' "$release_json")
+              test "$size" = "$(stat -c %s "$asset")"
+              id=$(jq -er --arg name "$name" '.assets[] | select(.name == $name) | .id' "$release_json")
+              gh api -H 'Accept: application/octet-stream' \
+                "/repos/${GITHUB_REPOSITORY}/releases/assets/$id" > "remote-assets/$name"
+              remote_sha=$(sha256sum "remote-assets/$name" | cut -d' ' -f1)
+              local_sha=$(sha256sum "$asset" | cut -d' ' -f1)
+              test "$remote_sha" = "$local_sha"
+            done
+          }
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/$TAG" > release.json
+            test "$(jq -r .draft release.json)" = false
+            test "$(jq -r .prerelease release.json)" = true
+            verify_release_assets release.json true
+            mapfile -t missing < <(
+              for asset in "${assets[@]}"; do
+                name=$(basename "$asset")
+                jq -e --arg name "$name" '.assets[] | select(.name == $name)' release.json >/dev/null || printf '%s\n' "$asset"
+              done
+            )
+            ((${#missing[@]} == 0)) || gh release upload "$TAG" "${missing[@]}"
+          else
+            gh release create "$TAG" "${assets[@]}" --verify-tag --prerelease --title "$WORKER $CANDIDATE_VERSION"
+          fi
+          gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/$TAG" > release-final.json
+          verify_release_assets release-final.json false
+
+      - name: Classify prepared artifact
+        id: artifact
+        run: |
+          if [[ "$(jq -r .artifact.kind release-prepared/release-descriptor.json)" == oci-image ]]; then
+            echo 'is_oci=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'is_oci=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up deterministic OCI index tooling
+        if: steps.artifact.outputs.is_oci == 'true'
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        with:
+          version: v0.36.1
+
+      - name: Authenticate OCI publication
+        if: steps.artifact.outputs.is_oci == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Publish immutable OCI image when declared
+        id: image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ "$(jq -r .artifact.kind release-prepared/release-descriptor.json)" == oci-image ]]; then
+            sudo apt-get update
+            sudo apt-get install -y skopeo
+            base="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/$WORKER"
+            skopeo login ghcr.io --username "$GITHUB_ACTOR" --password "$GH_TOKEN"
+            : >expected-image-digests.txt
+            refs=()
+            while IFS=$'\t' read -r unit archive; do
+              platform=$(jq -er --arg unit "$unit" '.build_units[] | select(.id == $unit) | .platform' \
+                release-prepared/release-descriptor.json)
+              platform_slug=${platform//\//-}
+              test -f "release-prepared/$archive"
+              gzip -dc "release-prepared/$archive" >"image-$platform_slug.oci.tar"
+              source_digest=$(skopeo inspect --format '{{.Digest}}' "oci-archive:image-$platform_slug.oci.tar")
+              [[ "$source_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+              staging_tag="$CANDIDATE_VERSION-$platform_slug"
+              if remote_digest=$(skopeo inspect --format '{{.Digest}}' "docker://$base:$staging_tag" 2>/dev/null); then
+                test "$remote_digest" = "$source_digest"
+              else
+                skopeo copy "oci-archive:image-$platform_slug.oci.tar" "docker://$base:$staging_tag"
+              fi
+              docker buildx imagetools inspect "$base:$staging_tag" --raw >"staging-$platform_slug.json"
+              if jq -e '.manifests | type == "array"' "staging-$platform_slug.json" >/dev/null; then
+                jq -r '.manifests[].digest' "staging-$platform_slug.json" >>expected-image-digests.txt
+              else
+                printf 'sha256:%s\n' "$(sha256sum "staging-$platform_slug.json" | cut -d' ' -f1)" \
+                  >>expected-image-digests.txt
+              fi
+              refs+=("$base:$staging_tag")
+            done < <(jq -r '.artifacts[] | select(.role == "oci-platform") | [.unit,.name] | @tsv' \
+              release-prepared/prepared-artifacts.json)
+            test "${#refs[@]}" = "$(jq '.build_units | length' release-prepared/release-descriptor.json)"
+            if ! docker buildx imagetools inspect "$base:$CANDIDATE_VERSION" --raw >published-index.json 2>/dev/null; then
+              docker buildx imagetools create --tag "$base:$CANDIDATE_VERSION" "${refs[@]}"
+              docker buildx imagetools inspect "$base:$CANDIDATE_VERSION" --raw >published-index.json
+            fi
+            sort -u expected-image-digests.txt -o expected-image-digests.txt
+            jq -r '.manifests[].digest' published-index.json | sort -u >published-image-digests.txt
+            cmp expected-image-digests.txt published-image-digests.txt
+            digest="sha256:$(sha256sum published-index.json | cut -d' ' -f1)"
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            echo "image_digest=$digest" >> "$GITHUB_OUTPUT"
+            echo "image_tag=$base:$CANDIDATE_VERSION@$digest" >> "$GITHUB_OUTPUT"
+          else
+            echo 'image_digest=' >> "$GITHUB_OUTPUT"
+            echo 'image_tag=' >> "$GITHUB_OUTPUT"
+          fi
+
+  registry:
+    needs: publish
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/_release-registry.yml
+    with:
+      worker: ${{ inputs.worker }}
+      version: ${{ inputs.candidate_version }}
+      github_tag: ${{ needs.publish.outputs.tag }}
+      prepared_run_id: ${{ inputs.prepared_run_id }}
+      prepared_artifact: release-prepared-${{ fromJSON(inputs.identity).candidate_id }}
+      image_tag: ${{ needs.publish.outputs.image_tag }}
+    secrets:
+      WORKERS_REGISTRY_API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
+
+  report:
+    if: always()
+    needs: [publish, registry]
+    runs-on: workers-release-linux-8core
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        continue-on-error: true
+        with:
+          name: release-prepared-${{ env.CANDIDATE_ID }}
+          path: release-prepared
+          run-id: ${{ inputs.prepared_run_id }}
+          github-token: ${{ github.token }}
+      - name: Probe candidate effects from authoritative surfaces
+        if: always()
+        id: effects
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLISH_RESULT: ${{ needs.publish.result }}
+          REGISTRY_RESULT: ${{ needs.registry.result }}
+          PUBLISHED_IMAGE_DIGEST: ${{ needs.publish.outputs.image_digest }}
+        run: |
+          set -euo pipefail
+          github_state=unknown
+          registry_state=unknown
+          image_state=unknown
+          image_digest=
+          mutation=started
+          [[ "$PUBLISH_RESULT" == success ]] && mutation=completed
+
+          if [[ -f release-prepared/release-descriptor.json && -f release-prepared/prepared-artifacts.json ]]; then
+            python3 .github/scripts/release_interface.py verify-evidence \
+              --descriptor release-prepared/release-descriptor.json \
+              --evidence release-prepared/release-evidence.json
+            tag="$WORKER/v$CANDIDATE_VERSION"
+            if gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/$tag" \
+              >release-probe.json 2>release-probe.err; then
+              github_state=present
+              if gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/$tag" >tag-ref-probe.json; then
+                tag_type=$(jq -er .object.type tag-ref-probe.json)
+                tag_sha=$(jq -er .object.sha tag-ref-probe.json)
+                if [[ "$tag_type" == tag ]]; then
+                  tag_sha=$(gh api "/repos/${GITHUB_REPOSITORY}/git/tags/$tag_sha" --jq .object.sha)
+                fi
+                [[ "$tag_type" == tag && "$tag_sha" == "$PREPARED_SHA" ]] || github_state=absent
+              else
+                github_state=unknown
+              fi
+              [[ "$(jq -r .draft release-probe.json)" == false ]] || github_state=absent
+              [[ "$(jq -r .prerelease release-probe.json)" == true ]] || github_state=absent
+              find release-prepared -maxdepth 1 -type f ! -name '*.json' -printf '%f\n' \
+                | sort >expected-assets.txt
+              jq -r '.assets[].name' release-probe.json | sort >remote-assets.txt
+              if ! cmp expected-assets.txt remote-assets.txt; then
+                github_state=absent
+              else
+                mkdir -p remote-probe-assets
+                while IFS= read -r name; do
+                  id=$(jq -er --arg name "$name" '.assets[] | select(.name == $name) | .id' release-probe.json) || {
+                    github_state=absent
+                    break
+                  }
+                  if ! gh api -H 'Accept: application/octet-stream' \
+                    "/repos/${GITHUB_REPOSITORY}/releases/assets/$id" \
+                    >"remote-probe-assets/$name"; then
+                    github_state=unknown
+                    break
+                  fi
+                  if ! cmp "release-prepared/$name" "remote-probe-assets/$name"; then
+                    github_state=absent
+                    break
+                  fi
+                done <expected-assets.txt
+              fi
+            elif grep -Eq 'HTTP 404|Not Found' release-probe.err; then
+              github_state=absent
+            fi
+
+            body=$(jq -nc --arg worker "$WORKER" '{worker:$worker,version:"next"}')
+            status=$(curl -sS -o registry-probe.json -w '%{http_code}' \
+              -H 'Content-Type: application/json' -X POST \
+              'https://api.workers.iii.dev/resolve' --data "$body" || true)
+            if [[ "$status" == 200 ]]; then
+              if jq -e --slurpfile descriptor release-prepared/release-descriptor.json \
+                --arg worker "$WORKER" --arg version "$CANDIDATE_VERSION" '
+                  .root.version == $version
+                  and ([.graph[] | select(.name == $worker)] | length) == 1
+                  and ([.graph[] | select(.name == $worker)][0].version == $version)
+                  and ([.graph[] | select(.name == $worker)][0].type == $descriptor[0].registry_projection.type)
+                  and ([.graph[] | select(.name == $worker)][0].dependencies == ($descriptor[0].registry_projection.dependencies | map({key:.name,value:.version}) | from_entries))
+                ' registry-probe.json >/dev/null; then
+                registry_state=present
+              else
+                registry_state=absent
+              fi
+            elif [[ "$status" == 404 ]]; then
+              registry_state=absent
+            fi
+
+            kind=$(jq -r .artifact.kind release-prepared/release-descriptor.json)
+            if [[ "$kind" == oci-image ]]; then
+              image_digest=${PUBLISHED_IMAGE_DIGEST:-}
+              [[ "$image_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+              base="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/$WORKER"
+              if docker buildx imagetools inspect "$base:$CANDIDATE_VERSION" --raw \
+                >candidate-image-probe.json 2>candidate-image-probe.err; then
+                actual_digest="sha256:$(sha256sum candidate-image-probe.json | cut -d' ' -f1)"
+                image_state=absent
+                [[ "$actual_digest" == "$image_digest" ]] && image_state=present
+              elif grep -Eiq 'manifest unknown|not found' candidate-image-probe.err; then
+                image_state=absent
+              fi
+            fi
+          fi
+
+          github_state=$(python3 .github/scripts/release_effects.py classify \
+            --before unknown --mutation "$mutation" --after "$github_state")
+          registry_mutation=started
+          [[ "$REGISTRY_RESULT" == success ]] && registry_mutation=completed
+          registry_state=$(python3 .github/scripts/release_effects.py classify \
+            --before unknown --mutation "$registry_mutation" --after "$registry_state")
+          image_state=$(python3 .github/scripts/release_effects.py classify \
+            --before unknown --mutation "$mutation" --after "$image_state")
+          {
+            echo "github_state=$github_state"
+            echo "registry_state=$registry_state"
+            echo "image_state=$image_state"
+            echo "image_digest=$image_digest"
+          } >>"$GITHUB_OUTPUT"
+      - name: Write byte-exact result
+        if: always()
+        env:
+          PUBLISH_RESULT: ${{ needs.publish.result }}
+          REGISTRY_RESULT: ${{ needs.registry.result }}
+          GITHUB_STATE: ${{ steps.effects.outputs.github_state }}
+          REGISTRY_STATE: ${{ steps.effects.outputs.registry_state }}
+          IMAGE_STATE: ${{ steps.effects.outputs.image_state }}
+          IMAGE_DIGEST: ${{ steps.effects.outputs.image_digest }}
+        run: |
+          set -euo pipefail
+          outcome=succeeded; error=null
+          if [[ "$PUBLISH_RESULT" == cancelled || "$REGISTRY_RESULT" == cancelled ]]; then
+            outcome=canceled; error='{"code":"candidate_publish_canceled","category":"release","retryable":true,"message":"candidate publication was canceled"}'
+          elif [[ "$PUBLISH_RESULT" != success || "$REGISTRY_RESULT" != success ]]; then
+            outcome=failed; error='{"code":"candidate_publish_failed","category":"release","retryable":true,"message":"candidate publication did not complete"}'
+          fi
+          artifacts='[]'
+          kind=unknown
+          if [[ -f release-prepared/release-evidence.json ]]; then artifacts=$(jq -c '[.artifacts[] | del(.unit)]' release-prepared/release-evidence.json); fi
+          if [[ -f release-prepared/release-descriptor.json ]]; then kind=$(jq -r .artifact.kind release-prepared/release-descriptor.json); fi
+          github_state=${GITHUB_STATE:-unknown}; registry_state=${REGISTRY_STATE:-unknown}
+          effects=$(jq -nc --arg tag "$WORKER/v$CANDIDATE_VERSION" --arg version "$CANDIDATE_VERSION" --arg github_state "$github_state" --arg registry_state "$registry_state" '[{surface:"github-release",state:$github_state,immutable_id:$tag},{surface:"registry-next",state:$registry_state,after:$version}]')
+          if [[ "$kind" == oci-image ]]; then
+            image_state=${IMAGE_STATE:-unknown}
+            image_effect=$(jq -nc --arg state "$image_state" --arg digest "$IMAGE_DIGEST" 'if $digest == "" then {surface:"registry-image",state:$state} else {surface:"registry-image",state:$state,immutable_id:$digest} end')
+            effects=$(jq -cn --argjson effects "$effects" --argjson image "$image_effect" '$effects + [$image]')
+          fi
+          python3 .github/scripts/release_control_contract.py write-result --repository '${{ github.repository }}' --operation-id "$OPERATION_ID" --step-id "$STEP_ID" --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' --workflow 'release-candidate-publish.yml' --event '${{ github.event_name }}' --sha '${{ github.sha }}' --release-intent-id "$RELEASE_INTENT_ID" --candidate-id "$CANDIDATE_ID" --attempt-id "$ATTEMPT_ID" --dispatch-nonce "$DISPATCH_NONCE" --plan-hash "$PLAN_HASH" --worker "$WORKER" --phase candidate_publish --source-sha "$SOURCE_SHA" --prepared-sha "$PREPARED_SHA" --candidate-version "$CANDIDATE_VERSION" --stable-version "$STABLE_VERSION" --descriptor-sha256 "$DESCRIPTOR_SHA256" --outcome "$outcome" --effects "$effects" --artifacts-json "$artifacts" --error-json "$error" --output release-result.json
+      - if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: release-result-${{ env.CANDIDATE_ID }}-${{ env.STEP_ID }}-attempt-${{ github.run_attempt }}
+          path: release-result.json
+          retention-days: 30
+          if-no-files-found: error
+      - name: Report to Release Control
+        if: always()
+        env:
+          RELEASE_CONTROL_API_URL: ${{ vars.RELEASE_CONTROL_API_URL }}
+        run: python3 .github/scripts/release_control_contract.py post-result --api-url "$RELEASE_CONTROL_API_URL" --result release-result.json

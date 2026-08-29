@@ -117,12 +117,17 @@ on:
       deepseek_api_key:
         required: false
 
+permissions: {}
+
 jobs:
   build:
     name: harness e2e build
     runs-on: ubuntu-latest
     # Instrumented cold builds are slower than regular ones.
     timeout-minutes: ${{ inputs.coverage && 60 || 45 }}
+    permissions:
+      actions: read
+      contents: read
     outputs:
       scenarios: ${{ steps.scenarios.outputs.json }}
       required_scenarios: ${{ steps.scenarios.outputs.required }}
@@ -142,8 +147,9 @@ jobs:
             /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
           sudo docker image prune -af >/dev/null 2>&1 || true
           df -h /
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          persist-credentials: false
           ref: ${{ inputs.source_ref }}
 
       # state/build.rs and harness/build.rs build their embedded UIs when the
@@ -151,10 +157,10 @@ jobs:
       # stack mode (Test/Lint E2E crate), so both lanes need the same
       # Node/pnpm toolchain as the regular CI worker builds.
       - name: Setup pnpm
-        uses: pnpm/action-setup@v5
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
 
       - name: Setup Node
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
           cache: pnpm
@@ -208,8 +214,9 @@ jobs:
               ;;
           esac
 
-      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
+          toolchain: 1.97.1
           components: ${{ inputs.coverage && 'clippy,llvm-tools' || 'clippy' }}
 
       - name: Validate E2E manifests and lockfiles
@@ -250,7 +257,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Restore E2E Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           # Instrumented builds have different fingerprints; keep them on their
           # own key so coverage runs never poison the normal cache. Both lanes
@@ -320,7 +327,7 @@ jobs:
 
       - name: Upload Rust build timings
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: harness-e2e-rust-timings
           path: '*/target/cargo-timings/*.html'
@@ -328,8 +335,9 @@ jobs:
           if-no-files-found: ignore
 
       - name: Checkout workflow scenario validator
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          persist-credentials: false
           ref: ${{ github.sha }}
           path: _workflow
           sparse-checkout: .github/scripts/validate_harness_scenarios.py
@@ -412,7 +420,7 @@ jobs:
           tar -czf target/harness-e2e-stack.tar.gz -C harness/target/release harness-e2e
 
       - name: Upload E2E binaries
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: harness-e2e-stack
           path: target/harness-e2e-stack.tar.gz
@@ -424,6 +432,9 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    permissions:
+      actions: read
+      contents: read
     strategy:
       fail-fast: false
       max-parallel: ${{ inputs.max_parallel }}
@@ -431,12 +442,13 @@ jobs:
         scenario: ${{ fromJSON(needs.build.outputs.scenarios) }}
         subject: ${{ fromJSON(inputs.subjects) }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          persist-credentials: false
           ref: ${{ inputs.source_ref }}
 
       - name: Download E2E binaries
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: harness-e2e-stack
           path: target
@@ -450,7 +462,7 @@ jobs:
             tar -xzf target/harness-e2e-stack.tar.gz
           fi
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         if: inputs.stack_mode == 'registry'
         with:
           python-version: '3.x'
@@ -567,7 +579,7 @@ jobs:
 
       - name: Upload E2E results
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: harness-e2e-${{ matrix.subject.id }}-${{ matrix.scenario }}-results
           path: |
@@ -580,7 +592,7 @@ jobs:
 
       - name: Upload E2E diagnostics
         if: failure()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: harness-e2e-${{ matrix.subject.id }}-${{ matrix.scenario }}-diagnostics
           path: |
@@ -591,7 +603,7 @@ jobs:
 
       - name: Upload coverage profiles
         if: always() && inputs.coverage
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: harness-e2e-${{ matrix.subject.id }}-${{ matrix.scenario }}-profraw
           path: target/harness-e2e/profraw/
@@ -603,14 +615,18 @@ jobs:
     needs: [build, e2e]
     if: always() && needs.build.result == 'success'
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          persist-credentials: false
           ref: ${{ github.sha }}
 
       - name: Download E2E results
         continue-on-error: true
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           pattern: harness-e2e-*-results
           path: target/harness-e2e-results
@@ -714,7 +730,7 @@ jobs:
             --actor '${{ github.actor }}'
 
       - name: Upload canonical Release Control summary
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: harness-e2e-summary
           path: target/harness-e2e-summary/summary.json
@@ -727,18 +743,23 @@ jobs:
     if: always() && inputs.stack_mode == 'source' && inputs.coverage && needs.build.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
     steps:
       # Sources must match the binaries built from the same ref for llvm-cov.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          persist-credentials: false
           ref: ${{ inputs.source_ref }}
 
-      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
+          toolchain: 1.97.1
           components: llvm-tools
 
       - name: Download E2E binaries
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: harness-e2e-stack
           path: target
@@ -748,7 +769,7 @@ jobs:
 
       - name: Download coverage profiles
         continue-on-error: true
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           pattern: harness-e2e-*-profraw
           merge-multiple: true
@@ -792,7 +813,7 @@ jobs:
             "${object_args[@]}"
 
       - name: Upload coverage report
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: harness-e2e-coverage
           path: |

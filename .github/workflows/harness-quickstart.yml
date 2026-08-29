@@ -53,8 +53,9 @@ jobs:
     env:
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.cache/ms-playwright
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          persist-credentials: false
           ref: ${{ inputs.source_sha }}
 
       - name: Validate Release Control dispatch
@@ -65,14 +66,13 @@ jobs:
           --operation-id '${{ inputs.operation_id }}'
           --step-id '${{ inputs.step_id }}'
 
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
         with:
           version: 11.13.1
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
-          package-manager-cache: false
 
       - name: Install Console Playwright dependencies
         working-directory: console/web
@@ -123,7 +123,7 @@ jobs:
 
       - name: Upload raw quickstart facts
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: quickstart-${{ inputs.operation_id }}-${{ inputs.step_id }}
           path: target/harness-quickstart/
@@ -143,19 +143,19 @@ jobs:
             --arg release_run_id '${{ inputs.release_run_id }}' --arg release_run_attempt '${{ inputs.release_run_attempt }}' \
             --slurpfile quickstart target/harness-quickstart/result.json \
             '{cli_channel:$cli,registry_tag:$registry,release_run:{id:($release_run_id|tonumber),attempt:($release_run_attempt|tonumber)},quickstart:($quickstart[0] // null),slack_evidence:(($quickstart[0].slack_evidence // null) | if . == null then null else .path = ("target/harness-quickstart/" + .path) end)}')
-          python3 .github/scripts/release_control_contract.py write-result \
+          python3 .github/scripts/release_control_contract.py write-test-result \
             --kind test --repository '${{ github.repository }}' \
             --operation-id '${{ inputs.operation_id }}' --step-id '${{ inputs.step_id }}' \
             --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' \
             --workflow harness-quickstart.yml --event '${{ github.event_name }}' --sha '${{ github.sha }}' \
-            --subject "$subject" --checks "$checks" --effects '[]' --outputs "$outputs" --output execution-result.json
+            --subject "$subject" --checks "$checks" --effects '[]' --outputs "$outputs" --output e2e-result.json
 
       - if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: execution-result-${{ inputs.operation_id }}-${{ inputs.step_id }}
+          name: e2e-result-${{ inputs.operation_id }}-${{ inputs.step_id }}
           path: |
-            execution-result.json
+            e2e-result.json
             target/harness-quickstart/slack-evidence/
           retention-days: 30
           if-no-files-found: error

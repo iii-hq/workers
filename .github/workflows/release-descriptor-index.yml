@@ -1,0 +1,106 @@
+name: Release Descriptor Index
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full Workers source commit; defaults to the workflow SHA
+        required: false
+        type: string
+
+permissions: {}
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Resolve immutable source
+        id: source
+        env:
+          REQUESTED_SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          source_sha="${REQUESTED_SOURCE_SHA:-${GITHUB_SHA}}"
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$source_sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ steps.source.outputs.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+
+      - name: Verify approved compiler bytes
+        env:
+          APPROVED_COMPILER_DIGEST: 72b4a2c33f293d57235ad527f6f74c8d4bc2067e381554c94eb360250c2256f7
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+
+          digest = hashlib.sha256()
+          digest.update(b"iii-workers-release-compiler\0")
+          digest.update(Path(".github/scripts/release_compiler.py").read_bytes())
+          digest.update(b"\0release-descriptor-schema\0")
+          digest.update(Path(".github/contracts/release-descriptor.schema.json").read_bytes())
+          actual = digest.hexdigest()
+          expected = os.environ["APPROVED_COMPILER_DIGEST"]
+          if actual != expected:
+              raise SystemExit(f"unapproved release compiler bytes: expected {expected}, got {actual}")
+          PY
+
+      - name: Install descriptor validators
+        run: python -m pip install --disable-pip-version-check --quiet pyyaml jsonschema
+
+      - name: Compile all public release workers exactly once
+        run: >-
+          python3 .github/scripts/release_compiler.py compile-index
+          --source-sha '${{ steps.source.outputs.sha }}'
+          --compiler-repository '${{ github.repository }}'
+          --compiler-commit '${{ steps.source.outputs.sha }}'
+          --output-dir release-descriptor-index
+
+      - name: Validate descriptor schema, identities, and counts
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from jsonschema import Draft202012Validator
+
+          root = Path("release-descriptor-index")
+          schema = json.loads(Path(".github/contracts/release-descriptor.schema.json").read_text())
+          index = json.loads((root / "release-descriptor-index.json").read_text())
+          assert index["contract"] == "release-descriptor-index"
+          assert index["source_sha"] == os.environ["SOURCE_SHA"]
+          assert index["compiler"]["repository"] == os.environ["GITHUB_REPOSITORY"]
+          assert index["compiler"]["commit"] == os.environ["SOURCE_SHA"]
+          assert len(index["workers"]) == 69
+          assert all(entry["publish"] is True for entry in index["workers"].values())
+          validator = Draft202012Validator(schema)
+          for worker, entry in index["workers"].items():
+              descriptor = json.loads((root / entry["path"]).read_text())
+              validator.validate(descriptor)
+              assert descriptor["worker"] == worker
+              assert descriptor["descriptor_sha256"] == entry["digest"]
+              assert descriptor["compiler_digest"] == index["compiler"]["digest"]
+          PY
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: release-descriptor-index-${{ steps.source.outputs.sha }}
+          path: release-descriptor-index/
+          if-no-files-found: error
+          retention-days: 30

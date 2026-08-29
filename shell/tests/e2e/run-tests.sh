@@ -20,7 +20,7 @@ WORKER_SRC="${WORKER_SRC:-$(cd "$ROOT_DIR/../.." && pwd)}"
 III_BIN="${III_BIN:-$(command -v iii 2>/dev/null || echo "$HOME/.local/bin/iii")}"
 WORKER_BIN_TARGET="${WORKER_BIN_TARGET:-$WORKER_SRC/target/release/shell}"
 # The engine resolves binaries by registered worker name (`shell` per
-# iii.worker.yaml), not by cargo bin name. If the engine actually looks up
+# worker-compose.yaml), not by cargo bin name. If the engine actually looks up
 # by binary name, override with WORKER_BIN_LINK=$HOME/.iii/workers/shell.
 worker_bin_link_override=${WORKER_BIN_LINK:-}
 

@@ -12033,7 +12033,7 @@
   }
  },
  {
-  "description": "Install a worker from a registry slug, an OCI image ref, or a LOCAL project directory (one containing an iii.worker.yaml). Call worker::schema to see each source shape, and worker::validate to dry-run an iii.worker.yaml before installing. LOCAL installs run the project directory LIVE and start a source watcher: code edits auto-restart the worker, so do NOT re-add after changing source files \u2014 re-add (force: true) only when iii.worker.yaml itself changes. Installs can outlive a bus invocation timeout and CONTINUE server-side \u2014 on timeout, poll worker::status instead of re-issuing (the project lock stays held until the in-flight install finishes).",
+  "description": "Install a worker from a registry slug, an OCI image ref, or a LOCAL project directory (one containing an worker-compose.yaml). Call worker::schema to see each source shape, and worker::validate to dry-run an worker-compose.yaml before installing. LOCAL installs run the project directory LIVE and start a source watcher: code edits auto-restart the worker, so do NOT re-add after changing source files \u2014 re-add (force: true) only when worker-compose.yaml itself changes. Installs can outlive a bus invocation timeout and CONTINUE server-side \u2014 on timeout, poll worker::status instead of re-issuing (the project lock stays held until the in-flight install finishes).",
   "name": "worker::add",
   "parameters": {
    "$schema": "http://json-schema.org/draft-07/schema#",
@@ -12095,7 +12095,7 @@
          "type": "string"
         },
         "path": {
-         "description": "Path to a worker PROJECT DIRECTORY on the engine/daemon host (NOT the caller's machine), e.g. \"/srv/workers/my-worker\". The directory MUST contain an `iii.worker.yaml` manifest.\n\nMinimal manifest (just name + how to start):\n  name: my-worker\n  scripts:\n    start: \"node src/index.js\"\n\nAll iii.worker.yaml fields:\n  name        (required) worker id; must be a single path segment (alphanumerics, '-', '_', '.').\n  description (optional) one-line human/LLM-readable summary.\n  scripts.start   (required unless inferred) command that runs the worker process.\n  scripts.setup   (optional) one-time host provisioning, e.g. \"apt-get install -y build-essential\".\n  scripts.install (optional) dependency install, e.g. \"npm install\".\n  dependencies    (optional) map of other-worker-name -> semver range, e.g. { iii-state: \"^0.19\" }.\n  resources.cpus   (optional) integer vCPUs, default 2.\n  resources.memory (optional) MiB, default 2048.\n  env             (optional) string->string vars injected into the worker (III_URL/III_ENGINE_URL are set by the engine and ignored here).\n  runtime.base_image (optional) OCI rootfs override, e.g. \"oven/bun:1\".\n\nUnknown keys are rejected at add time. The setup/install/start scripts run on the host. Works over the trigger as well as the CLI. Dry-run a manifest with `worker::validate`; fetch the full manifest JSON Schema via `worker::schema { function_id: \"iii.worker.yaml\" }`.",
+         "description": "Path to a worker PROJECT DIRECTORY on the engine/daemon host (NOT the caller's machine), e.g. \"/srv/workers/my-worker\". The directory MUST contain an `worker-compose.yaml` manifest.\n\nMinimal manifest (just name + how to start):\n  name: my-worker\n  scripts:\n    start: \"node src/index.js\"\n\nAll worker-compose.yaml fields:\n  name        (required) worker id; must be a single path segment (alphanumerics, '-', '_', '.').\n  description (optional) one-line human/LLM-readable summary.\n  scripts.start   (required unless inferred) command that runs the worker process.\n  scripts.setup   (optional) one-time host provisioning, e.g. \"apt-get install -y build-essential\".\n  scripts.install (optional) dependency install, e.g. \"npm install\".\n  dependencies    (optional) map of other-worker-name -> semver range, e.g. { iii-state: \"^0.19\" }.\n  resources.cpus   (optional) integer vCPUs, default 2.\n  resources.memory (optional) MiB, default 2048.\n  env             (optional) string->string vars injected into the worker (III_URL/III_ENGINE_URL are set by the engine and ignored here).\n  runtime.base_image (optional) OCI rootfs override, e.g. \"oven/bun:1\".\n\nUnknown keys are rejected at add time. The setup/install/start scripts run on the host. Works over the trigger as well as the CLI. Dry-run a manifest with `worker::validate`; fetch the full manifest JSON Schema via `worker::schema { function_id: \"worker-compose.yaml\" }`.",
          "type": "string"
         }
        },
@@ -12281,7 +12281,7 @@
   }
  },
  {
-  "description": "Introspect request/response schemas for worker::* triggers. Optional `function_id` filters to a single trigger. Also serves the iii.worker.yaml manifest schema under the pseudo-id \"iii.worker.yaml\".",
+  "description": "Introspect request/response schemas for worker::* triggers. Optional `function_id` filters to a single trigger. Also serves the worker-compose.yaml manifest schema under the pseudo-id \"worker-compose.yaml\".",
   "name": "worker::schema",
   "parameters": {
    "$schema": "http://json-schema.org/draft-07/schema#",
@@ -12399,7 +12399,7 @@
   }
  },
  {
-  "description": "Reinstall REGISTRY-installed workers preserving config (re-resolves iii.lock pins). LOCAL-path workers are NOT touched by this: their source watcher already auto-restarts them on code edits; only an iii.worker.yaml change needs worker::add with force: true. Like worker::add, updates can outlive a bus timeout and continue server-side \u2014 poll worker::status.",
+  "description": "Reinstall REGISTRY-installed workers preserving config (re-resolves iii.lock pins). LOCAL-path workers are NOT touched by this: their source watcher already auto-restarts them on code edits; only an worker-compose.yaml change needs worker::add with force: true. Like worker::add, updates can outlive a bus timeout and continue server-side \u2014 poll worker::status.",
   "name": "worker::update",
   "parameters": {
    "$schema": "http://json-schema.org/draft-07/schema#",
@@ -12418,15 +12418,15 @@
   }
  },
  {
-  "description": "Dry-run validation of an iii.worker.yaml WITHOUT installing anything. Pass `manifest` (inline YAML text) or `path` (host file/dir). Returns errors, unknown keys, deprecated keys, and warnings \u2014 author, validate, then worker::add.",
+  "description": "Dry-run validation of an worker-compose.yaml WITHOUT installing anything. Pass `manifest` (inline YAML text) or `path` (host file/dir). Returns errors, unknown keys, deprecated keys, and warnings \u2014 author, validate, then worker::add.",
   "name": "worker::validate",
   "parameters": {
    "$schema": "http://json-schema.org/draft-07/schema#",
-   "description": "Validate an iii.worker.yaml WITHOUT installing anything. Pass exactly one of `manifest` (inline YAML text \u2014 preferred for authoring) or `path` (a file or worker directory on the engine/daemon host).",
+   "description": "Validate an worker-compose.yaml WITHOUT installing anything. Pass exactly one of `manifest` (inline YAML text \u2014 preferred for authoring) or `path` (a file or worker directory on the engine/daemon host).",
    "properties": {
     "manifest": {
      "default": null,
-     "description": "Inline iii.worker.yaml content to validate. Preferred: lets a caller check a manifest before writing it anywhere.",
+     "description": "Inline worker-compose.yaml content to validate. Preferred: lets a caller check a manifest before writing it anywhere.",
      "type": [
       "string",
       "null"
@@ -12434,7 +12434,7 @@
     },
     "path": {
      "default": null,
-     "description": "Host path to an iii.worker.yaml, or to a worker project directory containing one (same resolution as worker::add kind=local; resolved on the engine/daemon host, not the caller).",
+     "description": "Host path to an worker-compose.yaml, or to a worker project directory containing one (same resolution as worker::add kind=local; resolved on the engine/daemon host, not the caller).",
      "type": [
       "string",
       "null"

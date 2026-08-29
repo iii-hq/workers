@@ -222,7 +222,7 @@ promotion decision. It dispatches one of two strict entrypoints:
 - `harness-e2e-source.yml` builds an immutable source SHA;
 - `harness-e2e-registry.yml` installs the exact `latest` or `next` stack.
 
-Both entrypoints validate every required input and call `_harness-e2e.yml`,
+Both entrypoints validate every required input and call `_worker-e2e.yml`,
 which only builds, executes and uploads canonical schema-v3 evidence. The
 Workers repository has no release-policy catalog, autonomous schedule, run
 discovery, promotion decision or public dashboard. Each subject/scenario pair

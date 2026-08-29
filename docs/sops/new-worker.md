@@ -1,170 +1,70 @@
-# New worker onboarding
+# Add a worker
 
-**Sources of truth:** this checklist; language scaffolds in
-[`binary-worker.md`](binary-worker.md); CI in
-[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml); release in
-[`release.md`](release.md). On conflict, the workflow wins — update this doc.
+Use this checklist for every first-party worker. Rust daemon implementation
+details are in [`binary-worker.md`](binary-worker.md).
 
-Cross-cutting SOP for adding **any** worker to this monorepo. For the inside
-of a Rust `deploy: binary` daemon, continue with [`binary-worker.md`](binary-worker.md)
-after §2.
+## Identity and files
 
-## 1. Naming and folder rules
+- Choose a root folder and catalog slug matching
+  `^[a-z0-9][a-z0-9_-]*$`.
+- Add the package manifest that owns the version: `Cargo.toml`, `package.json`,
+  or `pyproject.toml`.
+- Add a consumer-facing `README.md` and a non-empty `tests/` directory.
+- Add `iii.worker.yaml` for local development, scaffolding and `iii worker`.
+- Add an entry to the private
+  [`.release/workers.yaml`](../../.release/workers.yaml) build catalog.
 
-- **Folder name** = `iii.worker.yaml` `name` = `[package].name` (Rust) =
-  `[[bin]].name` = `bin:` field.
-- Pattern: `^[a-z0-9][a-z0-9_-]*$` (enforced by `TAG_RE` in
-  [`.github/scripts/parse_release_tag.py`](../../.github/scripts/parse_release_tag.py)).
-- Do **not** prefix with `iii-` unless the worker itself is named that way
-  (e.g. `iii-directory`, `iii-lsp`).
-- Git release tags use the folder name: `<worker>/vX.Y.Z`.
-- **Function and trigger IDs** are `<worker>::<verb>`; multi-word segments use
-  kebab-case, never snake_case (e.g. `context::count-tokens`,
-  `shell::on-config-change`). See [`binary-worker.md`](binary-worker.md) §7.
+The private entry contains exactly `source`, `artifact`, `validation`, and
+`publish`. Public runtime and Registry metadata stay in `iii.worker.yaml`.
+See [`worker-compose.md`](../architecture/worker-compose.md) for the boundary.
+Release Control reads only the compiled descriptor index and never either
+source document.
 
-## 2. Required files by deploy mode
+## Registry metadata
 
-Every worker needs a top-level folder with:
+For a first-party package, set private `publish: true` and put its non-empty
+license, description, dependency ranges, configuration, and discovery tags in
+the public manifest. Fixtures use private `publish: false` and are never
+release candidates.
 
-| File / dir | All workers | Notes |
-|---|---|---|
-| `iii.worker.yaml` | yes | Registry + CI metadata |
-| Version manifest | yes | `Cargo.toml`, `package.json`, or `pyproject.toml` per `manifest:` |
-| `config.yaml` | **Path A (static config):** yes — operator defaults, committed | **Path B (configuration worker):** **no** — omit; use `WorkerConfig::default()` + configuration worker; optional uncommitted local seed. See [`configuration.md`](configuration.md); `session-manager` is Path B |
-| `tests/` (non-empty) | yes | See §5 |
-| `README.md` | yes | Per [`worker-readme.md`](../../worker-readme.md) |
+Never put API keys, tokens, `III_*` connection settings, or mutable external
+references in public defaults; the compiler rejects them before producing the
+immutable Registry projection.
 
-Pick a scaffold by `deploy` + `language`:
+Set `validation.interface: required` when the worker exposes a collectable
+interface. Use `skipped` only for a worker that cannot expose one, such as a
+stdio-only process. Skipping validation does not silently disable publication.
 
-| `deploy` | `language` | Scaffold |
-|---|---|---|
-| `binary` | `rust` | [`binary-worker.md`](binary-worker.md) |
-| `image` | `javascript` / `node` | [`deploy-modes.md`](../architecture/deploy-modes.md) §Image |
-| `image` | `python` | [`deploy-modes.md`](../architecture/deploy-modes.md) §Image |
-| `bundle` | `javascript` | [`harness/`](../../harness/) (monorepo bundle) |
-
-`iii.worker.yaml` must declare valid `deploy` (`binary` | `image` | `bundle`)
-and `language` (`rust` | `javascript` | `node` | `python`).
-
-### Discovery tags (required)
-
-Every **publishable** worker must set a non-empty `tags:` list in
-`iii.worker.yaml`. Tags are how the registry indexes a worker for search and
-collections, so a worker without them is effectively undiscoverable.
-
-```yaml
-# iii.worker.yaml
-tags:
-  - sql
-  - database
-  - storage
-```
-
-Keep tags lowercase and specific to what the worker does. `pr-checks` enforces
-this (`.github/scripts/validate_worker.py`): a publishable worker with a missing
-or empty `tags:` list is a hard error. Workers that opt out of publishing with
-`interface_smoke: false` (e.g. `acp`, `iii-lsp`) are exempt — tags stay optional
-for them.
-
-## 3. Repo registration
-
-Add a row to the **Modules** table in [`README.md`](../../README.md). Every
-shipped worker has one — kind, one-line summary, link to README or architecture.
-
-## 4. CI expectations
-
-On the first PR that touches the worker, [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)
-runs:
-
-| Job | What it enforces |
-|---|---|
-| `pr-checks` | `README.md` present; `iii.worker.yaml` valid; non-empty `tags:` on publishable workers (see [Discovery tags](#discovery-tags-required)); manifest version ≥ base; `tests/` non-empty |
-| Language job | Rust: `fmt`, `clippy -D warnings`, `test`; Node: `biome ci`, `npm test`; Python: `ruff`, `pytest` |
-| `interface-smoke` | Rust only: build from source, boot engine + worker, collect non-empty interface |
-
-**Before opening the PR:**
-
-- If the default `config.yaml` needs sidecars or local paths unavailable on a
-  clean runner, ship `config.collect.yaml` (lighter boot for interface
-  collection). See `storage/config.collect.yaml` and `shell/config.collect.yaml`.
-- If the worker cannot be booted for interface collection (stdio server, no
-  registered functions), set `interface_smoke: false` in `iii.worker.yaml`
-  (e.g. `iii-lsp`). This skips interface smoke **and** registry publish at
-  release time.
-
-Metadata-only changes (`iii.worker.yaml`, `README.md`, `Cargo.toml`, `Cargo.lock`,
-`AGENTS*.md`) downgrade version/tests/README gates to notices instead of hard
-errors.
-
-## 5. Tests contract
-
-- `tests/` must exist and be non-empty — `pr-checks` enforces this on every
-  changed worker.
-- **Typed wire schemas (all languages):** every registered function must publish
-  a typed request **and** response schema — never the permissive `AnyValue`
-  ("unknown") schema a `Value`/untyped handler emits. Rust workers pin this with
-  a `catalog()` + golden schema test (`tests/schemas.rs`) that also asserts no
-  schema is untyped; see [`binary-worker.md`](binary-worker.md) §7 (typed-schema
-  rule) and §9 (catalog + golden test). The publish pipeline re-checks the live
-  interface with `collect_worker_interface.py --assert-typed-schemas`
-  (`_publish-registry.yml`), so an untyped handler fails the release.
-- **Rust binary:** pattern A (integration against lib) or pattern B (Cucumber
-  BDD). See [`binary-worker.md`](binary-worker.md) §9.
-- **Node:** `npm test` when `tests/` exists.
-- **Python:** `tests/test_*.py` runnable with `pytest`.
-
-Dedicated e2e workflows (`shell-e2e.yml`, `database-e2e.yml`, `storage-e2e.yml`)
-are added when a worker needs harness-level integration beyond unit tests.
-
-## 6. Release wiring (one-time per worker)
-
-Before the first release, add the worker to the release catalog. The standard
-Release workflow listens for generic `<worker>/v*` tags and validates every
-slug against this catalog, so there is no second tag-pattern list to maintain.
-
-| # | Location | Action |
-|---|---|---|
-| 1 | Release Control typed release policy | Add the worker capability, manifest exception if any, channel policy, and required validation |
-
-## 7. Agent permissions
-
-Decide default agent-callable surfaces in [`iii-permissions.yaml`](../../iii-permissions.yaml).
-Rules are first-match-wins:
-
-- **Deny** (`'!function_id'`) for transcript-mutating, config-mutating, or
-  operator-only functions. Precedent: the `session-manager` block (deny all
-  `session::store::*` and write paths; reads stay at `needs_approval` default).
-- **Allow** bare strings or globs for read-only introspection agents need by
-  default (`engine::functions::list`, `directory::registry::workers::list`, …).
-
-Update permissions when the worker exposes functions agents should or should not
-call without approval.
-
-## 8. Skills
-
-Ship `skills/SKILL.md` when agents should discover **when** to use the worker
-(intent, boundaries, function catalogue — not JSON schemas). Author per
-[`DOCUMENTATION_GUIDELINES.md`](../../DOCUMENTATION_GUIDELINES.md).
-
-- **Optional:** workers may publish other markdown under `skills/` without a
-  canonical `skills/SKILL.md` entrypoint.
-- **On release:** skills are auto-uploaded via `POST /w/<worker>/skills` when
-  markdown is present; skipped cleanly when absent.
-
-## 9. First release
-
-Follow [`release.md`](release.md). For a brand-new worker, prefer
-**registry tag `next`** on the first publish so `compose::add` users on `latest`
-are not surprised.
-
-Recommended preflight:
+## Local checks
 
 ```bash
-# Rust binary — from the worker folder
-cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-features
-./target/debug/<worker> --manifest | jq .
+python3 .github/scripts/validate_worker.py \
+  --worker <slug> --base-ref origin/main --source-changed '["<slug>"]'
+
+python3 .github/scripts/release_compiler.py compile-index \
+  --source-sha "$(git rev-parse HEAD)" \
+  --compiler-repository iii-hq/workers \
+  --compiler-commit "$(git rev-parse HEAD)" \
+  --output-dir /tmp/release-descriptor-index
 ```
 
-Then run **Create Tag** on `main` with the worker selected.
+Run the language suite that CI will select:
+
+- Rust: `cargo fmt --all -- --check`, clippy, and locked tests.
+- JavaScript: Biome and package tests.
+- Python: Ruff and pytest.
+
+Handlers published as interface metadata must have typed request and response
+schemas. Add a focused schema/catalog test for the worker and a dedicated E2E
+workflow when startup, sidecars, or external protocol behavior needs coverage.
+
+## Release readiness
+
+Commit the exact candidate version in `source.package_manifest`. The descriptor
+index workflow compiles it at the merged source SHA; Release Control cannot
+plan a different version and prepare will never edit it. Ensure each declared
+bundle file exists, every Rust target is supported, and OCI Docker inputs are
+fully pinned before requesting a release.
+
+New release policy belongs in Release Control. Do not add another tag-triggered
+or repository-local release orchestrator.

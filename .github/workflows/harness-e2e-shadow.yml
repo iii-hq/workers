@@ -41,8 +41,9 @@ jobs:
     env:
       HARNESS_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-e2e-shadow
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          persist-credentials: false
           ref: ${{ github.sha }}
 
       - name: Validate Release Control dispatch
@@ -144,7 +145,7 @@ jobs:
 
       - name: Upload observation bundle
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: e2e-observation-${{ inputs.campaign_id }}-${{ inputs.execution_id }}-${{ inputs.attempt }}-gh-${{ github.run_attempt }}
           path: target/harness-e2e-shadow/

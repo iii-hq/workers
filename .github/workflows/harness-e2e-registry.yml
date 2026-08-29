@@ -52,8 +52,9 @@ jobs:
   guard:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          persist-credentials: false
           ref: ${{ github.sha }}
       - name: Validate Release Control dispatch
         env:
@@ -79,7 +80,7 @@ jobs:
 
   e2e:
     needs: guard
-    uses: ./.github/workflows/_harness-e2e.yml
+    uses: ./.github/workflows/_worker-e2e.yml
     with:
       source_ref: ${{ inputs.source_sha }}
       stack_mode: registry
@@ -114,8 +115,9 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          persist-credentials: false
           ref: ${{ github.sha }}
       - name: Write factual result
         run: |
@@ -131,15 +133,15 @@ jobs:
             --arg judge_model '${{ inputs.judge_model }}' --arg judge_provider '${{ inputs.judge_provider }}' \
             --arg release_run_id '${{ inputs.release_run_id }}' --arg release_run_attempt '${{ inputs.release_run_attempt }}' \
             '{profile:$profile,policy_digest:$digest,policy_version:($policy_version|tonumber),requested_runs:($runs|tonumber),selected_scenarios:$scenarios,subjects:$subjects,judge:{model:$judge_model,provider:$judge_provider},release_run:{id:($release_run_id|tonumber),attempt:($release_run_attempt|tonumber)}}')
-          python3 .github/scripts/release_control_contract.py write-result \
+          python3 .github/scripts/release_control_contract.py write-test-result \
             --kind harness_validation --repository '${{ github.repository }}' \
             --operation-id '${{ inputs.operation_id }}' --step-id '${{ inputs.step_id }}' \
             --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' \
             --workflow harness-e2e-registry.yml --event '${{ github.event_name }}' --sha '${{ github.sha }}' \
-            --subject "$subject" --checks "$checks" --effects '[]' --outputs "$outputs" --output execution-result.json
-      - uses: actions/upload-artifact@v6
+            --subject "$subject" --checks "$checks" --effects '[]' --outputs "$outputs" --output e2e-result.json
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: execution-result-${{ inputs.operation_id }}-${{ inputs.step_id }}
-          path: execution-result.json
+          name: e2e-result-${{ inputs.operation_id }}-${{ inputs.step_id }}
+          path: e2e-result.json
           retention-days: 30
           if-no-files-found: error

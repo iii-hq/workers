@@ -75,7 +75,7 @@ the canonical layout); new/changed modules called out:
 
 ```text
 rbac-proxy/
-├── iii.worker.yaml          # name: rbac-proxy, deploy: binary, dependencies: { configuration }
+├── worker-compose.yaml          # name: rbac-proxy, deploy: binary, dependencies: { configuration }
 ├── Cargo.toml               # [workspace] + [[bin]] + [lib]; iii-sdk pinned; axum/tokio/tungstenite
 ├── build.rs                 # exposes TARGET (no web assets to embed)
 ├── src/
@@ -264,14 +264,14 @@ the boundary it draws, configured by the operator, never by an agent.
 ## Dependencies
 
 - **`configuration` worker** — required boot dependency (schema register +
-  fetch). Declared in `iii.worker.yaml` `dependencies`.
+  fetch). Declared in `worker-compose.yaml` `dependencies`.
 - **A trusted engine listener** at `engine_url` with **no** `rbac` block (the
   proxy is the boundary; the engine port is internal-only).
 - **Operator-registered functions** (optional): the `auth_function_id`,
   `middleware_function_id`, and registration-hook functions, registered against
   the engine from any SDK.
 
-```yaml title="iii.worker.yaml"
+```yaml title="worker-compose.yaml"
 iii: v1
 name: rbac-proxy
 language: rust

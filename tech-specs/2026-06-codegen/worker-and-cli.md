@@ -19,7 +19,7 @@ Mirrors the binary-worker SOP and `coder`:
 ```
 workers/codegen/
   Cargo.toml                 # [[bin]] name = "codegen"
-  iii.worker.yaml            # deploy: binary, multi-target
+  worker-compose.yaml            # deploy: binary, multi-target
   src/
     main.rs                  # clap CLI; dispatches subcommands
     lib.rs                   # the pipeline, re-used by CLI and worker
@@ -128,9 +128,9 @@ Capability probe — what this build can emit.
 ] }
 ```
 
-## `iii.worker.yaml`
+## `worker-compose.yaml`
 
-Same shape as `coder`'s (`workers/coder/iii.worker.yaml:1-23`):
+Same shape as `coder`'s (`workers/coder/worker-compose.yaml:1-23`):
 
 ```yaml
 iii: v1
@@ -204,7 +204,7 @@ A small **live integration test** boots the engine with `todo-worker`, runs
   brief.)
 - **Client surface only.** Codegen emits typed *callers*, *types*, and typed
   *trigger-subscription* helpers. It does **not** scaffold worker
-  implementations, function bodies, or `iii.worker.yaml` — schemas and behavior
+  implementations, function bodies, or `worker-compose.yaml` — schemas and behavior
   are owned by the workers that register them.
 - **Not a schema authoring tool.** Codegen never invents or edits schemas; it is
   a pure projection of `engine::*::info` output.

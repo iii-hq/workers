@@ -24,8 +24,10 @@ jobs:
   guard:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-        with: { ref: "${{ github.sha }}" }
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: "${{ github.sha }}"
       - name: Validate Release Control dispatch
         env:
           RELEASE_CONTROL_BOT_LOGIN: ${{ vars.RELEASE_CONTROL_BOT_LOGIN }}
@@ -47,7 +49,7 @@ jobs:
           jq -e 'type == "array" and length > 0' <<<'${{ inputs.subjects }}' >/dev/null
   e2e:
     needs: guard
-    uses: ./.github/workflows/_harness-e2e.yml
+    uses: ./.github/workflows/_worker-e2e.yml
     with:
       source_ref: ${{ inputs.source_sha }}
       stack_mode: source
@@ -81,19 +83,21 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-        with: { ref: "${{ github.sha }}" }
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: "${{ github.sha }}"
       - run: |
           subject=$(jq -cn --arg source_sha '${{ inputs.source_sha }}' '{source_sha:$source_sha}')
           checks=$(jq -cn --arg status '${{ needs.e2e.result }}' '[{name:"harness_source",status:$status}]')
           outputs=$(jq -cn --argjson scenarios '${{ inputs.scenarios_json }}' --arg runs '${{ inputs.runs }}' \
             '{selected_scenarios:$scenarios,requested_runs:($runs|tonumber)}')
-          python3 .github/scripts/release_control_contract.py write-result --kind test --repository '${{ github.repository }}' \
+          python3 .github/scripts/release_control_contract.py write-test-result --kind test --repository '${{ github.repository }}' \
             --operation-id '${{ inputs.operation_id }}' --step-id '${{ inputs.step_id }}' --run-id '${{ github.run_id }}' \
             --run-attempt '${{ github.run_attempt }}' --workflow harness-e2e-source.yml --event '${{ github.event_name }}' --sha '${{ github.sha }}' \
-            --subject "$subject" --checks "$checks" --effects '[]' --outputs "$outputs" --output execution-result.json
-      - uses: actions/upload-artifact@v6
+            --subject "$subject" --checks "$checks" --effects '[]' --outputs "$outputs" --output e2e-result.json
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: execution-result-${{ inputs.operation_id }}-${{ inputs.step_id }}
-          path: execution-result.json
+          name: e2e-result-${{ inputs.operation_id }}-${{ inputs.step_id }}
+          path: e2e-result.json
           retention-days: 30

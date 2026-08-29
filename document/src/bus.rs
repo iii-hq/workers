@@ -9,7 +9,7 @@
 //! two reasons. A test can drive the whole handler — render, transcribe, cache
 //! — against recorded responses with no engine, no Chromium and no model bill.
 //! And the dependency stays SOFT: nothing here is declared in
-//! `iii.worker.yaml`, so a worker that is not installed surfaces as a failed
+//! `worker-compose.yaml`, so a worker that is not installed surfaces as a failed
 //! call this module turns into an instruction, not as a boot-time refusal that
 //! would cost a `.docx` reader a browser install.
 

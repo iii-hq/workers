@@ -91,7 +91,7 @@ def source_manifest() -> dict[str, object]:
     # Fingerprint only the source the oracle executes (gen_goldens.py imports
     # scrapling/src directly; its dependencies come from oracle/
     # requirements.lock, not the worker's own metadata). Worker metadata —
-    # iii.worker.yaml, README, permissions, pyproject — is deliberately
+    # worker-compose.yaml, README, permissions, pyproject — is deliberately
     # excluded: PR CI runs on the merge commit, so any main-side churn in
     # those files would break every open PR's freeze without touching parse
     # behavior. The version label is provenance, not a compared input.

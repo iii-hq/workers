@@ -31,8 +31,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          persist-credentials: false
           ref: ${{ inputs.source_sha || github.sha }}
 
       - name: Validate Release Control dispatch
@@ -45,18 +46,19 @@ jobs:
           --step-id '${{ inputs.step_id }}'
 
       - name: Rewrite SSH to HTTPS for public deps
-        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+        run: git config --local url."https://github.com/".insteadOf "ssh://git@github.com/"
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.97.1
-
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: 1.97.1
       - name: Cache cargo registry & build
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: shell
 
       - name: Install Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: '22'
           cache: 'npm'
@@ -65,8 +67,7 @@ jobs:
       # shell/build.rs builds the injectable UI (shell/ui) via pnpm.
       # Version comes from the repo-root package.json `packageManager` field.
       - name: Setup pnpm
-        uses: pnpm/action-setup@v5
-
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
       - name: Install iii engine (latest from main)
         run: |
           curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 \
@@ -87,7 +88,7 @@ jobs:
 
       - name: Upload report on failure
         if: failure()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: shell-e2e-report
           path: |
@@ -99,17 +100,19 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && always()
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-        with: { ref: "${{ github.sha }}" }
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: "${{ github.sha }}"
       - run: |
           subject=$(jq -cn --arg source_sha '${{ inputs.source_sha }}' '{source_sha:$source_sha}')
           checks=$(jq -cn --arg status '${{ needs.e2e.result }}' '[{name:"shell_e2e",status:$status}]')
-          python3 .github/scripts/release_control_contract.py write-result --kind test --repository '${{ github.repository }}' \
+          python3 .github/scripts/release_control_contract.py write-test-result --kind test --repository '${{ github.repository }}' \
             --operation-id '${{ inputs.operation_id }}' --step-id '${{ inputs.step_id }}' --run-id '${{ github.run_id }}' \
             --run-attempt '${{ github.run_attempt }}' --workflow shell-e2e.yml --event '${{ github.event_name }}' --sha '${{ github.sha }}' \
-            --subject "$subject" --checks "$checks" --effects '[]' --outputs '{}' --output execution-result.json
-      - uses: actions/upload-artifact@v6
+            --subject "$subject" --checks "$checks" --effects '[]' --outputs '{}' --output e2e-result.json
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: execution-result-${{ inputs.operation_id }}-${{ inputs.step_id }}
-          path: execution-result.json
+          name: e2e-result-${{ inputs.operation_id }}-${{ inputs.step_id }}
+          path: e2e-result.json
           retention-days: 30

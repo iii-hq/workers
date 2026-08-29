@@ -1,0 +1,148 @@
+name: Release Image Alias
+run-name: RC image alias · ${{ inputs.worker }} · ${{ fromJSON(inputs.identity).operation_id }} · ${{ fromJSON(inputs.identity).step_id }} · ${{ fromJSON(inputs.identity).dispatch_nonce }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      identity: {required: true, type: string}
+      worker: {required: true, type: string}
+      source_sha: {required: true, type: string}
+      prepared_sha: {required: true, type: string}
+      candidate_version: {required: true, type: string}
+      stable_version: {required: true, type: string}
+      descriptor_sha256: {required: true, type: string}
+      prepared_run_id: {required: true, type: string}
+      channel:
+        required: true
+        type: choice
+        options: [next, latest]
+      expected_digest: {required: true, type: string}
+
+env:
+  RELEASE_IDENTITY: ${{ inputs.identity }}
+  OPERATION_ID: ${{ fromJSON(inputs.identity).operation_id }}
+  STEP_ID: ${{ fromJSON(inputs.identity).step_id }}
+  RELEASE_INTENT_ID: ${{ fromJSON(inputs.identity).release_intent_id }}
+  CANDIDATE_ID: ${{ fromJSON(inputs.identity).candidate_id }}
+  ATTEMPT_ID: ${{ fromJSON(inputs.identity).attempt_id }}
+  DISPATCH_NONCE: ${{ fromJSON(inputs.identity).dispatch_nonce }}
+  PLAN_HASH: ${{ fromJSON(inputs.identity).plan_hash }}
+  WORKER: ${{ inputs.worker }}
+  SOURCE_SHA: ${{ inputs.source_sha }}
+  PREPARED_SHA: ${{ inputs.prepared_sha }}
+  CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+  STABLE_VERSION: ${{ inputs.stable_version }}
+  DESCRIPTOR_SHA256: ${{ inputs.descriptor_sha256 }}
+  PREPARED_RUN_ID: ${{ inputs.prepared_run_id }}
+  RELEASE_CHANNEL: ${{ inputs.channel }}
+  EXPECTED_DIGEST: ${{ inputs.expected_digest }}
+
+permissions: {}
+
+jobs:
+  alias:
+    runs-on: workers-release-linux-8core
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      packages: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: release-prepared-${{ env.CANDIDATE_ID }}
+          path: release-prepared
+          run-id: ${{ inputs.prepared_run_id }}
+          github-token: ${{ github.token }}
+      - name: Authorize exact image mutation
+        env:
+          RELEASE_CONTROL_API_URL: ${{ vars.RELEASE_CONTROL_API_URL }}
+        run: |
+          set -euo pipefail
+          test "$(jq -r .artifact.kind release-prepared/release-descriptor.json)" = oci-image
+          test "$(jq -r .descriptor_sha256 release-prepared/release-descriptor.json)" = "$DESCRIPTOR_SHA256"
+          python3 .github/scripts/release_interface.py verify-evidence --descriptor release-prepared/release-descriptor.json --evidence release-prepared/release-evidence.json
+          [[ "$EXPECTED_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          python3 .github/scripts/release_control_contract.py validate-identity --identity "$RELEASE_IDENTITY"
+          python3 .github/scripts/release_control_contract.py validate-dispatch --operation-id "$OPERATION_ID" --step-id "$STEP_ID" --dispatch-nonce "$DISPATCH_NONCE" --descriptor-sha256 "$DESCRIPTOR_SHA256" --plan-hash "$PLAN_HASH" --source-sha "$SOURCE_SHA" --prepared-sha "$PREPARED_SHA" --mutating
+          python3 .github/scripts/release_control_contract.py authorize-dispatch --api-url "$RELEASE_CONTROL_API_URL" --repository '${{ github.repository }}' --operation-id "$OPERATION_ID" --step-id "$STEP_ID" --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' --workflow 'release-image-alias.yml' --event '${{ github.event_name }}' --sha '${{ github.sha }}' --release-intent-id "$RELEASE_INTENT_ID" --candidate-id "$CANDIDATE_ID" --attempt-id "$ATTEMPT_ID" --dispatch-nonce "$DISPATCH_NONCE" --plan-hash "$PLAN_HASH" --worker "$WORKER" --source-sha "$SOURCE_SHA" --descriptor-sha256 "$DESCRIPTOR_SHA256"
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        with:
+          version: v0.36.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: CAS image alias by immutable digest
+        id: mutate
+        run: |
+          set -euo pipefail
+          mkdir -p effect-state
+          printf '%s\n' unknown >effect-state/image-before
+          printf '%s\n' not_started >effect-state/image-mutation
+          printf '%s\n' unknown >effect-state/image-after
+          base="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/$WORKER"
+          docker buildx imagetools inspect "$base@$EXPECTED_DIGEST" --raw >immutable.json
+          test "sha256:$(sha256sum immutable.json | cut -d' ' -f1)" = "$EXPECTED_DIGEST"
+          if docker buildx imagetools inspect "$base:$RELEASE_CHANNEL" --raw \
+            >alias-before.json 2>alias-before.err; then
+            before_digest="sha256:$(sha256sum alias-before.json | cut -d' ' -f1)"
+            if [[ "$before_digest" == "$EXPECTED_DIGEST" ]]; then
+              printf '%s\n' present >effect-state/image-before
+            else
+              printf '%s\n' absent >effect-state/image-before
+            fi
+          elif grep -Eiq 'manifest unknown|not found' alias-before.err; then
+            printf '%s\n' absent >effect-state/image-before
+          else
+            cat alias-before.err
+            echo "cannot prove image alias precondition"
+            exit 1
+          fi
+          plan=$(python3 .github/scripts/release_effects.py plan \
+            --before "$(cat effect-state/image-before)")
+          if [[ "$plan" == mutate ]]; then
+            printf '%s\n' started >effect-state/image-mutation
+            docker buildx imagetools create --tag "$base:$RELEASE_CHANNEL" "$base@$EXPECTED_DIGEST"
+            printf '%s\n' completed >effect-state/image-mutation
+          elif [[ "$plan" != skip ]]; then
+            echo "image alias precondition is unknown"
+            exit 1
+          fi
+          docker buildx imagetools inspect "$base:$RELEASE_CHANNEL" --raw >alias.json
+          cmp immutable.json alias.json
+          printf '%s\n' present >effect-state/image-after
+      - name: Write result
+        if: always()
+        env:
+          STATUS: ${{ steps.mutate.outcome }}
+        run: |
+          set -euo pipefail
+          outcome=succeeded; error=null
+          if [[ "$STATUS" == cancelled ]]; then outcome=canceled; error='{"code":"image_alias_canceled","category":"promotion","retryable":true,"message":"image alias CAS was canceled"}'
+          elif [[ "$STATUS" != success ]]; then outcome=failed; error='{"code":"image_alias_failed","category":"promotion","retryable":true,"message":"image alias CAS did not complete"}'; fi
+          artifacts='[]'
+          if [[ -f release-prepared/release-evidence.json ]]; then artifacts=$(jq -c '[.artifacts[] | del(.unit)]' release-prepared/release-evidence.json); fi
+          probe() { [[ -s "effect-state/$1" ]] && cat "effect-state/$1" || printf '%s\n' "$2"; }
+          state=$(python3 .github/scripts/release_effects.py classify \
+            --before "$(probe image-before unknown)" \
+            --mutation "$(probe image-mutation not_started)" \
+            --after "$(probe image-after unknown)")
+          effects=$(jq -nc --arg channel "$RELEASE_CHANNEL" --arg digest "$EXPECTED_DIGEST" --arg state "$state" '[{surface:("image-"+$channel),state:$state,immutable_id:$digest}]')
+          python3 .github/scripts/release_control_contract.py write-result --repository '${{ github.repository }}' --operation-id "$OPERATION_ID" --step-id "$STEP_ID" --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' --workflow 'release-image-alias.yml' --event '${{ github.event_name }}' --sha '${{ github.sha }}' --release-intent-id "$RELEASE_INTENT_ID" --candidate-id "$CANDIDATE_ID" --attempt-id "$ATTEMPT_ID" --dispatch-nonce "$DISPATCH_NONCE" --plan-hash "$PLAN_HASH" --worker "$WORKER" --phase image_alias --source-sha "$SOURCE_SHA" --prepared-sha "$PREPARED_SHA" --candidate-version "$CANDIDATE_VERSION" --stable-version "$STABLE_VERSION" --descriptor-sha256 "$DESCRIPTOR_SHA256" --outcome "$outcome" --effects "$effects" --artifacts-json "$artifacts" --error-json "$error" --output release-result.json
+      - if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: release-result-${{ env.CANDIDATE_ID }}-${{ env.STEP_ID }}-attempt-${{ github.run_attempt }}
+          path: release-result.json
+          retention-days: 30
+          if-no-files-found: error
+      - if: always()
+        env:
+          RELEASE_CONTROL_API_URL: ${{ vars.RELEASE_CONTROL_API_URL }}
+        run: python3 .github/scripts/release_control_contract.py post-result --api-url "$RELEASE_CONTROL_API_URL" --result release-result.json
