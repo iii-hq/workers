@@ -1,17 +1,19 @@
 //! INT-026 — agent-profile identity, end to end (MOT-4485): a send naming
 //! `options.agent` (and OMITTING `options.functions`) runs as the directory
 //! profile, and the same profile resolution works spawn-side:
-//!   * the parent's prompt is the top-level identity ENRICHED with
-//!     `You are Lead.` + the profile body, resolved server-side from the
-//!     run's `agents/lead.md` — no prompt fields on the send;
+//!   * the parent's prompt IS the profile body, resolved server-side from
+//!     the run's `agents/lead.md` — no prompt fields on the send, and no
+//!     built-in identity underneath (the regexes anchor the body at `^`);
 //!   * the omitted policy defaults to the configured baseline (`allow: *`),
 //!     which is what lets the spawn dispatch at all;
-//!   * the spawn (`agent: coder`) seeds a child whose prompt is the
-//!     shared identity enriched with `You are Coder.` — the coder profile
-//!     applied spawn-side, no `options.system_prompt` anywhere.
+//!   * the spawn (`agent: coder`) seeds a child whose prompt is the coder
+//!     profile resolved through its `extends: lead` — the lead body first,
+//!     then the coder body — applied spawn-side, no `options.system_prompt`
+//!     anywhere. This is the inheritance chain running through the real
+//!     directory binary.
 //!
 //! The child runs in its own session (untracked by the floor); its generation
-//! being consumed with the profile-enriched prompt is the evidence the
+//! being consumed with the chain-resolved prompt is the evidence the
 //! spawn-side resolution ran.
 
 use serde_json::json;
@@ -33,6 +35,7 @@ const CODER_PROFILE: &str = "---
 name: Coder
 description: Implementation test profile.
 icon: code
+extends: lead
 ---
 Do the one task you are given, then stop.
 ";
@@ -53,8 +56,8 @@ pub(super) fn scenario() -> ScenarioFixture {
         ID,
         "agent-identity",
         "A send running as a directory agent profile (no functions policy on the wire) \
-         spawns through harness::spawn: the coder profile seeds the child with its own \
-         enriched identity.",
+         spawns through harness::spawn: the profile prompt is the whole identity, and the \
+         coder profile (extends: lead) seeds the child with the chain-resolved prompt.",
         ScenarioDriver::Direct,
         model.clone(),
     )
@@ -75,8 +78,9 @@ pub(super) fn scenario() -> ScenarioFixture {
             .expect(
                 Request::new()
                     .turn_request_step(0)
-                    // DEFAULT identity enriched with the resolved profile.
-                    .system_prompt_regex("(?s)# System rules.*You are Lead\\.")
+                    // The profile body IS the prompt: anchored, nothing
+                    // built-in in front of it.
+                    .system_prompt_regex("(?s)^You are the integration lead\\.")
                     .messages_exact([Message::user(MESSAGE)])
                     .tools_subset([]),
             )
@@ -93,8 +97,11 @@ pub(super) fn scenario() -> ScenarioFixture {
             .expect(
                 Request::new()
                     .turn_request_step(0)
-                    // Sub-agent identity enriched with the LEAF profile.
-                    .system_prompt_regex("(?s)You are an iii agent.*You are Coder\\.")
+                    // The LEAF profile resolved through `extends: lead`:
+                    // parent body first, own body after, nothing in front.
+                    .system_prompt_regex(
+                        "(?s)^You are the integration lead\\..*Do the one task you are given",
+                    )
                     .messages_subset([json!({ "role": "user" })])
                     .tools_subset([]),
             )
@@ -105,7 +112,7 @@ pub(super) fn scenario() -> ScenarioFixture {
             .expect(
                 Request::new()
                     .turn_request_step(1)
-                    .system_prompt_regex("You are Lead\\.")
+                    .system_prompt_regex("^You are the integration lead\\.")
                     .messages_subset([
                         json!({ "role": "user" }),
                         json!({ "role": "assistant", "content": [

@@ -42,6 +42,9 @@ interface AgentRow {
   icon: string | null
   color: string | null
   modified_at: string
+  /** Bundled with the worker (`iii`, the base identity): editing creates
+   * the local file that shadows it; nothing to delete. */
+  builtin?: boolean
 }
 
 interface SystemPromptPreview {
@@ -212,7 +215,7 @@ export const agentsAdapter: BrowserAdapter = {
   nameRequired: true,
   newTemplate: '---\nname: \ndescription: ""\n---\n\n',
   newTemplateStartsClean: true,
-  extraManagedKeys: ['logo', 'skills', 'model', 'reasoning_effort', 'icon', 'color'],
+  extraManagedKeys: ['logo', 'skills', 'model', 'reasoning_effort', 'icon', 'color', 'extends'],
   customForm: (ctx) => <AgentForm {...ctx} />,
   customLoading: () => <AgentFormSkeleton />,
   customFormOwnsContent: true,
@@ -230,10 +233,13 @@ export const agentsAdapter: BrowserAdapter = {
       icon: <TokenIcon token={a.icon || 'agent'} size={20} />,
       title: a.name,
       description: a.description,
-      fine: formatRelativeTime(a.modified_at),
+      fine: a.builtin ? 'Built-in · edits save a local override' : formatRelativeTime(a.modified_at),
+      ...(a.builtin ? { noDelete: true } : {}),
     }))
   },
   async load(host, id) {
+    // `raw` is the profile's OWN file; `system_prompt` would be the
+    // inheritance-resolved prompt, never what the editor should save.
     const out = await host.iii.trigger<{
       system_prompt: string
       raw?: string | null

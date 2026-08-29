@@ -2548,6 +2548,9 @@
 [data-iii-ui="iii-directory"] .dir-ui-af-model-picker {
   width: min(100%, 280px);
 }
+[data-iii-ui="iii-directory"] .dir-ui-af-inheritance-error {
+  color: var(--color-warn);
+}
 [data-iii-ui="iii-directory"] .dir-ui-af-model-clear {
   appearance: none;
   display: inline-flex;
