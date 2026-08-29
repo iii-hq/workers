@@ -89,7 +89,7 @@ jobs:
           test "$(jq -r .worker release-input/release-descriptor.json)" = "$WORKER"
           test "$(jq -r .source_sha release-input/release-descriptor.json)" = "$PREPARED_SHA"
           jq -e --arg unit "$UNIT" --arg target "$TARGET" \
-            '.build_units | any(.id == $unit and ((.target // "none") == $target))' \
+            '.build_units | any(.id == $unit and ((.target // .platform // "none") == $target))' \
             release-input/release-descriptor.json >/dev/null
 
       - name: Rewrite SSH to HTTPS for public dependencies

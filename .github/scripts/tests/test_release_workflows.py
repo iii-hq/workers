@@ -144,6 +144,11 @@ def test_release_prepare_fans_one_job_per_compiled_build_unit():
     assert "unit: ${{ matrix.unit }}" in text
 
 
+def test_release_build_validates_rust_targets_and_oci_platforms():
+    text = body("_release-build.yml")
+    assert '(.target // .platform // "none") == $target' in text
+
+
 def test_prepare_runs_adapter_from_prepared_bytes_and_records_interface():
     text = body("release-prepare.yml")
     workflow = yaml.safe_load(text)
