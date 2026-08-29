@@ -6,84 +6,80 @@ on:
   workflow_dispatch:
     inputs:
       source_sha:
-        description: Full source commit; defaults to the dispatched workflow SHA
+        description: Full Workers source commit; defaults to the workflow SHA
         required: false
         type: string
 
-permissions:
-  contents: read
-  id-token: write
+permissions: {}
 
 jobs:
   compile:
-    runs-on: workers-release-linux-8core
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - name: Resolve source identity
+      - name: Resolve immutable source
         id: source
         env:
-          REQUESTED: ${{ inputs.source_sha }}
+          REQUESTED_SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
           set -euo pipefail
-          source_sha=${REQUESTED:-$GITHUB_SHA}
-          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || {
-            echo "::error::source_sha must be a full lowercase commit SHA"
-            exit 2
-          }
+          source_sha="${REQUESTED_SOURCE_SHA:-${GITHUB_SHA}}"
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]
           echo "sha=$source_sha" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ steps.source.outputs.sha }}
           persist-credentials: false
-      - name: Validate immutable compiler pin
-        id: compiler
-        run: python3 .github/scripts/release_compiler.py --github-output "$GITHUB_OUTPUT"
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          repository: ${{ steps.compiler.outputs.repository }}
-          ref: ${{ steps.compiler.outputs.commit }}
-          path: release-compiler
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
-        with:
-          toolchain: 1.97.1
-      - name: Authorize compiler cache with GitHub OIDC
-        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
-        with:
-          role-to-assume: ${{ vars.SCCACHE_ROLE_ARN }}
-          aws-region: ${{ vars.SCCACHE_REGION }}
-      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
-      - name: Compile pinned iii
+          python-version: '3.12'
+
+      - name: Install descriptor validators
+        run: python -m pip install --disable-pip-version-check --quiet pyyaml jsonschema
+
+      - name: Compile all public release workers exactly once
+        run: >-
+          python3 .github/scripts/release_compiler.py compile-index
+          --source-sha '${{ steps.source.outputs.sha }}'
+          --compiler-repository '${{ github.repository }}'
+          --compiler-commit '${{ steps.source.outputs.sha }}'
+          --output-dir release-descriptor-index
+
+      - name: Validate descriptor schema, identities, and counts
         env:
-          MANIFEST: ${{ steps.compiler.outputs.cargo_manifest }}
-          BINARY: ${{ steps.compiler.outputs.binary }}
-          SCCACHE_BUCKET: ${{ vars.SCCACHE_BUCKET }}
-          SCCACHE_REGION: ${{ vars.SCCACHE_REGION }}
-          SCCACHE_S3_KEY_PREFIX: sccache/1.97.1/compiler
-          RUSTC_WRAPPER: sccache
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
         run: |
           set -euo pipefail
-          cargo build --release --locked --manifest-path "release-compiler/$MANIFEST" --bin "$BINARY"
-          echo "III_BIN=$GITHUB_WORKSPACE/release-compiler/target/release/$BINARY" >> "$GITHUB_ENV"
-          sccache --show-stats | tee release-compiler-sccache-stats.txt
-      - name: Compile descriptor index
-        run: |
-          set -euo pipefail
-          "$III_BIN" compose descriptor-index \
-            --file worker-compose.yaml \
-            --source-sha '${{ steps.source.outputs.sha }}' \
-            --compiler-sha '${{ steps.compiler.outputs.commit }}' \
-            --output-dir release-descriptor-index
-      - name: Validate immutable OCI inputs selected by the compiler
-        run: python3 .github/scripts/validate_oci_dockerfile.py --index-dir release-descriptor-index
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from jsonschema import Draft202012Validator
+
+          root = Path("release-descriptor-index")
+          schema = json.loads(Path(".github/contracts/release-descriptor.schema.json").read_text())
+          index = json.loads((root / "release-descriptor-index.json").read_text())
+          assert index["contract"] == "release-descriptor-index"
+          assert index["source_sha"] == os.environ["SOURCE_SHA"]
+          assert index["compiler"]["repository"] == os.environ["GITHUB_REPOSITORY"]
+          assert index["compiler"]["commit"] == os.environ["SOURCE_SHA"]
+          assert len(index["workers"]) == 69
+          assert all(entry["publish"] is True for entry in index["workers"].values())
+          validator = Draft202012Validator(schema)
+          for worker, entry in index["workers"].items():
+              descriptor = json.loads((root / entry["path"]).read_text())
+              validator.validate(descriptor)
+              assert descriptor["worker"] == worker
+              assert descriptor["descriptor_sha256"] == entry["digest"]
+              assert descriptor["compiler_digest"] == index["compiler"]["digest"]
+          PY
+
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: release-descriptor-index-${{ steps.source.outputs.sha }}
           path: release-descriptor-index/
-          if-no-files-found: error
-          retention-days: 30
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        with:
-          name: release-compiler-sccache-${{ github.run_id }}-attempt-${{ github.run_attempt }}
-          path: release-compiler-sccache-stats.txt
           if-no-files-found: error
           retention-days: 30

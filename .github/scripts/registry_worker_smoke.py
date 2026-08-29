@@ -35,7 +35,7 @@ HARNESS_SELECTOR = "harness@next"
 
 
 def stable_workers() -> list[str]:
-    catalog = _lib.read_worker_catalog(REPO_ROOT / "worker-compose.yaml")
+    catalog = _lib.read_worker_catalog(REPO_ROOT / ".release" / "workers.yaml")
     workers = sorted(
         worker_id
         for worker_id, spec in catalog.items()
@@ -57,13 +57,11 @@ def state_version() -> str:
 
 
 def compose_text(project_namespace: str) -> str:
-    return f"""workers: {{}}
-stacks:
-  smoke:
-    namespace: {project_namespace}
-    containers:
-      state:
-        worker: package://api.workers.iii.dev/state@{state_version()}
+    return f"""namespace: {project_namespace}
+containers:
+  state:
+    worker: package://state
+    version: {state_version()}
 """
 
 

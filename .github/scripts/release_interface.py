@@ -94,14 +94,11 @@ def _single_artifact(artifacts: list[dict[str, Any]], role: str, *, unit: str | 
 def stage(args: argparse.Namespace) -> int:
     descriptor = _read_object(args.descriptor, "release descriptor")
     prepared = _read_object(args.prepared, "prepared artifact inventory")
-    package = descriptor.get("package")
-    if not isinstance(package, dict):
-        raise SystemExit("release descriptor package must be an object")
-    validation = (package.get("validation") or {}).get("interface")
+    validation = (descriptor.get("validation") or {}).get("interface")
     if validation not in {"required", "skipped"}:
         raise SystemExit("descriptor validation.interface must be required or skipped")
-    artifact = package.get("artifact")
-    runtime = package.get("runtime")
+    artifact = descriptor.get("artifact")
+    runtime = descriptor.get("runtime")
     if not isinstance(artifact, dict) or not isinstance(runtime, dict):
         raise SystemExit("descriptor artifact and runtime must be objects")
     artifacts = _verify_prepared(descriptor, prepared, args.prepared.parent)
@@ -154,18 +151,12 @@ def stage(args: argparse.Namespace) -> int:
             selected = _single_artifact(artifacts, "bundle")
             stage_dir = args.out.parent / "runtime"
             extract_regular_tar(args.prepared.parent / str(selected["name"]), stage_dir)
-            command = runtime.get("exec")
-            prepare = runtime.get("prepare", [])
-            if not isinstance(command, list) or not command or not all(isinstance(part, str) for part in command):
-                raise SystemExit("bundle runtime.exec must be a non-empty argv array")
-            if not isinstance(prepare, list) or any(
-                not isinstance(value, list) or not value or not all(isinstance(part, str) for part in value)
-                for value in prepare
-            ):
-                raise SystemExit("bundle runtime.prepare must contain argv arrays")
-            entry = command[1] if len(command) > 1 and command[1].startswith("./") else None
-            if entry is not None and not (stage_dir / entry.removeprefix("./")).is_file():
-                raise SystemExit(f"prepared bundle entrypoint is missing: {entry}")
+            start = runtime.get("start")
+            install = runtime.get("install") or ""
+            if not isinstance(start, str) or not start.strip() or not isinstance(install, str):
+                raise SystemExit("bundle runtime install/start commands are invalid")
+            command = ["sh", "-c", start]
+            prepare = [["sh", "-c", install]] if install.strip() else []
             tool_runtime = artifact.get("runtime")
             manager = artifact.get("package_manager")
             if not isinstance(tool_runtime, dict) or not isinstance(manager, dict):
@@ -176,7 +167,13 @@ def stage(args: argparse.Namespace) -> int:
                 package_manager_name=manager.get("name"), package_manager_version=manager.get("version"),
             )
         elif kind == "oci-image":
-            selected = _single_artifact(artifacts, "oci-image")
+            units = [
+                unit for unit in descriptor.get("build_units", [])
+                if isinstance(unit, dict) and unit.get("kind") == kind and unit.get("platform") == "linux/amd64"
+            ]
+            if len(units) != 1:
+                raise SystemExit("required OCI interface needs exactly one linux/amd64 build unit")
+            selected = _single_artifact(artifacts, "oci-platform", unit=str(units[0]["id"]))
             archive = args.out.parent / "image.oci.tar"
             with gzip.open(args.prepared.parent / str(selected["name"]), "rb") as source:
                 with archive.open("wb") as destination:
@@ -211,7 +208,7 @@ def _canonical_interface(value: object) -> dict[str, list[dict[str, Any]]]:
 
 def snapshot(args: argparse.Namespace) -> int:
     descriptor = _read_object(args.descriptor, "release descriptor")
-    validation = ((descriptor.get("package") or {}).get("validation") or {}).get("interface")
+    validation = (descriptor.get("validation") or {}).get("interface")
     if validation == "required":
         if args.interface is None:
             raise SystemExit("required interface snapshot needs collected interface bytes")
@@ -309,7 +306,7 @@ def verify_evidence(args: argparse.Namespace) -> int:
     for document, label in ((prepared, "prepared artifact"), (interface, "release interface")):
         if any(document.get(key) != value for key, value in identity.items() if key != "contract"):
             raise SystemExit(f"{label} identity differs from release descriptor")
-    expected_validation = ((descriptor.get("package") or {}).get("validation") or {}).get("interface")
+    expected_validation = (descriptor.get("validation") or {}).get("interface")
     if interface.get("contract") != "release-interface" or interface.get("validation") != expected_validation:
         raise SystemExit("release interface contract differs from release descriptor")
     if prepared.get("contract") != "prepared-artifacts":
@@ -325,7 +322,7 @@ def compare(args: argparse.Namespace) -> int:
         "worker": descriptor["worker"],
         "source_sha": descriptor["source_sha"],
         "descriptor_sha256": descriptor["descriptor_sha256"],
-        "validation": ((descriptor.get("package") or {}).get("validation") or {}).get("interface"),
+        "validation": (descriptor.get("validation") or {}).get("interface"),
     }
     if any(expected.get(key) != value for key, value in identity.items()):
         raise SystemExit("prepared interface identity differs from release descriptor")

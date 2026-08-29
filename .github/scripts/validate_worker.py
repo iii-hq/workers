@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate one publishable entry from the root worker-compose catalog."""
+"""Validate one publishable private release entry and its public manifest."""
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ def validate_public_manifest(worker: str, spec: _lib.WorkerSpec, hard) -> None:
     if manifest.manifest != spec.manifest:
         hard(
             f"{worker}/iii.worker.yaml manifest={manifest.manifest!r} must match "
-            f"worker-compose.yaml source.package_manifest={spec.manifest!r}"
+            f".release/workers.yaml source.package_manifest={spec.manifest!r}"
         )
 
     expected_kinds = {
@@ -53,7 +53,7 @@ def validate_public_manifest(worker: str, spec: _lib.WorkerSpec, hard) -> None:
     if manifest.deploy in expected_kinds and spec.artifact_kind not in expected_kinds[manifest.deploy]:
         hard(
             f"{worker}/iii.worker.yaml deploy={manifest.deploy!r} does not match "
-            f"worker-compose.yaml artifact.kind={spec.artifact_kind!r}"
+            f".release/workers.yaml artifact.kind={spec.artifact_kind!r}"
         )
 
     dependencies = manifest.raw.get("dependencies") or {}
@@ -62,18 +62,13 @@ def validate_public_manifest(worker: str, spec: _lib.WorkerSpec, hard) -> None:
         for name, version in dependencies.items()
     ):
         hard(f"{worker}/iii.worker.yaml dependencies must be a string-to-string mapping")
-    elif dependencies != (spec.registry.get("dependencies") or {}):
-        hard(
-            f"{worker}/iii.worker.yaml dependencies must match "
-            "worker-compose.yaml registry.dependencies"
-        )
 
     manifest_skips_interface = manifest.raw.get("interface_smoke") is False
     catalog_skips_interface = spec.validation.get("interface") == "skipped"
     if manifest_skips_interface != catalog_skips_interface:
         hard(
             f"{worker}/iii.worker.yaml interface_smoke and "
-            "worker-compose.yaml validation.interface must describe the same policy"
+            ".release/workers.yaml validation.interface must describe the same policy"
         )
 
     tags = manifest.raw.get("tags")
@@ -138,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
     if spec is not None:
         validate_public_manifest(worker, spec, hard)
         if not spec.publish:
-            hard(f"{worker}: first-party CI workers must set registry.publish=true")
+            hard(f"{worker}: first-party CI workers must set publish=true")
         expected_path = pathlib.Path(worker).resolve()
         if spec.path != expected_path:
             hard(f"{worker}: source.path must be {worker!r}, got {spec.source.get('path')!r}")
@@ -152,9 +147,9 @@ def main(argv: list[str] | None = None) -> int:
         if tags is not None and (
             not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags)
         ):
-            hard(f"{worker}: registry.tags must be an array of strings")
+            hard(f"{worker}/iii.worker.yaml tags must be an array of strings")
         elif spec.validation.get("interface") == "required" and not tags:
-            hard(f"{worker}: registry.tags must be non-empty when interface validation is enabled")
+            hard(f"{worker}/iii.worker.yaml tags must be non-empty when interface validation is enabled")
 
         if spec.validation.get("interface") not in {"required", "skipped"}:
             hard(f"{worker}: validation.interface must be required or skipped")
@@ -166,11 +161,6 @@ def main(argv: list[str] | None = None) -> int:
                     f"{worker}: artifact.binary={executable!r} must match the worker ID "
                     "because Registry extraction addresses the worker by ID"
                 )
-        if spec.artifact_kind != "oci-image":
-            command = spec.runtime.get("exec")
-            if not isinstance(command, list) or not command or not all(isinstance(part, str) and part for part in command):
-                hard(f"{worker}: runtime.exec must be a non-empty string array")
-
         if spec.manifest:
             manifest_path = spec.path / spec.manifest
             if not manifest_path.is_file():

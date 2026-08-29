@@ -12,14 +12,18 @@ def add_catalog_worker(root: Path, worker: str) -> None:
     directory = root / worker
     directory.mkdir()
     (directory / "Cargo.toml").write_text(f'[package]\nname="{worker}"\nversion="1.0.0"\n')
-    path = root / "worker-compose.yaml"
-    catalog = yaml.safe_load(path.read_text()) if path.exists() else {"workers": {}, "stacks": {}}
+    (directory / "iii.worker.yaml").write_text(
+        f"name: {worker}\nlanguage: rust\ndeploy: binary\nmanifest: Cargo.toml\n"
+        f"bin: {worker}\ndescription: {worker}\nlicense: Apache-2.0\n"
+    )
+    path = root / ".release" / "workers.yaml"
+    path.parent.mkdir(exist_ok=True)
+    catalog = yaml.safe_load(path.read_text()) if path.exists() else {"workers": {}}
     catalog["workers"][worker] = {
         "source": {"path": worker, "package_manifest": "Cargo.toml"},
         "artifact": {"kind": "rust-binary", "binary": worker, "targets": ["x86_64-unknown-linux-gnu"]},
-        "runtime": {"exec": [worker]},
-        "registry": {"description": worker, "license": "Apache-2.0", "tags": ["test"], "dependencies": {}, "publish": True},
         "validation": {"interface": "required"},
+        "publish": True,
     }
     path.write_text(yaml.safe_dump(catalog, sort_keys=False))
 

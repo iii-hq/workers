@@ -285,56 +285,64 @@ def normalize_worker_interface(
 
 def build_payload(
     *,
-    package_descriptor: dict[str, Any],
-    descriptor_sha256: str,
-    channel: str,
+    registry_projection: dict[str, Any],
     repo_url: str,
     interface: dict[str, Any],
     artifacts: dict[str, Any],
     readme: str | None = None,
 ) -> dict[str, Any]:
-    """Build only the strict descriptor-native Registry request.
-
-    Publication callers must consume the immutable compiler output and
-    prepared artifact inventory.  This helper deliberately has no catalog,
-    source-tree, or legacy manifest fallback.
-    """
-    if not isinstance(package_descriptor, dict):
-        raise ValueError("package_descriptor must be an object")
-    if not isinstance(descriptor_sha256, str) or len(descriptor_sha256) != 64:
-        raise ValueError("descriptor_sha256 must be a 64-character digest")
-    if channel != "next":
-        raise ValueError("candidate publication channel must be next")
-    kind = (package_descriptor.get("artifact") or {}).get("kind")
-    if artifacts.get("kind") != kind:
-        raise ValueError("artifacts.kind must match package_descriptor.artifact.kind")
-    payload: dict[str, Any] = {
-        "package_descriptor": package_descriptor,
-        "descriptor_sha256": descriptor_sha256,
-        "channel": channel,
-        "repo": repo_url,
-        "interface": {
-            "functions": [
-                _normalize_registry_function(function)
-                for function in interface.get("functions") or []
-            ],
-            "triggers": [
-                _normalize_registry_trigger(trigger)
-                for trigger in interface.get("triggers") or []
-            ],
-        },
-        "artifacts": artifacts,
+    """Merge the immutable compiler projection with current Registry fields."""
+    required = {
+        "worker_name", "version", "type", "description", "license", "tags",
+        "dependencies", "config", "experimental", "readme",
     }
-    if readme is not None:
-        payload["readme"] = readme
+    if not isinstance(registry_projection, dict) or set(registry_projection) != required:
+        raise ValueError("registry_projection differs from the current Registry metadata contract")
+    deploy = registry_projection["type"]
+    kind = artifacts.get("kind")
+    expected_kind = {
+        "binary": "rust-binary",
+        "bundle": {"javascript-bundle", "python-bundle"},
+        "image": "oci-image",
+    }.get(deploy)
+    if (kind not in expected_kind) if isinstance(expected_kind, set) else (kind != expected_kind):
+        raise ValueError("prepared artifacts differ from the public deploy type")
+    payload: dict[str, Any] = {
+        **registry_projection,
+        "repo": repo_url,
+        "functions": [
+            _normalize_registry_function(function)
+            for function in interface.get("functions") or []
+        ],
+        "triggers": [
+            _normalize_registry_trigger(trigger)
+            for trigger in interface.get("triggers") or []
+        ],
+    }
+    if deploy == "binary":
+        binaries = artifacts.get("binaries")
+        if not isinstance(binaries, dict) or not binaries:
+            raise ValueError("binary publication requires prepared binaries")
+        payload["binaries"] = binaries
+    elif deploy == "bundle":
+        archive_url = artifacts.get("archive_url")
+        digest = artifacts.get("sha256")
+        if not isinstance(archive_url, str) or not archive_url or not isinstance(digest, str) or not digest:
+            raise ValueError("bundle publication requires archive_url and sha256")
+        payload.update(archive_url=archive_url, sha256=digest)
+    elif deploy == "image":
+        image_tag = artifacts.get("image_tag")
+        if not isinstance(image_tag, str) or "@sha256:" not in image_tag:
+            raise ValueError("image publication requires a digest-pinned image_tag")
+        payload["image_tag"] = image_tag
+    if readme is not None and readme != payload["readme"]:
+        raise ValueError("external readme differs from the compiled Registry projection")
     return payload
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--descriptor", required=True)
-    parser.add_argument("--descriptor-sha256", required=True)
-    parser.add_argument("--channel", choices=("next",), default="next")
     parser.add_argument("--repo-url", required=True)
     parser.add_argument("--interface-json", required=True)
     parser.add_argument("--artifacts-json", required=True)
@@ -342,15 +350,13 @@ def main() -> int:
     parser.add_argument("--out", default="payload.json")
     args = parser.parse_args()
 
-    package_descriptor = json.loads(pathlib.Path(args.descriptor).read_text(encoding="utf-8"))
+    descriptor = json.loads(pathlib.Path(args.descriptor).read_text(encoding="utf-8"))
     interface = json.loads(pathlib.Path(args.interface_json).read_text(encoding="utf-8"))
     artifacts = json.loads(pathlib.Path(args.artifacts_json).read_text(encoding="utf-8"))
     readme = pathlib.Path(args.readme).read_text(encoding="utf-8") if args.readme else None
 
     payload = build_payload(
-        package_descriptor=package_descriptor,
-        descriptor_sha256=args.descriptor_sha256,
-        channel=args.channel,
+        registry_projection=descriptor["registry_projection"],
         repo_url=args.repo_url,
         interface=interface,
         artifacts=artifacts,

@@ -61,41 +61,16 @@ jobs:
           python3 .github/scripts/release_control_contract.py validate-identity --identity "$RELEASE_IDENTITY"
           python3 .github/scripts/release_control_contract.py validate-dispatch --operation-id "$OPERATION_ID" --step-id "$STEP_ID" --dispatch-nonce "$DISPATCH_NONCE" --descriptor-sha256 "$DESCRIPTOR_SHA256" --plan-hash "$PLAN_HASH" --source-sha "$SOURCE_SHA"
           python3 .github/scripts/release_control_contract.py authorize-dispatch --api-url "$RELEASE_CONTROL_API_URL" --repository '${{ github.repository }}' --operation-id "$OPERATION_ID" --step-id "$STEP_ID" --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' --workflow 'release-candidate-smoke.yml' --event '${{ github.event_name }}' --sha '${{ github.sha }}' --release-intent-id "$RELEASE_INTENT_ID" --candidate-id "$CANDIDATE_ID" --attempt-id "$ATTEMPT_ID" --dispatch-nonce "$DISPATCH_NONCE" --plan-hash "$PLAN_HASH" --worker "$WORKER" --source-sha "$SOURCE_SHA" --descriptor-sha256 "$DESCRIPTOR_SHA256"
-      - name: Validate immutable compiler pin
-        id: compiler
-        run: python3 .github/scripts/release_compiler.py --github-output "$GITHUB_OUTPUT"
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          persist-credentials: false
-          repository: ${{ steps.compiler.outputs.repository }}
-          ref: ${{ steps.compiler.outputs.commit }}
-          path: release-compiler
-
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
-        with:
-          toolchain: 1.97.1
-
-      - name: Authorize compiler cache with GitHub OIDC
-        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
-        with:
-          role-to-assume: ${{ vars.SCCACHE_ROLE_ARN }}
-          aws-region: ${{ vars.SCCACHE_REGION }}
-
-      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
-
-      - name: Build pinned iii CLI
-        env:
-          MANIFEST: ${{ steps.compiler.outputs.cargo_manifest }}
-          BINARY: ${{ steps.compiler.outputs.binary }}
-          SCCACHE_BUCKET: ${{ vars.SCCACHE_BUCKET }}
-          SCCACHE_REGION: ${{ vars.SCCACHE_REGION }}
-          SCCACHE_S3_KEY_PREFIX: sccache/1.97.1/compiler
-          RUSTC_WRAPPER: sccache
+      - name: Install current iii CLI
         run: |
           set -euo pipefail
-          cargo build --release --locked --manifest-path "release-compiler/$MANIFEST" --bin "$BINARY"
-          echo "$GITHUB_WORKSPACE/release-compiler/target/release" >> "$GITHUB_PATH"
-          sccache --show-stats | tee smoke-compiler-sccache-stats.txt
+          curl -fsSL --retry 3 --retry-all-errors --retry-delay 5 \
+            https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
+          sh /tmp/install-iii.sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.iii/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$HOME/.iii/bin:$PATH"
+          iii --version
 
       - name: Boot and verify exact published candidate
         id: validation
@@ -116,19 +91,18 @@ jobs:
             'https://api.workers.iii.dev/resolve' --data "$body" >smoke-resolution.json
           test "$(jq -r .root.version smoke-resolution.json)" = "$CANDIDATE_VERSION"
           jq -e --slurpfile descriptor release-prepared/release-descriptor.json \
-            --arg worker "$WORKER" --arg digest "$DESCRIPTOR_SHA256" '
-              [.graph[] | select(.package_descriptor.name == $worker)] as $matches
+            --arg worker "$WORKER" --arg version "$CANDIDATE_VERSION" '
+              [.graph[] | select(.name == $worker)] as $matches
               | ($matches | length) == 1
-              and $matches[0].package_descriptor == $descriptor[0].package
-              and $matches[0].descriptor_sha256 == $digest
+              and $matches[0].version == $version
+              and $matches[0].type == $descriptor[0].registry_projection.type
+              and $matches[0].dependencies == ($descriptor[0].registry_projection.dependencies | map({key:.name,value:.version}) | from_entries)
             ' smoke-resolution.json >/dev/null
 
-          kind=$(jq -r .package.artifact.kind release-prepared/release-descriptor.json)
+          kind=$(jq -r .artifact.kind release-prepared/release-descriptor.json)
           if [[ "$kind" == oci-image ]]; then
             [[ "$EXPECTED_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
-            image=$(jq -er --arg worker "$WORKER" '
-              .graph[] | select(.package_descriptor.name == $worker) | .artifacts.image_tag
-            ' smoke-resolution.json)
+            image=$(jq -er --arg worker "$WORKER" '.graph[] | select(.name == $worker) | .image' smoke-resolution.json)
             test "${image##*@}" = "$EXPECTED_IMAGE_DIGEST"
           else
             test "$EXPECTED_IMAGE_DIGEST" = none
@@ -142,15 +116,8 @@ jobs:
 
           worker = os.environ["WORKER"]
           document = {
-              "workers": {},
-              "stacks": {
-                  "smoke": {
-                      "namespace": "release-candidate-smoke",
-                      "containers": {
-                          worker: {"worker": f"package://{worker}@next"},
-                      },
-                  },
-              },
+              "namespace": "release-candidate-smoke",
+              "containers": {worker: {"worker": f"package://{worker}", "version": "next"}},
           }
           Path("smoke/worker-compose.yaml").write_text(
               json.dumps(document, indent=2, sort_keys=True) + "\n",
@@ -186,7 +153,7 @@ jobs:
             --file smoke/worker-compose.yaml --up >smoke/compose.log 2>&1 &
           compose_pid=$!
 
-          validation=$(jq -r .package.validation.interface release-prepared/release-descriptor.json)
+          validation=$(jq -r .validation.interface release-prepared/release-descriptor.json)
           if [[ "$validation" == required ]]; then
             export III_TRIGGER_PORT="$engine_port"
             python3 .github/scripts/collect_worker_interface.py \
@@ -225,7 +192,6 @@ jobs:
             smoke-resolution.json
             smoke/*.json
             smoke/*.log
-            smoke-compiler-sccache-stats.txt
           retention-days: 7
           if-no-files-found: warn
       - name: Write result

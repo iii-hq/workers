@@ -7,15 +7,16 @@ directly, or retag GHCR outside a Release Control recovery operation.
 ## Before starting
 
 The selected source commit must already contain the exact candidate version in
-the worker's `source.package_manifest`. The root catalog and sanitized release
-defaults must also be committed at that SHA. Prepare never bumps, commits, or
-pushes source.
+the worker's package manifest. Its `.release/workers.yaml` entry and public
+`iii.worker.yaml` must also be committed at that SHA. Prepare never bumps,
+commits, or pushes source.
 
 [`release-descriptor-index.yml`](../../.github/workflows/release-descriptor-index.yml)
-compiles every worker at the source SHA with the immutable iii compiler pin.
+compiles every worker at the source SHA with the Workers-owned compiler.
 Its artifact contains `release-descriptor-index.json` and exact
 `descriptors/<worker>.json` files. Release Control verifies the workflow,
-source SHA, compiler SHA, artifact and descriptor digest before planning.
+source SHA, compiler commit/digest, artifact and descriptor digest before
+planning.
 
 ## Sequence
 
@@ -26,7 +27,7 @@ source SHA, compiler SHA, artifact and descriptor digest before planning.
 2. `release-candidate-publish.yml` publishes GitHub assets, a digest-pinned OCI
    image when applicable, the immutable Registry package, and CASes `next`.
 3. `release-candidate-smoke.yml` resolves the exact descriptor and OCI digest,
-   boots `package://<worker>@next` through Worker Compose, and compares the live
+   boots `package://<worker>` with `version: next` through Worker Compose, and compares the live
    typed interface with the prepared snapshot without reading the source tree.
 4. `release-stable-publish.yml` CASes the same candidate version to `latest`.
 5. `release-image-alias.yml` moves the requested OCI alias by immutable digest.

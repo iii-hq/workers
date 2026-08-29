@@ -175,7 +175,7 @@ def suite_changed(
 def publishable_workers(repo_root: pathlib.Path) -> dict[str, _lib.WorkerSpec]:
     return {
         worker_id: spec
-        for worker_id, spec in _lib.read_worker_catalog(repo_root / "worker-compose.yaml").items()
+        for worker_id, spec in _lib.read_worker_catalog(repo_root / ".release" / "workers.yaml").items()
         if spec.publish and spec.path.parent == repo_root
     }
 
@@ -207,7 +207,7 @@ def catalog_at_ref(ref: str) -> dict:
 
     try:
         text = subprocess.check_output(
-            ["git", "show", f"{ref}:worker-compose.yaml"],
+            ["git", "show", f"{ref}:.release/workers.yaml"],
             text=True,
             stderr=subprocess.DEVNULL,
         )
@@ -218,7 +218,7 @@ def catalog_at_ref(ref: str) -> dict:
 
 
 def catalog_deltas(base: str, head: str) -> tuple[set[str], set[str], bool]:
-    """Return changed entries, source-affecting entries, and stack changes."""
+    """Return changed entries, source-affecting entries, and legacy stack changes."""
     before = catalog_at_ref(base)
     after = catalog_at_ref(head)
     before_workers = before.get("workers") or {}
@@ -234,9 +234,9 @@ def catalog_deltas(base: str, head: str) -> tuple[set[str], set[str], bool]:
         if not isinstance(old, dict) or not isinstance(new, dict):
             source_changed.add(worker)
             continue
-        if any(old.get(section) != new.get(section) for section in ("source", "artifact", "runtime")):
+        if any(old.get(section) != new.get(section) for section in ("source", "artifact")):
             source_changed.add(worker)
-    return changed, source_changed, before.get("stacks") != after.get("stacks")
+    return changed, source_changed, False
 
 
 def crate_dependents(repo_root: pathlib.Path, crate: str, workers: set[str]) -> list[str]:
@@ -278,7 +278,7 @@ def main(argv: list[str] | None = None) -> int:
     catalog_changed: set[str] = set()
     catalog_source_changed: set[str] = set()
     stack_changed = False
-    if "worker-compose.yaml" in files:
+    if ".release/workers.yaml" in files:
         catalog_changed, catalog_source_changed, stack_changed = catalog_deltas(args.base, args.head)
         catalog_changed &= workers
         catalog_source_changed &= workers

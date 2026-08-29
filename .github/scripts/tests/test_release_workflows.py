@@ -107,7 +107,10 @@ def test_post_prepare_workflows_consume_only_descriptor_and_prepared_artifacts()
 def test_release_train_never_reads_public_worker_manifests():
     release_files = [WORKFLOWS / name for name in set(ENTRYPOINTS) | REUSABLE]
     release_files.append(WORKFLOWS / "release-descriptor-index.yml")
-    release_files.extend((ROOT / ".github" / "scripts").glob("release_*.py"))
+    release_files.extend(
+        path for path in (ROOT / ".github" / "scripts").glob("release_*.py")
+        if path.name != "release_compiler.py"
+    )
     for path in release_files:
         assert "iii.worker.yaml" not in path.read_text(encoding="utf-8"), path
 
@@ -144,14 +147,15 @@ def test_prepare_runs_adapter_from_prepared_bytes_and_records_interface():
 
 def test_candidate_smoke_boots_registry_candidate_and_compares_prepared_interface():
     text = body("release-candidate-smoke.yml")
-    assert "package://{worker}@next" in text
+    assert '"worker": f"package://{worker}", "version": "next"' in text
     assert "iii compose --engine \"$engine_url\"" in text
     assert "collect_worker_interface.py" in text
     assert "release_interface.py compare" in text
     assert "release_interface.py verify-evidence" in text
-    assert ".package_descriptor == $descriptor[0].package" in text
+    assert ".registry_projection.type" in text
+    assert ".registry_projection.dependencies" in text
     assert "EXPECTED_IMAGE_DIGEST" in text
-    assert '.artifacts.image_tag' in text
+    assert ".image' smoke-resolution.json" in text
     assert "iii worker add" not in text
     assert "ref: ${{ inputs.source_sha }}" not in text
     assert "ref: ${{ inputs.prepared_sha }}" not in text
@@ -182,15 +186,17 @@ def test_mutating_phases_are_retry_safe_and_effect_states_are_probe_derived():
 def test_candidate_registry_publish_owns_next_atomically():
     reusable = body("_release-registry.yml")
     candidate = body("release-candidate-publish.yml")
-    assert "--channel next" in reusable
+    assert "assign-channel" in reusable
+    assert "--registry-tag next" in reusable
     assert '"tag": None' not in reusable
     assert "expected_current_version" not in reusable
     assert "/tags/" not in reusable
     assert "expected_next_version" not in candidate
     assert "--clobber" not in candidate
     assert "verify_release_assets" in candidate
-    assert ".package_descriptor == $payload[0].package_descriptor" in reusable
-    assert ".artifacts == $payload[0].artifacts" in reusable
+    assert 'has("package_descriptor") or has("descriptor_sha256") or has("channel")' in reusable
+    assert "registry_publication.py publish-version" in reusable
+    assert "build_publish_payload.py" in reusable
 
 
 def test_bundle_caches_are_scoped_by_descriptor_lock_runtime_and_architecture():

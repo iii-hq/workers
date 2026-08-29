@@ -16,7 +16,7 @@ workers in this monorepo. Per-worker deep docs stay inside each worker folder
 | Write a consumer `README.md` | [`worker-readme.md`](https://github.com/iii-hq/workers/blob/main/worker-readme.md) |
 | Author `skills/SKILL.md` | [`DOCUMENTATION_GUIDELINES.md`](https://github.com/iii-hq/workers/blob/main/DOCUMENTATION_GUIDELINES.md) |
 | Understand public `iii.worker.yaml` fields | [`architecture/iii-worker-yaml.md`](architecture/iii-worker-yaml.md) |
-| Understand `worker-compose.yaml` fields | [`architecture/worker-compose.md`](architecture/worker-compose.md) |
+| Understand public Compose and private release metadata | [`architecture/worker-compose.md`](architecture/worker-compose.md) |
 | Understand CI gates on a PR | [`architecture/testing-and-ci.md`](architecture/testing-and-ci.md) |
 | Integrate with session-manager | [`session-manager/architecture/integration.md`](https://github.com/iii-hq/workers/blob/main/session-manager/architecture/integration.md) |
 | Drive a desktop (computer use) | [`computer/architecture/integration.md`](https://github.com/iii-hq/workers/blob/main/computer/architecture/integration.md) |

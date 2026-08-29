@@ -3,6 +3,7 @@ name: code-runner
 language: rust
 deploy: binary
 manifest: Cargo.toml
+license: Apache-2.0
 bin: code-runner
 tags: [javascript, python, run, sandbox, v8, wasm]
 description: Run untrusted Node.js and Python in-process — V8 isolates and CPython-on-WebAssembly behind one run/register_function/teardown API, with no microVM and no /dev/kvm. Code gets a global `iii` and a private scratch directory.

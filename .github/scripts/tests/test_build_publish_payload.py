@@ -1,35 +1,40 @@
-"""Tests for the strict descriptor-native Registry payload."""
+"""Tests for projecting prepared releases onto the current Registry API."""
 from build_publish_payload import build_payload
 
 
 def build_binary_payload() -> dict[str, object]:
-    package = {
-        "name": "smoke",
+    projection = {
+        "worker_name": "smoke",
         "version": "1.0.0",
-        "source": {"path": "smoke", "package_manifest": "Cargo.toml"},
-        "artifact": {"kind": "rust-binary", "binary": "smoke", "targets": ["x86_64-unknown-linux-gnu"]},
-        "runtime": {"exec": ["smoke"]},
-        "registry": {"description": "smoke", "license": "Apache-2.0", "tags": [], "dependencies": {}, "publish": True},
-        "validation": {"interface": "required"},
+        "type": "binary",
+        "description": "smoke",
+        "license": "Apache-2.0",
+        "tags": [],
+        "dependencies": [],
+        "config": {},
+        "experimental": False,
+        "readme": "# Smoke\n",
     }
     return build_payload(
-        package_descriptor=package,
-        descriptor_sha256="a" * 64,
-        channel="next",
+        registry_projection=projection,
         repo_url="https://github.com/iii-hq/workers",
         interface={"functions": [], "triggers": []},
         artifacts={"kind": "rust-binary", "binaries": {"x86_64-unknown-linux-gnu": {"url": "https://example.test/smoke.tgz", "sha256": "b" * 64}}},
     )
 
 
-def test_payload_contains_only_strict_registry_contract() -> None:
+def test_payload_contains_only_current_registry_contract() -> None:
     payload = build_binary_payload()
     assert set(payload) == {
-        "package_descriptor", "descriptor_sha256", "channel", "repo", "interface", "artifacts"
+        "worker_name", "version", "type", "description", "license", "tags",
+        "dependencies", "config", "experimental", "readme", "repo",
+        "functions", "triggers", "binaries",
     }
-    assert payload["channel"] == "next"
-    assert payload["package_descriptor"]["registry"]["license"] == "Apache-2.0"
-    assert payload["artifacts"]["kind"] == "rust-binary"
+    assert payload["license"] == "Apache-2.0"
+    assert payload["binaries"]["x86_64-unknown-linux-gnu"]["sha256"] == "b" * 64
+    assert "package_descriptor" not in payload
+    assert "descriptor_sha256" not in payload
+    assert "channel" not in payload
 
 
 def test_engine_builtins_are_not_release_targets() -> None:

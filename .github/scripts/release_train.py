@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare and build immutable releases from an iii-compiled descriptor."""
+"""Prepare and build immutable releases from the Workers-owned descriptor."""
 
 from __future__ import annotations
 
@@ -35,7 +35,12 @@ def sha256(path: Path) -> str:
 def verify_descriptor(descriptor: object) -> dict[str, object]:
     if not isinstance(descriptor, dict):
         raise SystemExit("release descriptor must be an object")
-    required = {"contract", "worker", "version", "source_sha", "descriptor_sha256", "package", "build_units"}
+    required = {
+        "contract", "worker", "version", "source_sha", "release_spec_sha256",
+        "public_manifest_sha256", "registry_projection_sha256", "compiler_digest",
+        "descriptor_sha256", "source", "artifact", "runtime", "validation",
+        "publish", "build_units", "registry_projection",
+    }
     if set(descriptor) != required:
         raise SystemExit(
             "release descriptor fields differ from compiler contract: "
@@ -43,8 +48,15 @@ def verify_descriptor(descriptor: object) -> dict[str, object]:
         )
     if descriptor["contract"] != "release-descriptor":
         raise SystemExit("release descriptor contract mismatch")
-    if not isinstance(descriptor["package"], dict):
-        raise SystemExit("release descriptor package must be an object")
+    digest_subject = {key: value for key, value in descriptor.items() if key != "descriptor_sha256"}
+    digest = hashlib.sha256(
+        json.dumps(digest_subject, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+    if descriptor["descriptor_sha256"] != digest:
+        raise SystemExit("release descriptor digest is invalid")
+    for field in ("source", "artifact", "runtime", "validation", "registry_projection"):
+        if not isinstance(descriptor[field], dict):
+            raise SystemExit(f"release descriptor {field} must be an object")
     if not isinstance(descriptor["build_units"], list) or not descriptor["build_units"]:
         raise SystemExit("release descriptor build_units must be non-empty")
     return descriptor
@@ -53,20 +65,24 @@ def verify_descriptor(descriptor: object) -> dict[str, object]:
 def select_descriptor(args: argparse.Namespace) -> int:
     index_path = args.index_dir / "release-descriptor-index.json"
     index = json.loads(index_path.read_text(encoding="utf-8"))
-    required_index = {"contract", "source_sha", "compiler_sha", "workers"}
+    required_index = {"contract", "source_sha", "compiler", "workers"}
     if not isinstance(index, dict) or set(index) != required_index:
         raise SystemExit("descriptor index fields differ from compiler contract")
     if index["contract"] != "release-descriptor-index":
         raise SystemExit("descriptor index contract mismatch")
     if index["source_sha"] != args.source_sha:
         raise SystemExit("descriptor index source SHA mismatch")
-    if index["compiler_sha"] != args.compiler_sha:
-        raise SystemExit("descriptor index compiler SHA mismatch")
+    compiler = index["compiler"]
+    if not isinstance(compiler, dict) or compiler.get("digest") != args.compiler_digest:
+        raise SystemExit("descriptor index compiler digest mismatch")
     workers = index["workers"]
     if not isinstance(workers, dict) or args.worker not in workers:
         raise SystemExit("worker is absent from descriptor index")
     entry = workers[args.worker]
-    required_entry = {"path", "digest", "version", "publish"}
+    required_entry = {
+        "path", "digest", "version", "publish", "release_spec_sha256",
+        "public_manifest_sha256", "registry_projection_sha256",
+    }
     if not isinstance(entry, dict) or set(entry) != required_entry:
         raise SystemExit("descriptor index worker entry differs from compiler contract")
     expected_path = f"descriptors/{args.worker}.json"
@@ -113,9 +129,7 @@ def _argv(value: object, field: str) -> tuple[str, ...]:
 
 
 def frontend_specs(descriptor: dict[str, object]) -> list[dict[str, object]]:
-    package = descriptor["package"]
-    assert isinstance(package, dict)
-    artifact = package.get("artifact")
+    artifact = descriptor["artifact"]
     if not isinstance(artifact, dict):
         raise SystemExit("descriptor artifact must be an object")
     raw = artifact.get("frontends", [])
@@ -264,15 +278,13 @@ def build_metadata(args: argparse.Namespace) -> int:
     units = [unit for unit in descriptor["build_units"] if isinstance(unit, dict) and unit.get("id") == args.unit]
     if len(units) != 1:
         raise SystemExit(f"build unit {args.unit!r} is not declared exactly once")
-    package = descriptor["package"]
-    assert isinstance(package, dict)
-    artifact = package.get("artifact")
-    source = package.get("source")
+    artifact = descriptor["artifact"]
+    source = descriptor["source"]
     if not isinstance(artifact, dict) or not isinstance(source, dict):
-        raise SystemExit("descriptor package source/artifact must be objects")
+        raise SystemExit("descriptor source/artifact must be objects")
     kind = str(artifact.get("kind"))
     if units[0].get("kind") != kind:
-        raise SystemExit("build unit kind differs from package artifact")
+        raise SystemExit("build unit kind differs from descriptor artifact")
     metadata = {
         "kind": kind,
         "source_path": str(source.get("path", "")),
@@ -445,7 +457,7 @@ def matrix(args: argparse.Namespace) -> int:
         if not isinstance(unit, dict):
             raise SystemExit("build unit must be an object")
         kind = str(unit.get("kind"))
-        target = str(unit.get("target") or "none")
+        target = str(unit.get("target") or unit.get("platform") or "none")
         if kind == "rust-binary":
             runner = release_targets.TARGET_LARGER_RUNNERS.get(target)
             if runner is None:
@@ -466,10 +478,8 @@ def build(args: argparse.Namespace) -> int:
     if len(units) != 1:
         raise SystemExit(f"build unit {args.unit!r} is not declared exactly once")
     unit = units[0]
-    package = descriptor["package"]
-    assert isinstance(package, dict)
-    source = package["source"]
-    artifact = package["artifact"]
+    source = descriptor["source"]
+    artifact = descriptor["artifact"]
     assert isinstance(source, dict) and isinstance(artifact, dict)
     source_dir = Path(str(source["path"]))
     args.out.mkdir(parents=True, exist_ok=True)
@@ -513,9 +523,9 @@ def build(args: argparse.Namespace) -> int:
         normalized_tar(entries, archive)
         role = "bundle"
     elif kind == "oci-image":
-        platforms = artifact.get("platforms")
-        if not isinstance(platforms, list) or not platforms:
-            raise SystemExit("OCI platforms must be non-empty")
+        platform = unit.get("platform")
+        if not isinstance(platform, str) or not platform:
+            raise SystemExit("OCI build unit must identify exactly one platform")
         context = source_dir / str(artifact["context"])
         dockerfile = source_dir / str(artifact["dockerfile"])
         validate_oci_dockerfile.validate(dockerfile)
@@ -523,20 +533,21 @@ def build(args: argparse.Namespace) -> int:
             layout = Path(temporary) / "layout-first"
             repeated_layout = Path(temporary) / "layout-second"
             first_digest = build_oci_layout(
-                context=context, dockerfile=dockerfile, platforms=platforms, destination=layout,
+                context=context, dockerfile=dockerfile, platforms=[platform], destination=layout,
             )
             second_digest = build_oci_layout(
-                context=context, dockerfile=dockerfile, platforms=platforms, destination=repeated_layout,
+                context=context, dockerfile=dockerfile, platforms=[platform], destination=repeated_layout,
             )
             if first_digest != second_digest:
                 raise SystemExit(
                     "OCI build is not reproducible: "
                     f"first index={first_digest} second index={second_digest}"
                 )
-            archive = args.out / f"{descriptor['worker']}-image.oci.tar.gz"
+            platform_slug = platform.replace("/", "-")
+            archive = args.out / f"{descriptor['worker']}-image-{platform_slug}.oci.tar.gz"
             files = [(path, path.relative_to(layout).as_posix()) for path in layout.rglob("*") if path.is_file()]
             normalized_tar(files, archive)
-        role = "oci-image"
+        role = "oci-platform"
     else:
         raise SystemExit(f"unsupported artifact kind {kind!r}")
 
@@ -592,7 +603,7 @@ def make_parser() -> argparse.ArgumentParser:
     select_parser.add_argument("--index-dir", type=Path, required=True)
     select_parser.add_argument("--worker", required=True)
     select_parser.add_argument("--source-sha", required=True)
-    select_parser.add_argument("--compiler-sha", required=True)
+    select_parser.add_argument("--compiler-digest", required=True)
     select_parser.add_argument("--candidate-version", required=True)
     select_parser.add_argument("--descriptor-sha256", required=True)
     select_parser.add_argument("--out", type=Path, required=True)

@@ -17,6 +17,7 @@ permissions: {}
 jobs:
   publish:
     runs-on: workers-release-linux-8core
+    environment: workers-registry-release
     permissions:
       actions: read
       contents: read
@@ -33,7 +34,7 @@ jobs:
           run-id: ${{ inputs.prepared_run_id }}
           github-token: ${{ github.token }}
 
-      - name: Build descriptor-native Registry payload
+      - name: Build the current Registry payload from prepared bytes
         env:
           WORKER: ${{ inputs.worker }}
           VERSION: ${{ inputs.version }}
@@ -45,8 +46,10 @@ jobs:
             --descriptor release-prepared/release-descriptor.json \
             --evidence release-prepared/release-evidence.json
           python3 - <<'PY'
-          import json, os
+          import json
+          import os
           from pathlib import Path
+
           descriptor = json.loads(Path("release-prepared/release-descriptor.json").read_text())
           prepared = json.loads(Path("release-prepared/prepared-artifacts.json").read_text())
           interface_snapshot = json.loads(Path("release-prepared/release-interface.json").read_text())
@@ -54,92 +57,78 @@ jobs:
               raise SystemExit("prepared descriptor identity mismatch")
           if prepared["descriptor_sha256"] != descriptor["descriptor_sha256"]:
               raise SystemExit("prepared artifact descriptor mismatch")
-          if any(interface_snapshot.get(key) != descriptor[key] for key in ("worker", "source_sha", "descriptor_sha256")):
-              raise SystemExit("prepared interface identity mismatch")
-          validation = descriptor["package"]["validation"]["interface"]
-          if interface_snapshot.get("validation") != validation:
-              raise SystemExit("prepared interface validation mode mismatch")
           interface = interface_snapshot.get("interface")
-          if validation == "required" and not isinstance(interface, dict):
+          if descriptor["validation"]["interface"] == "required" and not isinstance(interface, dict):
               raise SystemExit("required prepared interface is missing")
-          if validation == "skipped" and interface is not None:
+          if descriptor["validation"]["interface"] == "skipped" and interface is not None:
               raise SystemExit("skipped prepared interface must be null")
-          kind = descriptor["package"]["artifact"]["kind"]
+          kind = descriptor["artifact"]["kind"]
           base = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/{os.environ['GITHUB_TAG']}"
-          artifacts = [a for a in prepared["artifacts"] if a["role"] != "checksum"]
+          artifacts = [entry for entry in prepared["artifacts"] if entry["role"] != "checksum"]
           if kind == "rust-binary":
               targets = {unit["id"]: unit["target"] for unit in descriptor["build_units"]}
-              binaries = {
-                  targets[artifact["unit"]]: {
-                      "url": f"{base}/{artifact['name']}",
-                      "sha256": artifact["sha256"],
-                  }
-                  for artifact in artifacts
+              artifact_payload = {
+                  "kind": kind,
+                  "binaries": {
+                      targets[entry["unit"]]: {
+                          "url": f"{base}/{entry['name']}",
+                          "sha256": entry["sha256"],
+                      }
+                      for entry in artifacts
+                  },
               }
-              artifact_payload = {"kind": kind, "binaries": binaries}
           elif kind in {"javascript-bundle", "python-bundle"}:
               if len(artifacts) != 1:
                   raise SystemExit("bundle release requires exactly one prepared archive")
-              artifact = artifacts[0]
+              entry = artifacts[0]
               artifact_payload = {
                   "kind": kind,
-                  "archive_url": f"{base}/{artifact['name']}",
-                  "sha256": artifact["sha256"],
+                  "archive_url": f"{base}/{entry['name']}",
+                  "sha256": entry["sha256"],
               }
-          else:
+          elif kind == "oci-image":
               image_tag = os.environ["IMAGE_TAG"]
               if not image_tag or "@sha256:" not in image_tag:
-                  raise SystemExit("image release requires a digest-pinned image_tag")
+                  raise SystemExit("image release requires a digest-pinned image tag")
               artifact_payload = {"kind": kind, "image_tag": image_tag}
-          Path("package-descriptor.json").write_text(json.dumps(descriptor["package"], sort_keys=True) + "\n")
+          else:
+              raise SystemExit(f"unsupported artifact kind {kind}")
           Path("interface.json").write_text(json.dumps(interface or {"functions": [], "triggers": []}, sort_keys=True) + "\n")
           Path("registry-artifacts.json").write_text(json.dumps(artifact_payload, sort_keys=True) + "\n")
           PY
           python3 .github/scripts/build_publish_payload.py \
-            --descriptor package-descriptor.json \
-            --descriptor-sha256 "$(jq -r .descriptor_sha256 release-prepared/release-descriptor.json)" \
-            --channel next \
+            --descriptor release-prepared/release-descriptor.json \
             --repo-url "https://github.com/$GITHUB_REPOSITORY" \
             --interface-json interface.json \
             --artifacts-json registry-artifacts.json \
             --out payload.json
+          if jq -e 'has("package_descriptor") or has("descriptor_sha256") or has("channel")' payload.json >/dev/null; then
+            echo 'descriptor-native fields must never reach the current Registry' >&2
+            exit 1
+          fi
 
-      - name: Publish immutable version and next atomically
+      - name: Publish immutable version and assign next with readback
         env:
-          API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
+          WORKERS_REGISTRY_API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
           WORKER: ${{ inputs.worker }}
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          verify_resolution() {
-            local response=$1 selector=$2
-            test "$(jq -r .root.version "$response")" = "$VERSION"
-            jq -e --slurpfile payload payload.json --arg worker "$WORKER" '
-              [.graph[] | select(.package_descriptor.name == $worker)] as $matches
-              | ($matches | length) == 1
-              and $matches[0].package_descriptor == $payload[0].package_descriptor
-              and $matches[0].descriptor_sha256 == $payload[0].descriptor_sha256
-              and $matches[0].artifacts == $payload[0].artifacts
-            ' "$response" >/dev/null || {
-              echo "Registry $selector identity differs from immutable publish payload"
-              return 1
-            }
-          }
-          status=$(curl -sS -o publish-response.json -w '%{http_code}' -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' -X POST 'https://api.workers.iii.dev/publish' --data-binary @payload.json)
-          cat publish-response.json
-          [[ "$status" == 200 || "$status" == 201 || "$status" == 409 ]]
-          if [[ "$status" == 409 ]]; then
-            body=$(jq -nc --arg worker "$WORKER" --arg version "$VERSION" '{worker:$worker,version:$version}')
-            curl -fsS -H 'Content-Type: application/json' -X POST 'https://api.workers.iii.dev/resolve' --data "$body" > immutable-response.json
-            verify_resolution immutable-response.json "$VERSION"
-          fi
-          body=$(jq -nc --arg worker "$WORKER" '{worker:$worker,version:"next"}')
-          curl -fsS -H 'Content-Type: application/json' -X POST 'https://api.workers.iii.dev/resolve' --data "$body" > next-response.json
-          verify_resolution next-response.json next
-          curl -fsS --get --data-urlencode "version=$VERSION" \
-            "https://api.workers.iii.dev/w/$WORKER/api-reference" >api-reference.json
-          test "$(jq -r .name api-reference.json)" = "$WORKER"
-          test "$(jq -r .version api-reference.json)" = "$VERSION"
-          jq -S '{functions,triggers}' api-reference.json >published-interface.json
-          jq -S . interface.json >expected-interface.json
-          cmp expected-interface.json published-interface.json
+          python3 .github/scripts/registry_publication.py publish-version \
+            --api-url https://api.workers.iii.dev \
+            --worker "$WORKER" --version "$VERSION" \
+            --payload payload.json --out registry-version-receipt.json
+          python3 .github/scripts/registry_publication.py assign-channel \
+            --api-url https://api.workers.iii.dev \
+            --worker "$WORKER" --version "$VERSION" \
+            --registry-tag next --out registry-next-receipt.json
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: registry-publication-${{ inputs.worker }}-${{ inputs.version }}
+          path: |
+            payload.json
+            registry-version-receipt.json
+            registry-next-receipt.json
+          if-no-files-found: error
+          retention-days: 30

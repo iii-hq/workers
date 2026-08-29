@@ -63,7 +63,7 @@ jobs:
           RELEASE_CONTROL_API_URL: ${{ vars.RELEASE_CONTROL_API_URL }}
         run: |
           set -euo pipefail
-          test "$(jq -r .package.artifact.kind release-prepared/release-descriptor.json)" = oci-image
+          test "$(jq -r .artifact.kind release-prepared/release-descriptor.json)" = oci-image
           test "$(jq -r .descriptor_sha256 release-prepared/release-descriptor.json)" = "$DESCRIPTOR_SHA256"
           python3 .github/scripts/release_interface.py verify-evidence --descriptor release-prepared/release-descriptor.json --evidence release-prepared/release-evidence.json
           [[ "$EXPECTED_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]

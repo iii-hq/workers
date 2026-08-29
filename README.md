@@ -128,18 +128,11 @@ and the local Harness stack with `worker-compose.yaml`.
 
 ## Binary releases
 
-Rust workers ship as standalone binaries — see the modules table above —
-and are released via GitHub Actions:
-
-1. Trigger the **Create Tag** workflow (Actions tab) — pick a worker, bump
-   type (`patch`/`minor`/`major`), and a registry tag (`latest` / `next`).
-2. A tag of the form `<worker>/v<X.Y.Z>` is pushed to `main`, with the
-   registry tag embedded in the tag's annotated message.
-3. The unified **Release** workflow fires on the tag, cross-compiles
-   binaries for up to 9 targets (Linux gnu/musl, macOS x86_64 + aarch64,
-   Windows x86_64/i686/aarch64, armv7), uploads them to a GitHub Release
-   with SHA-256 checksums, and calls `POST /publish` on the workers
-   registry API.
+Rust workers ship as standalone binaries. Release Control is the only
+supported interface for starting, retrying, reconciling, canceling, or
+promoting a release. GitHub Actions only executes its authenticated steps.
+See [`docs/sops/release.md`](docs/sops/release.md) for the sequence and recovery
+rules.
 
 Targets per build (Windows targets are skipped on POSIX-only workers such
 as `shell`):
@@ -180,16 +173,18 @@ configuration).
 
 Pull requests trigger per-worker lint + tests for the changed worker(s).
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) discovers changes from
-the repository-root [`worker-compose.yaml`](worker-compose.yaml), then routes:
+the private [`.release/workers.yaml`](.release/workers.yaml) build catalog,
+then routes:
 
 - Rust → `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test --all-features`
 - Node → `biome ci` against [`biome.json`](biome.json) and `npm test`
 - Python → `ruff check` + `ruff format --check` against [`ruff.toml`](ruff.toml) and `pytest`
 
 The `pr-checks` job additionally enforces, per changed worker: `README.md`
-present, the catalog entry valid, `tests/` non-empty, and the package version
-not behind the PR base. It also requires non-empty `registry.tags` on workers
-whose `validation.interface` is `required` — see the
+present, the private build entry and public `iii.worker.yaml` valid,
+`tests/` non-empty, and the package version not behind the PR base. It also
+requires non-empty public discovery tags on workers whose
+`validation.interface` is `required` — see the
 [Discovery tags step](docs/sops/new-worker.md#discovery-tags-required).
 
 Full reference (discovery buckets, interface boot smoke, e2e workflows):
@@ -199,7 +194,8 @@ Full reference (discovery buckets, interface boot smoke, e2e workflows):
 
 Release Control is the only supported release interface. For each source SHA,
 [`release-descriptor-index.yml`](.github/workflows/release-descriptor-index.yml)
-uses the pinned iii compiler to publish the worker descriptor index. Release
+uses the repository-owned compiler to join `.release/workers.yaml`, the public
+manifest, and the package manifest exactly once. Release
 Control selects those immutable bytes and dispatches the bounded phases:
 
 1. [`release-prepare.yml`](.github/workflows/release-prepare.yml) validates the

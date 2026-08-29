@@ -7,7 +7,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: a2ui
       targets: &id001
       - x86_64-apple-darwin
@@ -21,7 +21,7 @@ workers:
         source_path: a2ui/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -36,28 +36,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - a2ui
-    registry:
-      description: Compose, validate, persist, and render A2UI v0.9.1 surfaces for Harness sessions in chat and on an injectable
-        Console page.
-      license: Apache-2.0
-      tags:
-      - a2ui
-      - generative-ui
-      - agent-ui
-      - console
-      - harness
-      dependencies:
-        state: 0.x
-        configuration: 0.x
-        llm-router: ^1.4.12
-        harness: ^1.0.0
-        shell: 0.x
-      publish: true
     validation:
       interface: required
+    publish: true
   acp:
     source:
       path: acp
@@ -66,20 +47,12 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: iii-acp
       targets: *id001
-    runtime:
-      exec:
-      - iii-acp
-    registry:
-      description: Agent Client Protocol surface — stdio JSON-RPC, exposes iii agents as ACP sessions
-      license: Apache-2.0
-      tags: []
-      dependencies: {}
-      publish: true
     validation:
       interface: skipped
+    publish: true
   approval-gate:
     source:
       path: approval-gate
@@ -88,7 +61,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: approval-gate
       targets: *id001
       frontends:
@@ -96,7 +69,7 @@ workers:
         source_path: harness/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -111,27 +84,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - approval-gate
-    registry:
-      description: Policy and decision surface for human-held function calls — pre_trigger gate, pending inbox, per-session
-        permission settings, and two notification trigger types.
-      license: Apache-2.0
-      tags:
-      - approval
-      - human-in-the-loop
-      - permissions
-      - policy
-      - security
-      dependencies:
-        state: ^0.22.2
-        configuration: 0.x
-        iii-directory: ^1.2.3
-        session-manager: ^1.0.13
-      publish: true
     validation:
       interface: required
+    publish: true
   bridge:
     source:
       path: bridge
@@ -140,29 +95,12 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: bridge
       targets: *id001
-    runtime:
-      exec:
-      - bridge
-    registry:
-      description: Bridge two iii engines — expose local functions on a remote engine and invoke/forward remote functions
-        locally.
-      license: Apache-2.0
-      tags:
-      - bridge
-      - remote
-      - websocket
-      - federation
-      - engine
-      dependencies:
-        configuration: 0.x
-      publish: true
-      config:
-        defaults_file: config.yaml
     validation:
       interface: required
+    publish: true
   browser:
     source:
       path: browser
@@ -171,7 +109,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: browser
       targets: *id001
       frontends:
@@ -179,7 +117,7 @@ workers:
         source_path: browser/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -194,29 +132,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - browser
-      resources:
-        cpu: 2
-        memory_mib: 4096
-    registry:
-      description: Interactive Chromium sessions on the iii bus. Navigate, act, read the page console, pick elements. Also
-        parses HTML natively without a browser (browser::* — css/xpath/regex, element search, markdown).
-      license: Apache-2.0
-      tags:
-      - browser
-      - chromium
-      - automation
-      - web
-      - cdp
-      - scraping
-      - extraction
-      - parsing
-      dependencies: {}
-      publish: true
     validation:
       interface: required
+    publish: true
   canvas:
     source:
       path: canvas
@@ -225,7 +143,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: canvas
       targets: *id001
       frontends:
@@ -233,7 +151,7 @@ workers:
         source_path: canvas/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -248,26 +166,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - canvas
-    registry:
-      description: Create, edit and render diagrams in the console — stored as editable source, drawn live in chat and on
-        a canvas page.
-      license: Apache-2.0
-      tags:
-      - diagram
-      - mermaid
-      - flowchart
-      - whiteboard
-      - drawing
-      - svg
-      dependencies:
-        state: 0.x
-        configuration: 0.x
-      publish: true
     validation:
       interface: required
+    publish: true
   claude-code:
     source:
       path: claude-code
@@ -277,10 +178,10 @@ workers:
       workspace_root: claude-code
       runtime:
         name: node
-        version: '22.20.0'
+        version: 22.20.0
       package_manager:
         name: pnpm
-        version: '10.18.2'
+        version: 10.18.2
       lockfile: pnpm-lock.yaml
       install_command:
       - pnpm
@@ -294,29 +195,9 @@ workers:
       include:
       - dist/bundle/index.mjs
       - iii.worker.yaml
-    runtime:
-      base_image: docker.io/library/node:22.20.0-slim@sha256:b21fe589dfbe5cc39365d0544b9be3f1f33f55f3c86c87a76ff65a02f8f5848e
-      exec:
-      - node
-        - ./dist/bundle/index.mjs
-    registry:
-      description: Claude Code as an iii worker — claude::* functions run headless Claude Code turns, mirror raw messages
-        onto claude::events, and stream AgentEvent frames onto agent::events.
-      license: Apache-2.0
-      tags:
-      - coding-agent
-      - claude
-      - anthropic
-      - cli
-      - headless
-      dependencies:
-        state: ^0.22.2
-        iii-stream: 0.x
-      publish: true
-      config:
-        defaults_file: config.yaml
     validation:
       interface: required
+    publish: true
   code-runner:
     source:
       path: code-runner
@@ -325,7 +206,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: code-runner
       targets:
       - x86_64-apple-darwin
@@ -338,7 +219,7 @@ workers:
         source_path: code-runner/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -353,25 +234,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - code-runner
-    registry:
-      description: Run untrusted Node.js and Python in-process — V8 isolates and CPython-on-WebAssembly behind one run/register_function/teardown
-        API, with no microVM and no /dev/kvm. Code gets a global `iii` and a private scratch directory.
-      license: Apache-2.0
-      tags:
-      - javascript
-      - python
-      - run
-      - sandbox
-      - v8
-      - wasm
-      dependencies:
-        configuration: 0.x
-      publish: true
     validation:
       interface: required
+    publish: true
   fixture-code-runner-harness:
     source:
       path: code-runner/tests/e2e/workers/harness
@@ -381,10 +246,10 @@ workers:
       workspace_root: code-runner/tests/e2e/workers/harness
       runtime:
         name: node
-        version: '22.20.0'
+        version: 22.20.0
       package_manager:
         name: npm
-        version: '10.9.3'
+        version: 10.9.3
       lockfile: package-lock.json
       install_command:
       - npm
@@ -407,23 +272,9 @@ workers:
       - src/worker.ts
       - tsconfig.json
       - iii.worker.yaml
-    runtime:
-      base_image: docker.io/library/node:22.20.0-slim@sha256:b21fe589dfbe5cc39365d0544b9be3f1f33f55f3c86c87a76ff65a02f8f5848e
-      exec:
-      - npm
-      - run
-      - dev
-      prepare:
-      - - npm
-        - install
-    registry:
-      description: Internal fixture for fixture-code-runner-harness.
-      license: UNLICENSED
-      tags: []
-      dependencies: {}
-      publish: false
     validation:
       interface: required
+    publish: false
   codex:
     source:
       path: codex
@@ -432,28 +283,12 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: codex
       targets: *id001
-    runtime:
-      exec:
-      - codex
-    registry:
-      description: OpenAI Codex as an iii worker; codex::run/start/stop/status/sessions::list spawn the codex CLI for headless
-        turns, mirror raw thread events onto codex::events, and stream AgentEvent frames onto agent::events.
-      license: Apache-2.0
-      tags:
-      - coding-agent
-      - openai
-      - codex-cli
-      - headless
-      - agent
-      dependencies: {}
-      publish: true
-      config:
-        defaults_file: config.yaml
     validation:
       interface: required
+    publish: true
   compose-ui:
     source:
       path: compose-ui
@@ -463,10 +298,10 @@ workers:
       workspace_root: compose-ui
       runtime:
         name: node
-        version: '22.20.0'
+        version: 22.20.0
       package_manager:
         name: pnpm
-        version: '11.13.1'
+        version: 11.13.1
       lockfile: pnpm-lock.yaml
       install_command:
       - pnpm
@@ -480,27 +315,9 @@ workers:
       include:
       - dist/bundle/index.mjs
       - iii.worker.yaml
-    runtime:
-      base_image: docker.io/library/node:22.20.0-slim@sha256:b21fe589dfbe5cc39365d0544b9be3f1f33f55f3c86c87a76ff65a02f8f5848e
-      exec:
-      - node
-        - ./dist/bundle/index.mjs
-    registry:
-      description: Compose project supervision in the Console — a page over compose::* with live container state, lifecycle
-        actions, worker packages, and per-container log tails.
-      license: Apache-2.0
-      tags:
-      - compose
-      - console
-      - ui
-      - operations
-      - supervisor
-      - logs
-      dependencies:
-        console: ^1.9.11
-      publish: true
     validation:
       interface: required
+    publish: true
   computer:
     source:
       path: computer
@@ -509,7 +326,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: computer
       targets: *id001
       frontends:
@@ -517,7 +334,7 @@ workers:
         source_path: computer/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -532,23 +349,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - computer
-    registry:
-      description: Drive a full desktop on the iii bus. Start a session on the local machine, a sandboxed desktop, or a remote
-        one, screenshot it, click and type by coordinate, and stream the live screen.
-      license: Apache-2.0
-      tags:
-      - computer-use
-      - desktop
-      - screenshot
-      - gui
-      - automation
-      dependencies: {}
-      publish: true
     validation:
       interface: required
+    publish: true
   console:
     source:
       path: console
@@ -557,7 +360,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: console
       targets: *id001
       frontends:
@@ -565,7 +368,7 @@ workers:
         source_path: console/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -584,7 +387,7 @@ workers:
         source_path: console/web
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -599,25 +402,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - console
-    registry:
-      description: Web console for iii — bundles the React UI and proxies the engine WebSocket on a single port.
-      license: Apache-2.0
-      tags:
-      - console
-      - dashboard
-      - ui
-      - web
-      - admin
-      dependencies:
-        configuration: 0.x
-      publish: true
-      config:
-        defaults_file: config.yaml
     validation:
       interface: required
+    publish: true
   context-manager:
     source:
       path: context-manager
@@ -626,7 +413,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: context-manager
       targets: *id001
       frontends:
@@ -634,7 +421,7 @@ workers:
         source_path: context-manager/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -649,25 +436,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - context-manager
-    registry:
-      description: Turns a raw conversation history plus a target model into a model-ready context — token counting, function-result
-        pruning, and history compaction.
-      license: Apache-2.0
-      tags:
-      - context
-      - tokens
-      - compaction
-      - pruning
-      - llm
-      dependencies:
-        configuration: 0.x
-        llm-router: ^1.4.12
-      publish: true
     validation:
       interface: required
+    publish: true
   cron:
     source:
       path: cron
@@ -676,7 +447,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: cron
       targets: *id001
       frontends:
@@ -684,7 +455,7 @@ workers:
         source_path: cron/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -699,24 +470,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - cron
-    registry:
-      description: Schedule functions with cron expressions - registers the `cron` trigger type.
-      license: Apache-2.0
-      tags:
-      - cron
-      - schedule
-      - timer
-      - job
-      dependencies:
-        configuration: 0.x
-      publish: true
-      config:
-        defaults_file: config.yaml
     validation:
       interface: required
+    publish: true
   cursor:
     source:
       path: cursor
@@ -726,10 +482,10 @@ workers:
       workspace_root: cursor
       runtime:
         name: node
-        version: '22.20.0'
+        version: 22.20.0
       package_manager:
         name: pnpm
-        version: '10.18.2'
+        version: 10.18.2
       lockfile: pnpm-lock.yaml
       install_command:
       - pnpm
@@ -743,32 +499,9 @@ workers:
       include:
       - dist/bundle/index.mjs
       - iii.worker.yaml
-    runtime:
-      base_image: docker.io/library/node:22.20.0-slim@sha256:b21fe589dfbe5cc39365d0544b9be3f1f33f55f3c86c87a76ff65a02f8f5848e
-      exec:
-      - node
-        - ./dist/bundle/index.mjs
-    registry:
-      description: Cursor as a login-backed, text-only LLM Router provider and coding-agent worker through official CLI ACP,
-        with optional sdk.v1 Bridge sessions.
-      license: Apache-2.0
-      tags:
-      - llm
-      - provider
-      - coding-agent
-      - cursor
-      - acp
-      - bridge
-      - local-agent
-      - cloud-agent
-      dependencies:
-        state: ^0.22.2
-        iii-stream: 0.x
-        configuration: 0.x
-        llm-router: ^1.4.12
-      publish: true
     validation:
       interface: required
+    publish: true
   database:
     source:
       path: database
@@ -777,7 +510,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: database
       targets: *id001
       frontends:
@@ -785,7 +518,7 @@ workers:
         source_path: database/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -800,23 +533,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - database
-    registry:
-      description: Talk to PostgreSQL, MySQL, and SQLite from iii — query, execute, transactions, prepared statements, and
-        change feeds.
-      license: Apache-2.0
-      tags:
-      - sql
-      - sqlite
-      - postgres
-      - mysql
-      - db
-      dependencies: {}
-      publish: true
     validation:
       interface: required
+    publish: true
   fixture-database-harness:
     source:
       path: database/tests/e2e/workers/harness
@@ -826,10 +545,10 @@ workers:
       workspace_root: database/tests/e2e/workers/harness
       runtime:
         name: node
-        version: '22.20.0'
+        version: 22.20.0
       package_manager:
         name: npm
-        version: '10.9.3'
+        version: 10.9.3
       lockfile: package-lock.json
       install_command:
       - npm
@@ -862,23 +581,9 @@ workers:
       - src/worker.ts
       - tsconfig.json
       - iii.worker.yaml
-    runtime:
-      base_image: docker.io/library/node:22.20.0-slim@sha256:b21fe589dfbe5cc39365d0544b9be3f1f33f55f3c86c87a76ff65a02f8f5848e
-      exec:
-      - npm
-      - run
-      - dev
-      prepare:
-      - - npm
-        - install
-    registry:
-      description: Internal fixture for fixture-database-harness.
-      license: UNLICENSED
-      tags: []
-      dependencies: {}
-      publish: false
     validation:
       interface: required
+    publish: false
   devin:
     source:
       path: devin
@@ -887,29 +592,12 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: devin
       targets: *id001
-    runtime:
-      exec:
-      - devin
-    registry:
-      description: Devin CLI + API as an iii worker; devin::run/start/stop/status/sessions::list follow the agent-worker family
-        and stream AgentEvent frames onto agent::events, devin::session::* wrap the Devin cloud session lifecycle, devin::pr-review::*
-        exposes Devin's review surface, and devin::api reaches any Devin v1/v3 endpoint.
-      license: Apache-2.0
-      tags:
-      - coding-agent
-      - devin
-      - cloud
-      - pr-review
-      - agent
-      dependencies: {}
-      publish: true
-      config:
-        defaults_file: release-config.yaml
     validation:
       interface: required
+    publish: true
   document:
     source:
       path: document
@@ -918,33 +606,12 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: document
       targets: *id001
-    runtime:
-      exec:
-      - document
-    registry:
-      description: Convert Word, PowerPoint, Excel, OpenDocument, RTF, EPUB, CSV and PDF documents to markdown on this machine,
-        detect the format from the bytes, pull out the images embedded in them, and transcribe a scan by rendering its pages
-        and reading them with a vision model.
-      license: Apache-2.0
-      tags:
-      - document
-      - markdown
-      - docx
-      - pptx
-      - xlsx
-      - epub
-      - csv
-      - attachments
-      - text-extraction
-      - ocr
-      dependencies:
-        configuration: 0.x
-      publish: true
     validation:
       interface: required
+    publish: true
   editor:
     source:
       path: editor
@@ -953,7 +620,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: editor
       targets: *id001
       frontends:
@@ -961,7 +628,7 @@ workers:
         source_path: editor/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -976,28 +643,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - editor
-    registry:
-      description: A shared code workspace — open buffers, a file tree, unified diffs, fuzzy find and conflict-safe saves
-        that an agent and a person see the same view of, plus a console editor page.
-      license: Apache-2.0
-      tags:
-      - editor
-      - diff
-      - git
-      - code
-      - review
-      dependencies:
-        shell: ^0.11.9
-        state: ^0.22.2
-        configuration: 0.x
-      publish: true
-      config:
-        defaults_file: config.yaml
     validation:
       interface: required
+    publish: true
   email:
     source:
       path: email
@@ -1006,26 +654,12 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: email
       targets: *id001
-    runtime:
-      exec:
-      - email
-    registry:
-      description: Email worker — SMTP send and real-time IMAP read with IDLE push (email::*).
-      license: Apache-2.0
-      tags:
-      - email
-      - smtp
-      - imap
-      - inbox
-      - messaging
-      dependencies:
-        configuration: 0.x
-      publish: true
     validation:
       interface: required
+    publish: true
   eval:
     source:
       path: eval
@@ -1034,7 +668,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: eval
       targets: *id001
       frontends:
@@ -1042,7 +676,7 @@ workers:
         source_path: eval/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -1061,7 +695,7 @@ workers:
         source_path: harness/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -1076,28 +710,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - eval
-    registry:
-      description: Compare live objective metrics for 2-5 root sessions; retain durable prompt experiments as an advanced
-        surface.
-      license: Apache-2.0
-      tags:
-      - evaluation
-      - benchmark
-      - sessions
-      - metrics
-      - prompt
-      - system-prompt
-      dependencies:
-        state: 0.x
-        queue: 0.x
-        cron: 0.x
-        iii-observability: 0.x
-      publish: true
     validation:
       interface: required
+    publish: true
   fp:
     source:
       path: fp
@@ -1106,27 +721,12 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: fp
       targets: *id001
-    runtime:
-      exec:
-      - fp
-    registry:
-      description: Lodash-style value transforms (fp::get/pick/take/…) and fp::pipe — worker-side pipelines that move big
-        values function→function without routing them through the model.
-      license: Apache-2.0
-      tags:
-      - fp
-      - functional
-      - pipeline
-      - transform
-      - lodash
-      dependencies:
-        configuration: 0.x
-      publish: true
     validation:
       interface: required
+    publish: true
   github:
     source:
       path: github
@@ -1135,7 +735,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: github
       targets: *id001
       frontends:
@@ -1143,7 +743,7 @@ workers:
         source_path: github/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -1158,27 +758,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - github
-    registry:
-      description: GitHub CLI (gh) as an iii worker — typed github::pr/issue/repo/run/workflow/release/search functions, github::exec
-        argv passthrough, and github::api for any GitHub REST endpoint.
-      license: Apache-2.0
-      tags:
-      - github
-      - gh
-      - git
-      - pull-requests
-      - issues
-      - actions
-      - releases
-      dependencies: {}
-      publish: true
-      config:
-        defaults_file: release-config.yaml
     validation:
       interface: required
+    publish: true
   grok:
     source:
       path: grok
@@ -1187,28 +769,12 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: grok
       targets: *id001
-    runtime:
-      exec:
-      - grok
-    registry:
-      description: xAI Grok CLI as an iii worker; grok::run/start/stop/status/sessions::list spawn the grok CLI for headless
-        turns, mirror raw streaming-json events onto grok::events, and stream AgentEvent frames onto agent::events.
-      license: Apache-2.0
-      tags:
-      - coding-agent
-      - grok
-      - xai
-      - cli
-      - headless
-      dependencies: {}
-      publish: true
-      config:
-        defaults_file: config.yaml
     validation:
       interface: required
+    publish: true
   harness:
     source:
       path: harness
@@ -1217,7 +783,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: harness
       targets: *id001
       frontends:
@@ -1225,7 +791,7 @@ workers:
         source_path: harness/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -1240,37 +806,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - harness
-    registry:
-      description: Thin durable turn loop that wires session-manager, context-manager, and llm-router into an agent loop;
-        spawns sub-agents as child sessions.
-      license: Apache-2.0
-      tags:
-      - agent
-      - harness
-      - loop
-      - autonomous
-      dependencies:
-        state: ^0.22.2
-        queue: ^0.21.5
-        cron: ^0.21.9
-        configuration: 0.x
-        iii-observability: 0.x
-        iii-stream: 0.x
-        iii-directory: ^1.2.3
-        llm-router: ^1.4.12
-        session-manager: ^1.0.13
-        context-manager: ^1.1.3
-        provider-openai-codex: ^0.4.4
-        provider-anthropic: ^1.2.8
-        provider-openai: ^1.2.7
-        shell: ^0.11.9
-        console: ^1.9.11
-      publish: true
     validation:
       interface: required
+    publish: true
   hermes:
     source:
       path: hermes
@@ -1282,27 +820,9 @@ workers:
       platforms:
       - linux/amd64
       - linux/arm64
-    runtime:
-      resources:
-        cpu: 2
-        memory_mib: 2048
-    registry:
-      description: Hermes agent as an iii worker — hermes::run runs headless Hermes turns with the iii runtime context, hermes::send
-        delivers to 27+ messaging platforms, and inbound platform/webhook deliveries are republished onto hermes::events for
-        iii workers to react to.
-      license: Apache-2.0
-      tags:
-      - agent
-      - messaging
-      - chat
-      - webhook
-      - multi-channel
-      dependencies: {}
-      publish: true
-      config:
-        defaults_file: config.yaml
     validation:
       interface: required
+    publish: true
   http:
     source:
       path: http
@@ -1311,27 +831,12 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: http
       targets: *id001
-    runtime:
-      exec:
-      - http
-    registry:
-      description: Expose functions as HTTP endpoints — registers the `http` trigger type and serves matched routes.
-      license: Apache-2.0
-      tags:
-      - http
-      - rest
-      - api
-      - endpoint
-      dependencies:
-        configuration: 0.x
-      publish: true
-      config:
-        defaults_file: config.yaml
     validation:
       interface: required
+    publish: true
   iii-directory:
     source:
       path: iii-directory
@@ -1340,7 +845,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: iii-directory
       targets: *id001
       frontends:
@@ -1348,7 +853,7 @@ workers:
         source_path: iii-directory/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -1363,26 +868,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - iii-directory
-    registry:
-      description: Engine introspection, workers registry proxy, filesystem-backed skills, system prompts, and agent profiles,
-        plus lexical function search with a conditional pre-generate hint.
-      license: Apache-2.0
-      tags:
-      - introspect
-      - registry
-      - skills
-      - directory
-      - search
-      - functions
-      - agents
-      dependencies:
-        configuration: 0.x
-      publish: true
     validation:
       interface: required
+    publish: true
   fixture-image-resize-demo:
     source:
       path: image-resize/example
@@ -1392,10 +880,10 @@ workers:
       workspace_root: image-resize/example
       runtime:
         name: node
-        version: '22.20.0'
+        version: 22.20.0
       package_manager:
         name: npm
-        version: '10.9.3'
+        version: 10.9.3
       lockfile: package-lock.json
       install_command:
       - npm
@@ -1413,30 +901,9 @@ workers:
       - src/index.ts
       - tsconfig.json
       - iii.worker.yaml
-    runtime:
-      base_image: docker.io/library/node:22.20.0-slim@sha256:b21fe589dfbe5cc39365d0544b9be3f1f33f55f3c86c87a76ff65a02f8f5848e
-      exec:
-      - npm
-      - run
-      - dev
-      prepare:
-      - - npm
-        - install
-      environment:
-        MY_CUSTOM_VAR: hello222
-      resources:
-        cpu: 1
-        memory_mib: 512
-    registry:
-      description: Internal fixture for fixture-image-resize-demo.
-      license: UNLICENSED
-      tags: []
-      dependencies: {}
-      publish: false
-      config:
-        defaults_file: config.yaml
     validation:
       interface: required
+    publish: false
   image-resize:
     source:
       path: image-resize
@@ -1445,28 +912,12 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: image-resize
       targets: *id001
-    runtime:
-      exec:
-      - image-resize
-    registry:
-      description: III engine image resize worker (JPEG/PNG/WebP, EXIF orient, scale-to-fit / crop-to-fit)
-      license: Apache-2.0
-      tags:
-      - image
-      - resize
-      - jpeg
-      - png
-      - webp
-      - media
-      dependencies: {}
-      publish: true
-      config:
-        defaults_file: config.yaml
     validation:
       interface: required
+    publish: true
   llm-router:
     source:
       path: llm-router
@@ -1475,7 +926,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: llm-router
       targets: *id001
       frontends:
@@ -1483,7 +934,7 @@ workers:
         source_path: llm-router/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -1498,23 +949,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - llm-router
-    registry:
-      description: One front door + provider protocol in front of every LLM provider.
-      license: Apache-2.0
-      tags:
-      - llm
-      - router
-      - models
-      - providers
-      dependencies:
-        state: ^0.22.2
-        configuration: 0.x
-      publish: true
     validation:
       interface: required
+    publish: true
   lsp:
     source:
       path: lsp
@@ -1523,20 +960,12 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: lsp
       targets: *id001
-    runtime:
-      exec:
-      - lsp
-    registry:
-      description: III Language Server — autocompletion and hover for III engine functions and triggers
-      license: Apache-2.0
-      tags: []
-      dependencies: {}
-      publish: true
     validation:
       interface: skipped
+    publish: true
   mcp:
     source:
       path: mcp
@@ -1545,28 +974,12 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: mcp
       targets: *id001
-    runtime:
-      exec:
-      - mcp
-    registry:
-      description: MCP 2025-06-18 Streamable HTTP bridge for the iii engine.
-      license: Apache-2.0
-      tags:
-      - mcp
-      - model-context-protocol
-      - bridge
-      - http
-      - agents
-      dependencies:
-        skills: 0.x
-      publish: true
-      config:
-        defaults_file: config.yaml
     validation:
       interface: required
+    publish: true
   memory:
     source:
       path: memory
@@ -1575,7 +988,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: memory
       targets: *id001
       frontends:
@@ -1583,7 +996,7 @@ workers:
         source_path: memory/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -1598,30 +1011,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - memory
-    registry:
-      description: Durable cross-session agent memory — named banks of always-injected markdown rules and auto-extracted memories,
-        hybrid BM25 + entity recall, pinning, and supersede-never-delete history. Plain files on disk; every operation is
-        a traced function.
-      license: Apache-2.0
-      tags:
-      - memory
-      - rag
-      - bm25
-      - recall
-      - agent
-      - context
-      dependencies:
-        configuration: 0.x
-        session-manager: ^1.0.13
-        llm-router: ^1.4.12
-        state: ^0.22.2
-        queue: ^0.21.5
-      publish: true
     validation:
       interface: required
+    publish: true
   memory-consolidate:
     source:
       path: memory-consolidate
@@ -1630,30 +1022,12 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: memory-consolidate
       targets: *id001
-    runtime:
-      exec:
-      - memory-consolidate
-    registry:
-      description: Scheduled hygiene for the memory worker — deterministic dedup of near-duplicate memories, applied supersede-only
-        through the public memory functions, pinned untouchable, with catch-up-on-boot scheduling. Install, stop, or remove
-        it without touching stored memory.
-      license: Apache-2.0
-      tags:
-      - memory
-      - deduplication
-      - cleanup
-      - schedule
-      - maintenance
-      dependencies:
-        memory: ^0.2.2
-        configuration: 0.x
-        state: ^0.22.2
-      publish: true
     validation:
       interface: required
+    publish: true
   opencode:
     source:
       path: opencode
@@ -1663,10 +1037,10 @@ workers:
       workspace_root: opencode
       runtime:
         name: node
-        version: '22.20.0'
+        version: 22.20.0
       package_manager:
         name: pnpm
-        version: '10.18.2'
+        version: 10.18.2
       lockfile: pnpm-lock.yaml
       install_command:
       - pnpm
@@ -1680,29 +1054,9 @@ workers:
       include:
       - dist/bundle/index.mjs
       - iii.worker.yaml
-    runtime:
-      base_image: docker.io/library/node:22.20.0-slim@sha256:b21fe589dfbe5cc39365d0544b9be3f1f33f55f3c86c87a76ff65a02f8f5848e
-      exec:
-      - node
-        - ./dist/bundle/index.mjs
-    registry:
-      description: OpenCode as an iii worker — opencode::* functions run headless OpenCode turns, mirror raw JSON events onto
-        opencode::events, and stream AgentEvent frames onto agent::events.
-      license: Apache-2.0
-      tags:
-      - coding-agent
-      - opencode
-      - cli
-      - headless
-      - agent
-      dependencies:
-        state: ^0.22.2
-        iii-stream: 0.x
-      publish: true
-      config:
-        defaults_file: config.yaml
     validation:
       interface: required
+    publish: true
   opengantry:
     source:
       path: opengantry
@@ -1712,10 +1066,10 @@ workers:
       workspace_root: opengantry
       runtime:
         name: node
-        version: '22.20.0'
+        version: 22.20.0
       package_manager:
         name: pnpm
-        version: '10.18.2'
+        version: 10.18.2
       lockfile: pnpm-lock.yaml
       install_command:
       - pnpm
@@ -1729,24 +1083,9 @@ workers:
       include:
       - dist/bundle/index.mjs
       - iii.worker.yaml
-    runtime:
-      base_image: docker.io/library/node:22.20.0-slim@sha256:b21fe589dfbe5cc39365d0544b9be3f1f33f55f3c86c87a76ff65a02f8f5848e
-      exec:
-      - node
-        - ./dist/bundle/index.mjs
-    registry:
-      description: OpenGantry governance for iii. Kernel verify and middleware gate before promote-class calls.
-      license: Apache-2.0
-      tags:
-      - governance
-      - verify
-      - policy
-      - gxt
-      - opengantry
-      dependencies: {}
-      publish: true
     validation:
       interface: required
+    publish: true
   openwiki:
     source:
       path: openwiki
@@ -1756,10 +1095,10 @@ workers:
       workspace_root: openwiki
       runtime:
         name: node
-        version: '22.20.0'
+        version: 22.20.0
       package_manager:
         name: pnpm
-        version: '10.18.2'
+        version: 10.18.2
       lockfile: pnpm-lock.yaml
       install_command:
       - pnpm
@@ -1773,29 +1112,9 @@ workers:
       include:
       - dist/bundle/index.mjs
       - iii.worker.yaml
-    runtime:
-      base_image: docker.io/library/node:22.20.0-slim@sha256:b21fe589dfbe5cc39365d0544b9be3f1f33f55f3c86c87a76ff65a02f8f5848e
-      exec:
-      - node
-        - ./dist/bundle/index.mjs
-    registry:
-      description: Source-grounded markdown wiki for any git repository — openwiki::* functions generate, search, and incrementally
-        refresh categorized pages with pinned-commit line citations, and the engine serves a browser UI + JSON API under /openwiki.
-      license: Apache-2.0
-      tags:
-      - wiki
-      - documentation
-      - docs
-      - markdown
-      - knowledge-base
-      - repo
-      dependencies:
-        state: ^0.22.2
-        cron: ^0.21.9
-        llm-router: ^1.4.12
-      publish: true
     validation:
       interface: required
+    publish: true
   pdf:
     source:
       path: pdf
@@ -1804,7 +1123,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: pdf
       targets: *id001
       frontends:
@@ -1812,7 +1131,7 @@ workers:
         source_path: pdf/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -1827,25 +1146,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - pdf
-    registry:
-      description: Read PDFs locally — classify text-based vs scanned, convert to markdown, extract positioned text and tables,
-        and report which pages still need OCR.
-      license: Apache-2.0
-      tags:
-      - pdf
-      - document
-      - markdown
-      - text-extraction
-      - ocr-routing
-      - tables
-      dependencies:
-        configuration: 0.x
-      publish: true
     validation:
       interface: required
+    publish: true
   pi:
     source:
       path: pi
@@ -1855,10 +1158,10 @@ workers:
       workspace_root: pi
       runtime:
         name: node
-        version: '22.20.0'
+        version: 22.20.0
       package_manager:
         name: pnpm
-        version: '10.18.2'
+        version: 10.18.2
       lockfile: pnpm-lock.yaml
       install_command:
       - pnpm
@@ -1872,29 +1175,9 @@ workers:
       include:
       - dist/bundle/index.mjs
       - iii.worker.yaml
-    runtime:
-      base_image: docker.io/library/node:22.20.0-slim@sha256:b21fe589dfbe5cc39365d0544b9be3f1f33f55f3c86c87a76ff65a02f8f5848e
-      exec:
-      - node
-        - ./dist/bundle/index.mjs
-    registry:
-      description: Pi coding agent as an iii worker — pi::* functions run headless Pi turns, mirror raw events onto pi::events,
-        and stream AgentEvent frames onto agent::events.
-      license: Apache-2.0
-      tags:
-      - coding-agent
-      - pi
-      - cli
-      - headless
-      - agent
-      dependencies:
-        state: ^0.22.2
-        iii-stream: 0.x
-      publish: true
-      config:
-        defaults_file: config.yaml
     validation:
       interface: required
+    publish: true
   provider-anthropic:
     source:
       path: provider-anthropic
@@ -1903,7 +1186,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: provider-anthropic
       targets: *id001
       frontends:
@@ -1911,7 +1194,7 @@ workers:
         source_path: llm-router/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -1926,25 +1209,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - provider-anthropic
-    registry:
-      description: Anthropic Messages API provider worker; implements provider::anthropic::stream and provider::anthropic::refresh_models
-        behind llm-router.
-      license: Apache-2.0
-      tags:
-      - llm
-      - anthropic
-      - claude
-      - messages
-      - provider
-      dependencies:
-        state: ^0.22.2
-        llm-router: ^1.4.12
-      publish: true
     validation:
       interface: required
+    publish: true
   provider-claude-code:
     source:
       path: provider-claude-code
@@ -1953,7 +1220,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: provider-claude-code
       targets: *id001
       frontends:
@@ -1961,7 +1228,7 @@ workers:
         source_path: llm-router/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -1976,27 +1243,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - provider-claude-code
-    registry:
-      description: Claude Code (Pro/Max subscription) Messages API provider worker; implements provider::claude-code::stream
-        and provider::claude-code::refresh_models behind llm-router, using OAuth credentials from the auth-credentials vault
-        or ~/.claude/.credentials.json.
-      license: Apache-2.0
-      tags:
-      - llm
-      - anthropic
-      - claude
-      - claude-code
-      - subscription
-      - provider
-      dependencies:
-        state: ^0.22.2
-        llm-router: ^1.4.12
-      publish: true
     validation:
       interface: required
+    publish: true
   provider-command-code:
     source:
       path: provider-command-code
@@ -2005,7 +1254,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: provider-command-code
       targets: *id001
       frontends:
@@ -2013,7 +1262,7 @@ workers:
         source_path: llm-router/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -2028,25 +1277,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - provider-command-code
-    registry:
-      description: Command Code provider worker; routes Claude models to the Anthropic Messages API and other models to OpenAI
-        Chat Completions behind llm-router.
-      license: Apache-2.0
-      tags:
-      - llm
-      - command-code
-      - provider
-      - openai
-      - anthropic
-      dependencies:
-        state: ^0.22.2
-        llm-router: ^1.4.12
-      publish: true
     validation:
       interface: required
+    publish: true
   provider-deepseek:
     source:
       path: provider-deepseek
@@ -2055,7 +1288,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: provider-deepseek
       targets: *id001
       frontends:
@@ -2063,7 +1296,7 @@ workers:
         source_path: llm-router/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -2078,24 +1311,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - provider-deepseek
-    registry:
-      description: DeepSeek Chat Completions provider worker; implements provider::deepseek::stream and provider::deepseek::refresh_models
-        behind llm-router.
-      license: Apache-2.0
-      tags:
-      - llm
-      - deepseek
-      - chat-completions
-      - provider
-      dependencies:
-        state: ^0.22.2
-        llm-router: ^1.4.12
-      publish: true
     validation:
       interface: required
+    publish: true
   provider-github-copilot:
     source:
       path: provider-github-copilot
@@ -2104,7 +1322,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: provider-github-copilot
       targets: *id001
       frontends:
@@ -2112,7 +1330,7 @@ workers:
         source_path: llm-router/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -2127,27 +1345,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - provider-github-copilot
-    registry:
-      description: GitHub Copilot subscription provider worker; sign in with GitHub once and the models the plan grants appear
-        in the picker. Implements provider::github-copilot::stream, refresh_models, and a device-flow login surface behind
-        llm-router.
-      license: Apache-2.0
-      tags:
-      - llm
-      - github
-      - copilot
-      - subscription
-      - chat-completions
-      - provider
-      dependencies:
-        state: ^0.22.2
-        llm-router: ^1.4.12
-      publish: true
     validation:
       interface: required
+    publish: true
   provider-kimi:
     source:
       path: provider-kimi
@@ -2156,7 +1356,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: provider-kimi
       targets: *id001
       frontends:
@@ -2164,7 +1364,7 @@ workers:
         source_path: llm-router/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -2179,25 +1379,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - provider-kimi
-    registry:
-      description: Moonshot (Kimi) Chat Completions provider worker; implements provider::kimi::stream and provider::kimi::refresh_models
-        behind llm-router.
-      license: Apache-2.0
-      tags:
-      - llm
-      - kimi
-      - moonshot
-      - chat-completions
-      - provider
-      dependencies:
-        state: ^0.22.2
-        llm-router: ^1.4.12
-      publish: true
     validation:
       interface: required
+    publish: true
   provider-llamacpp:
     source:
       path: provider-llamacpp
@@ -2206,7 +1390,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: provider-llamacpp
       targets: *id001
       frontends:
@@ -2214,7 +1398,7 @@ workers:
         source_path: llm-router/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -2229,25 +1413,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - provider-llamacpp
-    registry:
-      description: llama.cpp server (llama-server) Chat Completions provider worker; implements provider::llamacpp::stream
-        and provider::llamacpp::refresh_models behind llm-router.
-      license: Apache-2.0
-      tags:
-      - llm
-      - llama.cpp
-      - local
-      - open-source
-      - provider
-      dependencies:
-        state: ^0.22.2
-        llm-router: ^1.4.12
-      publish: true
     validation:
       interface: required
+    publish: true
   provider-openai:
     source:
       path: provider-openai
@@ -2256,7 +1424,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: provider-openai
       targets: *id001
       frontends:
@@ -2264,7 +1432,7 @@ workers:
         source_path: llm-router/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -2279,25 +1447,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - provider-openai
-    registry:
-      description: OpenAI Responses provider worker with Chat Completions compatibility; implements provider::openai::stream
-        and provider::openai::refresh_models behind llm-router.
-      license: Apache-2.0
-      tags:
-      - llm
-      - openai
-      - responses
-      - chat-completions
-      - provider
-      dependencies:
-        state: ^0.22.2
-        llm-router: ^1.4.12
-      publish: true
     validation:
       interface: required
+    publish: true
   provider-openai-codex:
     source:
       path: provider-openai-codex
@@ -2306,7 +1458,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: provider-openai-codex
       targets: *id001
       frontends:
@@ -2314,7 +1466,7 @@ workers:
         source_path: llm-router/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -2333,7 +1485,7 @@ workers:
         source_path: provider-openai-codex/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -2348,26 +1500,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - provider-openai-codex
-    registry:
-      description: OpenAI Codex (ChatGPT subscription) provider; implements provider::openai-codex::stream and provider::openai-codex::refresh_models
-        behind llm-router, sourcing credentials from the auth-credentials vault.
-      license: Apache-2.0
-      tags:
-      - llm
-      - openai
-      - codex
-      - chatgpt
-      - subscription
-      - provider
-      dependencies:
-        state: ^0.22.2
-        llm-router: ^1.4.12
-      publish: true
     validation:
       interface: required
+    publish: true
   provider-opencode-go:
     source:
       path: provider-opencode-go
@@ -2376,7 +1511,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: provider-opencode-go
       targets: *id001
       frontends:
@@ -2384,7 +1519,7 @@ workers:
         source_path: llm-router/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -2399,26 +1534,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - provider-opencode-go
-    registry:
-      description: OpenCode Go Chat Completions provider worker; implements provider::opencode_go::stream and provider::opencode_go::refresh_models
-        behind llm-router.
-      license: Apache-2.0
-      tags:
-      - llm
-      - opencode
-      - go
-      - chat-completions
-      - subscription
-      - provider
-      dependencies:
-        state: 0.x
-        llm-router: ^1.4.12
-      publish: true
     validation:
       interface: required
+    publish: true
   provider-openrouter:
     source:
       path: provider-openrouter
@@ -2427,7 +1545,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: provider-openrouter
       targets: *id001
       frontends:
@@ -2435,7 +1553,7 @@ workers:
         source_path: llm-router/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -2450,25 +1568,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - provider-openrouter
-    registry:
-      description: OpenRouter Chat Completions provider worker; one API key in front of every major vendor. Implements provider::openrouter::stream
-        and provider::openrouter::refresh_models behind llm-router.
-      license: Apache-2.0
-      tags:
-      - llm
-      - openrouter
-      - aggregator
-      - chat-completions
-      - provider
-      dependencies:
-        state: 0.x
-        llm-router: ^1.4.12
-      publish: true
     validation:
       interface: required
+    publish: true
   provider-xai:
     source:
       path: provider-xai
@@ -2477,7 +1579,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: provider-xai
       targets: *id001
       frontends:
@@ -2485,7 +1587,7 @@ workers:
         source_path: llm-router/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -2500,25 +1602,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - provider-xai
-    registry:
-      description: xAI Chat Completions provider worker; implements provider::xai::stream and provider::xai::refresh_models
-        behind llm-router.
-      license: Apache-2.0
-      tags:
-      - llm
-      - xai
-      - grok
-      - chat-completions
-      - provider
-      dependencies:
-        state: ^0.22.2
-        llm-router: ^1.4.12
-      publish: true
     validation:
       interface: required
+    publish: true
   provider-zai:
     source:
       path: provider-zai
@@ -2527,7 +1613,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: provider-zai
       targets: *id001
       frontends:
@@ -2535,7 +1621,7 @@ workers:
         source_path: llm-router/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -2550,25 +1636,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - provider-zai
-    registry:
-      description: Z.AI Chat Completions provider worker; implements provider::zai::stream and provider::zai::refresh_models
-        behind llm-router.
-      license: Apache-2.0
-      tags:
-      - llm
-      - zai
-      - glm
-      - chat-completions
-      - provider
-      dependencies:
-        state: ^0.22.2
-        llm-router: ^1.4.12
-      publish: true
     validation:
       interface: required
+    publish: true
   pubsub:
     source:
       path: pubsub
@@ -2577,27 +1647,12 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: pubsub
       targets: *id001
-    runtime:
-      exec:
-      - pubsub
-    registry:
-      description: Topic-based publish/subscribe messaging — registers the `subscribe` trigger type and the `publish` function.
-      license: Apache-2.0
-      tags:
-      - pubsub
-      - messaging
-      - events
-      - topics
-      dependencies:
-        configuration: 0.x
-      publish: true
-      config:
-        defaults_file: config.yaml
     validation:
       interface: required
+    publish: true
   queue:
     source:
       path: queue
@@ -2606,29 +1661,12 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: queue
       targets: *id001
-    runtime:
-      exec:
-      - queue
-    registry:
-      description: Durable function queues - registers the `durable:subscriber` trigger type and the queue/DLQ service functions.
-      license: Apache-2.0
-      tags:
-      - queue
-      - async
-      - jobs
-      - retry
-      - rabbitmq
-      - redis
-      dependencies:
-        configuration: 0.x
-      publish: true
-      config:
-        defaults_file: config.yaml
     validation:
       interface: required
+    publish: true
   rbac-proxy:
     source:
       path: rbac-proxy
@@ -2637,27 +1675,12 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: rbac-proxy
       targets: *id001
-    runtime:
-      exec:
-      - rbac-proxy
-    registry:
-      description: 'RBAC boundary proxy for the iii worker protocol — auth, gating, namespacing, middleware, and engine::
-        result filtering on its own port.'
-      license: Apache-2.0
-      tags:
-      - rbac
-      - authorization
-      - security
-      - proxy
-      - middleware
-      dependencies:
-        configuration: 0.x
-      publish: true
     validation:
       interface: required
+    publish: true
   fixture-rbac-proxy-harness:
     source:
       path: rbac-proxy/tests/e2e/workers/harness
@@ -2667,10 +1690,10 @@ workers:
       workspace_root: rbac-proxy/tests/e2e/workers/harness
       runtime:
         name: node
-        version: '22.20.0'
+        version: 22.20.0
       package_manager:
         name: npm
-        version: '10.9.3'
+        version: 10.9.3
       lockfile: package-lock.json
       install_command:
       - npm
@@ -2690,23 +1713,9 @@ workers:
       - src/worker.ts
       - tsconfig.json
       - iii.worker.yaml
-    runtime:
-      base_image: docker.io/library/node:22.20.0-slim@sha256:b21fe589dfbe5cc39365d0544b9be3f1f33f55f3c86c87a76ff65a02f8f5848e
-      exec:
-      - npm
-      - run
-      - dev
-      prepare:
-      - - npm
-        - install
-    registry:
-      description: Internal fixture for fixture-rbac-proxy-harness.
-      license: UNLICENSED
-      tags: []
-      dependencies: {}
-      publish: false
     validation:
       interface: required
+    publish: false
   sandbox-code-runner:
     source:
       path: sandbox-code-runner
@@ -2715,7 +1724,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: sandbox-code-runner
       targets: *id001
       frontends:
@@ -2723,7 +1732,7 @@ workers:
         source_path: sandbox-code-runner/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -2738,27 +1747,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - sandbox-code-runner
-    registry:
-      description: Run Node.js and Python in iii-sandbox microVMs — run code, register bus functions from working source,
-        and tear down runtimes on demand. Guest code gets the real iii-sdk client as a global `iii`, lazily connected to the
-        engine.
-      license: Apache-2.0
-      tags:
-      - nodejs
-      - python
-      - run
-      - sandbox
-      - microvm
-      dependencies:
-        configuration: 0.x
-      publish: true
-      config:
-        defaults_file: config.yaml
     validation:
       interface: required
+    publish: true
   scrapling:
     source:
       path: scrapling
@@ -2768,10 +1759,10 @@ workers:
       workspace_root: scrapling
       runtime:
         name: python
-        version: '3.12.3'
+        version: 3.12.3
       package_manager:
         name: uv
-        version: '0.12.5'
+        version: 0.12.5
       lockfile: uv.lock
       install_command:
       - uv
@@ -2798,43 +1789,9 @@ workers:
       - src/storage.py
       - uv.lock
       - iii.worker.yaml
-    runtime:
-      base_image: mcr.microsoft.com/playwright/python:v1.60.0-noble@sha256:8ff591d613b01c884cc488339ed4318b4513eaf0c57a164a878ba49e70e3f384
-      exec:
-      - python
-      - -m
-      - src.main
-      prepare:
-      - - python
-        - -m
-        - tarfile
-        - -e
-        - dist/site-packages.tar.gz
-        - .release/site-packages
-      environment:
-        PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
-        PYTHONPATH: ./.release/site-packages
-      resources:
-        cpu: 2
-        memory_mib: 4096
-    registry:
-      description: Scrapling as an iii worker — scrapling::* functions run HTTP / anti-bot / browser fetches, CSS/XPath/regex/adaptive
-        extraction, persistent sessions, and a declarative crawl over the iii bus.
-      license: Apache-2.0
-      tags:
-      - scraping
-      - browser
-      - crawler
-      - anti-bot
-      - extraction
-      - http
-      dependencies:
-        configuration: 0.x
-      publish: true
-      config:
-        defaults_file: config.yaml
     validation:
       interface: required
+    publish: true
   security-scan:
     source:
       path: security-scan
@@ -2843,7 +1800,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: security-scan
       targets: *id001
       frontends:
@@ -2851,7 +1808,7 @@ workers:
         source_path: security-scan/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -2866,35 +1823,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - security-scan
-    registry:
-      description: Report-only security reviews of operator-configured repositories at immutable Git commits, dispatched through
-        a read-only Harness policy.
-      license: Apache-2.0
-      tags:
-      - security
-      - scanning
-      - code-review
-      - supply-chain
-      - git
-      dependencies:
-        github: ^0.3.0
-        harness: ^1.8.5
-        cron: ^0.21.9
-        state: ^0.22.2
-        queue: ^0.21.5
-        worktree: ^0.3.0
-        storage: ^0.1.0
-        configuration: 0.x
-        iii-observability: 0.x
-        iii-stream: 0.x
-      publish: true
-      config:
-        defaults_file: config.yaml
     validation:
       interface: required
+    publish: true
   session-manager:
     source:
       path: session-manager
@@ -2903,25 +1834,12 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: session-manager
       targets: *id001
-    runtime:
-      exec:
-      - session-manager
-    registry:
-      description: Durable, reactive, branching store of typed conversation entries with six emitted trigger types.
-      license: Apache-2.0
-      tags:
-      - session
-      - conversation
-      - chat
-      - history
-      dependencies:
-        configuration: 0.x
-      publish: true
     validation:
       interface: required
+    publish: true
   shell:
     source:
       path: shell
@@ -2930,7 +1848,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: shell
       targets:
       - x86_64-apple-darwin
@@ -2944,7 +1862,7 @@ workers:
         source_path: shell/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -2959,25 +1877,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - shell
-    registry:
-      description: Unix shell + filesystem worker — exec with denylist/timeout/output caps and background jobs; fs::ls|stat|mkdir|rm|chmod|mv|grep|sed|read|write
-        with host jail, denylist, size caps, and sandbox-target forwarding
-      license: Apache-2.0
-      tags:
-      - shell
-      - exec
-      - filesystem
-      - bash
-      - terminal
-      dependencies: {}
-      publish: true
-      config:
-        defaults_file: config.yaml
     validation:
       interface: required
+    publish: true
   fixture-shell-harness:
     source:
       path: shell/tests/e2e/workers/harness
@@ -2987,10 +1889,10 @@ workers:
       workspace_root: shell/tests/e2e/workers/harness
       runtime:
         name: node
-        version: '22.20.0'
+        version: 22.20.0
       package_manager:
         name: npm
-        version: '10.9.3'
+        version: 10.9.3
       lockfile: package-lock.json
       install_command:
       - npm
@@ -3028,23 +1930,9 @@ workers:
       - src/worker.ts
       - tsconfig.json
       - iii.worker.yaml
-    runtime:
-      base_image: docker.io/library/node:22.20.0-slim@sha256:b21fe589dfbe5cc39365d0544b9be3f1f33f55f3c86c87a76ff65a02f8f5848e
-      exec:
-      - npm
-      - run
-      - dev
-      prepare:
-      - - npm
-        - install
-    registry:
-      description: Internal fixture for fixture-shell-harness.
-      license: UNLICENSED
-      tags: []
-      dependencies: {}
-      publish: false
     validation:
       interface: required
+    publish: false
   slack:
     source:
       path: slack
@@ -3053,30 +1941,12 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: slack
       targets: *id001
-    runtime:
-      exec:
-      - slack
-    registry:
-      description: Slack as an iii worker — exposes the Slack Web API as slack::* functions, plus a harness bridge (inbound
-        events → harness::send, native streaming, approvals). Configurable from the console.
-      license: Apache-2.0
-      tags:
-      - slack
-      - messaging
-      - chat
-      - bot
-      - approvals
-      dependencies:
-        configuration: 0.x
-        state: ^0.22.2
-        harness: ^1.8.5
-        session-manager: ^1.0.13
-      publish: true
     validation:
       interface: required
+    publish: true
   state:
     source:
       path: state
@@ -3085,7 +1955,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: state
       targets: *id001
       frontends:
@@ -3093,7 +1963,7 @@ workers:
         source_path: state/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -3108,26 +1978,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - state
-    registry:
-      description: Distributed key-value state management with reactive change triggers — registers the `state` trigger type
-        and the `state::*` functions.
-      license: Apache-2.0
-      tags:
-      - key-value
-      - kv
-      - state
-      - distributed
-      - cache
-      dependencies:
-        configuration: 0.x
-      publish: true
-      config:
-        defaults_file: config.yaml
     validation:
       interface: required
+    publish: true
   storage:
     source:
       path: storage
@@ -3136,7 +1989,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: storage
       targets: *id001
       frontends:
@@ -3144,7 +1997,7 @@ workers:
         source_path: storage/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -3159,25 +2012,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - storage
-    registry:
-      description: Object storage across AWS S3, GCS, Cloudflare R2, and a native local filesystem backend. Streamed uploads,
-        signed URLs, and object change triggers.
-      license: Apache-2.0
-      tags:
-      - s3
-      - object-storage
-      - gcs
-      - r2
-      - blob
-      dependencies: {}
-      publish: true
-      config:
-        defaults_file: config.yaml
     validation:
       interface: required
+    publish: true
   fixture-storage-harness:
     source:
       path: storage/tests/e2e/workers/harness
@@ -3187,10 +2024,10 @@ workers:
       workspace_root: storage/tests/e2e/workers/harness
       runtime:
         name: node
-        version: '22.20.0'
+        version: 22.20.0
       package_manager:
         name: npm
-        version: '10.9.3'
+        version: 10.9.3
       lockfile: package-lock.json
       install_command:
       - npm
@@ -3213,21 +2050,9 @@ workers:
       - src/worker.ts
       - tsconfig.json
       - iii.worker.yaml
-    runtime:
-      base_image: docker.io/library/node:22.20.0-slim@sha256:b21fe589dfbe5cc39365d0544b9be3f1f33f55f3c86c87a76ff65a02f8f5848e
-      exec:
-      - npm
-      - run
-      - dev
-    registry:
-      description: Self-asserting smoke harness for storage. Drives putObject / getObject / deleteObject / presignUrl and
-        asserts object-created / object-deleted trigger dispatches over native local storage.
-      license: UNLICENSED
-      tags: []
-      dependencies: {}
-      publish: false
     validation:
       interface: required
+    publish: false
   tailscale:
     source:
       path: tailscale
@@ -3236,7 +2061,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: tailscale
       targets: *id001
       frontends:
@@ -3244,7 +2069,7 @@ workers:
         source_path: tailscale/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -3259,31 +2084,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - tailscale
-    registry:
-      description: Tailscale as an iii worker — tailscale::* functions for connectivity and peers, exit nodes and preferences,
-        Serve and Funnel publishing, Taildrop, certificates, Taildrive, accounts, tailnet lock, and updates, plus a Console
-        page with QR links.
-      license: Apache-2.0
-      tags:
-      - tailscale
-      - tailnet
-      - vpn
-      - remote-access
-      - serve
-      - funnel
-      - taildrop
-      - exit-node
-      - dns
-      - console
-      dependencies:
-        configuration: 0.x
-        console: ^1.9.11
-      publish: true
     validation:
       interface: required
+    publish: true
   telegram-bot:
     source:
       path: telegram-bot
@@ -3292,31 +2095,12 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: telegram-bot
       targets: *id001
-    runtime:
-      exec:
-      - telegram-bot
-    registry:
-      description: Telegram bridge to the harness stack — polling or webhook ingress, live message edits, approvals, and configurable
-        verbosity.
-      license: Apache-2.0
-      tags:
-      - telegram
-      - bot
-      - messaging
-      - chat
-      - webhook
-      dependencies:
-        state: ^0.22.2
-        queue: ^0.21.5
-        configuration: 0.x
-        session-manager: ^1.0.13
-        harness: ^1.8.5
-      publish: true
     validation:
       interface: required
+    publish: true
   vscode:
     source:
       path: vscode
@@ -3326,10 +2110,10 @@ workers:
       workspace_root: vscode
       runtime:
         name: node
-        version: '22.20.0'
+        version: 22.20.0
       package_manager:
         name: pnpm
-        version: '10.18.2'
+        version: 10.18.2
       lockfile: pnpm-lock.yaml
       install_command:
       - pnpm
@@ -3343,28 +2127,9 @@ workers:
       include:
       - dist/bundle/index.mjs
       - iii.worker.yaml
-    runtime:
-      base_image: docker.io/library/node:22.20.0-slim@sha256:b21fe589dfbe5cc39365d0544b9be3f1f33f55f3c86c87a76ff65a02f8f5848e
-      exec:
-      - node
-        - ./dist/bundle/index.mjs
-    registry:
-      description: VS Code as an iii worker — vscode::* functions run the VS Code Server through the code CLI per workspace,
-        and a Console page embeds the Workbench for the working directory.
-      license: Apache-2.0
-      tags:
-      - vscode
-      - ide
-      - editor
-      - workbench
-      - development
-      dependencies:
-        configuration: 0.x
-      publish: true
-      config:
-        defaults_file: config.yaml
     validation:
       interface: required
+    publish: true
   web:
     source:
       path: web
@@ -3373,7 +2138,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: web
       targets: *id001
       frontends:
@@ -3381,7 +2146,7 @@ workers:
         source_path: web/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -3396,23 +2161,9 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - web
-    registry:
-      description: Outbound HTTP client on the iii bus (web::fetch).
-      license: Apache-2.0
-      tags:
-      - http
-      - client
-      - fetch
-      - rest
-      - api
-      dependencies:
-        configuration: 0.x
-      publish: true
     validation:
       interface: required
+    publish: true
   workflow:
     source:
       path: workflow
@@ -3421,26 +2172,12 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: workflow
       targets: *id001
-    runtime:
-      exec:
-      - workflow
-    registry:
-      description: Deterministic, crash-resumable multi-agent workflow orchestrator over harness turns.
-      license: Apache-2.0
-      tags:
-      - workflow
-      - orchestration
-      - multi-agent
-      - durable
-      - automation
-      dependencies:
-        configuration: 0.x
-      publish: true
     validation:
       interface: required
+    publish: true
   worktree:
     source:
       path: worktree
@@ -3449,7 +2186,7 @@ workers:
       kind: rust-binary
       toolchain:
         name: rust
-        version: '1.97.1'
+        version: 1.97.1
       binary: worktree
       targets: *id001
       frontends:
@@ -3457,7 +2194,7 @@ workers:
         source_path: worktree/ui
         runtime:
           name: node
-          version: '22.20.0'
+          version: 22.20.0
         package_manager:
           name: pnpm
           version: 11.13.1
@@ -3472,80 +2209,6 @@ workers:
         - build
         outputs:
         - dist
-    runtime:
-      exec:
-      - worktree
-    registry:
-      description: Git worktree lifecycle for parallel agents — mint, claim, and track isolated worktrees per repo, emit lifecycle
-        trigger types, and land branches back through a per-repo FIFO queue (rebase, test gate, ff-only merge).
-      license: Apache-2.0
-      tags:
-      - git
-      - worktree
-      - parallel
-      - agents
-      - branches
-      - ci
-      dependencies:
-        configuration: 0.x
-        state: ^0.22.2
-        shell: ^0.11.9
-      publish: true
     validation:
       interface: required
-stacks:
-  harness:
-    namespace: my-project
-    containers:
-      queue:
-        worker: catalog://queue
-      state:
-        worker: catalog://state
-      session-manager:
-        worker: catalog://session-manager
-      llm-router:
-        worker: catalog://llm-router
-        start_after:
-        - state
-      provider-openai-codex:
-        worker: catalog://provider-openai-codex
-        start_after:
-        - llm-router
-        - state
-      provider-openai:
-        worker: catalog://provider-openai
-        start_after:
-        - llm-router
-        - state
-      provider-anthropic:
-        worker: catalog://provider-anthropic
-        start_after:
-        - llm-router
-        - state
-      context-manager:
-        worker: catalog://context-manager
-        start_after:
-        - llm-router
-      iii-directory:
-        worker: catalog://iii-directory
-      cron:
-        worker: catalog://cron
-      console:
-        worker: catalog://console
-      shell:
-        worker: catalog://shell
-      harness:
-        worker: catalog://harness
-        start_after:
-        - state
-        - queue
-        - session-manager
-        - llm-router
-        - provider-openai-codex
-        - provider-openai
-        - provider-anthropic
-        - context-manager
-        - iii-directory
-        - cron
-        - console
-        - shell
+    publish: true

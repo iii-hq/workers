@@ -8,7 +8,9 @@ import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-CATALOG = yaml.safe_load((REPO_ROOT / "worker-compose.yaml").read_text(encoding="utf-8"))["workers"]
+RELEASE_CATALOG = yaml.safe_load(
+    (REPO_ROOT / ".release" / "workers.yaml").read_text(encoding="utf-8")
+)["workers"]
 EXPERIMENTAL_WORKERS = {
     "a2ui",
     "canvas",
@@ -43,11 +45,18 @@ WORKER_DEPENDENCY_RANGE_OVERRIDES: dict[str, dict[str, str]] = {}
 
 
 def dependencies(worker: str) -> dict[str, str]:
-    return CATALOG[worker]["registry"].get("dependencies", {})
+    worker_path = RELEASE_CATALOG[worker]["source"]["path"]
+    manifest = yaml.safe_load(
+        (REPO_ROOT / worker_path / "iii.worker.yaml").read_text(encoding="utf-8")
+    )
+    return manifest.get("dependencies", {})
 
 
 def test_worker_dependency_graph_is_acyclic() -> None:
-    workers = {name for name, entry in CATALOG.items() if "/" not in entry["source"]["path"]}
+    workers = {
+        name for name, entry in RELEASE_CATALOG.items()
+        if "/" not in entry["source"]["path"]
+    }
     graph = {
         worker: set(dependencies(worker)).intersection(workers)
         for worker in workers
@@ -78,7 +87,10 @@ def test_non_experimental_workers_use_validated_dependency_ranges() -> None:
         dependency: [] for dependency in DEPENDENCY_RANGES
     }
 
-    for worker in sorted(name for name, entry in CATALOG.items() if "/" not in entry["source"]["path"]):
+    for worker in sorted(
+        name for name, entry in RELEASE_CATALOG.items()
+        if "/" not in entry["source"]["path"]
+    ):
         if worker in EXPERIMENTAL_WORKERS:
             continue
         worker_dependencies = dependencies(worker)
@@ -89,7 +101,7 @@ def test_non_experimental_workers_use_validated_dependency_ranges() -> None:
                 consumers[dependency].append(worker)
                 dependency_range = worker_dependencies[dependency]
                 assert dependency_range == expected_range, (
-                    f"worker-compose.yaml workers.{worker} pins shared dependency "
+                    f"{worker}/iii.worker.yaml pins shared dependency "
                     f"{dependency} to {dependency_range!r}; use {expected_range!r} so "
                     "non-experimental consumers resolve the validated worker release"
                 )
@@ -119,7 +131,10 @@ def test_approval_gate_uses_shared_runtime_dependency_ranges() -> None:
 
 def test_harness_llm_stack_uses_shared_state_range() -> None:
     expected = dependencies("harness")["state"]
-    providers = sorted(name for name in CATALOG if name.startswith("provider-") and name not in EXPERIMENTAL_WORKERS)
+    providers = sorted(
+        name for name in RELEASE_CATALOG
+        if name.startswith("provider-") and name not in EXPERIMENTAL_WORKERS
+    )
 
     for worker in ("llm-router", *providers):
         assert dependencies(worker)["state"] == expected

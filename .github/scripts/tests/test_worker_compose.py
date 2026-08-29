@@ -1,4 +1,3 @@
-import re
 from pathlib import Path
 
 import yaml
@@ -9,21 +8,21 @@ import validate_worker
 
 
 ROOT = Path(__file__).resolve().parents[3]
-CATALOG = ROOT / "worker-compose.yaml"
+CATALOG = ROOT / ".release" / "workers.yaml"
 
 
-def test_root_catalog_has_exact_first_party_and_fixture_counts():
+def test_private_catalog_has_exact_first_party_and_fixture_counts():
     workers = _lib.read_worker_catalog(CATALOG)
     assert len(workers) == 75
     assert sum(worker.publish for worker in workers.values()) == 69
     assert sum(not worker.publish for worker in workers.values()) == 6
 
 
-def test_catalog_has_only_new_worker_contract_and_explicit_bundle_files():
+def test_catalog_has_only_release_build_contract_and_explicit_bundle_files():
     workers = _lib.read_worker_catalog(CATALOG)
     legacy = {"language", "deploy", "manifest", "bin", "scripts", "interface_smoke", "name"}
     for worker_id, worker in workers.items():
-        assert set(worker.raw) == {"source", "artifact", "runtime", "registry", "validation"}
+        assert set(worker.raw) == {"source", "artifact", "validation", "publish"}
         assert not legacy.intersection(worker.raw), worker_id
         for include in worker.artifact.get("include", []):
             assert (worker.path / include).is_file() or include.startswith("dist/"), (
@@ -41,14 +40,11 @@ def test_public_worker_manifests_remain_valid_and_match_release_catalog():
     assert errors == []
 
 
-def test_harness_stack_uses_catalog_references_only():
-    document = yaml.safe_load(CATALOG.read_text(encoding="utf-8"))
-    stack = document["stacks"]["harness"]
-    assert set(stack) == {"namespace", "containers"}
-    assert len(stack["containers"]) == 13
-    for container in stack["containers"].values():
-        assert set(container) <= {"worker", "start_after", "config"}
-        assert container["worker"].startswith("catalog://")
+def test_public_harness_compose_uses_the_current_cli_contract():
+    compose = yaml.safe_load((ROOT / "harness" / "worker-compose.yaml").read_text(encoding="utf-8"))
+    assert "workers" not in compose
+    assert "stacks" not in compose
+    assert set(compose) >= {"namespace", "containers"}
 
 
 def test_artifact_kind_drives_ci_language_buckets():
@@ -98,10 +94,6 @@ def test_release_toolchains_and_bundle_locks_are_explicit():
         }, slug
         lockfile = ROOT / artifact["workspace_root"] / artifact["lockfile"]
         assert lockfile.is_file(), f"{slug}: missing explicit lockfile {lockfile}"
-        base_image = worker["runtime"].get("base_image", "")
-        assert re.fullmatch(r"[^@\s]+@sha256:[0-9a-f]{64}", base_image), (
-            f"{slug}: bundle runtime base image must be immutable"
-        )
         if artifact["kind"] == "javascript-bundle":
             assert artifact["runtime"] == {"name": "node", "version": "22.20.0"}
             assert artifact["package_manager"]["name"] in {"pnpm", "npm"}
@@ -111,22 +103,8 @@ def test_release_toolchains_and_bundle_locks_are_explicit():
     assert bundles == 15
 
 
-def test_publishable_runtime_prepare_is_offline_and_scrapling_vendors_dependencies():
+def test_scrapling_release_bundle_vendors_dependencies():
     document = yaml.safe_load(CATALOG.read_text(encoding="utf-8"))
-    network_installers = {"curl", "wget", "pip", "pip3", "npm", "pnpm", "uv", "scrapling"}
-    for slug, worker in document["workers"].items():
-        if not worker["registry"]["publish"]:
-            continue
-        for command in worker["runtime"].get("prepare", []):
-            assert command[0] not in network_installers, (
-                f"{slug}: runtime.prepare must consume only prepared local bytes"
-            )
-
     scrapling = document["workers"]["scrapling"]
     assert "dist/site-packages.tar.gz" in scrapling["artifact"]["include"]
     assert scrapling["artifact"]["install_command"][-1] == "--no-install-project"
-    assert scrapling["runtime"]["prepare"] == [[
-        "python", "-m", "tarfile", "-e",
-        "dist/site-packages.tar.gz", ".release/site-packages",
-    ]]
-    assert scrapling["runtime"]["environment"]["PYTHONPATH"] == "./.release/site-packages"

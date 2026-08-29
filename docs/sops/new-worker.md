@@ -11,24 +11,25 @@ details are in [`binary-worker.md`](binary-worker.md).
   or `pyproject.toml`.
 - Add a consumer-facing `README.md` and a non-empty `tests/` directory.
 - Add `iii.worker.yaml` for local development, scaffolding and `iii worker`.
-- Add an entry to the repository-root
-  [`worker-compose.yaml`](../../worker-compose.yaml) for the release train.
+- Add an entry to the private
+  [`.release/workers.yaml`](../../.release/workers.yaml) build catalog.
 
-The catalog entry contains exactly `source`, `artifact`, `runtime`, `registry`,
-and `validation`. See [`worker-compose.md`](../architecture/worker-compose.md)
-for the canonical shapes.
-Release Control reads only the root catalog and compiled descriptor. Keep the
-public manifest aligned through CI; do not add a release-time fallback to it.
+The private entry contains exactly `source`, `artifact`, `validation`, and
+`publish`. Public runtime and Registry metadata stay in `iii.worker.yaml`.
+See [`worker-compose.md`](../architecture/worker-compose.md) for the boundary.
+Release Control reads only the compiled descriptor index and never either
+source document.
 
 ## Registry metadata
 
-For a first-party package, set `registry.publish: true`, a non-empty license
-and description, dependency ranges, and useful discovery tags. Fixtures use
-`registry.publish: false` and are never release candidates.
+For a first-party package, set private `publish: true` and put its non-empty
+license, description, dependency ranges, configuration, and discovery tags in
+the public manifest. Fixtures use private `publish: false` and are never
+release candidates.
 
-Use `registry.config.defaults_file` only for non-secret defaults. Never put API
-keys, tokens, `III_*` connection settings, or mutable external references in
-release defaults; the compiled package descriptor is public immutable data.
+Never put API keys, tokens, `III_*` connection settings, or mutable external
+references in public defaults; the compiler rejects them before producing the
+immutable Registry projection.
 
 Set `validation.interface: required` when the worker exposes a collectable
 interface. Use `skipped` only for a worker that cannot expose one, such as a
@@ -40,7 +41,11 @@ stdio-only process. Skipping validation does not silently disable publication.
 python3 .github/scripts/validate_worker.py \
   --worker <slug> --base-ref origin/main --source-changed '["<slug>"]'
 
-iii compose validate --file worker-compose.yaml
+python3 .github/scripts/release_compiler.py compile-index \
+  --source-sha "$(git rev-parse HEAD)" \
+  --compiler-repository iii-hq/workers \
+  --compiler-commit "$(git rev-parse HEAD)" \
+  --output-dir /tmp/release-descriptor-index
 ```
 
 Run the language suite that CI will select:

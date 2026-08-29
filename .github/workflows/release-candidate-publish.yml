@@ -154,28 +154,75 @@ jobs:
           gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/$TAG" > release-final.json
           verify_release_assets release-final.json false
 
+      - name: Classify prepared artifact
+        id: artifact
+        run: |
+          if [[ "$(jq -r .artifact.kind release-prepared/release-descriptor.json)" == oci-image ]]; then
+            echo 'is_oci=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'is_oci=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up deterministic OCI index tooling
+        if: steps.artifact.outputs.is_oci == 'true'
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        with:
+          version: v0.36.1
+
+      - name: Authenticate OCI publication
+        if: steps.artifact.outputs.is_oci == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
       - name: Publish immutable OCI image when declared
         id: image
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [[ "$(jq -r .package.artifact.kind release-prepared/release-descriptor.json)" == oci-image ]]; then
+          if [[ "$(jq -r .artifact.kind release-prepared/release-descriptor.json)" == oci-image ]]; then
             sudo apt-get update
             sudo apt-get install -y skopeo
-            archive=$(jq -r '.artifacts[] | select(.role == "oci-image") | .name' release-prepared/prepared-artifacts.json)
-            [[ -n "$archive" && -f "release-prepared/$archive" ]]
-            gzip -dc "release-prepared/$archive" > image.oci.tar
             base="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/$WORKER"
             skopeo login ghcr.io --username "$GITHUB_ACTOR" --password "$GH_TOKEN"
-            source_digest=$(skopeo inspect --format '{{.Digest}}' "oci-archive:image.oci.tar")
-            if remote_digest=$(skopeo inspect --format '{{.Digest}}' "docker://$base:$CANDIDATE_VERSION" 2>/dev/null); then
-              test "$remote_digest" = "$source_digest"
-            else
-              skopeo copy --all "oci-archive:image.oci.tar" "docker://$base:$CANDIDATE_VERSION"
+            : >expected-image-digests.txt
+            refs=()
+            while IFS=$'\t' read -r unit archive; do
+              platform=$(jq -er --arg unit "$unit" '.build_units[] | select(.id == $unit) | .platform' \
+                release-prepared/release-descriptor.json)
+              platform_slug=${platform//\//-}
+              test -f "release-prepared/$archive"
+              gzip -dc "release-prepared/$archive" >"image-$platform_slug.oci.tar"
+              source_digest=$(skopeo inspect --format '{{.Digest}}' "oci-archive:image-$platform_slug.oci.tar")
+              [[ "$source_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+              staging_tag="$CANDIDATE_VERSION-$platform_slug"
+              if remote_digest=$(skopeo inspect --format '{{.Digest}}' "docker://$base:$staging_tag" 2>/dev/null); then
+                test "$remote_digest" = "$source_digest"
+              else
+                skopeo copy "oci-archive:image-$platform_slug.oci.tar" "docker://$base:$staging_tag"
+              fi
+              docker buildx imagetools inspect "$base:$staging_tag" --raw >"staging-$platform_slug.json"
+              if jq -e '.manifests | type == "array"' "staging-$platform_slug.json" >/dev/null; then
+                jq -r '.manifests[].digest' "staging-$platform_slug.json" >>expected-image-digests.txt
+              else
+                printf 'sha256:%s\n' "$(sha256sum "staging-$platform_slug.json" | cut -d' ' -f1)" \
+                  >>expected-image-digests.txt
+              fi
+              refs+=("$base:$staging_tag")
+            done < <(jq -r '.artifacts[] | select(.role == "oci-platform") | [.unit,.name] | @tsv' \
+              release-prepared/prepared-artifacts.json)
+            test "${#refs[@]}" = "$(jq '.build_units | length' release-prepared/release-descriptor.json)"
+            if ! docker buildx imagetools inspect "$base:$CANDIDATE_VERSION" --raw >published-index.json 2>/dev/null; then
+              docker buildx imagetools create --tag "$base:$CANDIDATE_VERSION" "${refs[@]}"
+              docker buildx imagetools inspect "$base:$CANDIDATE_VERSION" --raw >published-index.json
             fi
-            digest=$(skopeo inspect --format '{{.Digest}}' "docker://$base:$CANDIDATE_VERSION")
-            test "$digest" = "$source_digest"
+            sort -u expected-image-digests.txt -o expected-image-digests.txt
+            jq -r '.manifests[].digest' published-index.json | sort -u >published-image-digests.txt
+            cmp expected-image-digests.txt published-image-digests.txt
+            digest="sha256:$(sha256sum published-index.json | cut -d' ' -f1)"
             [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
             echo "image_digest=$digest" >> "$GITHUB_OUTPUT"
             echo "image_tag=$base:$CANDIDATE_VERSION@$digest" >> "$GITHUB_OUTPUT"
@@ -227,6 +274,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PUBLISH_RESULT: ${{ needs.publish.result }}
           REGISTRY_RESULT: ${{ needs.registry.result }}
+          PUBLISHED_IMAGE_DIGEST: ${{ needs.publish.outputs.image_digest }}
         run: |
           set -euo pipefail
           github_state=unknown
@@ -290,12 +338,12 @@ jobs:
               'https://api.workers.iii.dev/resolve' --data "$body" || true)
             if [[ "$status" == 200 ]]; then
               if jq -e --slurpfile descriptor release-prepared/release-descriptor.json \
-                --arg worker "$WORKER" --arg version "$CANDIDATE_VERSION" \
-                --arg digest "$DESCRIPTOR_SHA256" '
+                --arg worker "$WORKER" --arg version "$CANDIDATE_VERSION" '
                   .root.version == $version
-                  and ([.graph[] | select(.package_descriptor.name == $worker)] | length) == 1
-                  and ([.graph[] | select(.package_descriptor.name == $worker)][0].package_descriptor == $descriptor[0].package)
-                  and ([.graph[] | select(.package_descriptor.name == $worker)][0].descriptor_sha256 == $digest)
+                  and ([.graph[] | select(.name == $worker)] | length) == 1
+                  and ([.graph[] | select(.name == $worker)][0].version == $version)
+                  and ([.graph[] | select(.name == $worker)][0].type == $descriptor[0].registry_projection.type)
+                  and ([.graph[] | select(.name == $worker)][0].dependencies == ($descriptor[0].registry_projection.dependencies | map({key:.name,value:.version}) | from_entries))
                 ' registry-probe.json >/dev/null; then
                 registry_state=present
               else
@@ -305,13 +353,9 @@ jobs:
               registry_state=absent
             fi
 
-            kind=$(jq -r .package.artifact.kind release-prepared/release-descriptor.json)
+            kind=$(jq -r .artifact.kind release-prepared/release-descriptor.json)
             if [[ "$kind" == oci-image ]]; then
-              archive=$(jq -er '.artifacts[] | select(.role == "oci-image") | .name' \
-                release-prepared/prepared-artifacts.json)
-              gzip -dc "release-prepared/$archive" >candidate-probe.oci.tar
-              image_digest=$(tar -xOf candidate-probe.oci.tar index.json \
-                | jq -er '.manifests | if length == 1 then .[0].digest else error("ambiguous OCI index") end')
+              image_digest=${PUBLISHED_IMAGE_DIGEST:-}
               [[ "$image_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
               base="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/$WORKER"
               if docker buildx imagetools inspect "$base:$CANDIDATE_VERSION" --raw \
@@ -359,7 +403,7 @@ jobs:
           artifacts='[]'
           kind=unknown
           if [[ -f release-prepared/release-evidence.json ]]; then artifacts=$(jq -c '[.artifacts[] | del(.unit)]' release-prepared/release-evidence.json); fi
-          if [[ -f release-prepared/release-descriptor.json ]]; then kind=$(jq -r .package.artifact.kind release-prepared/release-descriptor.json); fi
+          if [[ -f release-prepared/release-descriptor.json ]]; then kind=$(jq -r .artifact.kind release-prepared/release-descriptor.json); fi
           github_state=${GITHUB_STATE:-unknown}; registry_state=${REGISTRY_STATE:-unknown}
           effects=$(jq -nc --arg tag "$WORKER/v$CANDIDATE_VERSION" --arg version "$CANDIDATE_VERSION" --arg github_state "$github_state" --arg registry_state "$registry_state" '[{surface:"github-release",state:$github_state,immutable_id:$tag},{surface:"registry-next",state:$registry_state,after:$version}]')
           if [[ "$kind" == oci-image ]]; then

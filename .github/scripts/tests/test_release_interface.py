@@ -15,18 +15,15 @@ def descriptor(validation: str = "required") -> dict:
         "version": "1.0.0-rc.1",
         "source_sha": "a" * 40,
         "descriptor_sha256": "b" * 64,
-        "package": {
-            "source": {"path": "source-must-not-be-read", "package_manifest": "Cargo.toml"},
-            "artifact": {
-                "kind": "rust-binary",
-                "binary": "smoke",
-                "targets": ["x86_64-unknown-linux-gnu"],
-                "toolchain": {"name": "rust", "version": "1.97.1"},
-            },
-            "runtime": {"exec": ["smoke"]},
-            "registry": {"publish": True},
-            "validation": {"interface": validation},
+        "source": {"path": "source-must-not-be-read", "package_manifest": "Cargo.toml"},
+        "artifact": {
+            "kind": "rust-binary",
+            "binary": "smoke",
+            "targets": ["x86_64-unknown-linux-gnu"],
+            "toolchain": {"name": "rust", "version": "1.97.1"},
         },
+        "runtime": {"exec": ["smoke"], "environment": {}, "resources": {}},
+        "validation": {"interface": validation},
         "build_units": [{
             "id": "rust-x86_64-unknown-linux-gnu",
             "kind": "rust-binary",

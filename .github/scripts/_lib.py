@@ -350,7 +350,11 @@ def sync_cargo_lock_self_version(lock_path: Path, name: str, new_version: str) -
 
 @dataclass(frozen=True)
 class WorkerSpec:
-    """One worker entry from the repository-root worker-compose catalog."""
+    """One entry from the private release catalog.
+
+    ``runtime`` and ``registry`` are compatibility projections derived from
+    the public manifest; they are never stored in ``.release/workers.yaml``.
+    """
 
     catalog_id: str
     path: Path
@@ -404,11 +408,11 @@ def read_iii_worker_yaml(worker_dir: Path) -> WorkerManifest:
 
 
 def worker_catalog_path() -> Path:
-    return Path(__file__).resolve().parents[2] / "worker-compose.yaml"
+    return Path(__file__).resolve().parents[2] / ".release" / "workers.yaml"
 
 
 def read_worker_catalog(path: Path | None = None) -> dict[str, WorkerSpec]:
-    """Load the canonical catalog; no directory manifest fallback exists."""
+    """Load private build metadata and join its public manifest projection."""
     import yaml  # imported lazily so version-only helpers need no PyYAML
 
     catalog_path = (path or worker_catalog_path()).resolve()
@@ -417,17 +421,14 @@ def read_worker_catalog(path: Path | None = None) -> dict[str, WorkerSpec]:
     document = yaml.safe_load(catalog_path.read_text(encoding="utf-8")) or {}
     if not isinstance(document, dict):
         raise ValueError(f"{catalog_path}: expected a mapping at top level")
-    unknown = set(document) - {"workers", "stacks"}
+    unknown = set(document) - {"workers"}
     if unknown:
         raise ValueError(f"{catalog_path}: unknown top-level keys: {sorted(unknown)}")
     workers = document.get("workers")
-    stacks = document.get("stacks")
     if not isinstance(workers, dict) or not workers:
         raise ValueError(f"{catalog_path}: workers must be a non-empty mapping")
-    if not isinstance(stacks, dict):
-        raise ValueError(f"{catalog_path}: stacks must be a mapping")
 
-    root = catalog_path.parent
+    root = catalog_path.parent.parent if catalog_path.parent.name == ".release" else catalog_path.parent
     parsed: dict[str, WorkerSpec] = {}
     paths: set[Path] = set()
     publish_names: set[str] = set()
@@ -437,7 +438,7 @@ def read_worker_catalog(path: Path | None = None) -> dict[str, WorkerSpec]:
         if not isinstance(value, dict):
             raise ValueError(f"{catalog_path}: workers.{catalog_id} must be a mapping")
         raw = dict(value)
-        expected_sections = {"source", "artifact", "runtime", "registry", "validation"}
+        expected_sections = {"source", "artifact", "validation", "publish"}
         legacy = {"language", "deploy", "manifest", "bin", "scripts", "interface_smoke"} & set(raw)
         if legacy:
             raise ValueError(f"{catalog_path}: workers.{catalog_id} uses legacy fields: {sorted(legacy)}")
@@ -450,14 +451,10 @@ def read_worker_catalog(path: Path | None = None) -> dict[str, WorkerSpec]:
             )
         source = raw["source"]
         artifact = raw["artifact"]
-        runtime = raw["runtime"]
-        registry = raw["registry"]
         validation = raw["validation"]
         for section_name, section in (
             ("source", source),
             ("artifact", artifact),
-            ("runtime", runtime),
-            ("registry", registry),
             ("validation", validation),
         ):
             if not isinstance(section, dict):
@@ -473,9 +470,9 @@ def read_worker_catalog(path: Path | None = None) -> dict[str, WorkerSpec]:
         if worker_path in paths:
             raise ValueError(f"{catalog_path}: duplicate worker path {relative!r}")
         paths.add(worker_path)
-        publish = registry.get("publish")
+        publish = raw.get("publish")
         if not isinstance(publish, bool):
-            raise ValueError(f"{catalog_path}: workers.{catalog_id}.registry.publish must be a boolean")
+            raise ValueError(f"{catalog_path}: workers.{catalog_id}.publish must be a boolean")
         if publish:
             if catalog_id in publish_names:
                 raise ValueError(f"{catalog_path}: duplicate publishable worker name {catalog_id!r}")
@@ -493,6 +490,22 @@ def read_worker_catalog(path: Path | None = None) -> dict[str, WorkerSpec]:
                 raise ValueError(f"{catalog_path}: workers.{catalog_id}.artifact.targets must be non-empty")
             if not isinstance(binary, str) or not binary:
                 raise ValueError(f"{catalog_path}: workers.{catalog_id}.artifact.binary is required")
+        public = read_iii_worker_yaml(worker_path)
+        public_dependencies = public.raw.get("dependencies") or {}
+        runtime = {
+            "exec": [binary or catalog_id] if artifact_kind == "rust-binary" else [],
+            "manifest": public.raw.get("runtime") or {},
+            "scripts": public.raw.get("scripts") or {},
+            "environment": public.raw.get("env") or {},
+            "resources": public.raw.get("resources") or {},
+        }
+        registry = {
+            "description": public.raw.get("description") or "",
+            "license": public.raw.get("license") or "",
+            "tags": public.raw.get("tags") or [],
+            "dependencies": public_dependencies,
+            "publish": publish,
+        }
         parsed[catalog_id] = WorkerSpec(
             catalog_id=catalog_id,
             path=worker_path,

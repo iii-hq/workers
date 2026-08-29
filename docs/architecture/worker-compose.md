@@ -1,29 +1,35 @@
-# Release worker catalog
+# Public Compose and private release metadata
 
-[`worker-compose.yaml`](../../worker-compose.yaml) is the single source of
-truth for the first-party release train: release packages, prepared runtime
-defaults, build units and named stacks. Release Control and release workflows
-never read `iii.worker.yaml` and have no fallback parser.
-
-Per-worker `iii.worker.yaml` files remain the public contract used by local
-development, `iii worker`, scaffolding and legacy package consumers. Normal CI
-validates those manifests and the overlapping fields below, but they are not
-release inputs.
-
-## Top level
+`worker-compose.yaml` is a public iii Compose document. It describes a running
+namespace and its containers; it is not a worker catalog and must not contain
+top-level `workers` or `stacks` mappings.
 
 ```yaml
-workers:
-  <slug>: {}
-stacks:
-  <stack-name>: {}
+namespace: harness
+containers:
+  state:
+    worker: package://state
+    version: next
+    config_override: {}
+  harness:
+    worker: path://.
+    start_after: [state]
+    environment:
+      RUST_LOG: info
+    scripts:
+      run: cargo run --locked --bin harness
 ```
 
-Worker keys are stable Registry identities. A worker entry contains exactly
-`source`, `artifact`, `runtime`, `registry`, and `validation`; public-manifest
-fields placed directly inside a Compose entry are rejected.
+The current public fields include `namespace`, `containers`, `worker`,
+`version`, `start_after`, `config_override`, `environment`, and `scripts`.
+Repository Compose files, generated candidate-smoke files, and Harness E2E
+fixtures all use this same shape.
 
-## Worker shape
+## Release-only catalog
+
+[`.release/workers.yaml`](../../.release/workers.yaml) is private to this
+repository. It contains build and validation policy that does not belong in
+the public manifest or Compose contract:
 
 ```yaml
 workers:
@@ -34,69 +40,40 @@ workers:
     artifact:
       kind: rust-binary
       binary: session-manager
+      toolchain: {name: rust, version: 1.97.1}
       targets:
         - x86_64-apple-darwin
         - aarch64-apple-darwin
         - x86_64-unknown-linux-gnu
-    runtime:
-      exec: [session-manager]
-      resources:
-        cpu: 1
-        memory_mib: 512
-    registry:
-      description: Durable typed conversation storage.
-      license: Apache-2.0
-      tags: [sessions]
-      dependencies: {}
-      publish: true
     validation:
       interface: required
+    publish: true
 ```
 
-`source.package_manifest` supplies the immutable package version. Non-OCI
-packages require `runtime.exec`. Registry configuration may use
-`config: {defaults_file: <relative-file>}`; the iii compiler resolves and
-sanitizes defaults into the package descriptor so later phases never reopen
-the source tree.
+Each entry contains exactly `source`, `artifact`, `validation`, and `publish`.
+The worker identity is the mapping key and its version comes only from the
+selected package manifest.
 
-## Artifact variants
+Public runtime and Registry metadata remain in `<worker>/iii.worker.yaml`:
+identity, deploy kind, package manifest, binary name, description, license,
+tags, semver dependencies, non-secret configuration, resources, environment,
+and scripts. `iii.worker.yaml` remains supported by local development,
+scaffolding, `iii worker`, and package consumers.
 
-- `rust-binary`: `binary` plus explicit `targets`.
-- `javascript-bundle` and `python-bundle`: `build_command` plus a sorted,
-  explicit `include` file list. Directories and globs are rejected.
-- `oci-image`: `context`, `dockerfile`, and explicit `platforms`.
+## Compilation boundary
 
-Fixtures live in the same catalog with `registry.publish: false`. The current
-contract gate requires 69 publishable workers and 6 fixtures.
+The repository-owned
+[`release_compiler.py`](../../.github/scripts/release_compiler.py) joins the
+private release entry, public manifest, package manifest, and source SHA once.
+It emits a `release-descriptor.json` containing input digests, independent
+build units, runtime, and a projection onto the current Registry API.
 
-## Stacks
+Prepare and every later phase consume only that immutable descriptor and the
+prepared artifacts. Release Control consumes only the descriptor index and
+selected descriptor. Neither rereads `.release/workers.yaml`,
+`iii.worker.yaml`, or a package manifest.
 
-Stacks only express composition and ordering. A container uses
-`worker: catalog://<slug>` or `package://<slug>`, optional `start_after`, and
-non-secret `config`. Runtime commands and resources belong to the worker entry.
-
-```yaml
-stacks:
-  harness:
-    namespace: harness
-    containers:
-      queue:
-        worker: catalog://queue
-      harness:
-        worker: catalog://harness
-        start_after: [queue]
-```
-
-## Compilation and validation
-
-The pinned iii CLI is the only release descriptor compiler:
-
-```bash
-iii compose validate --file worker-compose.yaml --stack harness
-iii compose descriptor --file worker-compose.yaml --worker session-manager \
-  --source-sha <full-commit> --output release-descriptor.json
-```
-
-CI uses [`validate_worker.py`](../../.github/scripts/validate_worker.py) for
-repository conventions and parity with `iii.worker.yaml`, then uses the iii
-compiler for the canonical release package shape and digest.
+Bundles declare an explicit file allowlist and reject tests, documentation,
+caches, `node_modules`, and traversal. OCI workers declare `linux/amd64` and
+`linux/arm64` unless an explicit exception is accepted. Public defaults reject
+secrets and `III_*` connection values.

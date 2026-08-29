@@ -64,12 +64,12 @@ jobs:
           set -euo pipefail
           [[ "$DESCRIPTOR_RUN_ID" =~ ^[1-9][0-9]*$ ]]
           test "$DESCRIPTOR_ARTIFACT" = "release-descriptor-index-$SOURCE_SHA"
-          compiler_sha=$(jq -er .commit .github/release-compiler.json)
+          compiler_digest=$(jq -er .compiler.digest release-descriptor-index/release-descriptor-index.json)
           python3 .github/scripts/release_train.py select-descriptor \
             --index-dir release-descriptor-index \
             --worker "$WORKER" \
             --source-sha "$SOURCE_SHA" \
-            --compiler-sha "$compiler_sha" \
+            --compiler-digest "$compiler_digest" \
             --candidate-version "$CANDIDATE_VERSION" \
             --descriptor-sha256 "$DESCRIPTOR_SHA256" \
             --out release-input/release-descriptor.json
@@ -254,7 +254,6 @@ jobs:
           ref: ${{ github.sha }}
           sparse-checkout: |
             .github/scripts
-            .github/release-compiler.json
 
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
@@ -270,49 +269,17 @@ jobs:
           --out interface-work/stage.json
           --github-output "$GITHUB_OUTPUT"
 
-      - name: Validate immutable compiler pin
+      - name: Install current iii runtime
         if: steps.interface.outputs.validation == 'required'
-        id: compiler
-        run: python3 .github/scripts/release_compiler.py --github-output "$GITHUB_OUTPUT"
-
-      - name: Checkout pinned iii runtime
-        if: steps.interface.outputs.validation == 'required'
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          persist-credentials: false
-          repository: ${{ steps.compiler.outputs.repository }}
-          ref: ${{ steps.compiler.outputs.commit }}
-          path: release-compiler
-
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
-        if: steps.interface.outputs.validation == 'required'
-        with:
-          toolchain: 1.97.1
-
-      - name: Authorize compiler cache with GitHub OIDC
-        if: steps.interface.outputs.validation == 'required'
-        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
-        with:
-          role-to-assume: ${{ vars.SCCACHE_ROLE_ARN }}
-          aws-region: ${{ vars.SCCACHE_REGION }}
-
-      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
-        if: steps.interface.outputs.validation == 'required'
-
-      - name: Build pinned iii runtime
-        if: steps.interface.outputs.validation == 'required'
-        env:
-          MANIFEST: ${{ steps.compiler.outputs.cargo_manifest }}
-          BINARY: ${{ steps.compiler.outputs.binary }}
-          SCCACHE_BUCKET: ${{ vars.SCCACHE_BUCKET }}
-          SCCACHE_REGION: ${{ vars.SCCACHE_REGION }}
-          SCCACHE_S3_KEY_PREFIX: sccache/1.97.1/compiler
-          RUSTC_WRAPPER: sccache
         run: |
           set -euo pipefail
-          cargo build --release --locked --manifest-path "release-compiler/$MANIFEST" --bin "$BINARY"
-          echo "$GITHUB_WORKSPACE/release-compiler/target/release" >> "$GITHUB_PATH"
-          sccache --show-stats | tee interface-compiler-sccache-stats.txt
+          curl -fsSL --retry 3 --retry-all-errors --retry-delay 5 \
+            https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
+          sh /tmp/install-iii.sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.iii/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$HOME/.iii/bin:$PATH"
+          iii --version
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         if: steps.interface.outputs.kind == 'javascript-bundle' && steps.interface.outputs.validation == 'required'
@@ -421,14 +388,6 @@ jobs:
           name: release-prepared-${{ env.CANDIDATE_ID }}
           path: release-prepared/
           if-no-files-found: error
-          retention-days: 7
-
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        if: always() && steps.interface.outputs.validation == 'required'
-        with:
-          name: release-interface-sccache-${{ env.CANDIDATE_ID }}
-          path: interface-compiler-sccache-stats.txt
-          if-no-files-found: warn
           retention-days: 7
 
   report:

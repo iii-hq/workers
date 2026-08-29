@@ -20,7 +20,8 @@ license: Apache-2.0
 tags: [<discovery-tag>]
 ```
 
-Add the worker to the root [`worker-compose.yaml`](../../worker-compose.yaml):
+Add its release-only build metadata to
+[`.release/workers.yaml`](../../.release/workers.yaml):
 
 ```yaml
 workers:
@@ -38,17 +39,9 @@ workers:
         - x86_64-unknown-linux-musl
         - aarch64-unknown-linux-gnu
         - armv7-unknown-linux-gnueabihf
-    runtime:
-      exec: [<worker>]
-      resources: {cpu: 1, memory_mib: 512}
-    registry:
-      description: One-line public description.
-      license: Apache-2.0
-      tags: [<discovery-tag>]
-      dependencies: {}
-      publish: true
     validation:
       interface: required
+    publish: true
 ```
 
 The slug, folder, Cargo package, binary, runtime executable and registered

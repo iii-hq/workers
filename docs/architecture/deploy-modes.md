@@ -1,8 +1,8 @@
 # Release artifact modes
 
-The pinned iii compiler translates one root-catalog worker into an immutable
-package descriptor and independent build units. The release train consumes
-only that descriptor after prepare.
+The Workers-owned compiler translates one private build entry plus its public
+manifest into an immutable release descriptor and independent build units.
+The release train consumes only that descriptor after prepare.
 
 | `artifact.kind` | Prepared artifact | Publication |
 |---|---|---|
@@ -17,24 +17,34 @@ the Rust target fan-out. Rust units share remote sccache objects by toolchain
 and target, but artifact bytes remain target-specific.
 
 [`release-candidate-publish.yml`](../../.github/workflows/release-candidate-publish.yml)
-publishes one immutable candidate version and assigns Registry `next` with a
-compare-and-swap. [`release-stable-publish.yml`](../../.github/workflows/release-stable-publish.yml)
+publishes one immutable candidate version and assigns Registry `next` with an
+idempotent, verified update. [`release-stable-publish.yml`](../../.github/workflows/release-stable-publish.yml)
 assigns `latest` to that same version and descriptor; it does not rebuild or
 create a second package version. OCI channel aliases are a separate digest-CAS
 phase.
 
-Registry publication uses the strict request:
+Registry publication projects the descriptor onto the current API. For a
+binary worker the request has this shape:
 
 ```json
 {
-  "package_descriptor": {},
-  "descriptor_sha256": "<package digest>",
-  "tag": null,
+  "worker_name": "state",
+  "version": "0.22.3-rc.3",
+  "type": "binary",
+  "description": "...",
+  "license": "Apache-2.0",
+  "tags": [],
+  "dependencies": [],
+  "config": {},
+  "functions": [],
+  "triggers": [],
   "repo": "https://github.com/iii-hq/workers",
-  "artifacts": {}
+  "binaries": {}
 }
 ```
 
-Metadata, defaults, dependency ranges, runtime and validation come only from
-the compiled package descriptor. Publish, smoke, promotion, finalize and
-verify never read the root catalog or package source.
+The immutable publish omits a Registry tag; channel assignment happens only
+after exact readback. Descriptor-only fields such as `package_descriptor` and
+`descriptor_sha256` are never sent to the current Registry. Publish, smoke,
+promotion, finalize, and verify never read the private catalog, public
+manifest, or package source.
