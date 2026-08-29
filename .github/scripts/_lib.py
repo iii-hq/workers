@@ -73,8 +73,8 @@ def validate_release_transition(current: str, target: str) -> None:
     """Require monotonic cores and forward-only maturity at the same core.
 
     Equality is allowed: `bump=none` is the supported way to tag a version
-    that a merged change already wrote into its manifest. Tag availability is
-    checked separately by create-tag.yml.
+    that a merged change already wrote into its package manifest. Immutable tag
+    availability is checked by the authenticated release executor effect probe.
     """
     before = parse_release_version(current)
     after = parse_release_version(target)
