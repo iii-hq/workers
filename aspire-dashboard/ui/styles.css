@@ -1,0 +1,143 @@
+/* The pane, not the viewport, is what narrows when this page is split-panelled
+   with another worker. Every width rule below is a container query against this
+   element, so it tracks the pane. A `@media` query measures the window instead
+   and stays silent in a split pane. */
+[data-iii-ui=aspire-dashboard] .aspire-dashboard-shell {
+  container-type: inline-size;
+  min-width: 0;
+  min-height: 0;
+}
+
+[data-iii-ui=aspire-dashboard] .aspire-dashboard-main {
+  position: relative;
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  overflow: auto;
+
+  /* Fluid type, held between two fixed ends: each size keeps its original value
+     at a pane of 1100px or wider and shrinks with the pane down to a floor at
+     380px, so a split pane stays readable instead of shouting. Declared here
+     rather than on the shell because `cqi` on the container element itself would
+     resolve against the viewport; from inside, it resolves against the shell. */
+  --aspire-font-lg: clamp(11.5px, calc(10.18px + 0.35cqi), 14px);
+  --aspire-font-md: clamp(11px, calc(9.94px + 0.28cqi), 13px);
+  --aspire-font-sm: clamp(10px, calc(8.94px + 0.28cqi), 12px);
+}
+
+[data-iii-ui=aspire-dashboard] .aspire-dashboard-frame {
+  width: 100%;
+  min-height: 0;
+  flex: 1;
+  border: 1px solid var(--color-edge);
+  border-radius: 12px;
+  background: var(--color-panel-raised);
+}
+
+[data-iii-ui=aspire-dashboard] .aspire-dashboard-setup {
+  display: grid;
+  gap: 12px;
+  max-width: 980px;
+  width: 100%;
+}
+
+[data-iii-ui=aspire-dashboard] .aspire-dashboard-card h2 {
+  margin: 0;
+  color: var(--color-ink);
+  font: 600 var(--aspire-font-lg)/1.4 var(--font-sans);
+}
+
+[data-iii-ui=aspire-dashboard] .aspire-dashboard-card p {
+  margin: 4px 0 0;
+  color: var(--color-ink-muted);
+  font: 400 var(--aspire-font-md)/1.5 var(--font-sans);
+}
+
+[data-iii-ui=aspire-dashboard] .aspire-dashboard-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+[data-iii-ui=aspire-dashboard] .aspire-dashboard-note {
+  color: var(--color-ink-muted);
+  font: 400 var(--aspire-font-md)/1.55 var(--font-sans);
+}
+
+[data-iii-ui=aspire-dashboard] .aspire-dashboard-note code,
+[data-iii-ui=aspire-dashboard] .aspire-dashboard-facts code {
+  font-family: var(--font-mono);
+  color: var(--color-ink);
+}
+
+[data-iii-ui=aspire-dashboard] .aspire-dashboard-warnings {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  color: var(--color-warn-ink, var(--color-ink));
+  font: 400 var(--aspire-font-md)/1.5 var(--font-sans);
+}
+
+[data-iii-ui=aspire-dashboard] .aspire-dashboard-facts {
+  display: grid;
+  grid-template-columns: minmax(120px, max-content) minmax(0, 1fr);
+  gap: 8px 14px;
+  margin: 0 0 14px;
+}
+
+[data-iii-ui=aspire-dashboard] .aspire-dashboard-facts div {
+  display: contents;
+}
+
+[data-iii-ui=aspire-dashboard] .aspire-dashboard-facts dt {
+  color: var(--color-ink-muted);
+  font: 500 var(--aspire-font-sm)/1.4 var(--font-sans);
+}
+
+[data-iii-ui=aspire-dashboard] .aspire-dashboard-facts dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--color-ink);
+  overflow-wrap: anywhere;
+  font: 400 var(--aspire-font-sm)/1.4 var(--font-mono);
+}
+
+/* The embedded dashboard is Microsoft's own UI, so its type scale is not ours to
+   restyle — and it is served through the proxy into an iframe, which our CSS
+   does not cross. `zoom` is the one lever that reaches inside: it shrinks the
+   iframe's layout viewport, so the dashboard lays itself out as if it had more
+   room and its text comes down with it.
+   Steps rather than a clamp() because `zoom` takes a unitless factor and there
+   is no way to derive one from `cqi`. ponytail: three breakpoints, replace with
+   a resize observer only if the jumps actually bother anyone. */
+@container (max-width: 68rem) {
+  [data-iii-ui=aspire-dashboard] .aspire-dashboard-frame {
+    zoom: 0.9;
+  }
+}
+
+@container (max-width: 54rem) {
+  [data-iii-ui=aspire-dashboard] .aspire-dashboard-frame {
+    zoom: 0.8;
+  }
+}
+
+@container (max-width: 42rem) {
+  [data-iii-ui=aspire-dashboard] .aspire-dashboard-frame {
+    zoom: 0.7;
+  }
+}
+
+@container (max-width: 40rem) {
+  [data-iii-ui=aspire-dashboard] .aspire-dashboard-main {
+    padding: 8px;
+  }
+
+  [data-iii-ui=aspire-dashboard] .aspire-dashboard-facts {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
+}
