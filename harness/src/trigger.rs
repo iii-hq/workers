@@ -349,8 +349,6 @@ pub async fn invoke_target(
                 post_filter_discovery(&mut value, policy);
             } else if function_id == "engine::functions::info" {
                 post_filter_info(&mut value, policy);
-            } else if function_id == "compose::schema" {
-                overlay_compose_schema(&mut value, arguments);
             }
             normalized_result(value)
         }
@@ -426,55 +424,6 @@ fn post_filter_info(value: &mut Value, policy: &CompiledPolicy) {
 /// `once`/`lifecycle`/`conditions`) is NOT the contract an agent calls.
 /// Discovery must describe the intercept, or an agent that reads
 /// `functions::info` "learns" its tool schema is wrong.
-fn overlay_compose_schema(value: &mut Value, arguments: &Value) {
-    let Some(function_id) = arguments.get("function_id").and_then(Value::as_str) else {
-        return;
-    };
-    if !matches!(
-        function_id,
-        "compose::add"
-            | "compose::remove"
-            | "compose::update"
-            | "compose::up"
-            | "compose::down"
-            | "compose::restart"
-    ) {
-        return;
-    }
-    let Some(object) = value.as_object_mut() else {
-        return;
-    };
-    let key = if object.contains_key("response_schema") {
-        "response_schema"
-    } else if object.contains_key("response_format") {
-        "response_format"
-    } else {
-        return;
-    };
-    object.insert(key.into(), json!({
-        "type": "object",
-        "description": "Concise Compose mutation outcome; full reconciliation diagnostics remain in Compose logs.",
-        "properties": {
-            "status": { "type": "string" },
-            "changed": { "type": "boolean" },
-            "container": { "type": "string" },
-            "workers": { "type": "array", "items": { "type": "string" } },
-            "declared": { "type": "array", "items": { "type": "string" } },
-            "detail": { "type": "string", "maxLength": 1001 },
-            "errors": { "type": "array", "maxItems": 8, "items": {
-                "type": "object",
-                "properties": {
-                    "container": { "type": "string" },
-                    "code": { "type": "string" },
-                    "message": { "type": "string", "maxLength": 1001 }
-                },
-                "additionalProperties": false
-            }}
-        },
-        "additionalProperties": false
-    }));
-}
-
 fn overlay_control_contract(item: &mut Value, id: &str) {
     let Some((description, schema)) = crate::functions::subscribe::control_contract(id) else {
         return;
@@ -1419,26 +1368,5 @@ mod tests {
         let details = persisted_result_details(&result);
         assert_eq!(details["truncated"], true);
         assert!(details["preview"].as_str().unwrap().chars().count() <= 2_000);
-    }
-
-    #[test]
-    fn compose_schema_advertises_the_compact_mutation_result() {
-        let mut schema = json!({
-            "function_id": "compose::add",
-            "response_schema": {
-                "properties": {
-                    "up": {},
-                    "down": {},
-                    "restarted": {}
-                }
-            }
-        });
-        overlay_compose_schema(&mut schema, &json!({ "function_id": "compose::add" }));
-        let response = &schema["response_schema"];
-        assert!(response["properties"].get("status").is_some());
-        assert!(response["properties"].get("errors").is_some());
-        assert!(response["properties"].get("up").is_none());
-        assert!(response["properties"].get("down").is_none());
-        assert!(response["properties"].get("restarted").is_none());
     }
 }

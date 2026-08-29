@@ -103,17 +103,12 @@ impl EngineClient {
             // interrupted from an untrusted baseline and re-running it.
             None => call.await,
         };
-        result
-            .map(|value| compact_compose_mutation_result(function_id, value))
-            .map_err(|e| {
-                let raw = e.to_string();
-                let mut parsed = parse_dispatch_error_message(&raw);
-                if is_compose_mutation(function_id) {
-                    parsed.message = truncate_chars(&parsed.message, 1_000);
-                }
-                parsed.message = format!("{function_id}: {}", parsed.message);
-                parsed
-            })
+        result.map_err(|e| {
+            let raw = e.to_string();
+            let mut parsed = parse_dispatch_error_message(&raw);
+            parsed.message = format!("{function_id}: {}", parsed.message);
+            parsed
+        })
     }
 
     /// List registry function descriptors (best-effort; empty on failure).
@@ -228,124 +223,6 @@ fn dispatch_namespace<'a>(
     }
 }
 
-/// Compose mutation responses include daemon reconciliation internals (the
-/// complete up/down container inventory). Those diagnostics belong in Compose
-/// traces and logs, not in an agent transcript. Keep the public function
-/// result bounded while preserving the mutation outcome and actionable errors.
-fn is_compose_mutation(function_id: &str) -> bool {
-    matches!(
-        function_id,
-        "compose::add"
-            | "compose::remove"
-            | "compose::update"
-            | "compose::up"
-            | "compose::down"
-            | "compose::restart"
-    )
-}
-
-fn compact_compose_mutation_result(function_id: &str, value: Value) -> Value {
-    if !is_compose_mutation(function_id) {
-        return value;
-    }
-
-    let Some(source) = value.as_object() else {
-        return value;
-    };
-    let mut compact = serde_json::Map::new();
-    for key in ["status", "changed", "container", "workers", "declared"] {
-        if let Some(field) = source.get(key) {
-            compact.insert(key.to_string(), field.clone());
-        }
-    }
-
-    let mut errors = Vec::new();
-    collect_compose_errors(&value, None, &mut errors);
-    let has_errors = !errors.is_empty();
-    if has_errors {
-        compact.insert("errors".to_string(), Value::Array(errors));
-    }
-    if source.get("status").and_then(Value::as_str) == Some("failed") && !has_errors {
-        if let Some(detail) = source.get("detail").and_then(Value::as_str) {
-            compact.insert(
-                "detail".to_string(),
-                Value::String(truncate_chars(detail, 1_000)),
-            );
-        }
-    }
-
-    Value::Object(compact)
-}
-
-fn collect_compose_errors(
-    value: &Value,
-    inherited_container: Option<&str>,
-    errors: &mut Vec<Value>,
-) {
-    if errors.len() >= 8 {
-        return;
-    }
-    match value {
-        Value::Object(object) => {
-            let container = object
-                .get("container")
-                .and_then(Value::as_str)
-                .or(inherited_container);
-            if let Some(error) = object.get("error") {
-                let mut item = serde_json::Map::new();
-                if let Some(container) = container {
-                    item.insert(
-                        "container".to_string(),
-                        Value::String(container.to_string()),
-                    );
-                }
-                match error {
-                    Value::Object(error) => {
-                        for key in ["code", "message"] {
-                            if let Some(text) = error.get(key).and_then(Value::as_str) {
-                                item.insert(
-                                    key.to_string(),
-                                    Value::String(truncate_chars(text, 1_000)),
-                                );
-                            }
-                        }
-                    }
-                    Value::String(message) => {
-                        item.insert(
-                            "message".to_string(),
-                            Value::String(truncate_chars(message, 1_000)),
-                        );
-                    }
-                    _ => {}
-                }
-                if !item.is_empty() {
-                    errors.push(Value::Object(item));
-                }
-            }
-            for (key, child) in object {
-                if key != "error" {
-                    collect_compose_errors(child, container, errors);
-                }
-            }
-        }
-        Value::Array(items) => {
-            for item in items {
-                collect_compose_errors(item, inherited_container, errors);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn truncate_chars(value: &str, max_chars: usize) -> String {
-    let mut chars = value.chars();
-    let truncated: String = chars.by_ref().take(max_chars).collect();
-    if chars.next().is_some() {
-        format!("{truncated}…")
-    } else {
-        truncated
-    }
-}
 fn nonempty_env(name: &str) -> Option<String> {
     std::env::var(name)
         .ok()
@@ -625,79 +502,6 @@ mod tests {
         assert_eq!(
             err.message,
             "remote error (S215): path escapes the fs jail roots [/private/tmp]: /Users/example filesystem_access_request={\"v\":1,\"requested_root\":\"/Users/example\",\"attempted_path\":\"/Users/example\",\"error_code\":\"S215\"}"
-        );
-    }
-
-    #[test]
-    fn compose_mutation_results_omit_reconciliation_inventory() {
-        let result = json!({
-            "status": "ok",
-            "changed": true,
-            "container": "database",
-            "workers": ["database"],
-            "up": {
-                "operation_id": "large-internal-id",
-                "containers": [
-                    { "container": "queue", "state": "ready", "changed": false },
-                    { "container": "database", "state": "ready", "changed": true }
-                ]
-            },
-            "restarted": [{ "containers": [{ "container": "console", "state": "ready" }] }]
-        });
-
-        assert_eq!(
-            compact_compose_mutation_result("compose::add", result),
-            json!({
-                "status": "ok",
-                "changed": true,
-                "container": "database",
-                "workers": ["database"]
-            })
-        );
-    }
-
-    #[test]
-    fn compose_mutation_results_keep_only_actionable_failure() {
-        let long_message = "x".repeat(2_000);
-        let result = json!({
-            "status": "failed",
-            "changed": false,
-            "up": {
-                "containers": [
-                    { "container": "queue", "state": "ready" },
-                    { "container": "database", "state": "failed", "error": {
-                        "code": "CHILD_EXITED_BEFORE_REGISTRATION",
-                        "message": long_message,
-                        "stdout": "not model context"
-                    }}
-                ]
-            }
-        });
-
-        let compact = compact_compose_mutation_result("compose::add", result);
-        assert_eq!(compact["status"], "failed");
-        assert_eq!(compact["errors"][0]["container"], "database");
-        assert_eq!(
-            compact["errors"][0]["code"],
-            "CHILD_EXITED_BEFORE_REGISTRATION"
-        );
-        assert!(
-            compact["errors"][0]["message"]
-                .as_str()
-                .unwrap()
-                .chars()
-                .count()
-                <= 1_001
-        );
-        assert!(compact.get("up").is_none());
-    }
-
-    #[test]
-    fn non_mutating_compose_results_are_unchanged() {
-        let status = json!({ "containers": [{ "container": "queue", "state": "ready" }] });
-        assert_eq!(
-            compact_compose_mutation_result("compose::status", status.clone()),
-            status
         );
     }
 }
