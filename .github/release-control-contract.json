@@ -1,6 +1,6 @@
 {
   "repository": "iii-hq/release-control",
-  "commit": "4b77302b6513c028943d576df4b9a9170f9f9e6e",
+  "commit": "2f319857b38be930ca12b4aa0bf4232d68c92de9",
   "path": "api/contracts/release-execution.schema.json",
   "sha256": "947ccf41d51918901d994a484c5c0efaac7e8966310627354dccbb37e53733fa"
 }
