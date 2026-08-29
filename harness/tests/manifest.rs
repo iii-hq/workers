@@ -45,7 +45,9 @@ fn manifest_subcommand_emits_valid_json() {
 
 #[test]
 fn worker_catalog_uses_the_standalone_queue_worker() {
-    let catalog: serde_yaml::Value = serde_yaml::from_str(include_str!("../../worker-compose.yaml")).expect("parse worker catalog");
+    let catalog: serde_yaml::Value =
+        serde_yaml::from_str(include_str!("../../worker-compose.yaml"))
+            .expect("parse worker catalog");
     let dependencies = catalog["workers"]["harness"]["registry"]["dependencies"]
         .as_mapping()
         .expect("dependencies is a mapping");
@@ -59,7 +61,9 @@ fn worker_catalog_uses_the_standalone_queue_worker() {
 
 #[test]
 fn worker_catalog_uses_the_standalone_state_worker() {
-    let catalog: serde_yaml::Value = serde_yaml::from_str(include_str!("../../worker-compose.yaml")).expect("parse worker catalog");
+    let catalog: serde_yaml::Value =
+        serde_yaml::from_str(include_str!("../../worker-compose.yaml"))
+            .expect("parse worker catalog");
     let dependencies = catalog["workers"]["harness"]["registry"]["dependencies"]
         .as_mapping()
         .expect("dependencies is a mapping");
@@ -73,7 +77,9 @@ fn worker_catalog_uses_the_standalone_state_worker() {
 
 #[test]
 fn worker_catalog_uses_the_standalone_cron_worker() {
-    let catalog: serde_yaml::Value = serde_yaml::from_str(include_str!("../../worker-compose.yaml")).expect("parse worker catalog");
+    let catalog: serde_yaml::Value =
+        serde_yaml::from_str(include_str!("../../worker-compose.yaml"))
+            .expect("parse worker catalog");
     let dependencies = catalog["workers"]["harness"]["registry"]["dependencies"]
         .as_mapping()
         .expect("dependencies is a mapping");
@@ -87,7 +93,9 @@ fn worker_catalog_uses_the_standalone_cron_worker() {
 
 #[test]
 fn worker_catalog_uses_the_tested_harness_stack() {
-    let catalog: serde_yaml::Value = serde_yaml::from_str(include_str!("../../worker-compose.yaml")).expect("parse worker catalog");
+    let catalog: serde_yaml::Value =
+        serde_yaml::from_str(include_str!("../../worker-compose.yaml"))
+            .expect("parse worker catalog");
     let dependencies = catalog["workers"]["harness"]["registry"]["dependencies"]
         .as_mapping()
         .expect("dependencies is a mapping");

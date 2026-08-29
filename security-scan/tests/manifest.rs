@@ -27,11 +27,15 @@ fn manifest_builder_emits_registry_metadata_without_a_binary() {
 
 #[test]
 fn worker_catalog_names_the_same_worker_and_description() {
-    let catalog: serde_yaml::Value = serde_yaml::from_str(include_str!("../../worker-compose.yaml")).expect("parse worker catalog");
+    let catalog: serde_yaml::Value =
+        serde_yaml::from_str(include_str!("../../worker-compose.yaml"))
+            .expect("parse worker catalog");
     let worker = &catalog["workers"]["security-scan"];
     assert_eq!(worker["artifact"]["binary"], "security-scan");
     assert_eq!(worker["registry"]["description"], manifest::DESCRIPTION);
-    let dependencies = worker["registry"]["dependencies"].as_mapping().expect("dependencies map");
+    let dependencies = worker["registry"]["dependencies"]
+        .as_mapping()
+        .expect("dependencies map");
     for dependency in ["github", "harness", "cron", "queue", "worktree", "storage"] {
         assert!(dependencies.contains_key(serde_yaml::Value::String(dependency.into())));
     }

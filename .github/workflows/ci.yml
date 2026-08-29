@@ -26,6 +26,7 @@ jobs:
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 24
+          package-manager-cache: false
       - run: pip install --quiet pytest pyyaml
       - run: pytest .github/scripts/tests/ -v
       - name: Validate GitHub Actions workflows
@@ -838,6 +839,7 @@ jobs:
           # setup-node v5 auto-caches when package.json declares packageManager.
           # This step never cached; the repository is already over its cache budget.
           node-version: 22
+          package-manager-cache: false
 
       - name: Install dependencies
         working-directory: ${{ matrix.worker }}

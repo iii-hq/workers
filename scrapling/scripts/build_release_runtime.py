@@ -10,7 +10,6 @@ import sys
 import tarfile
 from pathlib import Path, PurePosixPath
 
-
 SKIPPED_PARTS = {"__pycache__", ".pytest_cache"}
 
 

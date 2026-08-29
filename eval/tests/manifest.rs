@@ -27,7 +27,9 @@ fn manifest_subcommand_emits_valid_json() {
 
 #[test]
 fn worker_catalog_declares_runtime_dependencies() {
-    let catalog: serde_yaml::Value = serde_yaml::from_str(include_str!("../../worker-compose.yaml")).expect("parse worker catalog");
+    let catalog: serde_yaml::Value =
+        serde_yaml::from_str(include_str!("../../worker-compose.yaml"))
+            .expect("parse worker catalog");
     let dependencies = catalog["workers"]["eval"]["registry"]["dependencies"]
         .as_mapping()
         .expect("dependencies map");
@@ -49,7 +51,9 @@ fn worker_catalog_declares_runtime_dependencies() {
 /// in by eval's own install.
 #[test]
 fn worker_catalog_omits_harness_to_stay_within_install_graph_depth() {
-    let catalog: serde_yaml::Value = serde_yaml::from_str(include_str!("../../worker-compose.yaml")).expect("parse worker catalog");
+    let catalog: serde_yaml::Value =
+        serde_yaml::from_str(include_str!("../../worker-compose.yaml"))
+            .expect("parse worker catalog");
     let dependencies = catalog["workers"]["eval"]["registry"]["dependencies"]
         .as_mapping()
         .expect("dependencies map");
