@@ -144,6 +144,11 @@ def test_release_prepare_fans_one_job_per_compiled_build_unit():
     assert "unit: ${{ matrix.unit }}" in text
 
 
+def test_release_build_validates_rust_targets_and_oci_platforms():
+    text = body("_release-build.yml")
+    assert '(.target // .platform // "none") == $target' in text
+
+
 def test_prepare_runs_adapter_from_prepared_bytes_and_records_interface():
     text = body("release-prepare.yml")
     workflow = yaml.safe_load(text)
@@ -157,6 +162,14 @@ def test_prepare_runs_adapter_from_prepared_bytes_and_records_interface():
     adapter_text = str(workflow["jobs"]["adapter"])
     assert "inputs.source_sha" not in adapter_text
     assert "worker-compose.yaml" not in adapter_text
+
+
+def test_release_runtime_uses_the_current_engine_config_shape():
+    expected = "workers:\\n  - name: iii-worker-manager\\n    config:"
+    for name in ("release-prepare.yml", "release-candidate-smoke.yml"):
+        text = body(name)
+        assert expected in text
+        assert "printf 'engine:" not in text
 
 
 def test_candidate_smoke_boots_registry_candidate_and_compares_prepared_interface():
@@ -220,7 +233,7 @@ def test_bundle_caches_are_scoped_by_descriptor_lock_runtime_and_architecture():
     assert "python-version: ${{ steps.metadata.outputs.runtime_version }}" in reusable
     assert "version: ${{ steps.metadata.outputs.package_manager_version }}" in reusable
     assert "${{ runner.os }}-${{ runner.arch }}-${{ steps.metadata.outputs.lock_sha256 }}" in reusable
-    assert "package_json_file" not in reusable
+    assert "package_json_file: ${{ steps.metadata.outputs.source_path }}/package.json" in reusable
     assert "python-version: '3.12.13'" not in reusable
     assert "lockfile=\"$source_path" not in reusable
     assert "package-manager-cache" not in reusable

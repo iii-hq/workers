@@ -334,7 +334,7 @@ jobs:
           trap cleanup EXIT
           engine_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
           engine_url="ws://127.0.0.1:$engine_port"
-          printf 'engine:\n  workers:\n    iii-worker-manager:\n      host: 127.0.0.1\n      port: %s\nworkers: []\n' "$engine_port" >interface-work/engine.yaml
+          printf 'workers:\n  - name: iii-worker-manager\n    config:\n      host: 127.0.0.1\n      port: %s\n' "$engine_port" >interface-work/engine.yaml
           setsid iii --config interface-work/engine.yaml --no-update-check >interface-work/engine.log 2>&1 &
           engine_pid=$!
           for _ in $(seq 1 60); do
