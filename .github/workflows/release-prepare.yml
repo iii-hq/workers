@@ -427,7 +427,7 @@ jobs:
           fi
           artifacts='[]'
           if [[ -f release-prepared/release-evidence.json ]]; then artifacts=$(jq -c '[.artifacts[] | del(.unit)]' release-prepared/release-evidence.json); fi
-          state=unknown; [[ "$outcome" == succeeded ]] && state=present
+          state=absent; [[ "$outcome" == succeeded ]] && state=present
           effects=$(jq -nc --arg id "$SOURCE_SHA" --arg state "$state" '[{surface:"source-snapshot",state:$state,immutable_id:$id}]')
           python3 .github/scripts/release_control_contract.py write-result \
             --repository '${{ github.repository }}' \
