@@ -108,6 +108,9 @@ impl EngineClient {
             .map_err(|e| {
                 let raw = e.to_string();
                 let mut parsed = parse_dispatch_error_message(&raw);
+                if is_compose_mutation(function_id) {
+                    parsed.message = truncate_chars(&parsed.message, 1_000);
+                }
                 parsed.message = format!("{function_id}: {}", parsed.message);
                 parsed
             })
@@ -229,16 +232,20 @@ fn dispatch_namespace<'a>(
 /// complete up/down container inventory). Those diagnostics belong in Compose
 /// traces and logs, not in an agent transcript. Keep the public function
 /// result bounded while preserving the mutation outcome and actionable errors.
+fn is_compose_mutation(function_id: &str) -> bool {
+    matches!(
+        function_id,
+        "compose::add"
+            | "compose::remove"
+            | "compose::update"
+            | "compose::up"
+            | "compose::down"
+            | "compose::restart"
+    )
+}
+
 fn compact_compose_mutation_result(function_id: &str, value: Value) -> Value {
-    const MUTATIONS: &[&str] = &[
-        "compose::add",
-        "compose::remove",
-        "compose::update",
-        "compose::up",
-        "compose::down",
-        "compose::restart",
-    ];
-    if !MUTATIONS.contains(&function_id) {
+    if !is_compose_mutation(function_id) {
         return value;
     }
 

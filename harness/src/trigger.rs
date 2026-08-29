@@ -1420,4 +1420,25 @@ mod tests {
         assert_eq!(details["truncated"], true);
         assert!(details["preview"].as_str().unwrap().chars().count() <= 2_000);
     }
+
+    #[test]
+    fn compose_schema_advertises_the_compact_mutation_result() {
+        let mut schema = json!({
+            "function_id": "compose::add",
+            "response_schema": {
+                "properties": {
+                    "up": {},
+                    "down": {},
+                    "restarted": {}
+                }
+            }
+        });
+        overlay_compose_schema(&mut schema, &json!({ "function_id": "compose::add" }));
+        let response = &schema["response_schema"];
+        assert!(response["properties"].get("status").is_some());
+        assert!(response["properties"].get("errors").is_some());
+        assert!(response["properties"].get("up").is_none());
+        assert!(response["properties"].get("down").is_none());
+        assert!(response["properties"].get("restarted").is_none());
+    }
 }
