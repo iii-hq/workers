@@ -1,0 +1,96 @@
+namespace: integration-compose-smoke
+startup_timeout: 30s
+stop_timeout: 5s
+
+engine:
+  url: "@COMPOSE_ENGINE_URL@"
+  workers:
+    configuration:
+      adapter:
+        name: fs
+        config:
+          directory: "@COMPOSE_CONFIG_DIR@"
+    iii-worker-manager:
+      host: 127.0.0.1
+      port: @COMPOSE_ENGINE_PORT@
+    iii-stream: {}
+
+containers:
+  queue:
+    worker: "path://@QUEUE_WORKER_DIR@"
+    config_name: queue
+    environment:
+      LLVM_PROFILE_FILE: "@COMPOSE_LLVM_PROFILE_FILE@"
+    config_override:
+      adapter:
+        name: builtin
+        config:
+          store_method: file_based
+          file_path: "@COMPOSE_QUEUE_PATH@"
+          save_interval_ms: 1000
+    scripts:
+      run: "@QUEUE_BIN@"
+
+  iii-directory:
+    worker: "path://@III_DIRECTORY_WORKER_DIR@"
+    config_name: iii-directory
+    environment:
+      LLVM_PROFILE_FILE: "@COMPOSE_LLVM_PROFILE_FILE@"
+    config_override:
+      skills_folder: "@COMPOSE_SKILLS_DIR@"
+      local_skills_folder: "@COMPOSE_LOCAL_SKILLS_DIR@"
+      agents_folder: "@COMPOSE_AGENTS_DIR@"
+      global_agents_folder: "@COMPOSE_GLOBAL_AGENTS_DIR@"
+      agents_skills_folder: "@COMPOSE_AGENTS_SKILLS_DIR@"
+      global_agents_skills_folder: "@COMPOSE_GLOBAL_AGENTS_SKILLS_DIR@"
+      auto_download: false
+    scripts:
+      run: "@III_DIRECTORY_BIN@"
+
+  session-manager:
+    worker: "path://@SESSION_MANAGER_WORKER_DIR@"
+    config_name: session-manager
+    environment:
+      LLVM_PROFILE_FILE: "@COMPOSE_LLVM_PROFILE_FILE@"
+    config_override:
+      adapter:
+        name: fs
+        config:
+          data_dir: "@COMPOSE_SESSION_DIR@"
+    scripts:
+      run: "@SESSION_MANAGER_BIN@"
+
+  context-manager:
+    worker: "path://@CONTEXT_MANAGER_WORKER_DIR@"
+    config_name: context-manager
+    environment:
+      LLVM_PROFILE_FILE: "@COMPOSE_LLVM_PROFILE_FILE@"
+    config_override:
+      lease_dir: "@COMPOSE_LEASES_DIR@"
+    scripts:
+      run: "@CONTEXT_MANAGER_BIN@"
+
+  state:
+    worker: "path://@STATE_WORKER_DIR@"
+    config_name: state
+    environment:
+      LLVM_PROFILE_FILE: "@COMPOSE_LLVM_PROFILE_FILE@"
+    config_override:
+      adapter:
+        name: kv
+        config:
+          store_method: in_memory
+    scripts:
+      run: "@STATE_BIN@"
+
+  database:
+    worker: "path://@DATABASE_WORKER_DIR@"
+    config_name: database
+    environment:
+      LLVM_PROFILE_FILE: "@COMPOSE_LLVM_PROFILE_FILE@"
+    config_override:
+      databases:
+        primary:
+          url: "sqlite:@COMPOSE_DATABASE_PATH@"
+    scripts:
+      run: "@DATABASE_BIN@"

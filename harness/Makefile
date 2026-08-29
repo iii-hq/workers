@@ -30,7 +30,7 @@ RUST_WORKERS   := $(filter-out $(PYTHON_WORKERS),$(STACK))
 
 GOAL_ARGS        := $(filter-out help install-iii-rc build install-local clean cargo-clean dev-run dev-up dev-down dev-restart \
                     engine wait-engine wait-base wait-stack restart restart-worker stop stop-worker stop-work stop-engine status smoke logs attach \
-                    ensure-session prepare-scrapling require-engine where integration-test integration-coverage integration-playground integration-validate quickstart-validate,$(MAKECMDGOALS))
+                    ensure-session prepare-scrapling require-engine where integration-test integration-build integration-run integration-coverage integration-playground integration-validate quickstart-validate,$(MAKECMDGOALS))
 SELECTED_WORKERS := $(strip $(GOAL_ARGS))
 ACTIVE_WORKERS   := $(if $(SELECTED_WORKERS),$(SELECTED_WORKERS),$(STACK))
 UNKNOWN_WORKERS  := $(filter-out $(STACK),$(SELECTED_WORKERS))
@@ -42,7 +42,7 @@ RUN_FLAG   := $(if $(filter release,$(RUN_PROFILE)),--release,)
 
 .PHONY: help install-iii-rc build install-local clean cargo-clean dev-run dev-up dev-down dev-restart engine wait-engine wait-base wait-stack \
         restart restart-worker stop stop-worker stop-work stop-engine status smoke logs attach ensure-session prepare-scrapling \
-        require-engine where integration-test integration-coverage integration-playground integration-validate quickstart-validate $(STACK)
+        require-engine where integration-test integration-build integration-run integration-coverage integration-playground integration-validate quickstart-validate $(STACK)
 
 help:
 	@printf '%s\n' \
@@ -65,6 +65,8 @@ help:
 	  '  make cargo-clean [workers...]       cargo clean stack or selected workers' \
 	  '  make install-local [workers...]     build and symlink into ~/.iii/workers' \
 	  '  make integration-test III_BIN=<iii>  run the harness integration scenarios (tests/integration)' \
+	  '  make integration-build              build integration binaries without running scenarios' \
+	  '  make integration-run III_BIN=<iii>  run scenarios with binaries that are already built' \
 	  '  make integration-coverage III_BIN=<iii>  run the scenarios instrumented and emit an LLVM coverage report' \
 	  '  make integration-playground III_BIN=<iii>  open the Console against an isolated integration stack' \
 	  '  make integration-validate           validate every integration scenario' \
@@ -383,18 +385,23 @@ INTEGRATION_ARTIFACTS ?= $(REPO_ROOT)/target/integration
 INTEGRATION_PLAYGROUND_SCENARIO ?= console-streamed-text
 INTEGRATION_PLAYGROUND_ARTIFACTS ?= $(REPO_ROOT)/target/console-e2e
 
-integration-test:
-	@if [ -z "$(III_BIN)" ]; then \
-	  echo "III_BIN is required: path to the pinned iii engine binary."; \
-	  echo "Pinned source: harness/tests/integration/engine.lock"; \
-	  exit 3; \
-	fi
+integration-test: integration-build
+	@$(MAKE) --no-print-directory integration-run
+
+integration-build:
 	@for w in $(INTEGRATION_WORKERS) harness; do \
 	  echo "building $$w ($(INTEGRATION_PROFILE))"; \
 	  cargo build $(CARGO_BUILD_FLAGS) $(INTEGRATION_FLAG) --manifest-path "$(REPO_ROOT)/$$w/Cargo.toml" || exit 1; \
 	done
 	@echo "building harness-integration ($(INTEGRATION_PROFILE))"
 	@cargo build $(CARGO_BUILD_FLAGS) $(INTEGRATION_FLAG) --manifest-path "$(MAKEFILE_DIR)Cargo.toml" -p harness-integration
+
+integration-run:
+	@if [ -z "$(III_BIN)" ]; then \
+	  echo "III_BIN is required: path to the pinned iii engine binary."; \
+	  echo "Pinned source: harness/tests/integration/engine.lock"; \
+	  exit 3; \
+	fi
 	@"$(MAKEFILE_DIR)target/$(INTEGRATION_PROFILE)/harness-integration" \
 	  run \
 	  --engine-bin "$(III_BIN)" \
