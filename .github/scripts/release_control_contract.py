@@ -315,7 +315,7 @@ def authorize_dispatch(args: argparse.Namespace) -> int:
     body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     digest = "sha256:" + hashlib.sha256(body).hexdigest()
     request = urllib.request.Request(
-        args.api_url.rstrip("/") + "/api/executor-dispatches/authorize",
+        args.api_url.rstrip("/") + "/executor-dispatches/authorize",
         data=body,
         method="POST",
         headers={
@@ -337,7 +337,7 @@ def post_result(args: argparse.Namespace) -> int:
         raise ValueError("release result has the wrong contract")
     digest = "sha256:" + hashlib.sha256(body).hexdigest()
     request = urllib.request.Request(
-        args.api_url.rstrip("/") + "/api/executor-results",
+        args.api_url.rstrip("/") + "/executor-results",
         data=body,
         method="POST",
         headers={

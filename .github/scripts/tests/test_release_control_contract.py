@@ -123,6 +123,7 @@ def test_authorize_posts_nested_canonical_body_and_its_digest(monkeypatch):
     request = captured["request"]
     body = request.data
     payload = json.loads(body)
+    assert request.full_url == "https://release-control.example/executor-dispatches/authorize"
     assert set(payload) == {"identity", "executor", "subject"}
     assert set(payload["subject"]) == {"worker", "source_sha", "descriptor_sha256"}
     assert request.get_header("X-release-result-sha256") == "sha256:" + hashlib.sha256(body).hexdigest()
@@ -144,6 +145,7 @@ def test_post_result_sends_the_file_bytes_without_reserializing(tmp_path, monkey
     args = SimpleNamespace(result=result, api_url="https://release-control.example", audience="release-control-workers")
     assert contract.post_result(args) == 0
     request = captured["request"]
+    assert request.full_url == "https://release-control.example/executor-results"
     assert request.data == body
     assert request.get_header("X-release-result-sha256") == "sha256:" + hashlib.sha256(body).hexdigest()
 
