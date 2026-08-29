@@ -1084,7 +1084,7 @@ fetchers = [
 
 [[package]]
 name = "scrapling-worker"
-version = "0.2.9rc4"
+version = "0.2.9rc5"
 source = { editable = "." }
 dependencies = [
     { name = "iii-helpers" },
