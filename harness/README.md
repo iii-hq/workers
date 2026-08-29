@@ -203,11 +203,17 @@ operating-mode paragraph — resend the prompt fields to re-resolve.
 `options.agent` on a session-creating `harness::send` names a directory agent
 profile (`directory::agents::*`, one markdown file per profile). The harness
 resolves it ONCE via `directory::agents::get` and freezes the result onto the
-turn: `"You are <name>."` plus the file body becomes the enrich system prompt
-over the top-level identity, the profile's skill filter becomes the session's
-skill selection (an explicit `options.skills` wins), its `model` and optional
-provider-native `reasoning_effort` are authoritative for the session, and —
-when the send also omits
+turn: the profile's RESOLVED system prompt — the directory composes `extends`
+chains root-first, so `tech-lead` extending the bundled `iii` base arrives as
+the full iii doctrine followed by the tech-lead body — IS the session
+identity. Nothing built-in sits underneath it and no prefix is added; only the
+per-send `mode` paragraph goes in front, then the usual per-step runtime
+context (session id, working directory, policy aid, skills index, hook
+injections). A profile whose `extends` chain does not resolve is refused as an
+invalid request with the directory's D415 text. The profile's skill filter
+becomes the session's skill selection (an explicit `options.skills` wins), its
+`model` and optional provider-native `reasoning_effort` are authoritative for
+the session, and — when the send also omits
 `options.functions` — the dispatch policy defaults to the configured
 `default_functions` baseline instead of deny-all (an identity picked to DO
 something must be able to dispatch; the ask-mode cap still applies). The
@@ -218,8 +224,8 @@ inherit it, an explicit prompt field sheds it. Refused on an existing
 session or combined with either prompt field. Directory edits after
 resolution never reach a live session — start a new one to pick them up.
 
-`harness::spawn` takes the same id as a top-level `agent` field: the profile
-body enriches the sub-agent identity, its skills/model/effort slot in the same way
+`harness::spawn` takes the same id as a top-level `agent` field: the profile's
+resolved prompt is the child's whole identity, its skills/model/effort slot in the same way
 (model precedence profile → explicit `model` → parent, without dragging the parent's
 provider onto a foreign model), and its name and icon become the display
 defaults. Which agent profile a spawn names is the prompt's decision — the profile

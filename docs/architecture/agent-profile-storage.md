@@ -51,7 +51,46 @@ underscore validation.
 
 The current required frontmatter and non-empty body validation stays in
 place. Unknown frontmatter keys remain harmless, so fields that iii does not
-consume do not prevent a profile from loading.
+consume do not prevent a profile from loading. The keys iii consumes are
+`name`, `description`, `logo`, `skills`, `model`, `reasoning_effort`, `icon`,
+`color` and `extends`.
+
+## Inheritance
+
+`extends: <id>` names one parent profile; chains are allowed up to eight
+hops. The directory resolves the chain on every read — `list` and `get`
+serve resolved values, the harness never composes:
+
+- `system_prompt` = each ancestor's body root-first, then the profile's own
+  body, joined by a blank line. A profile without `extends` serves its own
+  body byte-for-byte.
+- `skills`, `model` and `reasoning_effort` fall back to the nearest ancestor
+  that sets them when the profile omits them. A non-empty `skills` list
+  replaces the parent's filter (no union); an empty list means "not narrowed
+  here", never "no skills".
+- `name`, `description`, `logo`, `icon` and `color` are always the
+  profile's own.
+
+A chain that does not resolve — unknown parent, loop, too deep — is
+reported fail-soft, mirroring `unknown_skills`: writes are not gated, and
+`list`/`get` serve the profile from its own file with `inheritance_error`
+(the `D415 invalid_input` text) set, so the editor can open and fix it; the
+harness refuses to run it until the chain resolves. A local `iii.md` that
+extends `iii` is a self-loop (the bundled copy it shadows is not in the
+catalog to extend).
+
+## Bundled base profiles `iii` and `iii-minimal`
+
+The worker binary embeds two agent profiles: `iii`, whose body is the harness
+default identity verbatim (a unit test pins the two copies to each other), and
+`iii-minimal`, the minimal directory-first identity (the same embedded file
+that serves as the bundled `iii-minimal` system prompt). Both follow the
+bundled system-prompt contract: always present in `list`/`get` with
+`builtin: true` and an empty `modified_at`, shadowed by a local
+`<agents_folder>/<id>.md`, `update` copy-on-writes that local file, `create`
+of the id writes the same shadow, `delete` of the local file falls back to
+the bundled copy, and nothing is ever seeded on disk. `extends: iii` builds
+on the full iii doctrine; `extends: iii-minimal` on the compact one.
 
 `model` and `reasoning_effort` are optional, verbatim catalog selections. A
 catalog key may include its provider (`provider::model`); the harness splits
@@ -120,9 +159,14 @@ events and suppress the corresponding external-write event.
 ## Compatibility with harness
 
 Harness remains storage-agnostic. `harness::send` and `harness::spawn` pass a
-flat agent profile id to `directory::agents::get` and freeze its prompt,
-skills, model, reasoning effort, display name, icon, and color. When a profile
-declares a model, that model and its effort are authoritative for the session.
+flat agent profile id to `directory::agents::get` and freeze its resolved
+prompt, skills, model, reasoning effort, display name, icon, and color. The
+resolved prompt IS the session identity — the harness puts no built-in prompt
+underneath it and adds no prefix; only the per-send `mode` paragraph goes in
+front, then the usual per-step runtime context. A profile served with
+`inheritance_error` is refused as an invalid request. When a profile declares
+(or inherits) a model, that model and its effort are authoritative for the
+session.
 The harness also writes the frozen display/configuration snapshot to
 `SessionMeta.metadata.agent_profile`, allowing the Console sidebar and panel
 header to identify the session without re-reading the mutable Directory

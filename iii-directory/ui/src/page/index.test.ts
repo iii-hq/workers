@@ -1,6 +1,7 @@
 import type { Host } from '@iii-dev/console-ui'
 import { expect, it, vi } from 'vitest'
 import {
+  agentsAdapter,
   HARNESS_DEFAULT_SYSTEM_PROMPT_KEY,
   systemPromptsAdapter,
 } from './index'
@@ -108,4 +109,44 @@ it('hides the built-in row once a local default exists', async () => {
     rows.some((row) => row.key === HARNESS_DEFAULT_SYSTEM_PROMPT_KEY),
   ).toBe(false)
   expect(rows.some((row) => row.key === 'default')).toBe(true)
+})
+
+it('lists the bundled base agent as an editable copy-on-write row', async () => {
+  const trigger = vi.fn(async (functionId: string) => {
+    if (functionId === 'directory::agents::list') {
+      return {
+        agents: [
+          {
+            id: 'iii',
+            name: 'iii',
+            description: 'Base.',
+            logo: null,
+            icon: null,
+            color: null,
+            modified_at: '',
+            builtin: true,
+          },
+          {
+            id: 'lead',
+            name: 'Lead',
+            description: 'Leads.',
+            logo: null,
+            icon: 'code',
+            color: null,
+            modified_at: '2026-01-01T00:00:00Z',
+          },
+        ],
+      }
+    }
+    throw new Error(`unexpected function: ${functionId}`)
+  })
+  const host = { iii: { browserId: 'browser-1', trigger } } as unknown as Host
+
+  const rows = await agentsAdapter.list(host)
+  expect(rows.find((row) => row.key === 'iii')).toMatchObject({
+    title: 'iii',
+    fine: 'Built-in · edits save a local override',
+    noDelete: true,
+  })
+  expect(rows.find((row) => row.key === 'lead')?.noDelete).toBeUndefined()
 })

@@ -16,7 +16,7 @@ use crate::functions::spawn::{SpawnRequest, SubagentDisplay};
 use crate::ids;
 use crate::policy;
 use crate::prompt;
-use crate::prompt::Mode;
+use crate::prompt::{Mode, SystemPromptOpts};
 use crate::trigger::ResultData;
 use crate::types::content::ContentBlock;
 use crate::types::turn::{fs_scope_metadata, FunctionPolicy, ParentLink, TurnOptions, TurnRecord};
@@ -249,7 +249,8 @@ async fn seed_child(
                 return Err(HarnessError::InvalidRequest(
                     "spawn `agent` supplies the child's system prompt; drop \
                      `options.system_prompt` or drop `agent` (with `agent` set, \
-                     `system_prompt_strategy` is ignored and enrich applies)"
+                     `system_prompt_strategy` is ignored: the profile's resolved \
+                     prompt is the child's whole identity)"
                         .into(),
                 ));
             }
@@ -284,9 +285,14 @@ async fn seed_child(
     // prompt); what makes a child a leaf is its POLICY (the control-plane
     // deny set), not a separate prompt. Spawn `options.system_prompt`
     // (+ override strategy) is the escape hatch for a child that genuinely
-    // needs a different identity; an `agent` profile enriches this same
-    // identity with its body.
-    let identity = prompt::effective_default(&deps.iii).await.identity;
+    // needs a different identity; an `agent` profile IS a different identity
+    // — its resolved prompt replaces the default outright, so the default is
+    // only fetched when no profile is set.
+    let identity = if agent.is_some() {
+        String::new()
+    } else {
+        prompt::effective_default(&deps.iii).await.identity
+    };
     let identity = identity.as_str();
 
     let orchestrator = req
@@ -335,12 +341,10 @@ async fn seed_child(
         model,
         provider,
         system_prompt: match agent.as_ref() {
-            Some(a) => prompt::resolve_system_prompt(
-                Some(a.prompt.clone()),
-                crate::prompt::SystemPromptStrategy::Enrich,
-                req.options.as_ref().and_then(|o| o.mode),
-                identity,
-            ),
+            Some(a) => Some(prompt::build_system_prompt(SystemPromptOpts {
+                mode: req.options.as_ref().and_then(|o| o.mode),
+                identity: &a.prompt,
+            })),
             None => prompt::resolve_system_prompt(
                 req.options.as_ref().and_then(|o| o.system_prompt.clone()),
                 req.options
@@ -1308,7 +1312,7 @@ mod tests {
                 icon: None,
                 color: None,
             },
-            prompt: format!("You are {name}.\n\nWork."),
+            prompt: format!("You are {name}. Work."),
             skills: None,
             model: None,
             reasoning_effort: None,

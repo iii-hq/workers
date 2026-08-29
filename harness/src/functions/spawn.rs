@@ -120,12 +120,14 @@ pub struct SpawnRequest {
     /// db: "primary"`); the child cannot infer resources from the parent.
     pub task: MessageInput,
     /// Run the child as a directory agent profile (`directory::agents::*`
-    /// id). The profile's body becomes the child's enrich system prompt
-    /// (over the shared identity), its skill
-    /// filter applies when `options.skills` is omitted, its `model` slots
-    /// between an explicit `model` and the parent's, and its name/icon become
-    /// the display defaults. Which agent profile to name is the prompt's decision.
-    /// Refused combined with `options.system_prompt`.
+    /// id). The profile's resolved system prompt (its `extends` chain
+    /// composed by the directory) becomes the child's whole identity — no
+    /// shared identity underneath, only the `mode` paragraph in front — its
+    /// skill filter applies when `options.skills` is omitted, its `model`
+    /// slots between an explicit `model` and the parent's, and its name/icon
+    /// become the display defaults. Which agent profile to name is the
+    /// prompt's decision. Refused combined with `options.system_prompt`, and
+    /// when the profile's `extends` chain does not resolve.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
     /// Optional display-only identity for the child session. This never affects
