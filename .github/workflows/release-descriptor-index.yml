@@ -37,6 +37,27 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Verify approved compiler bytes
+        env:
+          APPROVED_COMPILER_DIGEST: 72b4a2c33f293d57235ad527f6f74c8d4bc2067e381554c94eb360250c2256f7
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+
+          digest = hashlib.sha256()
+          digest.update(b"iii-workers-release-compiler\0")
+          digest.update(Path(".github/scripts/release_compiler.py").read_bytes())
+          digest.update(b"\0release-descriptor-schema\0")
+          digest.update(Path(".github/contracts/release-descriptor.schema.json").read_bytes())
+          actual = digest.hexdigest()
+          expected = os.environ["APPROVED_COMPILER_DIGEST"]
+          if actual != expected:
+              raise SystemExit(f"unapproved release compiler bytes: expected {expected}, got {actual}")
+          PY
+
       - name: Install descriptor validators
         run: python -m pip install --disable-pip-version-check --quiet pyyaml jsonschema
 

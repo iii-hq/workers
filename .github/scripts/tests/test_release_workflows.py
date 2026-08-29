@@ -115,6 +115,20 @@ def test_release_train_never_reads_public_worker_manifests():
         assert "iii.worker.yaml" not in path.read_text(encoding="utf-8"), path
 
 
+def test_descriptor_index_independently_verifies_approved_compiler_bytes():
+    text = body("release-descriptor-index.yml")
+    assert "Verify approved compiler bytes" in text
+    assert (
+        "APPROVED_COMPILER_DIGEST: "
+        "72b4a2c33f293d57235ad527f6f74c8d4bc2067e381554c94eb360250c2256f7"
+    ) in text
+    assert 'digest.update(b"iii-workers-release-compiler\\0")' in text
+    assert 'Path(".github/scripts/release_compiler.py").read_bytes()' in text
+    assert 'digest.update(b"\\0release-descriptor-schema\\0")' in text
+    assert 'Path(".github/contracts/release-descriptor.schema.json").read_bytes()' in text
+    assert "unapproved release compiler bytes" in text
+
+
 def test_release_prepare_fans_one_job_per_compiled_build_unit():
     text = body("release-prepare.yml")
     assert "descriptor_run_id" in text
