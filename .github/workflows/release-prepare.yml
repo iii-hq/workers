@@ -160,10 +160,12 @@ jobs:
         id: descriptor
         run: |
           set -euo pipefail
-          echo "prepared_sha=$(jq -r .source_sha release-input/release-descriptor.json)" >> "$GITHUB_OUTPUT"
-          echo "matrix=$(python3 .github/scripts/release_train.py matrix --descriptor release-input/release-descriptor.json)" >> "$GITHUB_OUTPUT"
-          echo "artifact=release-descriptor-$OPERATION_ID-$STEP_ID" >> "$GITHUB_OUTPUT"
-          echo "frontend_artifact=release-frontend-$OPERATION_ID-$STEP_ID" >> "$GITHUB_OUTPUT"
+          {
+            echo "prepared_sha=$(jq -r .source_sha release-input/release-descriptor.json)"
+            echo "matrix=$(python3 .github/scripts/release_train.py matrix --descriptor release-input/release-descriptor.json)"
+            echo "artifact=release-descriptor-$OPERATION_ID-$STEP_ID"
+            echo "frontend_artifact=release-frontend-$OPERATION_ID-$STEP_ID"
+          } >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
@@ -352,7 +354,10 @@ jobs:
             exit 0
           fi
 
-          engine_pid= adapter_pid= container_name= image_name=
+          engine_pid=''
+          adapter_pid=''
+          container_name=''
+          image_name=''
           cleanup() {
             if [[ -n "$container_name" ]]; then docker rm -f "$container_name" >/dev/null 2>&1 || true; fi
             if [[ -n "$image_name" ]]; then docker image rm "$image_name" >/dev/null 2>&1 || true; fi

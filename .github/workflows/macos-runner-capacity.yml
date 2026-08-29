@@ -24,9 +24,11 @@ jobs:
           echo "slot=1 runner=$RUNNER_NAME arch=$(uname -m) started=$started"
           sleep 60
           finished=$(date -u +%s)
-          echo "started=$started" >> "$GITHUB_OUTPUT"
-          echo "finished=$finished" >> "$GITHUB_OUTPUT"
-          echo "runner=$RUNNER_NAME" >> "$GITHUB_OUTPUT"
+          {
+            echo "started=$started"
+            echo "finished=$finished"
+            echo "runner=$RUNNER_NAME"
+          } >> "$GITHUB_OUTPUT"
   macos-slot-2:
     runs-on: workers-release-macos-12core
     timeout-minutes: 5
@@ -42,9 +44,11 @@ jobs:
           echo "slot=2 runner=$RUNNER_NAME arch=$(uname -m) started=$started"
           sleep 60
           finished=$(date -u +%s)
-          echo "started=$started" >> "$GITHUB_OUTPUT"
-          echo "finished=$finished" >> "$GITHUB_OUTPUT"
-          echo "runner=$RUNNER_NAME" >> "$GITHUB_OUTPUT"
+          {
+            echo "started=$started"
+            echo "finished=$finished"
+            echo "runner=$RUNNER_NAME"
+          } >> "$GITHUB_OUTPUT"
   macos-slot-3:
     runs-on: workers-release-macos-12core
     timeout-minutes: 5
@@ -60,9 +64,11 @@ jobs:
           echo "slot=3 runner=$RUNNER_NAME arch=$(uname -m) started=$started"
           sleep 60
           finished=$(date -u +%s)
-          echo "started=$started" >> "$GITHUB_OUTPUT"
-          echo "finished=$finished" >> "$GITHUB_OUTPUT"
-          echo "runner=$RUNNER_NAME" >> "$GITHUB_OUTPUT"
+          {
+            echo "started=$started"
+            echo "finished=$finished"
+            echo "runner=$RUNNER_NAME"
+          } >> "$GITHUB_OUTPUT"
 
   prove-overlap:
     needs: [macos-slot-1, macos-slot-2, macos-slot-3]
@@ -101,9 +107,11 @@ jobs:
           echo "slot=arm-1 runner=$RUNNER_NAME arch=$(uname -m) started=$started"
           sleep 60
           finished=$(date -u +%s)
-          echo "started=$started" >> "$GITHUB_OUTPUT"
-          echo "finished=$finished" >> "$GITHUB_OUTPUT"
-          echo "runner=$RUNNER_NAME" >> "$GITHUB_OUTPUT"
+          {
+            echo "started=$started"
+            echo "finished=$finished"
+            echo "runner=$RUNNER_NAME"
+          } >> "$GITHUB_OUTPUT"
 
   macos-arm-slot-2:
     runs-on: workers-release-macos-arm-5core
@@ -120,9 +128,11 @@ jobs:
           echo "slot=arm-2 runner=$RUNNER_NAME arch=$(uname -m) started=$started"
           sleep 60
           finished=$(date -u +%s)
-          echo "started=$started" >> "$GITHUB_OUTPUT"
-          echo "finished=$finished" >> "$GITHUB_OUTPUT"
-          echo "runner=$RUNNER_NAME" >> "$GITHUB_OUTPUT"
+          {
+            echo "started=$started"
+            echo "finished=$finished"
+            echo "runner=$RUNNER_NAME"
+          } >> "$GITHUB_OUTPUT"
 
   macos-arm-slot-3:
     runs-on: workers-release-macos-arm-5core
@@ -139,9 +149,11 @@ jobs:
           echo "slot=arm-3 runner=$RUNNER_NAME arch=$(uname -m) started=$started"
           sleep 60
           finished=$(date -u +%s)
-          echo "started=$started" >> "$GITHUB_OUTPUT"
-          echo "finished=$finished" >> "$GITHUB_OUTPUT"
-          echo "runner=$RUNNER_NAME" >> "$GITHUB_OUTPUT"
+          {
+            echo "started=$started"
+            echo "finished=$finished"
+            echo "runner=$RUNNER_NAME"
+          } >> "$GITHUB_OUTPUT"
 
   prove-arm-overlap:
     needs: [macos-arm-slot-1, macos-arm-slot-2, macos-arm-slot-3]

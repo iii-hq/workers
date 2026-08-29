@@ -158,7 +158,8 @@ jobs:
           )
           PY
 
-          engine_pid= compose_pid=
+          engine_pid=''
+          compose_pid=''
           cleanup() {
             if [[ -n "$compose_pid" ]]; then
               kill -TERM "$compose_pid" >/dev/null 2>&1 || true

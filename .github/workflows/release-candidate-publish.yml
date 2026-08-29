@@ -333,10 +333,12 @@ jobs:
             --before unknown --mutation "$registry_mutation" --after "$registry_state")
           image_state=$(python3 .github/scripts/release_effects.py classify \
             --before unknown --mutation "$mutation" --after "$image_state")
-          echo "github_state=$github_state" >>"$GITHUB_OUTPUT"
-          echo "registry_state=$registry_state" >>"$GITHUB_OUTPUT"
-          echo "image_state=$image_state" >>"$GITHUB_OUTPUT"
-          echo "image_digest=$image_digest" >>"$GITHUB_OUTPUT"
+          {
+            echo "github_state=$github_state"
+            echo "registry_state=$registry_state"
+            echo "image_state=$image_state"
+            echo "image_digest=$image_digest"
+          } >>"$GITHUB_OUTPUT"
       - name: Write byte-exact result
         if: always()
         env:
