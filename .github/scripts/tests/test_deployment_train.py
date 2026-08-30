@@ -15,6 +15,7 @@ from deployment_train import (
     frontend_metadata,
     normalized_tar,
     normalized_zip,
+    prepare,
     select_descriptor,
 )
 
@@ -63,6 +64,29 @@ def descriptor(worker: str, source_sha: str, package_manifest_version: str) -> d
             "readme": "",
         },
     })
+
+
+def test_prepare_accepts_exact_target_independent_of_manifest_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_sha = "a" * 40
+    selected = descriptor("smoke", source_sha, "0.1.0")
+    descriptor_path = tmp_path / "deployment-descriptor.json"
+    descriptor_path.write_text(json.dumps(selected), encoding="utf-8")
+    monkeypatch.setattr(
+        deployment_train.subprocess,
+        "check_output",
+        lambda *_args, **_kwargs: source_sha + "\n",
+    )
+
+    assert prepare(argparse.Namespace(
+        worker="smoke",
+        source_sha=source_sha,
+        target_version="2.0.0-beta",
+        channel="next",
+        descriptor_sha256=selected["descriptor_sha256"],
+        descriptor=descriptor_path,
+    )) == 0
 
 
 def test_select_descriptor_preserves_compiler_bytes(tmp_path: Path) -> None:

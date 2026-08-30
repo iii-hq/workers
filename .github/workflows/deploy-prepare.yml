@@ -1,13 +1,16 @@
 name: Deployment Prepare
-run-name: RC prepare · ${{ inputs.worker }} · ${{ fromJSON(inputs.identity).operation_id }} · ${{ fromJSON(inputs.identity).step_id }} · ${{ fromJSON(inputs.identity).dispatch_nonce }}
+run-name: Deployment prepare · ${{ inputs.worker }} · ${{ fromJSON(inputs.identity).deployment_batch_id }} · ${{ fromJSON(inputs.identity).deployment_target_id }} · ${{ fromJSON(inputs.identity).step_id }} · ${{ fromJSON(inputs.identity).dispatch_nonce }}
 
 on:
   workflow_dispatch:
     inputs:
       identity: {required: true, type: string}
       worker: {required: true, type: string}
-      stable_version: {required: true, type: string}
-      candidate_version: {required: true, type: string}
+      target_version: {required: true, type: string}
+      channel:
+        required: true
+        type: choice
+        options: [next, latest]
       source_sha: {required: true, type: string}
       descriptor_sha256: {required: true, type: string}
       descriptor_run_id: {required: true, type: string}
@@ -15,16 +18,15 @@ on:
 
 env:
   DEPLOYMENT_IDENTITY: ${{ inputs.identity }}
-  OPERATION_ID: ${{ fromJSON(inputs.identity).operation_id }}
+  DEPLOYMENT_BATCH_ID: ${{ fromJSON(inputs.identity).deployment_batch_id }}
+  DEPLOYMENT_TARGET_ID: ${{ fromJSON(inputs.identity).deployment_target_id }}
   STEP_ID: ${{ fromJSON(inputs.identity).step_id }}
-  DEPLOYMENT_INTENT_ID: ${{ fromJSON(inputs.identity).deployment_intent_id }}
-  CANDIDATE_ID: ${{ fromJSON(inputs.identity).candidate_id }}
   ATTEMPT_ID: ${{ fromJSON(inputs.identity).attempt_id }}
   DISPATCH_NONCE: ${{ fromJSON(inputs.identity).dispatch_nonce }}
   PLAN_HASH: ${{ fromJSON(inputs.identity).plan_hash }}
   WORKER: ${{ inputs.worker }}
-  STABLE_VERSION: ${{ inputs.stable_version }}
-  CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+  TARGET_VERSION: ${{ inputs.target_version }}
+  DEPLOYMENT_CHANNEL: ${{ inputs.channel }}
   SOURCE_SHA: ${{ inputs.source_sha }}
   DESCRIPTOR_SHA256: ${{ inputs.descriptor_sha256 }}
   DESCRIPTOR_RUN_ID: ${{ inputs.descriptor_run_id }}
@@ -81,7 +83,6 @@ jobs:
           pip install --quiet pyyaml
           python3 .github/scripts/deployment_control_contract.py validate-identity --identity "$DEPLOYMENT_IDENTITY"
           python3 .github/scripts/deployment_control_contract.py validate-dispatch \
-            --operation-id "$OPERATION_ID" \
             --step-id "$STEP_ID" \
             --dispatch-nonce "$DISPATCH_NONCE" \
             --descriptor-sha256 "$DESCRIPTOR_SHA256" \
@@ -90,15 +91,16 @@ jobs:
             --mutating
           python3 .github/scripts/deployment_control_contract.py authorize-dispatch \
             --api-url "$RELEASE_CONTROL_API_URL" \
-            --operation-id "$OPERATION_ID" \
             --step-id "$STEP_ID" \
             --dispatch-nonce "$DISPATCH_NONCE" \
-            --deployment-intent-id "$DEPLOYMENT_INTENT_ID" \
-            --candidate-id "$CANDIDATE_ID" \
+            --deployment-batch-id "$DEPLOYMENT_BATCH_ID" \
+            --deployment-target-id "$DEPLOYMENT_TARGET_ID" \
             --attempt-id "$ATTEMPT_ID" \
             --plan-hash "$PLAN_HASH" \
             --worker "$WORKER" \
             --source-sha "$SOURCE_SHA" \
+            --target-version "$TARGET_VERSION" \
+            --channel "$DEPLOYMENT_CHANNEL" \
             --descriptor-sha256 "$DESCRIPTOR_SHA256" \
             --repository '${{ github.repository }}' \
             --workflow 'deploy-prepare.yml' \
@@ -113,8 +115,8 @@ jobs:
           python3 .github/scripts/deployment_train.py prepare \
             --worker "$WORKER" \
             --source-sha "$SOURCE_SHA" \
-            --candidate-version "$CANDIDATE_VERSION" \
-            --stable-version "$STABLE_VERSION" \
+            --target-version "$TARGET_VERSION" \
+            --channel "$DEPLOYMENT_CHANNEL" \
             --descriptor-sha256 "$DESCRIPTOR_SHA256" \
             --descriptor deployment-input/deployment-descriptor.json
 
@@ -147,7 +149,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ steps.frontend-pnpm.outputs.store_path }}
-          key: release-frontend-${{ steps.frontend.outputs.package_manager_version }}-node${{ steps.frontend.outputs.runtime_version }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.frontend.outputs.lock_sha256 }}
+          key: deployment-frontend-${{ steps.frontend.outputs.package_manager_version }}-node${{ steps.frontend.outputs.runtime_version }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.frontend.outputs.lock_sha256 }}
 
       - name: Build embedded frontends once
         run: >-
@@ -162,20 +164,20 @@ jobs:
           {
             echo "prepared_sha=$(jq -r .source_sha deployment-input/deployment-descriptor.json)"
             echo "matrix=$(python3 .github/scripts/deployment_train.py matrix --descriptor deployment-input/deployment-descriptor.json)"
-            echo "artifact=deployment-descriptor-$OPERATION_ID-$STEP_ID"
-            echo "frontend_artifact=release-frontend-$OPERATION_ID-$STEP_ID"
+            echo "artifact=deployment-descriptor-$DEPLOYMENT_TARGET_ID-$STEP_ID"
+            echo "frontend_artifact=deployment-frontend-$DEPLOYMENT_TARGET_ID-$STEP_ID"
           } >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: deployment-descriptor-${{ env.OPERATION_ID }}-${{ env.STEP_ID }}
+          name: deployment-descriptor-${{ env.DEPLOYMENT_TARGET_ID }}-${{ env.STEP_ID }}
           path: deployment-input/deployment-descriptor.json
           if-no-files-found: error
           retention-days: 7
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: release-frontend-${{ env.OPERATION_ID }}-${{ env.STEP_ID }}
+          name: deployment-frontend-${{ env.DEPLOYMENT_TARGET_ID }}-${{ env.STEP_ID }}
           path: .release-frontend/
           if-no-files-found: error
           include-hidden-files: true
@@ -234,7 +236,7 @@ jobs:
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: release-assembled-${{ env.CANDIDATE_ID }}
+          name: deployment-assembled-${{ env.DEPLOYMENT_TARGET_ID }}
           path: deploy-prepared/
           if-no-files-found: error
           retention-days: 7
@@ -256,7 +258,7 @@ jobs:
 
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
-          name: release-assembled-${{ env.CANDIDATE_ID }}
+          name: deployment-assembled-${{ env.DEPLOYMENT_TARGET_ID }}
           path: deploy-prepared
 
       - name: Stage prepared bytes through the descriptor adapter
@@ -386,7 +388,7 @@ jobs:
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: deploy-prepared-${{ env.CANDIDATE_ID }}
+          name: deployment-prepared-${{ env.DEPLOYMENT_TARGET_ID }}
           path: deploy-prepared/
           if-no-files-found: error
           retention-days: 7
@@ -408,7 +410,7 @@ jobs:
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         continue-on-error: true
         with:
-          name: deploy-prepared-${{ env.CANDIDATE_ID }}
+          name: deployment-prepared-${{ env.DEPLOYMENT_TARGET_ID }}
           path: deploy-prepared
 
       - name: Write release result
@@ -432,15 +434,14 @@ jobs:
           effects=$(jq -nc --arg id "$SOURCE_SHA" --arg state "$state" '[{surface:"source-snapshot",state:$state,immutable_id:$id}]')
           python3 .github/scripts/deployment_control_contract.py write-result \
             --repository '${{ github.repository }}' \
-            --operation-id "$OPERATION_ID" \
             --step-id "$STEP_ID" \
             --run-id '${{ github.run_id }}' \
             --run-attempt '${{ github.run_attempt }}' \
             --workflow 'deploy-prepare.yml' \
             --event '${{ github.event_name }}' \
             --sha '${{ github.sha }}' \
-            --deployment-intent-id "$DEPLOYMENT_INTENT_ID" \
-            --candidate-id "$CANDIDATE_ID" \
+            --deployment-batch-id "$DEPLOYMENT_BATCH_ID" \
+            --deployment-target-id "$DEPLOYMENT_TARGET_ID" \
             --attempt-id "$ATTEMPT_ID" \
             --dispatch-nonce "$DISPATCH_NONCE" \
             --plan-hash "$PLAN_HASH" \
@@ -448,8 +449,8 @@ jobs:
             --phase prepare \
             --source-sha "$SOURCE_SHA" \
             --prepared-sha "$SOURCE_SHA" \
-            --candidate-version "$CANDIDATE_VERSION" \
-            --stable-version "$STABLE_VERSION" \
+            --target-version "$TARGET_VERSION" \
+            --channel "$DEPLOYMENT_CHANNEL" \
             --descriptor-sha256 "$DESCRIPTOR_SHA256" \
             --outcome "$outcome" \
             --effects "$effects" \
@@ -460,7 +461,7 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: deployment-result-${{ env.CANDIDATE_ID }}-${{ env.STEP_ID }}-attempt-${{ github.run_attempt }}
+          name: deployment-result-${{ env.DEPLOYMENT_TARGET_ID }}-${{ env.STEP_ID }}-attempt-${{ github.run_attempt }}
           path: deployment-result.json
           if-no-files-found: error
           retention-days: 30

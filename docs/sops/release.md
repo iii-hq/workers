@@ -7,9 +7,9 @@ directly, or retag GHCR outside a Release Control recovery operation.
 ## Before starting
 
 The selected source commit must contain the worker's `.deploy/workers.yaml`
-entry and public `iii.worker.yaml`. The package-manifest version is recorded as
-source metadata; Release Control owns the independent published RC and stable
-versions. Prepare never bumps, commits, or pushes source.
+entry and public `iii.worker.yaml`. The package-manifest version is source
+metadata; Release Control owns the independent exact `target_version`. Prepare
+never bumps, commits, or pushes source.
 
 [`deploy-descriptor-index.yml`](../../.github/workflows/deploy-descriptor-index.yml)
 compiles every worker at the source SHA with the Workers-owned compiler.
@@ -24,17 +24,17 @@ planning.
    builds one job per target, boots the prepared adapter, snapshots its typed
    interface, and uploads byte-unchanged inputs plus `deployment-evidence.json`
    with the SHA-256 and size of every descriptor, interface and build artifact.
-2. `deploy-candidate-publish.yml` publishes GitHub assets, a digest-pinned OCI
-   image when applicable, the immutable Registry candidate, and assigns `next`.
-3. `deploy-stable-publish.yml` publishes the stable identity from the prepared
-   bytes without rebuilding and CASes `next` from the promoted RC to stable.
-4. `deploy-image-alias.yml` moves the requested OCI alias by immutable digest.
-5. `deploy-finalize.yml` CASes `latest` only after `next` resolves to stable.
-6. `deploy-verify.yml` verifies GitHub, Registry and optional GHCR surfaces.
+2. `deploy-publish.yml` publishes or proves GitHub assets, the exact Registry
+   version and a digest-pinned OCI image when applicable, then CASes the
+   requested `next` or `latest` channel from the value captured in the plan.
+   For `latest`, it first advances `next` only when the target is ahead and
+   never moves `next` backwards. The OCI channel alias is updated by digest in
+   this same workflow.
+3. `deploy-verify.yml` verifies GitHub, Registry and optional GHCR surfaces.
 
 Every entrypoint authorizes with GitHub OIDC audience
 `release-control-workers`. It uploads
-`deployment-result-<candidate-id>-<step-id>-attempt-<run-attempt>` containing the
+`deployment-result-<deployment-target-id>-<step-id>-attempt-<run-attempt>` containing the
 single file `deployment-result.json`, then posts those exact bytes to Release
 Control with their SHA-256 header.
 
@@ -42,7 +42,7 @@ Control with their SHA-256 header.
 
 Use the failed operation's recovery action in Release Control. A recovery gets
 a new operation/step/nonce and reuses immutable descriptor and prepared
-artifacts. Results report effects as `unknown` when the workflow cannot prove a
+artifacts for the same exact target. Results report effects as `unknown` when the workflow cannot prove a
 mutation completed, allowing reconciliation without pretending success.
 
 If either physical macOS runner pool cannot schedule three independent jobs,

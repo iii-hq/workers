@@ -25,7 +25,7 @@ source document.
 For a first-party package, set private `publish: true` and put its non-empty
 license, description, dependency ranges, configuration, and discovery tags in
 the public manifest. Fixtures use private `publish: false` and are never
-release candidates.
+deployment targets.
 
 Never put API keys, tokens, `III_*` connection settings, or mutable external
 references in public defaults; the compiler rejects them before producing the
@@ -60,9 +60,10 @@ workflow when startup, sidecars, or external protocol behavior needs coverage.
 
 ## Release readiness
 
-Commit the exact candidate version in `source.package_manifest`. The descriptor
-index workflow compiles it at the merged source SHA; Release Control cannot
-plan a different version and prepare will never edit it. Ensure each declared
+Commit the source metadata in `source.package_manifest`. The descriptor index
+workflow records its version at the merged source SHA, while Release Control
+selects the exact deployment target version independently. Prepare never edits
+the manifest. Ensure each declared
 bundle file exists, every Rust target is supported, and OCI Docker inputs are
 fully pinned before requesting a release.
 

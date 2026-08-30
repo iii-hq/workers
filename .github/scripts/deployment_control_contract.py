@@ -15,23 +15,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 
+import _lib
+
 
 PHASES = {
     "prepare",
-    "candidate_publish",
-    "stable_publish",
-    "image_alias",
-    "finalize",
+    "publish",
     "verify",
 }
 PHASE_WORKFLOWS = {phase: f"deploy-{phase.replace('_', '-')}.yml" for phase in PHASES}
 WORKER_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
 WORKFLOW_RE = re.compile(r"(?:\.github/workflows/)?[a-zA-Z0-9_.-]+\.ya?ml")
 IDENTITY_FIELDS = {
-    "operation_id",
+    "deployment_batch_id",
+    "deployment_target_id",
     "step_id",
-    "deployment_intent_id",
-    "candidate_id",
     "attempt_id",
     "dispatch_nonce",
     "plan_hash",
@@ -74,6 +72,16 @@ def nullable(value: str | None) -> str | None:
     return None if value in (None, "", "none", "null") else value
 
 
+def deployment_channel(value: str) -> str:
+    if value not in {"next", "latest"}:
+        raise ValueError("channel must be next or latest")
+    return value
+
+
+def target_version(value: str) -> str:
+    return _lib.validate_deployment_target_version(value)
+
+
 def validate_executor(args: argparse.Namespace) -> None:
     if args.repository != "iii-hq/workers":
         raise ValueError("Workers deployment executions require repository=iii-hq/workers")
@@ -99,14 +107,14 @@ def identity_value(raw: str) -> dict[str, str]:
     assert isinstance(identity, dict)
     if set(identity) != IDENTITY_FIELDS:
         raise ValueError(
-            "identity fields differ from release contract: "
+            "identity fields differ from deployment contract: "
             f"missing={sorted(IDENTITY_FIELDS - set(identity))} "
             f"unknown={sorted(set(identity) - IDENTITY_FIELDS)}"
         )
     if not all(isinstance(identity[field], str) and identity[field] for field in IDENTITY_FIELDS):
         raise ValueError("identity fields must be non-empty strings")
     for field in (
-        "operation_id", "step_id", "deployment_intent_id", "candidate_id", "attempt_id", "dispatch_nonce",
+        "deployment_batch_id", "deployment_target_id", "step_id", "attempt_id", "dispatch_nonce",
     ):
         uuid_value(identity[field], field)
     sha256_hex(identity["plan_hash"], "plan_hash")
@@ -119,7 +127,6 @@ def validate_identity(args: argparse.Namespace) -> int:
 
 
 def validate_dispatch(args: argparse.Namespace) -> int:
-    uuid_value(args.operation_id, "operation_id")
     uuid_value(args.step_id, "step_id")
     uuid_value(args.dispatch_nonce, "dispatch_nonce")
     sha256_hex(args.descriptor_sha256, "descriptor_sha256")
@@ -191,15 +198,12 @@ def write_result(args: argparse.Namespace) -> int:
     if args.workflow != PHASE_WORKFLOWS[args.phase]:
         raise ValueError(f"phase {args.phase} requires workflow {PHASE_WORKFLOWS[args.phase]}")
     prepared_sha = nullable(args.prepared_sha)
-    candidate_version = nullable(args.candidate_version)
-    stable_version = nullable(args.stable_version)
     payload = {
         "contract": "deployment-execution",
         "identity": {
-            "operation_id": uuid_value(args.operation_id, "operation_id"),
+            "deployment_batch_id": uuid_value(args.deployment_batch_id, "deployment_batch_id"),
+            "deployment_target_id": uuid_value(args.deployment_target_id, "deployment_target_id"),
             "step_id": uuid_value(args.step_id, "step_id"),
-            "deployment_intent_id": uuid_value(args.deployment_intent_id, "deployment_intent_id"),
-            "candidate_id": uuid_value(args.candidate_id, "candidate_id"),
             "attempt_id": uuid_value(args.attempt_id, "attempt_id"),
             "dispatch_nonce": uuid_value(args.dispatch_nonce, "dispatch_nonce"),
             "plan_hash": sha256_hex(args.plan_hash, "plan_hash"),
@@ -217,8 +221,8 @@ def write_result(args: argparse.Namespace) -> int:
             "phase": args.phase,
             "source_sha": commit_sha(args.source_sha, "source_sha"),
             "prepared_sha": commit_sha(prepared_sha, "prepared_sha") if prepared_sha else None,
-            "candidate_version": candidate_version,
-            "stable_version": stable_version,
+            "target_version": target_version(args.target_version),
+            "channel": deployment_channel(args.channel),
             "descriptor_sha256": sha256_hex(args.descriptor_sha256, "descriptor_sha256"),
         },
         "outcome": args.outcome,
@@ -283,10 +287,9 @@ def authorize_dispatch(args: argparse.Namespace) -> int:
     validate_executor(args)
     payload = {
         "identity": {
-            "operation_id": uuid_value(args.operation_id, "operation_id"),
+            "deployment_batch_id": uuid_value(args.deployment_batch_id, "deployment_batch_id"),
+            "deployment_target_id": uuid_value(args.deployment_target_id, "deployment_target_id"),
             "step_id": uuid_value(args.step_id, "step_id"),
-            "deployment_intent_id": uuid_value(args.deployment_intent_id, "deployment_intent_id"),
-            "candidate_id": uuid_value(args.candidate_id, "candidate_id"),
             "attempt_id": uuid_value(args.attempt_id, "attempt_id"),
             "dispatch_nonce": uuid_value(args.dispatch_nonce, "dispatch_nonce"),
             "plan_hash": sha256_hex(args.plan_hash, "plan_hash"),
@@ -302,6 +305,8 @@ def authorize_dispatch(args: argparse.Namespace) -> int:
         "subject": {
             "worker": validate_worker(args.worker),
             "source_sha": commit_sha(args.source_sha, "source_sha"),
+            "target_version": target_version(args.target_version),
+            "channel": deployment_channel(args.channel),
             "descriptor_sha256": sha256_hex(args.descriptor_sha256, "descriptor_sha256"),
         },
     }
@@ -327,7 +332,7 @@ def post_result(args: argparse.Namespace) -> int:
     body = args.result.read_bytes()
     payload = json.loads(body)
     if not isinstance(payload, dict) or payload.get("contract") != "deployment-execution":
-        raise ValueError("release result has the wrong contract")
+        raise ValueError("deployment result has the wrong contract")
     digest = "sha256:" + hashlib.sha256(body).hexdigest()
     request = urllib.request.Request(
         args.api_url.rstrip("/") + "/executor-results",
@@ -348,7 +353,6 @@ def post_result(args: argparse.Namespace) -> int:
 
 def add_executor_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--repository", required=True)
-    parser.add_argument("--operation-id", required=True)
     parser.add_argument("--step-id", required=True)
     parser.add_argument("--run-id", type=int, required=True)
     parser.add_argument("--run-attempt", type=int, required=True)
@@ -366,7 +370,6 @@ def parser() -> argparse.ArgumentParser:
     identity.set_defaults(handler=validate_identity)
 
     validate = commands.add_parser("validate-dispatch")
-    validate.add_argument("--operation-id", required=True)
     validate.add_argument("--step-id", required=True)
     validate.add_argument("--dispatch-nonce", required=True)
     validate.add_argument("--descriptor-sha256", required=True)
@@ -379,8 +382,8 @@ def parser() -> argparse.ArgumentParser:
 
     write = commands.add_parser("write-result")
     add_executor_args(write)
-    write.add_argument("--deployment-intent-id", required=True)
-    write.add_argument("--candidate-id", required=True)
+    write.add_argument("--deployment-batch-id", required=True)
+    write.add_argument("--deployment-target-id", required=True)
     write.add_argument("--attempt-id", required=True)
     write.add_argument("--dispatch-nonce", required=True)
     write.add_argument("--plan-hash", required=True)
@@ -388,8 +391,8 @@ def parser() -> argparse.ArgumentParser:
     write.add_argument("--phase", choices=sorted(PHASES), required=True)
     write.add_argument("--source-sha", required=True)
     write.add_argument("--prepared-sha", default="none")
-    write.add_argument("--candidate-version", default="none")
-    write.add_argument("--stable-version", default="none")
+    write.add_argument("--target-version", required=True)
+    write.add_argument("--channel", choices=["next", "latest"], required=True)
     write.add_argument("--descriptor-sha256", required=True)
     write.add_argument("--outcome", choices=["succeeded", "failed", "canceled"], required=True)
     write.add_argument("--effects", required=True)
@@ -401,6 +404,7 @@ def parser() -> argparse.ArgumentParser:
 
     test = commands.add_parser("write-test-result")
     add_executor_args(test)
+    test.add_argument("--operation-id", required=True)
     test.add_argument("--kind", required=True)
     test.add_argument("--subject", required=True)
     test.add_argument("--checks", required=True)
@@ -413,13 +417,15 @@ def parser() -> argparse.ArgumentParser:
     authorize.add_argument("--api-url", required=True)
     authorize.add_argument("--audience", default="release-control-workers")
     add_executor_args(authorize)
-    authorize.add_argument("--deployment-intent-id", required=True)
-    authorize.add_argument("--candidate-id", required=True)
+    authorize.add_argument("--deployment-batch-id", required=True)
+    authorize.add_argument("--deployment-target-id", required=True)
     authorize.add_argument("--attempt-id", required=True)
     authorize.add_argument("--dispatch-nonce", required=True)
     authorize.add_argument("--plan-hash", required=True)
     authorize.add_argument("--worker", required=True)
     authorize.add_argument("--source-sha", required=True)
+    authorize.add_argument("--target-version", required=True)
+    authorize.add_argument("--channel", choices=["next", "latest"], required=True)
     authorize.add_argument("--descriptor-sha256", required=True)
     authorize.set_defaults(handler=authorize_dispatch)
 

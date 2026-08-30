@@ -22,7 +22,7 @@ containers:
 
 The current public fields include `namespace`, `containers`, `worker`,
 `version`, `start_after`, `config_override`, `environment`, and `scripts`.
-Repository Compose files, generated candidate-smoke files, and Harness E2E
+Repository Compose files, generated deployment-verification files, and Harness E2E
 fixtures all use this same shape.
 
 ## Release-only catalog
@@ -51,8 +51,8 @@ workers:
 ```
 
 Each entry contains exactly `source`, `artifact`, `validation`, and `publish`.
-The worker identity is the mapping key and its version comes only from the
-selected package manifest.
+The worker identity is the mapping key. The selected package-manifest version
+is metadata; Release Control selects the exact deployment target version.
 
 Public runtime and Registry metadata remain in `<worker>/iii.worker.yaml`:
 identity, deploy kind, package manifest, binary name, description, license,

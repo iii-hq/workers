@@ -2,27 +2,25 @@
 
 `.deploy/workers.yaml` is the deployment catalog. The pinned compiler emits
 `deployment-descriptor` snapshots whose package-manifest version is
-informational; Release Control supplies the candidate and stable versions.
+informational; Release Control supplies one exact target version and channel.
 
 Only these Release Control-authorized entrypoints may mutate deployment state:
 
 - `deploy-prepare.yml`
-- `deploy-candidate-publish.yml`
-- `deploy-stable-publish.yml`
-- `deploy-image-alias.yml`
-- `deploy-finalize.yml`
+- `deploy-publish.yml`
 - `deploy-verify.yml`
 
 Prepare builds one independent job per build unit and uploads deterministic
 artifacts. Every later phase downloads those artifacts and refuses identity or
-digest drift. Candidate publication creates the immutable RC and moves
-`@next`. Stable publication creates the immutable stable version and moves
-`@next`; finalize moves `@latest`, preserving `@next >= @latest` across partial
-failure. No publication phase compiles source.
+digest drift. Publish creates or proves the immutable target version, then CASes
+the requested `next` or `latest` channel. A latest deployment advances `next`
+first only when the target is ahead, and never regresses it. OCI version images
+and channel aliases are handled inside publish. No publication phase compiles
+source.
 
 Each executor writes `deployment-result.json` once, uploads it under the
-candidate/step/attempt identity, obtains a GitHub OIDC token, and sends the same
-bytes to Release Control. GitHub App credentials are not available to build
+deployment-target/step/attempt identity, obtains a GitHub OIDC token, and sends
+the same bytes to Release Control. GitHub App credentials are not available to build
 shards. Effect jobs use environment-scoped Registry and container credentials.
 
 Rust uses remote `sccache` partitioned by toolchain and target. JavaScript and

@@ -3,7 +3,7 @@ import pytest
 from deployment_effects import classify_effect, mutation_plan
 
 
-MUTATING_PHASES = ("candidate_publish", "stable_publish", "image_alias", "finalize")
+MUTATING_PHASES = ("publish",)
 
 
 @pytest.mark.parametrize("phase", MUTATING_PHASES)

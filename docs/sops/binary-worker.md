@@ -99,12 +99,13 @@ CI builds changed Rust workers and runs the interface boot smoke when
 
 ## Release behavior
 
-The package version in `Cargo.toml` must already equal the intended candidate
-version at the selected source SHA. The descriptor compiler emits one build
+The package version in `Cargo.toml` is informational and does not select the
+deployment target version. The descriptor compiler emits one build
 unit per declared target. Each unit builds independently and uploads a
 deterministic `<binary>-<target>.tar.gz` plus checksum; prepare later assembles
 those files without changing descriptor bytes.
 
 The Registry request maps every declared target to its immutable GitHub Release
-URL and SHA-256. Promotion moves the same candidate version from `next` to
-`latest`; there is no stable rebuild.
+URL and SHA-256. Publishing moves the exact target version to the requested
+channel; a `latest` publication advances the `next` floor first when needed.
+There is no rebuild.

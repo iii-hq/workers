@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-SemverKey = tuple[tuple[int, ...], int, str]
+SemverKey = tuple[tuple[int, ...], int, int]
 BumpKind = Literal["patch", "minor", "major"]
 ManifestKind = Literal["cargo", "node", "python"]
 
@@ -17,6 +17,12 @@ RELEASE_VERSION_RE = re.compile(
     r"(?P<minor>0|[1-9][0-9]*)\."
     r"(?P<patch>0|[1-9][0-9]*)"
     r"(?:-(?:(?P<rc>rc)\.(?P<rc_number>[1-9][0-9]*)|(?P<maturity>experimental|alpha|beta)))?$"
+)
+DEPLOYMENT_TARGET_VERSION_RE = re.compile(
+    r"^(?:0|[1-9][0-9]*)\."
+    r"(?:0|[1-9][0-9]*)\."
+    r"(?:0|[1-9][0-9]*)"
+    r"(?:-(?:experimental|alpha|beta))?$"
 )
 RELEASE_MATURITIES = ("experimental", "alpha", "beta", "rc", "stable")
 RELEASE_SUFFIXES = ("none", "experimental", "alpha", "beta")
@@ -65,6 +71,16 @@ def parse_release_version(version: str) -> ReleaseVersion:
     )
 
 
+def validate_deployment_target_version(version: str) -> str:
+    """Validate a new deployment target without accepting legacy numbered RCs."""
+    if not DEPLOYMENT_TARGET_VERSION_RE.fullmatch(version):
+        raise ValueError(
+            "deployment target version must be MAJOR.MINOR.PATCH with an optional "
+            "-experimental, -alpha, or -beta suffix"
+        )
+    return version
+
+
 def release_maturity(version: str) -> str:
     return parse_release_version(version).maturity
 
@@ -82,8 +98,8 @@ def validate_release_transition(current: str, target: str) -> None:
         raise ValueError(f"version core cannot move backwards: {current} -> {target}")
     if after.core == before.core and target != current:
         # A manifest at an unreleased stable core is the bootstrap point for
-        # its first candidate. Once a prerelease exists, movement is forward
-        # only through the maturity ladder and RC counter.
+        # its first prerelease. Once a prerelease exists, movement is forward
+        # only through the maturity ladder and numbered prerelease counter.
         if before.maturity != "stable" and _MATURITY_RANK[after.maturity] < _MATURITY_RANK[before.maturity]:
             raise ValueError(f"maturity cannot repeat or move backwards: {current} -> {target}")
         if after.maturity == before.maturity == "rc" and (after.rc or 0) <= (before.rc or 0):
@@ -160,10 +176,8 @@ def resolve_release_version(current: str, kind: str, suffix: str, target: str = 
 def parse_semver(v: str) -> SemverKey:
     """Returns a tuple suitable for lexicographic compare.
 
-    Shape: (core_tuple, 1 if stable else 0, pre_suffix).
-    The middle int makes stable strictly greater than any pre-release at the
-    same core (1.2.3 > 1.2.3-rc.1). The trailing string lexically orders
-    multiple pre-releases at the same core (rc.1 < rc.2).
+    Shape: (core_tuple, product_maturity_rank, numbered_prerelease).
+    The product order is experimental < alpha < beta < legacy rc.N < stable.
     """
     # Strip build metadata (semver 2.0.0 §10: ignored for precedence).
     v_nobuild, _, _ = v.partition("+")
@@ -172,10 +186,13 @@ def parse_semver(v: str) -> SemverKey:
     while len(parts) < 3:
         parts.append(0)
     if not pre:
-        return (tuple(parts), 1, "")
+        return (tuple(parts), 4, 0)
+    maturity_rank = {"experimental": 0, "alpha": 1, "beta": 2}
+    if pre in maturity_rank:
+        return (tuple(parts), maturity_rank[pre], 0)
     if pre.startswith("rc.") and pre[3:].isdigit():
-        return (tuple(parts), 0, f"rc.{int(pre[3:]):020d}")
-    return (tuple(parts), 0, pre)
+        return (tuple(parts), 3, int(pre[3:]))
+    raise ValueError(f"unsupported worker prerelease version: {v}")
 
 
 def bump(current: str, kind: BumpKind) -> str:

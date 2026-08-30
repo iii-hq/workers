@@ -127,7 +127,7 @@ def _baseline_worker_identities(baseline_workers_json: dict[str, Any] | None) ->
 
 
 # Workers the engine itself hosts (enabled via the engine config, not
-# installed from the registry). A candidate install can flip one on mid-boot
+# installed from the registry). A target install can flip one on mid-boot
 # (e.g. harness enables `iii-stream` for console streaming), which lands it in
 # the workers-baseline diff even though its interface is not part of the
 # released worker's surface — and its schemas are not this repo's to fix.
@@ -290,7 +290,6 @@ def build_payload(
     repo_url: str,
     interface: dict[str, Any],
     artifacts: dict[str, Any],
-    registry_tag: str,
     readme: str | None = None,
 ) -> dict[str, Any]:
     """Merge the immutable compiler projection with current Registry fields."""
@@ -300,7 +299,7 @@ def build_payload(
     }
     if not isinstance(registry_projection, dict) or set(registry_projection) != required:
         raise ValueError("registry_projection differs from the current Registry metadata contract")
-    _lib.parse_release_version(published_version)
+    _lib.validate_deployment_target_version(published_version)
     deploy = registry_projection["type"]
     kind = artifacts.get("kind")
     expected_kind = {
@@ -323,8 +322,6 @@ def build_payload(
             for trigger in interface.get("triggers") or []
         ],
     }
-    if registry_tag != "none":
-        payload["tag"] = registry_tag
     if deploy == "binary":
         binaries = artifacts.get("binaries")
         if not isinstance(binaries, dict) or not binaries:
@@ -353,7 +350,6 @@ def main() -> int:
     parser.add_argument("--repo-url", required=True)
     parser.add_argument("--interface-json", required=True)
     parser.add_argument("--artifacts-json", required=True)
-    parser.add_argument("--registry-tag", required=True)
     parser.add_argument("--readme")
     parser.add_argument("--out", default="payload.json")
     args = parser.parse_args()
@@ -369,7 +365,6 @@ def main() -> int:
         repo_url=args.repo_url,
         interface=interface,
         artifacts=artifacts,
-        registry_tag=args.registry_tag,
         readme=readme,
     )
     pathlib.Path(args.out).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")

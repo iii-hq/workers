@@ -16,12 +16,12 @@ matrix job per descriptor build unit. Embedded frontends are built once before
 the Rust target fan-out. Rust units share remote sccache objects by toolchain
 and target, but artifact bytes remain target-specific.
 
-[`deploy-candidate-publish.yml`](../../.github/workflows/deploy-candidate-publish.yml)
-publishes one immutable candidate version and assigns Registry `next` with an
-idempotent, verified update. [`deploy-stable-publish.yml`](../../.github/workflows/deploy-stable-publish.yml)
-assigns `latest` to that same version and descriptor; it does not rebuild or
-create a second package version. OCI channel aliases are a separate digest-CAS
-phase.
+[`deploy-publish.yml`](../../.github/workflows/deploy-publish.yml) publishes one
+exact immutable target version and assigns Registry `next` or `latest` with an
+idempotent compare-and-swap. The target version is selected by Release Control
+and is independent of package-manifest metadata. Promotion reuses prepared
+bytes without rebuilding. OCI immutable images and channel aliases are handled
+inside the same publish workflow.
 
 Registry publication projects the descriptor onto the current API. For a
 binary worker the request has this shape:
@@ -44,8 +44,9 @@ binary worker the request has this shape:
 }
 ```
 
-Candidate publication assigns `next` atomically in `POST /publish` and proves
-both the exact version and channel through current Registry read surfaces.
+Version publication never assigns a channel implicitly. Publish proves the
+exact version first and then moves the requested channel with the plan's CAS
+precondition through current Registry read surfaces.
 Descriptor-only fields such as `package_descriptor` and `descriptor_sha256`
-are never sent to the current Registry. Publish, smoke, promotion, finalize,
-and verify never read the private catalog, public manifest, or package source.
+are never sent to the current Registry. Publish and verify never read the
+private catalog, public manifest, or package source.

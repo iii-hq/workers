@@ -8,10 +8,7 @@ ROOT = Path(__file__).resolve().parents[3]
 WORKFLOWS = ROOT / ".github" / "workflows"
 ENTRYPOINTS = {
     "deploy-prepare.yml": "prepare",
-    "deploy-candidate-publish.yml": "candidate_publish",
-    "deploy-stable-publish.yml": "stable_publish",
-    "deploy-image-alias.yml": "image_alias",
-    "deploy-finalize.yml": "finalize",
+    "deploy-publish.yml": "publish",
     "deploy-verify.yml": "verify",
 }
 REUSABLE = {"_deploy-build.yml", "_deploy-registry.yml", "_worker-e2e.yml"}
@@ -24,10 +21,9 @@ def body(name: str) -> str:
 def test_exact_release_topology_and_no_legacy_wrappers():
     for name in set(ENTRYPOINTS) | REUSABLE:
         assert (WORKFLOWS / name).is_file(), name
-    old = {"prepare-release.yml", "publish-candidate.yml", "candidate-smoke.yml", "publish-stable.yml",
-           "container-alias.yml", "finalize-registry.yml", "verify-release.yml", "release.yml",
-           "_rust-binary.yml", "_publish-registry.yml", "_harness-e2e.yml", "_bundle.yml", "_container.yml"}
-    assert not {path.name for path in WORKFLOWS.glob("*.yml")}.intersection(old)
+    assert {path.name for path in WORKFLOWS.glob("deploy-*.yml")} == (
+        set(ENTRYPOINTS) | {"deploy-descriptor-index.yml"}
+    )
 
 
 def test_every_entrypoint_authorizes_and_posts_nominal_release_result():
@@ -37,9 +33,9 @@ def test_every_entrypoint_authorizes_and_posts_nominal_release_result():
         assert "post-result" in text, name
         assert "--output deployment-result.json" in text, name
         assert f"--phase {phase}" in text, name
-        assert "deployment-result-${{ env.CANDIDATE_ID }}-${{ env.STEP_ID }}-attempt-${{ github.run_attempt }}" in text
+        assert "deployment-result-${{ env.DEPLOYMENT_TARGET_ID }}-${{ env.STEP_ID }}-attempt-${{ github.run_attempt }}" in text
         assert f"--workflow '{name}'" in text
-        assert "${{ fromJSON(inputs.identity).operation_id }} · ${{ fromJSON(inputs.identity).step_id }} · ${{ fromJSON(inputs.identity).dispatch_nonce }}" in text
+        assert "${{ fromJSON(inputs.identity).deployment_batch_id }} · ${{ fromJSON(inputs.identity).deployment_target_id }} · ${{ fromJSON(inputs.identity).step_id }} · ${{ fromJSON(inputs.identity).dispatch_nonce }}" in text
         assert "validate-identity --identity \"$DEPLOYMENT_IDENTITY\"" in text
 
 
@@ -62,16 +58,19 @@ def test_every_entrypoint_reports_and_uploads_result_even_after_effect_failure()
 
 
 def test_dispatch_inputs_use_one_identity_object_and_fit_github_limit():
-    legacy_identity_inputs = {
-        "operation_id", "step_id", "deployment_intent_id", "candidate_id",
-        "release_attempt_id", "dispatch_nonce", "plan_hash",
+    identity_components = {
+        "deployment_batch_id", "deployment_target_id", "step_id",
+        "attempt_id", "dispatch_nonce", "plan_hash",
     }
     for name in ENTRYPOINTS:
         workflow = yaml.safe_load(body(name))
         inputs = workflow[True]["workflow_dispatch"]["inputs"]
         assert len(inputs) <= 10, name
         assert inputs["identity"] == {"required": True, "type": "string"}
-        assert legacy_identity_inputs.isdisjoint(inputs), name
+        assert identity_components.isdisjoint(inputs), name
+        assert "target_version" in inputs, name
+        assert "channel" in inputs, name
+        assert "stable_version" not in inputs, name
         assert "prepared_artifact" not in inputs, name
 
 
@@ -140,6 +139,9 @@ def test_release_prepare_fans_one_job_per_compiled_build_unit():
     assert "deployment_train.py matrix" in text
     assert "matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}" in text
     assert "unit: ${{ matrix.unit }}" in text
+    assert '--target-version "$TARGET_VERSION"' in text
+    assert '--channel "$DEPLOYMENT_CHANNEL"' in text
+    assert "package_manifest_version" not in text
 
 
 def test_release_prepare_reports_failed_source_snapshots_as_absent():
@@ -162,7 +164,7 @@ def test_prepare_runs_adapter_from_prepared_bytes_and_records_interface():
     assert "deployment_interface.py run-adapter" in text
     assert "deployment_interface.py snapshot" in text
     assert "deployment_interface.py build-evidence" in text
-    assert "deploy-prepared-${{ env.CANDIDATE_ID }}" in text
+    assert "deployment-prepared-${{ env.DEPLOYMENT_TARGET_ID }}" in text
     adapter_text = str(workflow["jobs"]["adapter"])
     assert "inputs.source_sha" not in adapter_text
     assert "worker-compose.yaml" not in adapter_text
@@ -197,40 +199,38 @@ def test_all_post_prepare_phases_verify_final_evidence_and_report_it():
         assert "deployment-evidence.json" in text, name
 
 
-def test_mutating_phases_are_retry_safe_and_effect_states_are_probe_derived():
-    candidate = body("deploy-candidate-publish.yml")
-    stable = body("deploy-stable-publish.yml")
-    alias = body("deploy-image-alias.yml")
-    finalize = body("deploy-finalize.yml")
-    assert "deployment_effects.py classify" in candidate
-    assert 'value=sys.argv[1].strip()' in candidate
-    assert 'all(.[]; .state == "absent" or .state == "present" or .state == "unknown")' in candidate
+def test_publish_is_retry_safe_and_effect_states_are_probe_derived():
+    publish = body("deploy-publish.yml")
+    assert "deployment_effects.py classify" in publish
+    assert 'value=sys.argv[1].strip()' in publish
+    assert 'all(.[]; .state == "absent" or .state == "present" or .state == "unknown")' in publish
     registry = body("_deploy-registry.yml")
-    assert "deployment_effects.py plan" in registry
-    assert "next changed outside the authorized compare-and-swap" in registry
-    assert "deployment_effects.py classify" in stable
-    assert "deployment_effects.py plan" in alias
-    assert "deployment_effects.py classify" in alias
-    assert "deployment_effects.py classify" in finalize
-    assert "--clobber" not in candidate
+    assert "registry_publication.py assign-channel" in registry
+    assert "registry_publication.py advance-next-floor" in registry
+    assert "expected-current-version" in registry
+    assert "expected-next-version" in registry
+    assert "--clobber" not in publish
 
 
-def test_candidate_registry_publish_owns_next_atomically():
+def test_publish_separates_immutable_version_from_explicit_channel_cas():
     reusable = body("_deploy-registry.yml")
-    candidate = body("deploy-candidate-publish.yml")
-    assert "assign-channel" not in reusable
-    assert 'default: next' in reusable
-    assert '--registry-tag "$REGISTRY_TAG"' in reusable
+    publish = body("deploy-publish.yml")
+    assert "assign-channel" in reusable
+    assert "target_version" in reusable
+    assert "channel" in reusable
     assert '"tag": None' not in reusable
     assert "expected_current_version" in reusable
-    assert "expected_current_version" not in candidate
-    assert "/tags/" in reusable
-    assert "expected_next_version" not in candidate
-    assert "--clobber" not in candidate
-    assert "verify_release_assets" in candidate
+    assert "expected_next_version" in reusable
+    assert "--clobber" not in publish
+    assert "verify_release_assets" in publish
     assert 'has("package_descriptor") or has("descriptor_sha256") or has("channel")' in reusable
     assert "registry_publication.py publish-version" in reusable
     assert "build_publish_payload.py" in reusable
+    assert '--registry-tag "$DEPLOYMENT_CHANNEL"' in reusable
+    assert "Move requested channel with compare-and-swap" in reusable
+    assert "Move the requested OCI channel to the immutable digest" in publish
+    assert '"$DEPLOYMENT_CHANNEL" == next || "$TARGET_VERSION" == *-*' in publish
+    assert '"$RELEASE_CHANNEL" == next || "$TARGET_VERSION" == *-*' in body("deploy-verify.yml")
 
 
 def test_bundle_caches_are_scoped_by_descriptor_lock_runtime_and_architecture():
@@ -291,25 +291,26 @@ def test_release_control_app_credentials_are_isolated_to_contract_drift_job():
 
 
 def test_release_permissions_are_job_scoped_and_reports_cannot_mutate():
-    candidate = yaml.safe_load(body("deploy-candidate-publish.yml"))
-    assert candidate["permissions"] == {"contents": "read"}
-    assert candidate["jobs"]["publish"]["permissions"] == {
+    publish = yaml.safe_load(body("deploy-publish.yml"))
+    assert publish["permissions"] == {"contents": "read"}
+    assert publish["jobs"]["publish"]["permissions"] == {
         "actions": "read",
         "contents": "write",
         "id-token": "write",
         "packages": "write",
     }
-    assert candidate["jobs"]["registry"]["permissions"] == {
+    assert publish["jobs"]["registry"]["permissions"] == {
         "actions": "read",
         "contents": "read",
     }
-    assert candidate["jobs"]["report"]["permissions"] == {
+    assert publish["jobs"]["report"]["permissions"] == {
         "actions": "read",
         "contents": "read",
         "id-token": "write",
+        "packages": "read",
     }
 
-    for name in set(ENTRYPOINTS) - {"deploy-candidate-publish.yml"}:
+    for name in set(ENTRYPOINTS) - {"deploy-publish.yml"}:
         workflow = yaml.safe_load(body(name))
         assert workflow["permissions"] == {}, name
         assert all("permissions" in job for job in workflow["jobs"].values()), name

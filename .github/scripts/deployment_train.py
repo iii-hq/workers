@@ -428,12 +428,9 @@ def prepare(args: argparse.Namespace) -> int:
     actual = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     if actual != args.source_sha:
         raise SystemExit(f"source SHA mismatch: checkout={actual}, requested={args.source_sha}")
-    _lib.parse_release_version(args.candidate_version)
-    stable = _lib.parse_release_version(args.stable_version)
-    if stable.maturity != "stable":
-        raise SystemExit("stable version must not contain a prerelease suffix")
-    if args.candidate_version.split("-", 1)[0] != args.stable_version:
-        raise SystemExit("candidate and stable versions must share the same core")
+    _lib.validate_deployment_target_version(args.target_version)
+    if args.channel not in {"next", "latest"}:
+        raise SystemExit("deployment channel must be next or latest")
 
     descriptor = verify_descriptor(json.loads(args.descriptor.read_bytes()))
     expected = {
@@ -620,8 +617,8 @@ def make_parser() -> argparse.ArgumentParser:
     prepare_parser.set_defaults(handler=prepare)
     prepare_parser.add_argument("--worker", required=True)
     prepare_parser.add_argument("--source-sha", required=True)
-    prepare_parser.add_argument("--candidate-version", required=True)
-    prepare_parser.add_argument("--stable-version", required=True)
+    prepare_parser.add_argument("--target-version", required=True)
+    prepare_parser.add_argument("--channel", choices=["next", "latest"], required=True)
     prepare_parser.add_argument("--descriptor-sha256", required=True)
     prepare_parser.add_argument("--descriptor", type=Path, required=True)
     matrix_parser = sub.add_parser("matrix")
