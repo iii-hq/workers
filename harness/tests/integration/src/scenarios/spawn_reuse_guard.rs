@@ -272,6 +272,12 @@ pub(super) fn scenario() -> ScenarioFixture {
             )
             .respond(Response::text("retask done", 10, 2)),
     )
+    // This fixture drives eight router generations across a parent and an
+    // asynchronously scheduled child. The default deadline is appropriate
+    // for single-turn fixtures, but can expire while the child is waiting for
+    // its second dispatch on a busy shared runner even though the contract is
+    // still making progress.
+    .scenario_timeout_ms(120_000)
     .verify(|run| {
         run.expect_assistant_texts(["collision refused; own child re-tasked"])?;
         run.expect_target_calls(1)?;
@@ -328,6 +334,7 @@ mod tests {
         assert_eq!(fixture.expected_terminal_turns, 1);
         assert_eq!(fixture.await_target_calls, Some(1));
         assert_eq!(fixture.expected_traces(), 1);
+        assert_eq!(fixture.scenario.deadlines.scenario_ms, 120_000);
         assert_eq!(fixture.script.generations.len(), 8);
         assert_eq!(
             fixture.script.dispatch,
