@@ -404,13 +404,18 @@ jobs:
           kind=unknown
           if [[ -f release-prepared/release-evidence.json ]]; then artifacts=$(jq -c '[.artifacts[] | del(.unit)]' release-prepared/release-evidence.json); fi
           if [[ -f release-prepared/release-descriptor.json ]]; then kind=$(jq -r .artifact.kind release-prepared/release-descriptor.json); fi
-          github_state=${GITHUB_STATE:-unknown}; registry_state=${REGISTRY_STATE:-unknown}
+          normalize_state() {
+            python3 -c 'import sys; value=sys.argv[1].strip(); print(value if value in {"absent", "present", "unknown"} else "unknown")' "$1"
+          }
+          github_state=$(normalize_state "${GITHUB_STATE:-unknown}")
+          registry_state=$(normalize_state "${REGISTRY_STATE:-unknown}")
           effects=$(jq -nc --arg tag "$WORKER/v$CANDIDATE_VERSION" --arg version "$CANDIDATE_VERSION" --arg github_state "$github_state" --arg registry_state "$registry_state" '[{surface:"github-release",state:$github_state,immutable_id:$tag},{surface:"registry-next",state:$registry_state,after:$version}]')
           if [[ "$kind" == oci-image ]]; then
-            image_state=${IMAGE_STATE:-unknown}
+            image_state=$(normalize_state "${IMAGE_STATE:-unknown}")
             image_effect=$(jq -nc --arg state "$image_state" --arg digest "$IMAGE_DIGEST" 'if $digest == "" then {surface:"registry-image",state:$state} else {surface:"registry-image",state:$state,immutable_id:$digest} end')
             effects=$(jq -cn --argjson effects "$effects" --argjson image "$image_effect" '$effects + [$image]')
           fi
+          jq -e 'all(.[]; .state == "absent" or .state == "present" or .state == "unknown")' <<<"$effects" >/dev/null
           python3 .github/scripts/release_control_contract.py write-result --repository '${{ github.repository }}' --operation-id "$OPERATION_ID" --step-id "$STEP_ID" --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' --workflow 'release-candidate-publish.yml' --event '${{ github.event_name }}' --sha '${{ github.sha }}' --release-intent-id "$RELEASE_INTENT_ID" --candidate-id "$CANDIDATE_ID" --attempt-id "$ATTEMPT_ID" --dispatch-nonce "$DISPATCH_NONCE" --plan-hash "$PLAN_HASH" --worker "$WORKER" --phase candidate_publish --source-sha "$SOURCE_SHA" --prepared-sha "$PREPARED_SHA" --candidate-version "$CANDIDATE_VERSION" --stable-version "$STABLE_VERSION" --descriptor-sha256 "$DESCRIPTOR_SHA256" --outcome "$outcome" --effects "$effects" --artifacts-json "$artifacts" --error-json "$error" --output release-result.json
       - if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
