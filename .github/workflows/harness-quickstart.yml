@@ -1,0 +1,107 @@
+name: Harness quickstart smoke test
+run-name: RC · quickstart · ${{ inputs.quickstart_id }} · ${{ inputs.attempt }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      quickstart_id: {required: true, type: string}
+      attempt: {required: true, type: string}
+      cli_channel:
+        required: true
+        type: choice
+        # `rc` replaced the CLI's dead `next` prerelease channel; the compose
+        # flow the validator drives needs a 0.23.0-rc or newer CLI.
+        options: [latest, rc]
+      registry_tag:
+        required: true
+        type: choice
+        options: [latest, next]
+
+permissions: {}
+
+concurrency:
+  group: harness-quickstart
+  cancel-in-progress: false
+
+jobs:
+  quickstart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.cache/ms-playwright
+    steps:
+      - name: Validate Release Control dispatch
+        env:
+          BOT_LOGIN: ${{ vars.RELEASE_CONTROL_BOT_LOGIN }}
+          ACTOR: ${{ github.actor }}
+          QUICKSTART_ID: ${{ inputs.quickstart_id }}
+          ATTEMPT: ${{ inputs.attempt }}
+        run: |
+          set -euo pipefail
+          test -n "$BOT_LOGIN"
+          test "$ACTOR" = "$BOT_LOGIN"
+          python3 - "$QUICKSTART_ID" "$ATTEMPT" <<'EOF'
+          import sys
+          import uuid
+
+          quickstart_id, attempt = sys.argv[1], sys.argv[2]
+          assert str(uuid.UUID(quickstart_id)) == quickstart_id.lower(), "quickstart_id must be a UUID"
+          assert attempt.isdigit() and int(attempt) >= 1, "attempt must be a positive integer"
+          EOF
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+        with:
+          version: 11.13.1
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - name: Install Console Playwright dependencies
+        working-directory: console/web
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium and video tooling
+        working-directory: console/web
+        run: |
+          pnpm exec playwright install --with-deps chromium
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Run quickstart validator
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          HARNESS_QUICKSTART_ARTIFACTS_DIR: ${{ github.workspace }}/target/harness-quickstart
+          HARNESS_QUICKSTART_TRACE: '1'
+          III_CLI_CHANNEL: ${{ inputs.cli_channel }}
+          III_WORKER_TAG: ${{ inputs.registry_tag }}
+        run: harness/tests/quickstart/run-ci.sh
+
+      - name: Show quickstart logs
+        if: always()
+        run: |
+          shopt -s nullglob
+          for log in target/harness-quickstart/logs/*.log; do
+            echo "::group::$(basename "$log")"
+            cat "$log"
+            echo "::endgroup::"
+          done
+
+      # Release Control reads result.json and the slack-evidence video from
+      # this artifact; a runner-level catastrophe still settles from the run
+      # conclusion, hence warn instead of error.
+      - if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: quickstart-result-${{ inputs.quickstart_id }}-${{ inputs.attempt }}
+          path: target/harness-quickstart/
+          retention-days: 14
+          if-no-files-found: warn
