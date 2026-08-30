@@ -168,6 +168,7 @@ def test_prepare_runs_adapter_from_prepared_bytes_and_records_interface():
     adapter_text = str(workflow["jobs"]["adapter"])
     assert "inputs.source_sha" not in adapter_text
     assert "worker-compose.yaml" not in adapter_text
+    assert 'sudo skopeo copy "oci-archive:$oci_archive" "docker-daemon:$image_name"' in text
 
 
 def test_release_runtime_uses_the_current_engine_config_shape():
@@ -176,6 +177,19 @@ def test_release_runtime_uses_the_current_engine_config_shape():
         text = body(name)
         assert expected in text
         assert "printf 'engine:" not in text
+
+
+def test_release_runtime_installs_use_authenticated_github_requests():
+    for name in ("release-prepare.yml", "release-candidate-smoke.yml"):
+        workflow = yaml.safe_load(body(name))
+        install_steps = [
+            step
+            for job in workflow["jobs"].values()
+            for step in job.get("steps", [])
+            if "install.iii.dev/iii/main/install.sh" in step.get("run", "")
+        ]
+        assert install_steps, name
+        assert all(step.get("env", {}).get("GITHUB_TOKEN") == "${{ github.token }}" for step in install_steps), name
 
 
 def test_candidate_smoke_boots_registry_candidate_and_compares_prepared_interface():
@@ -207,6 +221,8 @@ def test_mutating_phases_are_retry_safe_and_effect_states_are_probe_derived():
     alias = body("release-image-alias.yml")
     finalize = body("release-finalize.yml")
     assert "release_effects.py classify" in candidate
+    assert 'value=sys.argv[1].strip()' in candidate
+    assert 'all(.[]; .state == "absent" or .state == "present" or .state == "unknown")' in candidate
     assert "release_effects.py plan" in stable
     assert "latest changed outside the authorized compare-and-swap" in stable
     assert "release_effects.py classify" in stable

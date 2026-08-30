@@ -62,6 +62,8 @@ jobs:
           python3 .github/scripts/release_control_contract.py validate-dispatch --operation-id "$OPERATION_ID" --step-id "$STEP_ID" --dispatch-nonce "$DISPATCH_NONCE" --descriptor-sha256 "$DESCRIPTOR_SHA256" --plan-hash "$PLAN_HASH" --source-sha "$SOURCE_SHA"
           python3 .github/scripts/release_control_contract.py authorize-dispatch --api-url "$RELEASE_CONTROL_API_URL" --repository '${{ github.repository }}' --operation-id "$OPERATION_ID" --step-id "$STEP_ID" --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' --workflow 'release-candidate-smoke.yml' --event '${{ github.event_name }}' --sha '${{ github.sha }}' --release-intent-id "$RELEASE_INTENT_ID" --candidate-id "$CANDIDATE_ID" --attempt-id "$ATTEMPT_ID" --dispatch-nonce "$DISPATCH_NONCE" --plan-hash "$PLAN_HASH" --worker "$WORKER" --source-sha "$SOURCE_SHA" --descriptor-sha256 "$DESCRIPTOR_SHA256"
       - name: Install current iii CLI
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           curl -fsSL --retry 3 --retry-all-errors --retry-delay 5 \

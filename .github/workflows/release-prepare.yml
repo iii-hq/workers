@@ -271,6 +271,8 @@ jobs:
 
       - name: Install current iii runtime
         if: steps.interface.outputs.validation == 'required'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           curl -fsSL --retry 3 --retry-all-errors --retry-delay 5 \
@@ -349,7 +351,7 @@ jobs:
             container_name="release-interface-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
             image_name="$container_name:prepared"
             oci_archive=$(jq -er .oci_archive interface-work/stage.json)
-            skopeo copy "oci-archive:$oci_archive" "docker-daemon:$image_name"
+            sudo skopeo copy "oci-archive:$oci_archive" "docker-daemon:$image_name"
             docker_env=(--env "III_URL=$engine_url")
             while IFS= read -r encoded; do
               docker_env+=(--env "$(printf '%s' "$encoded" | base64 --decode)")
