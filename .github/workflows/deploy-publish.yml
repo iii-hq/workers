@@ -489,7 +489,7 @@ jobs:
           PUBLISH_RESULT: ${{ needs.publish.result }}
           REGISTRY_RESULT: ${{ needs.registry.result }}
           IMAGE_CHANNEL_RESULT: ${{ needs.image_channel.result }}
-          GITHUB_STATE: ${{ steps.effects.outputs.github_state }}
+          PUBLISH_GITHUB_STATE: ${{ steps.effects.outputs.github_state }}
           REGISTRY_STATE: ${{ steps.effects.outputs.registry_state }}
           NEXT_FLOOR_STATE: ${{ steps.effects.outputs.next_floor_state }}
           NEXT_FLOOR_VERSION: ${{ steps.effects.outputs.next_floor_version }}
@@ -511,7 +511,7 @@ jobs:
           normalize_state() {
             python3 -c 'import sys; value=sys.argv[1].strip(); print(value if value in {"absent", "present", "unknown"} else "unknown")' "$1"
           }
-          github_state=$(normalize_state "${GITHUB_STATE:-unknown}")
+          github_state=$(normalize_state "${PUBLISH_GITHUB_STATE:-unknown}")
           registry_state=$(normalize_state "${REGISTRY_STATE:-unknown}")
           effects=$(jq -nc --arg tag "$WORKER/v$TARGET_VERSION" --arg channel "$DEPLOYMENT_CHANNEL" --arg version "$TARGET_VERSION" --arg github_state "$github_state" --arg registry_state "$registry_state" '[{surface:"github-release",state:$github_state,immutable_id:$tag},{surface:("registry-"+$channel),state:$registry_state,after:$version}]')
           if [[ "$DEPLOYMENT_CHANNEL" == latest ]]; then

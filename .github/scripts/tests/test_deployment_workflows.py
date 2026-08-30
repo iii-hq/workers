@@ -183,6 +183,8 @@ def test_publish_is_retry_safe_and_effect_states_are_probe_derived():
     assert "ref" not in checkout["with"]
     assert checkout["with"]["fetch-depth"] == 0
     assert "deployment_effects.py classify" in publish
+    assert "PUBLISH_GITHUB_STATE" in publish
+    assert "\n          GITHUB_STATE:" not in publish
     assert 'value=sys.argv[1].strip()' in publish
     assert 'all(.[]; .state == "absent" or .state == "present" or .state == "unknown")' in publish
     registry = body("_deploy-registry.yml")
