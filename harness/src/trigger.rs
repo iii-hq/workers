@@ -18,6 +18,10 @@ use crate::policy::CompiledPolicy;
 use crate::types::content::ContentBlock;
 use crate::types::turn::FunctionContractLedgerEntry;
 
+/// Generic function values larger than this stay lossless in `details`, but are
+/// not duplicated verbatim into the model-facing text content.
+const MAX_INLINE_RESULT_BYTES: usize = 16 * 1024;
+
 /// A normalised function result ready to become a `function_result` entry.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResultData {
@@ -514,7 +518,93 @@ fn normalize(value: &Value) -> (Vec<ContentBlock>, bool) {
         }
     }
     let rendered = serde_json::to_string(value).unwrap_or_else(|_| "<unserializable>".to_string());
-    (vec![ContentBlock::text(rendered)], is_error)
+    if rendered.len() <= MAX_INLINE_RESULT_BYTES {
+        return (vec![ContentBlock::text(rendered)], is_error);
+    }
+
+    let kind = match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    };
+    let mut summary = json!({
+        "result_omitted_from_content": true,
+        "reason": "result exceeds model-facing inline limit",
+        "type": kind,
+        "serialized_bytes": rendered.len(),
+        "inline_limit_bytes": MAX_INLINE_RESULT_BYTES,
+        "details_available": true,
+    });
+    match value {
+        Value::Array(items) => summary["items"] = json!(items.len()),
+        Value::Object(fields) => {
+            summary["fields"] = json!(fields.len());
+            summary["field_names"] = json!(fields.keys().take(20).collect::<Vec<_>>());
+        }
+        _ => {}
+    }
+    (
+        vec![ContentBlock::text(
+            serde_json::to_string(&summary).expect("result summary is serializable"),
+        )],
+        is_error,
+    )
+}
+
+#[cfg(test)]
+mod result_size_tests {
+    use super::*;
+
+    #[test]
+    fn oversized_generic_result_is_not_duplicated_into_content() {
+        let value = json!({
+            "containers": (0..500)
+                .map(|index| json!({ "name": format!("worker-{index}"), "output": "x".repeat(100) }))
+                .collect::<Vec<_>>(),
+            "operation_id": "diagnostic-id",
+        });
+
+        let data = normalized_result(value.clone());
+        assert_eq!(data.details, value);
+        let text = ContentBlock::join_text(&data.content);
+        assert!(
+            text.len() < 1_000,
+            "summary should stay bounded: {} bytes",
+            text.len()
+        );
+        let summary: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(summary["result_omitted_from_content"], true);
+        assert_eq!(summary["type"], "object");
+        assert_eq!(summary["details_available"], true);
+        assert!(!text.contains("worker-499"));
+    }
+
+    #[test]
+    fn explicit_content_blocks_are_not_rewritten_by_size_guard() {
+        let long = "x".repeat(MAX_INLINE_RESULT_BYTES + 1);
+        let value = json!({
+            "content": [{ "type": "text", "text": long }],
+            "metadata": { "large": true },
+        });
+
+        let data = normalized_result(value.clone());
+        assert_eq!(data.details, value);
+        assert_eq!(
+            ContentBlock::join_text(&data.content).len(),
+            MAX_INLINE_RESULT_BYTES + 1
+        );
+    }
+
+    #[test]
+    fn ordinary_generic_results_keep_their_existing_rendering() {
+        let value = json!({ "status": "ok", "changed": true });
+        let data = normalized_result(value.clone());
+        assert_eq!(data.details, value);
+        assert_eq!(ContentBlock::join_text(&data.content), value.to_string());
+    }
 }
 
 /// Drop functions the agent cannot call from an `engine::functions::list`
