@@ -94,8 +94,9 @@ cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-features
 ```
 
-CI builds changed Rust workers and runs the interface boot smoke when
-`validation.interface` is `required`.
+CI builds changed Rust workers and runs the PR-only interface boot smoke unless
+`iii.worker.yaml` sets `interface_smoke: false`. Deployment does not boot the
+prepared binary.
 
 ## Release behavior
 

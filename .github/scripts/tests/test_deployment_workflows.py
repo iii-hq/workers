@@ -155,52 +155,33 @@ def test_release_build_validates_rust_targets_and_oci_platforms():
     assert '(.target // .platform // "none") == $target' in text
 
 
-def test_prepare_runs_adapter_from_prepared_bytes_and_records_interface():
+def test_prepare_uploads_inventory_without_booting_the_worker():
     text = body("deploy-prepare.yml")
     workflow = yaml.safe_load(text)
-    assert "adapter" in workflow["jobs"]
-    assert workflow["jobs"]["adapter"]["needs"] == ["prepare", "assemble"]
-    assert "deployment_interface.py stage" in text
-    assert "deployment_interface.py run-adapter" in text
-    assert "deployment_interface.py snapshot" in text
-    assert "deployment_interface.py build-evidence" in text
+    assert "adapter" not in workflow["jobs"]
     assert "deployment-prepared-${{ env.DEPLOYMENT_TARGET_ID }}" in text
-    adapter_text = str(workflow["jobs"]["adapter"])
-    assert "inputs.source_sha" not in adapter_text
-    assert "worker-compose.yaml" not in adapter_text
-    assert 'sudo skopeo copy "oci-archive:$oci_archive" "docker-daemon:$image_name"' in text
+    assert "deployment_interface.py" not in text
+    assert "collect_worker_interface.py" not in text
+    assert "install.iii.dev" not in text
 
 
-def test_release_runtime_uses_the_current_engine_config_shape():
-    expected = "workers:\\n  - name: iii-worker-manager\\n    config:"
-    for name in ("deploy-prepare.yml",):
-        text = body(name)
-        assert expected in text
-        assert "printf 'engine:" not in text
-
-
-def test_release_runtime_installs_use_authenticated_github_requests():
-    for name in ("deploy-prepare.yml",):
-        workflow = yaml.safe_load(body(name))
-        install_steps = [
-            step
-            for job in workflow["jobs"].values()
-            for step in job.get("steps", [])
-            if "install.iii.dev/iii/main/install.sh" in step.get("run", "")
-        ]
-        assert install_steps, name
-        assert all(step.get("env", {}).get("GITHUB_TOKEN") == "${{ github.token }}" for step in install_steps), name
-
-
-def test_all_post_prepare_phases_verify_final_evidence_and_report_it():
+def test_all_post_prepare_phases_verify_prepared_bytes_and_report_them():
     for name in set(ENTRYPOINTS) - {"deploy-prepare.yml"}:
         text = body(name)
-        assert "deployment_interface.py verify-evidence" in text, name
-        assert "deployment-evidence.json" in text, name
+        assert "deployment_train.py verify-prepared" in text, name
+        assert "prepared-artifacts.json" in text, name
+        assert "deployment-evidence.json" not in text, name
+    registry = body("_deploy-registry.yml")
+    assert "deployment_train.py verify-prepared" in registry
+    assert "deployment_interface.py" not in registry
 
 
 def test_publish_is_retry_safe_and_effect_states_are_probe_derived():
     publish = body("deploy-publish.yml")
+    workflow = yaml.safe_load(publish)
+    checkout = workflow["jobs"]["publish"]["steps"][0]
+    assert "ref" not in checkout["with"]
+    assert checkout["with"]["fetch-depth"] == 0
     assert "deployment_effects.py classify" in publish
     assert 'value=sys.argv[1].strip()' in publish
     assert 'all(.[]; .state == "absent" or .state == "present" or .state == "unknown")' in publish

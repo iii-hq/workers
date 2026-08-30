@@ -80,8 +80,8 @@ when SQLite parent dirs or sidecars are missing (#104 / `database/v0.2.6`).
 3. Start worker from `./target/debug/<bin>` (with `--config config.collect.yaml` when shipped)
 4. `collect_worker_interface.py` — 120 s wait, assert non-empty interface
 
-**Opt-out:** `validation.interface: skipped` in the release catalog, mirrored by
-`interface_smoke: false` in `iii.worker.yaml` (for example `lsp`).
+**Opt-out:** `interface_smoke: false` in `iii.worker.yaml` (for example `lsp`).
+This is a PR-only check and is not part of deployment prepare or publication.
 
 ## Dedicated e2e workflows
 

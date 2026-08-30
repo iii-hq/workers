@@ -589,6 +589,50 @@ def assemble(args: argparse.Namespace) -> int:
     return 0
 
 
+def verify_prepared(args: argparse.Namespace) -> int:
+    """Verify the immutable prepare inventory without executing the worker."""
+    descriptor = verify_descriptor(json.loads(args.descriptor.read_bytes()))
+    prepared = json.loads(args.prepared.read_text(encoding="utf-8"))
+    expected = {
+        "contract": "prepared-artifacts",
+        "worker": descriptor["worker"],
+        "source_sha": descriptor["source_sha"],
+        "descriptor_sha256": descriptor["descriptor_sha256"],
+    }
+    if not isinstance(prepared, dict) or set(prepared) != {*expected, "artifacts"}:
+        raise SystemExit("prepared artifact inventory fields differ from contract")
+    if any(prepared.get(key) != value for key, value in expected.items()):
+        raise SystemExit("prepared artifact identity differs from deployment descriptor")
+    artifacts = prepared.get("artifacts")
+    if not isinstance(artifacts, list) or not artifacts:
+        raise SystemExit("prepared artifacts must be a non-empty array")
+    names: set[str] = set()
+    for artifact in artifacts:
+        if not isinstance(artifact, dict) or set(artifact) != {"unit", "name", "role", "sha256", "size"}:
+            raise SystemExit("prepared artifact entry fields differ from contract")
+        name = artifact.get("name")
+        if not isinstance(name, str) or not name or Path(name).name != name or name in names:
+            raise SystemExit(f"prepared artifact name is invalid or duplicated: {name!r}")
+        names.add(name)
+        path = args.prepared.parent / name
+        if not path.is_file() or path.is_symlink():
+            raise SystemExit(f"prepared artifact is not a regular file: {path}")
+        if path.stat().st_size != artifact.get("size") or sha256(path) != artifact.get("sha256"):
+            raise SystemExit(f"prepared artifact bytes differ from inventory: {path}")
+    actual = {
+        path.name for path in args.prepared.parent.iterdir()
+        if path.is_file() and not path.is_symlink()
+    }
+    expected_files = names | {args.descriptor.name, args.prepared.name}
+    if actual != expected_files:
+        raise SystemExit(
+            f"prepared directory differs from inventory: missing={sorted(expected_files - actual)} "
+            f"unknown={sorted(actual - expected_files)}"
+        )
+    print(json.dumps(prepared, sort_keys=True))
+    return 0
+
+
 def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
@@ -634,6 +678,10 @@ def make_parser() -> argparse.ArgumentParser:
     assemble_parser.add_argument("--descriptor", type=Path, required=True)
     assemble_parser.add_argument("--artifacts-dir", type=Path, required=True)
     assemble_parser.add_argument("--out", type=Path, required=True)
+    verify_parser = sub.add_parser("verify-prepared")
+    verify_parser.set_defaults(handler=verify_prepared)
+    verify_parser.add_argument("--descriptor", type=Path, required=True)
+    verify_parser.add_argument("--prepared", type=Path, required=True)
     return parser
 
 

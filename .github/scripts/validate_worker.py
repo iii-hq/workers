@@ -64,13 +64,6 @@ def validate_public_manifest(worker: str, spec: _lib.WorkerSpec, hard) -> None:
         hard(f"{worker}/iii.worker.yaml dependencies must be a string-to-string mapping")
 
     manifest_skips_interface = manifest.raw.get("interface_smoke") is False
-    catalog_skips_interface = spec.validation.get("interface") == "skipped"
-    if manifest_skips_interface != catalog_skips_interface:
-        hard(
-            f"{worker}/iii.worker.yaml interface_smoke and "
-            ".deploy/workers.yaml validation.interface must describe the same policy"
-        )
-
     tags = manifest.raw.get("tags")
     if tags is not None and (
         not isinstance(tags, list) or not all(isinstance(tag, str) for tag in tags)
@@ -149,10 +142,7 @@ def main(argv: list[str] | None = None) -> int:
         ):
             hard(f"{worker}/iii.worker.yaml tags must be an array of strings")
         elif spec.validation.get("interface") == "required" and not tags:
-            hard(f"{worker}/iii.worker.yaml tags must be non-empty when interface validation is enabled")
-
-        if spec.validation.get("interface") not in {"required", "skipped"}:
-            hard(f"{worker}: validation.interface must be required or skipped")
+            hard(f"{worker}/iii.worker.yaml tags must be non-empty when the PR interface smoke is enabled")
 
         if spec.artifact_kind == "rust-binary":
             executable = spec.binary or worker

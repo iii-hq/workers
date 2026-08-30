@@ -129,8 +129,8 @@ and the local Harness stack with `worker-compose.yaml`.
 ## Binary releases
 
 Rust workers ship as standalone binaries. Release Control is the only
-supported interface for starting, retrying, reconciling, canceling, or
-promoting a release. GitHub Actions only executes its authenticated steps.
+supported interface for starting, retrying, reconciling, or canceling a
+deployment. GitHub Actions only executes its authenticated steps.
 See [`docs/sops/release.md`](docs/sops/release.md) for the sequence and recovery
 rules.
 
@@ -154,7 +154,7 @@ armv7-unknown-linux-gnueabihf
 Workers are discovered through the workers registry API at
 `https://api.workers.iii.dev`. Each release publishes a manifest entry
 declaring the worker kind (`binary` / container image), supported targets,
-download URLs, and the worker's collected function + trigger interface.
+download URLs, and immutable package metadata.
 `iii trigger compose::add worker=<name>` queries this API to locate the right
 asset for the host.
 
@@ -183,8 +183,8 @@ then routes:
 The `pr-checks` job additionally enforces, per changed worker: `README.md`
 present, the private build entry and public `iii.worker.yaml` valid,
 `tests/` non-empty, and the package version not behind the PR base. It also
-requires non-empty public discovery tags on workers whose
-`validation.interface` is `required` — see the
+requires non-empty public discovery tags on workers whose public
+`interface_smoke` PR check is enabled — see the
 [Discovery tags step](docs/sops/new-worker.md#discovery-tags-required).
 
 Full reference (discovery buckets, interface boot smoke, e2e workflows):

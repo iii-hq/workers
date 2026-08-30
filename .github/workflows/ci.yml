@@ -614,7 +614,7 @@ jobs:
           skip=$(WORKER="$WORKER" python3 -c 'import os, sys; sys.path.insert(0, ".github/scripts"); import _lib; m = _lib.read_worker(os.environ["WORKER"]); print("true" if m.validation.get("interface") == "skipped" else "false")')
           echo "skip=$skip" >> "$GITHUB_OUTPUT"
           if [[ "$skip" == "true" ]]; then
-            echo "::notice::$WORKER opts out of interface boot smoke (validation.interface: skipped)"
+            echo "::notice::$WORKER opts out of the PR interface boot smoke (iii.worker.yaml interface_smoke: false)"
           fi
 
       - name: Rewrite SSH to HTTPS for public deps
