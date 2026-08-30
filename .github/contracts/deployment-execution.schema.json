@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://release-control.iii.dev/contracts/release-execution.schema.json",
-  "title": "Release execution result",
+  "$id": "https://release-control.iii.dev/contracts/deployment-execution.schema.json",
+  "title": "Deployment execution result",
   "type": "object",
   "additionalProperties": false,
   "required": ["contract", "identity", "executor", "subject", "outcome", "effects", "artifacts", "error", "completed_at"],
   "properties": {
-    "contract": { "const": "release-execution" },
+    "contract": { "const": "deployment-execution" },
     "identity": { "$ref": "#/$defs/identity" },
     "executor": { "$ref": "#/$defs/executor" },
     "subject": {
@@ -15,7 +15,7 @@
       "required": ["worker", "phase", "source_sha", "prepared_sha", "candidate_version", "stable_version", "descriptor_sha256"],
       "properties": {
         "worker": { "$ref": "#/$defs/worker" },
-        "phase": { "enum": ["prepare", "candidate_publish", "candidate_smoke", "stable_publish", "image_alias", "finalize", "verify", "harness_release"] },
+        "phase": { "enum": ["prepare", "candidate_publish", "stable_publish", "image_alias", "finalize", "verify"] },
         "source_sha": { "$ref": "#/$defs/sha" },
         "prepared_sha": { "oneOf": [{ "$ref": "#/$defs/sha" }, { "type": "null" }] },
         "candidate_version": { "type": ["string", "null"], "minLength": 1 },
@@ -73,9 +73,7 @@
   },
   "allOf": [
     { "if": { "properties": { "outcome": { "const": "succeeded" } }, "required": ["outcome"] }, "then": { "properties": { "error": { "type": "null" } } } },
-    { "if": { "properties": { "outcome": { "enum": ["failed", "canceled"] } }, "required": ["outcome"] }, "then": { "properties": { "error": { "type": "object" } } } },
-    { "if": { "properties": { "executor": { "properties": { "repository": { "const": "iii-hq/harness-e2e" } }, "required": ["repository"] } } }, "then": { "properties": { "subject": { "properties": { "phase": { "const": "harness_release" } } } } } },
-    { "if": { "properties": { "subject": { "properties": { "phase": { "const": "harness_release" } }, "required": ["phase"] } } }, "then": { "properties": { "executor": { "properties": { "repository": { "const": "iii-hq/harness-e2e" } } } } } }
+    { "if": { "properties": { "outcome": { "enum": ["failed", "canceled"] } }, "required": ["outcome"] }, "then": { "properties": { "error": { "type": "object" } } } }
   ],
   "$defs": {
     "uuid": { "type": "string", "format": "uuid" },
@@ -85,11 +83,11 @@
     "identity": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["operation_id", "step_id", "release_intent_id", "candidate_id", "attempt_id", "dispatch_nonce", "plan_hash"],
+      "required": ["operation_id", "step_id", "deployment_intent_id", "candidate_id", "attempt_id", "dispatch_nonce", "plan_hash"],
       "properties": {
         "operation_id": { "$ref": "#/$defs/uuid" },
         "step_id": { "$ref": "#/$defs/uuid" },
-        "release_intent_id": { "$ref": "#/$defs/uuid" },
+        "deployment_intent_id": { "$ref": "#/$defs/uuid" },
         "candidate_id": { "$ref": "#/$defs/uuid" },
         "attempt_id": { "$ref": "#/$defs/uuid" },
         "dispatch_nonce": { "$ref": "#/$defs/uuid" },
@@ -101,7 +99,7 @@
       "additionalProperties": false,
       "required": ["repository", "workflow", "sha", "run_id", "run_attempt", "event"],
       "properties": {
-        "repository": { "enum": ["iii-hq/workers", "iii-hq/harness-e2e"] },
+        "repository": { "const": "iii-hq/workers" },
         "workflow": { "type": "string", "pattern": "^(?:\\.github/workflows/)?[a-zA-Z0-9_.-]+\\.ya?ml$" },
         "sha": { "$ref": "#/$defs/sha" },
         "run_id": { "type": "integer", "minimum": 1 },

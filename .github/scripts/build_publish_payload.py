@@ -286,6 +286,7 @@ def normalize_worker_interface(
 def build_payload(
     *,
     registry_projection: dict[str, Any],
+    published_version: str,
     repo_url: str,
     interface: dict[str, Any],
     artifacts: dict[str, Any],
@@ -294,11 +295,12 @@ def build_payload(
 ) -> dict[str, Any]:
     """Merge the immutable compiler projection with current Registry fields."""
     required = {
-        "worker_name", "version", "type", "description", "license", "tags",
+        "worker_name", "type", "description", "license", "tags",
         "dependencies", "config", "experimental", "readme",
     }
     if not isinstance(registry_projection, dict) or set(registry_projection) != required:
         raise ValueError("registry_projection differs from the current Registry metadata contract")
+    _lib.parse_release_version(published_version)
     deploy = registry_projection["type"]
     kind = artifacts.get("kind")
     expected_kind = {
@@ -310,7 +312,7 @@ def build_payload(
         raise ValueError("prepared artifacts differ from the public deploy type")
     payload: dict[str, Any] = {
         **registry_projection,
-        "tag": registry_tag,
+        "version": published_version,
         "repo": repo_url,
         "functions": [
             _normalize_registry_function(function)
@@ -321,6 +323,8 @@ def build_payload(
             for trigger in interface.get("triggers") or []
         ],
     }
+    if registry_tag != "none":
+        payload["tag"] = registry_tag
     if deploy == "binary":
         binaries = artifacts.get("binaries")
         if not isinstance(binaries, dict) or not binaries:
@@ -345,6 +349,7 @@ def build_payload(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--descriptor", required=True)
+    parser.add_argument("--published-version", required=True)
     parser.add_argument("--repo-url", required=True)
     parser.add_argument("--interface-json", required=True)
     parser.add_argument("--artifacts-json", required=True)
@@ -360,6 +365,7 @@ def main() -> int:
 
     payload = build_payload(
         registry_projection=descriptor["registry_projection"],
+        published_version=args.published_version,
         repo_url=args.repo_url,
         interface=interface,
         artifacts=artifacts,

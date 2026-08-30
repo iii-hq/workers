@@ -210,7 +210,10 @@ pub(super) fn scenario() -> ScenarioFixture {
         Generation::new(6)
             .expect(
                 Request::new()
-                    .turn_request_step(0)
+                    // The re-task either appends to the still-active child
+                    // turn or starts a new turn after the first one settles.
+                    // Both schedules preserve the same session transcript.
+                    .turn_request_steps([0, 1])
                     .system_prompt_regex(SUBAGENT_PROMPT)
                     .messages_subset([
                         json!({ "role": "user", "content": [{ "type": "text", "text": TASK_ONE }] }),
@@ -256,7 +259,7 @@ pub(super) fn scenario() -> ScenarioFixture {
         Generation::new(8)
             .expect(
                 Request::new()
-                    .turn_request_step(1)
+                    .turn_request_steps([1, 2])
                     .system_prompt_regex(SUBAGENT_PROMPT)
                     .messages_subset([
                         json!({ "role": "user" }),
@@ -309,6 +312,7 @@ pub(super) fn scenario() -> ScenarioFixture {
 mod tests {
     use super::*;
     use crate::expand::expand_compiled_fixture;
+    use crate::types::script::JsonMatcherV1;
 
     #[test]
     fn fixture_prompt_sorts_expanded_allowed_function_ids() {
@@ -343,5 +347,12 @@ mod tests {
         // Both spawns of the child name the same explicit session id.
         let script = serde_json::to_string(&fixture.script.generations).unwrap();
         assert_eq!(script.matches("{{run_id}}-fresh").count(), 2, "{script}");
+
+        for (generation, expected) in [(5, "(?:0|1)$"), (7, "(?:1|2)$")] {
+            assert!(matches!(
+                &fixture.script.generations[generation].match_.request_id,
+                JsonMatcherV1::Regex { pattern } if pattern.ends_with(expected)
+            ));
+        }
     }
 }

@@ -175,7 +175,7 @@ def suite_changed(
 def publishable_workers(repo_root: pathlib.Path) -> dict[str, _lib.WorkerSpec]:
     return {
         worker_id: spec
-        for worker_id, spec in _lib.read_worker_catalog(repo_root / ".release" / "workers.yaml").items()
+        for worker_id, spec in _lib.read_worker_catalog(repo_root / ".deploy" / "workers.yaml").items()
         if spec.publish and spec.path.parent == repo_root
     }
 
@@ -207,7 +207,7 @@ def catalog_at_ref(ref: str) -> dict:
 
     try:
         text = subprocess.check_output(
-            ["git", "show", f"{ref}:.release/workers.yaml"],
+            ["git", "show", f"{ref}:.deploy/workers.yaml"],
             text=True,
             stderr=subprocess.DEVNULL,
         )
@@ -278,7 +278,7 @@ def main(argv: list[str] | None = None) -> int:
     catalog_changed: set[str] = set()
     catalog_source_changed: set[str] = set()
     stack_changed = False
-    if ".release/workers.yaml" in files:
+    if ".deploy/workers.yaml" in files:
         catalog_changed, catalog_source_changed, stack_changed = catalog_deltas(args.base, args.head)
         catalog_changed &= workers
         catalog_source_changed &= workers

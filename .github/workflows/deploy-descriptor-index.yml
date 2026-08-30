@@ -1,4 +1,4 @@
-name: Release Descriptor Index
+name: Deployment Descriptor Index
 
 on:
   push:
@@ -39,7 +39,7 @@ jobs:
 
       - name: Verify approved compiler bytes
         env:
-          APPROVED_COMPILER_DIGEST: eb14d729ec032f62f356b9d3fa4f49f3cab4638b4391b0e8cca39c2be2fe32ce
+          APPROVED_COMPILER_DIGEST: 5f720e57d1987b9016a0c2c9b7eaff25a696509506809734d28a88ecc208c364
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -48,14 +48,14 @@ jobs:
           from pathlib import Path
 
           digest = hashlib.sha256()
-          digest.update(b"iii-workers-release-compiler\0")
-          digest.update(Path(".github/scripts/release_compiler.py").read_bytes())
-          digest.update(b"\0release-descriptor-schema\0")
-          digest.update(Path(".github/contracts/release-descriptor.schema.json").read_bytes())
+          digest.update(b"iii-workers-deployment-compiler\0")
+          digest.update(Path(".github/scripts/deployment_compiler.py").read_bytes())
+          digest.update(b"\0deployment-descriptor-schema\0")
+          digest.update(Path(".github/contracts/deployment-descriptor.schema.json").read_bytes())
           actual = digest.hexdigest()
           expected = os.environ["APPROVED_COMPILER_DIGEST"]
           if actual != expected:
-              raise SystemExit(f"unapproved release compiler bytes: expected {expected}, got {actual}")
+              raise SystemExit(f"unapproved deployment compiler bytes: expected {expected}, got {actual}")
           PY
 
       - name: Install descriptor validators
@@ -63,11 +63,11 @@ jobs:
 
       - name: Compile all public release workers exactly once
         run: >-
-          python3 .github/scripts/release_compiler.py compile-index
+          python3 .github/scripts/deployment_compiler.py compile-index
           --source-sha '${{ steps.source.outputs.sha }}'
           --compiler-repository '${{ github.repository }}'
           --compiler-commit '${{ steps.source.outputs.sha }}'
-          --output-dir release-descriptor-index
+          --output-dir deployment-descriptor-index
 
       - name: Validate descriptor schema, identities, and counts
         env:
@@ -80,10 +80,10 @@ jobs:
           from pathlib import Path
           from jsonschema import Draft202012Validator
 
-          root = Path("release-descriptor-index")
-          schema = json.loads(Path(".github/contracts/release-descriptor.schema.json").read_text())
-          index = json.loads((root / "release-descriptor-index.json").read_text())
-          assert index["contract"] == "release-descriptor-index"
+          root = Path("deployment-descriptor-index")
+          schema = json.loads(Path(".github/contracts/deployment-descriptor.schema.json").read_text())
+          index = json.loads((root / "deployment-descriptor-index.json").read_text())
+          assert index["contract"] == "deployment-descriptor-index"
           assert index["source_sha"] == os.environ["SOURCE_SHA"]
           assert index["compiler"]["repository"] == os.environ["GITHUB_REPOSITORY"]
           assert index["compiler"]["commit"] == os.environ["SOURCE_SHA"]
@@ -100,7 +100,7 @@ jobs:
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: release-descriptor-index-${{ steps.source.outputs.sha }}
-          path: release-descriptor-index/
+          name: deployment-descriptor-index-${{ steps.source.outputs.sha }}
+          path: deployment-descriptor-index/
           if-no-files-found: error
           retention-days: 30

@@ -26,7 +26,7 @@ DEPLOY_KIND = {
     "bundle": {"javascript-bundle", "python-bundle"},
     "image": "oci-image",
 }
-RELEASE_SECTIONS = {"source", "artifact", "validation", "publish"}
+DEPLOYMENT_SECTIONS = {"source", "artifact", "publish"}
 SECRET_KEYS = {
     "api_key",
     "access_key",
@@ -83,7 +83,7 @@ def read_yaml(path: Path) -> Any:
     try:
         import yaml
     except ImportError as error:  # pragma: no cover - CI installs PyYAML explicitly
-        raise ValueError("PyYAML is required by the release compiler") from error
+        raise ValueError("PyYAML is required by the deployment compiler") from error
     if not path.is_file():
         fail(f"{path}: file does not exist")
     value = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -123,9 +123,9 @@ def read_version(path: Path) -> str:
 
 def compiler_digest(script: Path, schema: Path) -> str:
     digest = hashlib.sha256()
-    digest.update(b"iii-workers-release-compiler\0")
+    digest.update(b"iii-workers-deployment-compiler\0")
     digest.update(script.read_bytes())
-    digest.update(b"\0release-descriptor-schema\0")
+    digest.update(b"\0deployment-descriptor-schema\0")
     digest.update(schema.read_bytes())
     return digest.hexdigest()
 
@@ -380,9 +380,9 @@ def build_units(worker: str, artifact: dict[str, Any]) -> list[dict[str, Any]]:
 def compile_worker(root: Path, worker: str, value: Any, source_sha: str, compiler_sha: str) -> dict[str, Any]:
     if not WORKER_RE.fullmatch(worker) or not isinstance(value, dict):
         fail(f"invalid release worker entry {worker!r}")
-    if set(value) != RELEASE_SECTIONS:
+    if set(value) != DEPLOYMENT_SECTIONS:
         fail(
-            f"workers.{worker} must contain exactly {sorted(RELEASE_SECTIONS)}; "
+            f"workers.{worker} must contain exactly {sorted(DEPLOYMENT_SECTIONS)}; "
             f"got {sorted(value) if isinstance(value, dict) else type(value).__name__}"
         )
     source = value["source"]
@@ -408,40 +408,33 @@ def compile_worker(root: Path, worker: str, value: Any, source_sha: str, compile
         for field in ("description", "license"):
             if not isinstance(manifest.get(field), str) or not manifest[field].strip():
                 fail(f"{public_path}: {field} is required for Registry publication")
-    validation = value["validation"]
-    if not isinstance(validation, dict) or set(validation) != {"interface"} or validation["interface"] not in {"required", "skipped"}:
-        fail(f"workers.{worker}.validation.interface must be required or skipped")
-    if (manifest.get("interface_smoke") is False) != (validation["interface"] == "skipped"):
-        fail(f"{worker}: public interface_smoke and private validation.interface differ")
     artifact = validate_artifact(root, worker, worker_dir, value["artifact"], manifest)
-    version = read_version(package_manifest)
+    package_manifest_version = read_version(package_manifest)
     projection = {
         "worker_name": worker,
-        "version": version,
         "type": manifest["deploy"],
         "description": str(manifest.get("description") or ""),
         "license": str(manifest.get("license") or ""),
         "tags": normalize_tags(manifest.get("tags"), f"{worker}.tags"),
         "dependencies": normalize_dependencies(manifest.get("dependencies"), f"{worker}.dependencies"),
         "config": normalize_config(worker_dir, manifest),
-        "experimental": "-experimental" in version,
+        "experimental": bool(manifest.get("experimental", False)),
         "readme": (worker_dir / "README.md").read_text(encoding="utf-8")
         if (worker_dir / "README.md").is_file()
         else "",
     }
     descriptor: dict[str, Any] = {
-        "contract": "release-descriptor",
+        "contract": "deployment-descriptor",
         "worker": worker,
-        "version": version,
+        "package_manifest_version": package_manifest_version,
         "source_sha": source_sha,
-        "release_spec_sha256": json_sha256(value),
+        "deployment_spec_sha256": json_sha256(value),
         "public_manifest_sha256": file_sha256(public_path),
         "registry_projection_sha256": json_sha256(projection),
         "compiler_digest": compiler_sha,
         "source": source,
         "artifact": artifact,
         "runtime": normalize_runtime(worker, manifest, str(artifact["kind"])),
-        "validation": validation,
         "publish": publish,
         "build_units": build_units(worker, artifact),
         "registry_projection": projection,
@@ -457,7 +450,7 @@ def write_json(path: Path, value: Any) -> None:
 
 def compile_index(args: argparse.Namespace) -> int:
     root = args.root.resolve()
-    release_spec = (root / args.release_spec).resolve()
+    deployment_spec = (root / args.deployment_spec).resolve()
     schema = args.schema.resolve()
     if not SHA_RE.fullmatch(args.source_sha):
         fail("source_sha must be a full lowercase commit SHA")
@@ -465,11 +458,11 @@ def compile_index(args: argparse.Namespace) -> int:
         fail("compiler_commit must be a full lowercase commit SHA")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.compiler_repository):
         fail("compiler_repository must be an owner/name pair")
-    document = read_yaml(release_spec)
+    document = read_yaml(deployment_spec)
     if not isinstance(document, dict) or set(document) != {"workers"} or not isinstance(document["workers"], dict):
-        fail(f"{release_spec}: expected exactly one non-empty workers mapping")
+        fail(f"{deployment_spec}: expected exactly one non-empty workers mapping")
     if not document["workers"]:
-        fail(f"{release_spec}: workers must not be empty")
+        fail(f"{deployment_spec}: workers must not be empty")
     digest = compiler_digest(Path(__file__).resolve(), schema)
     output = args.output_dir.resolve()
     if output.exists() and any(output.iterdir()):
@@ -486,14 +479,14 @@ def compile_index(args: argparse.Namespace) -> int:
         entries[worker] = {
             "path": relative,
             "digest": descriptor["descriptor_sha256"],
-            "version": descriptor["version"],
+            "package_manifest_version": descriptor["package_manifest_version"],
             "publish": descriptor["publish"],
-            "release_spec_sha256": descriptor["release_spec_sha256"],
+            "deployment_spec_sha256": descriptor["deployment_spec_sha256"],
             "public_manifest_sha256": descriptor["public_manifest_sha256"],
             "registry_projection_sha256": descriptor["registry_projection_sha256"],
         }
     index = {
-        "contract": "release-descriptor-index",
+        "contract": "deployment-descriptor-index",
         "source_sha": args.source_sha,
         "compiler": {
             "repository": args.compiler_repository,
@@ -502,7 +495,7 @@ def compile_index(args: argparse.Namespace) -> int:
         },
         "workers": entries,
     }
-    write_json(output / "release-descriptor-index.json", index)
+    write_json(output / "deployment-descriptor-index.json", index)
     print(json.dumps({"workers": len(entries), "publishable": sum(row["publish"] for row in entries.values()), "compiler_digest": digest}, sort_keys=True))
     return 0
 
@@ -518,12 +511,12 @@ def show_digest(args: argparse.Namespace) -> int:
 
 def parser() -> argparse.ArgumentParser:
     root = Path(__file__).resolve().parents[2]
-    schema = Path(__file__).resolve().parents[1] / "contracts" / "release-descriptor.schema.json"
+    schema = Path(__file__).resolve().parents[1] / "contracts" / "deployment-descriptor.schema.json"
     command = argparse.ArgumentParser(description=__doc__)
     subparsers = command.add_subparsers(dest="command", required=True)
     compile_command = subparsers.add_parser("compile-index")
     compile_command.add_argument("--root", type=Path, default=root)
-    compile_command.add_argument("--release-spec", type=Path, default=Path(".release/workers.yaml"))
+    compile_command.add_argument("--deployment-spec", type=Path, default=Path(".deploy/workers.yaml"))
     compile_command.add_argument("--source-sha", required=True)
     compile_command.add_argument("--compiler-repository", required=True)
     compile_command.add_argument("--compiler-commit", required=True)
@@ -542,7 +535,7 @@ def main() -> int:
         args = parser().parse_args()
         return args.handler(args)
     except (OSError, ValueError, json.JSONDecodeError, tomllib.TOMLDecodeError) as error:
-        print(f"release compiler: {error}", file=sys.stderr)
+        print(f"deployment compiler: {error}", file=sys.stderr)
         return 1
 
 

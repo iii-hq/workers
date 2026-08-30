@@ -65,7 +65,7 @@ def validate(path: Path) -> None:
 
 
 def descriptors(index_dir: Path) -> list[Path]:
-    index = json.loads((index_dir / "release-descriptor-index.json").read_text(encoding="utf-8"))
+    index = json.loads((index_dir / "deployment-descriptor-index.json").read_text(encoding="utf-8"))
     workers = index.get("workers")
     if not isinstance(workers, dict):
         raise SystemExit("release descriptor index workers must be an object")

@@ -173,7 +173,7 @@ configuration).
 
 Pull requests trigger per-worker lint + tests for the changed worker(s).
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) discovers changes from
-the private [`.release/workers.yaml`](.release/workers.yaml) build catalog,
+the private [`.deploy/workers.yaml`](.deploy/workers.yaml) build catalog,
 then routes:
 
 - Rust → `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test --all-features`
@@ -193,21 +193,21 @@ Full reference (discovery buckets, interface boot smoke, e2e workflows):
 ## CD
 
 Release Control is the only supported release interface. For each source SHA,
-[`release-descriptor-index.yml`](.github/workflows/release-descriptor-index.yml)
-uses the repository-owned compiler to join `.release/workers.yaml`, the public
+[`deployment-descriptor-index.yml`](.github/workflows/deployment-descriptor-index.yml)
+uses the repository-owned compiler to join `.deploy/workers.yaml`, the public
 manifest, and the package manifest exactly once. Release
 Control selects those immutable bytes and dispatches the bounded phases:
 
-1. [`release-prepare.yml`](.github/workflows/release-prepare.yml) validates the
+1. [`deploy-prepare.yml`](.github/workflows/deploy-prepare.yml) validates the
    already-versioned source, compiles the selected descriptor, and builds one
    independent job per build unit through
-   [`_release-build.yml`](.github/workflows/_release-build.yml).
-2. [`release-candidate-publish.yml`](.github/workflows/release-candidate-publish.yml)
+   [`_deploy-build.yml`](.github/workflows/_deploy-build.yml).
+2. [`deploy-candidate-publish.yml`](.github/workflows/deploy-candidate-publish.yml)
    publishes the immutable candidate to `@next`.
 3. Candidate smoke, stable CAS to `@latest`, optional OCI alias, finalize, and
    verify run as separate authorized workflows.
 
-Every phase uploads `release-result.json` and posts the same bytes to Release
+Every phase uploads `deployment-result.json` and posts the same bytes to Release
 Control. Candidate and stable use one package version and one descriptor; no
 phase rebuilds or rereads the catalog after prepare.
 

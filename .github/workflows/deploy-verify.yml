@@ -1,4 +1,4 @@
-name: Release Verify
+name: Deployment Verify
 run-name: RC verify · ${{ inputs.worker }} · ${{ fromJSON(inputs.identity).operation_id }} · ${{ fromJSON(inputs.identity).step_id }} · ${{ fromJSON(inputs.identity).dispatch_nonce }}
 
 on:
@@ -19,10 +19,10 @@ on:
       expected_image_digest: {required: false, default: none, type: string}
 
 env:
-  RELEASE_IDENTITY: ${{ inputs.identity }}
+  DEPLOYMENT_IDENTITY: ${{ inputs.identity }}
   OPERATION_ID: ${{ fromJSON(inputs.identity).operation_id }}
   STEP_ID: ${{ fromJSON(inputs.identity).step_id }}
-  RELEASE_INTENT_ID: ${{ fromJSON(inputs.identity).release_intent_id }}
+  DEPLOYMENT_INTENT_ID: ${{ fromJSON(inputs.identity).deployment_intent_id }}
   CANDIDATE_ID: ${{ fromJSON(inputs.identity).candidate_id }}
   ATTEMPT_ID: ${{ fromJSON(inputs.identity).attempt_id }}
   DISPATCH_NONCE: ${{ fromJSON(inputs.identity).dispatch_nonce }}
@@ -54,8 +54,8 @@ jobs:
           sparse-checkout: .github/scripts
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
-          name: release-prepared-${{ env.CANDIDATE_ID }}
-          path: release-prepared
+          name: deploy-prepared-${{ env.CANDIDATE_ID }}
+          path: deploy-prepared
           run-id: ${{ inputs.prepared_run_id }}
           github-token: ${{ github.token }}
       - name: Authorize exact verification
@@ -63,12 +63,11 @@ jobs:
           RELEASE_CONTROL_API_URL: ${{ vars.RELEASE_CONTROL_API_URL }}
         run: |
           set -euo pipefail
-          test "$(jq -r .version release-prepared/release-descriptor.json)" = "$CANDIDATE_VERSION"
-          test "$(jq -r .descriptor_sha256 release-prepared/release-descriptor.json)" = "$DESCRIPTOR_SHA256"
-          python3 .github/scripts/release_interface.py verify-evidence --descriptor release-prepared/release-descriptor.json --evidence release-prepared/release-evidence.json
-          python3 .github/scripts/release_control_contract.py validate-identity --identity "$RELEASE_IDENTITY"
-          python3 .github/scripts/release_control_contract.py validate-dispatch --operation-id "$OPERATION_ID" --step-id "$STEP_ID" --dispatch-nonce "$DISPATCH_NONCE" --descriptor-sha256 "$DESCRIPTOR_SHA256" --plan-hash "$PLAN_HASH" --source-sha "$SOURCE_SHA"
-          python3 .github/scripts/release_control_contract.py authorize-dispatch --api-url "$RELEASE_CONTROL_API_URL" --repository '${{ github.repository }}' --operation-id "$OPERATION_ID" --step-id "$STEP_ID" --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' --workflow 'release-verify.yml' --event '${{ github.event_name }}' --sha '${{ github.sha }}' --release-intent-id "$RELEASE_INTENT_ID" --candidate-id "$CANDIDATE_ID" --attempt-id "$ATTEMPT_ID" --dispatch-nonce "$DISPATCH_NONCE" --plan-hash "$PLAN_HASH" --worker "$WORKER" --source-sha "$SOURCE_SHA" --descriptor-sha256 "$DESCRIPTOR_SHA256"
+          test "$(jq -r .descriptor_sha256 deploy-prepared/deployment-descriptor.json)" = "$DESCRIPTOR_SHA256"
+          python3 .github/scripts/deployment_interface.py verify-evidence --descriptor deploy-prepared/deployment-descriptor.json --evidence deploy-prepared/deployment-evidence.json
+          python3 .github/scripts/deployment_control_contract.py validate-identity --identity "$DEPLOYMENT_IDENTITY"
+          python3 .github/scripts/deployment_control_contract.py validate-dispatch --operation-id "$OPERATION_ID" --step-id "$STEP_ID" --dispatch-nonce "$DISPATCH_NONCE" --descriptor-sha256 "$DESCRIPTOR_SHA256" --plan-hash "$PLAN_HASH" --source-sha "$SOURCE_SHA"
+          python3 .github/scripts/deployment_control_contract.py authorize-dispatch --api-url "$RELEASE_CONTROL_API_URL" --repository '${{ github.repository }}' --operation-id "$OPERATION_ID" --step-id "$STEP_ID" --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' --workflow 'deploy-verify.yml' --event '${{ github.event_name }}' --sha '${{ github.sha }}' --deployment-intent-id "$DEPLOYMENT_INTENT_ID" --candidate-id "$CANDIDATE_ID" --attempt-id "$ATTEMPT_ID" --dispatch-nonce "$DISPATCH_NONCE" --plan-hash "$PLAN_HASH" --worker "$WORKER" --source-sha "$SOURCE_SHA" --descriptor-sha256 "$DESCRIPTOR_SHA256"
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
         with:
           version: v0.36.1
@@ -99,16 +98,16 @@ jobs:
           if [[ "$STATUS" == cancelled ]]; then outcome=canceled; error='{"code":"release_verify_canceled","category":"verification","retryable":true,"message":"release surface verification was canceled"}'
           elif [[ "$STATUS" != success ]]; then outcome=failed; error='{"code":"release_verify_failed","category":"verification","retryable":true,"message":"release surface verification did not complete"}'; fi
           artifacts='[]'
-          if [[ -f release-prepared/release-evidence.json ]]; then artifacts=$(jq -c '[.artifacts[] | del(.unit)]' release-prepared/release-evidence.json); fi
-          python3 .github/scripts/release_control_contract.py write-result --repository '${{ github.repository }}' --operation-id "$OPERATION_ID" --step-id "$STEP_ID" --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' --workflow 'release-verify.yml' --event '${{ github.event_name }}' --sha '${{ github.sha }}' --release-intent-id "$RELEASE_INTENT_ID" --candidate-id "$CANDIDATE_ID" --attempt-id "$ATTEMPT_ID" --dispatch-nonce "$DISPATCH_NONCE" --plan-hash "$PLAN_HASH" --worker "$WORKER" --phase verify --source-sha "$SOURCE_SHA" --prepared-sha "$PREPARED_SHA" --candidate-version "$CANDIDATE_VERSION" --stable-version "$STABLE_VERSION" --descriptor-sha256 "$DESCRIPTOR_SHA256" --outcome "$outcome" --effects '[]' --artifacts-json "$artifacts" --error-json "$error" --output release-result.json
+          if [[ -f deploy-prepared/deployment-evidence.json ]]; then artifacts=$(jq -c '[.artifacts[] | del(.unit)]' deploy-prepared/deployment-evidence.json); fi
+          python3 .github/scripts/deployment_control_contract.py write-result --repository '${{ github.repository }}' --operation-id "$OPERATION_ID" --step-id "$STEP_ID" --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' --workflow 'deploy-verify.yml' --event '${{ github.event_name }}' --sha '${{ github.sha }}' --deployment-intent-id "$DEPLOYMENT_INTENT_ID" --candidate-id "$CANDIDATE_ID" --attempt-id "$ATTEMPT_ID" --dispatch-nonce "$DISPATCH_NONCE" --plan-hash "$PLAN_HASH" --worker "$WORKER" --phase verify --source-sha "$SOURCE_SHA" --prepared-sha "$PREPARED_SHA" --candidate-version "$CANDIDATE_VERSION" --stable-version "$STABLE_VERSION" --descriptor-sha256 "$DESCRIPTOR_SHA256" --outcome "$outcome" --effects '[]' --artifacts-json "$artifacts" --error-json "$error" --output deployment-result.json
       - if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: release-result-${{ env.CANDIDATE_ID }}-${{ env.STEP_ID }}-attempt-${{ github.run_attempt }}
-          path: release-result.json
+          name: deployment-result-${{ env.CANDIDATE_ID }}-${{ env.STEP_ID }}-attempt-${{ github.run_attempt }}
+          path: deployment-result.json
           retention-days: 30
           if-no-files-found: error
       - if: always()
         env:
           RELEASE_CONTROL_API_URL: ${{ vars.RELEASE_CONTROL_API_URL }}
-        run: python3 .github/scripts/release_control_contract.py post-result --api-url "$RELEASE_CONTROL_API_URL" --result release-result.json
+        run: python3 .github/scripts/deployment_control_contract.py post-result --api-url "$RELEASE_CONTROL_API_URL" --result deployment-result.json

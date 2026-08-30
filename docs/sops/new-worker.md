@@ -12,7 +12,7 @@ details are in [`binary-worker.md`](binary-worker.md).
 - Add a consumer-facing `README.md` and a non-empty `tests/` directory.
 - Add `iii.worker.yaml` for local development, scaffolding and `iii worker`.
 - Add an entry to the private
-  [`.release/workers.yaml`](../../.release/workers.yaml) build catalog.
+  [`.deploy/workers.yaml`](../../.deploy/workers.yaml) build catalog.
 
 The private entry contains exactly `source`, `artifact`, `validation`, and
 `publish`. Public runtime and Registry metadata stay in `iii.worker.yaml`.
@@ -41,11 +41,11 @@ stdio-only process. Skipping validation does not silently disable publication.
 python3 .github/scripts/validate_worker.py \
   --worker <slug> --base-ref origin/main --source-changed '["<slug>"]'
 
-python3 .github/scripts/release_compiler.py compile-index \
+python3 .github/scripts/deployment_compiler.py compile-index \
   --source-sha "$(git rev-parse HEAD)" \
   --compiler-repository iii-hq/workers \
   --compiler-commit "$(git rev-parse HEAD)" \
-  --output-dir /tmp/release-descriptor-index
+  --output-dir /tmp/deployment-descriptor-index
 ```
 
 Run the language suite that CI will select:

@@ -33,7 +33,7 @@ def test_rust_toolchain_is_pinned_to_the_last_verified_stable() -> None:
     assert set(workflow_toolchains) == {"6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772"}
     assert "toolchain: 1.97.1" in bodies
     assert "toolchain: ${{ steps.metadata.outputs.toolchain_version }}" in (
-        WORKFLOWS / "_release-build.yml"
+        WORKFLOWS / "_deploy-build.yml"
     ).read_text()
 
 
@@ -137,7 +137,7 @@ def test_slow_rust_builds_upload_cargo_timing_reports() -> None:
 def test_ci_cargo_commands_use_committed_lockfiles() -> None:
     ci_body = (WORKFLOWS / "ci.yml").read_text()
     integration_body = (WORKFLOWS / "_harness-integration.yml").read_text()
-    release = workflow("_release-build.yml")
+    release = workflow("_deploy-build.yml")
     release_steps = release["jobs"]["build"]["steps"]
     build = named_step(release_steps, "Build immutable artifact")
 
@@ -145,7 +145,7 @@ def test_ci_cargo_commands_use_committed_lockfiles() -> None:
     assert "cargo test --locked --all-features" in ci_body
     assert "cargo build --locked" in ci_body
     assert "cargo test --locked --manifest-path harness/Cargo.toml" in integration_body
-    assert "release_train.py build" in build["run"]
+    assert "deployment_train.py build" in build["run"]
 
 
 def test_rust_security_audit_is_narrow_on_prs_and_complete_on_schedule() -> None:

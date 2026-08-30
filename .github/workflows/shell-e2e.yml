@@ -41,7 +41,7 @@ jobs:
         env:
           RELEASE_CONTROL_BOT_LOGIN: ${{ vars.RELEASE_CONTROL_BOT_LOGIN }}
         run: >-
-          python3 .github/scripts/release_control_contract.py validate-dispatch
+          python3 .github/scripts/deployment_control_contract.py validate-dispatch
           --operation-id '${{ inputs.operation_id }}'
           --step-id '${{ inputs.step_id }}'
 
@@ -69,6 +69,8 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
       - name: Install iii engine (latest from main)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 \
             https://install.iii.dev/iii/main/install.sh | sh
@@ -107,7 +109,7 @@ jobs:
       - run: |
           subject=$(jq -cn --arg source_sha '${{ inputs.source_sha }}' '{source_sha:$source_sha}')
           checks=$(jq -cn --arg status '${{ needs.e2e.result }}' '[{name:"shell_e2e",status:$status}]')
-          python3 .github/scripts/release_control_contract.py write-test-result --kind test --repository '${{ github.repository }}' \
+          python3 .github/scripts/deployment_control_contract.py write-test-result --kind test --repository '${{ github.repository }}' \
             --operation-id '${{ inputs.operation_id }}' --step-id '${{ inputs.step_id }}' --run-id '${{ github.run_id }}' \
             --run-attempt '${{ github.run_attempt }}' --workflow shell-e2e.yml --event '${{ github.event_name }}' --sha '${{ github.sha }}' \
             --subject "$subject" --checks "$checks" --effects '[]' --outputs '{}' --output e2e-result.json

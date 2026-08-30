@@ -1,4 +1,4 @@
-name: Release Build Unit
+name: Deployment Build Unit
 
 on:
   workflow_call:
@@ -55,15 +55,15 @@ jobs:
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: ${{ inputs.descriptor_artifact }}
-          path: release-input
+          path: deployment-input
 
       - name: Resolve descriptor-owned build metadata
         id: metadata
         env:
           BUILD_UNIT: ${{ inputs.unit }}
         run: >-
-          python3 .github/scripts/release_train.py build-metadata
-          --descriptor release-input/release-descriptor.json
+          python3 .github/scripts/deployment_train.py build-metadata
+          --descriptor deployment-input/deployment-descriptor.json
           --unit "$BUILD_UNIT"
           --github-output "$GITHUB_OUTPUT"
 
@@ -86,11 +86,11 @@ jobs:
         run: |
           set -euo pipefail
           pip install --quiet pyyaml
-          test "$(jq -r .worker release-input/release-descriptor.json)" = "$WORKER"
-          test "$(jq -r .source_sha release-input/release-descriptor.json)" = "$PREPARED_SHA"
+          test "$(jq -r .worker deployment-input/deployment-descriptor.json)" = "$WORKER"
+          test "$(jq -r .source_sha deployment-input/deployment-descriptor.json)" = "$PREPARED_SHA"
           jq -e --arg unit "$UNIT" --arg target "$TARGET" \
             '.build_units | any(.id == $unit and ((.target // .platform // "none") == $target))' \
-            release-input/release-descriptor.json >/dev/null
+            deployment-input/deployment-descriptor.json >/dev/null
 
       - name: Rewrite SSH to HTTPS for public dependencies
         run: git config --local url."https://github.com/".insteadOf "ssh://git@github.com/"
@@ -212,8 +212,8 @@ jobs:
           SCCACHE_S3_KEY_PREFIX: sccache/${{ steps.metadata.outputs.toolchain_version }}/${{ inputs.target }}
         run: |
           set -euo pipefail
-          python3 .github/scripts/release_train.py build \
-            --descriptor release-input/release-descriptor.json \
+          python3 .github/scripts/deployment_train.py build \
+            --descriptor deployment-input/deployment-descriptor.json \
             --unit "$BUILD_UNIT" \
             --out release-output
 

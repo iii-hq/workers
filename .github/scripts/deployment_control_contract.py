@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Release Control authorization and byte-exact execution evidence."""
+"""Deployment Control authorization and byte-exact execution evidence."""
 
 from __future__ import annotations
 
@@ -19,25 +19,18 @@ from uuid import UUID
 PHASES = {
     "prepare",
     "candidate_publish",
-    "candidate_smoke",
     "stable_publish",
     "image_alias",
     "finalize",
     "verify",
 }
-PHASE_WORKFLOWS = {phase: f"release-{phase.replace('_', '-')}.yml" for phase in PHASES}
-PHASE_WORKFLOWS.update({
-    "candidate_publish": "release-candidate-publish.yml",
-    "candidate_smoke": "release-candidate-smoke.yml",
-    "stable_publish": "release-stable-publish.yml",
-    "image_alias": "release-image-alias.yml",
-})
+PHASE_WORKFLOWS = {phase: f"deploy-{phase.replace('_', '-')}.yml" for phase in PHASES}
 WORKER_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
 WORKFLOW_RE = re.compile(r"(?:\.github/workflows/)?[a-zA-Z0-9_.-]+\.ya?ml")
 IDENTITY_FIELDS = {
     "operation_id",
     "step_id",
-    "release_intent_id",
+    "deployment_intent_id",
     "candidate_id",
     "attempt_id",
     "dispatch_nonce",
@@ -83,15 +76,15 @@ def nullable(value: str | None) -> str | None:
 
 def validate_executor(args: argparse.Namespace) -> None:
     if args.repository != "iii-hq/workers":
-        raise ValueError("Workers release executions require repository=iii-hq/workers")
+        raise ValueError("Workers deployment executions require repository=iii-hq/workers")
     if not WORKFLOW_RE.fullmatch(args.workflow):
         raise ValueError("workflow must be a workflow filename or path")
     if args.workflow not in PHASE_WORKFLOWS.values():
-        raise ValueError("workflow is not a release-train entrypoint")
+        raise ValueError("workflow is not a deployment entrypoint")
     if args.run_id < 1 or args.run_attempt < 1:
         raise ValueError("run_id and run_attempt must be positive integers")
     if args.event != "workflow_dispatch":
-        raise ValueError("release executions require event=workflow_dispatch")
+        raise ValueError("deployment executions require event=workflow_dispatch")
     commit_sha(args.sha, "sha")
 
 
@@ -113,7 +106,7 @@ def identity_value(raw: str) -> dict[str, str]:
     if not all(isinstance(identity[field], str) and identity[field] for field in IDENTITY_FIELDS):
         raise ValueError("identity fields must be non-empty strings")
     for field in (
-        "operation_id", "step_id", "release_intent_id", "candidate_id", "attempt_id", "dispatch_nonce",
+        "operation_id", "step_id", "deployment_intent_id", "candidate_id", "attempt_id", "dispatch_nonce",
     ):
         uuid_value(identity[field], field)
     sha256_hex(identity["plan_hash"], "plan_hash")
@@ -193,7 +186,7 @@ def validate_error(raw: str) -> dict[str, object] | None:
 
 def write_result(args: argparse.Namespace) -> int:
     if args.phase not in PHASES:
-        raise ValueError(f"unsupported release phase: {args.phase}")
+        raise ValueError(f"unsupported deployment phase: {args.phase}")
     validate_executor(args)
     if args.workflow != PHASE_WORKFLOWS[args.phase]:
         raise ValueError(f"phase {args.phase} requires workflow {PHASE_WORKFLOWS[args.phase]}")
@@ -201,11 +194,11 @@ def write_result(args: argparse.Namespace) -> int:
     candidate_version = nullable(args.candidate_version)
     stable_version = nullable(args.stable_version)
     payload = {
-        "contract": "release-execution",
+        "contract": "deployment-execution",
         "identity": {
             "operation_id": uuid_value(args.operation_id, "operation_id"),
             "step_id": uuid_value(args.step_id, "step_id"),
-            "release_intent_id": uuid_value(args.release_intent_id, "release_intent_id"),
+            "deployment_intent_id": uuid_value(args.deployment_intent_id, "deployment_intent_id"),
             "candidate_id": uuid_value(args.candidate_id, "candidate_id"),
             "attempt_id": uuid_value(args.attempt_id, "attempt_id"),
             "dispatch_nonce": uuid_value(args.dispatch_nonce, "dispatch_nonce"),
@@ -292,7 +285,7 @@ def authorize_dispatch(args: argparse.Namespace) -> int:
         "identity": {
             "operation_id": uuid_value(args.operation_id, "operation_id"),
             "step_id": uuid_value(args.step_id, "step_id"),
-            "release_intent_id": uuid_value(args.release_intent_id, "release_intent_id"),
+            "deployment_intent_id": uuid_value(args.deployment_intent_id, "deployment_intent_id"),
             "candidate_id": uuid_value(args.candidate_id, "candidate_id"),
             "attempt_id": uuid_value(args.attempt_id, "attempt_id"),
             "dispatch_nonce": uuid_value(args.dispatch_nonce, "dispatch_nonce"),
@@ -321,7 +314,7 @@ def authorize_dispatch(args: argparse.Namespace) -> int:
         headers={
             "Authorization": f"Bearer {oidc_token(args.audience)}",
             "Content-Type": "application/json",
-            "x-release-result-sha256": digest,
+            "x-deployment-result-sha256": digest,
         },
     )
     with urllib.request.urlopen(request, timeout=30) as response:
@@ -333,7 +326,7 @@ def authorize_dispatch(args: argparse.Namespace) -> int:
 def post_result(args: argparse.Namespace) -> int:
     body = args.result.read_bytes()
     payload = json.loads(body)
-    if not isinstance(payload, dict) or payload.get("contract") != "release-execution":
+    if not isinstance(payload, dict) or payload.get("contract") != "deployment-execution":
         raise ValueError("release result has the wrong contract")
     digest = "sha256:" + hashlib.sha256(body).hexdigest()
     request = urllib.request.Request(
@@ -343,7 +336,7 @@ def post_result(args: argparse.Namespace) -> int:
         headers={
             "Authorization": f"Bearer {oidc_token(args.audience)}",
             "Content-Type": "application/json",
-            "x-release-result-sha256": digest,
+            "x-deployment-result-sha256": digest,
         },
     )
     with urllib.request.urlopen(request, timeout=30) as response:
@@ -386,7 +379,7 @@ def parser() -> argparse.ArgumentParser:
 
     write = commands.add_parser("write-result")
     add_executor_args(write)
-    write.add_argument("--release-intent-id", required=True)
+    write.add_argument("--deployment-intent-id", required=True)
     write.add_argument("--candidate-id", required=True)
     write.add_argument("--attempt-id", required=True)
     write.add_argument("--dispatch-nonce", required=True)
@@ -420,7 +413,7 @@ def parser() -> argparse.ArgumentParser:
     authorize.add_argument("--api-url", required=True)
     authorize.add_argument("--audience", default="release-control-workers")
     add_executor_args(authorize)
-    authorize.add_argument("--release-intent-id", required=True)
+    authorize.add_argument("--deployment-intent-id", required=True)
     authorize.add_argument("--candidate-id", required=True)
     authorize.add_argument("--attempt-id", required=True)
     authorize.add_argument("--dispatch-nonce", required=True)

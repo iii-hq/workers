@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-import release_train
-from release_train import (
+import deployment_train
+from deployment_train import (
     build,
     build_frontends,
     build_oci_layout,
@@ -27,13 +27,13 @@ def seal_descriptor(value: dict) -> dict:
     return value
 
 
-def descriptor(worker: str, source_sha: str, version: str) -> dict:
+def descriptor(worker: str, source_sha: str, package_manifest_version: str) -> dict:
     return seal_descriptor({
-        "contract": "release-descriptor",
+        "contract": "deployment-descriptor",
         "worker": worker,
-        "version": version,
+        "package_manifest_version": package_manifest_version,
         "source_sha": source_sha,
-        "release_spec_sha256": "1" * 64,
+        "deployment_spec_sha256": "1" * 64,
         "public_manifest_sha256": "2" * 64,
         "registry_projection_sha256": "3" * 64,
         "compiler_digest": "4" * 64,
@@ -49,12 +49,10 @@ def descriptor(worker: str, source_sha: str, version: str) -> dict:
             "include": ["dist/index.mjs"],
         },
         "runtime": {"environment": {}, "resources": {}, "install": "", "start": "node dist/index.mjs"},
-        "validation": {"interface": "required"},
         "publish": True,
         "build_units": [{"id": "bundle", "kind": "javascript-bundle"}],
         "registry_projection": {
             "worker_name": worker,
-            "version": version,
             "type": "bundle",
             "description": "Smoke",
             "license": "Apache-2.0",
@@ -76,8 +74,8 @@ def test_select_descriptor_preserves_compiler_bytes(tmp_path: Path) -> None:
     digest = selected["descriptor_sha256"]
     descriptor_bytes = (json.dumps(selected, indent=4) + "\n").encode()
     (descriptor_dir / "smoke.json").write_bytes(descriptor_bytes)
-    (tmp_path / "release-descriptor-index.json").write_text(json.dumps({
-        "contract": "release-descriptor-index",
+    (tmp_path / "deployment-descriptor-index.json").write_text(json.dumps({
+        "contract": "deployment-descriptor-index",
         "source_sha": source_sha,
         "compiler": {
             "repository": "iii-hq/workers",
@@ -87,9 +85,9 @@ def test_select_descriptor_preserves_compiler_bytes(tmp_path: Path) -> None:
         "workers": {"smoke": {
             "path": "descriptors/smoke.json",
             "digest": digest,
-            "version": "1.0.0-rc.1",
+            "package_manifest_version": "1.0.0-rc.1",
             "publish": True,
-            "release_spec_sha256": selected["release_spec_sha256"],
+            "deployment_spec_sha256": selected["deployment_spec_sha256"],
             "public_manifest_sha256": selected["public_manifest_sha256"],
             "registry_projection_sha256": selected["registry_projection_sha256"],
         }},
@@ -101,7 +99,6 @@ def test_select_descriptor_preserves_compiler_bytes(tmp_path: Path) -> None:
         worker="smoke",
         source_sha=source_sha,
         compiler_digest=compiler_digest,
-        candidate_version="1.0.0-rc.1",
         descriptor_sha256=digest,
         out=output,
     ))
@@ -176,12 +173,12 @@ def test_rust_build_uses_deterministic_target_native_archive(
     selected["registry_projection"]["type"] = "binary"
     selected["build_units"] = [{"id": f"rust-{target}", "kind": "rust-binary", "target": target}]
     seal_descriptor(selected)
-    descriptor_path = tmp_path / "release-descriptor.json"
+    descriptor_path = tmp_path / "deployment-descriptor.json"
     descriptor_path.write_text(json.dumps(selected), encoding="utf-8")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(release_train.subprocess, "check_output", lambda *args, **kwargs: source_sha + "\n")
+    monkeypatch.setattr(deployment_train.subprocess, "check_output", lambda *args, **kwargs: source_sha + "\n")
     commands = []
-    monkeypatch.setattr(release_train, "run", lambda *command, cwd=None: commands.append((command, cwd)))
+    monkeypatch.setattr(deployment_train, "run", lambda *command, cwd=None: commands.append((command, cwd)))
 
     outputs = []
     for output_name in ("first", "second"):
@@ -194,7 +191,7 @@ def test_rust_build_uses_deterministic_target_native_archive(
     assert first_archive.read_bytes() == second_archive.read_bytes()
     checksum_name = archive_name.removesuffix(".tar.gz").removesuffix(".zip") + ".sha256"
     assert (outputs[0] / checksum_name).read_text(encoding="utf-8") == (
-        f"{release_train.sha256(first_archive)}  {archive_name}\n"
+        f"{deployment_train.sha256(first_archive)}  {archive_name}\n"
     )
     assert commands == [
         (("cargo", "build", "--release", "--target", target, "--manifest-path", "smoke/Cargo.toml"), None),
@@ -239,11 +236,11 @@ def test_javascript_bundle_preserves_compiler_owned_include_path(tmp_path: Path,
     }
     selected["runtime"] = {"environment": {}, "resources": {}, "install": "", "start": "node dist/bundle/index.mjs"}
     seal_descriptor(selected)
-    descriptor_path = tmp_path / "release-descriptor.json"
+    descriptor_path = tmp_path / "deployment-descriptor.json"
     descriptor_path.write_text(json.dumps(selected), encoding="utf-8")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(release_train.subprocess, "check_output", lambda *args, **kwargs: source_sha + "\n")
-    monkeypatch.setattr(release_train, "run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(deployment_train.subprocess, "check_output", lambda *args, **kwargs: source_sha + "\n")
+    monkeypatch.setattr(deployment_train, "run", lambda *args, **kwargs: None)
 
     output = tmp_path / "output"
     build(argparse.Namespace(descriptor=descriptor_path, unit="bundle", out=output))
@@ -267,7 +264,7 @@ def test_oci_build_uses_reproducible_exporter_and_reports_index_digest(tmp_path:
         destination.mkdir()
         (destination / "index.json").write_bytes(b'{"manifests":[]}')
 
-    monkeypatch.setattr(release_train, "run", fake_run)
+    monkeypatch.setattr(deployment_train, "run", fake_run)
     digest = build_oci_layout(
         context=context,
         dockerfile=dockerfile,
@@ -275,7 +272,7 @@ def test_oci_build_uses_reproducible_exporter_and_reports_index_digest(tmp_path:
         destination=destination,
     )
 
-    assert digest == "sha256:" + release_train.sha256(destination / "index.json")
+    assert digest == "sha256:" + deployment_train.sha256(destination / "index.json")
     assert calls == [(('docker', 'buildx', 'build',
                        '--provenance=false', '--build-arg', 'SOURCE_DATE_EPOCH=0',
                        '--platform', 'linux/amd64,linux/arm64', '--file', str(dockerfile),
@@ -333,7 +330,7 @@ def test_descriptor_frontends_install_once_and_build_each_explicit_output(tmp_pa
             (cwd / "dist").mkdir()
             (cwd / "dist" / "index.js").write_text(cwd.as_posix(), encoding="utf-8")
 
-    monkeypatch.setattr(release_train, "run", fake_run)
+    monkeypatch.setattr(deployment_train, "run", fake_run)
     output_dir = tmp_path / "frontend-output"
     build_frontends(argparse.Namespace(descriptor=descriptor_path, out=output_dir))
 

@@ -1,5 +1,5 @@
-name: Release Candidate Publish
-run-name: RC candidate publish · ${{ inputs.worker }} · ${{ fromJSON(inputs.identity).operation_id }} · ${{ fromJSON(inputs.identity).step_id }} · ${{ fromJSON(inputs.identity).dispatch_nonce }}
+name: Deployment Stable Publish
+run-name: Stable publish · ${{ inputs.worker }} · ${{ fromJSON(inputs.identity).operation_id }} · ${{ fromJSON(inputs.identity).step_id }} · ${{ fromJSON(inputs.identity).dispatch_nonce }}
 
 on:
   workflow_dispatch:
@@ -14,10 +14,10 @@ on:
       prepared_run_id: {required: true, type: string}
 
 env:
-  RELEASE_IDENTITY: ${{ inputs.identity }}
+  DEPLOYMENT_IDENTITY: ${{ inputs.identity }}
   OPERATION_ID: ${{ fromJSON(inputs.identity).operation_id }}
   STEP_ID: ${{ fromJSON(inputs.identity).step_id }}
-  RELEASE_INTENT_ID: ${{ fromJSON(inputs.identity).release_intent_id }}
+  DEPLOYMENT_INTENT_ID: ${{ fromJSON(inputs.identity).deployment_intent_id }}
   CANDIDATE_ID: ${{ fromJSON(inputs.identity).candidate_id }}
   ATTEMPT_ID: ${{ fromJSON(inputs.identity).attempt_id }}
   DISPATCH_NONCE: ${{ fromJSON(inputs.identity).dispatch_nonce }}
@@ -25,16 +25,16 @@ env:
   WORKER: ${{ inputs.worker }}
   SOURCE_SHA: ${{ inputs.source_sha }}
   PREPARED_SHA: ${{ inputs.prepared_sha }}
-  CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+  ORIGINAL_CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+  CANDIDATE_VERSION: ${{ inputs.stable_version }}
   STABLE_VERSION: ${{ inputs.stable_version }}
   DESCRIPTOR_SHA256: ${{ inputs.descriptor_sha256 }}
   PREPARED_RUN_ID: ${{ inputs.prepared_run_id }}
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
-  group: release-candidate-${{ inputs.worker }}
+  group: deployment-stable-${{ inputs.worker }}
   cancel-in-progress: false
 
 jobs:
@@ -59,8 +59,8 @@ jobs:
 
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
-          name: release-prepared-${{ env.CANDIDATE_ID }}
-          path: release-prepared
+          name: deploy-prepared-${{ env.CANDIDATE_ID }}
+          path: deploy-prepared
           run-id: ${{ inputs.prepared_run_id }}
           github-token: ${{ github.token }}
 
@@ -69,17 +69,16 @@ jobs:
           RELEASE_CONTROL_API_URL: ${{ vars.RELEASE_CONTROL_API_URL }}
         run: |
           set -euo pipefail
-          test "$(jq -r .worker release-prepared/release-descriptor.json)" = "$WORKER"
-          test "$(jq -r .version release-prepared/release-descriptor.json)" = "$CANDIDATE_VERSION"
-          test "$(jq -r .source_sha release-prepared/release-descriptor.json)" = "$PREPARED_SHA"
-          test "$(jq -r .descriptor_sha256 release-prepared/release-descriptor.json)" = "$DESCRIPTOR_SHA256"
-          test "$(jq -r .descriptor_sha256 release-prepared/prepared-artifacts.json)" = "$DESCRIPTOR_SHA256"
-          python3 .github/scripts/release_interface.py verify-evidence \
-            --descriptor release-prepared/release-descriptor.json \
-            --evidence release-prepared/release-evidence.json
-          python3 .github/scripts/release_control_contract.py validate-identity --identity "$RELEASE_IDENTITY"
-          python3 .github/scripts/release_control_contract.py validate-dispatch --operation-id "$OPERATION_ID" --step-id "$STEP_ID" --dispatch-nonce "$DISPATCH_NONCE" --descriptor-sha256 "$DESCRIPTOR_SHA256" --plan-hash "$PLAN_HASH" --source-sha "$SOURCE_SHA" --prepared-sha "$PREPARED_SHA" --mutating
-          python3 .github/scripts/release_control_contract.py authorize-dispatch --api-url "$RELEASE_CONTROL_API_URL" --repository '${{ github.repository }}' --operation-id "$OPERATION_ID" --step-id "$STEP_ID" --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' --workflow 'release-candidate-publish.yml' --event '${{ github.event_name }}' --sha '${{ github.sha }}' --release-intent-id "$RELEASE_INTENT_ID" --candidate-id "$CANDIDATE_ID" --attempt-id "$ATTEMPT_ID" --dispatch-nonce "$DISPATCH_NONCE" --plan-hash "$PLAN_HASH" --worker "$WORKER" --source-sha "$SOURCE_SHA" --descriptor-sha256 "$DESCRIPTOR_SHA256"
+          test "$(jq -r .worker deploy-prepared/deployment-descriptor.json)" = "$WORKER"
+          test "$(jq -r .source_sha deploy-prepared/deployment-descriptor.json)" = "$PREPARED_SHA"
+          test "$(jq -r .descriptor_sha256 deploy-prepared/deployment-descriptor.json)" = "$DESCRIPTOR_SHA256"
+          test "$(jq -r .descriptor_sha256 deploy-prepared/prepared-artifacts.json)" = "$DESCRIPTOR_SHA256"
+          python3 .github/scripts/deployment_interface.py verify-evidence \
+            --descriptor deploy-prepared/deployment-descriptor.json \
+            --evidence deploy-prepared/deployment-evidence.json
+          python3 .github/scripts/deployment_control_contract.py validate-identity --identity "$DEPLOYMENT_IDENTITY"
+          python3 .github/scripts/deployment_control_contract.py validate-dispatch --operation-id "$OPERATION_ID" --step-id "$STEP_ID" --dispatch-nonce "$DISPATCH_NONCE" --descriptor-sha256 "$DESCRIPTOR_SHA256" --plan-hash "$PLAN_HASH" --source-sha "$SOURCE_SHA" --prepared-sha "$PREPARED_SHA" --mutating
+          python3 .github/scripts/deployment_control_contract.py authorize-dispatch --api-url "$RELEASE_CONTROL_API_URL" --repository '${{ github.repository }}' --operation-id "$OPERATION_ID" --step-id "$STEP_ID" --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' --workflow 'deploy-stable-publish.yml' --event '${{ github.event_name }}' --sha '${{ github.sha }}' --deployment-intent-id "$DEPLOYMENT_INTENT_ID" --candidate-id "$CANDIDATE_ID" --attempt-id "$ATTEMPT_ID" --dispatch-nonce "$DISPATCH_NONCE" --plan-hash "$PLAN_HASH" --worker "$WORKER" --source-sha "$SOURCE_SHA" --descriptor-sha256 "$DESCRIPTOR_SHA256"
 
       - name: Resolve immutable tag
         id: identity
@@ -109,12 +108,12 @@ jobs:
             gh api --method POST "/repos/${GITHUB_REPOSITORY}/git/refs" \
               -f ref="refs/tags/$TAG" -f sha="$tag_object" >/dev/null
           fi
-          mapfile -t assets < <(find release-prepared -maxdepth 1 -type f ! -name '*.json' | sort)
+          mapfile -t assets < <(find deploy-prepared -maxdepth 1 -type f ! -name '*.json' | sort)
           ((${#assets[@]} > 0))
 
           verify_release_assets() {
             local release_json=$1 allow_missing=$2 asset name size id remote_sha local_sha
-            find release-prepared -maxdepth 1 -type f ! -name '*.json' -printf '%f\n' | sort > expected-assets.txt
+            find deploy-prepared -maxdepth 1 -type f ! -name '*.json' -printf '%f\n' | sort > expected-assets.txt
             jq -r '.assets[].name' "$release_json" | sort > remote-assets.txt
             extra=$(comm -13 expected-assets.txt remote-assets.txt)
             [[ -z "$extra" ]] || { echo "unexpected immutable release assets: $extra"; return 1; }
@@ -139,7 +138,7 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/$TAG" > release.json
             test "$(jq -r .draft release.json)" = false
-            test "$(jq -r .prerelease release.json)" = true
+            test "$(jq -r .prerelease release.json)" = false
             verify_release_assets release.json true
             mapfile -t missing < <(
               for asset in "${assets[@]}"; do
@@ -149,7 +148,7 @@ jobs:
             )
             ((${#missing[@]} == 0)) || gh release upload "$TAG" "${missing[@]}"
           else
-            gh release create "$TAG" "${assets[@]}" --verify-tag --prerelease --title "$WORKER $CANDIDATE_VERSION"
+            gh release create "$TAG" "${assets[@]}" --verify-tag --latest --title "$WORKER $CANDIDATE_VERSION"
           fi
           gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/$TAG" > release-final.json
           verify_release_assets release-final.json false
@@ -157,7 +156,7 @@ jobs:
       - name: Classify prepared artifact
         id: artifact
         run: |
-          if [[ "$(jq -r .artifact.kind release-prepared/release-descriptor.json)" == oci-image ]]; then
+          if [[ "$(jq -r .artifact.kind deploy-prepared/deployment-descriptor.json)" == oci-image ]]; then
             echo 'is_oci=true' >> "$GITHUB_OUTPUT"
           else
             echo 'is_oci=false' >> "$GITHUB_OUTPUT"
@@ -183,7 +182,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [[ "$(jq -r .artifact.kind release-prepared/release-descriptor.json)" == oci-image ]]; then
+          if [[ "$(jq -r .artifact.kind deploy-prepared/deployment-descriptor.json)" == oci-image ]]; then
             sudo apt-get update
             sudo apt-get install -y skopeo
             base="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/$WORKER"
@@ -192,10 +191,10 @@ jobs:
             refs=()
             while IFS=$'\t' read -r unit archive; do
               platform=$(jq -er --arg unit "$unit" '.build_units[] | select(.id == $unit) | .platform' \
-                release-prepared/release-descriptor.json)
+                deploy-prepared/deployment-descriptor.json)
               platform_slug=${platform//\//-}
-              test -f "release-prepared/$archive"
-              gzip -dc "release-prepared/$archive" >"image-$platform_slug.oci.tar"
+              test -f "deploy-prepared/$archive"
+              gzip -dc "deploy-prepared/$archive" >"image-$platform_slug.oci.tar"
               source_digest=$(skopeo inspect --format '{{.Digest}}' "oci-archive:image-$platform_slug.oci.tar")
               [[ "$source_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
               staging_tag="$CANDIDATE_VERSION-$platform_slug"
@@ -213,8 +212,8 @@ jobs:
               fi
               refs+=("$base:$staging_tag")
             done < <(jq -r '.artifacts[] | select(.role == "oci-platform") | [.unit,.name] | @tsv' \
-              release-prepared/prepared-artifacts.json)
-            test "${#refs[@]}" = "$(jq '.build_units | length' release-prepared/release-descriptor.json)"
+              deploy-prepared/prepared-artifacts.json)
+            test "${#refs[@]}" = "$(jq '.build_units | length' deploy-prepared/deployment-descriptor.json)"
             if ! docker buildx imagetools inspect "$base:$CANDIDATE_VERSION" --raw >published-index.json 2>/dev/null; then
               docker buildx imagetools create --tag "$base:$CANDIDATE_VERSION" "${refs[@]}"
               docker buildx imagetools inspect "$base:$CANDIDATE_VERSION" --raw >published-index.json
@@ -236,14 +235,16 @@ jobs:
     permissions:
       actions: read
       contents: read
-    uses: ./.github/workflows/_release-registry.yml
+    uses: ./.github/workflows/_deploy-registry.yml
     with:
       worker: ${{ inputs.worker }}
-      version: ${{ inputs.candidate_version }}
+      version: ${{ inputs.stable_version }}
       github_tag: ${{ needs.publish.outputs.tag }}
       prepared_run_id: ${{ inputs.prepared_run_id }}
-      prepared_artifact: release-prepared-${{ fromJSON(inputs.identity).candidate_id }}
+      prepared_artifact: deploy-prepared-${{ fromJSON(inputs.identity).candidate_id }}
       image_tag: ${{ needs.publish.outputs.image_tag }}
+      registry_tag: none
+      expected_current_version: ${{ inputs.candidate_version }}
     secrets:
       WORKERS_REGISTRY_API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
 
@@ -263,8 +264,8 @@ jobs:
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         continue-on-error: true
         with:
-          name: release-prepared-${{ env.CANDIDATE_ID }}
-          path: release-prepared
+          name: deploy-prepared-${{ env.CANDIDATE_ID }}
+          path: deploy-prepared
           run-id: ${{ inputs.prepared_run_id }}
           github-token: ${{ github.token }}
       - name: Probe candidate effects from authoritative surfaces
@@ -284,10 +285,10 @@ jobs:
           mutation=started
           [[ "$PUBLISH_RESULT" == success ]] && mutation=completed
 
-          if [[ -f release-prepared/release-descriptor.json && -f release-prepared/prepared-artifacts.json ]]; then
-            python3 .github/scripts/release_interface.py verify-evidence \
-              --descriptor release-prepared/release-descriptor.json \
-              --evidence release-prepared/release-evidence.json
+          if [[ -f deploy-prepared/deployment-descriptor.json && -f deploy-prepared/prepared-artifacts.json ]]; then
+            python3 .github/scripts/deployment_interface.py verify-evidence \
+              --descriptor deploy-prepared/deployment-descriptor.json \
+              --evidence deploy-prepared/deployment-evidence.json
             tag="$WORKER/v$CANDIDATE_VERSION"
             if gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/$tag" \
               >release-probe.json 2>release-probe.err; then
@@ -303,8 +304,8 @@ jobs:
                 github_state=unknown
               fi
               [[ "$(jq -r .draft release-probe.json)" == false ]] || github_state=absent
-              [[ "$(jq -r .prerelease release-probe.json)" == true ]] || github_state=absent
-              find release-prepared -maxdepth 1 -type f ! -name '*.json' -printf '%f\n' \
+              [[ "$(jq -r .prerelease release-probe.json)" == false ]] || github_state=absent
+              find deploy-prepared -maxdepth 1 -type f ! -name '*.json' -printf '%f\n' \
                 | sort >expected-assets.txt
               jq -r '.assets[].name' release-probe.json | sort >remote-assets.txt
               if ! cmp expected-assets.txt remote-assets.txt; then
@@ -322,7 +323,7 @@ jobs:
                     github_state=unknown
                     break
                   fi
-                  if ! cmp "release-prepared/$name" "remote-probe-assets/$name"; then
+                  if ! cmp "deploy-prepared/$name" "remote-probe-assets/$name"; then
                     github_state=absent
                     break
                   fi
@@ -337,7 +338,7 @@ jobs:
               -H 'Content-Type: application/json' -X POST \
               'https://api.workers.iii.dev/resolve' --data "$body" || true)
             if [[ "$status" == 200 ]]; then
-              if jq -e --slurpfile descriptor release-prepared/release-descriptor.json \
+              if jq -e --slurpfile descriptor deploy-prepared/deployment-descriptor.json \
                 --arg worker "$WORKER" --arg version "$CANDIDATE_VERSION" '
                   .root.version == $version
                   and ([.graph[] | select(.name == $worker)] | length) == 1
@@ -353,7 +354,7 @@ jobs:
               registry_state=absent
             fi
 
-            kind=$(jq -r .artifact.kind release-prepared/release-descriptor.json)
+            kind=$(jq -r .artifact.kind deploy-prepared/deployment-descriptor.json)
             if [[ "$kind" == oci-image ]]; then
               image_digest=${PUBLISHED_IMAGE_DIGEST:-}
               [[ "$image_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
@@ -369,13 +370,13 @@ jobs:
             fi
           fi
 
-          github_state=$(python3 .github/scripts/release_effects.py classify \
+          github_state=$(python3 .github/scripts/deployment_effects.py classify \
             --before unknown --mutation "$mutation" --after "$github_state")
           registry_mutation=started
           [[ "$REGISTRY_RESULT" == success ]] && registry_mutation=completed
-          registry_state=$(python3 .github/scripts/release_effects.py classify \
+          registry_state=$(python3 .github/scripts/deployment_effects.py classify \
             --before unknown --mutation "$registry_mutation" --after "$registry_state")
-          image_state=$(python3 .github/scripts/release_effects.py classify \
+          image_state=$(python3 .github/scripts/deployment_effects.py classify \
             --before unknown --mutation "$mutation" --after "$image_state")
           {
             echo "github_state=$github_state"
@@ -396,14 +397,14 @@ jobs:
           set -euo pipefail
           outcome=succeeded; error=null
           if [[ "$PUBLISH_RESULT" == cancelled || "$REGISTRY_RESULT" == cancelled ]]; then
-            outcome=canceled; error='{"code":"candidate_publish_canceled","category":"release","retryable":true,"message":"candidate publication was canceled"}'
+            outcome=canceled; error='{"code":"stable_publish_canceled","category":"release","retryable":true,"message":"candidate publication was canceled"}'
           elif [[ "$PUBLISH_RESULT" != success || "$REGISTRY_RESULT" != success ]]; then
-            outcome=failed; error='{"code":"candidate_publish_failed","category":"release","retryable":true,"message":"candidate publication did not complete"}'
+            outcome=failed; error='{"code":"stable_publish_failed","category":"release","retryable":true,"message":"candidate publication did not complete"}'
           fi
           artifacts='[]'
           kind=unknown
-          if [[ -f release-prepared/release-evidence.json ]]; then artifacts=$(jq -c '[.artifacts[] | del(.unit)]' release-prepared/release-evidence.json); fi
-          if [[ -f release-prepared/release-descriptor.json ]]; then kind=$(jq -r .artifact.kind release-prepared/release-descriptor.json); fi
+          if [[ -f deploy-prepared/deployment-evidence.json ]]; then artifacts=$(jq -c '[.artifacts[] | del(.unit)]' deploy-prepared/deployment-evidence.json); fi
+          if [[ -f deploy-prepared/deployment-descriptor.json ]]; then kind=$(jq -r .artifact.kind deploy-prepared/deployment-descriptor.json); fi
           normalize_state() {
             python3 -c 'import sys; value=sys.argv[1].strip(); print(value if value in {"absent", "present", "unknown"} else "unknown")' "$1"
           }
@@ -416,16 +417,16 @@ jobs:
             effects=$(jq -cn --argjson effects "$effects" --argjson image "$image_effect" '$effects + [$image]')
           fi
           jq -e 'all(.[]; .state == "absent" or .state == "present" or .state == "unknown")' <<<"$effects" >/dev/null
-          python3 .github/scripts/release_control_contract.py write-result --repository '${{ github.repository }}' --operation-id "$OPERATION_ID" --step-id "$STEP_ID" --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' --workflow 'release-candidate-publish.yml' --event '${{ github.event_name }}' --sha '${{ github.sha }}' --release-intent-id "$RELEASE_INTENT_ID" --candidate-id "$CANDIDATE_ID" --attempt-id "$ATTEMPT_ID" --dispatch-nonce "$DISPATCH_NONCE" --plan-hash "$PLAN_HASH" --worker "$WORKER" --phase candidate_publish --source-sha "$SOURCE_SHA" --prepared-sha "$PREPARED_SHA" --candidate-version "$CANDIDATE_VERSION" --stable-version "$STABLE_VERSION" --descriptor-sha256 "$DESCRIPTOR_SHA256" --outcome "$outcome" --effects "$effects" --artifacts-json "$artifacts" --error-json "$error" --output release-result.json
+          python3 .github/scripts/deployment_control_contract.py write-result --repository '${{ github.repository }}' --operation-id "$OPERATION_ID" --step-id "$STEP_ID" --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' --workflow 'deploy-stable-publish.yml' --event '${{ github.event_name }}' --sha '${{ github.sha }}' --deployment-intent-id "$DEPLOYMENT_INTENT_ID" --candidate-id "$CANDIDATE_ID" --attempt-id "$ATTEMPT_ID" --dispatch-nonce "$DISPATCH_NONCE" --plan-hash "$PLAN_HASH" --worker "$WORKER" --phase stable_publish --source-sha "$SOURCE_SHA" --prepared-sha "$PREPARED_SHA" --candidate-version "$ORIGINAL_CANDIDATE_VERSION" --stable-version "$STABLE_VERSION" --descriptor-sha256 "$DESCRIPTOR_SHA256" --outcome "$outcome" --effects "$effects" --artifacts-json "$artifacts" --error-json "$error" --output deployment-result.json
       - if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: release-result-${{ env.CANDIDATE_ID }}-${{ env.STEP_ID }}-attempt-${{ github.run_attempt }}
-          path: release-result.json
+          name: deployment-result-${{ env.CANDIDATE_ID }}-${{ env.STEP_ID }}-attempt-${{ github.run_attempt }}
+          path: deployment-result.json
           retention-days: 30
           if-no-files-found: error
       - name: Report to Release Control
         if: always()
         env:
           RELEASE_CONTROL_API_URL: ${{ vars.RELEASE_CONTROL_API_URL }}
-        run: python3 .github/scripts/release_control_contract.py post-result --api-url "$RELEASE_CONTROL_API_URL" --result release-result.json
+        run: python3 .github/scripts/deployment_control_contract.py post-result --api-url "$RELEASE_CONTROL_API_URL" --result deployment-result.json

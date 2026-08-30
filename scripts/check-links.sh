@@ -13,8 +13,9 @@ ignore=(
   'https://api.workers.iii.dev/resolve'    # workflow action endpoint, POST only
   'https://api.workers.iii.dev/publish'    # workflow action endpoint, POST only
   'https://api.workers.iii.dev/w/$WORKER/tags/latest' # workflow action endpoint, PUT only
+  'https://api.workers.iii.dev/w/$WORKER/tags/next' # workflow action endpoint, PUT only
   'https://api.workers.iii.dev/w/$WORKER/api-reference' # release API endpoint, not a documentation link
-  'https://release-control.iii.dev/contracts/release-execution.schema.json' # JSON Schema identifier; published at cutover
+  'https://release-control.iii.dev/contracts/deployment-execution.schema.json' # JSON Schema identifier; published at cutover
   'https://workers.iii.dev/workers/'       # URL prefix in a test assertion, not a link
   'https://workers.iii.dev/workers/skills' # published (badge.svg 200) but registry page missing
 )

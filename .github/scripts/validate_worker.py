@@ -42,7 +42,7 @@ def validate_public_manifest(worker: str, spec: _lib.WorkerSpec, hard) -> None:
     if manifest.manifest != spec.manifest:
         hard(
             f"{worker}/iii.worker.yaml manifest={manifest.manifest!r} must match "
-            f".release/workers.yaml source.package_manifest={spec.manifest!r}"
+            f".deploy/workers.yaml source.package_manifest={spec.manifest!r}"
         )
 
     expected_kinds = {
@@ -53,7 +53,7 @@ def validate_public_manifest(worker: str, spec: _lib.WorkerSpec, hard) -> None:
     if manifest.deploy in expected_kinds and spec.artifact_kind not in expected_kinds[manifest.deploy]:
         hard(
             f"{worker}/iii.worker.yaml deploy={manifest.deploy!r} does not match "
-            f".release/workers.yaml artifact.kind={spec.artifact_kind!r}"
+            f".deploy/workers.yaml artifact.kind={spec.artifact_kind!r}"
         )
 
     dependencies = manifest.raw.get("dependencies") or {}
@@ -68,7 +68,7 @@ def validate_public_manifest(worker: str, spec: _lib.WorkerSpec, hard) -> None:
     if manifest_skips_interface != catalog_skips_interface:
         hard(
             f"{worker}/iii.worker.yaml interface_smoke and "
-            ".release/workers.yaml validation.interface must describe the same policy"
+            ".deploy/workers.yaml validation.interface must describe the same policy"
         )
 
     tags = manifest.raw.get("tags")

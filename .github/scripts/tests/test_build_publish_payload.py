@@ -1,11 +1,10 @@
-"""Tests for projecting prepared releases onto the current Registry API."""
+"""Tests for projecting prepared deployments onto the current Registry API."""
 from build_publish_payload import build_payload
 
 
 def build_binary_payload() -> dict[str, object]:
     projection = {
         "worker_name": "smoke",
-        "version": "1.0.0",
         "type": "binary",
         "description": "smoke",
         "license": "Apache-2.0",
@@ -17,6 +16,7 @@ def build_binary_payload() -> dict[str, object]:
     }
     return build_payload(
         registry_projection=projection,
+        published_version="1.0.0-rc.7",
         repo_url="https://github.com/iii-hq/workers",
         interface={"functions": [], "triggers": []},
         artifacts={"kind": "rust-binary", "binaries": {"x86_64-unknown-linux-gnu": {"url": "https://example.test/smoke.tgz", "sha256": "b" * 64}}},
@@ -37,9 +37,28 @@ def test_payload_contains_only_current_registry_contract() -> None:
     assert "descriptor_sha256" not in payload
     assert "channel" not in payload
     assert payload["tag"] == "next"
+    assert payload["version"] == "1.0.0-rc.7"
 
 
-def test_engine_builtins_are_not_release_targets() -> None:
+def test_stable_publication_can_defer_channel_assignment_to_cas() -> None:
+    payload = build_binary_payload()
+    projection = {key: payload[key] for key in (
+        "worker_name", "type", "description", "license", "tags", "dependencies",
+        "config", "experimental", "readme",
+    )}
+    stable = build_payload(
+        registry_projection=projection,
+        published_version="1.0.0",
+        repo_url="https://github.com/iii-hq/workers",
+        interface={"functions": [], "triggers": []},
+        artifacts={"kind": "rust-binary", "binaries": payload["binaries"]},
+        registry_tag="none",
+    )
+    assert stable["version"] == "1.0.0"
+    assert "tag" not in stable
+
+
+def test_engine_builtins_are_not_deployment_targets() -> None:
     """A candidate install can enable an engine-hosted worker mid-boot (harness
     turns on `iii-stream`), which lands it in the workers-baseline diff. Its
     interface is not part of the released worker's surface and must not reach

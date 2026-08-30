@@ -8,7 +8,7 @@ import validate_worker
 
 
 ROOT = Path(__file__).resolve().parents[3]
-CATALOG = ROOT / ".release" / "workers.yaml"
+CATALOG = ROOT / ".deploy" / "workers.yaml"
 
 
 def test_private_catalog_has_exact_first_party_and_fixture_counts():
@@ -22,7 +22,7 @@ def test_catalog_has_only_release_build_contract_and_explicit_bundle_files():
     workers = _lib.read_worker_catalog(CATALOG)
     legacy = {"language", "deploy", "manifest", "bin", "scripts", "interface_smoke", "name"}
     for worker_id, worker in workers.items():
-        assert set(worker.raw) == {"source", "artifact", "validation", "publish"}
+        assert set(worker.raw) == {"source", "artifact", "publish"}
         assert not legacy.intersection(worker.raw), worker_id
         for include in worker.artifact.get("include", []):
             assert (worker.path / include).is_file() or include.startswith("dist/"), (

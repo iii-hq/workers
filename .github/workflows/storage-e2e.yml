@@ -41,7 +41,7 @@ jobs:
         env:
           RELEASE_CONTROL_BOT_LOGIN: ${{ vars.RELEASE_CONTROL_BOT_LOGIN }}
         run: >-
-          python3 .github/scripts/release_control_contract.py validate-dispatch
+          python3 .github/scripts/deployment_control_contract.py validate-dispatch
           --operation-id '${{ inputs.operation_id }}'
           --step-id '${{ inputs.step_id }}'
 
@@ -71,6 +71,8 @@ jobs:
         # including the engine-binary check. Without iii on PATH the --filter
         # and SIGINT tests bail early with "iii engine binary missing" instead
         # of exercising what they're meant to assert.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 \
             https://install.iii.dev/iii/main/install.sh | sh
@@ -95,7 +97,7 @@ jobs:
         env:
           RELEASE_CONTROL_BOT_LOGIN: ${{ vars.RELEASE_CONTROL_BOT_LOGIN }}
         run: >-
-          python3 .github/scripts/release_control_contract.py validate-dispatch
+          python3 .github/scripts/deployment_control_contract.py validate-dispatch
           --operation-id '${{ inputs.operation_id }}'
           --step-id '${{ inputs.step_id }}'
 
@@ -122,6 +124,8 @@ jobs:
           node-version: '22'
 
       - name: Install iii engine
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 \
             https://install.iii.dev/iii/main/install.sh | sh
@@ -163,7 +167,7 @@ jobs:
           subject=$(jq -cn --arg source_sha '${{ inputs.source_sha }}' '{source_sha:$source_sha}')
           checks=$(jq -cn --arg scripts '${{ needs.script-tests.result }}' --arg e2e '${{ needs.e2e.result }}' \
             '[{name:"storage_script_tests",status:$scripts},{name:"storage_e2e",status:$e2e}]')
-          python3 .github/scripts/release_control_contract.py write-test-result --kind test --repository '${{ github.repository }}' \
+          python3 .github/scripts/deployment_control_contract.py write-test-result --kind test --repository '${{ github.repository }}' \
             --operation-id '${{ inputs.operation_id }}' --step-id '${{ inputs.step_id }}' --run-id '${{ github.run_id }}' \
             --run-attempt '${{ github.run_attempt }}' --workflow storage-e2e.yml --event '${{ github.event_name }}' --sha '${{ github.sha }}' \
             --subject "$subject" --checks "$checks" --effects '[]' --outputs '{}' --output e2e-result.json

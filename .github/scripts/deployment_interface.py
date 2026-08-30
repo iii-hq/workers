@@ -104,7 +104,7 @@ def stage(args: argparse.Namespace) -> int:
     artifacts = _verify_prepared(descriptor, prepared, args.prepared.parent)
     kind = artifact.get("kind")
     result: dict[str, Any] = {
-        "contract": "release-interface-stage",
+        "contract": "deployment-interface-stage",
         "worker": descriptor["worker"],
         "descriptor_sha256": descriptor["descriptor_sha256"],
         "validation": validation,
@@ -224,7 +224,7 @@ def snapshot(args: argparse.Namespace) -> int:
     else:
         raise SystemExit("descriptor validation.interface must be required or skipped")
     result = {
-        "contract": "release-interface",
+        "contract": "deployment-interface",
         "worker": descriptor["worker"],
         "source_sha": descriptor["source_sha"],
         "descriptor_sha256": descriptor["descriptor_sha256"],
@@ -263,7 +263,7 @@ def build_evidence(args: argparse.Namespace) -> int:
             "size": path.stat().st_size,
         })
     evidence.sort(key=lambda artifact: (str(artifact["name"]), str(artifact["role"])))
-    document = {"contract": "release-evidence", **identity, "artifacts": evidence}
+    document = {"contract": "deployment-evidence", **identity, "artifacts": evidence}
     args.out.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return 0
 
@@ -272,7 +272,7 @@ def verify_evidence(args: argparse.Namespace) -> int:
     descriptor = _read_object(args.descriptor, "release descriptor")
     evidence = _read_object(args.evidence, "release evidence inventory")
     identity = {
-        "contract": "release-evidence",
+        "contract": "deployment-evidence",
         "worker": descriptor["worker"],
         "source_sha": descriptor["source_sha"],
         "descriptor_sha256": descriptor["descriptor_sha256"],
@@ -298,16 +298,16 @@ def verify_evidence(args: argparse.Namespace) -> int:
             raise SystemExit(f"release evidence file is missing: {path}")
         if path.stat().st_size != artifact.get("size") or sha256(path) != artifact.get("sha256"):
             raise SystemExit(f"release evidence bytes differ from inventory: {path}")
-    required = {args.descriptor.name, "prepared-artifacts.json", "release-interface.json"}
+    required = {args.descriptor.name, "prepared-artifacts.json", "deployment-interface.json"}
     if not required.issubset(names):
         raise SystemExit(f"release evidence is incomplete: missing {sorted(required - names)}")
     prepared = _read_object(args.evidence.parent / "prepared-artifacts.json", "prepared artifact inventory")
-    interface = _read_object(args.evidence.parent / "release-interface.json", "release interface")
+    interface = _read_object(args.evidence.parent / "deployment-interface.json", "release interface")
     for document, label in ((prepared, "prepared artifact"), (interface, "release interface")):
         if any(document.get(key) != value for key, value in identity.items() if key != "contract"):
             raise SystemExit(f"{label} identity differs from release descriptor")
     expected_validation = (descriptor.get("validation") or {}).get("interface")
-    if interface.get("contract") != "release-interface" or interface.get("validation") != expected_validation:
+    if interface.get("contract") != "deployment-interface" or interface.get("validation") != expected_validation:
         raise SystemExit("release interface contract differs from release descriptor")
     if prepared.get("contract") != "prepared-artifacts":
         raise SystemExit("prepared artifact inventory contract differs")
@@ -318,7 +318,7 @@ def compare(args: argparse.Namespace) -> int:
     descriptor = _read_object(args.descriptor, "release descriptor")
     expected = _read_object(args.expected, "prepared release interface")
     identity = {
-        "contract": "release-interface",
+        "contract": "deployment-interface",
         "worker": descriptor["worker"],
         "source_sha": descriptor["source_sha"],
         "descriptor_sha256": descriptor["descriptor_sha256"],
@@ -340,7 +340,7 @@ def compare(args: argparse.Namespace) -> int:
 
 def run_adapter(args: argparse.Namespace) -> int:
     metadata = _read_object(args.metadata, "release interface stage")
-    if metadata.get("contract") != "release-interface-stage" or metadata.get("validation") != "required":
+    if metadata.get("contract") != "deployment-interface-stage" or metadata.get("validation") != "required":
         raise SystemExit("only a required prepared interface stage can be executed")
     if metadata.get("kind") == "oci-image":
         raise SystemExit("OCI interface stages must run through the container adapter")

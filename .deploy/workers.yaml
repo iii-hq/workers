@@ -36,8 +36,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   acp:
     source:
@@ -50,8 +48,6 @@ workers:
         version: 1.97.1
       binary: iii-acp
       targets: *id001
-    validation:
-      interface: skipped
     publish: true
   approval-gate:
     source:
@@ -84,8 +80,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   bridge:
     source:
@@ -98,8 +92,6 @@ workers:
         version: 1.97.1
       binary: bridge
       targets: *id001
-    validation:
-      interface: required
     publish: true
   browser:
     source:
@@ -132,8 +124,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   canvas:
     source:
@@ -166,8 +156,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   claude-code:
     source:
@@ -195,8 +183,6 @@ workers:
       include:
       - dist/bundle/index.mjs
       - iii.worker.yaml
-    validation:
-      interface: required
     publish: true
   code-runner:
     source:
@@ -234,8 +220,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   fixture-code-runner-harness:
     source:
@@ -272,8 +256,6 @@ workers:
       - src/worker.ts
       - tsconfig.json
       - iii.worker.yaml
-    validation:
-      interface: required
     publish: false
   codex:
     source:
@@ -286,8 +268,6 @@ workers:
         version: 1.97.1
       binary: codex
       targets: *id001
-    validation:
-      interface: required
     publish: true
   compose-ui:
     source:
@@ -315,8 +295,6 @@ workers:
       include:
       - dist/bundle/index.mjs
       - iii.worker.yaml
-    validation:
-      interface: required
     publish: true
   computer:
     source:
@@ -349,8 +327,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   console:
     source:
@@ -402,8 +378,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   context-manager:
     source:
@@ -436,8 +410,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   cron:
     source:
@@ -470,8 +442,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   cursor:
     source:
@@ -499,8 +469,6 @@ workers:
       include:
       - dist/bundle/index.mjs
       - iii.worker.yaml
-    validation:
-      interface: required
     publish: true
   database:
     source:
@@ -533,8 +501,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   fixture-database-harness:
     source:
@@ -581,8 +547,6 @@ workers:
       - src/worker.ts
       - tsconfig.json
       - iii.worker.yaml
-    validation:
-      interface: required
     publish: false
   devin:
     source:
@@ -595,8 +559,6 @@ workers:
         version: 1.97.1
       binary: devin
       targets: *id001
-    validation:
-      interface: required
     publish: true
   document:
     source:
@@ -609,8 +571,6 @@ workers:
         version: 1.97.1
       binary: document
       targets: *id001
-    validation:
-      interface: required
     publish: true
   editor:
     source:
@@ -643,8 +603,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   email:
     source:
@@ -657,8 +615,6 @@ workers:
         version: 1.97.1
       binary: email
       targets: *id001
-    validation:
-      interface: required
     publish: true
   eval:
     source:
@@ -710,8 +666,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   fp:
     source:
@@ -724,8 +678,6 @@ workers:
         version: 1.97.1
       binary: fp
       targets: *id001
-    validation:
-      interface: required
     publish: true
   github:
     source:
@@ -758,8 +710,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   grok:
     source:
@@ -772,8 +722,6 @@ workers:
         version: 1.97.1
       binary: grok
       targets: *id001
-    validation:
-      interface: required
     publish: true
   harness:
     source:
@@ -806,8 +754,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   hermes:
     source:
@@ -820,8 +766,6 @@ workers:
       platforms:
       - linux/amd64
       - linux/arm64
-    validation:
-      interface: required
     publish: true
   http:
     source:
@@ -834,8 +778,6 @@ workers:
         version: 1.97.1
       binary: http
       targets: *id001
-    validation:
-      interface: required
     publish: true
   iii-directory:
     source:
@@ -868,8 +810,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   fixture-image-resize-demo:
     source:
@@ -901,8 +841,6 @@ workers:
       - src/index.ts
       - tsconfig.json
       - iii.worker.yaml
-    validation:
-      interface: required
     publish: false
   image-resize:
     source:
@@ -915,8 +853,6 @@ workers:
         version: 1.97.1
       binary: image-resize
       targets: *id001
-    validation:
-      interface: required
     publish: true
   llm-router:
     source:
@@ -949,8 +885,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   lsp:
     source:
@@ -963,8 +897,6 @@ workers:
         version: 1.97.1
       binary: lsp
       targets: *id001
-    validation:
-      interface: skipped
     publish: true
   mcp:
     source:
@@ -977,8 +909,6 @@ workers:
         version: 1.97.1
       binary: mcp
       targets: *id001
-    validation:
-      interface: required
     publish: true
   memory:
     source:
@@ -1011,8 +941,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   memory-consolidate:
     source:
@@ -1025,8 +953,6 @@ workers:
         version: 1.97.1
       binary: memory-consolidate
       targets: *id001
-    validation:
-      interface: required
     publish: true
   opencode:
     source:
@@ -1054,8 +980,6 @@ workers:
       include:
       - dist/bundle/index.mjs
       - iii.worker.yaml
-    validation:
-      interface: required
     publish: true
   opengantry:
     source:
@@ -1083,8 +1007,6 @@ workers:
       include:
       - dist/bundle/index.mjs
       - iii.worker.yaml
-    validation:
-      interface: required
     publish: true
   openwiki:
     source:
@@ -1112,8 +1034,6 @@ workers:
       include:
       - dist/bundle/index.mjs
       - iii.worker.yaml
-    validation:
-      interface: required
     publish: true
   pdf:
     source:
@@ -1146,8 +1066,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   pi:
     source:
@@ -1175,8 +1093,6 @@ workers:
       include:
       - dist/bundle/index.mjs
       - iii.worker.yaml
-    validation:
-      interface: required
     publish: true
   provider-anthropic:
     source:
@@ -1209,8 +1125,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   provider-claude-code:
     source:
@@ -1243,8 +1157,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   provider-command-code:
     source:
@@ -1277,8 +1189,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   provider-deepseek:
     source:
@@ -1311,8 +1221,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   provider-github-copilot:
     source:
@@ -1345,8 +1253,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   provider-kimi:
     source:
@@ -1379,8 +1285,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   provider-llamacpp:
     source:
@@ -1413,8 +1317,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   provider-openai:
     source:
@@ -1447,8 +1349,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   provider-openai-codex:
     source:
@@ -1500,8 +1400,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   provider-opencode-go:
     source:
@@ -1534,8 +1432,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   provider-openrouter:
     source:
@@ -1568,8 +1464,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   provider-xai:
     source:
@@ -1602,8 +1496,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   provider-zai:
     source:
@@ -1636,8 +1528,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   pubsub:
     source:
@@ -1650,8 +1540,6 @@ workers:
         version: 1.97.1
       binary: pubsub
       targets: *id001
-    validation:
-      interface: required
     publish: true
   queue:
     source:
@@ -1664,8 +1552,6 @@ workers:
         version: 1.97.1
       binary: queue
       targets: *id001
-    validation:
-      interface: required
     publish: true
   rbac-proxy:
     source:
@@ -1678,8 +1564,6 @@ workers:
         version: 1.97.1
       binary: rbac-proxy
       targets: *id001
-    validation:
-      interface: required
     publish: true
   fixture-rbac-proxy-harness:
     source:
@@ -1713,8 +1597,6 @@ workers:
       - src/worker.ts
       - tsconfig.json
       - iii.worker.yaml
-    validation:
-      interface: required
     publish: false
   sandbox-code-runner:
     source:
@@ -1747,8 +1629,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   scrapling:
     source:
@@ -1789,8 +1669,6 @@ workers:
       - src/storage.py
       - uv.lock
       - iii.worker.yaml
-    validation:
-      interface: required
     publish: true
   security-scan:
     source:
@@ -1823,8 +1701,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   session-manager:
     source:
@@ -1837,8 +1713,6 @@ workers:
         version: 1.97.1
       binary: session-manager
       targets: *id001
-    validation:
-      interface: required
     publish: true
   shell:
     source:
@@ -1877,8 +1751,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   fixture-shell-harness:
     source:
@@ -1930,8 +1802,6 @@ workers:
       - src/worker.ts
       - tsconfig.json
       - iii.worker.yaml
-    validation:
-      interface: required
     publish: false
   slack:
     source:
@@ -1944,8 +1814,6 @@ workers:
         version: 1.97.1
       binary: slack
       targets: *id001
-    validation:
-      interface: required
     publish: true
   state:
     source:
@@ -1978,8 +1846,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   storage:
     source:
@@ -2012,8 +1878,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   fixture-storage-harness:
     source:
@@ -2050,8 +1914,6 @@ workers:
       - src/worker.ts
       - tsconfig.json
       - iii.worker.yaml
-    validation:
-      interface: required
     publish: false
   tailscale:
     source:
@@ -2084,8 +1946,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   telegram-bot:
     source:
@@ -2098,8 +1958,6 @@ workers:
         version: 1.97.1
       binary: telegram-bot
       targets: *id001
-    validation:
-      interface: required
     publish: true
   vscode:
     source:
@@ -2127,8 +1985,6 @@ workers:
       include:
       - dist/bundle/index.mjs
       - iii.worker.yaml
-    validation:
-      interface: required
     publish: true
   web:
     source:
@@ -2161,8 +2017,6 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true
   workflow:
     source:
@@ -2175,8 +2029,6 @@ workers:
         version: 1.97.1
       binary: workflow
       targets: *id001
-    validation:
-      interface: required
     publish: true
   worktree:
     source:
@@ -2209,6 +2061,4 @@ workers:
         - build
         outputs:
         - dist
-    validation:
-      interface: required
     publish: true

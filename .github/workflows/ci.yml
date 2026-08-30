@@ -51,7 +51,7 @@ jobs:
           persist-credentials: false
       - name: Validate immutable Release Control contract pin
         id: release-contract
-        run: python3 .github/scripts/release_contract_pin.py --github-output "$GITHUB_OUTPUT"
+        run: python3 .github/scripts/deployment_contract_pin.py --github-output "$GITHUB_OUTPUT"
       - name: Mint read-only cross-repository token
         id: release-contract-token
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
@@ -75,8 +75,8 @@ jobs:
           EXPECTED_SHA256: ${{ steps.release-contract.outputs.sha256 }}
         run: |
           set -euo pipefail
-          cmp .github/contracts/release-execution.schema.json "release-control-contract/$CONTRACT_PATH"
-          echo "$EXPECTED_SHA256  .github/contracts/release-execution.schema.json" | sha256sum --check
+          cmp .github/contracts/deployment-execution.schema.json "release-control-contract/$CONTRACT_PATH"
+          echo "$EXPECTED_SHA256  .github/contracts/deployment-execution.schema.json" | sha256sum --check
 
   # ──────────────────────────────────────────────────────────────
   # Discover: enumerate changed catalog workers and bucket their artifact
