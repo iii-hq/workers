@@ -7,15 +7,14 @@ import yaml
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOWS = ROOT / ".github" / "workflows"
 ENTRYPOINTS = {
-    "release-prepare.yml": "prepare",
-    "release-candidate-publish.yml": "candidate_publish",
-    "release-candidate-smoke.yml": "candidate_smoke",
-    "release-stable-publish.yml": "stable_publish",
-    "release-image-alias.yml": "image_alias",
-    "release-finalize.yml": "finalize",
-    "release-verify.yml": "verify",
+    "deploy-prepare.yml": "prepare",
+    "deploy-candidate-publish.yml": "candidate_publish",
+    "deploy-stable-publish.yml": "stable_publish",
+    "deploy-image-alias.yml": "image_alias",
+    "deploy-finalize.yml": "finalize",
+    "deploy-verify.yml": "verify",
 }
-REUSABLE = {"_release-build.yml", "_release-registry.yml", "_worker-e2e.yml"}
+REUSABLE = {"_deploy-build.yml", "_deploy-registry.yml", "_worker-e2e.yml"}
 
 
 def body(name: str) -> str:
@@ -36,12 +35,12 @@ def test_every_entrypoint_authorizes_and_posts_nominal_release_result():
         text = body(name)
         assert "authorize-dispatch" in text, name
         assert "post-result" in text, name
-        assert "--output release-result.json" in text, name
+        assert "--output deployment-result.json" in text, name
         assert f"--phase {phase}" in text, name
-        assert "release-result-${{ env.CANDIDATE_ID }}-${{ env.STEP_ID }}-attempt-${{ github.run_attempt }}" in text
+        assert "deployment-result-${{ env.CANDIDATE_ID }}-${{ env.STEP_ID }}-attempt-${{ github.run_attempt }}" in text
         assert f"--workflow '{name}'" in text
         assert "${{ fromJSON(inputs.identity).operation_id }} · ${{ fromJSON(inputs.identity).step_id }} · ${{ fromJSON(inputs.identity).dispatch_nonce }}" in text
-        assert "validate-identity --identity \"$RELEASE_IDENTITY\"" in text
+        assert "validate-identity --identity \"$DEPLOYMENT_IDENTITY\"" in text
 
 
 def test_every_entrypoint_reports_and_uploads_result_even_after_effect_failure():
@@ -51,7 +50,7 @@ def test_every_entrypoint_reports_and_uploads_result_even_after_effect_failure()
             step
             for job in workflow["jobs"].values()
             for step in job.get("steps", [])
-            if "release-result.json" in str(step)
+            if "deployment-result.json" in str(step)
             and (
                 "write-result" in step.get("run", "")
                 or "post-result" in step.get("run", "")
@@ -64,7 +63,7 @@ def test_every_entrypoint_reports_and_uploads_result_even_after_effect_failure()
 
 def test_dispatch_inputs_use_one_identity_object_and_fit_github_limit():
     legacy_identity_inputs = {
-        "operation_id", "step_id", "release_intent_id", "candidate_id",
+        "operation_id", "step_id", "deployment_intent_id", "candidate_id",
         "release_attempt_id", "dispatch_nonce", "plan_hash",
     }
     for name in ENTRYPOINTS:
@@ -77,7 +76,7 @@ def test_dispatch_inputs_use_one_identity_object_and_fit_github_limit():
 
 
 def test_dispatch_values_are_never_rendered_into_shell_source():
-    for name in set(ENTRYPOINTS) | {"_release-build.yml", "_release-registry.yml"}:
+    for name in set(ENTRYPOINTS) | {"_deploy-build.yml", "_deploy-registry.yml"}:
         workflow = yaml.safe_load(body(name))
         for job in workflow["jobs"].values():
             for step in job.get("steps", []):
@@ -96,75 +95,74 @@ def test_new_release_workflows_pin_third_party_actions_by_sha():
 
 
 def test_post_prepare_workflows_consume_only_descriptor_and_prepared_artifacts():
-    for name in set(ENTRYPOINTS) - {"release-prepare.yml"}:
+    for name in set(ENTRYPOINTS) - {"deploy-prepare.yml"}:
         text = body(name)
-        if name != "release-candidate-smoke.yml":
-            assert "worker-compose.yaml" not in text, name
+        assert "worker-compose.yaml" not in text, name
         assert "package_manifest" not in text, name
         assert "iii compose descriptor" not in text, name
 
 
-def test_release_train_never_reads_public_worker_manifests():
+def test_deployment_train_never_reads_public_worker_manifests():
     release_files = [WORKFLOWS / name for name in set(ENTRYPOINTS) | REUSABLE]
-    release_files.append(WORKFLOWS / "release-descriptor-index.yml")
+    release_files.append(WORKFLOWS / "deploy-descriptor-index.yml")
     release_files.extend(
         path for path in (ROOT / ".github" / "scripts").glob("release_*.py")
-        if path.name != "release_compiler.py"
+        if path.name != "deployment_compiler.py"
     )
     for path in release_files:
         assert "iii.worker.yaml" not in path.read_text(encoding="utf-8"), path
 
 
 def test_descriptor_index_independently_verifies_approved_compiler_bytes():
-    text = body("release-descriptor-index.yml")
+    text = body("deploy-descriptor-index.yml")
     assert "Verify approved compiler bytes" in text
     assert (
         "APPROVED_COMPILER_DIGEST: "
-        "eb14d729ec032f62f356b9d3fa4f49f3cab4638b4391b0e8cca39c2be2fe32ce"
+        "5f720e57d1987b9016a0c2c9b7eaff25a696509506809734d28a88ecc208c364"
     ) in text
-    assert 'digest.update(b"iii-workers-release-compiler\\0")' in text
-    assert 'Path(".github/scripts/release_compiler.py").read_bytes()' in text
-    assert 'digest.update(b"\\0release-descriptor-schema\\0")' in text
-    assert 'Path(".github/contracts/release-descriptor.schema.json").read_bytes()' in text
-    assert "unapproved release compiler bytes" in text
+    assert 'digest.update(b"iii-workers-deployment-compiler\\0")' in text
+    assert 'Path(".github/scripts/deployment_compiler.py").read_bytes()' in text
+    assert 'digest.update(b"\\0deployment-descriptor-schema\\0")' in text
+    assert 'Path(".github/contracts/deployment-descriptor.schema.json").read_bytes()' in text
+    assert "unapproved deployment compiler bytes" in text
 
 
 def test_release_prepare_fans_one_job_per_compiled_build_unit():
-    text = body("release-prepare.yml")
+    text = body("deploy-prepare.yml")
     assert "descriptor_run_id" in text
     assert "descriptor_artifact" in text
-    assert "release_train.py select-descriptor" in text
+    assert "deployment_train.py select-descriptor" in text
     assert "iii compose descriptor" not in text
     assert "Build pinned iii compiler" not in text
     assert "frontend-bundles" not in text
-    assert "release_train.py frontend-metadata" in text
-    assert "release_train.py build-frontends" in text
-    assert "release_train.py matrix" in text
+    assert "deployment_train.py frontend-metadata" in text
+    assert "deployment_train.py build-frontends" in text
+    assert "deployment_train.py matrix" in text
     assert "matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}" in text
     assert "unit: ${{ matrix.unit }}" in text
 
 
 def test_release_prepare_reports_failed_source_snapshots_as_absent():
-    text = body("release-prepare.yml")
+    text = body("deploy-prepare.yml")
     assert 'state=absent; [[ "$outcome" == succeeded ]] && state=present' in text
     assert 'state=unknown; [[ "$outcome" == succeeded ]] && state=present' not in text
 
 
 def test_release_build_validates_rust_targets_and_oci_platforms():
-    text = body("_release-build.yml")
+    text = body("_deploy-build.yml")
     assert '(.target // .platform // "none") == $target' in text
 
 
 def test_prepare_runs_adapter_from_prepared_bytes_and_records_interface():
-    text = body("release-prepare.yml")
+    text = body("deploy-prepare.yml")
     workflow = yaml.safe_load(text)
     assert "adapter" in workflow["jobs"]
     assert workflow["jobs"]["adapter"]["needs"] == ["prepare", "assemble"]
-    assert "release_interface.py stage" in text
-    assert "release_interface.py run-adapter" in text
-    assert "release_interface.py snapshot" in text
-    assert "release_interface.py build-evidence" in text
-    assert "release-prepared-${{ env.CANDIDATE_ID }}" in text
+    assert "deployment_interface.py stage" in text
+    assert "deployment_interface.py run-adapter" in text
+    assert "deployment_interface.py snapshot" in text
+    assert "deployment_interface.py build-evidence" in text
+    assert "deploy-prepared-${{ env.CANDIDATE_ID }}" in text
     adapter_text = str(workflow["jobs"]["adapter"])
     assert "inputs.source_sha" not in adapter_text
     assert "worker-compose.yaml" not in adapter_text
@@ -173,14 +171,14 @@ def test_prepare_runs_adapter_from_prepared_bytes_and_records_interface():
 
 def test_release_runtime_uses_the_current_engine_config_shape():
     expected = "workers:\\n  - name: iii-worker-manager\\n    config:"
-    for name in ("release-prepare.yml", "release-candidate-smoke.yml"):
+    for name in ("deploy-prepare.yml",):
         text = body(name)
         assert expected in text
         assert "printf 'engine:" not in text
 
 
 def test_release_runtime_installs_use_authenticated_github_requests():
-    for name in ("release-prepare.yml", "release-candidate-smoke.yml"):
+    for name in ("deploy-prepare.yml",):
         workflow = yaml.safe_load(body(name))
         install_steps = [
             step
@@ -192,54 +190,41 @@ def test_release_runtime_installs_use_authenticated_github_requests():
         assert all(step.get("env", {}).get("GITHUB_TOKEN") == "${{ github.token }}" for step in install_steps), name
 
 
-def test_candidate_smoke_boots_registry_candidate_and_compares_prepared_interface():
-    text = body("release-candidate-smoke.yml")
-    assert '"worker": f"package://{worker}", "version": "next"' in text
-    assert "iii compose --engine \"$engine_url\"" in text
-    assert "collect_worker_interface.py" in text
-    assert "release_interface.py compare" in text
-    assert "release_interface.py verify-evidence" in text
-    assert ".registry_projection.type" in text
-    assert ".registry_projection.dependencies" in text
-    assert "EXPECTED_IMAGE_DIGEST" in text
-    assert ".image' smoke-resolution.json" in text
-    assert "iii worker add" not in text
-    assert "ref: ${{ inputs.source_sha }}" not in text
-    assert "ref: ${{ inputs.prepared_sha }}" not in text
-
-
 def test_all_post_prepare_phases_verify_final_evidence_and_report_it():
-    for name in set(ENTRYPOINTS) - {"release-prepare.yml"}:
+    for name in set(ENTRYPOINTS) - {"deploy-prepare.yml"}:
         text = body(name)
-        assert "release_interface.py verify-evidence" in text, name
-        assert "release-evidence.json" in text, name
+        assert "deployment_interface.py verify-evidence" in text, name
+        assert "deployment-evidence.json" in text, name
 
 
 def test_mutating_phases_are_retry_safe_and_effect_states_are_probe_derived():
-    candidate = body("release-candidate-publish.yml")
-    stable = body("release-stable-publish.yml")
-    alias = body("release-image-alias.yml")
-    finalize = body("release-finalize.yml")
-    assert "release_effects.py classify" in candidate
+    candidate = body("deploy-candidate-publish.yml")
+    stable = body("deploy-stable-publish.yml")
+    alias = body("deploy-image-alias.yml")
+    finalize = body("deploy-finalize.yml")
+    assert "deployment_effects.py classify" in candidate
     assert 'value=sys.argv[1].strip()' in candidate
     assert 'all(.[]; .state == "absent" or .state == "present" or .state == "unknown")' in candidate
-    assert "release_effects.py plan" in stable
-    assert "latest changed outside the authorized compare-and-swap" in stable
-    assert "release_effects.py classify" in stable
-    assert "release_effects.py plan" in alias
-    assert "release_effects.py classify" in alias
-    assert "release_effects.py classify" in finalize
+    registry = body("_deploy-registry.yml")
+    assert "deployment_effects.py plan" in registry
+    assert "next changed outside the authorized compare-and-swap" in registry
+    assert "deployment_effects.py classify" in stable
+    assert "deployment_effects.py plan" in alias
+    assert "deployment_effects.py classify" in alias
+    assert "deployment_effects.py classify" in finalize
     assert "--clobber" not in candidate
 
 
 def test_candidate_registry_publish_owns_next_atomically():
-    reusable = body("_release-registry.yml")
-    candidate = body("release-candidate-publish.yml")
+    reusable = body("_deploy-registry.yml")
+    candidate = body("deploy-candidate-publish.yml")
     assert "assign-channel" not in reusable
-    assert "--registry-tag next" in reusable
+    assert 'default: next' in reusable
+    assert '--registry-tag "$REGISTRY_TAG"' in reusable
     assert '"tag": None' not in reusable
-    assert "expected_current_version" not in reusable
-    assert "/tags/" not in reusable
+    assert "expected_current_version" in reusable
+    assert "expected_current_version" not in candidate
+    assert "/tags/" in reusable
     assert "expected_next_version" not in candidate
     assert "--clobber" not in candidate
     assert "verify_release_assets" in candidate
@@ -249,8 +234,8 @@ def test_candidate_registry_publish_owns_next_atomically():
 
 
 def test_bundle_caches_are_scoped_by_descriptor_lock_runtime_and_architecture():
-    reusable = body("_release-build.yml")
-    assert "release_train.py build-metadata" in reusable
+    reusable = body("_deploy-build.yml")
+    assert "deployment_train.py build-metadata" in reusable
     assert "node-version: ${{ steps.metadata.outputs.runtime_version }}" in reusable
     assert "python-version: ${{ steps.metadata.outputs.runtime_version }}" in reusable
     assert "version: ${{ steps.metadata.outputs.package_manager_version }}" in reusable
@@ -262,8 +247,8 @@ def test_bundle_caches_are_scoped_by_descriptor_lock_runtime_and_architecture():
 
 
 def test_release_build_shards_do_not_persist_checkout_or_git_credentials():
-    reusable = body("_release-build.yml")
-    prepare = yaml.safe_load(body("release-prepare.yml"))
+    reusable = body("_deploy-build.yml")
+    prepare = yaml.safe_load(body("deploy-prepare.yml"))
     build = yaml.safe_load(reusable)
 
     checkout = next(
@@ -294,8 +279,8 @@ def test_release_control_app_credentials_are_isolated_to_contract_drift_job():
     drift_text = str(drift)
     assert "III_CI_APP_ID" in drift_text
     assert "III_CI_APP_PRIVATE_KEY" in drift_text
-    assert "release_contract_pin.py" in drift_text
-    assert "release-execution.schema.json" in drift_text
+    assert "deployment_contract_pin.py" in drift_text
+    assert "deployment-execution.schema.json" in drift_text
 
     for job_name, job in workflow["jobs"].items():
         if job_name == "release-contract-drift":
@@ -306,7 +291,7 @@ def test_release_control_app_credentials_are_isolated_to_contract_drift_job():
 
 
 def test_release_permissions_are_job_scoped_and_reports_cannot_mutate():
-    candidate = yaml.safe_load(body("release-candidate-publish.yml"))
+    candidate = yaml.safe_load(body("deploy-candidate-publish.yml"))
     assert candidate["permissions"] == {"contents": "read"}
     assert candidate["jobs"]["publish"]["permissions"] == {
         "actions": "read",
@@ -324,14 +309,14 @@ def test_release_permissions_are_job_scoped_and_reports_cannot_mutate():
         "id-token": "write",
     }
 
-    for name in set(ENTRYPOINTS) - {"release-candidate-publish.yml"}:
+    for name in set(ENTRYPOINTS) - {"deploy-candidate-publish.yml"}:
         workflow = yaml.safe_load(body(name))
         assert workflow["permissions"] == {}, name
         assert all("permissions" in job for job in workflow["jobs"].values()), name
 
 
 def test_workflows_parse_as_yaml():
-    names = set(ENTRYPOINTS) | REUSABLE | {"release-descriptor-index.yml", "macos-runner-capacity.yml"}
+    names = set(ENTRYPOINTS) | REUSABLE | {"deploy-descriptor-index.yml", "macos-runner-capacity.yml"}
     for name in names:
         assert isinstance(yaml.safe_load(body(name)), dict), name
 

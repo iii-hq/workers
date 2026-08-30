@@ -207,7 +207,7 @@ def catalog_at_ref(ref: str) -> dict:
 
     try:
         text = subprocess.check_output(
-            ["git", "show", f"{ref}:.release/workers.yaml"],
+            ["git", "show", f"{ref}:.deploy/workers.yaml"],
             text=True,
             stderr=subprocess.DEVNULL,
         )
@@ -278,7 +278,7 @@ def main(argv: list[str] | None = None) -> int:
     catalog_changed: set[str] = set()
     catalog_source_changed: set[str] = set()
     stack_changed = False
-    if ".release/workers.yaml" in files:
+    if ".deploy/workers.yaml" in files:
         catalog_changed, catalog_source_changed, stack_changed = catalog_deltas(args.base, args.head)
         catalog_changed &= workers
         catalog_source_changed &= workers

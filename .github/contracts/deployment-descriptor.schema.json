@@ -1,15 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/iii-hq/workers/.github/contracts/release-descriptor.schema.json",
-  "title": "Workers release descriptor",
+  "$id": "https://github.com/iii-hq/workers/.github/contracts/deployment-descriptor.schema.json",
+  "title": "Workers deployment descriptor",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "contract",
     "worker",
-    "version",
+    "package_manifest_version",
     "source_sha",
-    "release_spec_sha256",
+    "deployment_spec_sha256",
     "public_manifest_sha256",
     "registry_projection_sha256",
     "compiler_digest",
@@ -17,17 +17,16 @@
     "source",
     "artifact",
     "runtime",
-    "validation",
     "publish",
     "build_units",
     "registry_projection"
   ],
   "properties": {
-    "contract": {"const": "release-descriptor"},
+    "contract": {"const": "deployment-descriptor"},
     "worker": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$"},
-    "version": {"type": "string", "minLength": 1},
+    "package_manifest_version": {"type": "string", "minLength": 1},
     "source_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
-    "release_spec_sha256": {"$ref": "#/$defs/sha256"},
+    "deployment_spec_sha256": {"$ref": "#/$defs/sha256"},
     "public_manifest_sha256": {"$ref": "#/$defs/sha256"},
     "registry_projection_sha256": {"$ref": "#/$defs/sha256"},
     "compiler_digest": {"$ref": "#/$defs/sha256"},
@@ -49,12 +48,6 @@
       ]
     },
     "runtime": {"type": "object"},
-    "validation": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["interface"],
-      "properties": {"interface": {"enum": ["required", "skipped"]}}
-    },
     "publish": {"type": "boolean"},
     "build_units": {
       "type": "array",
@@ -74,10 +67,9 @@
     "registry_projection": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["worker_name", "version", "type", "description", "license", "tags", "dependencies", "config", "experimental", "readme"],
+      "required": ["worker_name", "type", "description", "license", "tags", "dependencies", "config", "experimental", "readme"],
       "properties": {
         "worker_name": {"type": "string", "minLength": 1},
-        "version": {"type": "string", "minLength": 1},
         "type": {"enum": ["binary", "bundle", "image"]},
         "description": {"type": "string"},
         "license": {"type": "string"},

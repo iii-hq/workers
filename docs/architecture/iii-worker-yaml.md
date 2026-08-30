@@ -21,11 +21,11 @@ descriptor; Release Control and post-prepare workflows never read it.
 | Field | Purpose | Consumer |
 |---|---|---|
 | `bin` | Cargo binary name (defaults to `name`) | private release parity, local boot |
-| `targets` | Optional public Rust target list | parity with `.release/workers.yaml` when present |
+| `targets` | Optional public Rust target list | parity with `.deploy/workers.yaml` when present |
 
 When `targets` is omitted, all six default Unix triples are built: macOS
 x86_64/aarch64, Linux x86_64 gnu/musl, aarch64 gnu, and armv7 gnueabihf.
-The authoritative release matrix lives in `.release/workers.yaml`; when this
+The authoritative release matrix lives in `.deploy/workers.yaml`; when this
 public field is present the compiler requires the two lists to match.
 
 ## Opt-outs and runtime
@@ -96,7 +96,7 @@ See [`shell/iii.worker.yaml`](../../shell/iii.worker.yaml).
 ## Validation
 
 - `pr-checks` parses the file via [`validate_worker.py`](../../.github/scripts/validate_worker.py).
-- `release_compiler.py` rejects public/private deploy-shape mismatches.
+- `deployment_compiler.py` rejects public/private deploy-shape mismatches.
 
 ## Related
 

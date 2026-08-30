@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the immutable cross-repository release-result schema pin."""
+"""Validate the immutable cross-repository deployment-result schema pin."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 PIN = Path(__file__).resolve().parents[1] / "release-control-contract.json"
-LOCAL = Path(__file__).resolve().parents[1] / "contracts/release-execution.schema.json"
+LOCAL = Path(__file__).resolve().parents[1] / "contracts/deployment-execution.schema.json"
 
 
 def main() -> int:
@@ -26,7 +26,7 @@ def main() -> int:
         raise SystemExit("release-control contract repository is not canonical")
     if not re.fullmatch(r"[0-9a-f]{40}", pin["commit"]) or set(pin["commit"]) == {"0"}:
         raise SystemExit("release-control contract commit must be an immutable non-zero SHA")
-    if pin["path"] != "api/contracts/release-execution.schema.json":
+    if pin["path"] != "api/contracts/deployment-execution.schema.json":
         raise SystemExit("release-control contract path is not canonical")
     actual = hashlib.sha256(LOCAL.read_bytes()).hexdigest()
     if actual != pin["sha256"]:

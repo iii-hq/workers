@@ -1,4 +1,4 @@
-name: Release Registry Publish
+name: Deployment Registry Publish
 
 on:
   workflow_call:
@@ -9,6 +9,8 @@ on:
       prepared_run_id: {required: true, type: string}
       prepared_artifact: {required: true, type: string}
       image_tag: {required: false, default: '', type: string}
+      registry_tag: {required: false, default: next, type: string}
+      expected_current_version: {required: false, default: '', type: string}
     secrets:
       WORKERS_REGISTRY_API_KEY: {required: true}
 
@@ -30,7 +32,7 @@ jobs:
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: ${{ inputs.prepared_artifact }}
-          path: release-prepared
+          path: deploy-prepared
           run-id: ${{ inputs.prepared_run_id }}
           github-token: ${{ github.token }}
 
@@ -40,28 +42,25 @@ jobs:
           VERSION: ${{ inputs.version }}
           GITHUB_TAG: ${{ inputs.github_tag }}
           IMAGE_TAG: ${{ inputs.image_tag }}
+          REGISTRY_TAG: ${{ inputs.registry_tag }}
         run: |
           set -euo pipefail
-          python3 .github/scripts/release_interface.py verify-evidence \
-            --descriptor release-prepared/release-descriptor.json \
-            --evidence release-prepared/release-evidence.json
+          python3 .github/scripts/deployment_interface.py verify-evidence \
+            --descriptor deploy-prepared/deployment-descriptor.json \
+            --evidence deploy-prepared/deployment-evidence.json
           python3 - <<'PY'
           import json
           import os
           from pathlib import Path
 
-          descriptor = json.loads(Path("release-prepared/release-descriptor.json").read_text())
-          prepared = json.loads(Path("release-prepared/prepared-artifacts.json").read_text())
-          interface_snapshot = json.loads(Path("release-prepared/release-interface.json").read_text())
-          if descriptor["worker"] != os.environ["WORKER"] or descriptor["version"] != os.environ["VERSION"]:
+          descriptor = json.loads(Path("deploy-prepared/deployment-descriptor.json").read_text())
+          prepared = json.loads(Path("deploy-prepared/prepared-artifacts.json").read_text())
+          interface_snapshot = json.loads(Path("deploy-prepared/deployment-interface.json").read_text())
+          if descriptor["worker"] != os.environ["WORKER"]:
               raise SystemExit("prepared descriptor identity mismatch")
           if prepared["descriptor_sha256"] != descriptor["descriptor_sha256"]:
               raise SystemExit("prepared artifact descriptor mismatch")
           interface = interface_snapshot.get("interface")
-          if descriptor["validation"]["interface"] == "required" and not isinstance(interface, dict):
-              raise SystemExit("required prepared interface is missing")
-          if descriptor["validation"]["interface"] == "skipped" and interface is not None:
-              raise SystemExit("skipped prepared interface must be null")
           kind = descriptor["artifact"]["kind"]
           base = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/{os.environ['GITHUB_TAG']}"
           artifacts = [entry for entry in prepared["artifacts"] if entry["role"] != "checksum"]
@@ -97,17 +96,22 @@ jobs:
           Path("registry-artifacts.json").write_text(json.dumps(artifact_payload, sort_keys=True) + "\n")
           PY
           python3 .github/scripts/build_publish_payload.py \
-            --descriptor release-prepared/release-descriptor.json \
+            --descriptor deploy-prepared/deployment-descriptor.json \
+            --published-version "$VERSION" \
             --repo-url "https://github.com/$GITHUB_REPOSITORY" \
             --interface-json interface.json \
             --artifacts-json registry-artifacts.json \
-            --registry-tag next \
+            --registry-tag "$REGISTRY_TAG" \
             --out payload.json
           if jq -e 'has("package_descriptor") or has("descriptor_sha256") or has("channel")' payload.json >/dev/null; then
             echo 'descriptor-native fields must never reach the current Registry' >&2
             exit 1
           fi
-          test "$(jq -r .tag payload.json)" = next
+          if [[ "$REGISTRY_TAG" == none ]]; then
+            test "$(jq 'has(\"tag\")' payload.json)" = false
+          else
+            test "$(jq -r .tag payload.json)" = "$REGISTRY_TAG"
+          fi
 
       - name: Publish candidate and next atomically with readback
         env:
@@ -120,6 +124,36 @@ jobs:
             --api-url https://api.workers.iii.dev \
             --worker "$WORKER" --version "$VERSION" \
             --payload payload.json --out registry-version-receipt.json
+
+      - name: Move next with compare-and-swap
+        if: inputs.expected_current_version != ''
+        env:
+          API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
+          WORKER: ${{ inputs.worker }}
+          VERSION: ${{ inputs.version }}
+          EXPECTED_CURRENT_VERSION: ${{ inputs.expected_current_version }}
+        run: |
+          set -euo pipefail
+          before=$(curl -fsS -H 'Content-Type: application/json' -X POST \
+            'https://api.workers.iii.dev/resolve' \
+            --data "$(jq -nc --arg worker "$WORKER" '{worker:$worker,version:"next"}')" | jq -er .root.version)
+          state=absent
+          [[ "$before" == "$VERSION" ]] && state=present
+          if [[ "$state" == absent && "$before" != "$EXPECTED_CURRENT_VERSION" ]]; then
+            echo 'next changed outside the authorized compare-and-swap' >&2
+            exit 1
+          fi
+          plan=$(python3 .github/scripts/deployment_effects.py plan --before "$state")
+          if [[ "$plan" == mutate ]]; then
+            payload=$(jq -nc --arg version "$VERSION" --arg expected "$EXPECTED_CURRENT_VERSION" \
+              '{version:$version,expected_current_version:$expected}')
+            curl -fsS -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' -X PUT \
+              "https://api.workers.iii.dev/w/$WORKER/tags/next" --data "$payload" >next-mutation.json
+          fi
+          after=$(curl -fsS -H 'Content-Type: application/json' -X POST \
+            'https://api.workers.iii.dev/resolve' \
+            --data "$(jq -nc --arg worker "$WORKER" '{worker:$worker,version:"next"}')" | jq -er .root.version)
+          test "$after" = "$VERSION"
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:

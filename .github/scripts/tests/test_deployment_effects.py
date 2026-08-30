@@ -1,6 +1,6 @@
 import pytest
 
-from release_effects import classify_effect, mutation_plan
+from deployment_effects import classify_effect, mutation_plan
 
 
 MUTATING_PHASES = ("candidate_publish", "stable_publish", "image_alias", "finalize")

@@ -16,7 +16,7 @@ import zipfile
 from pathlib import Path
 
 import _lib
-import release_targets
+import deployment_targets
 import validate_oci_dockerfile
 
 def run(*command: str, cwd: Path | None = None) -> None:
@@ -34,41 +34,41 @@ def sha256(path: Path) -> str:
 
 def verify_descriptor(descriptor: object) -> dict[str, object]:
     if not isinstance(descriptor, dict):
-        raise SystemExit("release descriptor must be an object")
+        raise SystemExit("deployment descriptor must be an object")
     required = {
-        "contract", "worker", "version", "source_sha", "release_spec_sha256",
+        "contract", "worker", "package_manifest_version", "source_sha", "deployment_spec_sha256",
         "public_manifest_sha256", "registry_projection_sha256", "compiler_digest",
-        "descriptor_sha256", "source", "artifact", "runtime", "validation",
+        "descriptor_sha256", "source", "artifact", "runtime",
         "publish", "build_units", "registry_projection",
     }
     if set(descriptor) != required:
         raise SystemExit(
-            "release descriptor fields differ from compiler contract: "
+            "deployment descriptor fields differ from compiler contract: "
             f"missing={sorted(required - set(descriptor))} unknown={sorted(set(descriptor) - required)}"
         )
-    if descriptor["contract"] != "release-descriptor":
-        raise SystemExit("release descriptor contract mismatch")
+    if descriptor["contract"] != "deployment-descriptor":
+        raise SystemExit("deployment descriptor contract mismatch")
     digest_subject = {key: value for key, value in descriptor.items() if key != "descriptor_sha256"}
     digest = hashlib.sha256(
         json.dumps(digest_subject, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     ).hexdigest()
     if descriptor["descriptor_sha256"] != digest:
-        raise SystemExit("release descriptor digest is invalid")
-    for field in ("source", "artifact", "runtime", "validation", "registry_projection"):
+        raise SystemExit("deployment descriptor digest is invalid")
+    for field in ("source", "artifact", "runtime", "registry_projection"):
         if not isinstance(descriptor[field], dict):
-            raise SystemExit(f"release descriptor {field} must be an object")
+            raise SystemExit(f"deployment descriptor {field} must be an object")
     if not isinstance(descriptor["build_units"], list) or not descriptor["build_units"]:
-        raise SystemExit("release descriptor build_units must be non-empty")
+        raise SystemExit("deployment descriptor build_units must be non-empty")
     return descriptor
 
 
 def select_descriptor(args: argparse.Namespace) -> int:
-    index_path = args.index_dir / "release-descriptor-index.json"
+    index_path = args.index_dir / "deployment-descriptor-index.json"
     index = json.loads(index_path.read_text(encoding="utf-8"))
     required_index = {"contract", "source_sha", "compiler", "workers"}
     if not isinstance(index, dict) or set(index) != required_index:
         raise SystemExit("descriptor index fields differ from compiler contract")
-    if index["contract"] != "release-descriptor-index":
+    if index["contract"] != "deployment-descriptor-index":
         raise SystemExit("descriptor index contract mismatch")
     if index["source_sha"] != args.source_sha:
         raise SystemExit("descriptor index source SHA mismatch")
@@ -80,7 +80,7 @@ def select_descriptor(args: argparse.Namespace) -> int:
         raise SystemExit("worker is absent from descriptor index")
     entry = workers[args.worker]
     required_entry = {
-        "path", "digest", "version", "publish", "release_spec_sha256",
+        "path", "digest", "package_manifest_version", "publish", "deployment_spec_sha256",
         "public_manifest_sha256", "registry_projection_sha256",
     }
     if not isinstance(entry, dict) or set(entry) != required_entry:
@@ -90,8 +90,6 @@ def select_descriptor(args: argparse.Namespace) -> int:
         raise SystemExit("descriptor index worker path mismatch")
     if entry["digest"] != args.descriptor_sha256:
         raise SystemExit("descriptor index digest mismatch")
-    if entry["version"] != args.candidate_version:
-        raise SystemExit("descriptor index version mismatch")
     if entry["publish"] is not True:
         raise SystemExit("descriptor index worker is not publishable")
 
@@ -101,7 +99,7 @@ def select_descriptor(args: argparse.Namespace) -> int:
     expected_identity = {
         "worker": args.worker,
         "source_sha": args.source_sha,
-        "version": args.candidate_version,
+        "package_manifest_version": entry["package_manifest_version"],
         "descriptor_sha256": args.descriptor_sha256,
     }
     for field, expected in expected_identity.items():
@@ -441,11 +439,10 @@ def prepare(args: argparse.Namespace) -> int:
     expected = {
         "worker": args.worker,
         "source_sha": args.source_sha,
-        "version": args.candidate_version,
         "descriptor_sha256": args.descriptor_sha256,
     }
     if any(descriptor[field] != value for field, value in expected.items()):
-        raise SystemExit("selected descriptor identity differs from release intent")
+        raise SystemExit("selected descriptor identity differs from deployment intent")
     print(json.dumps(descriptor, sort_keys=True))
     return 0
 
@@ -459,7 +456,7 @@ def matrix(args: argparse.Namespace) -> int:
         kind = str(unit.get("kind"))
         target = str(unit.get("target") or unit.get("platform") or "none")
         if kind == "rust-binary":
-            runner = release_targets.TARGET_LARGER_RUNNERS.get(target)
+            runner = deployment_targets.TARGET_LARGER_RUNNERS.get(target)
             if runner is None:
                 raise SystemExit(f"no runner configured for target {target}")
         else:
@@ -586,7 +583,7 @@ def assemble(args: argparse.Namespace) -> int:
     actual_units = {entry["unit"] for entry in entries if entry["role"] != "checksum"}
     if expected_units != actual_units:
         raise SystemExit(f"assembled units differ: expected={sorted(expected_units)} actual={sorted(actual_units)}")
-    (args.out / "release-descriptor.json").write_bytes(descriptor_bytes)
+    (args.out / "deployment-descriptor.json").write_bytes(descriptor_bytes)
     prepared = {"contract": "prepared-artifacts", "worker": descriptor["worker"],
                 "source_sha": descriptor["source_sha"], "descriptor_sha256": descriptor["descriptor_sha256"],
                 "artifacts": sorted(entries, key=lambda entry: (str(entry["unit"]), str(entry["name"])))}
@@ -604,7 +601,6 @@ def make_parser() -> argparse.ArgumentParser:
     select_parser.add_argument("--worker", required=True)
     select_parser.add_argument("--source-sha", required=True)
     select_parser.add_argument("--compiler-digest", required=True)
-    select_parser.add_argument("--candidate-version", required=True)
     select_parser.add_argument("--descriptor-sha256", required=True)
     select_parser.add_argument("--out", type=Path, required=True)
     frontend_metadata_parser = sub.add_parser("frontend-metadata")

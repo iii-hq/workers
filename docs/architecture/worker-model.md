@@ -29,7 +29,7 @@ domain: `shell::exec`, `session::append` (session-manager), `shell::fs::read`.
 
 | Context | How workers are found |
 |---|---|
-| In-repo development | Folder with public `iii.worker.yaml`; release-only build metadata lives in `.release/workers.yaml` |
+| In-repo development | Folder with public `iii.worker.yaml`; release-only build metadata lives in `.deploy/workers.yaml` |
 | Production install | Workers registry API — `iii worker add <name>` or `package://<name>` in Compose |
 | Runtime catalogue | `engine::workers::list`, `engine::functions::list` |
 

@@ -11,7 +11,7 @@ How pull requests are gated for workers in this monorepo.
 `discover` runs `discover_changed_workers.py` comparing a PR to its base or a
 trusted `main` push to the previous revision.
 A directory is a **worker** when it is owned by a `source.path` entry in the
-private `.release/workers.yaml` build catalog. Publishable worker directories
+private `.deploy/workers.yaml` build catalog. Publishable worker directories
 also retain `iii.worker.yaml` as the public `iii worker` contract.
 
 Outputs:
@@ -20,14 +20,14 @@ Outputs:
 |---|---|
 | `all` | Every changed worker folder |
 | `source_changed` | Workers with non-metadata file changes |
-| `rust` / `node` / `python` | Language buckets from `.release/workers.yaml` artifact kinds |
+| `rust` / `node` / `python` | Language buckets from `.deploy/workers.yaml` artifact kinds |
 
 **Harness fan-out:** when `harness/` changes, in-repo deps listed in
 `harness/worker-compose.yaml` `dependencies` join the rust matrix (version-bump
 gates still apply only to workers the PR author edited).
 
 **Metadata-only PRs:** if a worker's only changes match
-`.release/workers.yaml`, `iii.worker.yaml`, `README.md`, `Cargo.toml`, `Cargo.lock`, `AGENTS*.md`,
+`.deploy/workers.yaml`, `iii.worker.yaml`, `README.md`, `Cargo.toml`, `Cargo.lock`, `AGENTS*.md`,
 version/tests/README gates downgrade to GitHub notices.
 
 ## pr-checks (per changed worker)
@@ -35,7 +35,7 @@ version/tests/README gates downgrade to GitHub notices.
 [`validate_worker.py`](../../.github/scripts/validate_worker.py):
 
 1. `README.md` exists and is non-empty
-2. the `.release/workers.yaml` entry parses with required private build fields
+2. the `.deploy/workers.yaml` entry parses with required private build fields
 3. `iii.worker.yaml` remains valid and agrees with the catalog on identity,
    package manifest, deploy shape and semver dependencies
 4. Package-manifest version ≥ version on base branch

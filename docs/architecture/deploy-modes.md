@@ -11,14 +11,14 @@ The release train consumes only that descriptor after prepare.
 | `python-bundle` | one deterministic archive from explicit files | GitHub Release archive URL and digest |
 | `oci-image` | deterministic OCI-layout archive | digest-pinned GHCR image |
 
-[`release-prepare.yml`](../../.github/workflows/release-prepare.yml) builds one
+[`deploy-prepare.yml`](../../.github/workflows/deploy-prepare.yml) builds one
 matrix job per descriptor build unit. Embedded frontends are built once before
 the Rust target fan-out. Rust units share remote sccache objects by toolchain
 and target, but artifact bytes remain target-specific.
 
-[`release-candidate-publish.yml`](../../.github/workflows/release-candidate-publish.yml)
+[`deploy-candidate-publish.yml`](../../.github/workflows/deploy-candidate-publish.yml)
 publishes one immutable candidate version and assigns Registry `next` with an
-idempotent, verified update. [`release-stable-publish.yml`](../../.github/workflows/release-stable-publish.yml)
+idempotent, verified update. [`deploy-stable-publish.yml`](../../.github/workflows/deploy-stable-publish.yml)
 assigns `latest` to that same version and descriptor; it does not rebuild or
 create a second package version. OCI channel aliases are a separate digest-CAS
 phase.

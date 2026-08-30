@@ -6,7 +6,7 @@ import sys
 import urllib.request
 from collections.abc import Callable
 
-import release_targets
+import deployment_targets
 
 
 def read_checksum_url(url: str) -> str:
@@ -27,7 +27,7 @@ def build_binary_artifact_map(
     binaries = {}
     missing = []
     for target in targets:
-        if target not in release_targets.TARGET_RUNNERS:
+        if target not in deployment_targets.TARGET_RUNNERS:
             raise ValueError(f"unsupported release target: {target}")
         ext = "tar.gz"
         asset_url = f"{base}/{bin_name}-{target}.{ext}"
@@ -54,7 +54,7 @@ def main() -> int:
     parser.add_argument("--bin", required=True)
     parser.add_argument(
         "--targets",
-        default=",".join(release_targets.DEFAULT_TARGETS),
+        default=",".join(deployment_targets.DEFAULT_TARGETS),
         help="Exact comma-separated Unix targets; Windows targets are rejected",
     )
     parser.add_argument("--out", default="binaries.json")
@@ -64,7 +64,7 @@ def main() -> int:
         repo_url=args.repo_url,
         tag=args.tag,
         bin_name=args.bin,
-        targets=release_targets.normalize_targets(args.targets),
+        targets=deployment_targets.normalize_targets(args.targets),
         read_checksum=read_checksum_url,
     )
     pathlib.Path(args.out).write_text(json.dumps(binaries, indent=2) + "\n", encoding="utf-8")

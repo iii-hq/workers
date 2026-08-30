@@ -21,7 +21,7 @@ tags: [<discovery-tag>]
 ```
 
 Add its release-only build metadata to
-[`.release/workers.yaml`](../../.release/workers.yaml):
+[`.deploy/workers.yaml`](../../.deploy/workers.yaml):
 
 ```yaml
 workers:

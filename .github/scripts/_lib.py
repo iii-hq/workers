@@ -353,7 +353,7 @@ class WorkerSpec:
     """One entry from the private release catalog.
 
     ``runtime`` and ``registry`` are compatibility projections derived from
-    the public manifest; they are never stored in ``.release/workers.yaml``.
+    the public manifest; they are never stored in ``.deploy/workers.yaml``.
     """
 
     catalog_id: str
@@ -408,7 +408,7 @@ def read_iii_worker_yaml(worker_dir: Path) -> WorkerManifest:
 
 
 def worker_catalog_path() -> Path:
-    return Path(__file__).resolve().parents[2] / ".release" / "workers.yaml"
+    return Path(__file__).resolve().parents[2] / ".deploy" / "workers.yaml"
 
 
 def read_worker_catalog(path: Path | None = None) -> dict[str, WorkerSpec]:
@@ -428,7 +428,7 @@ def read_worker_catalog(path: Path | None = None) -> dict[str, WorkerSpec]:
     if not isinstance(workers, dict) or not workers:
         raise ValueError(f"{catalog_path}: workers must be a non-empty mapping")
 
-    root = catalog_path.parent.parent if catalog_path.parent.name == ".release" else catalog_path.parent
+    root = catalog_path.parent.parent if catalog_path.parent.name == ".deploy" else catalog_path.parent
     parsed: dict[str, WorkerSpec] = {}
     paths: set[Path] = set()
     publish_names: set[str] = set()
@@ -438,7 +438,7 @@ def read_worker_catalog(path: Path | None = None) -> dict[str, WorkerSpec]:
         if not isinstance(value, dict):
             raise ValueError(f"{catalog_path}: workers.{catalog_id} must be a mapping")
         raw = dict(value)
-        expected_sections = {"source", "artifact", "validation", "publish"}
+        expected_sections = {"source", "artifact", "publish"}
         legacy = {"language", "deploy", "manifest", "bin", "scripts", "interface_smoke"} & set(raw)
         if legacy:
             raise ValueError(f"{catalog_path}: workers.{catalog_id} uses legacy fields: {sorted(legacy)}")
@@ -451,11 +451,9 @@ def read_worker_catalog(path: Path | None = None) -> dict[str, WorkerSpec]:
             )
         source = raw["source"]
         artifact = raw["artifact"]
-        validation = raw["validation"]
         for section_name, section in (
             ("source", source),
             ("artifact", artifact),
-            ("validation", validation),
         ):
             if not isinstance(section, dict):
                 raise ValueError(f"{catalog_path}: workers.{catalog_id}.{section_name} must be a mapping")
@@ -517,7 +515,7 @@ def read_worker_catalog(path: Path | None = None) -> dict[str, WorkerSpec]:
             artifact=artifact,
             runtime=runtime,
             registry=registry,
-            validation=validation,
+            validation={"interface": "skipped" if public.raw.get("interface_smoke") is False else "required"},
             raw=raw,
         )
     return parsed

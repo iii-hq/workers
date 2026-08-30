@@ -27,7 +27,7 @@ fixtures all use this same shape.
 
 ## Release-only catalog
 
-[`.release/workers.yaml`](../../.release/workers.yaml) is private to this
+[`.deploy/workers.yaml`](../../.deploy/workers.yaml) is private to this
 repository. It contains build and validation policy that does not belong in
 the public manifest or Compose contract:
 
@@ -63,14 +63,14 @@ scaffolding, `iii worker`, and package consumers.
 ## Compilation boundary
 
 The repository-owned
-[`release_compiler.py`](../../.github/scripts/release_compiler.py) joins the
+[`deployment_compiler.py`](../../.github/scripts/deployment_compiler.py) joins the
 private release entry, public manifest, package manifest, and source SHA once.
-It emits a `release-descriptor.json` containing input digests, independent
+It emits a `deployment-descriptor.json` containing input digests, independent
 build units, runtime, and a projection onto the current Registry API.
 
 Prepare and every later phase consume only that immutable descriptor and the
 prepared artifacts. Release Control consumes only the descriptor index and
-selected descriptor. Neither rereads `.release/workers.yaml`,
+selected descriptor. Neither rereads `.deploy/workers.yaml`,
 `iii.worker.yaml`, or a package manifest.
 
 Bundles declare an explicit file allowlist and reject tests, documentation,
