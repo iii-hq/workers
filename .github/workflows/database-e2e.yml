@@ -76,6 +76,8 @@ jobs:
       # The harness brings up its own postgres + mysql via docker-compose
       # (not GHA `services:`) so local and CI runs share one stack definition.
       - name: Install iii engine (next)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 \
             https://install.iii.dev/iii/main/install.sh | sh

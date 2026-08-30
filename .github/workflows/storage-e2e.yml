@@ -71,6 +71,8 @@ jobs:
         # including the engine-binary check. Without iii on PATH the --filter
         # and SIGINT tests bail early with "iii engine binary missing" instead
         # of exercising what they're meant to assert.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 \
             https://install.iii.dev/iii/main/install.sh | sh
@@ -122,6 +124,8 @@ jobs:
           node-version: '22'
 
       - name: Install iii engine
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 \
             https://install.iii.dev/iii/main/install.sh | sh
