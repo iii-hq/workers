@@ -210,7 +210,9 @@ pub(super) fn scenario() -> ScenarioFixture {
         Generation::new(6)
             .expect(
                 Request::new()
-                    .turn_request_step(0)
+                    // Reusing the explicit child session continues its
+                    // existing turn id at the next request step.
+                    .turn_request_step(1)
                     .system_prompt_regex(SUBAGENT_PROMPT)
                     .messages_subset([
                         json!({ "role": "user", "content": [{ "type": "text", "text": TASK_ONE }] }),
@@ -256,7 +258,7 @@ pub(super) fn scenario() -> ScenarioFixture {
         Generation::new(8)
             .expect(
                 Request::new()
-                    .turn_request_step(1)
+                    .turn_request_step(2)
                     .system_prompt_regex(SUBAGENT_PROMPT)
                     .messages_subset([
                         json!({ "role": "user" }),
@@ -272,12 +274,6 @@ pub(super) fn scenario() -> ScenarioFixture {
             )
             .respond(Response::text("retask done", 10, 2)),
     )
-    // This fixture drives eight router generations across a parent and an
-    // asynchronously scheduled child. The default deadline is appropriate
-    // for single-turn fixtures, but can expire while the child is waiting for
-    // its second dispatch on a busy shared runner even though the contract is
-    // still making progress.
-    .scenario_timeout_ms(120_000)
     .verify(|run| {
         run.expect_assistant_texts(["collision refused; own child re-tasked"])?;
         run.expect_target_calls(1)?;
@@ -315,6 +311,7 @@ pub(super) fn scenario() -> ScenarioFixture {
 mod tests {
     use super::*;
     use crate::expand::expand_compiled_fixture;
+    use crate::types::script::JsonMatcherV1;
 
     #[test]
     fn fixture_prompt_sorts_expanded_allowed_function_ids() {
@@ -334,7 +331,6 @@ mod tests {
         assert_eq!(fixture.expected_terminal_turns, 1);
         assert_eq!(fixture.await_target_calls, Some(1));
         assert_eq!(fixture.expected_traces(), 1);
-        assert_eq!(fixture.scenario.deadlines.scenario_ms, 120_000);
         assert_eq!(fixture.script.generations.len(), 8);
         assert_eq!(
             fixture.script.dispatch,
@@ -350,5 +346,12 @@ mod tests {
         // Both spawns of the child name the same explicit session id.
         let script = serde_json::to_string(&fixture.script.generations).unwrap();
         assert_eq!(script.matches("{{run_id}}-fresh").count(), 2, "{script}");
+
+        for (generation, step) in [(5, 1), (7, 2)] {
+            assert!(matches!(
+                &fixture.script.generations[generation].match_.request_id,
+                JsonMatcherV1::Regex { pattern } if pattern.ends_with(&format!(":{step}$"))
+            ));
+        }
     }
 }
