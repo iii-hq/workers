@@ -210,9 +210,10 @@ pub(super) fn scenario() -> ScenarioFixture {
         Generation::new(6)
             .expect(
                 Request::new()
-                    // Reusing the explicit child session continues its
-                    // existing turn id at the next request step.
-                    .turn_request_step(1)
+                    // The re-task either appends to the still-active child
+                    // turn or starts a new turn after the first one settles.
+                    // Both schedules preserve the same session transcript.
+                    .turn_request_steps([0, 1])
                     .system_prompt_regex(SUBAGENT_PROMPT)
                     .messages_subset([
                         json!({ "role": "user", "content": [{ "type": "text", "text": TASK_ONE }] }),
@@ -258,7 +259,7 @@ pub(super) fn scenario() -> ScenarioFixture {
         Generation::new(8)
             .expect(
                 Request::new()
-                    .turn_request_step(2)
+                    .turn_request_steps([1, 2])
                     .system_prompt_regex(SUBAGENT_PROMPT)
                     .messages_subset([
                         json!({ "role": "user" }),
@@ -347,10 +348,10 @@ mod tests {
         let script = serde_json::to_string(&fixture.script.generations).unwrap();
         assert_eq!(script.matches("{{run_id}}-fresh").count(), 2, "{script}");
 
-        for (generation, step) in [(5, 1), (7, 2)] {
+        for (generation, expected) in [(5, "(?:0|1)$"), (7, "(?:1|2)$")] {
             assert!(matches!(
                 &fixture.script.generations[generation].match_.request_id,
-                JsonMatcherV1::Regex { pattern } if pattern.ends_with(&format!(":{step}$"))
+                JsonMatcherV1::Regex { pattern } if pattern.ends_with(expected)
             ));
         }
     }

@@ -506,7 +506,7 @@ impl ControlledFunction {
 
 pub(super) struct Request {
     turn_request: bool,
-    turn_step: Option<u64>,
+    turn_steps: Option<Vec<u64>>,
     system_prompt: Option<JsonMatcherV1>,
     messages: Option<JsonMatcherV1>,
     tools: Option<JsonMatcherV1>,
@@ -516,7 +516,7 @@ impl Request {
     pub(super) fn new() -> Self {
         Self {
             turn_request: false,
-            turn_step: None,
+            turn_steps: None,
             system_prompt: None,
             messages: None,
             tools: None,
@@ -528,9 +528,17 @@ impl Request {
         self
     }
 
-    pub(super) fn turn_request_step(mut self, step: u64) -> Self {
+    pub(super) fn turn_request_step(self, step: u64) -> Self {
+        self.turn_request_steps([step])
+    }
+
+    pub(super) fn turn_request_steps(mut self, steps: impl IntoIterator<Item = u64>) -> Self {
+        let mut steps: Vec<_> = steps.into_iter().collect();
+        steps.sort_unstable();
+        steps.dedup();
+        assert!(!steps.is_empty(), "at least one turn step is required");
         self.turn_request = true;
-        self.turn_step = Some(step);
+        self.turn_steps = Some(steps);
         self
     }
 
@@ -635,7 +643,7 @@ impl Request {
                 normalize: None,
             },
             request_id: JsonMatcherV1::Regex {
-                pattern: self.turn_step.map_or_else(
+                pattern: self.turn_steps.map_or_else(
                     || {
                         if ordinal == 1 {
                             "^t_[0-9a-f]{32}:[0-9]+$".to_string()
@@ -643,7 +651,18 @@ impl Request {
                             format!("^t_[0-9a-f]{{32}}:{}$", ordinal - 1)
                         }
                     },
-                    |step| format!("^t_[0-9a-f]{{32}}:{step}$"),
+                    |steps| {
+                        let suffix = steps
+                            .iter()
+                            .map(u64::to_string)
+                            .collect::<Vec<_>>()
+                            .join("|");
+                        if steps.len() == 1 {
+                            format!("^t_[0-9a-f]{{32}}:{suffix}$")
+                        } else {
+                            format!("^t_[0-9a-f]{{32}}:(?:{suffix})$")
+                        }
+                    },
                 ),
             },
             model: exact(json!(model.id)),
