@@ -193,23 +193,24 @@ Full reference (discovery buckets, interface boot smoke, e2e workflows):
 ## CD
 
 Release Control is the only supported release interface. For each source SHA,
-[`deployment-descriptor-index.yml`](.github/workflows/deployment-descriptor-index.yml)
+[`deploy-descriptor-index.yml`](.github/workflows/deploy-descriptor-index.yml)
 uses the repository-owned compiler to join `.deploy/workers.yaml`, the public
 manifest, and the package manifest exactly once. Release
 Control selects those immutable bytes and dispatches the bounded phases:
 
 1. [`deploy-prepare.yml`](.github/workflows/deploy-prepare.yml) validates the
-   already-versioned source, compiles the selected descriptor, and builds one
+   selected descriptor and source, then builds one
    independent job per build unit through
    [`_deploy-build.yml`](.github/workflows/_deploy-build.yml).
-2. [`deploy-candidate-publish.yml`](.github/workflows/deploy-candidate-publish.yml)
-   publishes the immutable candidate to `@next`.
-3. Candidate smoke, stable CAS to `@latest`, optional OCI alias, finalize, and
-   verify run as separate authorized workflows.
+2. [`deploy-publish.yml`](.github/workflows/deploy-publish.yml) publishes the
+   exact immutable target and CASes the requested `@next` or `@latest` channel,
+   including a digest-pinned OCI image and alias when applicable.
+3. [`deploy-verify.yml`](.github/workflows/deploy-verify.yml) verifies the
+   selected channel and all public surfaces.
 
 Every phase uploads `deployment-result.json` and posts the same bytes to Release
-Control. Candidate and stable use one package version and one descriptor; no
-phase rebuilds or rereads the catalog after prepare.
+Control. The target version is selected independently from package-manifest
+metadata; no phase rebuilds or rereads the catalog after prepare.
 
 Step-by-step (variants, troubleshooting, rollback):
 [`docs/sops/release.md`](docs/sops/release.md).

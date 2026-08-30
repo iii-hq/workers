@@ -16,11 +16,10 @@ def build_binary_payload() -> dict[str, object]:
     }
     return build_payload(
         registry_projection=projection,
-        published_version="1.0.0-rc.7",
+        published_version="1.0.0-beta",
         repo_url="https://github.com/iii-hq/workers",
         interface={"functions": [], "triggers": []},
         artifacts={"kind": "rust-binary", "binaries": {"x86_64-unknown-linux-gnu": {"url": "https://example.test/smoke.tgz", "sha256": "b" * 64}}},
-        registry_tag="next",
     )
 
 
@@ -29,37 +28,59 @@ def test_payload_contains_only_current_registry_contract() -> None:
     assert set(payload) == {
         "worker_name", "version", "type", "description", "license", "tags",
         "dependencies", "config", "experimental", "readme", "repo",
-        "functions", "triggers", "binaries", "tag",
+        "functions", "triggers", "binaries",
     }
     assert payload["license"] == "Apache-2.0"
     assert payload["binaries"]["x86_64-unknown-linux-gnu"]["sha256"] == "b" * 64
     assert "package_descriptor" not in payload
     assert "descriptor_sha256" not in payload
     assert "channel" not in payload
-    assert payload["tag"] == "next"
-    assert payload["version"] == "1.0.0-rc.7"
+    assert "tag" not in payload
+    assert payload["version"] == "1.0.0-beta"
 
 
-def test_stable_publication_can_defer_channel_assignment_to_cas() -> None:
+def test_target_version_is_independent_from_manifest_metadata_and_has_no_implicit_channel() -> None:
     payload = build_binary_payload()
     projection = {key: payload[key] for key in (
         "worker_name", "type", "description", "license", "tags", "dependencies",
         "config", "experimental", "readme",
     )}
-    stable = build_payload(
+    target = build_payload(
         registry_projection=projection,
-        published_version="1.0.0",
+        published_version="2.0.0-alpha",
         repo_url="https://github.com/iii-hq/workers",
         interface={"functions": [], "triggers": []},
         artifacts={"kind": "rust-binary", "binaries": payload["binaries"]},
-        registry_tag="none",
     )
-    assert stable["version"] == "1.0.0"
-    assert "tag" not in stable
+    assert target["version"] == "2.0.0-alpha"
+    assert "tag" not in target
+
+
+def test_new_publish_target_rejects_legacy_numbered_rc() -> None:
+    projection = {
+        "worker_name": "smoke", "type": "binary", "description": "smoke",
+        "license": "Apache-2.0", "tags": [], "dependencies": [], "config": {},
+        "experimental": False, "readme": "# Smoke\n",
+    }
+    try:
+        build_payload(
+            registry_projection=projection,
+            published_version="2.0.0-rc.4",
+            repo_url="https://github.com/iii-hq/workers",
+            interface={"functions": [], "triggers": []},
+            artifacts={
+                "kind": "rust-binary",
+                "binaries": {"x86_64-unknown-linux-gnu": {"url": "https://example.test/smoke.tgz", "sha256": "b" * 64}},
+            },
+        )
+    except ValueError as error:
+        assert "deployment target version" in str(error)
+    else:
+        raise AssertionError("legacy numbered rc target was accepted")
 
 
 def test_engine_builtins_are_not_deployment_targets() -> None:
-    """A candidate install can enable an engine-hosted worker mid-boot (harness
+    """A target install can enable an engine-hosted worker mid-boot (harness
     turns on `iii-stream`), which lands it in the workers-baseline diff. Its
     interface is not part of the released worker's surface and must not reach
     the typed-schema gate."""

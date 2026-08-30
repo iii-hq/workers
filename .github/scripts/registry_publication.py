@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Publish Registry versions and verify every requested effect by readback.
+"""Publish immutable Registry versions and CAS deployment channels.
 
-Candidate publication may atomically assign its release tag in ``POST
-/publish``. Stable promotion remains a separate compare-and-swap operation.
-Mutating requests retry at most three times. A timeout or 5xx is always
-followed by exact version and channel readback before another write.
+Version publication never assigns a channel implicitly. Mutating requests
+retry at most three times, and a timeout or 5xx is followed by exact version
+and channel readback before another write.
 """
 
 from __future__ import annotations
@@ -19,6 +18,8 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Literal
+
+import _lib
 
 
 MAX_ATTEMPTS = 3
@@ -366,6 +367,13 @@ def _retry_delay(attempt: int) -> None:
     time.sleep(attempt)
 
 
+def _target_version(version: str) -> str:
+    try:
+        return _lib.validate_deployment_target_version(version)
+    except ValueError as error:
+        raise RegistryPublicationError(str(error)) from error
+
+
 def publish_version(
     api_url: str,
     api_key: str,
@@ -373,6 +381,7 @@ def publish_version(
     version: str,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
+    _target_version(version)
     _validate_publish_payload(payload, worker, version)
     last = "publication did not run"
     for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -462,6 +471,7 @@ def publish_skills(
     version: str,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
+    _target_version(version)
     expected = _skills_map(payload, version)
     last = "skills publication did not run"
     encoded_worker = urllib.parse.quote(worker, safe="")
@@ -539,18 +549,12 @@ def assign_channel(
     tag: str,
     expected_current_version: str,
 ) -> dict[str, Any]:
-    if tag == "none":
-        return {"state": "skipped", "proof": "immutable version has no channel commit"}
-
+    _target_version(version)
+    if tag not in {"next", "latest"}:
+        raise RegistryPublicationError("deployment channel must be next or latest")
+    if not expected_current_version:
+        raise RegistryPublicationError("expected_current_version is required for channel CAS")
     expected = expected_current_version
-    if not expected:
-        observed = read_channel(api_url, worker, tag)
-        if observed.state == "equivalent":
-            expected = observed.detail
-        elif observed.state == "absent":
-            expected = "none"
-        else:
-            raise RegistryPublicationError(f"cannot snapshot current channel for CAS: {observed.detail}")
 
     payload: dict[str, Any] = {"version": version}
     payload["expected_current_version"] = None if expected == "none" else expected
@@ -609,6 +613,41 @@ def assign_channel(
     raise RegistryPublicationError(f"channel was not verified after {MAX_ATTEMPTS} attempts: {last}")
 
 
+def advance_next_floor(
+    api_url: str,
+    api_key: str,
+    worker: str,
+    version: str,
+    expected_next_version: str,
+) -> dict[str, Any]:
+    """Keep next at or ahead of a latest target without ever moving it backwards."""
+    if not expected_next_version:
+        raise RegistryPublicationError("expected_next_version is required for latest publication")
+    _target_version(version)
+    observed = read_channel(api_url, worker, "next")
+    if observed.state == "equivalent":
+        current = observed.detail
+    elif observed.state == "absent":
+        current = "none"
+    else:
+        raise RegistryPublicationError(f"cannot prove current next pointer: {observed.detail}")
+
+    if current == version:
+        return {"state": "unchanged", "next": current, "proof": "next already equals latest target"}
+    if current != expected_next_version:
+        raise RegistryPublicationError(
+            f"next changed outside the authorized plan: current={current}, expected={expected_next_version}"
+        )
+    if current != "none" and _lib.parse_semver(current) > _lib.parse_semver(version):
+        return {
+            "state": "unchanged",
+            "next": current,
+            "proof": f"next {current} is already ahead of latest target {version}",
+        }
+    result = assign_channel(api_url, api_key, worker, version, "next", expected_next_version)
+    return {**result, "next": version}
+
+
 def _api_key() -> str:
     value = os.environ.get("WORKERS_REGISTRY_API_KEY", "")
     if not value:
@@ -634,7 +673,9 @@ def main() -> int:
     skills_parser.add_argument("--payload", type=pathlib.Path, required=True)
     channel_parser = common("assign-channel")
     channel_parser.add_argument("--registry-tag", required=True)
-    channel_parser.add_argument("--expected-current-version", default="")
+    channel_parser.add_argument("--expected-current-version", required=True)
+    next_floor_parser = common("advance-next-floor")
+    next_floor_parser.add_argument("--expected-next-version", required=True)
     args = parser.parse_args()
 
     try:
@@ -642,7 +683,7 @@ def main() -> int:
             result = publish_version(args.api_url, _api_key(), args.worker, args.version, _json_file(args.payload))
         elif args.command == "publish-skills":
             result = publish_skills(args.api_url, _api_key(), args.worker, args.version, _json_file(args.payload))
-        else:
+        elif args.command == "assign-channel":
             result = assign_channel(
                 args.api_url,
                 _api_key(),
@@ -650,6 +691,14 @@ def main() -> int:
                 args.version,
                 args.registry_tag,
                 args.expected_current_version,
+            )
+        else:
+            result = advance_next_floor(
+                args.api_url,
+                _api_key(),
+                args.worker,
+                args.version,
+                args.expected_next_version,
             )
         _write_receipt(args.out, result)
         print(json.dumps(result, sort_keys=True))

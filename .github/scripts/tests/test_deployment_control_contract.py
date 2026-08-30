@@ -10,10 +10,9 @@ import deployment_control_contract as contract
 
 SCRIPT = pathlib.Path(__file__).parents[1] / "deployment_control_contract.py"
 SCHEMA = pathlib.Path(__file__).parents[2] / "contracts" / "deployment-execution.schema.json"
-OPERATION_ID = "11111111-1111-4111-8111-111111111111"
+DEPLOYMENT_BATCH_ID = "11111111-1111-4111-8111-111111111111"
 STEP_ID = "22222222-2222-4222-8222-222222222222"
-INTENT_ID = "33333333-3333-4333-8333-333333333333"
-CANDIDATE_ID = "44444444-4444-4444-8444-444444444444"
+DEPLOYMENT_TARGET_ID = "44444444-4444-4444-8444-444444444444"
 ATTEMPT_ID = "55555555-5555-4555-8555-555555555555"
 NONCE = "66666666-6666-4666-8666-666666666666"
 
@@ -23,15 +22,14 @@ def run(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 def test_contract_schema_is_byte_identical_to_release_control():
-    assert hashlib.sha256(SCHEMA.read_bytes()).hexdigest() == "470b340239459bcd18befbedad9ad0670ae72f6a2c214f1c7f8a581d527b28ad"
+    assert hashlib.sha256(SCHEMA.read_bytes()).hexdigest() == "dc51f42d89626f0d554b94965b49aace257726a0b77010c4be05e22c6eb44196"
 
 
 def test_compact_identity_input_requires_exact_canonical_fields():
     identity = {
-        "operation_id": OPERATION_ID,
+        "deployment_batch_id": DEPLOYMENT_BATCH_ID,
+        "deployment_target_id": DEPLOYMENT_TARGET_ID,
         "step_id": STEP_ID,
-        "deployment_intent_id": INTENT_ID,
-        "candidate_id": CANDIDATE_ID,
         "attempt_id": ATTEMPT_ID,
         "dispatch_nonce": NONCE,
         "plan_hash": "b" * 64,
@@ -44,7 +42,7 @@ def test_compact_identity_input_requires_exact_canonical_fields():
 
 
 def test_dispatch_identity_is_syntactic_and_reruns_are_rejected():
-    common = ["validate-dispatch", "--operation-id", OPERATION_ID, "--step-id", STEP_ID,
+    common = ["validate-dispatch", "--step-id", STEP_ID,
               "--dispatch-nonce", NONCE, "--descriptor-sha256", "d" * 64,
               "--plan-hash", "b" * 64, "--source-sha", "a" * 40, "--mutating"]
     assert run(*common, "--run-attempt", "1").returncode == 0
@@ -54,13 +52,14 @@ def test_dispatch_identity_is_syntactic_and_reruns_are_rejected():
 def test_release_result_has_exact_nominal_shape(tmp_path: pathlib.Path):
     output = tmp_path / "deployment-result.json"
     result = run(
-        "write-result", "--repository", "iii-hq/workers", "--operation-id", OPERATION_ID,
+        "write-result", "--repository", "iii-hq/workers",
         "--step-id", STEP_ID, "--run-id", "123", "--run-attempt", "1",
         "--workflow", "deploy-prepare.yml", "--event", "workflow_dispatch", "--sha", "a" * 40,
-        "--deployment-intent-id", INTENT_ID, "--candidate-id", CANDIDATE_ID, "--attempt-id", ATTEMPT_ID,
+        "--deployment-batch-id", DEPLOYMENT_BATCH_ID, "--deployment-target-id", DEPLOYMENT_TARGET_ID,
+        "--attempt-id", ATTEMPT_ID,
         "--dispatch-nonce", NONCE, "--plan-hash", "b" * 64, "--worker", "eval", "--phase", "prepare",
         "--source-sha", "a" * 40, "--prepared-sha", "c" * 40,
-        "--candidate-version", "1.2.3-rc.1", "--stable-version", "1.2.3",
+        "--target-version", "1.2.3-beta", "--channel", "next",
         "--descriptor-sha256", "d" * 64, "--outcome", "succeeded",
         "--effects", '[{"surface":"git-ref","state":"present","immutable_id":"c"}]',
         "--artifacts-json", '[{"name":"eval.tar.gz","role":"bundle","sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","size":42}]',
@@ -70,8 +69,15 @@ def test_release_result_has_exact_nominal_shape(tmp_path: pathlib.Path):
     payload = json.loads(output.read_text())
     assert set(payload) == {"contract", "identity", "executor", "subject", "outcome", "effects", "artifacts", "error", "completed_at"}
     assert payload["contract"] == "deployment-execution"
-    assert payload["identity"]["candidate_id"] == CANDIDATE_ID
+    assert set(payload["identity"]) == {
+        "deployment_batch_id", "deployment_target_id", "step_id",
+        "attempt_id", "dispatch_nonce", "plan_hash",
+    }
+    assert payload["identity"]["deployment_batch_id"] == DEPLOYMENT_BATCH_ID
+    assert payload["identity"]["deployment_target_id"] == DEPLOYMENT_TARGET_ID
     assert payload["subject"]["phase"] == "prepare"
+    assert payload["subject"]["target_version"] == "1.2.3-beta"
+    assert payload["subject"]["channel"] == "next"
     assert payload["error"] is None
 
 
@@ -90,20 +96,21 @@ def executor_args(**overrides):
         "api_url": "https://release-control.example",
         "audience": "release-control-workers",
         "repository": "iii-hq/workers",
-        "operation_id": OPERATION_ID,
+        "deployment_batch_id": DEPLOYMENT_BATCH_ID,
+        "deployment_target_id": DEPLOYMENT_TARGET_ID,
         "step_id": STEP_ID,
         "run_id": 123,
         "run_attempt": 1,
         "workflow": "deploy-prepare.yml",
         "event": "workflow_dispatch",
         "sha": "a" * 40,
-        "deployment_intent_id": INTENT_ID,
-        "candidate_id": CANDIDATE_ID,
         "attempt_id": ATTEMPT_ID,
         "dispatch_nonce": NONCE,
         "plan_hash": "b" * 64,
         "worker": "eval",
         "source_sha": "c" * 40,
+        "target_version": "1.2.3-beta",
+        "channel": "next",
         "descriptor_sha256": "d" * 64,
     }
     values.update(overrides)
@@ -125,9 +132,33 @@ def test_authorize_posts_nested_canonical_body_and_its_digest(monkeypatch):
     payload = json.loads(body)
     assert request.full_url == "https://release-control.example/executor-dispatches/authorize"
     assert set(payload) == {"identity", "executor", "subject"}
-    assert set(payload["subject"]) == {"worker", "source_sha", "descriptor_sha256"}
+    assert set(payload["identity"]) == {
+        "deployment_batch_id", "deployment_target_id", "step_id",
+        "attempt_id", "dispatch_nonce", "plan_hash",
+    }
+    assert set(payload["subject"]) == {
+        "worker", "source_sha", "target_version", "channel", "descriptor_sha256"
+    }
     assert request.get_header("X-deployment-result-sha256") == "sha256:" + hashlib.sha256(body).hexdigest()
     assert request.get_header("Authorization") == "Bearer oidc:release-control-workers"
+
+
+def test_new_deployment_target_rejects_legacy_numbered_rc(tmp_path: pathlib.Path):
+    result = run(
+        "write-result", "--repository", "iii-hq/workers", "--step-id", STEP_ID,
+        "--run-id", "123", "--run-attempt", "1", "--workflow", "deploy-prepare.yml",
+        "--event", "workflow_dispatch", "--sha", "a" * 40,
+        "--deployment-batch-id", DEPLOYMENT_BATCH_ID,
+        "--deployment-target-id", DEPLOYMENT_TARGET_ID, "--attempt-id", ATTEMPT_ID,
+        "--dispatch-nonce", NONCE, "--plan-hash", "b" * 64, "--worker", "eval",
+        "--phase", "prepare", "--source-sha", "a" * 40,
+        "--target-version", "1.2.3-rc.1", "--channel", "next",
+        "--descriptor-sha256", "d" * 64, "--outcome", "succeeded", "--effects", "[]",
+        "--artifacts-json", "[]", "--error-json", "null",
+        "--output", str(tmp_path / "deployment-result.json"),
+    )
+    assert result.returncode == 2
+    assert "deployment target version" in result.stderr
 
 
 def test_post_result_sends_the_file_bytes_without_reserializing(tmp_path, monkeypatch):
@@ -152,12 +183,14 @@ def test_post_result_sends_the_file_bytes_without_reserializing(tmp_path, monkey
 
 def test_phase_and_workflow_must_match(tmp_path: pathlib.Path):
     result = run(
-        "write-result", "--repository", "iii-hq/workers", "--operation-id", OPERATION_ID,
+        "write-result", "--repository", "iii-hq/workers",
         "--step-id", STEP_ID, "--run-id", "123", "--run-attempt", "1",
         "--workflow", "deploy-verify.yml", "--event", "workflow_dispatch", "--sha", "a" * 40,
-        "--deployment-intent-id", INTENT_ID, "--candidate-id", CANDIDATE_ID, "--attempt-id", ATTEMPT_ID,
+        "--deployment-batch-id", DEPLOYMENT_BATCH_ID, "--deployment-target-id", DEPLOYMENT_TARGET_ID,
+        "--attempt-id", ATTEMPT_ID,
         "--dispatch-nonce", NONCE, "--plan-hash", "b" * 64, "--worker", "eval", "--phase", "prepare",
-        "--source-sha", "a" * 40, "--descriptor-sha256", "d" * 64, "--outcome", "failed",
+        "--source-sha", "a" * 40, "--target-version", "1.2.3", "--channel", "latest",
+        "--descriptor-sha256", "d" * 64, "--outcome", "failed",
         "--effects", "[]", "--artifacts-json", "[]",
         "--error-json", '{"code":"x","category":"test","retryable":false,"message":"x"}',
         "--output", str(tmp_path / "deployment-result.json"),

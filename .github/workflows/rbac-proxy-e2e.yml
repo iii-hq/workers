@@ -1,5 +1,5 @@
 name: rbac-proxy E2E
-run-name: ${{ github.event_name == 'workflow_dispatch' && format('RC · test · {0} · {1}', inputs.operation_id, inputs.step_id) || format('Test · rbac_proxy_e2e · {0}', github.event_name) }}
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('Deployment · test · {0} · {1}', inputs.operation_id, inputs.step_id) || format('Test · rbac_proxy_e2e · {0}', github.event_name) }}
 
 on:
   pull_request:

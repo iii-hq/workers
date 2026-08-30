@@ -331,10 +331,10 @@ def compare(args: argparse.Namespace) -> int:
             raise SystemExit("skipped interface evidence must remain explicit and empty")
         return 0
     if args.actual is None:
-        raise SystemExit("required candidate smoke must collect the published interface")
+        raise SystemExit("required deployment verification must collect the published interface")
     actual = _canonical_interface(json.loads(args.actual.read_text(encoding="utf-8")))
     if expected.get("interface") != actual:
-        raise SystemExit("published candidate interface differs from prepared artifact snapshot")
+        raise SystemExit("published target interface differs from prepared artifact snapshot")
     return 0
 
 

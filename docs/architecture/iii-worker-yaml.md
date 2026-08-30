@@ -62,9 +62,9 @@ Engine-owned dependencies such as `configuration`, `iii-stream`, and
 worker dependencies use a caret range whose lower bound is the newest stable
 release validated with the current SDK. For example, `state: "^0.22.2"` accepts
 compatible patch releases without falling back to an older SDK build. A worker
-installed explicitly from a candidate channel may temporarily use a newer
-candidate lower bound, but stable dependents must wait until that candidate is
-promoted. Experimental workers may retain broad ranges until their dependency
+installed explicitly from the `next` channel may temporarily use a newer
+target lower bound, but stable dependents must wait until that target reaches
+`latest`. Experimental workers may retain broad ranges until their dependency
 stack is promoted. These forms are understood directly by iii and the Registry.
 
 ## Example (minimal Rust binary)

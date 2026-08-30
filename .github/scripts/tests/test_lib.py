@@ -10,13 +10,13 @@ import _lib
 
 class TestParseSemver:
     def test_stable_three_part(self):
-        assert _lib.parse_semver("1.2.3") == ((1, 2, 3), 1, "")
+        assert _lib.parse_semver("1.2.3") == ((1, 2, 3), 4, 0)
 
     def test_stable_pads_to_three(self):
-        assert _lib.parse_semver("1.2") == ((1, 2, 0), 1, "")
+        assert _lib.parse_semver("1.2") == ((1, 2, 0), 4, 0)
 
     def test_prerelease_strips_core_keeps_suffix(self):
-        assert _lib.parse_semver("1.2.3-rc.1") == ((1, 2, 3), 0, "rc.00000000000000000001")
+        assert _lib.parse_semver("1.2.3-rc.1") == ((1, 2, 3), 3, 1)
 
     def test_stable_greater_than_prerelease_same_core(self):
         # 1.2.3 must rank above 1.2.3-rc.1 (the audit bug).
@@ -26,14 +26,20 @@ class TestParseSemver:
         # 1.2.4-rc.1 must rank above 1.2.3 (newer core wins).
         assert _lib.parse_semver("1.2.4-rc.1") > _lib.parse_semver("1.2.3")
 
-    def test_two_prereleases_sort_lexicographically(self):
+    def test_numbered_legacy_prereleases_sort_numerically(self):
         assert _lib.parse_semver("1.2.3-rc.1") < _lib.parse_semver("1.2.3-rc.2")
         assert _lib.parse_semver("1.2.3-rc.2") < _lib.parse_semver("1.2.3-rc.10")
 
     def test_build_metadata_is_ignored(self):
         # SemVer 2.0.0 §10: build metadata after `+` MUST NOT affect precedence.
-        assert _lib.parse_semver("1.0.0+build.5") == ((1, 0, 0), 1, "")
+        assert _lib.parse_semver("1.0.0+build.5") == ((1, 0, 0), 4, 0)
         assert _lib.parse_semver("1.0.0+a") == _lib.parse_semver("1.0.0+b")
+
+    def test_product_maturity_order(self):
+        assert _lib.parse_semver("1.2.3-experimental") < _lib.parse_semver("1.2.3-alpha")
+        assert _lib.parse_semver("1.2.3-alpha") < _lib.parse_semver("1.2.3-beta")
+        assert _lib.parse_semver("1.2.3-beta") < _lib.parse_semver("1.2.3-rc.1")
+        assert _lib.parse_semver("1.2.3-rc.9") < _lib.parse_semver("1.2.3")
 
 
 class TestBump:

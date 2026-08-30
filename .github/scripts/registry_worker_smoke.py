@@ -150,7 +150,7 @@ def worker_key(worker_spec: str) -> str:
 
 
 def ordered_workers(worker_specs: list[str]) -> list[str]:
-    """Keep Harness last and always test its current candidate channel."""
+    """Keep Harness last and always test its current next channel."""
     workers = [spec for spec in worker_specs if worker_key(spec) != "harness"]
     if len(workers) != len(worker_specs):
         workers.append(HARNESS_SELECTOR)
