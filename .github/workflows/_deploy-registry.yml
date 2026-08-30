@@ -105,7 +105,7 @@ jobs:
             echo 'descriptor-native fields must never reach the current Registry' >&2
             exit 1
           fi
-          test "$(jq 'has(\"tag\")' payload.json)" = false
+          test "$(jq 'has("tag")' payload.json)" = false
 
       - name: Publish immutable version with readback
         env:
