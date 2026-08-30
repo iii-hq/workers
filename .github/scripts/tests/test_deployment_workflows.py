@@ -207,6 +207,8 @@ def test_publish_separates_immutable_version_from_explicit_channel_cas():
     assert 'has("package_descriptor") or has("descriptor_sha256") or has("channel")' in reusable
     assert "registry_publication.py publish-version" in reusable
     assert "build_publish_payload.py" in reusable
+    assert "jq 'has(\"tag\")' payload.json" in reusable
+    assert "has(\\\"tag\\\")" not in reusable
     assert '--registry-tag "$DEPLOYMENT_CHANNEL"' in reusable
     assert "Move requested channel with compare-and-swap" in reusable
     assert "Move the requested OCI channel to the immutable digest" in publish
