@@ -137,7 +137,7 @@ def stage(args: argparse.Namespace) -> int:
             if len(units) != 1:
                 raise SystemExit(f"required interface needs exactly one {target} build unit")
             selected = _single_artifact(artifacts, "binary", unit=str(units[0]["id"]))
-            stage_dir = args.out.parent / "runtime"
+            stage_dir = (args.out.parent / "runtime").resolve()
             extract_regular_tar(args.prepared.parent / str(selected["name"]), stage_dir)
             command = runtime.get("exec")
             if not isinstance(command, list) or not command or not all(isinstance(part, str) for part in command):
@@ -149,7 +149,7 @@ def stage(args: argparse.Namespace) -> int:
             result.update(cwd=str(stage_dir), command=[str(executable), *command[1:]])
         elif kind in {"javascript-bundle", "python-bundle"}:
             selected = _single_artifact(artifacts, "bundle")
-            stage_dir = args.out.parent / "runtime"
+            stage_dir = (args.out.parent / "runtime").resolve()
             extract_regular_tar(args.prepared.parent / str(selected["name"]), stage_dir)
             start = runtime.get("start")
             install = runtime.get("install") or ""
@@ -174,7 +174,7 @@ def stage(args: argparse.Namespace) -> int:
             if len(units) != 1:
                 raise SystemExit("required OCI interface needs exactly one linux/amd64 build unit")
             selected = _single_artifact(artifacts, "oci-platform", unit=str(units[0]["id"]))
-            archive = args.out.parent / "image.oci.tar"
+            archive = (args.out.parent / "image.oci.tar").resolve()
             with gzip.open(args.prepared.parent / str(selected["name"]), "rb") as source:
                 with archive.open("wb") as destination:
                     shutil.copyfileobj(source, destination)

@@ -77,6 +77,25 @@ def test_required_interface_stages_only_prepared_artifact_bytes(tmp_path: Path) 
     assert not (tmp_path / "source-must-not-be-read").exists()
 
 
+def test_stage_resolves_runtime_paths_before_adapter_changes_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    descriptor_path, prepared_path = write_prepared(tmp_path, descriptor())
+    monkeypatch.chdir(tmp_path)
+
+    release_interface.stage(argparse.Namespace(
+        descriptor=descriptor_path,
+        prepared=prepared_path,
+        out=Path("interface") / "stage.json",
+        github_output=None,
+    ))
+
+    stage = json.loads((tmp_path / "interface" / "stage.json").read_text())
+    assert Path(stage["cwd"]).is_absolute()
+    assert Path(stage["command"][0]).is_absolute()
+    assert Path(stage["command"][0]).is_relative_to(Path(stage["cwd"]))
+
+
 def test_skipped_interface_records_explicit_evidence_without_staging_runtime(tmp_path: Path) -> None:
     selected = descriptor("skipped")
     descriptor_path, prepared_path = write_prepared(tmp_path, selected)
