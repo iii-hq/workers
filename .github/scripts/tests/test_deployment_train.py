@@ -17,6 +17,7 @@ from deployment_train import (
     normalized_zip,
     prepare,
     select_descriptor,
+    verify_prepared,
 )
 
 
@@ -87,6 +88,38 @@ def test_prepare_accepts_exact_target_independent_of_manifest_metadata(
         descriptor_sha256=selected["descriptor_sha256"],
         descriptor=descriptor_path,
     )) == 0
+
+
+def test_verify_prepared_checks_inventory_without_executing_worker(tmp_path: Path) -> None:
+    selected = descriptor("smoke", "a" * 40, "0.1.0")
+    descriptor_path = tmp_path / "deployment-descriptor.json"
+    descriptor_path.write_text(json.dumps(selected), encoding="utf-8")
+    artifact = tmp_path / "smoke.tar.gz"
+    artifact.write_bytes(b"prepared bytes")
+    inventory = {
+        "contract": "prepared-artifacts",
+        "worker": "smoke",
+        "source_sha": "a" * 40,
+        "descriptor_sha256": selected["descriptor_sha256"],
+        "artifacts": [{
+            "unit": "bundle",
+            "name": artifact.name,
+            "role": "bundle",
+            "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+            "size": artifact.stat().st_size,
+        }],
+    }
+    prepared_path = tmp_path / "prepared-artifacts.json"
+    prepared_path.write_text(json.dumps(inventory), encoding="utf-8")
+
+    assert verify_prepared(argparse.Namespace(
+        descriptor=descriptor_path,
+        prepared=prepared_path,
+    )) == 0
+
+    artifact.write_bytes(b"tampered")
+    with pytest.raises(SystemExit, match="bytes differ"):
+        verify_prepared(argparse.Namespace(descriptor=descriptor_path, prepared=prepared_path))
 
 
 def test_select_descriptor_preserves_compiler_bytes(tmp_path: Path) -> None:

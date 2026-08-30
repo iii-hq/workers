@@ -21,9 +21,8 @@ planning.
 ## Sequence
 
 1. `deploy-prepare.yml` authorizes the dispatch, verifies descriptor identity,
-   builds one job per target, boots the prepared adapter, snapshots its typed
-   interface, and uploads byte-unchanged inputs plus `deployment-evidence.json`
-   with the SHA-256 and size of every descriptor, interface and build artifact.
+   builds one job per target, and uploads the byte-unchanged descriptor,
+   prepared inventory, and artifacts with their SHA-256 and size.
 2. `deploy-publish.yml` publishes or proves GitHub assets, the exact Registry
    version and a digest-pinned OCI image when applicable, then CASes the
    requested `next` or `latest` channel from the value captured in the plan.

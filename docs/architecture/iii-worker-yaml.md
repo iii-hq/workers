@@ -32,15 +32,16 @@ public field is present the compiler requires the two lists to match.
 
 | Field | Purpose | Consumer |
 |---|---|---|
-| `interface_smoke: false` | Mirror private `validation.interface: skipped` | compiler, `ci.yml` |
+| `interface_smoke: false` | Opt out of the PR-only interface boot check | `validate_worker.py`, `ci.yml` |
 | `runtime` / `scripts.start` | Public local and installed runtime definition | `iii worker`, Compose, release compiler |
 | `scripts.install` | Build command for local install | `compose::add` (local source) |
 | `tags` | Discovery aliases included in the compiled Registry projection | release compiler |
 
 `tags` must be a list of strings. The publish pipeline trims values, converts them to lowercase,
 removes duplicates, and omits the field when no non-empty tags remain.
-`interface_smoke: false` skips interface collection, not publication. Private
-`publish` controls whether a worker appears in the release index.
+`interface_smoke: false` skips only the PR check; deployments never boot a
+prepared worker. Private `publish` controls whether a worker appears in the
+deployment index.
 
 ```yaml
 tags:

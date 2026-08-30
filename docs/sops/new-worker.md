@@ -31,9 +31,10 @@ Never put API keys, tokens, `III_*` connection settings, or mutable external
 references in public defaults; the compiler rejects them before producing the
 immutable Registry projection.
 
-Set `validation.interface: required` when the worker exposes a collectable
-interface. Use `skipped` only for a worker that cannot expose one, such as a
-stdio-only process. Skipping validation does not silently disable publication.
+The PR interface boot check is enabled by default. Set
+`interface_smoke: false` in `iii.worker.yaml` only for a worker that cannot
+expose a collectable interface, such as a stdio-only process. This setting does
+not affect deployment or publication.
 
 ## Local checks
 
