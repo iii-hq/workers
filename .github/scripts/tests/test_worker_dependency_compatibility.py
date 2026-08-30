@@ -9,7 +9,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 RELEASE_CATALOG = yaml.safe_load(
-    (REPO_ROOT / ".release" / "workers.yaml").read_text(encoding="utf-8")
+    (REPO_ROOT / ".deploy" / "workers.yaml").read_text(encoding="utf-8")
 )["workers"]
 EXPERIMENTAL_WORKERS = {
     "a2ui",

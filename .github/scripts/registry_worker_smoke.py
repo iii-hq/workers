@@ -35,7 +35,7 @@ HARNESS_SELECTOR = "harness@next"
 
 
 def stable_workers() -> list[str]:
-    catalog = _lib.read_worker_catalog(REPO_ROOT / ".release" / "workers.yaml")
+    catalog = _lib.read_worker_catalog(REPO_ROOT / ".deploy" / "workers.yaml")
     workers = sorted(
         worker_id
         for worker_id, spec in catalog.items()

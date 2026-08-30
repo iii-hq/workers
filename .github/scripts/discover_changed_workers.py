@@ -175,7 +175,7 @@ def suite_changed(
 def publishable_workers(repo_root: pathlib.Path) -> dict[str, _lib.WorkerSpec]:
     return {
         worker_id: spec
-        for worker_id, spec in _lib.read_worker_catalog(repo_root / ".release" / "workers.yaml").items()
+        for worker_id, spec in _lib.read_worker_catalog(repo_root / ".deploy" / "workers.yaml").items()
         if spec.publish and spec.path.parent == repo_root
     }
 

@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 
 
-PIN = Path(__file__).resolve().parents[1] / "release-control-contract.json"
+PIN = Path(__file__).resolve().parents[1] / "deployment-control-contract.json"
 LOCAL = Path(__file__).resolve().parents[1] / "contracts/deployment-execution.schema.json"
 
 

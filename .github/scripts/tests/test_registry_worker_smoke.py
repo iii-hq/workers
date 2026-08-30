@@ -16,13 +16,12 @@ def add_catalog_worker(root: Path, worker: str) -> None:
         f"name: {worker}\nlanguage: rust\ndeploy: binary\nmanifest: Cargo.toml\n"
         f"bin: {worker}\ndescription: {worker}\nlicense: Apache-2.0\n"
     )
-    path = root / ".release" / "workers.yaml"
+    path = root / ".deploy" / "workers.yaml"
     path.parent.mkdir(exist_ok=True)
     catalog = yaml.safe_load(path.read_text()) if path.exists() else {"workers": {}}
     catalog["workers"][worker] = {
         "source": {"path": worker, "package_manifest": "Cargo.toml"},
         "artifact": {"kind": "rust-binary", "binary": worker, "targets": ["x86_64-unknown-linux-gnu"]},
-        "validation": {"interface": "required"},
         "publish": True,
     }
     path.write_text(yaml.safe_dump(catalog, sort_keys=False))
