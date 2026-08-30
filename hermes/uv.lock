@@ -53,7 +53,7 @@ wheels = [
 
 [[package]]
 name = "hermes"
-version = "0.1.7rc3"
+version = "0.1.7rc4"
 source = { editable = "." }
 dependencies = [
     { name = "iii-helpers" },
