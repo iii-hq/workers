@@ -178,6 +178,10 @@ def test_all_post_prepare_phases_verify_prepared_bytes_and_report_them():
 
 def test_publish_is_retry_safe_and_effect_states_are_probe_derived():
     publish = body("deploy-publish.yml")
+    workflow = yaml.safe_load(publish)
+    checkout = workflow["jobs"]["publish"]["steps"][0]
+    assert "ref" not in checkout["with"]
+    assert checkout["with"]["fetch-depth"] == 0
     assert "deployment_effects.py classify" in publish
     assert 'value=sys.argv[1].strip()' in publish
     assert 'all(.[]; .state == "absent" or .state == "present" or .state == "unknown")' in publish
