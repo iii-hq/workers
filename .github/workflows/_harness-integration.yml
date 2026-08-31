@@ -140,6 +140,11 @@ jobs:
           # own key so coverage runs never poison the normal cache.
           shared-key: ${{ inputs.coverage && 'harness-integration-coverage' || 'harness-integration' }}
           save-if: ${{ inputs.save-cache || inputs.coverage }}
+          # Every release build the stack needs now lands in one shared
+          # target dir (see harness/Makefile INTEGRATION_TARGET_DIR); the
+          # per-workspace entries below stay so the cache key keeps hashing
+          # all eight lockfiles.
+          cache-directories: target/integration-build
           workspaces: |
             harness -> target
             queue -> target
@@ -181,7 +186,10 @@ jobs:
         env:
           RUSTFLAGS: ${{ inputs.coverage && '-Cinstrument-coverage -Cllvm-args=-runtime-counter-relocation' || '' }}
           LLVM_PROFILE_FILE: ${{ inputs.coverage && format('{0}/target/coverage/profraw/%m_%p%c.profraw', github.workspace) || '' }}
-        run: cargo build --locked --release --timings --manifest-path console/Cargo.toml
+        run: >-
+          cargo build --locked --release --timings
+          --target-dir "$GITHUB_WORKSPACE/target/integration-build"
+          --manifest-path console/Cargo.toml
 
       - name: Install Playwright Chromium
         working-directory: console/web
@@ -195,15 +203,15 @@ jobs:
         working-directory: console/web
         env:
           III_BIN: ${{ steps.engine.outputs.bin }}
-          HARNESS_INTEGRATION_BIN: ${{ github.workspace }}/harness/target/release/harness-integration
-          HARNESS_BIN: ${{ github.workspace }}/harness/target/release/harness
-          CONSOLE_BIN: ${{ github.workspace }}/console/target/release/console
-          QUEUE_BIN: ${{ github.workspace }}/queue/target/release/queue
-          III_DIRECTORY_BIN: ${{ github.workspace }}/iii-directory/target/release/iii-directory
-          SESSION_MANAGER_BIN: ${{ github.workspace }}/session-manager/target/release/session-manager
-          CONTEXT_MANAGER_BIN: ${{ github.workspace }}/context-manager/target/release/context-manager
-          STATE_BIN: ${{ github.workspace }}/state/target/release/state
-          DATABASE_BIN: ${{ github.workspace }}/database/target/release/database
+          HARNESS_INTEGRATION_BIN: ${{ github.workspace }}/target/integration-build/release/harness-integration
+          HARNESS_BIN: ${{ github.workspace }}/target/integration-build/release/harness
+          CONSOLE_BIN: ${{ github.workspace }}/target/integration-build/release/console
+          QUEUE_BIN: ${{ github.workspace }}/target/integration-build/release/queue
+          III_DIRECTORY_BIN: ${{ github.workspace }}/target/integration-build/release/iii-directory
+          SESSION_MANAGER_BIN: ${{ github.workspace }}/target/integration-build/release/session-manager
+          CONTEXT_MANAGER_BIN: ${{ github.workspace }}/target/integration-build/release/context-manager
+          STATE_BIN: ${{ github.workspace }}/target/integration-build/release/state
+          DATABASE_BIN: ${{ github.workspace }}/target/integration-build/release/database
           CONSOLE_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/console-e2e
           LLVM_PROFILE_FILE: ${{ inputs.coverage && format('{0}/target/coverage/profraw/%m_%p%c.profraw', github.workspace) || '' }}
         run: pnpm test:e2e
@@ -236,14 +244,14 @@ jobs:
             --profraw-dir target/coverage/profraw \
             --output-dir target/coverage/integration \
             --title harness-integration \
-            --object queue/target/release/queue \
-            --object iii-directory/target/release/iii-directory \
-            --object session-manager/target/release/session-manager \
-            --object context-manager/target/release/context-manager \
-            --object state/target/release/state \
-            --object harness/target/release/harness \
-            --object harness/target/release/harness-integration \
-            --object console/target/release/console
+            --object target/integration-build/release/queue \
+            --object target/integration-build/release/iii-directory \
+            --object target/integration-build/release/session-manager \
+            --object target/integration-build/release/context-manager \
+            --object target/integration-build/release/state \
+            --object target/integration-build/release/harness \
+            --object target/integration-build/release/harness-integration \
+            --object target/integration-build/release/console
 
       - name: Upload coverage report
         if: always() && inputs.coverage
@@ -279,6 +287,7 @@ jobs:
           name: harness-integration-rust-timings
           path: |
             */target/cargo-timings/*.html
+            target/integration-build/cargo-timings/*.html
             target/integration-engine-src/target/cargo-timings/*.html
           retention-days: 14
           if-no-files-found: ignore
