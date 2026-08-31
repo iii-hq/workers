@@ -211,17 +211,13 @@ pub fn map_finish_reason(s: &str) -> StopReason {
 /// `Usage.input` / `cache_read` / `cache_write` are disjoint prompt-cache
 /// *splits* (tech-specs § Usage) and `llm_router::chat::pricing` bills them
 /// additively, so `input` carries the tokens charged at the full input rate —
-/// the cache MISS slice — not the prompt total. Groq reports the split
-/// directly (`prompt_cache_miss_tokens + prompt_cache_hit_tokens =
-/// prompt_tokens`), so no arithmetic is needed on the happy path. Feeding the
-/// total instead would bill the cached prefix twice, and Groq's cache
-/// discount is ~120x (0.435 vs 0.003625 USD/MTok on v4-pro) — on an agent
-/// loop that resends a large cached prefix every turn, that roughly doubles
-/// the reported cost.
-///
-/// OpenAI-compatible endpoints behind an `api_url` override report a
-/// `prompt_tokens` total that *includes* the cached slice under
-/// `prompt_tokens_details.cached_tokens`; there the miss slice is derived.
+/// the cache MISS slice — not the prompt total. Groq documents cached
+/// tokens under `usage.prompt_tokens_details.cached_tokens` (billed at a 50%
+/// discount), so the miss slice is derived: prompt total minus the cached
+/// count. Endpoints behind an `api_url` override that report the split
+/// directly (`prompt_cache_hit_tokens`/`prompt_cache_miss_tokens`) are
+/// honored first. Feeding the total instead would bill the cached prefix
+/// twice on every agent turn that resends a large cached prefix.
 pub fn merge_usage(raw: &Value, into: &mut Usage) {
     let num = |k: &str| raw.get(k).and_then(Value::as_u64);
     let cached = num("prompt_cache_hit_tokens").or_else(|| {

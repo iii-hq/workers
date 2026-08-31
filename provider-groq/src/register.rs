@@ -47,10 +47,19 @@ pub fn declaration() -> ProviderDeclaration {
     }
 }
 
+/// The token the router issued most recently in this process. Persistence
+/// retries with backoff, but if the store stays down past that budget the
+/// issued token must not be lost — the router rejects re-registering an
+/// already bound provider, so the next attempt presents this copy.
+static LAST_ISSUED_TOKEN: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 /// One registration attempt: declare (with the persisted token when present)
 /// and persist the token the router returns.
 pub async fn declare_once(iii: &IIIClient) -> Result<(), Error> {
-    let token = state::load_token(iii).await;
+    let token = match state::load_token(iii).await {
+        Some(t) => Some(t),
+        None => LAST_ISSUED_TOKEN.lock().unwrap().clone(),
+    };
     let mut payload = serde_json::to_value(declaration()).expect("serializable declaration");
     if let Some(t) = &token {
         payload["token"] = json!(t);
@@ -58,6 +67,7 @@ pub async fn declare_once(iii: &IIIClient) -> Result<(), Error> {
     let resp = router_client::register(iii, payload).await?;
     if let Some(t) = resp.get("registration_token").and_then(Value::as_str) {
         if token.as_deref() != Some(t) {
+            *LAST_ISSUED_TOKEN.lock().unwrap() = Some(t.to_string());
             persist_registration_token(iii, t).await?;
         }
     }

@@ -9,3 +9,4 @@ rules:
   - '!provider::groq::refresh_models'
   - '!provider::groq::on_router_ready'
   - '!provider::groq::count_tokens'
+  - '!provider::groq::abort'

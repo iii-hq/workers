@@ -219,13 +219,6 @@ system_prompt?, tools?, messages}` → `{model, tokens, estimator}`) to serve
 "tiktoken"`). Providers without it simply make `router::count_tokens` return
 a typed `router/no_token_counter` error for that provider.
 
-A provider may also register `provider::<id>::count_tokens` (`{model,
-system_prompt?, tools?, messages}` → `{model, tokens, estimator}`) to serve
-`router::count_tokens`: an exact count from a provider metering API
-(`estimator: "provider"`) or a local tokenizer estimate (`estimator:
-"tiktoken"`). Providers without it simply make `router::count_tokens` return
-a typed `router/no_token_counter` error for that provider.
-
 The first real provider implementing this protocol is
 [`provider-anthropic/`](https://github.com/iii-hq/workers/tree/main/provider-anthropic) — useful as a reference
 implementation alongside the scripted provider in the integration tests.

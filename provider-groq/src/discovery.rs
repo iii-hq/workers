@@ -19,12 +19,18 @@ use serde_json::Value;
 /// Derive the models endpoint from the generation endpoint — the sibling
 /// of the configured chat route, so an override pointed at a gateway finds
 /// its listing on the same host.
-pub fn models_url(api_url: &str) -> String {
-    api_url
-        .trim_end_matches('/')
-        .strip_suffix("/chat/completions")
-        .map(|base| format!("{base}/models"))
-        .unwrap_or_else(|| "https://api.groq.com/openai/v1/models".to_string())
+pub fn models_url(api_url: &str) -> Option<String> {
+    let trimmed = api_url.trim_end_matches('/');
+    if let Some(base) = trimmed.strip_suffix("/chat/completions") {
+        return Some(format!("{base}/models"));
+    }
+    // An override that is not a chat route still lists on the operator's own
+    // host — never the default host, which would receive their credential.
+    let url = reqwest::Url::parse(api_url).ok()?;
+    Some(format!(
+        "{}/openai/v1/models",
+        url.origin().ascii_serialization()
+    ))
 }
 
 /// One live listing row → a catalog Model.
@@ -124,7 +130,7 @@ fn modalities(raw: &Value, field: &str) -> Option<Vec<String>> {
         .filter_map(Value::as_str)
         .map(str::to_ascii_lowercase)
         .collect();
-    (!list.is_empty()).then_some(list)
+    Some(list)
 }
 
 /// Groq quotes prices per single token as strings; the catalog carries USD
@@ -210,7 +216,13 @@ pub async fn refresh_models(iii: &IIIClient, http: &reqwest::Client) -> Result<u
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or(DEFAULT_API_URL);
-    match fetch_live_models(http, &models_url(api_url), credential_parts(&credential)).await {
+    let Some(models_endpoint) = models_url(api_url) else {
+        // Underivable endpoint: fail this refresh and keep the previous slice.
+        return Err(upstream_unavailable(format!(
+            "cannot derive a models endpoint from api_url {api_url}"
+        )));
+    };
+    match fetch_live_models(http, &models_endpoint, credential_parts(&credential)).await {
         FetchOutcome::Ok(models) => {
             let count = models.len();
             router_client::reconcile(iii, models, token.as_deref()).await?;
@@ -249,21 +261,21 @@ mod tests {
     #[test]
     fn models_url_is_the_sibling_of_the_generation_endpoint() {
         assert_eq!(
-            models_url(DEFAULT_API_URL),
-            "https://api.groq.com/openai/v1/models"
+            models_url(DEFAULT_API_URL).as_deref(),
+            Some("https://api.groq.com/openai/v1/models")
         );
         assert_eq!(
-            models_url("https://api.groq.com/openai/v1/chat/completions/"),
-            "https://api.groq.com/openai/v1/models"
+            models_url("https://api.groq.com/openai/v1/chat/completions/").as_deref(),
+            Some("https://api.groq.com/openai/v1/models")
         );
         assert_eq!(
-            models_url("http://127.0.0.1:9999/v1/chat/completions"),
-            "http://127.0.0.1:9999/v1/models"
+            models_url("http://127.0.0.1:9999/v1/chat/completions").as_deref(),
+            Some("http://127.0.0.1:9999/v1/models")
         );
         // unrecognized shape falls back to the public endpoint
         assert_eq!(
-            models_url("https://proxy.example/custom"),
-            "https://api.groq.com/openai/v1/models"
+            models_url("https://proxy.example/custom").as_deref(),
+            Some("https://api.groq.com/openai/v1/models")
         );
     }
 

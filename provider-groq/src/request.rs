@@ -18,22 +18,26 @@ pub struct BodyArgs {
     /// own default applies.
     pub reasoning_effort: Option<&'static str>,
     pub response_format: Option<ResponseFormat>,
+    /// Catalog capability: whether this model supports Groq's strict
+    /// `json_schema` mode. Without it a schema falls back to `json_object`.
+    pub structured_output: bool,
 }
 
 /// `ResponseFormat { type: "json", schema? }` → Groq's `response_format`.
 ///
-/// A schema rides as `json_schema`, which Groq's OpenAI-compatible surface
-/// documents alongside `json_object` and plain text. Without one there is no
-/// schema to enforce, so the request asks only for valid JSON — and in that
-/// mode the caller must mention "json" in the prompt, which is their contract
-/// per spec § Model capabilities.
-pub fn build_response_format(rf: &ResponseFormat) -> Value {
+/// A schema rides as strict `json_schema` only on models whose catalog row
+/// declares structured-output support; elsewhere it falls back to
+/// `json_object` (the caller is warned in stream_fn). Without a schema the
+/// request asks only for valid JSON — and in that mode the caller must
+/// mention "json" in the prompt, which is their contract per spec § Model
+/// capabilities.
+pub fn build_response_format(rf: &ResponseFormat, structured_output: bool) -> Value {
     match &rf.schema {
-        Some(schema) => json!({
+        Some(schema) if structured_output => json!({
             "type": "json_schema",
             "json_schema": { "name": "response", "schema": schema, "strict": true },
         }),
-        None => json!({ "type": "json_object" }),
+        _ => json!({ "type": "json_object" }),
     }
 }
 
@@ -65,7 +69,7 @@ pub fn build_body(args: &BodyArgs) -> Value {
         body["reasoning_effort"] = json!(effort);
     }
     if let Some(rf) = &args.response_format {
-        body["response_format"] = build_response_format(rf);
+        body["response_format"] = build_response_format(rf, args.structured_output);
     }
     body
 }
@@ -95,6 +99,7 @@ mod tests {
             })],
             tools: vec![],
             reasoning_effort: None,
+            structured_output: false,
             response_format: None,
         }
     }
@@ -153,13 +158,18 @@ mod tests {
 
     #[test]
     fn a_schema_rides_as_json_schema_and_bare_json_asks_only_for_json() {
-        let with_schema = build_response_format(&ResponseFormat {
+        let rf = ResponseFormat {
             r#type: "json".into(),
             schema: Some(serde_json::json!({ "type": "object" })),
-        });
+        };
+        let with_schema = build_response_format(&rf, true);
         assert_eq!(with_schema["type"], "json_schema");
         assert_eq!(with_schema["json_schema"]["schema"]["type"], "object");
         assert_eq!(with_schema["json_schema"]["strict"], true);
+
+        // Without the catalog capability the same schema downgrades to
+        // json_object (stream_fn warns the caller).
+        assert_eq!(build_response_format(&rf, false)["type"], "json_object");
 
         let mut a = args();
         a.response_format = Some(ResponseFormat {

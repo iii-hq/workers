@@ -78,6 +78,15 @@ fn register_state_stub(iii: &IIIClient) {
     );
 }
 
+/// A real key exported on the host would leak into the in-process router's
+/// env-var fallback and defeat no-credential assertions. Cleared once for the
+/// whole process: tests run concurrently, and a mid-test `remove_var` would
+/// race another engine's credential resolution.
+fn clear_host_credential() {
+    static CLEAR: std::sync::Once = std::sync::Once::new();
+    CLEAR.call_once(|| std::env::remove_var("GROQ_API_KEY"));
+}
+
 fn engine_bin() -> Option<std::path::PathBuf> {
     if let Ok(p) = std::env::var("III_ENGINE_BIN") {
         return Some(p.into());
@@ -364,9 +373,7 @@ async fn refresh_and_wait(router_iii: &IIIClient, provider_iii: &IIIClient, expe
 
 #[tokio::test(flavor = "multi_thread")]
 async fn provider_registers_with_persisted_token_and_credential_gated_catalog() {
-    // A real key exported on the host would leak into the in-process router's
-    // env-var fallback and defeat the no-credential assertions below.
-    std::env::remove_var("GROQ_API_KEY");
+    clear_host_credential();
     let engine = engine_or_skip!();
     let (router_iii, provider_iii) = boot_stack(&engine.url).await;
 

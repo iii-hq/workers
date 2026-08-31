@@ -29,6 +29,14 @@ pub fn is_reasoning_model(model: &str, catalog_supports_thinking: Option<bool>) 
     id.contains("gpt-oss") || id.contains("qwen")
 }
 
+/// Whether the model takes the graded `low`/`medium`/`high` efforts. Groq
+/// documents the graded ladder for the GPT-OSS family; its hosted Qwen
+/// reasoners take only `none`/`default`, so a graded value is omitted there
+/// and the model's own default applies.
+pub fn supports_graded_effort(model: &str) -> bool {
+    model.to_ascii_lowercase().contains("gpt-oss")
+}
+
 /// The router's five levels onto Groq's four requestable efforts.
 ///
 /// `xhigh` has nowhere above `high` to go, so it saturates there rather than

@@ -3,7 +3,7 @@
 //! the router-owned channel, terminal done/error last, then close.
 use crate::config::config_from_resolve;
 use crate::errors::classify_bus_error;
-use crate::reasoning::{is_reasoning_model, reasoning_effort_for};
+use crate::reasoning::{is_reasoning_model, reasoning_effort_for, supports_graded_effort};
 use crate::request::{build_body, build_headers, BodyArgs};
 use crate::sse::synthetic_error_event;
 use crate::upstream::{spawn_upstream, UpstreamArgs};
@@ -108,17 +108,22 @@ async fn run_stream_call(
         Some(m) => Some(m),
         None => router_client::models_get(iii, &model).await,
     };
-    // Report-and-continue: Groq has no strict json_schema mode, so a
-    // schema rides as unvalidated json_object output.
-    if input
-        .response_format
+    // A schema is enforced only where the model supports Groq's strict
+    // json_schema mode; elsewhere the request falls back to json_object and
+    // says so — report-and-continue either way.
+    let structured_output = model_meta
         .as_ref()
-        .is_some_and(|rf| rf.schema.is_some())
+        .and_then(|m| m.supports_structured_output)
+        .unwrap_or(false);
+    if !structured_output
+        && input
+            .response_format
+            .as_ref()
+            .is_some_and(|rf| rf.schema.is_some())
     {
-        warnings.push(
-            "response_format schema unsupported: Groq runs json_object mode without schema validation"
-                .to_string(),
-        );
+        warnings.push(format!(
+            "response_format schema not enforced: {model} runs json_object mode without schema validation"
+        ));
     }
     // Report-and-continue: the wire layer degrades images to a text marker
     // rather than 400-ing the turn on an API that takes text only.
@@ -136,9 +141,16 @@ async fn run_stream_call(
             "thinking_level ignored: {model} is not a reasoning model"
         ));
     }
-    let reasoning_effort = if reasoning {
+    let reasoning_effort = if reasoning && supports_graded_effort(&model) {
         reasoning_effort_for(input.thinking_level)
     } else {
+        if reasoning && input.thinking_level.is_some() {
+            // Report-and-continue: the model reasons, but takes no graded
+            // effort value — its own default applies.
+            warnings.push(format!(
+                "thinking_level ignored: {model} takes no graded reasoning_effort"
+            ));
+        }
         None
     };
 
@@ -150,6 +162,7 @@ async fn run_stream_call(
         tools: input.tools.unwrap_or_default(),
         reasoning_effort,
         response_format: input.response_format,
+        structured_output,
     });
     let headers = build_headers(&cfg);
 

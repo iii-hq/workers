@@ -41,14 +41,24 @@ pub fn spawn_upstream(
     rx
 }
 
-/// Last `data: ` payload in an SSE block, if any. Blocks that carry only
-/// comments — Groq emits `: keep-alive` while an overloaded scheduler
-/// makes the request wait — have none and decode to zero events.
-fn data_line(block: &str) -> Option<&str> {
-    block
+/// Every `data:` payload in an SSE block, newline-joined — the SSE spec
+/// concatenates multiple data fields and allows the prefix with or without
+/// one leading space. Blocks that carry only comments — Groq emits
+/// `: keep-alive` while an overloaded scheduler makes the request wait —
+/// have none and decode to zero events.
+fn data_line(block: &str) -> Option<String> {
+    let parts: Vec<&str> = block
         .lines()
-        .filter_map(|l| l.strip_prefix("data: "))
-        .next_back()
+        .filter_map(|l| {
+            l.strip_prefix("data:")
+                .map(|rest| rest.strip_prefix(' ').unwrap_or(rest))
+        })
+        .collect();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n"))
+    }
 }
 
 async fn run_upstream(
@@ -113,6 +123,7 @@ async fn run_upstream(
             let Some(data) = data_line(data_block) else {
                 return vec![];
             };
+            let data = data.as_str();
             if data == "[DONE]" {
                 return vec![
                     AssistantMessageEvent::Stop {
