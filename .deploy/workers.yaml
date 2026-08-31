@@ -854,6 +854,33 @@ workers:
       binary: image-resize
       targets: *id001
     publish: true
+  kanban:
+    source:
+      path: kanban
+      package_manifest: package.json
+    artifact:
+      kind: javascript-bundle
+      workspace_root: kanban
+      runtime:
+        name: node
+        version: 22.20.0
+      package_manager:
+        name: pnpm
+        version: 11.13.1
+      lockfile: pnpm-lock.yaml
+      install_command:
+      - pnpm
+      - install
+      - --ignore-workspace
+      - --frozen-lockfile
+      build_command:
+      - pnpm
+      - run
+      - build:bundle
+      include:
+      - dist/bundle/index.mjs
+      - iii.worker.yaml
+    publish: true
   llm-router:
     source:
       path: llm-router
