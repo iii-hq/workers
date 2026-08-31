@@ -5,7 +5,7 @@
 **A thin, durable turn loop that turns a model plus a few iii workers into an agent.**
 
 <p>
-  <a href="#install"><img alt="Install: iii worker add harness" src="https://img.shields.io/badge/install-iii%20worker%20add%20harness-0a84ff?style=flat-square"></a>
+  <a href="#install"><img alt="Install: iii trigger compose::add worker=harness" src="https://img.shields.io/badge/install-iii%20trigger%20compose%3A%3Aadd%20worker%3Dharness-0a84ff?style=flat-square"></a>
   <a href="../LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg?style=flat-square"></a>
   <a href="https://www.rust-lang.org"><img alt="Built with Rust" src="https://img.shields.io/badge/built%20with-rust-orange?style=flat-square&logo=rust&logoColor=white"></a>
   <a href="https://workers.iii.dev/workers/harness"><img alt="harness on the workers registry" src="https://workers.iii.dev/workers/harness/badge.svg"></a>
@@ -33,14 +33,13 @@ curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 export ANTHROPIC_API_KEY='<your-anthropic-api-key>'
 export OPENAI_API_KEY='<your-openai-api-key>'
 iii project init iii-app && cd iii-app
-iii
+iii compose --up
 ```
 
 ```bash
-# New terminal, same folder. `iii worker add` targets the running engine's
-# config.yaml, so it has to match the directory the engine runs in.
+# New terminal, same folder. `compose::add` updates this Compose project.
 cd iii-app
-iii worker add harness console
+iii trigger compose::add worker=harness worker=console
 ```
 
 ```bash
@@ -54,7 +53,7 @@ providers read `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` from the engine
 environment, so credentials do not need to be pasted into or stored by the
 Console.
 
-`iii worker add harness` installs every worker the loop needs (see the badges
+`iii trigger compose::add worker=harness` installs every worker the loop needs (see the badges
 above); you do not add them one by one. During bootstrap, the harness asks the
 `queue` worker to define a dedicated `harness-turn` queue before it reports
 ready. That queue is FIFO within each `session_id` and processes separate
@@ -204,11 +203,17 @@ operating-mode paragraph — resend the prompt fields to re-resolve.
 `options.agent` on a session-creating `harness::send` names a directory agent
 profile (`directory::agents::*`, one markdown file per profile). The harness
 resolves it ONCE via `directory::agents::get` and freezes the result onto the
-turn: `"You are <name>."` plus the file body becomes the enrich system prompt
-over the top-level identity, the profile's skill filter becomes the session's
-skill selection (an explicit `options.skills` wins), its `model` and optional
-provider-native `reasoning_effort` are authoritative for the session, and —
-when the send also omits
+turn: the profile's RESOLVED system prompt — the directory composes `extends`
+chains root-first, so `tech-lead` extending the bundled `iii` base arrives as
+the full iii doctrine followed by the tech-lead body — IS the session
+identity. Nothing built-in sits underneath it and no prefix is added; only the
+per-send `mode` paragraph goes in front, then the usual per-step runtime
+context (session id, working directory, policy aid, skills index, hook
+injections). A profile whose `extends` chain does not resolve is refused as an
+invalid request with the directory's D415 text. The profile's skill filter
+becomes the session's skill selection (an explicit `options.skills` wins), its
+`model` and optional provider-native `reasoning_effort` are authoritative for
+the session, and — when the send also omits
 `options.functions` — the dispatch policy defaults to the configured
 `default_functions` baseline instead of deny-all (an identity picked to DO
 something must be able to dispatch; the ask-mode cap still applies). The
@@ -219,8 +224,8 @@ inherit it, an explicit prompt field sheds it. Refused on an existing
 session or combined with either prompt field. Directory edits after
 resolution never reach a live session — start a new one to pick them up.
 
-`harness::spawn` takes the same id as a top-level `agent` field: the profile
-body enriches the sub-agent identity, its skills/model/effort slot in the same way
+`harness::spawn` takes the same id as a top-level `agent` field: the profile's
+resolved prompt is the child's whole identity, its skills/model/effort slot in the same way
 (model precedence profile → explicit `model` → parent, without dragging the parent's
 provider onto a foreign model), and its name and icon become the display
 defaults. Which agent profile a spawn names is the prompt's decision — the profile

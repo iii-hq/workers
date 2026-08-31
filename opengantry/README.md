@@ -73,7 +73,7 @@ These are the rules the code is written to. A missing `.gitagent` does not unloc
 ## Install
 
 ```bash
-iii worker add opengantry
+iii trigger compose::add worker=opengantry
 ```
 
 ## Skills
@@ -196,7 +196,7 @@ Subscribe a sibling function (audit log, Slack notifier, console inbox) via `reg
 From zero to a fail-closed land on the governed port:
 
 ```bash
-iii worker add opengantry approval-gate worktree shell
+iii trigger compose::add worker=opengantry worker=approval-gate worker=worktree worker=shell
 iii   # starts the engine + workers
 ```
 
@@ -239,7 +239,7 @@ Without a verdict token from `gantry::verify`, middleware throws `GantryDenied` 
 
 Initialize OpenGantry in the repo you want governed (`gantry init`), run `gantry::verify` for the active mission, then retry the land call with the verdict token in `context` or `payload`.
 
-A sandboxed `iii worker add` worker only mounts its own folder. `gantry::verify` against a host repo needs a host-started worker that can see that absolute path.
+A sandboxed Compose worker only mounts its own folder. `gantry::verify` against a host repo needs a host-started worker that can see that absolute path.
 
 ## Configuration
 

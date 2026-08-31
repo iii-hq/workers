@@ -17,11 +17,13 @@ jobs:
     name: .github/scripts tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.11'
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 24
           package-manager-cache: false
@@ -38,9 +40,47 @@ jobs:
           tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
           /tmp/actionlint -color
 
+  release-contract-drift:
+    name: Release Control contract drift
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Validate immutable Release Control contract pin
+        id: release-contract
+        run: python3 .github/scripts/deployment_contract_pin.py --github-output "$GITHUB_OUTPUT"
+      - name: Mint read-only cross-repository token
+        id: release-contract-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.III_CI_APP_ID }}
+          private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+          owner: iii-hq
+          repositories: release-control
+      - name: Checkout pinned Release Control contract
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          repository: ${{ steps.release-contract.outputs.repository }}
+          ref: ${{ steps.release-contract.outputs.commit }}
+          token: ${{ steps.release-contract-token.outputs.token }}
+          path: release-control-contract
+          sparse-checkout: ${{ steps.release-contract.outputs.path }}
+      - name: Compare canonical Release Control schema bytes
+        env:
+          CONTRACT_PATH: ${{ steps.release-contract.outputs.path }}
+          EXPECTED_SHA256: ${{ steps.release-contract.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          cmp .github/contracts/deployment-execution.schema.json "release-control-contract/$CONTRACT_PATH"
+          echo "$EXPECTED_SHA256  .github/contracts/deployment-execution.schema.json" | sha256sum --check
+
   # ──────────────────────────────────────────────────────────────
-  # Discover: enumerate changed workers, read their iii.worker.yaml,
-  # bucket them per language for the matrix jobs below.
+  # Discover: enumerate changed catalog workers and bucket their artifact
+  # kinds for the matrix jobs below.
   # ──────────────────────────────────────────────────────────────
   discover:
     name: Discover changed workers
@@ -57,8 +97,9 @@ jobs:
       provider_contract: ${{ steps.bucket.outputs.provider_contract }}
       any: ${{ steps.bucket.outputs.any }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Compute base ref
@@ -88,7 +129,7 @@ jobs:
           python3 .github/scripts/discover_changed_workers.py --base "$BASE"
 
   # ──────────────────────────────────────────────────────────────
-  # PR gates: readme present, manifest version > main, iii.worker.yaml valid.
+  # PR gates: README present, package version monotonic, catalog entry valid.
   # Runs once per changed worker.
   # ──────────────────────────────────────────────────────────────
   pr-checks:
@@ -101,8 +142,9 @@ jobs:
       matrix:
         worker: ${{ fromJSON(needs.discover.outputs.changed_workers) }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Fetch base
@@ -139,16 +181,18 @@ jobs:
       run:
         working-directory: ${{ matrix.worker }}
     steps:
-      - uses: actions/checkout@v5
-
-      - name: Rewrite SSH to HTTPS for public deps
-        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
-
-      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          persist-credentials: false
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --local url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: 1.97.1
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           shared-key: worker-${{ matrix.worker }}
           # PRs restore the trusted default-branch cache but never publish a
@@ -194,13 +238,12 @@ jobs:
 
       - name: Setup pnpm (bundled frontends)
         if: steps.frontends.outputs.found == 'true'
-        uses: pnpm/action-setup@v5
-        # version comes from the repo-root package.json `packageManager`
-        # field (the UI pnpm workspace root).
+        # Version comes from the repo-root package.json packageManager field.
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
 
       - name: Setup Node (bundled frontends)
         if: steps.frontends.outputs.found == 'true'
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
           cache: 'pnpm'
@@ -263,16 +306,18 @@ jobs:
       run:
         working-directory: crates/${{ matrix.crate }}
     steps:
-      - uses: actions/checkout@v5
-
-      - name: Rewrite SSH to HTTPS for public deps
-        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
-
-      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          persist-credentials: false
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --local url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: 1.97.1
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           save-if: ${{ github.event_name == 'push' }}
           workspaces: crates/${{ matrix.crate }} -> target
@@ -282,11 +327,10 @@ jobs:
       # Cargo reaches provider-openai-codex/build.rs.
       - name: Setup pnpm (provider testkit UI)
         if: matrix.crate == 'provider-integration-testkit'
-        uses: pnpm/action-setup@v5
-
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
       - name: Setup Node (provider testkit UI)
         if: matrix.crate == 'provider-integration-testkit'
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
           cache: pnpm
@@ -320,14 +364,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
-
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
       - name: Rewrite SSH to HTTPS for public deps
-        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+        run: git config --local url."https://github.com/".insteadOf "ssh://git@github.com/"
 
-      - uses: dtolnay/rust-toolchain@1.97.1
-
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           shared-key: llm-router-integration
           save-if: false
@@ -336,10 +382,9 @@ jobs:
             state -> target
 
       - name: Setup pnpm (state UI)
-        uses: pnpm/action-setup@v5
-
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
       - name: Setup Node (state UI)
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
           cache: pnpm
@@ -405,14 +450,16 @@ jobs:
       matrix:
         provider: ${{ fromJSON(needs.discover.outputs.provider_contract) }}
     steps:
-      - uses: actions/checkout@v5
-
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
       - name: Rewrite SSH to HTTPS for public deps
-        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+        run: git config --local url."https://github.com/".insteadOf "ssh://git@github.com/"
 
-      - uses: dtolnay/rust-toolchain@1.97.1
-
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           shared-key: provider-contract-${{ matrix.provider }}
           save-if: false
@@ -423,10 +470,9 @@ jobs:
       # The state worker always embeds its UI. provider-openai-codex also
       # embeds a UI, so build that bundle when its contract is selected.
       - name: Setup pnpm (bundled UIs)
-        uses: pnpm/action-setup@v5
-
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
       - name: Setup Node (bundled UIs)
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
           cache: pnpm
@@ -491,7 +537,7 @@ jobs:
 
       - name: Upload sanitized contract evidence
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: provider-contract-${{ matrix.provider }}
           path: target/provider-contract/${{ matrix.provider }}/
@@ -545,9 +591,10 @@ jobs:
       matrix:
         worker: ${{ fromJSON(needs.discover.outputs.rust) }}
     steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.11'
 
@@ -555,29 +602,31 @@ jobs:
 
       # Some workers can't be interface-smoked: stdio servers (e.g. iii-lsp)
       # exit on stdin EOF while backgrounded, and pure discovery consumers
-      # register no interface to collect. They opt out with
-      # `interface_smoke: false` in iii.worker.yaml; every downstream step is
-      # gated on this so the rest of the matrix is unaffected.
+      # register no interface to collect. Their catalog validation is
+      # `interface: skipped`; every downstream step is gated on this so the
+      # rest of the matrix is unaffected.
       - name: Check interface-smoke opt-out
         id: optout
         env:
           WORKER: ${{ matrix.worker }}
         run: |
           set -euo pipefail
-          skip=$(WORKER="$WORKER" python3 -c 'import os, sys, pathlib; sys.path.insert(0, ".github/scripts"); import _lib; m = _lib.read_iii_worker_yaml(pathlib.Path(os.environ["WORKER"])); print("true" if m.raw.get("interface_smoke") is False else "false")')
+          skip=$(WORKER="$WORKER" python3 -c 'import os, sys; sys.path.insert(0, ".github/scripts"); import _lib; m = _lib.read_worker(os.environ["WORKER"]); print("true" if m.validation.get("interface") == "skipped" else "false")')
           echo "skip=$skip" >> "$GITHUB_OUTPUT"
           if [[ "$skip" == "true" ]]; then
-            echo "::notice::$WORKER opts out of interface boot smoke (interface_smoke: false in iii.worker.yaml)"
+            echo "::notice::$WORKER opts out of the PR interface boot smoke (iii.worker.yaml interface_smoke: false)"
           fi
 
       - name: Rewrite SSH to HTTPS for public deps
         if: steps.optout.outputs.skip != 'true'
-        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+        run: git config --local url."https://github.com/".insteadOf "ssh://git@github.com/"
 
-      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         if: steps.optout.outputs.skip != 'true'
+        with:
+          toolchain: 1.97.1
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         if: steps.optout.outputs.skip != 'true'
         with:
           shared-key: worker-${{ matrix.worker }}
@@ -590,13 +639,12 @@ jobs:
       # embeds the llm-router UI transitively, so it needs that UI prepared too.
       - name: Setup pnpm (workers with bundled web/)
         if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go'
-        uses: pnpm/action-setup@v5
-        # version comes from the repo-root package.json `packageManager`
-        # field (the UI pnpm workspace root).
+        # Version comes from the repo-root package.json packageManager field.
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
 
       - name: Setup Node (workers with bundled web/)
         if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go'
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
           cache: 'pnpm'
@@ -618,7 +666,7 @@ jobs:
           fi
 
       # Build with default features so we boot the same artifact that ships
-      # in the GitHub Release (`_rust-binary.yml` builds default features).
+      # in the GitHub Release (the release build uses default features).
       - name: Build worker binary
         if: steps.optout.outputs.skip != 'true'
         working-directory: ${{ matrix.worker }}
@@ -682,9 +730,8 @@ jobs:
           WORKER: ${{ matrix.worker }}
         run: |
           set -euo pipefail
-          # Resolve the cargo bin name the same way the publish flow does
-          # (iii.worker.yaml `bin:`, falling back to the worker name).
-          bin=$(WORKER="$WORKER" python3 -c 'import os, sys, pathlib; sys.path.insert(0, ".github/scripts"); import _lib; m = _lib.read_iii_worker_yaml(pathlib.Path(os.environ["WORKER"])); print(m.bin or m.name)')
+          # Resolve the cargo binary from the canonical catalog.
+          bin=$(WORKER="$WORKER" python3 -c 'import os, sys; sys.path.insert(0, ".github/scripts"); import _lib; m = _lib.read_worker(os.environ["WORKER"]); print(m.binary or m.catalog_id)')
 
           worker_log="worker-$WORKER.log"
           # Interface collection only needs the worker to connect and register
@@ -694,7 +741,7 @@ jobs:
           # sidecar that isn't available here, crashing startup with
           # LOCAL_BACKEND_BIN_NOT_FOUND; config.collect.yaml gives it a
           # sidecar-free config instead. Kept in lockstep with
-          # _publish-registry.yml so this smoke check mirrors the publish boot.
+          # the release registry workflow so this smoke mirrors publication.
           collect_args=()
           if [[ -f "$WORKER/config.collect.yaml" ]]; then
             echo "Using interface-collection config: $WORKER/config.collect.yaml"
@@ -784,14 +831,15 @@ jobs:
       matrix:
         worker: ${{ fromJSON(needs.discover.outputs.node) }}
     steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           # setup-node v5 auto-caches when package.json declares packageManager.
           # This step never cached; the repository is already over its cache budget.
-          package-manager-cache: false
           node-version: 22
+          package-manager-cache: false
 
       - name: Install dependencies
         working-directory: ${{ matrix.worker }}
@@ -823,9 +871,10 @@ jobs:
       matrix:
         worker: ${{ fromJSON(needs.discover.outputs.python) }}
     steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.11"
 

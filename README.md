@@ -5,8 +5,8 @@ directory is a self-contained worker module: a process that connects to the
 engine over WebSocket, registers functions + triggers, and does something
 useful.
 
-Workers are installed via `iii worker add <name>`, which resolves the matching
-asset for the host from the workers registry API.
+Workers are installed via `iii trigger compose::add worker=<name>`, which
+resolves the matching asset for the host from the workers registry API.
 
 ## Skills
 
@@ -59,6 +59,7 @@ npx skills add iii-hq/iii --all
 | [`editor`](editor/) | Rust | A shared code workspace — open buffers, file tree, unified diffs, fuzzy find and conflict-safe saves, held in `state` so an agent and a person see one editor. Files and git go through `shell`; ships a console editor page. |
 | [`vscode`](vscode/) | Node | VS Code as an iii worker — `vscode::*` runs the VS Code Server through the `code` CLI per workspace, and a Console page embeds the Workbench for the working directory. |
 | [`compose-ui`](compose-ui/) | Node | The compose daemon in the Console — a **Compose** page over `compose::*` with live container state, lifecycle actions, worker packages, and per-container log tails, plus a `compose-ui::changed` trigger type for supervisor changes. |
+| [`kanban`](kanban/) | Node | Repository-aware multi-worker Kanban runs — launch Harness and external worker tasks under one root session, isolate them in managed Git worktrees, gate dependencies, review results, and land approved branches from the Console. |
 | [`iii-directory`](iii-directory/) | Rust | Engine introspection, workers-registry proxy, filesystem-backed skills, system prompts, and agent profiles, plus one-shot lexical function search — `directory::search_functions` returns compact candidates for the relevant functions (BM25 + coverage pruning, installed + installable-from-registry) and directs callers to batch selected ids through `engine::functions::info`; its search hint is injected at most once per turn. |
 | [`lsp`](lsp/) | Rust | Language Server for iii function ids, trigger configs, and worker discovery. Autocomplete / hover across JS/TS, Python, Rust. |
 | [`lsp-vscode`](lsp-vscode/) | Node | VS Code extension package `iii-lsp`, embedding the `lsp` server. |
@@ -128,18 +129,11 @@ and the local Harness stack with `worker-compose.yaml`.
 
 ## Binary releases
 
-Rust workers ship as standalone binaries — see the modules table above —
-and are released via GitHub Actions:
-
-1. Trigger the **Create Tag** workflow (Actions tab) — pick a worker, bump
-   type (`patch`/`minor`/`major`), and a registry tag (`latest` / `next`).
-2. A tag of the form `<worker>/v<X.Y.Z>` is pushed to `main`, with the
-   registry tag embedded in the tag's annotated message.
-3. The unified **Release** workflow fires on the tag, cross-compiles
-   binaries for up to 9 targets (Linux gnu/musl, macOS x86_64 + aarch64,
-   Windows x86_64/i686/aarch64, armv7), uploads them to a GitHub Release
-   with SHA-256 checksums, and calls `POST /publish` on the workers
-   registry API.
+Rust workers ship as standalone binaries. Release Control is the only
+supported interface for starting, retrying, reconciling, or canceling a
+deployment. GitHub Actions only executes its authenticated steps.
+See [`docs/sops/release.md`](docs/sops/release.md) for the sequence and recovery
+rules.
 
 Targets per build (Windows targets are skipped on POSIX-only workers such
 as `shell`):
@@ -161,35 +155,37 @@ armv7-unknown-linux-gnueabihf
 Workers are discovered through the workers registry API at
 `https://api.workers.iii.dev`. Each release publishes a manifest entry
 declaring the worker kind (`binary` / container image), supported targets,
-download URLs, and the worker's collected function + trigger interface.
-`iii worker add <name>` queries this API to locate the right asset for the
-host.
+download URLs, and immutable package metadata.
+`iii trigger compose::add worker=<name>` queries this API to locate the right
+asset for the host.
 
 ## Add a new worker
 
 Start with [`docs/sops/new-worker.md`](docs/sops/new-worker.md) — the
 cross-cutting checklist (naming, required files, CI gates, release wiring).
-For the inside of a Rust `deploy: binary` worker, continue with
+For the inside of a Rust `artifact.kind: rust-binary` worker, continue with
 [`docs/sops/binary-worker.md`](docs/sops/binary-worker.md). Each worker ships
 a consumer `README.md` per the [`worker-readme.md`](worker-readme.md)
-contract (install via `iii worker add`, quickstart, configuration).
+contract (install via `iii trigger compose::add worker=<name>`, quickstart,
+configuration).
 [`docs/README.md`](docs/README.md) indexes all shared docs.
 
 ## CI
 
 Pull requests trigger per-worker lint + tests for the changed worker(s).
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) discovers changes by
-reading each worker's `iii.worker.yaml`, then routes:
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) discovers changes from
+the private [`.deploy/workers.yaml`](.deploy/workers.yaml) build catalog,
+then routes:
 
 - Rust → `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test --all-features`
 - Node → `biome ci` against [`biome.json`](biome.json) and `npm test`
 - Python → `ruff check` + `ruff format --check` against [`ruff.toml`](ruff.toml) and `pytest`
 
 The `pr-checks` job additionally enforces, per changed worker: `README.md`
-present, `iii.worker.yaml` valid, `tests/` non-empty, and the manifest
-version is greater than the version on the PR's base branch. It also requires
-a non-empty `tags:` list on every publishable worker for registry discovery
-(workers with `interface_smoke: false` are exempt) — see the
+present, the private build entry and public `iii.worker.yaml` valid,
+`tests/` non-empty, and the package version not behind the PR base. It also
+requires non-empty public discovery tags on workers whose public
+`interface_smoke` PR check is enabled — see the
 [Discovery tags step](docs/sops/new-worker.md#discovery-tags-required).
 
 Full reference (discovery buckets, interface boot smoke, e2e workflows):
@@ -197,21 +193,25 @@ Full reference (discovery buckets, interface boot smoke, e2e workflows):
 
 ## CD
 
-Releases are cut manually via the **Create Tag** workflow
-([`.github/workflows/create-tag.yml`](.github/workflows/create-tag.yml)) —
-pick a worker, a bump type, and a registry tag (`latest` / `next`). The
-resulting `<worker>/v<X.Y.Z>` tag drives a single dispatcher
-([`.github/workflows/release.yml`](.github/workflows/release.yml)) that:
+Release Control is the only supported release interface. For each source SHA,
+[`deploy-descriptor-index.yml`](.github/workflows/deploy-descriptor-index.yml)
+uses the repository-owned compiler to join `.deploy/workers.yaml`, the public
+manifest, and the package manifest exactly once. Release
+Control selects those immutable bytes and dispatches the bounded phases:
 
-1. Routes on `deploy` from `iii.worker.yaml`:
-   - `binary` → cross-compile via
-     [`_rust-binary.yml`](.github/workflows/_rust-binary.yml).
-   - `image` → multi-arch image to `ghcr.io/<owner>/<worker>` via
-     [`_container.yml`](.github/workflows/_container.yml).
-   - `bundle` → single-file archive via
-     [`_bundle.yml`](.github/workflows/_bundle.yml).
-2. Calls `POST /publish` against the workers registry API via
-   [`_publish-registry.yml`](.github/workflows/_publish-registry.yml).
+1. [`deploy-prepare.yml`](.github/workflows/deploy-prepare.yml) validates the
+   selected descriptor and source, then builds one
+   independent job per build unit through
+   [`_deploy-build.yml`](.github/workflows/_deploy-build.yml).
+2. [`deploy-publish.yml`](.github/workflows/deploy-publish.yml) publishes the
+   exact immutable target and CASes the requested `@next` or `@latest` channel,
+   including a digest-pinned OCI image and alias when applicable.
+3. [`deploy-verify.yml`](.github/workflows/deploy-verify.yml) verifies the
+   selected channel and all public surfaces.
+
+Every phase uploads `deployment-result.json` and posts the same bytes to Release
+Control. The target version is selected independently from package-manifest
+metadata; no phase rebuilds or rereads the catalog after prepare.
 
 Step-by-step (variants, troubleshooting, rollback):
 [`docs/sops/release.md`](docs/sops/release.md).

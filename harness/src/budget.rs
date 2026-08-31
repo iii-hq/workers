@@ -203,12 +203,36 @@ pub async fn prepare_root(
         return Ok(());
     }
 
+    // A cost budget fails closed at every reservation (`reserve`); refuse
+    // the send here instead of accepting it and failing the turn at step 0.
+    if options.max_cost_usd.is_some() {
+        let model = deps
+            .router()
+            .await
+            .models_get(options.provider.as_deref(), &options.model)
+            .await;
+        if model.and_then(|model| model.pricing).is_none() {
+            return Err(HarnessError::InvalidRequest(pricing_unavailable(
+                &options.model,
+            )));
+        }
+    }
+
     options.budget_root_session_id = Some(session_id.to_string());
     let _guard = deps.locks.guard(&budget_lock_key(session_id)).await;
     match load_state(deps, session_id).await? {
         Some(state) => state.verify_limits(options),
         None => save_state(deps, &BudgetState::new(session_id, options)?).await,
     }
+}
+
+/// Shared by `prepare_root` (send-time refusal) and `reserve` (per-step
+/// fail-closed check).
+fn pricing_unavailable(model: &str) -> String {
+    format!(
+        "cannot enforce max_cost_usd for model {model} because no pricing is configured in \
+         the model catalog; configure input/output pricing or remove max_cost_usd"
+    )
 }
 
 /// Reserve one generation's maximum possible charge. Cost budgets fail closed
@@ -231,11 +255,7 @@ pub async fn reserve(
             .await;
         let Some(pricing) = model.and_then(|model| model.pricing) else {
             return Ok(ReserveOutcome::Rejected(BudgetRejection::Unavailable(
-                format!(
-                    "cannot enforce max_cost_usd for model {} because no pricing is configured in \
-                     the model catalog; configure input/output pricing or remove max_cost_usd",
-                    record.options.model
-                ),
+                pricing_unavailable(&record.options.model),
             )));
         };
         match maximum_cost_microusd(input_tokens, output_tokens, &pricing) {

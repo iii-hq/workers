@@ -10,6 +10,7 @@ import yaml
 GITHUB = Path(__file__).parents[2]
 REPOSITORY = GITHUB.parent
 WORKFLOWS = GITHUB / "workflows"
+RUST_CACHE_ACTION = "Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6"
 
 
 def workflow(name: str) -> dict:
@@ -29,7 +30,23 @@ def test_rust_toolchain_is_pinned_to_the_last_verified_stable() -> None:
     bodies = "\n".join(path.read_text() for path in WORKFLOWS.glob("*.yml"))
     workflow_toolchains = re.findall(r"dtolnay/rust-toolchain@([^\s]+)", bodies)
     assert workflow_toolchains
-    assert set(workflow_toolchains) == {"1.97.1"}
+    assert set(workflow_toolchains) == {"6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772"}
+    assert "toolchain: 1.97.1" in bodies
+    assert "toolchain: ${{ steps.metadata.outputs.toolchain_version }}" in (
+        WORKFLOWS / "_deploy-build.yml"
+    ).read_text()
+
+
+def test_all_external_actions_are_pinned_by_commit_sha() -> None:
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        for line_number, line in enumerate(path.read_text().splitlines(), start=1):
+            match = re.search(r"\buses:\s*([^\s#]+)", line)
+            if not match or match.group(1).startswith("./"):
+                continue
+            reference = match.group(1)
+            assert re.fullmatch(r"[^@]+@[0-9a-f]{40}", reference), (
+                f"{path.name}:{line_number}: mutable action reference {reference}"
+            )
 
 
 def test_prs_restore_rust_caches_and_main_pushes_publish_them() -> None:
@@ -38,11 +55,11 @@ def test_prs_restore_rust_caches_and_main_pushes_publish_them() -> None:
 
     rust_cache = next(
         step for step in ci["jobs"]["rust"]["steps"]
-        if step.get("uses") == "Swatinem/rust-cache@v2"
+        if step.get("uses") == RUST_CACHE_ACTION
     )
     crate_cache = next(
         step for step in ci["jobs"]["crates"]["steps"]
-        if step.get("uses") == "Swatinem/rust-cache@v2"
+        if step.get("uses") == RUST_CACHE_ACTION
     )
     expected = "${{ github.event_name == 'push' }}"
     assert rust_cache["with"]["save-if"] == expected
@@ -60,7 +77,13 @@ def test_actionlint_knows_the_repository_runner_pool_labels() -> None:
     config = yaml.load(
         (GITHUB / "actionlint.yaml").read_text(), Loader=yaml.BaseLoader
     )
-    assert config["self-hosted-runner"]["labels"] == ["general", "rust"]
+    assert config["self-hosted-runner"]["labels"] == [
+        "general",
+        "rust",
+        "workers-release-linux-8core",
+        "workers-release-macos-12core",
+        "workers-release-macos-arm-5core",
+    ]
 
 
 def test_interface_smoke_bounds_each_engine_readiness_probe() -> None:
@@ -100,10 +123,10 @@ def test_slow_rust_builds_upload_cargo_timing_reports() -> None:
     assert timing_upload["if"] == "always()"
     assert "cargo-timings/*.html" in timing_upload["with"]["path"]
 
-    e2e = workflow("_harness-e2e.yml")
+    e2e = workflow("_worker-e2e.yml")
     e2e_steps = e2e["jobs"]["build"]["steps"]
     e2e_cache = next(
-        step for step in e2e_steps if step.get("uses") == "Swatinem/rust-cache@v2"
+        step for step in e2e_steps if str(step.get("uses", "")).startswith("Swatinem/rust-cache@")
     )
     timing_upload = named_step(e2e_steps, "Upload Rust build timings")
     assert timing_upload["if"] == "always()"
@@ -114,15 +137,15 @@ def test_slow_rust_builds_upload_cargo_timing_reports() -> None:
 def test_ci_cargo_commands_use_committed_lockfiles() -> None:
     ci_body = (WORKFLOWS / "ci.yml").read_text()
     integration_body = (WORKFLOWS / "_harness-integration.yml").read_text()
-    release = workflow("_rust-binary.yml")
+    release = workflow("_deploy-build.yml")
     release_steps = release["jobs"]["build"]["steps"]
-    upload = named_step(release_steps, "Build and upload binary")
+    build = named_step(release_steps, "Build immutable artifact")
 
     assert "cargo clippy --locked --all-targets --all-features" in ci_body
     assert "cargo test --locked --all-features" in ci_body
     assert "cargo build --locked" in ci_body
     assert "cargo test --locked --manifest-path harness/Cargo.toml" in integration_body
-    assert upload["with"]["locked"] == "true"
+    assert "deployment_train.py build" in build["run"]
 
 
 def test_rust_security_audit_is_narrow_on_prs_and_complete_on_schedule() -> None:
@@ -134,7 +157,9 @@ def test_rust_security_audit_is_narrow_on_prs_and_complete_on_schedule() -> None
     steps = audit["jobs"]["audit"]["steps"]
     install = named_step(steps, "Install cargo-audit")
     run = named_step(steps, "Audit Rust lockfiles")["run"]
-    assert install["uses"] == "taiki-e/install-action@v2.85.13"
+    assert install["uses"] == (
+        "taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1"
+    )
     assert install["with"]["tool"] == "cargo-audit@0.22.2"
     assert "git diff --name-only -z" in run
     assert "find . -name Cargo.lock" in run

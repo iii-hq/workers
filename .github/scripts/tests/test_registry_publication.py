@@ -346,21 +346,93 @@ def test_channel_cas_is_last_state_change_and_uses_raw_pointer_readback(monkeypa
     assert calls[1][1].endswith("/w/smoke/versions")
 
 
-def test_legacy_blank_precondition_snapshots_once_then_uses_cas(monkeypatch) -> None:
-    reads = 0
+def test_blank_channel_precondition_is_rejected_instead_of_snapshotted() -> None:
+    with pytest.raises(RegistryPublicationError, match="expected_current_version is required"):
+        registry_publication.assign_channel(API, KEY, WORKER, VERSION, "latest", "")
 
-    def request(method, _url, body=None, **_kwargs):
-        nonlocal reads
-        if method == "GET":
-            reads += 1
-            return 200, versions_response("latest", "1.2.2" if reads == 1 else VERSION)
-        assert body == {"version": VERSION, "expected_current_version": "1.2.2"}
-        return 200, {"tag": {"version": VERSION}, "changed": True}
 
-    monkeypatch.setattr(registry_publication, "request_json", request)
-    result = registry_publication.assign_channel(API, KEY, WORKER, VERSION, "latest", "")
-    assert result["expected_previous"] == "1.2.2"
-    assert reads == 2
+def test_latest_advances_next_when_target_is_ahead(monkeypatch) -> None:
+    monkeypatch.setattr(
+        registry_publication,
+        "read_channel",
+        lambda *_args, **_kwargs: registry_publication.Readback("equivalent", "1.2.2"),
+    )
+    captured = {}
+
+    def assign(_api, _key, _worker, version, channel, expected):
+        captured.update(version=version, channel=channel, expected=expected)
+        return {"state": "changed"}
+
+    monkeypatch.setattr(registry_publication, "assign_channel", assign)
+    result = registry_publication.advance_next_floor(API, KEY, WORKER, VERSION, "1.2.2")
+    assert result["next"] == VERSION
+    assert captured == {"version": VERSION, "channel": "next", "expected": "1.2.2"}
+
+
+def test_latest_never_regresses_next_when_it_is_ahead(monkeypatch) -> None:
+    monkeypatch.setattr(
+        registry_publication,
+        "read_channel",
+        lambda *_args, **_kwargs: registry_publication.Readback("equivalent", "1.3.0-rc.1"),
+    )
+    monkeypatch.setattr(
+        registry_publication,
+        "assign_channel",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not mutate next")),
+    )
+    result = registry_publication.advance_next_floor(API, KEY, WORKER, VERSION, "1.3.0-rc.1")
+    assert result["state"] == "unchanged"
+    assert result["next"] == "1.3.0-rc.1"
+
+
+def test_latest_keeps_same_core_next_when_product_maturity_is_ahead(monkeypatch) -> None:
+    monkeypatch.setattr(
+        registry_publication,
+        "read_channel",
+        lambda *_args, **_kwargs: registry_publication.Readback("equivalent", "1.2.3-beta"),
+    )
+    monkeypatch.setattr(
+        registry_publication,
+        "assign_channel",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not regress next")),
+    )
+    result = registry_publication.advance_next_floor(
+        API, KEY, WORKER, "1.2.3-alpha", "1.2.3-beta"
+    )
+    assert result["state"] == "unchanged"
+    assert result["next"] == "1.2.3-beta"
+
+
+def test_latest_advances_same_core_next_through_product_maturity(monkeypatch) -> None:
+    monkeypatch.setattr(
+        registry_publication,
+        "read_channel",
+        lambda *_args, **_kwargs: registry_publication.Readback("equivalent", "1.2.3-alpha"),
+    )
+    captured = {}
+
+    def assign(_api, _key, _worker, version, channel, expected):
+        captured.update(version=version, channel=channel, expected=expected)
+        return {"state": "changed"}
+
+    monkeypatch.setattr(registry_publication, "assign_channel", assign)
+    result = registry_publication.advance_next_floor(
+        API, KEY, WORKER, "1.2.3-beta", "1.2.3-alpha"
+    )
+    assert result["next"] == "1.2.3-beta"
+    assert captured == {
+        "version": "1.2.3-beta", "channel": "next", "expected": "1.2.3-alpha"
+    }
+
+
+def test_latest_rejects_next_drift_from_authorized_plan(monkeypatch) -> None:
+    monkeypatch.setattr(
+        registry_publication,
+        "read_channel",
+        lambda *_args, **_kwargs: registry_publication.Readback("equivalent", "1.2.1"),
+    )
+    with pytest.raises(RegistryPublicationError, match="outside the authorized plan"):
+        registry_publication.advance_next_floor(API, KEY, WORKER, VERSION, "1.2.2")
 
 
 def test_channel_5xx_is_recovered_when_raw_pointer_already_matches(monkeypatch) -> None:

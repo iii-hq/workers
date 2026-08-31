@@ -5,7 +5,7 @@ OpenCode as an iii worker: the OpenCode API exposed as functions and streams on 
 ## Install
 
 ```bash
-iii worker add opencode
+iii trigger compose::add worker=opencode
 ```
 
 Requires the `opencode` CLI on the host (`npm i -g opencode-ai` or the official installer) and an API key for the LLM provider you use — `ANTHROPIC_API_KEY` (or any provider key) in the worker environment, or an existing `opencode auth` login.
@@ -20,7 +20,7 @@ npx skills add iii-hq/workers --skill opencode
 
 ```bash
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
-iii worker add opencode
+iii trigger compose::add worker=opencode
 iii   # starts the engine + worker
 ```
 

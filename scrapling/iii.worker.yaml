@@ -16,9 +16,6 @@ description: >-
   browser fetches, CSS/XPath/regex/adaptive extraction, persistent sessions,
   and a declarative crawl over the iii bus.
 
-env:
-  III_URL: "ws://localhost:49134"
-
 dependencies:
   configuration: "0.x"
 

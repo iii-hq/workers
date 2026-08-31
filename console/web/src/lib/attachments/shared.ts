@@ -122,7 +122,7 @@ export function failureBlock(name: string, reason: string): string {
 export function describeWorkerFailure(err: unknown, worker: string): string {
   const message = messageOf(err)
   if (/not registered|NOT_FOUND|function .* not found/i.test(message)) {
-    return `the ${worker} worker is not running — install it with \`iii worker add ${worker}\``
+    return `the ${worker} worker is not running — install it with \`iii trigger compose::add worker=${worker}\``
   }
   return message.length > 160 ? `${message.slice(0, 157)}…` : message
 }

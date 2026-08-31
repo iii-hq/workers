@@ -26,18 +26,18 @@ cargo install --path workers-dev
 
 ## Worker groups
 
-Workers are **discovered automatically** from top-level `*/iii.worker.yaml` in this repo.
+Workers are **discovered automatically** from top-level `*/worker-compose.yaml` in this repo.
 
 | Group | Workers | Started by |
 |-------|---------|------------|
-| **current stack** (default: `harness`) | The stack's roots **plus everything they transitively depend on**, derived live from each worker's `iii.worker.yaml` dependencies. The built-in `harness` stack's roots are `session-manager`, `llm-router`, `context-manager`, `provider-anthropic`, `provider-openai`, `approval-gate`, `harness`; define more stacks (or override `harness`'s roots) in `workers-dev.yaml` or from the TUI (`Space` + `n`) — see Config below | `workers-dev up` / bare `workers-dev start` start the `default_stack` (missing deps are pulled in, connected ones left alone); `Ctrl+u` in the TUI starts it directly, or opens a stack picker when more than one stack is defined |
+| **current stack** (default: `harness`) | The stack's roots **plus everything they transitively depend on**, derived live from each worker's `worker-compose.yaml` dependencies. The built-in `harness` stack's roots are `session-manager`, `llm-router`, `context-manager`, `provider-anthropic`, `provider-openai`, `approval-gate`, `harness`; define more stacks (or override `harness`'s roots) in `workers-dev.yaml` or from the TUI (`Space` + `n`) — see Config below | `workers-dev up` / bare `workers-dev start` start the `default_stack` (missing deps are pulled in, connected ones left alone); `Ctrl+u` in the TUI starts it directly, or opens a stack picker when more than one stack is defined |
 | **other** | All remaining repo workers (e.g. `telegram-bot`, `console`, …) | `workers-dev start <name>`, `workers-dev start --all`, `Ctrl+a` in TUI |
 
 Press `d` on any worker in the TUI to see its direct dependencies and its transitive dependents (the `r` restart blast radius), each with live status.
 
-Only **Rust `deploy: binary`** workers can be started with `cargo run`. Non-Rust (Node/bundle) workers show **Process: external** — install them via the iii registry (`iii worker add`) instead.
+Only **Rust `deploy: binary`** workers can be started with `cargo run`. Non-Rust (Node/bundle) workers show **Process: external** — install them via the iii registry (`iii trigger compose::add worker=<name>`) instead.
 
-A worker connected to the engine but not started by this `workers-dev` shows **Process: elsewhere** beside **Engine: connected** (`workers-dev` only tracks processes it spawned itself). Non-Rust workers installed via `iii worker add` show **Process: external**.
+A worker connected to the engine but not started by this `workers-dev` shows **Process: elsewhere** beside **Engine: connected** (`workers-dev` only tracks processes it spawned itself). Non-Rust workers installed via `compose::add` show **Process: external**.
 
 ## Usage
 
@@ -174,4 +174,4 @@ Press `e` in the TUI, or start the engine manually: `iii -c harness/engine.confi
 
 **Non-Rust worker won't start**
 
-Expected — use `iii worker add <name>` for JavaScript/bundle workers.
+Expected — use `iii trigger compose::add worker=<name>` for JavaScript/bundle workers.

@@ -7,3 +7,8 @@ license: Apache-2.0
 bin: github
 tags: [github, gh, git, pull-requests, issues, actions, releases]
 description: GitHub CLI (gh) as an iii worker — typed github::pr/issue/repo/run/workflow/release/search functions, github::exec argv passthrough, and github::api for any GitHub REST endpoint.
+config:
+  gh_executable: ""
+  default_timeout_ms: 30000
+  max_timeout_ms: 120000
+  max_output_bytes: 1048576

@@ -2,7 +2,7 @@
 
 [package]
 name = "console"
-version = "1.9.15-rc.3"
+version = "1.9.15-rc.10"
 edition = "2021"
 publish = false
 

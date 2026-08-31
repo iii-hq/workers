@@ -11,7 +11,7 @@
 ## Install
 
 ```sh
-iii worker add database
+iii trigger compose::add worker=database
 ```
 
 ## Skills

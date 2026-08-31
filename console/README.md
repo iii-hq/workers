@@ -5,7 +5,7 @@
 **A single binary. A chat. A trace explorer. The whole [iii](https://github.com/iii-hq) engine in your browser.**
 
 <p>
-  <a href="#install"><img alt="Install: iii worker add console" src="https://img.shields.io/badge/install-iii%20worker%20add%20console-0a84ff?style=flat-square"></a>
+  <a href="#install"><img alt="Install: iii trigger compose::add worker=console" src="https://img.shields.io/badge/install-iii%20trigger%20compose%3A%3Aadd%20worker%3Dconsole-0a84ff?style=flat-square"></a>
   <a href="../LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg?style=flat-square"></a>
   <a href="https://www.rust-lang.org"><img alt="Built with Rust" src="https://img.shields.io/badge/built%20with-rust-orange?style=flat-square&logo=rust&logoColor=white"></a>
   <a href="https://react.dev"><img alt="React 19" src="https://img.shields.io/badge/react-19-149eca?style=flat-square&logo=react&logoColor=white"></a>
@@ -23,22 +23,22 @@
 ## Install
 
 ```bash
-iii worker add console
+iii trigger compose::add worker=console
 ```
 
-This fetches the prebuilt binary, writes a `console:` block into `~/.iii/config.yaml`, and the engine launches the worker the next time it boots.
+This resolves the worker, writes its declaration to `worker-compose.yaml`, and reconciles the Compose project.
 
 ## Quickstart
 
 ```bash
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 iii project init iii-app && cd iii-app
-iii                              # engine on ws://127.0.0.1:49134
+iii compose --up                 # engine on ws://127.0.0.1:49134
 ```
 
 ```bash
 # New terminal, same folder
-iii worker add console          # UI + /ws proxy on :3113
+iii trigger compose::add worker=console # UI + /ws proxy on :3113
 open http://127.0.0.1:3113
 ```
 
@@ -49,7 +49,7 @@ The browser hits `/` for the SPA shell and upgrades `/ws` to the engine WebSocke
 Chat runs on the [`harness`](https://github.com/iii-hq/workers/tree/main/harness) durable turn loop. Its manifest declares the whole stack as dependencies — [`session-manager`](https://github.com/iii-hq/workers/tree/main/session-manager) (the conversation store the sidebar, transcripts, and live token rendering are backed by), [`llm-router`](https://github.com/iii-hq/workers/tree/main/llm-router) (generation + the model catalog), [`context-manager`](https://github.com/iii-hq/workers/tree/main/context-manager) (the `/compact` summariser), [`approval-gate`](https://github.com/iii-hq/workers/tree/main/approval-gate) (human-in-the-loop approvals), and the provider workers — so a single command resolves and installs all of it:
 
 ```bash
-iii worker add harness
+iii trigger compose::add worker=harness
 ```
 
 ### Add a provider key

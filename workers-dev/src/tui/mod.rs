@@ -985,7 +985,9 @@ fn handle_confirm_key(key: KeyEvent, mode: &mut UiMode, actions: &Actions) {
 }
 
 fn not_startable_msg() -> UiMode {
-    UiMode::Busy("worker not startable from workers-dev (use iii worker add)".into())
+    UiMode::Busy(
+        "worker not startable from workers-dev (use iii trigger compose::add worker=<name>)".into(),
+    )
 }
 
 /// Shared by both `n`-prompt paths (a fresh name, and after an overwrite
@@ -1567,7 +1569,7 @@ fn draw_table(f: &mut Frame, area: Rect, table_state: &mut TableState, ctx: &UiC
                 let icon = status_icon(&v.display_status, ctx.spinner_frame);
                 // Name cell is the mark (Space-toggled, for stack creation) +
                 // glyph + name; unmarked rows get a space so names still line
-                // up. The wide "(iii worker add)" label and the crash exit
+                // up. The wide external-install label and the crash exit
                 // code moved to the Process column, so the name sits right
                 // next to its status instead of behind a column sized for the
                 // longest label.
@@ -2062,7 +2064,7 @@ fn draw_help_overlay(f: &mut Frame, area: Rect, color: bool) {
         Span::raw("stopped"),
     ]));
     lines.push(Line::from(Span::styled(
-        "   external  = installed via `iii worker add`",
+        "   external  = installed via `iii trigger compose::add worker=<name>`",
         styled_if(color, hint_style()),
     )));
     lines.push(Line::from(Span::styled(
@@ -2509,7 +2511,7 @@ mod tests {
     #[test]
     fn marked_worker_name_at_the_column_budget_is_not_truncated() {
         // Longest real worker name (provider-openai-codex, verified against
-        // the */iii.worker.yaml directories) is 21 chars. Plus the 3-char
+        // the */worker-compose.yaml directories) is 21 chars. Plus the 3-char
         // mark+icon+space prefix, that's exactly `Constraint::Length(24)` on
         // the Worker column — zero margin. Rendered at the table's real pane
         // width (TABLE_PANE_WIDTH), not a narrow test backend, so this

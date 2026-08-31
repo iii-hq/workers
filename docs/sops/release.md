@@ -1,71 +1,51 @@
-# Worker release executors
+# Release train operations
 
-Release Control is the only supported release interface. GitHub Actions in this
-repository are execution endpoints: they accept an exact command, perform a
-single bounded effect, and upload factual evidence. They do not choose versions,
-channels, dependencies, validation profiles, recovery actions, or schedules.
+Release Control is the exclusive operator interface. Do not dispatch release
+workflows by hand, rerun a mutating Actions run, move Registry channels
+directly, or retag GHCR outside a Release Control recovery operation.
 
-## Dispatch contract
+## Before starting
 
-Every Release Control workflow requires canonical `operation_id` and `step_id`
-UUIDs and all effect-specific identities. The run name is
-`RC · <kind> · <operation_id> · <step_id>`.
+The selected source commit must contain the worker's `.deploy/workers.yaml`
+entry and public `iii.worker.yaml`. The package-manifest version is source
+metadata; Release Control owns the independent exact `target_version`. Prepare
+never bumps, commits, or pushes source.
 
-The repository variable `RELEASE_CONTROL_BOT_LOGIN` must be set to
-`iii-release-control[bot]`. Dispatches from any other actor are rejected.
-Mutating workflows also reject GitHub reruns; recovery creates a new operation
-and a new workflow run.
+[`deploy-descriptor-index.yml`](../../.github/workflows/deploy-descriptor-index.yml)
+compiles every worker at the source SHA with the Workers-owned compiler.
+Its artifact contains `deployment-descriptor-index.json` and exact
+`descriptors/<worker>.json` files. Release Control verifies the workflow,
+source SHA, compiler commit/digest, artifact and descriptor digest before
+planning.
 
-Annotated tags use this shape:
+## Sequence
 
-```text
-worker: <slug>
-version: <exact version>
-managed-by: release-control
-operation-id: <uuid>
-step-id: <uuid>
-source-sha: <40 character sha>
-maturity: <stable|experimental|alpha|beta>
-registry-tag: <next|latest>
-experimental: <true|false>
-```
+1. `deploy-prepare.yml` authorizes the dispatch, verifies descriptor identity,
+   builds one job per target, and uploads the byte-unchanged descriptor,
+   prepared inventory, and artifacts with their SHA-256 and size.
+2. `deploy-publish.yml` publishes or proves GitHub assets, the exact Registry
+   version and a digest-pinned OCI image when applicable, then CASes the
+   requested `next` or `latest` channel from the value captured in the plan.
+   For `latest`, it first advances `next` only when the target is ahead and
+   never moves `next` backwards. The OCI channel alias is updated by digest in
+   this same workflow.
+3. `deploy-verify.yml` verifies GitHub, Registry and optional GHCR surfaces.
 
-Tag creation never starts publication implicitly. Release Control waits for the
-tag executor, verifies the tag, and then dispatches the exact publication
-workflow.
-
-## Executors
-
-- `create-tag.yml` creates a version commit on main and an annotated tag with a
-  manifest CAS guard.
-- `create-prerelease-tag.yml` creates an ephemeral versioned commit reachable
-  only from the tag.
-- `release.yml` builds one immutable worker version and obeys the exact
-  `publish_registry` capability supplied by Release Control. `acp` and `lsp`
-  publish GitHub artifacts directly to `latest`; they have no Registry
-  candidate or promotion stage.
-- `candidate-smoke.yml` validates the exact version currently behind `next`.
-- `promote-registry.yml` performs only the `latest` Registry CAS.
-- `container-alias.yml` moves one exact GHCR channel alias from a pinned digest.
-- `reconcile-github-release.yml` applies one exact GitHub Release state.
-- `verify-release.yml` reads and verifies the requested release surfaces.
-- `harness-e2e-registry.yml` executes an exact stack/scenario/model selection.
-
-## Evidence
-
-Every app-dispatched executor uploads
-`execution-result-<operation_id>-<step_id>/execution-result.json`. The schema has
-four factual sections: `subject`, `checks`, `effects`, and `outputs`. Workflows
-must not emit aggregate release decisions; Release Control derives operation
-state from policy and observed facts.
-
-Raw test logs remain ordinary GitHub artifacts. Harness uploads one canonical
-`harness-e2e-summary` schema 1 artifact for Release Control ingestion.
-There is no GitHub Pages projection or repository-owned release schedule.
+Every entrypoint authorizes with GitHub OIDC audience
+`release-control-workers`. It uploads
+`deployment-result-<deployment-target-id>-<step-id>-attempt-<run-attempt>` containing the
+single file `deployment-result.json`, then posts those exact bytes to Release
+Control with their SHA-256 header.
 
 ## Recovery
 
-Do not rerun a mutating Actions run. Open the failed operation in Release
-Control and execute the suggested recovery. The application creates a child
-operation containing only the missing effect, such as container alias,
-GitHub Release reconciliation, candidate smoke, or surface verification.
+Use the failed operation's recovery action in Release Control. A recovery gets
+a new operation/step/nonce and reuses immutable descriptor and prepared
+artifacts for the same exact target. Results report effects as `unknown` when the workflow cannot prove a
+mutation completed, allowing reconciliation without pretending success.
+
+If either physical macOS runner pool cannot schedule three independent jobs,
+stop the release and fix external capacity first. The diagnostic
+[`macos-runner-capacity.yml`](../../.github/workflows/macos-runner-capacity.yml)
+tests both Intel and Apple Silicon gates; this repository does not provision
+EC2 Mac hosts.

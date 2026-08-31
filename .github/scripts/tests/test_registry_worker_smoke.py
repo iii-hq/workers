@@ -7,12 +7,24 @@ from typing import Any
 import registry_worker_smoke
 
 
-def add_manifest(root: Path, worker: str) -> None:
+def add_catalog_worker(root: Path, worker: str) -> None:
+    import yaml
     directory = root / worker
     directory.mkdir()
+    (directory / "Cargo.toml").write_text(f'[package]\nname="{worker}"\nversion="1.0.0"\n')
     (directory / "iii.worker.yaml").write_text(
-        f"iii: v1\nname: {worker}\n", encoding="utf-8"
+        f"name: {worker}\nlanguage: rust\ndeploy: binary\nmanifest: Cargo.toml\n"
+        f"bin: {worker}\ndescription: {worker}\nlicense: Apache-2.0\n"
     )
+    path = root / ".deploy" / "workers.yaml"
+    path.parent.mkdir(exist_ok=True)
+    catalog = yaml.safe_load(path.read_text()) if path.exists() else {"workers": {}}
+    catalog["workers"][worker] = {
+        "source": {"path": worker, "package_manifest": "Cargo.toml"},
+        "artifact": {"kind": "rust-binary", "binary": worker, "targets": ["x86_64-unknown-linux-gnu"]},
+        "publish": True,
+    }
+    path.write_text(yaml.safe_dump(catalog, sort_keys=False))
 
 
 def test_stable_workers_excludes_non_registry_workers_and_keeps_harness_next_last(
@@ -20,7 +32,7 @@ def test_stable_workers_excludes_non_registry_workers_and_keeps_harness_next_las
     monkeypatch,
 ) -> None:
     for worker in ("browser", "harness", "acp", "lsp", "a2ui"):
-        add_manifest(tmp_path, worker)
+        add_catalog_worker(tmp_path, worker)
 
     monkeypatch.setattr(registry_worker_smoke, "REPO_ROOT", tmp_path)
 

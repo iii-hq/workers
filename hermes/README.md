@@ -5,7 +5,7 @@ Hermes agent as an iii worker: the Hermes agent on the iii bus as functions, str
 ## Install
 
 ```bash
-iii worker add hermes
+iii trigger compose::add worker=hermes
 ```
 
 Container worker (`deploy: image`) — the image bundles the Hermes CLI (Python 3.11 + Node bridge + platform adapters) via the official installer. Hermes is provider-agnostic: configure any LLM provider non-interactively with `hermes auth add anthropic --api-key <key>` (or set `ANTHROPIC_API_KEY` + `HERMES_INFERENCE_MODEL=anthropic/...`). The interactive OAuth-via-portal flow is not needed.

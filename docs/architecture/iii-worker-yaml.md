@@ -1,7 +1,9 @@
 # iii.worker.yaml contract
 
-Every worker folder ships `iii.worker.yaml` at its root. CI discovery,
-release routing, and registry publish all read this file.
+Every worker folder ships `iii.worker.yaml` at its root. It is the public iii
+contract for local development, scaffolding, installation, and package
+consumers. The Workers release compiler reads it once to produce an immutable
+descriptor; Release Control and post-prepare workflows never read it.
 
 ## Required fields
 
@@ -18,27 +20,28 @@ release routing, and registry publish all read this file.
 
 | Field | Purpose | Consumer |
 |---|---|---|
-| `bin` | Cargo binary name (defaults to `name`) | `_rust-binary.yml`, publish boot |
-| `targets` | Optional list of Rust triples to build | `_rust-binary.yml` matrix subset; `supported_targets` in manifest |
+| `bin` | Cargo binary name (defaults to `name`) | private release parity, local boot |
+| `targets` | Optional public Rust target list | parity with `.deploy/workers.yaml` when present |
 
-When `targets` is omitted, all nine default triples are built: macOS
-x86_64/aarch64, Windows x86_64/i686/aarch64, Linux x86_64 gnu/musl,
-aarch64 gnu, and armv7 gnueabihf (the matrix lives in
-[`_rust-binary.yml`](../../.github/workflows/_rust-binary.yml)).
+When `targets` is omitted, all six default Unix triples are built: macOS
+x86_64/aarch64, Linux x86_64 gnu/musl, aarch64 gnu, and armv7 gnueabihf.
+The authoritative release matrix lives in `.deploy/workers.yaml`; when this
+public field is present the compiler requires the two lists to match.
 
 ## Opt-outs and runtime
 
 | Field | Purpose | Consumer |
 |---|---|---|
-| `interface_smoke: false` | Skip interface boot smoke + registry publish | `ci.yml`, `release.yml` |
-| `runtime` / `scripts.start` | Local boot definition; presence routes publish boot to `iii-add` for non-binary/bundle deploys | `manifest_version.py deploy-mode`, `iii worker add` |
-| `scripts.install` | Build command for local install | `iii worker add` (local source) |
-| `tags` | Optional discovery aliases included in `POST /publish` | `build_publish_payload.py` |
+| `interface_smoke: false` | Opt out of the PR-only interface boot check | `validate_worker.py`, `ci.yml` |
+| `runtime` / `scripts.start` | Public local and installed runtime definition | `iii worker`, Compose, release compiler |
+| `scripts.install` | Build command for local install | `compose::add` (local source) |
+| `tags` | Discovery aliases included in the compiled Registry projection | release compiler |
 
 `tags` must be a list of strings. The publish pipeline trims values, converts them to lowercase,
 removes duplicates, and omits the field when no non-empty tags remain.
-Workers with `interface_smoke: false` skip registry publishing entirely, so their manifests do not
-declare tags.
+`interface_smoke: false` skips only the PR check; deployments never boot a
+prepared worker. Private `publish` controls whether a worker appears in the
+deployment index.
 
 ```yaml
 tags:
@@ -60,9 +63,9 @@ Engine-owned dependencies such as `configuration`, `iii-stream`, and
 worker dependencies use a caret range whose lower bound is the newest stable
 release validated with the current SDK. For example, `state: "^0.22.2"` accepts
 compatible patch releases without falling back to an older SDK build. A worker
-installed explicitly from a candidate channel may temporarily use a newer
-candidate lower bound, but stable dependents must wait until that candidate is
-promoted. Experimental workers may retain broad ranges until their dependency
+installed explicitly from the `next` channel may temporarily use a newer
+target lower bound, but stable dependents must wait until that target reaches
+`latest`. Experimental workers may retain broad ranges until their dependency
 stack is promoted. These forms are understood directly by iii and the Registry.
 
 ## Example (minimal Rust binary)
@@ -94,7 +97,7 @@ See [`shell/iii.worker.yaml`](../../shell/iii.worker.yaml).
 ## Validation
 
 - `pr-checks` parses the file via [`validate_worker.py`](../../.github/scripts/validate_worker.py).
-- `parse_release_tag.py` rejects unknown `deploy` values at release time.
+- `deployment_compiler.py` rejects public/private deploy-shape mismatches.
 
 ## Related
 

@@ -70,6 +70,9 @@ pub(super) fn scenario() -> ScenarioFixture {
             .allow_function(&record)
             .allow_id(ENSURE),
     )
+    // Parent and child turns are independently scheduled. Match each request
+    // by its strict contract instead of relying on queue arrival order.
+    .match_any_dispatch()
     // Only the parent's turn is tracked; the child's recorder call is the
     // whole-run completion signal for its second (re-tasked) turn.
     .await_target_calls(1)
@@ -156,9 +159,8 @@ pub(super) fn scenario() -> ScenarioFixture {
                 4,
             )),
     )
-    // The fresh child's opening step arrives BEFORE the parent's post-spawn
-    // step (its turn job is enqueued during the spawn dispatch, ahead of the
-    // parent's re-enqueued next step).
+    // The fresh child's opening step and the parent's post-spawn step may
+    // arrive in either order; match-any dispatch keeps both contracts strict.
     .generation(
         Generation::new(4)
             .expect(
@@ -208,7 +210,10 @@ pub(super) fn scenario() -> ScenarioFixture {
         Generation::new(6)
             .expect(
                 Request::new()
-                    .turn_request_step(0)
+                    // The re-task either appends to the still-active child
+                    // turn or starts a new turn after the first one settles.
+                    // Both schedules preserve the same session transcript.
+                    .turn_request_steps([0, 1])
                     .system_prompt_regex(SUBAGENT_PROMPT)
                     .messages_subset([
                         json!({ "role": "user", "content": [{ "type": "text", "text": TASK_ONE }] }),
@@ -254,7 +259,7 @@ pub(super) fn scenario() -> ScenarioFixture {
         Generation::new(8)
             .expect(
                 Request::new()
-                    .turn_request_step(1)
+                    .turn_request_steps([1, 2])
                     .system_prompt_regex(SUBAGENT_PROMPT)
                     .messages_subset([
                         json!({ "role": "user" }),
@@ -307,6 +312,7 @@ pub(super) fn scenario() -> ScenarioFixture {
 mod tests {
     use super::*;
     use crate::expand::expand_compiled_fixture;
+    use crate::types::script::JsonMatcherV1;
 
     #[test]
     fn fixture_prompt_sorts_expanded_allowed_function_ids() {
@@ -327,6 +333,10 @@ mod tests {
         assert_eq!(fixture.await_target_calls, Some(1));
         assert_eq!(fixture.expected_traces(), 1);
         assert_eq!(fixture.script.generations.len(), 8);
+        assert_eq!(
+            fixture.script.dispatch,
+            crate::types::script::RouterDispatchV1::MatchAny
+        );
 
         // The collision gate is load-bearing: silent reuse answers
         // `is_error: false` and can never satisfy generation 3.
@@ -337,5 +347,12 @@ mod tests {
         // Both spawns of the child name the same explicit session id.
         let script = serde_json::to_string(&fixture.script.generations).unwrap();
         assert_eq!(script.matches("{{run_id}}-fresh").count(), 2, "{script}");
+
+        for (generation, expected) in [(5, "(?:0|1)$"), (7, "(?:1|2)$")] {
+            assert!(matches!(
+                &fixture.script.generations[generation].match_.request_id,
+                JsonMatcherV1::Regex { pattern } if pattern.ends_with(expected)
+            ));
+        }
     }
 }

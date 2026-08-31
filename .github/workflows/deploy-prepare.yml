@@ -1,0 +1,323 @@
+name: Deployment Prepare
+run-name: Deployment prepare · ${{ inputs.worker }} · ${{ fromJSON(inputs.identity).deployment_batch_id }} · ${{ fromJSON(inputs.identity).deployment_target_id }} · ${{ fromJSON(inputs.identity).step_id }} · ${{ fromJSON(inputs.identity).dispatch_nonce }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      identity: {required: true, type: string}
+      worker: {required: true, type: string}
+      target_version: {required: true, type: string}
+      channel:
+        required: true
+        type: choice
+        options: [next, latest]
+      source_sha: {required: true, type: string}
+      descriptor_sha256: {required: true, type: string}
+      descriptor_run_id: {required: true, type: string}
+      descriptor_artifact: {required: true, type: string}
+
+env:
+  DEPLOYMENT_IDENTITY: ${{ inputs.identity }}
+  DEPLOYMENT_BATCH_ID: ${{ fromJSON(inputs.identity).deployment_batch_id }}
+  DEPLOYMENT_TARGET_ID: ${{ fromJSON(inputs.identity).deployment_target_id }}
+  STEP_ID: ${{ fromJSON(inputs.identity).step_id }}
+  ATTEMPT_ID: ${{ fromJSON(inputs.identity).attempt_id }}
+  DISPATCH_NONCE: ${{ fromJSON(inputs.identity).dispatch_nonce }}
+  PLAN_HASH: ${{ fromJSON(inputs.identity).plan_hash }}
+  WORKER: ${{ inputs.worker }}
+  TARGET_VERSION: ${{ inputs.target_version }}
+  DEPLOYMENT_CHANNEL: ${{ inputs.channel }}
+  SOURCE_SHA: ${{ inputs.source_sha }}
+  DESCRIPTOR_SHA256: ${{ inputs.descriptor_sha256 }}
+  DESCRIPTOR_RUN_ID: ${{ inputs.descriptor_run_id }}
+  DESCRIPTOR_ARTIFACT: ${{ inputs.descriptor_artifact }}
+
+permissions: {}
+
+jobs:
+  prepare:
+    runs-on: workers-release-linux-8core
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    outputs:
+      prepared_sha: ${{ steps.descriptor.outputs.prepared_sha }}
+      matrix: ${{ steps.descriptor.outputs.matrix }}
+      descriptor_artifact: ${{ steps.descriptor.outputs.artifact }}
+      frontend_artifact: ${{ steps.descriptor.outputs.frontend_artifact }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+
+      - name: Download Release Control-selected descriptor index
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ${{ inputs.descriptor_artifact }}
+          path: deployment-descriptor-index
+          run-id: ${{ inputs.descriptor_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Select byte-exact descriptor from immutable index
+        run: |
+          set -euo pipefail
+          [[ "$DESCRIPTOR_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          test "$DESCRIPTOR_ARTIFACT" = "deployment-descriptor-index-$SOURCE_SHA"
+          compiler_digest=$(jq -er .compiler.digest deployment-descriptor-index/deployment-descriptor-index.json)
+          python3 .github/scripts/deployment_train.py select-descriptor \
+            --index-dir deployment-descriptor-index \
+            --worker "$WORKER" \
+            --source-sha "$SOURCE_SHA" \
+            --compiler-digest "$compiler_digest" \
+            --descriptor-sha256 "$DESCRIPTOR_SHA256" \
+            --out deployment-input/deployment-descriptor.json
+
+      - name: Validate and authorize immutable dispatch
+        env:
+          RELEASE_CONTROL_API_URL: ${{ vars.RELEASE_CONTROL_API_URL }}
+        run: |
+          set -euo pipefail
+          pip install --quiet pyyaml
+          python3 .github/scripts/deployment_control_contract.py validate-identity --identity "$DEPLOYMENT_IDENTITY"
+          python3 .github/scripts/deployment_control_contract.py validate-dispatch \
+            --step-id "$STEP_ID" \
+            --dispatch-nonce "$DISPATCH_NONCE" \
+            --descriptor-sha256 "$DESCRIPTOR_SHA256" \
+            --plan-hash "$PLAN_HASH" \
+            --source-sha "$SOURCE_SHA" \
+            --mutating
+          python3 .github/scripts/deployment_control_contract.py authorize-dispatch \
+            --api-url "$RELEASE_CONTROL_API_URL" \
+            --step-id "$STEP_ID" \
+            --dispatch-nonce "$DISPATCH_NONCE" \
+            --deployment-batch-id "$DEPLOYMENT_BATCH_ID" \
+            --deployment-target-id "$DEPLOYMENT_TARGET_ID" \
+            --attempt-id "$ATTEMPT_ID" \
+            --plan-hash "$PLAN_HASH" \
+            --worker "$WORKER" \
+            --source-sha "$SOURCE_SHA" \
+            --target-version "$TARGET_VERSION" \
+            --channel "$DEPLOYMENT_CHANNEL" \
+            --descriptor-sha256 "$DESCRIPTOR_SHA256" \
+            --repository '${{ github.repository }}' \
+            --workflow 'deploy-prepare.yml' \
+            --run-id '${{ github.run_id }}' \
+            --run-attempt '${{ github.run_attempt }}' \
+            --event '${{ github.event_name }}' \
+            --sha '${{ github.sha }}'
+
+      - name: Validate immutable source against selected descriptor
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/deployment_train.py prepare \
+            --worker "$WORKER" \
+            --source-sha "$SOURCE_SHA" \
+            --target-version "$TARGET_VERSION" \
+            --channel "$DEPLOYMENT_CHANNEL" \
+            --descriptor-sha256 "$DESCRIPTOR_SHA256" \
+            --descriptor deployment-input/deployment-descriptor.json
+
+      - name: Resolve descriptor-owned frontend metadata
+        id: frontend
+        run: >-
+          python3 .github/scripts/deployment_train.py frontend-metadata
+          --descriptor deployment-input/deployment-descriptor.json
+          --github-output "$GITHUB_OUTPUT"
+
+      - name: Install descriptor-pinned pnpm
+        if: steps.frontend.outputs.count != '0'
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+        with:
+          version: ${{ steps.frontend.outputs.package_manager_version }}
+
+      - name: Install descriptor-pinned Node.js
+        if: steps.frontend.outputs.count != '0'
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: ${{ steps.frontend.outputs.runtime_version }}
+
+      - name: Resolve frontend pnpm store
+        if: steps.frontend.outputs.count != '0'
+        id: frontend-pnpm
+        run: echo "store_path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache descriptor-pinned frontend dependencies
+        if: steps.frontend.outputs.count != '0'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ steps.frontend-pnpm.outputs.store_path }}
+          key: deployment-frontend-${{ steps.frontend.outputs.package_manager_version }}-node${{ steps.frontend.outputs.runtime_version }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.frontend.outputs.lock_sha256 }}
+
+      - name: Build embedded frontends once
+        run: >-
+          python3 .github/scripts/deployment_train.py build-frontends
+          --descriptor deployment-input/deployment-descriptor.json
+          --out .release-frontend
+
+      - name: Export descriptor
+        id: descriptor
+        run: |
+          set -euo pipefail
+          {
+            echo "prepared_sha=$(jq -r .source_sha deployment-input/deployment-descriptor.json)"
+            echo "matrix=$(python3 .github/scripts/deployment_train.py matrix --descriptor deployment-input/deployment-descriptor.json)"
+            echo "artifact=deployment-descriptor-$DEPLOYMENT_TARGET_ID-$STEP_ID"
+            echo "frontend_artifact=deployment-frontend-$DEPLOYMENT_TARGET_ID-$STEP_ID"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: deployment-descriptor-${{ env.DEPLOYMENT_TARGET_ID }}-${{ env.STEP_ID }}
+          path: deployment-input/deployment-descriptor.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: deployment-frontend-${{ env.DEPLOYMENT_TARGET_ID }}-${{ env.STEP_ID }}
+          path: .release-frontend/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 7
+
+  build:
+    needs: prepare
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    uses: ./.github/workflows/_deploy-build.yml
+    with:
+      worker: ${{ inputs.worker }}
+      prepared_sha: ${{ needs.prepare.outputs.prepared_sha }}
+      descriptor_artifact: ${{ needs.prepare.outputs.descriptor_artifact }}
+      frontend_artifact: ${{ needs.prepare.outputs.frontend_artifact }}
+      target: ${{ matrix.target }}
+      unit: ${{ matrix.unit }}
+      kind: ${{ matrix.kind }}
+      runner: ${{ matrix.runner }}
+
+  assemble:
+    needs: [prepare, build]
+    runs-on: workers-release-linux-8core
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.prepared_sha }}
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ${{ needs.prepare.outputs.descriptor_artifact }}
+          path: deployment-input
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: release-build-${{ inputs.worker }}-*
+          path: release-builds
+
+      - name: Assemble immutable release
+        run: |
+          set -euo pipefail
+          pip install --quiet pyyaml
+          python3 .github/scripts/deployment_train.py assemble \
+            --descriptor deployment-input/deployment-descriptor.json \
+            --artifacts-dir release-builds \
+            --out deploy-prepared
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: deployment-prepared-${{ env.DEPLOYMENT_TARGET_ID }}
+          path: deploy-prepared/
+          if-no-files-found: error
+          retention-days: 7
+
+  report:
+    if: always()
+    needs: [prepare, build, assemble]
+    runs-on: workers-release-linux-8core
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        continue-on-error: true
+        with:
+          name: deployment-prepared-${{ env.DEPLOYMENT_TARGET_ID }}
+          path: deploy-prepared
+
+      - name: Write release result
+        if: always()
+        env:
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          ASSEMBLE_RESULT: ${{ needs.assemble.result }}
+        run: |
+          set -euo pipefail
+          outcome=succeeded; error=null
+          if [[ "$PREPARE_RESULT" == cancelled || "$BUILD_RESULT" == cancelled || "$ASSEMBLE_RESULT" == cancelled ]]; then
+            outcome=canceled; error='{"code":"prepare_canceled","category":"build","retryable":true,"message":"release preparation was canceled"}'
+          elif [[ "$PREPARE_RESULT" != success || "$BUILD_RESULT" != success || "$ASSEMBLE_RESULT" != success ]]; then
+            outcome=failed; error='{"code":"prepare_failed","category":"build","retryable":true,"message":"release preparation did not complete"}'
+          fi
+          artifacts='[]'
+          if [[ -f deploy-prepared/prepared-artifacts.json ]]; then artifacts=$(jq -c '[.artifacts[] | del(.unit)]' deploy-prepared/prepared-artifacts.json); fi
+          state=absent; [[ "$outcome" == succeeded ]] && state=present
+          effects=$(jq -nc --arg id "$SOURCE_SHA" --arg state "$state" '[{surface:"source-snapshot",state:$state,immutable_id:$id}]')
+          python3 .github/scripts/deployment_control_contract.py write-result \
+            --repository '${{ github.repository }}' \
+            --step-id "$STEP_ID" \
+            --run-id '${{ github.run_id }}' \
+            --run-attempt '${{ github.run_attempt }}' \
+            --workflow 'deploy-prepare.yml' \
+            --event '${{ github.event_name }}' \
+            --sha '${{ github.sha }}' \
+            --deployment-batch-id "$DEPLOYMENT_BATCH_ID" \
+            --deployment-target-id "$DEPLOYMENT_TARGET_ID" \
+            --attempt-id "$ATTEMPT_ID" \
+            --dispatch-nonce "$DISPATCH_NONCE" \
+            --plan-hash "$PLAN_HASH" \
+            --worker "$WORKER" \
+            --phase prepare \
+            --source-sha "$SOURCE_SHA" \
+            --prepared-sha "$SOURCE_SHA" \
+            --target-version "$TARGET_VERSION" \
+            --channel "$DEPLOYMENT_CHANNEL" \
+            --descriptor-sha256 "$DESCRIPTOR_SHA256" \
+            --outcome "$outcome" \
+            --effects "$effects" \
+            --artifacts-json "$artifacts" \
+            --error-json "$error" \
+            --output deployment-result.json
+
+      - if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: deployment-result-${{ env.DEPLOYMENT_TARGET_ID }}-${{ env.STEP_ID }}-attempt-${{ github.run_attempt }}
+          path: deployment-result.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Report byte-exact result to Release Control
+        if: always()
+        env:
+          RELEASE_CONTROL_API_URL: ${{ vars.RELEASE_CONTROL_API_URL }}
+        run: |
+          python3 .github/scripts/deployment_control_contract.py post-result \
+            --api-url "$RELEASE_CONTROL_API_URL" \
+            --result deployment-result.json

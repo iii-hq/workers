@@ -177,7 +177,7 @@ impl Config {
 
         let discovered_names = order_worker_names(&worker_specs);
         // An explicit `workers:` list may name folders that auto-discovery
-        // skipped (folder/name mismatch or missing iii.worker.yaml). Drop those
+        // skipped (missing or invalid root-catalog entry). Drop those
         // with a warning instead of letting WorkerGraph::load abort startup —
         // mirroring discover_repo_workers' skip-and-continue behavior.
         let workers = match file_cfg.workers {
@@ -190,7 +190,7 @@ impl Config {
                         let ok = valid.contains(w.as_str());
                         if !ok {
                             eprintln!(
-                                "warning: skipping configured worker {w}: not a discovered worker (folder/name mismatch or missing iii.worker.yaml)"
+                                "warning: skipping configured worker {w}: not a discovered root-catalog worker"
                             );
                         }
                         ok
@@ -366,7 +366,7 @@ pub fn resolve_repo_root(explicit: Option<PathBuf>) -> Result<PathBuf> {
     }
 
     bail!(
-        "could not find workers repo root (expected top-level */iii.worker.yaml); \
+        "could not find workers repo root (expected worker-compose.yaml); \
          pass --repo or set WORKERS_DEV_REPO"
     )
 }
@@ -381,18 +381,10 @@ fn find_repo_root(start: &Path) -> Option<PathBuf> {
 }
 
 fn validate_repo_root(path: &Path) -> Result<()> {
-    let count = std::fs::read_dir(path)
-        .with_context(|| format!("read {}", path.display()))?
-        .filter_map(Result::ok)
-        .filter(|entry| entry.path().join("iii.worker.yaml").is_file())
-        .count();
-    if count > 0 {
+    if path.join("worker-compose.yaml").is_file() {
         Ok(())
     } else {
-        bail!(
-            "no top-level iii.worker.yaml workers under {}",
-            path.display()
-        )
+        bail!("no worker-compose.yaml under {}", path.display())
     }
 }
 
@@ -448,11 +440,7 @@ mod tests {
     fn write_repo(tmp: &TempDir) {
         let dir = tmp.path().join("harness");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("iii.worker.yaml"),
-            "iii: v1\nname: harness\nlanguage: rust\ndeploy: binary\ndescription: test\n",
-        )
-        .unwrap();
+        std::fs::write(tmp.path().join("worker-compose.yaml"), "workers:\n  harness:\n    source: {path: harness}\n    artifact: {kind: rust-binary}\n    registry: {dependencies: {}}\n").unwrap();
         std::fs::write(dir.join("Cargo.toml"), "[workspace]\n").unwrap();
     }
 
@@ -587,18 +575,14 @@ mod tests {
 
     /// Repo with enough workers to define non-trivial stacks.
     fn write_repo_multi(tmp: &TempDir) {
+        let mut catalog = String::from("workers:\n");
         for name in ["harness", "session-manager", "console"] {
             let dir = tmp.path().join(name);
             std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(
-                dir.join("iii.worker.yaml"),
-                format!(
-                    "iii: v1\nname: {name}\nlanguage: rust\ndeploy: binary\ndescription: test\n"
-                ),
-            )
-            .unwrap();
+            catalog.push_str(&format!("  {name}:\n    source: {{path: {name}}}\n    artifact: {{kind: rust-binary}}\n    registry: {{dependencies: {{}}}}\n"));
             std::fs::write(dir.join("Cargo.toml"), "[workspace]\n").unwrap();
         }
+        std::fs::write(tmp.path().join("worker-compose.yaml"), catalog).unwrap();
     }
 
     fn load_with_yaml(tmp: &TempDir, yaml: &str) -> Result<Config> {

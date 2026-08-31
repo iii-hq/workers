@@ -11,6 +11,10 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _lib  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXPERIMENTAL_WORKERS = {
@@ -31,14 +35,16 @@ HARNESS_SELECTOR = "harness@next"
 
 
 def stable_workers() -> list[str]:
+    catalog = _lib.read_worker_catalog(REPO_ROOT / ".deploy" / "workers.yaml")
     workers = sorted(
-        manifest.parent.name
-        for manifest in REPO_ROOT.glob("*/iii.worker.yaml")
-        if manifest.parent.name not in EXPERIMENTAL_WORKERS
-        and manifest.parent.name not in REGISTRY_COMPOSE_UNSUPPORTED_WORKERS
-        and manifest.parent.name != "harness"
+        worker_id
+        for worker_id, spec in catalog.items()
+        if spec.publish
+        and worker_id not in EXPERIMENTAL_WORKERS
+        and worker_id not in REGISTRY_COMPOSE_UNSUPPORTED_WORKERS
+        and worker_id != "harness"
     )
-    if (REPO_ROOT / "harness" / "iii.worker.yaml").is_file():
+    if catalog.get("harness") and catalog["harness"].publish:
         workers.append(HARNESS_SELECTOR)
     return workers
 
@@ -52,13 +58,9 @@ def state_version() -> str:
 
 def compose_text(project_namespace: str) -> str:
     return f"""namespace: {project_namespace}
-startup_timeout: 15m
-stop_timeout: 10s
-
 containers:
-  # Bootstrap entry required by the compose::add text editor.
   state:
-    worker: package://api.workers.iii.dev/state
+    worker: package://state
     version: {state_version()}
 """
 
@@ -148,7 +150,7 @@ def worker_key(worker_spec: str) -> str:
 
 
 def ordered_workers(worker_specs: list[str]) -> list[str]:
-    """Keep Harness last and always test its current candidate channel."""
+    """Keep Harness last and always test its current next channel."""
     workers = [spec for spec in worker_specs if worker_key(spec) != "harness"]
     if len(workers) != len(worker_specs):
         workers.append(HARNESS_SELECTOR)

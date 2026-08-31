@@ -1,0 +1,115 @@
+name: Deployment Verify
+run-name: Deployment verify · ${{ inputs.worker }} · ${{ fromJSON(inputs.identity).deployment_batch_id }} · ${{ fromJSON(inputs.identity).deployment_target_id }} · ${{ fromJSON(inputs.identity).step_id }} · ${{ fromJSON(inputs.identity).dispatch_nonce }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      identity: {required: true, type: string}
+      worker: {required: true, type: string}
+      source_sha: {required: true, type: string}
+      prepared_sha: {required: true, type: string}
+      target_version: {required: true, type: string}
+      descriptor_sha256: {required: true, type: string}
+      prepared_run_id: {required: true, type: string}
+      channel:
+        required: true
+        type: choice
+        options: [next, latest]
+      expected_image_digest: {required: false, default: none, type: string}
+
+env:
+  DEPLOYMENT_IDENTITY: ${{ inputs.identity }}
+  DEPLOYMENT_BATCH_ID: ${{ fromJSON(inputs.identity).deployment_batch_id }}
+  DEPLOYMENT_TARGET_ID: ${{ fromJSON(inputs.identity).deployment_target_id }}
+  STEP_ID: ${{ fromJSON(inputs.identity).step_id }}
+  ATTEMPT_ID: ${{ fromJSON(inputs.identity).attempt_id }}
+  DISPATCH_NONCE: ${{ fromJSON(inputs.identity).dispatch_nonce }}
+  PLAN_HASH: ${{ fromJSON(inputs.identity).plan_hash }}
+  WORKER: ${{ inputs.worker }}
+  SOURCE_SHA: ${{ inputs.source_sha }}
+  PREPARED_SHA: ${{ inputs.prepared_sha }}
+  TARGET_VERSION: ${{ inputs.target_version }}
+  DESCRIPTOR_SHA256: ${{ inputs.descriptor_sha256 }}
+  PREPARED_RUN_ID: ${{ inputs.prepared_run_id }}
+  RELEASE_CHANNEL: ${{ inputs.channel }}
+  EXPECTED_IMAGE_DIGEST: ${{ inputs.expected_image_digest }}
+
+permissions: {}
+
+jobs:
+  verify:
+    runs-on: workers-release-linux-8core
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      packages: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: deployment-prepared-${{ env.DEPLOYMENT_TARGET_ID }}
+          path: deploy-prepared
+          run-id: ${{ inputs.prepared_run_id }}
+          github-token: ${{ github.token }}
+      - name: Authorize exact verification
+        env:
+          RELEASE_CONTROL_API_URL: ${{ vars.RELEASE_CONTROL_API_URL }}
+        run: |
+          set -euo pipefail
+          test "$(jq -r .descriptor_sha256 deploy-prepared/deployment-descriptor.json)" = "$DESCRIPTOR_SHA256"
+          python3 .github/scripts/deployment_train.py verify-prepared --descriptor deploy-prepared/deployment-descriptor.json --prepared deploy-prepared/prepared-artifacts.json
+          python3 .github/scripts/deployment_control_contract.py validate-identity --identity "$DEPLOYMENT_IDENTITY"
+          python3 .github/scripts/deployment_control_contract.py validate-dispatch --step-id "$STEP_ID" --dispatch-nonce "$DISPATCH_NONCE" --descriptor-sha256 "$DESCRIPTOR_SHA256" --plan-hash "$PLAN_HASH" --source-sha "$SOURCE_SHA"
+          python3 .github/scripts/deployment_control_contract.py authorize-dispatch --api-url "$RELEASE_CONTROL_API_URL" --repository '${{ github.repository }}' --step-id "$STEP_ID" --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' --workflow 'deploy-verify.yml' --event '${{ github.event_name }}' --sha '${{ github.sha }}' --deployment-batch-id "$DEPLOYMENT_BATCH_ID" --deployment-target-id "$DEPLOYMENT_TARGET_ID" --attempt-id "$ATTEMPT_ID" --dispatch-nonce "$DISPATCH_NONCE" --plan-hash "$PLAN_HASH" --worker "$WORKER" --source-sha "$SOURCE_SHA" --target-version "$TARGET_VERSION" --channel "$RELEASE_CHANNEL" --descriptor-sha256 "$DESCRIPTOR_SHA256"
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        with:
+          version: v0.36.1
+        if: inputs.expected_image_digest != 'none'
+      - name: Verify public surfaces
+        id: surfaces
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release view "$WORKER/v$TARGET_VERSION" --json tagName,isDraft,isPrerelease,url > github-release.json
+          test "$(jq -r .tagName github-release.json)" = "$WORKER/v$TARGET_VERSION"
+          test "$(jq -r .isDraft github-release.json)" = false
+          expected_prerelease=false
+          if [[ "$RELEASE_CHANNEL" == next || "$TARGET_VERSION" == *-* ]]; then expected_prerelease=true; fi
+          test "$(jq -r .isPrerelease github-release.json)" = "$expected_prerelease"
+          body=$(jq -nc --arg worker "$WORKER" --arg channel "$RELEASE_CHANNEL" '{worker:$worker,version:$channel}')
+          actual=$(curl -fsS -H 'Content-Type: application/json' -X POST 'https://api.workers.iii.dev/resolve' --data "$body" | jq -r .root.version)
+          test "$actual" = "$TARGET_VERSION"
+          if [[ "$EXPECTED_IMAGE_DIGEST" != none ]]; then
+            [[ "$EXPECTED_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+            docker buildx imagetools inspect "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/$WORKER:$RELEASE_CHANNEL" --format '{{json .Manifest}}' > image-manifest.json
+            docker buildx imagetools inspect "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/$WORKER@$EXPECTED_IMAGE_DIGEST" --format '{{json .Manifest}}' > immutable-manifest.json
+            cmp image-manifest.json immutable-manifest.json
+          fi
+      - name: Write result
+        if: always()
+        env:
+          STATUS: ${{ steps.surfaces.outcome }}
+        run: |
+          set -euo pipefail
+          outcome=succeeded; error=null
+          if [[ "$STATUS" == cancelled ]]; then outcome=canceled; error='{"code":"release_verify_canceled","category":"verification","retryable":true,"message":"release surface verification was canceled"}'
+          elif [[ "$STATUS" != success ]]; then outcome=failed; error='{"code":"release_verify_failed","category":"verification","retryable":true,"message":"release surface verification did not complete"}'; fi
+          artifacts='[]'
+          if [[ -f deploy-prepared/prepared-artifacts.json ]]; then artifacts=$(jq -c '[.artifacts[] | del(.unit)]' deploy-prepared/prepared-artifacts.json); fi
+          python3 .github/scripts/deployment_control_contract.py write-result --repository '${{ github.repository }}' --step-id "$STEP_ID" --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' --workflow 'deploy-verify.yml' --event '${{ github.event_name }}' --sha '${{ github.sha }}' --deployment-batch-id "$DEPLOYMENT_BATCH_ID" --deployment-target-id "$DEPLOYMENT_TARGET_ID" --attempt-id "$ATTEMPT_ID" --dispatch-nonce "$DISPATCH_NONCE" --plan-hash "$PLAN_HASH" --worker "$WORKER" --phase verify --source-sha "$SOURCE_SHA" --prepared-sha "$PREPARED_SHA" --target-version "$TARGET_VERSION" --channel "$RELEASE_CHANNEL" --descriptor-sha256 "$DESCRIPTOR_SHA256" --outcome "$outcome" --effects '[]' --artifacts-json "$artifacts" --error-json "$error" --output deployment-result.json
+      - if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: deployment-result-${{ env.DEPLOYMENT_TARGET_ID }}-${{ env.STEP_ID }}-attempt-${{ github.run_attempt }}
+          path: deployment-result.json
+          retention-days: 30
+          if-no-files-found: error
+      - if: always()
+        env:
+          RELEASE_CONTROL_API_URL: ${{ vars.RELEASE_CONTROL_API_URL }}
+        run: python3 .github/scripts/deployment_control_contract.py post-result --api-url "$RELEASE_CONTROL_API_URL" --result deployment-result.json

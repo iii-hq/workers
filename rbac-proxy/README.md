@@ -32,7 +32,7 @@ Full design: [`tech-specs/2026-06-rbac-proxy-worker/`](https://github.com/iii-hq
 ## Install
 
 ```bash
-iii worker add rbac-proxy
+iii trigger compose::add worker=rbac-proxy
 ```
 
 Requires a trusted engine listener with **no** `rbac` block (the proxy is the

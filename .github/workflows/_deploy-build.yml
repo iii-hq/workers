@@ -1,0 +1,233 @@
+name: Deployment Build Unit
+
+on:
+  workflow_call:
+    inputs:
+      worker:
+        required: true
+        type: string
+      prepared_sha:
+        required: true
+        type: string
+      descriptor_artifact:
+        required: true
+        type: string
+      frontend_artifact:
+        required: true
+        type: string
+      target:
+        required: true
+        type: string
+      unit:
+        required: true
+        type: string
+      kind:
+        required: true
+        type: string
+      runner:
+        required: true
+        type: string
+
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+  CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+  SCCACHE_BUCKET: ${{ vars.SCCACHE_BUCKET }}
+  SCCACHE_REGION: ${{ vars.SCCACHE_REGION }}
+  RUSTC_WRAPPER: sccache
+
+jobs:
+  build:
+    name: ${{ inputs.worker }} / ${{ inputs.unit }}
+    runs-on: ${{ inputs.runner }}
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.prepared_sha }}
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ${{ inputs.descriptor_artifact }}
+          path: deployment-input
+
+      - name: Resolve descriptor-owned build metadata
+        id: metadata
+        env:
+          BUILD_UNIT: ${{ inputs.unit }}
+        run: >-
+          python3 .github/scripts/deployment_train.py build-metadata
+          --descriptor deployment-input/deployment-descriptor.json
+          --unit "$BUILD_UNIT"
+          --github-output "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        if: inputs.kind == 'rust-binary'
+        with:
+          name: ${{ inputs.frontend_artifact }}
+          path: .release-frontend
+
+      - name: Restore embedded frontend outputs
+        if: inputs.kind == 'rust-binary'
+        run: rsync -a .release-frontend/ ./
+
+      - name: Validate immutable descriptor
+        env:
+          WORKER: ${{ inputs.worker }}
+          PREPARED_SHA: ${{ inputs.prepared_sha }}
+          TARGET: ${{ inputs.target }}
+          UNIT: ${{ inputs.unit }}
+        run: |
+          set -euo pipefail
+          # jq-only validation: no pyyaml needed, and the x86_64 macOS release
+          # runner has no `pip` on PATH — an install line here fails the whole
+          # build unit before any assertion runs.
+          test "$(jq -r .worker deployment-input/deployment-descriptor.json)" = "$WORKER"
+          test "$(jq -r .source_sha deployment-input/deployment-descriptor.json)" = "$PREPARED_SHA"
+          jq -e --arg unit "$UNIT" --arg target "$TARGET" \
+            '.build_units | any(.id == $unit and ((.target // .platform // "none") == $target))' \
+            deployment-input/deployment-descriptor.json >/dev/null
+
+      - name: Rewrite SSH to HTTPS for public dependencies
+        run: git config --local url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - name: Install Linux cross-compilers
+        if: runner.os == 'Linux' && inputs.kind == 'rust-binary'
+        env:
+          BUILD_TARGET: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          case "$BUILD_TARGET" in
+            x86_64-unknown-linux-musl)
+              sudo apt-get install -y musl-tools
+              ;;
+            aarch64-unknown-linux-gnu)
+              sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+              ;;
+            armv7-unknown-linux-gnueabihf)
+              sudo apt-get install -y gcc-arm-linux-gnueabihf libc6-dev-armhf-cross
+              ;;
+          esac
+
+      - name: Install Rust toolchain
+        if: inputs.kind == 'rust-binary'
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: ${{ steps.metadata.outputs.toolchain_version }}
+          targets: ${{ inputs.target }}
+
+      - name: Authorize cache access with GitHub OIDC
+        if: inputs.kind == 'rust-binary'
+        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
+        with:
+          role-to-assume: ${{ vars.SCCACHE_ROLE_ARN }}
+          aws-region: ${{ vars.SCCACHE_REGION }}
+
+      - name: Install sccache
+        if: inputs.kind == 'rust-binary'
+        uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+
+      - name: Cache Rust build
+        if: inputs.kind == 'rust-binary'
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: release-${{ inputs.worker }}-${{ steps.metadata.outputs.toolchain_version }}-${{ inputs.target }}
+          workspaces: ${{ inputs.worker }} -> target
+
+      - name: Install descriptor-pinned pnpm
+        if: inputs.kind == 'javascript-bundle' && steps.metadata.outputs.package_manager_name == 'pnpm'
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+        with:
+          version: ${{ steps.metadata.outputs.package_manager_version }}
+          package_json_file: ${{ steps.metadata.outputs.source_path }}/package.json
+
+      - name: Install descriptor-pinned Node.js
+        if: inputs.kind == 'javascript-bundle'
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: ${{ steps.metadata.outputs.runtime_version }}
+
+      - name: Install descriptor-pinned npm
+        if: inputs.kind == 'javascript-bundle' && steps.metadata.outputs.package_manager_name == 'npm'
+        run: npm install --global 'npm@${{ steps.metadata.outputs.package_manager_version }}'
+
+      - name: Install descriptor-pinned Python
+        if: inputs.kind == 'python-bundle'
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ steps.metadata.outputs.runtime_version }}
+
+      - name: Install descriptor-pinned uv
+        if: inputs.kind == 'python-bundle'
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: ${{ steps.metadata.outputs.package_manager_version }}
+          python-version: ${{ steps.metadata.outputs.runtime_version }}
+          working-directory: ${{ steps.metadata.outputs.workspace_root }}
+          enable-cache: false
+
+      - name: Resolve descriptor-pinned package cache
+        if: inputs.kind == 'javascript-bundle' || inputs.kind == 'python-bundle'
+        id: package-cache
+        env:
+          MANAGER: ${{ steps.metadata.outputs.package_manager_name }}
+        run: |
+          case "$MANAGER" in
+            pnpm) path=$(pnpm store path --silent) ;;
+            npm) path=$(npm config get cache) ;;
+            uv) path=$(uv cache dir) ;;
+            *) echo "unsupported descriptor package manager: $MANAGER"; exit 2 ;;
+          esac
+          echo "path=$path" >> "$GITHUB_OUTPUT"
+
+      - name: Cache descriptor-pinned bundle dependencies
+        if: inputs.kind == 'javascript-bundle' || inputs.kind == 'python-bundle'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ steps.package-cache.outputs.path }}
+          key: release-${{ steps.metadata.outputs.package_manager_name }}-${{ steps.metadata.outputs.package_manager_version }}-${{ steps.metadata.outputs.runtime_name }}-${{ steps.metadata.outputs.runtime_version }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.metadata.outputs.lock_sha256 }}
+
+      - name: Set up QEMU
+        if: inputs.kind == 'oci-image'
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
+        with:
+          image: tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+
+      - name: Set up Docker Buildx
+        if: inputs.kind == 'oci-image'
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        with:
+          version: v0.36.1
+          driver-opts: image=moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+
+      - name: Build immutable artifact
+        env:
+          BUILD_UNIT: ${{ inputs.unit }}
+          SOURCE_DATE_EPOCH: '0'
+          SCCACHE_S3_KEY_PREFIX: sccache/${{ steps.metadata.outputs.toolchain_version }}/${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/deployment_train.py build \
+            --descriptor deployment-input/deployment-descriptor.json \
+            --unit "$BUILD_UNIT" \
+            --out release-output
+
+      - name: Record sccache metrics
+        if: always() && inputs.kind == 'rust-binary'
+        run: |
+          mkdir -p release-output
+          sccache --show-stats | tee release-output/sccache-stats.txt
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: release-build-${{ inputs.worker }}-${{ inputs.unit }}
+          path: release-output/
+          if-no-files-found: error
+          retention-days: 7

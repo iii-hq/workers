@@ -1,12 +1,11 @@
-name: Validate exact quickstart channel
-run-name: RC · test · ${{ inputs.operation_id }} · ${{ inputs.step_id }}
+name: Harness quickstart smoke test
+run-name: RC · quickstart · ${{ inputs.quickstart_id }} · ${{ inputs.attempt }}
 
 on:
   workflow_dispatch:
     inputs:
-      operation_id: { required: true, type: string }
-      step_id: { required: true, type: string }
-      source_sha: { required: true, type: string }
+      quickstart_id: {required: true, type: string}
+      attempt: {required: true, type: string}
       cli_channel:
         required: true
         type: choice
@@ -17,59 +16,50 @@ on:
         required: true
         type: choice
         options: [latest, next]
-      release_worker:
-        description: Exact worker, or "none"
-        required: true
-        type: string
-      release_version:
-        description: Exact version, or "none"
-        required: true
-        type: string
-      release_tag:
-        description: Exact tag, or "none"
-        required: true
-        type: string
-      release_run_id:
-        description: Exact run id, or 0
-        required: true
-        type: string
-      release_run_attempt:
-        description: Exact run attempt, or 0
-        required: true
-        type: string
 
-permissions:
-  actions: read
-  contents: read
+permissions: {}
 
 concurrency:
-  group: harness-quickstart-${{ inputs.operation_id }}-${{ inputs.cli_channel }}-${{ inputs.registry_tag }}
+  group: harness-quickstart
   cancel-in-progress: false
 
 jobs:
-  validate:
+  quickstart:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
     env:
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.cache/ms-playwright
     steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ inputs.source_sha }}
-
       - name: Validate Release Control dispatch
         env:
-          RELEASE_CONTROL_BOT_LOGIN: ${{ vars.RELEASE_CONTROL_BOT_LOGIN }}
-        run: >-
-          python3 .github/scripts/release_control_contract.py validate-dispatch
-          --operation-id '${{ inputs.operation_id }}'
-          --step-id '${{ inputs.step_id }}'
+          BOT_LOGIN: ${{ vars.RELEASE_CONTROL_BOT_LOGIN }}
+          ACTOR: ${{ github.actor }}
+          QUICKSTART_ID: ${{ inputs.quickstart_id }}
+          ATTEMPT: ${{ inputs.attempt }}
+        run: |
+          set -euo pipefail
+          test -n "$BOT_LOGIN"
+          test "$ACTOR" = "$BOT_LOGIN"
+          python3 - "$QUICKSTART_ID" "$ATTEMPT" <<'EOF'
+          import sys
+          import uuid
 
-      - uses: pnpm/action-setup@v5
+          quickstart_id, attempt = sys.argv[1], sys.argv[2]
+          assert str(uuid.UUID(quickstart_id)) == quickstart_id.lower(), "quickstart_id must be a UUID"
+          assert attempt.isdigit() and int(attempt) >= 1, "attempt must be a positive integer"
+          EOF
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
         with:
           version: 11.13.1
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
           package-manager-cache: false
@@ -93,23 +83,7 @@ jobs:
           HARNESS_QUICKSTART_TRACE: '1'
           III_CLI_CHANNEL: ${{ inputs.cli_channel }}
           III_WORKER_TAG: ${{ inputs.registry_tag }}
-          HARNESS_QUICKSTART_RELEASE_WORKER: ${{ inputs.release_worker != 'none' && inputs.release_worker || '' }}
-          HARNESS_QUICKSTART_RELEASE_VERSION: ${{ inputs.release_version != 'none' && inputs.release_version || '' }}
         run: harness/tests/quickstart/run-ci.sh
-
-      - name: Verify exact release in compose file
-        if: inputs.release_version != 'none'
-        # No --manifest here: compose only declares workers it can run, so
-        # engine-builtin dependencies (iii-stream, iii-observability) are
-        # deliberately absent from the compose file.
-        run: >-
-          python3 .github/scripts/verify_registry_lock.py
-          --lock target/harness-quickstart/worker-compose.yaml
-          --required harness
-          --required console
-          --worker '${{ inputs.release_worker }}'
-          --version '${{ inputs.release_version }}'
-          --output target/harness-quickstart/lock-verification.json
 
       - name: Show quickstart logs
         if: always()
@@ -121,41 +95,13 @@ jobs:
             echo "::endgroup::"
           done
 
-      - name: Upload raw quickstart facts
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: quickstart-${{ inputs.operation_id }}-${{ inputs.step_id }}
-          path: target/harness-quickstart/
-          retention-days: 7
-          if-no-files-found: ignore
-
-      - name: Write factual result
-        if: always()
-        env:
-          JOB_STATUS: ${{ job.status }}
-        run: |
-          subject=$(jq -cn --arg source_sha '${{ inputs.source_sha }}' --arg channel '${{ inputs.registry_tag }}' \
-            --arg worker '${{ inputs.release_worker }}' --arg version '${{ inputs.release_version }}' \
-            '{source_sha:$source_sha,channel:$channel,worker:(if $worker == "none" then null else $worker end),version:(if $version == "none" then null else $version end)}')
-          checks=$(jq -cn --arg status "$JOB_STATUS" '[{name:"quickstart",status:$status}]')
-          outputs=$(jq -cn --arg cli '${{ inputs.cli_channel }}' --arg registry '${{ inputs.registry_tag }}' \
-            --arg release_run_id '${{ inputs.release_run_id }}' --arg release_run_attempt '${{ inputs.release_run_attempt }}' \
-            --slurpfile quickstart target/harness-quickstart/result.json \
-            '{cli_channel:$cli,registry_tag:$registry,release_run:{id:($release_run_id|tonumber),attempt:($release_run_attempt|tonumber)},quickstart:($quickstart[0] // null),slack_evidence:(($quickstart[0].slack_evidence // null) | if . == null then null else .path = ("target/harness-quickstart/" + .path) end)}')
-          python3 .github/scripts/release_control_contract.py write-result \
-            --kind test --repository '${{ github.repository }}' \
-            --operation-id '${{ inputs.operation_id }}' --step-id '${{ inputs.step_id }}' \
-            --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' \
-            --workflow harness-quickstart.yml --event '${{ github.event_name }}' --sha '${{ github.sha }}' \
-            --subject "$subject" --checks "$checks" --effects '[]' --outputs "$outputs" --output execution-result.json
-
+      # Release Control reads result.json and the slack-evidence video from
+      # this artifact; a runner-level catastrophe still settles from the run
+      # conclusion, hence warn instead of error.
       - if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: execution-result-${{ inputs.operation_id }}-${{ inputs.step_id }}
-          path: |
-            execution-result.json
-            target/harness-quickstart/slack-evidence/
-          retention-days: 30
-          if-no-files-found: error
+          name: quickstart-result-${{ inputs.quickstart_id }}-${{ inputs.attempt }}
+          path: target/harness-quickstart/
+          retention-days: 14
+          if-no-files-found: warn

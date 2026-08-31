@@ -14,7 +14,7 @@ without using the iii SDK. It exposes no callable `http::*` functions; its
 entire surface is the `http` trigger type, bound through a worker SDK trigger
 registration such as `iii.registerTrigger({ type: 'http', function_id, config })`.
 
-Install it with `iii worker add http`. The legacy in-engine HTTP service must not
+Install it with `iii trigger compose::add worker=http`. The legacy in-engine HTTP service must not
 run on the same engine because it also owns the `http` trigger type. Remove the
 legacy built-in from the engine config before starting this worker; the standalone
 worker refuses to boot when the builtin is active.

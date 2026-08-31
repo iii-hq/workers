@@ -63,7 +63,7 @@ export function Hero() {
           <Terminal title="a complete agent backend, from zero">
             <div className="flex flex-col gap-y-2.5">
               <TerminalRow
-                command="iii worker add harness"
+                command="iii trigger compose::add worker=harness"
                 output={
                   <span className="flex items-center gap-x-2">
                     <StatusDot pulse />

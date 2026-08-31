@@ -267,7 +267,7 @@ impl Orchestrator {
 
     pub async fn start_all_managed(&self, wait_connected: bool) -> Result<()> {
         // "All" means all spawnable workers; external ones (non-Rust, managed
-        // via `iii worker add`) are not an error here.
+        // via `compose::add`) are not an error here.
         let spawnable: Vec<String> = self
             .config
             .workers
@@ -306,7 +306,7 @@ impl Orchestrator {
                 continue;
             }
             // Non-spawnable workers pulled in as dependencies run externally
-            // (`iii worker add`); skip them. Bail only when the user asked for
+            // (`compose::add`); skip them. Bail only when the user asked for
             // that worker by name.
             if let Some(reason) = self.unsupported_reason(&worker) {
                 if names.contains(&worker) {
@@ -950,21 +950,11 @@ mod tests {
     #[test]
     fn unsupported_reason_flags_non_rust_dep() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let write = |name: &str, body: &str| {
-            let dir = tmp.path().join(name);
-            std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(dir.join("iii.worker.yaml"), body).unwrap();
-            dir
-        };
-        let harness_dir = write(
-            "harness",
-            "iii: v1\nname: harness\nlanguage: rust\ndeploy: binary\ndependencies:\n  scrapling: \"^0.2.4\"\n",
-        );
+        std::fs::write(tmp.path().join("worker-compose.yaml"), "workers:\n  harness:\n    source: {path: harness}\n    artifact: {kind: rust-binary}\n    registry:\n      dependencies: {scrapling: \"^0.2.4\"}\n  scrapling:\n    source: {path: scrapling}\n    artifact: {kind: python-bundle}\n    registry: {dependencies: {}}\n").unwrap();
+        let harness_dir = tmp.path().join("harness");
+        std::fs::create_dir_all(&harness_dir).unwrap();
         std::fs::write(harness_dir.join("Cargo.toml"), "[workspace]\n").unwrap();
-        write(
-            "scrapling",
-            "iii: v1\nname: scrapling\nlanguage: python\ndeploy: bundle\n",
-        );
+        std::fs::create_dir_all(tmp.path().join("scrapling")).unwrap();
 
         let worker_specs = crate::discover::discover_repo_workers(tmp.path()).unwrap();
         let workers = crate::discover::order_worker_names(&worker_specs);
@@ -1003,16 +993,9 @@ mod tests {
     /// outlive the `Orchestrator`.
     fn test_orchestrator() -> (tempfile::TempDir, Orchestrator) {
         let tmp = tempfile::TempDir::new().unwrap();
-        let write = |name: &str, body: &str| {
-            let dir = tmp.path().join(name);
-            std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(dir.join("iii.worker.yaml"), body).unwrap();
-            dir
-        };
-        let harness_dir = write(
-            "harness",
-            "iii: v1\nname: harness\nlanguage: rust\ndeploy: binary\n",
-        );
+        std::fs::write(tmp.path().join("worker-compose.yaml"), "workers:\n  harness:\n    source: {path: harness}\n    artifact: {kind: rust-binary}\n    registry: {dependencies: {}}\n").unwrap();
+        let harness_dir = tmp.path().join("harness");
+        std::fs::create_dir_all(&harness_dir).unwrap();
         std::fs::write(harness_dir.join("Cargo.toml"), "[workspace]\n").unwrap();
 
         let worker_specs = crate::discover::discover_repo_workers(tmp.path()).unwrap();

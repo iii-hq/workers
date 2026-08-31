@@ -465,7 +465,17 @@ pub struct FsAgent {
     /// Harness subagent color token (one of [`AGENT_COLOR_TOKENS`]) for
     /// display identities. `None` = neutral.
     pub color: Option<String>,
+    /// Parent profile id (`extends:`), verbatim. Resolved where the profile
+    /// is served (`directory::agents::*`), never at scan time: an unknown
+    /// parent is a per-profile warning there, not a load failure here.
+    pub extends: Option<String>,
+    /// Empty for a profile bundled with the worker (`builtin`): the body
+    /// lives in the binary, and there is no file to stat, edit in place, or
+    /// delete.
     pub abs_path: PathBuf,
+    /// Bundled with the worker — no file behind it until an update
+    /// copy-on-writes the local shadow.
+    pub builtin: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -486,6 +496,11 @@ pub struct AgentFrontmatter {
     pub icon: Option<String>,
     #[serde(default)]
     pub color: Option<String>,
+    /// Parent profile id: the resolved profile is the parent's resolved
+    /// prompt followed by this file's body, and `skills` / `model` /
+    /// `reasoning_effort` fall back to the parent when omitted here.
+    #[serde(default)]
+    pub extends: Option<String>,
 }
 
 /// The harness `SubagentIcon` closed token set — `harness::spawn`
@@ -572,6 +587,44 @@ pub fn validate_agent_logo(logo: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Normalize parsed frontmatter into an [`FsAgent`] row — the one place the
+/// trim / empty-means-absent rules live, shared by the scanner, the
+/// profiles bundled with the worker, and the write paths (so a write
+/// reports exactly what the next scan will serve).
+pub(crate) fn agent_from_frontmatter(
+    name: String,
+    fm: AgentFrontmatter,
+    abs_path: PathBuf,
+    builtin: bool,
+) -> FsAgent {
+    fn trimmed(value: Option<String>) -> Option<String> {
+        value
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    }
+    FsAgent {
+        name,
+        display_name: fm.name.as_deref().unwrap_or("").trim().to_string(),
+        description: fm
+            .description
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string(),
+        logo: fm.logo.map(|l| l.trim().to_string()),
+        skills: fm.skills,
+        model: trimmed(fm.model),
+        reasoning_effort: trimmed(fm.reasoning_effort),
+        icon: trimmed(fm.icon),
+        color: trimmed(fm.color),
+        extends: trimmed(fm.extends),
+        abs_path,
+        builtin,
+    }
+}
+
 /// Scan direct `*.md` agent profiles under `root`. Nested Markdown is
 /// ignored; profile ids come from the file stem and are validated by
 /// [`validate_name`].
@@ -625,43 +678,7 @@ pub fn scan_agents(root: &Path) -> (Vec<FsAgent>, Vec<SkipReason>) {
             skip(format!("invalid agent profile id {name:?}: {e}"));
             continue;
         }
-        agents.push(FsAgent {
-            name,
-            display_name: fm.name.as_deref().unwrap_or("").trim().to_string(),
-            description: fm
-                .description
-                .as_deref()
-                .map(str::trim)
-                .unwrap_or("")
-                .to_string(),
-            logo: fm.logo.map(|l| l.trim().to_string()),
-            skills: fm.skills,
-            model: fm
-                .model
-                .as_deref()
-                .map(str::trim)
-                .filter(|m| !m.is_empty())
-                .map(str::to_string),
-            reasoning_effort: fm
-                .reasoning_effort
-                .as_deref()
-                .map(str::trim)
-                .filter(|effort| !effort.is_empty())
-                .map(str::to_string),
-            icon: fm
-                .icon
-                .as_deref()
-                .map(str::trim)
-                .filter(|i| !i.is_empty())
-                .map(str::to_string),
-            color: fm
-                .color
-                .as_deref()
-                .map(str::trim)
-                .filter(|color| !color.is_empty())
-                .map(str::to_string),
-            abs_path: abs,
-        });
+        agents.push(agent_from_frontmatter(name, fm, abs, false));
     }
 
     agents.sort_by(|a, b| a.name.cmp(&b.name));
@@ -816,9 +833,13 @@ pub fn scan_skills_merged(
 
     // Merge: local skills first (they won any shadowed namespace),
     // then global-only namespaces. Re-sort by id for deterministic order.
+    // Namespace shadowing never covers ROOT-LEVEL files (`index.md` in both
+    // roots is the same id `index`), so dedupe by id too — the stable sort
+    // keeps the local row first, and the local row wins.
     let mut merged = local_skills;
     merged.extend(global_filtered);
     merged.sort_by(|a, b| a.id.cmp(&b.id));
+    merged.dedup_by(|later, earlier| later.id == earlier.id);
 
     let mut all_skipped = global_skipped;
     all_skipped.extend(local_skipped);
@@ -1521,6 +1542,19 @@ mod tests {
     }
 
     #[test]
+    fn merged_root_level_index_in_both_roots_is_one_skill_local_wins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let global = tmp.path().join("global");
+        let local = tmp.path().join("local");
+        write_fixture(&global, "index.md", "# iii\n");
+        write_fixture(&local, "index.md", "# harness\n");
+        let (merged, _) = scan_skills_merged(&global, &local);
+        let index: Vec<&FsSkill> = merged.iter().filter(|s| s.id == "index").collect();
+        assert_eq!(index.len(), 1, "one id, one row: {merged:?}");
+        assert!(index[0].abs_path.starts_with(&local), "the local root wins");
+    }
+
+    #[test]
     fn merged_global_only_namespace_still_listed() {
         let global = tempfile::tempdir().unwrap();
         let local = tempfile::tempdir().unwrap();
@@ -1810,7 +1844,7 @@ mod tests {
         write_fixture(
             tmp.path(),
             "captain.md",
-            "---\nname: Release Captain\ndescription: Cuts releases.\nlogo: \"🚢\"\nskills:\n  - iii-sandbox\nmodel: codex/gpt-5.4-mini\n---\nYou are the captain.\n",
+            "---\nname: Release Captain\ndescription: Cuts releases.\nlogo: \"🚢\"\nskills:\n  - iii-sandbox\nmodel: codex/gpt-5.4-mini\nextends: base \n---\nYou are the captain.\n",
         );
         let (agents, skipped) = scan_agents(tmp.path());
         assert!(skipped.is_empty(), "unexpected skips: {skipped:?}");
@@ -1822,12 +1856,18 @@ mod tests {
         assert_eq!(a.logo.as_deref(), Some("🚢"));
         assert_eq!(a.skills, vec!["iii-sandbox".to_string()]);
         assert_eq!(a.model.as_deref(), Some("codex/gpt-5.4-mini"));
+        assert_eq!(a.extends.as_deref(), Some("base"), "trimmed, verbatim");
+        assert!(!a.builtin);
     }
 
     #[test]
     fn scan_agents_empty_description_and_absent_optionals_ok() {
         let tmp = tempfile::tempdir().unwrap();
-        write_fixture(tmp.path(), "min.md", "---\nname: Min\n---\nBody.\n");
+        write_fixture(
+            tmp.path(),
+            "min.md",
+            "---\nname: Min\nextends: \"\"\n---\nBody.\n",
+        );
         let (agents, skipped) = scan_agents(tmp.path());
         assert!(skipped.is_empty(), "unexpected skips: {skipped:?}");
         let a = &agents[0];
@@ -1835,6 +1875,7 @@ mod tests {
         assert!(a.logo.is_none());
         assert!(a.skills.is_empty());
         assert!(a.model.is_none());
+        assert!(a.extends.is_none(), "an empty extends means no parent");
     }
 
     #[test]

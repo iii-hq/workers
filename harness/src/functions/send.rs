@@ -13,7 +13,7 @@ use crate::deps::Deps;
 use crate::error::HarnessError;
 use crate::ids;
 use crate::policy;
-use crate::prompt::{self, Mode, SystemPromptStrategy};
+use crate::prompt::{self, Mode, SystemPromptOpts, SystemPromptStrategy};
 use crate::turn_loop;
 use crate::types::message::{AgentMessage, UserMessage, UserRoleTag};
 use crate::types::model::ThinkingLevel;
@@ -41,12 +41,14 @@ impl From<String> for MessageInput {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct SendOptions {
     /// Run the session as a directory agent profile (`directory::agents::*`
-    /// id). Session-creating sends only — the profile's body becomes the
-    /// enrich system prompt, its skill filter the session's skill selection,
-    /// its `model` the fallback when this send names none, and its identity
-    /// sticks like the system prompt (later sends inherit; naming an explicit
-    /// prompt field sheds it). Refused on an existing session or combined
-    /// with either prompt field.
+    /// id). Session-creating sends only — the profile's resolved system
+    /// prompt (its `extends` chain composed by the directory) REPLACES the
+    /// built-in identity (only the `mode` paragraph is prepended), its skill
+    /// filter becomes the session's skill selection, its `model` is the
+    /// fallback when this send names none, and its identity sticks like the
+    /// system prompt (later sends inherit; naming an explicit prompt field
+    /// sheds it). Refused on an existing session, combined with either
+    /// prompt field, or when the profile's `extends` chain does not resolve.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -281,7 +283,13 @@ async fn start_with_delivery_lock(
 
     // Freeze the per-send options before moving the message out of `req`.
     let inherits_prompt = prev.is_some() && prompt_fields_omitted(req.options.as_ref());
-    let identity = crate::prompt::effective_default(&deps.iii).await.identity;
+    // A profile IS the identity, so the stored/embedded default is only
+    // fetched (a directory round trip) when no profile is set.
+    let identity = if agent.is_some() {
+        String::new()
+    } else {
+        crate::prompt::effective_default(&deps.iii).await.identity
+    };
     let mut options = build_options(&cfg, &req, model, provider, agent.as_ref(), &identity);
     inherit_prior_functions(
         &cfg,
@@ -339,7 +347,10 @@ async fn start_with_delivery_lock(
         }
         None => session.create(title.as_deref(), metadata.as_ref()).await?,
     };
-    crate::budget::prepare_root(deps, &session_id, &mut options, prev.as_ref()).await?;
+    tag_failed_send_with_session(
+        &session_id,
+        crate::budget::prepare_root(deps, &session_id, &mut options, prev.as_ref()).await,
+    )?;
 
     // Entry id: idempotent when a dedupe key is set.
     let entry_id = req
@@ -350,24 +361,27 @@ async fn start_with_delivery_lock(
     // Queue path: a `Running` step may be streaming — park the message as a
     // durable queue row the loop drains after the stream ends, instead of
     // appending mid-transcript.
-    let (outcome, entry) = deliver(
-        deps,
-        &cfg,
+    let (outcome, entry) = tag_failed_send_with_session(
         &session_id,
-        options,
-        Delivery {
-            message: &message,
-            entry_id: entry_id.as_deref(),
-            origin: None,
-            lineage: &TurnLineage::default(),
-            caller_holds_session_lock: caller_holds_target_session_lock,
-            skills_explicit: req
-                .options
-                .as_ref()
-                .is_some_and(|options| options.skills.is_some()),
-        },
-    )
-    .await?;
+        deliver(
+            deps,
+            &cfg,
+            &session_id,
+            options,
+            Delivery {
+                message: &message,
+                entry_id: entry_id.as_deref(),
+                origin: None,
+                lineage: &TurnLineage::default(),
+                caller_holds_session_lock: caller_holds_target_session_lock,
+                skills_explicit: req
+                    .options
+                    .as_ref()
+                    .is_some_and(|options| options.skills.is_some()),
+            },
+        )
+        .await,
+    )?;
 
     // Record the idempotency mapping (TTL-bound by contract).
     if let Some(key) = &req.idempotency_key {
@@ -381,6 +395,23 @@ async fn start_with_delivery_lock(
     }
 
     Ok(outcome)
+}
+
+/// Attribute failures that happen after session creation but before the turn
+/// trace exists. Successful sends deliberately stay untagged here: their
+/// `harness::turn step` trace is the one the session-scoped Console should
+/// list, without a duplicate `harness::send` row.
+fn tag_failed_send_with_session<T>(
+    session_id: &str,
+    result: Result<T, HarnessError>,
+) -> Result<T, HarnessError> {
+    if result.is_err() {
+        iii_helpers::observability::set_current_span_attribute(
+            "iii.session.id",
+            session_id.to_string(),
+        );
+    }
+    result
 }
 
 fn caller_holds_target_session_lock(
@@ -787,15 +818,14 @@ fn build_options(
         model,
         provider,
         // An agent profile supplies the prompt (validated exclusive with the
-        // explicit prompt fields in resolve_send_agent), always as Enrich
-        // over the top-level identity.
+        // explicit prompt fields in resolve_send_agent) and IS the identity:
+        // nothing built-in underneath, and the mode paragraph applies to it
+        // exactly as it would to the built-in identity.
         system_prompt: match agent {
-            Some(a) => prompt::resolve_system_prompt(
-                Some(a.prompt.clone()),
-                SystemPromptStrategy::Enrich,
-                opts.mode,
-                identity,
-            ),
+            Some(a) => Some(prompt::build_system_prompt(SystemPromptOpts {
+                mode: opts.mode,
+                identity: &a.prompt,
+            })),
             None => prompt::resolve_system_prompt(
                 opts.system_prompt,
                 opts.system_prompt_strategy.unwrap_or_default(),
@@ -1270,7 +1300,48 @@ pub(crate) async fn seed_new(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iii_helpers::observability::opentelemetry::trace::{
+        TraceContextExt, Tracer, TracerProvider,
+    };
+    use iii_helpers::observability::opentelemetry::Context;
+    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SimpleSpanProcessor};
     use std::sync::Arc;
+
+    fn failed_send_session_attribute(result: Result<(), HarnessError>) -> Option<String> {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_span_processor(SimpleSpanProcessor::new(exporter.clone()))
+            .build();
+        let tracer = provider.tracer("harness-send-test");
+        let span = tracer.start("execute harness::send");
+        let guard = Context::new().with_span(span).attach();
+
+        let _ = tag_failed_send_with_session("session-filter-test", result);
+
+        drop(guard);
+        exporter
+            .get_finished_spans()
+            .expect("exporter")
+            .into_iter()
+            .next()
+            .and_then(|span| {
+                span.attributes
+                    .into_iter()
+                    .find(|attribute| attribute.key.as_str() == "iii.session.id")
+                    .map(|attribute| attribute.value.as_str().to_string())
+            })
+    }
+
+    #[test]
+    fn failed_send_is_attributed_to_its_session_without_tagging_successes() {
+        assert_eq!(failed_send_session_attribute(Ok(())), None);
+        assert_eq!(
+            failed_send_session_attribute(Err(HarnessError::Dependency(
+                "enqueue harness::turn failed".into(),
+            ))),
+            Some("session-filter-test".into()),
+        );
+    }
 
     #[tokio::test]
     async fn omitted_delivery_cannot_overwrite_an_explicit_filter_writer() {
@@ -2253,14 +2324,37 @@ mod tests {
         }
     }
 
+    /// The profile prompt IS the identity: no built-in prompt underneath,
+    /// and the mode paragraph is the only layer the harness adds in front.
     #[test]
-    fn build_options_applies_agent_prompt_and_identity() {
+    fn build_options_applies_agent_prompt_as_the_identity() {
         let cfg = WorkerConfig::default();
+        let agent = resolved_agent(None);
+
         let req = agent_send_request(SendOptions {
             agent: Some("tech-leader".into()),
             ..Default::default()
         });
-        let agent = resolved_agent(None);
+        let opts = build_options(
+            &cfg,
+            &req,
+            "m".into(),
+            None,
+            Some(&agent),
+            crate::prompt::DEFAULT,
+        );
+        assert_eq!(
+            opts.system_prompt.as_deref(),
+            Some(agent.prompt.as_str()),
+            "override, not enrich"
+        );
+        assert_eq!(opts.agent, Some(agent.identity.clone()));
+
+        let req = agent_send_request(SendOptions {
+            agent: Some("tech-leader".into()),
+            mode: Some(Mode::Agent),
+            ..Default::default()
+        });
         let opts = build_options(
             &cfg,
             &req,
@@ -2270,12 +2364,12 @@ mod tests {
             crate::prompt::DEFAULT,
         );
         let prompt = opts.system_prompt.expect("agent prompt");
+        assert!(prompt.starts_with("You are operating in agent mode"));
+        assert!(prompt.ends_with(&format!("\n\n{}", agent.prompt)));
         assert!(
-            prompt.starts_with(crate::prompt::DEFAULT),
-            "enrich, not override"
+            !prompt.contains("# System rules"),
+            "the built-in identity never rides under a profile"
         );
-        assert!(prompt.ends_with("You are Tech Leader.\n\nDelegate everything."));
-        assert_eq!(opts.agent, Some(agent.identity));
     }
 
     #[test]

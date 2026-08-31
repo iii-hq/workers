@@ -12,7 +12,7 @@ curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 cargo build --release --bin iii-shell
 
 # 3. Wire the binary where the engine looks (registered worker name = `shell`,
-#    per iii.worker.yaml — fall back to ~/.iii/workers/iii-shell if your
+#    per worker-compose.yaml — fall back to ~/.iii/workers/iii-shell if your
 #    engine resolves by binary name).
 mkdir -p ~/.iii/workers
 ln -sfn $(pwd)/target/release/iii-shell ~/.iii/workers/shell
@@ -23,7 +23,7 @@ ln -sfn $(pwd)/target/release/iii-shell ~/.iii/workers/shell
 iii -c ./config.yaml
 ```
 
-`iii worker add shell` does not currently pull `iii-sandbox` along — run `iii worker add iii-sandbox` separately before using `shell::exec { target: sandbox }` or any `shell::fs::*` sandbox-target path. Plain host-targeted `shell::exec` works without it.
+`iii trigger compose::add worker=shell` does not currently pull `iii-sandbox` along — run `iii trigger compose::add worker=iii-sandbox` separately before using `shell::exec { target: sandbox }` or any `shell::fs::*` sandbox-target path. Plain host-targeted `shell::exec` works without it.
 
 ## Injected console UI (`ui/`, `src/ui.rs`)
 

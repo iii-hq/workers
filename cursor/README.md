@@ -7,7 +7,7 @@ No Cursor API key is required for the provider or local agent path. Both reuse t
 ## Install
 
 ```bash
-iii worker add cursor
+iii trigger compose::add worker=cursor
 ```
 
 Install the official Cursor Agent CLI and authenticate it once outside the worker:

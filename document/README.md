@@ -13,14 +13,14 @@ the answer.
 ## Install
 
 ```bash
-iii worker add document
+iii trigger compose::add worker=document
 ```
 
 Reading a scanned document also needs something to turn its pages into pixels
 and something to read them, neither of which ships here:
 
 ```bash
-iii worker add browser
+iii trigger compose::add worker=browser
 ```
 
 With [browser](https://github.com/iii-hq/workers/tree/main/browser) installed and a vision model configured through
@@ -165,7 +165,7 @@ only thing that turns a page into pixels. An office document whose text came
 back empty has its embedded images pulled out and read the same way.
 
 Both of those dependencies are soft. Neither is declared in
-`iii.worker.yaml`, every other function works without them, and a call that
+`worker-compose.yaml`, every other function works without them, and a call that
 needs one it cannot reach says which to install. Someone who installed this
 worker to read a `.docx` never pays for Chromium.
 

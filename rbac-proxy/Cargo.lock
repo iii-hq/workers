@@ -1114,7 +1114,7 @@ dependencies = [
 
 [[package]]
 name = "rbac-proxy"
-version = "1.0.4-rc.2"
+version = "1.0.4-rc.3"
 dependencies = [
  "anyhow",
  "async-trait",

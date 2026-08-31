@@ -73,25 +73,25 @@ Always exactly one command:
 
 ````markdown
 ```bash
-iii worker add <name>
+iii trigger compose::add worker=<name>
 ```
 ````
 
-Where `<name>` is the value of `iii.worker.yaml.name` (which equals the
+Where `<name>` is the value of `worker-compose.yaml.name` (which equals the
 folder name; see [`docs/sops/new-worker.md`](docs/sops/new-worker.md) §1).
 That is the whole user-facing install — no source build, no
-`sudo install`, no `--manifest | jq` verification step. `iii worker add`
-fetches the binary, writes a config block into `~/.iii/config.yaml`,
-and the engine starts the worker the next time it boots.
+`sudo install`, no `--manifest | jq` verification step. The
+`iii trigger compose::add` call declares the worker in `worker-compose.yaml`
+and starts it as part of the Compose project.
 
 ### Companion workers
 
-If your worker is most useful next to a sibling, include the companion as a
-second `iii worker add` block with one sentence explaining what it unlocks:
+If your worker is most useful next to a sibling, add the companion in the same
+call and include one sentence that explains what it unlocks:
 
 ````markdown
 ```bash
-iii worker add <companion>
+iii trigger compose::add worker=<name> worker=<companion>
 ```
 ````
 
@@ -212,12 +212,11 @@ most important thing it gives you.
 ## Install
 
 ```bash
-iii worker add <worker>
+iii trigger compose::add worker=<worker>
 ```
 
-`iii worker add` fetches the binary, writes a config block into
-`~/.iii/config.yaml`, and the engine starts the worker the next time it
-boots.
+`iii trigger compose::add` declares the worker in `worker-compose.yaml` and
+starts it as part of the Compose project.
 
 ## Quickstart
 

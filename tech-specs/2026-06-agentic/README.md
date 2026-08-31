@@ -107,7 +107,7 @@ plain LLM loop without `context-manager`).
 
 ## Design principles
 
-1. **Standalone first.** Every red worker is independently installable (`iii worker add <name>`) and
+1. **Standalone first.** Every red worker is independently installable (`iii trigger compose::add worker=<name>`) and
    has a coherent purpose by itself. Cross-worker calls are explicit `iii.trigger` calls, never
    in-process coupling.
 2. **The harness is thin.** `harness` only sequences the other three plus function dispatch. Anything

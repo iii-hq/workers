@@ -5,14 +5,13 @@ Run Unix commands, background jobs, and structured filesystem operations from th
 ## Install
 
 ```sh
-iii worker add shell
+iii trigger compose::add worker=shell
 ```
 
-Sandbox-targeted execution and `shell::fs::*` forwarding need the `iii-sandbox` worker; `iii worker add shell` does not pull it in. To surface `shell::*` to LLM agents, pair with `iii-directory`:
+Sandbox-targeted execution and `shell::fs::*` forwarding need the `iii-sandbox` worker; `iii trigger compose::add worker=shell` does not pull it in. To surface `shell::*` to LLM agents, pair with `iii-directory`:
 
 ```sh
-iii worker add iii-sandbox
-iii worker add iii-directory
+iii trigger compose::add worker=iii-sandbox worker=iii-directory
 ```
 
 ## Skills
@@ -197,7 +196,7 @@ out explicitly below:
 | `C220` | Path resolves inside a configured root but outside the per-call `scope_root` the session is scoped to. | `S220` |
 | `C221` | Optimistic whole-file save conflict: the file no longer matches `expected_revision`; no bytes were written. | n/a |
 
-No separate install: `iii worker add shell` brings the whole surface.
+No separate install: `iii trigger compose::add worker=shell` brings the whole surface.
 
 ## Terminal sessions (`shell::pty::*`)
 

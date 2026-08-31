@@ -21,11 +21,13 @@ import pathlib
 import subprocess
 import sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import _lib  # noqa: E402
+
 # Files inside a worker dir that DON'T count as a real source change. If the
 # only files a worker touched match these globs, version-bump + tests/ gates
 # in pr-checks downgrade to notices.
 METADATA_GLOBS = (
-    "iii.worker.yaml",
     "README.md",
     "AGENTS.md",
     "AGENTS-*.md",
@@ -99,8 +101,8 @@ PROVIDER_CONTRACT_INFRA_PATHS = {
     ".github/workflows/ci.yml",
 }
 
-# Shared Rust crates live under crates/<name>/ (no iii.worker.yaml — not
-# workers). A source change there (1) reports the crate in the `crates`
+# Shared Rust crates live under crates/<name>/ and are not catalog workers. A
+# source change there (1) reports the crate in the `crates`
 # bucket so ci.yml's crate lint+test job runs it, and (2) fans out to every
 # worker whose Cargo.toml declares a path dependency on it: dependents join
 # the matrix but not source_changed (no version-bump gate on the PR author).
@@ -164,20 +166,17 @@ def suite_changed(
             not f.startswith(excluded_prefixes)
             and f.split("/", 1)[0] in workers
             and len(f.split("/", 1)) == 2
-            and not is_integration_doc(f.split("/", 1)[1])
+            and not is_metadata(f.split("/", 1)[1])
         )
         for f in files
     )
 
 
-def list_worker_dirs(repo_root: pathlib.Path) -> set[str]:
+def publishable_workers(repo_root: pathlib.Path) -> dict[str, _lib.WorkerSpec]:
     return {
-        p.name
-        for p in repo_root.iterdir()
-        if p.is_dir()
-        and not p.name.startswith(".")
-        and p.name not in IGNORE_DIRS
-        and (p / "iii.worker.yaml").exists()
+        worker_id: spec
+        for worker_id, spec in _lib.read_worker_catalog(repo_root / ".deploy" / "workers.yaml").items()
+        if spec.publish and spec.path.parent == repo_root
     }
 
 
@@ -193,18 +192,51 @@ def changed_files(base: str, head: str) -> list[str]:
     return out.splitlines()
 
 
-def language_of(worker_dir: pathlib.Path) -> str | None:
-    meta = worker_dir / "iii.worker.yaml"
-    if not meta.exists():
-        return None
-    for line in meta.read_text().splitlines():
-        s = line.strip()
-        if s.startswith("language:"):
-            lang = s.split(":", 1)[1].strip()
-            if lang == "javascript":
-                return "node"
-            return lang
-    return None
+def language_of(spec: _lib.WorkerSpec) -> str | None:
+    return {
+        "rust-binary": "rust",
+        "javascript-bundle": "node",
+        "python-bundle": "python",
+        # The only first-party OCI worker currently uses a Python package.
+        "oci-image": "python",
+    }.get(spec.artifact_kind)
+
+
+def catalog_at_ref(ref: str) -> dict:
+    import yaml
+
+    try:
+        text = subprocess.check_output(
+            ["git", "show", f"{ref}:.deploy/workers.yaml"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except subprocess.CalledProcessError:
+        return {}
+    value = yaml.safe_load(text) or {}
+    return value if isinstance(value, dict) else {}
+
+
+def catalog_deltas(base: str, head: str) -> tuple[set[str], set[str], bool]:
+    """Return changed entries, source-affecting entries, and legacy stack changes."""
+    before = catalog_at_ref(base)
+    after = catalog_at_ref(head)
+    before_workers = before.get("workers") or {}
+    after_workers = after.get("workers") or {}
+    changed: set[str] = set()
+    source_changed: set[str] = set()
+    for worker in set(before_workers) | set(after_workers):
+        old = before_workers.get(worker)
+        new = after_workers.get(worker)
+        if old == new:
+            continue
+        changed.add(worker)
+        if not isinstance(old, dict) or not isinstance(new, dict):
+            source_changed.add(worker)
+            continue
+        if any(old.get(section) != new.get(section) for section in ("source", "artifact")):
+            source_changed.add(worker)
+    return changed, source_changed, False
 
 
 def crate_dependents(repo_root: pathlib.Path, crate: str, workers: set[str]) -> list[str]:
@@ -240,8 +272,16 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
 
     repo_root = pathlib.Path(".").resolve()
-    workers = list_worker_dirs(repo_root)
+    worker_specs = publishable_workers(repo_root)
+    workers = set(worker_specs)
     files = changed_files(args.base, args.head)
+    catalog_changed: set[str] = set()
+    catalog_source_changed: set[str] = set()
+    stack_changed = False
+    if ".deploy/workers.yaml" in files:
+        catalog_changed, catalog_source_changed, stack_changed = catalog_deltas(args.base, args.head)
+        catalog_changed &= workers
+        catalog_source_changed &= workers
 
     touched: dict[str, list[str]] = {}
     touched_crates: dict[str, list[str]] = {}
@@ -274,12 +314,15 @@ def main(argv: list[str] | None = None) -> int:
     forced = set(args.force_worker)
     for crate in changed_crates:
         forced.update(crate_dependents(repo_root, crate, workers))
-    changed = sorted(set(touched) | forced)
+    changed = sorted(set(touched) | forced | catalog_changed)
     source_changed = sorted(
-        w for w, rels in touched.items()
-        if any(not is_metadata(rel) for rel in rels)
+        {
+            w for w, rels in touched.items()
+            if any(not is_metadata(rel) for rel in rels)
+        }
+        | catalog_source_changed
     )
-    integration_changed = suite_changed(
+    integration_changed = stack_changed or suite_changed(
         files,
         forced,
         INTEGRATION_WORKERS,
@@ -296,7 +339,7 @@ def main(argv: list[str] | None = None) -> int:
     provider_contract = provider_contract_selection(files, workers)
     by_language: dict[str, list[str]] = {"rust": [], "node": [], "python": []}
     for w in changed:
-        lang = language_of(repo_root / w)
+        lang = language_of(worker_specs[w])
         if lang in by_language:
             by_language[lang].append(w)
         else:

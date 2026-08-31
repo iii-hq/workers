@@ -7,3 +7,11 @@ license: Apache-2.0
 bin: devin
 tags: [coding-agent, devin, cloud, pr-review, agent]
 description: Devin CLI + API as an iii worker; devin::run/start/stop/status/sessions::list follow the agent-worker family and stream AgentEvent frames onto agent::events, devin::session::* wrap the Devin cloud session lifecycle, devin::pr-review::* exposes Devin's review surface, and devin::api reaches any Devin v1/v3 endpoint.
+config:
+  base_url: https://api.devin.ai/v1
+  request_timeout_secs: 120
+  devin_executable: ""
+  cli_extra_args: ["--permission-mode", "dangerous"]
+  events_stream: agent::events
+  raw_events_stream: devin::events
+  iii_context: true

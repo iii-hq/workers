@@ -30,8 +30,8 @@ const MAX_WORKER_NAME_BYTES: usize = 64;
 /// `iii-worker` requires of one (`iii-worker/src/core/types.rs`): a name
 /// becomes a path segment under `~/.iii/logs/<name>` in that program, so
 /// being looser here would accept a namespace stem this crate happily runs
-/// with, only for `iii worker add` to refuse the equivalent name minutes
-/// later, in another program.
+/// with, only for the Compose worker resolver to refuse the equivalent name
+/// minutes later, in another program.
 fn validate_worker_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("worker name must not be empty; it becomes the namespace, \
@@ -101,7 +101,7 @@ fn validate_worker_name(name: &str) -> Result<(), String> {
 /// Deliberately STRICTER than upstream `iii`, which allows any
 /// `is_ascii_alphanumeric` in a worker name (`types.rs`): `MyApp` is refused
 /// here though `iii` would install it. LOOSER than upstream would be the bug,
-/// since it defers the refusal to `iii worker add`, in another program,
+/// since it defers the refusal to `compose::add`, in another program,
 /// minutes later.
 ///
 /// `Err` is the message the caller sees. `""`, `":"` and `"::"` leave nothing

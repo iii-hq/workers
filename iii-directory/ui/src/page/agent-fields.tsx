@@ -1,4 +1,4 @@
-import { Button, type Host, Input, type ModelOption, ModelPicker } from '@iii-dev/console-ui'
+import { Button, type Host, Input, type ModelOption, ModelPicker, Select } from '@iii-dev/console-ui'
 import type { CSSProperties, KeyboardEvent, ReactNode } from 'react'
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { PencilIcon, SearchIcon, XIcon } from '../lib/widgets'
@@ -59,6 +59,16 @@ const fetchSkills = (host: Host) =>
         desc: skill.description || undefined,
       })),
     )
+
+interface AgentCatalogRow {
+  id: string
+  name: string
+  builtin?: boolean
+  inheritance_error?: string | null
+}
+
+const fetchAgents = (host: Host): Promise<AgentCatalogRow[]> =>
+  host.iii.trigger<{ agents?: AgentCatalogRow[] }>('directory::agents::list').then((out) => out.agents ?? [])
 
 interface CatalogModelRow {
   id?: unknown
@@ -764,14 +774,17 @@ export function AgentForm(ctx: FormContext) {
     saving,
     deleting,
     onRemove,
+    entryKey,
   } = ctx
   const skills = readFrontmatterStringList(draft, 'skills').values
+  const extendsId = readFrontmatterField(draft, ['extends']).value.trim()
   const model = readFrontmatterField(draft, ['model']).value.trim()
   const reasoningEffort = readFrontmatterField(draft, ['reasoning_effort']).value.trim() || 'default'
   const icon = readFrontmatterField(draft, ['icon']).value.trim()
   const color = readFrontmatterField(draft, ['color']).value.trim()
   const skillCatalog = useCatalog(host, fetchSkills)
   const modelCatalog = useCatalog(host, fetchModels)
+  const agentCatalog = useCatalog(host, fetchAgents)
   const derived = useMemo(() => slugify(nameValue), [nameValue])
   const draftRef = useRef(draft)
   draftRef.current = draft
@@ -794,6 +807,12 @@ export function AgentForm(ctx: FormContext) {
       next && next !== 'default'
         ? setFrontmatterField(current, 'reasoning_effort', next)
         : withoutFrontmatterFields(current, ['reasoning_effort']),
+    )
+  }
+  const setExtends = (next: string) => {
+    const current = draftRef.current
+    commitDraft(
+      next ? setFrontmatterField(current, 'extends', next, true) : withoutFrontmatterFields(current, ['extends']),
     )
   }
   const setAvatar = (preset: { emoji: string; token: string } | null) => {
@@ -830,6 +849,16 @@ export function AgentForm(ctx: FormContext) {
     return [{ id: model, label: model }, ...options]
   }, [model, modelCatalog.items])
   const modelKnown = !model || modelCatalog.items === null || modelCatalog.items.some((option) => option.id === model)
+  // A profile never extends itself; an unknown current value stays visible
+  // (same trick as `pickerOptions`) so the author can see what to fix.
+  const parentOptions = useMemo(() => {
+    const rows = (agentCatalog.items ?? []).filter((row) => row.id !== entryKey)
+    if (!extendsId || rows.some((row) => row.id === extendsId)) return rows
+    return [{ id: extendsId, name: extendsId }, ...rows]
+  }, [agentCatalog.items, entryKey, extendsId])
+  // Server-side verdict on the SAVED chain; refreshes with the catalog on
+  // the next form mount.
+  const inheritanceError = agentCatalog.items?.find((row) => row.id === entryKey)?.inheritance_error ?? null
   const catalogsLoading =
     (skillCatalog.items === null && !skillCatalog.error) || (modelCatalog.items === null && !modelCatalog.error)
 
@@ -915,9 +944,37 @@ export function AgentForm(ctx: FormContext) {
               </div>
             </div>
 
+            <div className="dir-ui-af-model-row">
+              <div className="dir-ui-af-model-label">
+                <span>Extends</span>
+                <span>{inheritanceError ? 'Saved chain does not resolve.' : 'Optional parent profile.'}</span>
+              </div>
+              <div className="dir-ui-af-model-control">
+                <Select
+                  className="dir-ui-af-model-picker"
+                  aria-label="Parent agent profile"
+                  aria-busy={agentCatalog.items === null && !agentCatalog.error}
+                  value={extendsId || undefined}
+                  options={parentOptions.map((row) => ({
+                    value: row.id,
+                    label: row.name && row.name !== row.id ? `${row.name} (${row.id})` : row.id,
+                  }))}
+                  placeholder="None"
+                  allowEmpty
+                  emptyLabel="None"
+                  onClear={() => setExtends('')}
+                  disabled={readOnly || agentCatalog.error}
+                  onChange={setExtends}
+                />
+              </div>
+            </div>
+            {inheritanceError ? (
+              <p className="dir-ui-af-file-hint dir-ui-af-inheritance-error">{inheritanceError}</p>
+            ) : null}
+
             <CollapsibleSection
               title="System prompt"
-              description="Instructions sessions using this profile follow."
+              description="Instructions sessions using this profile follow. With a parent, they are appended after the parent's resolved prompt."
               summary="Markdown"
             >
               <SystemPromptEditor draft={draft} editDraft={editDraft} readOnly={readOnly} />

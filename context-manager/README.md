@@ -13,11 +13,11 @@ work standalone.
 ## Install
 
 ```bash
-iii worker add context-manager
+iii trigger compose::add worker=context-manager
 ```
 
-`iii worker add` fetches the binary and the engine starts the worker the
-next time it boots. Runtime configuration lives in the `configuration` worker
+`iii trigger compose::add` declares the worker in `worker-compose.yaml` and
+starts it as part of the Compose project. Runtime configuration lives in the `configuration` worker
 (enabled by default in the engine): at boot the worker registers its schema and
 fetches the authoritative value, and it hot-reloads on change — every field,
 with no restart (`summarizer_timeout_ms` is read per call; a `lease_dir` change

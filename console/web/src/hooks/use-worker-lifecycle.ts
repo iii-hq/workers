@@ -4,7 +4,7 @@ import { getIiiClient } from '@/lib/iii-client'
 /**
  * Subscribe to engine `worker` lifecycle events bound to a browser-local
  * handler so the UI reacts the instant a worker is added/removed — whether
- * from an in-app CTA or a `iii worker add/remove <name>` run in the operator's
+ * from an in-app CTA or a `iii trigger compose::add/remove worker=<name>` run in the operator's
  * own terminal.
  *
  * IMPORTANT: the engine `worker` trigger filters on BOTH `operations` and

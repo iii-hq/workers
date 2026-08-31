@@ -7,7 +7,7 @@ This worker is deliberately thin. It does not re-implement scheduling, sub-agent
 ## Install
 
 ```bash
-iii worker add devin
+iii trigger compose::add worker=devin
 ```
 
 For the API surface (`devin::session::*`, `devin::api`), set `DEVIN_API_KEY` in the worker environment. Get a key from the [Devin settings page](https://app.devin.ai/settings/api-keys).
@@ -30,7 +30,7 @@ From zero to a Devin cloud session over the bus:
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 export DEVIN_API_KEY=...       # personal token (v1) or service key (cog_..., v3)
 # service-key users only: also `export DEVIN_ORG_ID=org_...` and set base_url to v3
-iii worker add devin
+iii trigger compose::add worker=devin
 iii   # starts the engine + worker
 ```
 

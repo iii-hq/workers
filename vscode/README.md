@@ -7,10 +7,10 @@ VS Code as an iii worker. The worker runs the VS Code Server through the `code` 
 ## Install
 
 ```bash
-iii worker add vscode
+iii trigger compose::add worker=vscode
 ```
 
-`iii worker add` fetches the bundle, writes a config block into `~/.iii/config.yaml`, and the engine starts the worker the next time it boots. The host needs the VS Code CLI: install VS Code and enable the `code` shell command, or download the [standalone CLI](https://code.visualstudio.com/docs/remote/vscode-server) and point `code_executable` at it. The first start of a workspace downloads the matching VS Code Server build; starting the worker accepts the [VS Code Server license terms](https://aka.ms/vscode-server-license).
+`iii trigger compose::add` declares the worker in `worker-compose.yaml` and starts it as part of the Compose project. The host needs the VS Code CLI: install VS Code and enable the `code` shell command, or download the [standalone CLI](https://code.visualstudio.com/docs/remote/vscode-server) and point `code_executable` at it. The first start of a workspace downloads the matching VS Code Server build; starting the worker accepts the [VS Code Server license terms](https://aka.ms/vscode-server-license).
 
 ## Quickstart
 

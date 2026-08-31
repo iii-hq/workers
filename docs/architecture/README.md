@@ -6,7 +6,8 @@ procedures, see [`../sops/`](../sops/).
 | Document | Summary |
 |---|---|
 | [`worker-model.md`](worker-model.md) | Worker lifecycle, engine bus, function ids, registry discovery |
-| [`iii-worker-yaml.md`](iii-worker-yaml.md) | Manifest field reference and which CI/CD jobs consume each field |
+| [`iii-worker-yaml.md`](iii-worker-yaml.md) | Public local-development and worker-package manifest contract |
+| [`worker-compose.md`](worker-compose.md) | Release catalog fields and which CI/CD jobs consume each field |
 | [`deploy-modes.md`](deploy-modes.md) | `binary` / `image` / `bundle` paths through build and publish |
 | [`testing-and-ci.md`](testing-and-ci.md) | PR discovery, gates, interface boot smoke, dedicated e2e workflows |
 | [`skills-and-permissions.md`](skills-and-permissions.md) | `SKILL.md` lifecycle and `iii-permissions.yaml` conventions |

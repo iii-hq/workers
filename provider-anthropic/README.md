@@ -10,17 +10,17 @@ and `iii-permissions.yaml` blocks agent access to `provider::anthropic::*`.
 ## Install
 
 ```bash
-iii worker add provider-anthropic
+iii trigger compose::add worker=provider-anthropic
 ```
 
 The provider does nothing on its own — it plugs into the router:
 
 ```bash
-iii worker add llm-router
+iii trigger compose::add worker=llm-router
 ```
 
-`iii worker add` fetches the binary, writes a config block into
-`~/.iii/config.yaml`, and the engine starts the worker the next time it boots.
+`iii trigger compose::add` resolves each worker and its dependencies, writes
+exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 
 ## Quickstart
 

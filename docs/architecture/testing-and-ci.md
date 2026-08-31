@@ -10,8 +10,9 @@ How pull requests are gated for workers in this monorepo.
 
 `discover` runs `discover_changed_workers.py` comparing a PR to its base or a
 trusted `main` push to the previous revision.
-A directory is a **worker** when it contains `iii.worker.yaml` at its root.
-`docs/` is not discovered (no manifest).
+A directory is a **worker** when it is owned by a `source.path` entry in the
+private `.deploy/workers.yaml` build catalog. Publishable worker directories
+also retain `iii.worker.yaml` as the public `iii worker` contract.
 
 Outputs:
 
@@ -19,14 +20,14 @@ Outputs:
 |---|---|
 | `all` | Every changed worker folder |
 | `source_changed` | Workers with non-metadata file changes |
-| `rust` / `node` / `python` | Language buckets from `iii.worker.yaml` |
+| `rust` / `node` / `python` | Language buckets from `.deploy/workers.yaml` artifact kinds |
 
 **Harness fan-out:** when `harness/` changes, in-repo deps listed in
-`harness/iii.worker.yaml` `dependencies` join the rust matrix (version-bump
+`harness/worker-compose.yaml` `dependencies` join the rust matrix (version-bump
 gates still apply only to workers the PR author edited).
 
 **Metadata-only PRs:** if a worker's only changes match
-`iii.worker.yaml`, `README.md`, `Cargo.toml`, `Cargo.lock`, `AGENTS*.md`,
+`.deploy/workers.yaml`, `iii.worker.yaml`, `README.md`, `Cargo.toml`, `Cargo.lock`, `AGENTS*.md`,
 version/tests/README gates downgrade to GitHub notices.
 
 ## pr-checks (per changed worker)
@@ -34,9 +35,11 @@ version/tests/README gates downgrade to GitHub notices.
 [`validate_worker.py`](../../.github/scripts/validate_worker.py):
 
 1. `README.md` exists and is non-empty
-2. `iii.worker.yaml` parses with required fields
-3. Manifest version ≥ version on base branch
-4. `tests/` exists and is non-empty
+2. the `.deploy/workers.yaml` entry parses with required private build fields
+3. `iii.worker.yaml` remains valid and agrees with the catalog on identity,
+   package manifest, deploy shape and semver dependencies
+4. Package-manifest version ≥ version on base branch
+5. `tests/` exists and is non-empty
 
 Skill documentation is optional and is not part of this validation gate.
 
@@ -77,7 +80,8 @@ when SQLite parent dirs or sidecars are missing (#104 / `database/v0.2.6`).
 3. Start worker from `./target/debug/<bin>` (with `--config config.collect.yaml` when shipped)
 4. `collect_worker_interface.py` — 120 s wait, assert non-empty interface
 
-**Opt-out:** `interface_smoke: false` in `iii.worker.yaml` (e.g. `iii-lsp`).
+**Opt-out:** `interface_smoke: false` in `iii.worker.yaml` (for example `lsp`).
+This is a PR-only check and is not part of deployment prepare or publication.
 
 ## Dedicated e2e workflows
 
