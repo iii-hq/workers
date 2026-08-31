@@ -330,9 +330,6 @@ jobs:
         id: effects
         env:
           GH_TOKEN: ${{ github.token }}
-          PUBLISH_RESULT: ${{ needs.publish.result }}
-          REGISTRY_RESULT: ${{ needs.registry.result }}
-          IMAGE_CHANNEL_RESULT: ${{ needs.image_channel.result }}
           PUBLISHED_IMAGE_DIGEST: ${{ needs.publish.outputs.image_digest }}
         run: |
           set -euo pipefail
@@ -343,8 +340,6 @@ jobs:
           image_state=unknown
           image_channel_state=unknown
           image_digest=
-          mutation=started
-          [[ "$PUBLISH_RESULT" == success ]] && mutation=completed
 
           if [[ -f deploy-prepared/deployment-descriptor.json && -f deploy-prepared/prepared-artifacts.json ]]; then
             python3 .github/scripts/deployment_train.py verify-prepared \
@@ -460,20 +455,9 @@ jobs:
             fi
           fi
 
-          github_state=$(python3 .github/scripts/deployment_effects.py classify \
-            --before unknown --mutation "$mutation" --after "$github_state")
-          registry_mutation=started
-          [[ "$REGISTRY_RESULT" == success ]] && registry_mutation=completed
-          registry_state=$(python3 .github/scripts/deployment_effects.py classify \
-            --before unknown --mutation "$registry_mutation" --after "$registry_state")
-          next_floor_state=$(python3 .github/scripts/deployment_effects.py classify \
-            --before unknown --mutation "$registry_mutation" --after "$next_floor_state")
-          image_state=$(python3 .github/scripts/deployment_effects.py classify \
-            --before unknown --mutation "$mutation" --after "$image_state")
-          image_channel_mutation=started
-          [[ "$IMAGE_CHANNEL_RESULT" == success ]] && image_channel_mutation=completed
-          image_channel_state=$(python3 .github/scripts/deployment_effects.py classify \
-            --before unknown --mutation "$image_channel_mutation" --after "$image_channel_state")
+          # The probes above already hold the effect state verbatim: with no
+          # pre-mutation probe (before=unknown), classification is the
+          # identity function, so the states pass through unchanged.
           {
             echo "github_state=$github_state"
             echo "registry_state=$registry_state"

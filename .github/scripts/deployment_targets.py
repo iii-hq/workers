@@ -71,23 +71,3 @@ def normalize_targets(raw: object, *, deploy: str | None = "binary") -> list[str
     if deploy == "binary" and not requested:
         raise ValueError("binary workers must declare at least one Unix release target")
     return [target for target in DEFAULT_TARGETS if target in requested]
-
-
-def matrix_targets(raw: object, *, deploy: str | None) -> list[dict[str, str]]:
-    targets = normalize_targets(raw, deploy=deploy)
-    if deploy != "binary":
-        return [
-            {
-                "target": "none",
-                "os": "ubuntu-latest",
-                "runner": "workers-release-linux-8core",
-            }
-        ]
-    return [
-        {
-            "target": target,
-            "os": TARGET_RUNNERS[target],
-            "runner": TARGET_LARGER_RUNNERS[target],
-        }
-        for target in targets
-    ]
