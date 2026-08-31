@@ -49,6 +49,7 @@ impl Invoker for RecordingInvoker {
         function_id: &str,
         payload: Value,
         metadata: Option<Value>,
+        _namespace: Option<&str>,
     ) -> Result<Option<Value>, String> {
         self.deliveries
             .lock()
@@ -103,7 +104,7 @@ async fn publish_delivers_unwrapped_payload_to_subscriber_connect_or_skip() {
 
     let topic = format!("e2e-redis-{}", Uuid::new_v4());
     adapter
-        .subscribe(&topic, "sub-1", &function_id, None, None, None)
+        .subscribe(&topic, "sub-1", &function_id, None, None, None, None)
         .await;
     // Give the subscription task a beat to actually SUBSCRIBE on the Redis
     // connection before the first publish — pub/sub has no buffering for a
@@ -157,6 +158,7 @@ async fn same_function_subscriptions_each_receive_their_metadata_connect_or_skip
             Some(json!({"binding": "a"})),
             None,
             None,
+            None,
         )
         .await;
     adapter
@@ -165,6 +167,7 @@ async fn same_function_subscriptions_each_receive_their_metadata_connect_or_skip
             "sub-b",
             "same-function",
             Some(json!({"binding": "b"})),
+            None,
             None,
             None,
         )

@@ -56,9 +56,9 @@ fn require_or_skip(connected: Option<Arc<IIIClient>>) -> Option<Arc<IIIClient>> 
     None
 }
 
-async fn try_connect_raw() -> Option<Arc<IIIClient>> {
+async fn try_connect_raw_with_options(options: InitOptions) -> Option<Arc<IIIClient>> {
     let url = ws_url();
-    let iii = Arc::new(register_worker(&url, InitOptions::default()));
+    let iii = Arc::new(register_worker(&url, options));
 
     for _ in 0..20 {
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -81,6 +81,10 @@ async fn try_connect_raw() -> Option<Arc<IIIClient>> {
     None
 }
 
+async fn try_connect_raw() -> Option<Arc<IIIClient>> {
+    try_connect_raw_with_options(InitOptions::default()).await
+}
+
 /// Open a fresh, dedicated engine connection (NOT the shared `OnceCell` one).
 ///
 /// Needed when a test registers a function id that another test in the same
@@ -91,6 +95,11 @@ async fn try_connect_raw() -> Option<Arc<IIIClient>> {
 /// The caller should `shutdown_async()` the returned client when done.
 pub async fn connect_fresh() -> Option<Arc<IIIClient>> {
     require_or_skip(try_connect_raw().await)
+}
+
+/// Open a fresh engine connection with caller-provided identity options.
+pub async fn connect_fresh_with_options(options: InitOptions) -> Option<Arc<IIIClient>> {
+    require_or_skip(try_connect_raw_with_options(options).await)
 }
 
 /// Get-or-init the shared engine handle for this test binary.

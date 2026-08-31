@@ -1347,6 +1347,7 @@ mod tests {
             _metadata: Option<serde_json::Value>,
             _condition_function_id: Option<String>,
             _queue_config: Option<crate::subscriber_config::SubscriberQueueConfig>,
+            _namespace: Option<String>,
         ) {
         }
 

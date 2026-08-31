@@ -42,6 +42,61 @@ class TestParseSemver:
         assert _lib.parse_semver("1.2.3-rc.9") < _lib.parse_semver("1.2.3")
 
 
+class TestValidateDeploymentTargetVersion:
+    def test_accepts_numbered_rc(self):
+        assert _lib.validate_deployment_target_version("1.2.3-rc.1") == "1.2.3-rc.1"
+
+    def test_rejects_rc_zero(self):
+        with pytest.raises(ValueError, match="deployment target version"):
+            _lib.validate_deployment_target_version("1.2.3-rc.0")
+
+    def test_rejects_bare_rc_suffix(self):
+        with pytest.raises(ValueError, match="deployment target version"):
+            _lib.validate_deployment_target_version("1.2.3-rc")
+
+
+class TestValidateChannelTargetVersion:
+    def test_next_accepts_numbered_rc(self):
+        assert _lib.validate_channel_target_version("next", "1.2.3-rc.1") == "1.2.3-rc.1"
+
+    def test_next_accepts_pure_version_until_the_rc_flip_lands(self):
+        # Fase 1C tightens `next` to suffixed-only; until then any in-grammar
+        # version keeps the nightly window deployable.
+        assert _lib.validate_channel_target_version("next", "1.2.3") == "1.2.3"
+
+    def test_latest_accepts_pure_version(self):
+        assert _lib.validate_channel_target_version("latest", "1.2.3") == "1.2.3"
+
+    def test_latest_rejects_numbered_rc(self):
+        with pytest.raises(ValueError, match="pure MAJOR.MINOR.PATCH"):
+            _lib.validate_channel_target_version("latest", "1.2.3-rc.1")
+
+    def test_latest_rejects_maturity_suffix(self):
+        with pytest.raises(ValueError, match="pure MAJOR.MINOR.PATCH"):
+            _lib.validate_channel_target_version("latest", "1.2.3-beta")
+
+    def test_unknown_channel_raises(self):
+        with pytest.raises(ValueError, match="next or latest"):
+            _lib.validate_channel_target_version("stable", "1.2.3")
+
+
+class TestValidateFinalization:
+    def test_rc_candidate_and_same_core_stable_pass(self):
+        _lib.validate_finalization("1.7.0-rc.2", "1.7.0")
+
+    def test_pure_candidate_raises(self):
+        with pytest.raises(ValueError, match="X.Y.Z-rc.N"):
+            _lib.validate_finalization("1.7.0", "1.7.0")
+
+    def test_rc_stable_raises(self):
+        with pytest.raises(ValueError, match="pure MAJOR.MINOR.PATCH"):
+            _lib.validate_finalization("1.7.0-rc.2", "1.7.0-rc.3")
+
+    def test_different_core_raises(self):
+        with pytest.raises(ValueError, match="share the candidate core"):
+            _lib.validate_finalization("1.7.0-rc.2", "1.7.1")
+
+
 class TestBump:
     def test_patch(self):
         assert _lib.bump("1.2.3", "patch") == "1.2.4"

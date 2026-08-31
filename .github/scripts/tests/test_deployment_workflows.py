@@ -10,8 +10,14 @@ ENTRYPOINTS = {
     "deploy-prepare.yml": "prepare",
     "deploy-publish.yml": "publish",
     "deploy-verify.yml": "verify",
+    "deploy-finalize.yml": "finalize",
 }
-REUSABLE = {"_deploy-build.yml", "_deploy-registry.yml", "_worker-e2e.yml"}
+REUSABLE = {
+    "_deploy-build.yml",
+    "_deploy-registry.yml",
+    "_deploy-registry-finalize.yml",
+    "_worker-e2e.yml",
+}
 
 
 def body(name: str) -> str:
@@ -69,9 +75,24 @@ def test_dispatch_inputs_use_one_identity_object_and_fit_github_limit():
         assert inputs["identity"] == {"required": True, "type": "string"}
         assert identity_components.isdisjoint(inputs), name
         assert "target_version" in inputs, name
-        assert "channel" in inputs, name
+        if name == "deploy-finalize.yml":
+            # Finalization is latest-only by construction: the channel is a
+            # fixed workflow constant, never a dispatch degree of freedom.
+            assert "channel" not in inputs, name
+        else:
+            assert "channel" in inputs, name
         assert "stable_version" not in inputs, name
         assert "prepared_artifact" not in inputs, name
+
+
+def test_finalize_dispatch_carries_the_full_rc_promotion_context():
+    workflow = yaml.safe_load(body("deploy-finalize.yml"))
+    assert set(workflow[True]["workflow_dispatch"]["inputs"]) == {
+        "identity", "worker", "source_sha", "source_rc_version",
+        "target_version", "expected_current_version", "expected_next_version",
+        "descriptor_sha256", "prepared_run_id", "source_target_id",
+    }
+    assert "DEPLOYMENT_CHANNEL: latest" in body("deploy-finalize.yml")
 
 
 def test_dispatch_values_are_never_rendered_into_shell_source():
@@ -117,7 +138,7 @@ def test_descriptor_index_independently_verifies_approved_compiler_bytes():
     assert "Verify approved compiler bytes" in text
     assert (
         "APPROVED_COMPILER_DIGEST: "
-        "5f720e57d1987b9016a0c2c9b7eaff25a696509506809734d28a88ecc208c364"
+        "2b471d87f21887e4dbac0e8b8c70f91ea7297cddada8538523ac74414cc0f236"
     ) in text
     assert 'digest.update(b"iii-workers-deployment-compiler\\0")' in text
     assert 'Path(".github/scripts/deployment_compiler.py").read_bytes()' in text
@@ -182,7 +203,11 @@ def test_publish_is_retry_safe_and_effect_states_are_probe_derived():
     checkout = workflow["jobs"]["publish"]["steps"][0]
     assert "ref" not in checkout["with"]
     assert checkout["with"]["fetch-depth"] == 0
-    assert "deployment_effects.py classify" in publish
+    # Effect states pass straight from the probes to the result: with no
+    # pre-mutation probe there is no classification step to reinterpret them.
+    assert "deployment_effects.py" not in publish
+    assert 'echo "github_state=$github_state"' in publish
+    assert 'echo "image_channel_state=$image_channel_state"' in publish
     assert "PUBLISH_GITHUB_STATE" in publish
     assert "\n          GITHUB_STATE:" not in publish
     assert 'value=sys.argv[1].strip()' in publish
@@ -216,6 +241,62 @@ def test_publish_separates_immutable_version_from_explicit_channel_cas():
     assert "Move the requested OCI channel to the immutable digest" in publish
     assert '"$DEPLOYMENT_CHANNEL" == next || "$TARGET_VERSION" == *-*' in publish
     assert '"$RELEASE_CHANNEL" == next || "$TARGET_VERSION" == *-*' in body("deploy-verify.yml")
+
+
+def test_finalize_serializes_with_publish_per_worker():
+    # Serialization is load-bearing: a finalize racing a publish for the same
+    # worker would interleave the channel compare-and-swap moves.
+    finalize = yaml.safe_load(body("deploy-finalize.yml"))
+    publish = yaml.safe_load(body("deploy-publish.yml"))
+    assert finalize["concurrency"]["group"] == "deployment-${{ inputs.worker }}"
+    assert finalize["concurrency"] == publish["concurrency"]
+
+
+def test_prepared_artifacts_outlive_the_soak_window():
+    # Verified rc bytes are the finalization fast path: both the prepare
+    # assemble and the finalize assemble must keep them for 90 days.
+    for name in ("deploy-prepare.yml", "deploy-finalize.yml"):
+        workflow = yaml.safe_load(body(name))
+        uploads = [
+            step for step in workflow["jobs"]["assemble"]["steps"]
+            if str(step.get("uses", "")).startswith("actions/upload-artifact@")
+            and str(step.get("with", {}).get("name", "")).startswith("deployment-prepared-")
+        ]
+        assert len(uploads) == 1, name
+        assert uploads[0]["with"]["retention-days"] == 90, name
+
+
+def test_finalize_promotes_rc_bytes_through_the_train_contracts():
+    text = body("deploy-finalize.yml")
+    assert "deployment_train.py finalize" in text
+    assert "deployment_train.py matrix" in text
+    assert "--profile stable-delta" in text
+    assert "deployment_train.py assemble-stable" in text
+
+
+def test_registry_finalize_is_atomic_and_never_moves_channels_piecewise():
+    text = body("_deploy-registry-finalize.yml")
+    assert "registry_publication.py finalize-release" in text
+    assert "registry_publication.py publish-version" in text
+    assert "deployment_train.py verify-prepared" in text
+    assert "advance-next-floor" not in text
+    assert "assign-channel" not in text
+
+
+def test_repo_latest_is_granted_only_after_the_registry_receipt():
+    workflow = yaml.safe_load(body("deploy-finalize.yml"))
+    assert "registry" in workflow["jobs"]["promote"]["needs"]
+    assert "--latest=false" in body("deploy-finalize.yml")
+
+
+def test_release_build_restores_frontends_with_a_portable_copy():
+    text = body("_deploy-build.yml")
+    assert "shutil.copytree('.release-frontend', '.', dirs_exist_ok=True)" in text
+    # rsync is not guaranteed on the Windows and macOS release runners: it may
+    # be named only in comments, never invoked.
+    for line in text.splitlines():
+        if "rsync" in line:
+            assert line.lstrip().startswith("#"), line
 
 
 def test_bundle_caches_are_scoped_by_descriptor_lock_runtime_and_architecture():
@@ -318,3 +399,14 @@ def test_macos_capacity_gate_proves_three_slots_in_both_release_pools():
     assert set(jobs["prove-arm-overlap"]["needs"]) == {
         "macos-arm-slot-1", "macos-arm-slot-2", "macos-arm-slot-3",
     }
+
+def test_deploy_train_workflows_never_install_python_packages() -> None:
+    # The self-hosted release runners are not guaranteed to have pip on PATH:
+    # a stray `pip install` under `set -euo pipefail` killed ten workers in the
+    # first nightly batch. The deploy train is jq/python-stdlib only; pyyaml is
+    # legitimately installed solely by deploy-descriptor-index.yml (and the
+    # e2e harness workflow, which is not part of the train).
+    train = (set(ENTRYPOINTS) | REUSABLE) - {"_worker-e2e.yml"}
+    train |= {path.name for path in WORKFLOWS.glob("deploy-*.yml")} - {"deploy-descriptor-index.yml"}
+    for name in sorted(train):
+        assert "pip install" not in body(name), name

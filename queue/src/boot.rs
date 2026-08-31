@@ -39,11 +39,7 @@ impl BootHandle {
     }
 }
 
-pub async fn start(
-    project_iii: Arc<IIIClient>,
-    default_iii: Arc<IIIClient>,
-    config: QueueConfig,
-) -> anyhow::Result<BootHandle> {
+pub async fn start(project_iii: Arc<IIIClient>, config: QueueConfig) -> anyhow::Result<BootHandle> {
     guard_against_builtin_iii_queue(&project_iii).await?;
 
     let invoker: Arc<dyn Invoker> = Arc::new(IiiInvoker::new(project_iii.clone()));
@@ -70,7 +66,7 @@ pub async fn start(
     // target function to appear, so starting before dependent workers is safe.
     runtime.start().await?;
 
-    crate::functions::register_all(&project_iii, &default_iii, adapter.clone(), runtime.clone());
+    crate::functions::register_all(&project_iii, adapter.clone(), runtime.clone());
     let _ = project_iii.register_trigger_type(
         RegisterTriggerType::new(
             TRIGGER_TYPE,

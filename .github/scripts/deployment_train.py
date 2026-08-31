@@ -273,7 +273,9 @@ def build_frontends(args: argparse.Namespace) -> int:
 
 def build_metadata(args: argparse.Namespace) -> int:
     descriptor = verify_descriptor(json.loads(args.descriptor.read_bytes()))
-    units = [unit for unit in descriptor["build_units"] if isinstance(unit, dict) and unit.get("id") == args.unit]
+    # The stable profile is the full unit universe: candidate units plus the
+    # supplemental (Windows) units built only at finalization.
+    units = [unit for unit in profile_units(descriptor, "stable") if unit.get("id") == args.unit]
     if len(units) != 1:
         raise SystemExit(f"build unit {args.unit!r} is not declared exactly once")
     artifact = descriptor["artifact"]
@@ -428,9 +430,10 @@ def prepare(args: argparse.Namespace) -> int:
     actual = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     if actual != args.source_sha:
         raise SystemExit(f"source SHA mismatch: checkout={actual}, requested={args.source_sha}")
-    _lib.validate_deployment_target_version(args.target_version)
-    if args.channel not in {"next", "latest"}:
-        raise SystemExit("deployment channel must be next or latest")
+    try:
+        _lib.validate_channel_target_version(args.channel, args.target_version)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
 
     descriptor = verify_descriptor(json.loads(args.descriptor.read_bytes()))
     expected = {
@@ -444,10 +447,75 @@ def prepare(args: argparse.Namespace) -> int:
     return 0
 
 
+def finalize(args: argparse.Namespace) -> int:
+    """Validate a finalize_release intent against the immutable rc origin.
+
+    The stable version reuses the rc bytes, so the descriptor identity, the
+    annotated rc tag, and the release history must all prove the candidate
+    before any supplemental build or channel move happens.
+    """
+    actual = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    if actual != args.source_sha:
+        raise SystemExit(f"source SHA mismatch: checkout={actual}, requested={args.source_sha}")
+    try:
+        _lib.validate_finalization(args.candidate_version, args.stable_version)
+        _lib.validate_channel_target_version("latest", args.stable_version)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
+
+    descriptor = verify_descriptor(json.loads(args.descriptor.read_bytes()))
+    expected = {
+        "worker": args.worker,
+        "source_sha": args.source_sha,
+        "descriptor_sha256": args.descriptor_sha256,
+    }
+    if any(descriptor[field] != value for field, value in expected.items()):
+        raise SystemExit("selected descriptor identity differs from finalization intent")
+
+    # Requires a full clone (fetch-depth 0): the rc tag proves the candidate
+    # was published from this exact source, and the history gate proves the
+    # stable core is not moving backwards.
+    versions = _lib.list_tagged_versions(args.worker)
+    if args.candidate_version not in versions:
+        raise SystemExit(f"candidate tag {args.worker}/v{args.candidate_version} is not in the git history")
+    try:
+        _lib.validate_release_history(args.stable_version, versions)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
+    print(json.dumps(descriptor, sort_keys=True))
+    return 0
+
+
+def profile_units(descriptor: dict, profile: str) -> list[dict]:
+    """Resolve build units for a target profile.
+
+    `candidate` is the descriptor's embedded build_units. For rust binaries,
+    `stable` adds the supplemental targets declared only in stable_targets and
+    `stable-delta` is just that supplement; other artifact kinds have an empty
+    delta and identical candidate/stable profiles.
+    """
+    units = [unit for unit in descriptor["build_units"] if isinstance(unit, dict)]
+    if profile == "candidate":
+        return units
+    artifact = descriptor["artifact"]
+    kind = str(artifact.get("kind"))
+    if kind != "rust-binary":
+        return units if profile == "stable" else []
+    candidate_targets = set(artifact["candidate_targets"])
+    delta_units = [
+        {"id": f"{descriptor['worker']}-{target}", "kind": kind, "target": target}
+        for target in artifact["stable_targets"]
+        if target not in candidate_targets
+    ]
+    if profile == "stable-delta":
+        return delta_units
+    return units + delta_units
+
+
 def matrix(args: argparse.Namespace) -> int:
     descriptor = verify_descriptor(json.loads(args.descriptor.read_text(encoding="utf-8")))
     include: list[dict[str, str]] = []
-    for unit in descriptor["build_units"]:
+    for unit in profile_units(descriptor, args.profile):
         if not isinstance(unit, dict):
             raise SystemExit("build unit must be an object")
         kind = str(unit.get("kind"))
@@ -468,7 +536,7 @@ def build(args: argparse.Namespace) -> int:
     actual = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     if actual != descriptor["source_sha"]:
         raise SystemExit(f"prepared SHA mismatch: checkout={actual}, descriptor={descriptor['source_sha']}")
-    units = [unit for unit in descriptor["build_units"] if isinstance(unit, dict) and unit.get("id") == args.unit]
+    units = [unit for unit in profile_units(descriptor, "stable") if unit.get("id") == args.unit]
     if len(units) != 1:
         raise SystemExit(f"build unit {args.unit!r} is not declared exactly once")
     unit = units[0]
@@ -589,10 +657,9 @@ def assemble(args: argparse.Namespace) -> int:
     return 0
 
 
-def verify_prepared(args: argparse.Namespace) -> int:
-    """Verify the immutable prepare inventory without executing the worker."""
-    descriptor = verify_descriptor(json.loads(args.descriptor.read_bytes()))
-    prepared = json.loads(args.prepared.read_text(encoding="utf-8"))
+def _verify_prepared_inventory(descriptor: dict, descriptor_path: Path, prepared_path: Path) -> dict:
+    """Validate a prepared inventory and its directory byte-for-byte."""
+    prepared = json.loads(prepared_path.read_text(encoding="utf-8"))
     expected = {
         "contract": "prepared-artifacts",
         "worker": descriptor["worker"],
@@ -614,22 +681,76 @@ def verify_prepared(args: argparse.Namespace) -> int:
         if not isinstance(name, str) or not name or Path(name).name != name or name in names:
             raise SystemExit(f"prepared artifact name is invalid or duplicated: {name!r}")
         names.add(name)
-        path = args.prepared.parent / name
+        path = prepared_path.parent / name
         if not path.is_file() or path.is_symlink():
             raise SystemExit(f"prepared artifact is not a regular file: {path}")
         if path.stat().st_size != artifact.get("size") or sha256(path) != artifact.get("sha256"):
             raise SystemExit(f"prepared artifact bytes differ from inventory: {path}")
     actual = {
-        path.name for path in args.prepared.parent.iterdir()
+        path.name for path in prepared_path.parent.iterdir()
         if path.is_file() and not path.is_symlink()
     }
-    expected_files = names | {args.descriptor.name, args.prepared.name}
+    expected_files = names | {descriptor_path.name, prepared_path.name}
     if actual != expected_files:
         raise SystemExit(
             f"prepared directory differs from inventory: missing={sorted(expected_files - actual)} "
             f"unknown={sorted(actual - expected_files)}"
         )
+    return prepared
+
+
+def verify_prepared(args: argparse.Namespace) -> int:
+    """Verify the immutable prepare inventory without executing the worker."""
+    descriptor = verify_descriptor(json.loads(args.descriptor.read_bytes()))
+    prepared = _verify_prepared_inventory(descriptor, args.descriptor, args.prepared)
     print(json.dumps(prepared, sort_keys=True))
+    return 0
+
+
+def assemble_stable(args: argparse.Namespace) -> int:
+    """Union verified rc bytes with supplemental builds into a stable inventory.
+
+    Nothing already proved for the candidate is rebuilt: the rc files are
+    copied byte-for-byte, the supplemental (stable-delta) build results are
+    validated exactly like `assemble` validates candidate builds, and the
+    result must cover the stable profile exactly.
+    """
+    descriptor_bytes = args.descriptor.read_bytes()
+    descriptor = verify_descriptor(json.loads(descriptor_bytes))
+    prepared = _verify_prepared_inventory(descriptor, args.descriptor, args.prepared)
+    args.out.mkdir(parents=True, exist_ok=True)
+    entries: list[dict[str, object]] = []
+    for artifact in prepared["artifacts"]:
+        source = args.prepared.parent / str(artifact["name"])
+        destination = args.out / source.name
+        if destination.exists():
+            raise SystemExit(f"duplicate artifact name {destination.name}")
+        shutil.copy2(source, destination)
+        entries.append(dict(artifact))
+    for result_path in sorted(args.supplemental_dir.rglob("build-result.json")) if args.supplemental_dir.is_dir() else []:
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        if result.get("descriptor_sha256") != descriptor["descriptor_sha256"]:
+            raise SystemExit(f"{result_path}: descriptor digest mismatch")
+        unit = result.get("unit")
+        for artifact in result.get("artifacts", []):
+            source = result_path.parent / artifact["name"]
+            if not source.is_file() or sha256(source) != artifact["sha256"] or source.stat().st_size != artifact["size"]:
+                raise SystemExit(f"{source}: artifact bytes differ from build result")
+            destination = args.out / source.name
+            if destination.exists():
+                raise SystemExit(f"duplicate artifact name {destination.name}")
+            shutil.copy2(source, destination)
+            entries.append({"unit": unit, **artifact})
+    expected_units = {unit["id"] for unit in profile_units(descriptor, "stable")}
+    actual_units = {entry["unit"] for entry in entries if entry["role"] != "checksum"}
+    if expected_units != actual_units:
+        raise SystemExit(f"stable units differ: expected={sorted(expected_units)} actual={sorted(actual_units)}")
+    (args.out / "deployment-descriptor.json").write_bytes(descriptor_bytes)
+    stable = {"contract": "prepared-artifacts", "worker": descriptor["worker"],
+              "source_sha": descriptor["source_sha"], "descriptor_sha256": descriptor["descriptor_sha256"],
+              "artifacts": sorted(entries, key=lambda entry: (str(entry["unit"]), str(entry["name"])))}
+    (args.out / "prepared-artifacts.json").write_text(json.dumps(stable, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(json.dumps(stable, sort_keys=True))
     return 0
 
 
@@ -665,9 +786,18 @@ def make_parser() -> argparse.ArgumentParser:
     prepare_parser.add_argument("--channel", choices=["next", "latest"], required=True)
     prepare_parser.add_argument("--descriptor-sha256", required=True)
     prepare_parser.add_argument("--descriptor", type=Path, required=True)
+    finalize_parser = sub.add_parser("finalize")
+    finalize_parser.set_defaults(handler=finalize)
+    finalize_parser.add_argument("--worker", required=True)
+    finalize_parser.add_argument("--source-sha", required=True)
+    finalize_parser.add_argument("--candidate-version", required=True)
+    finalize_parser.add_argument("--stable-version", required=True)
+    finalize_parser.add_argument("--descriptor-sha256", required=True)
+    finalize_parser.add_argument("--descriptor", type=Path, required=True)
     matrix_parser = sub.add_parser("matrix")
     matrix_parser.set_defaults(handler=matrix)
     matrix_parser.add_argument("--descriptor", type=Path, required=True)
+    matrix_parser.add_argument("--profile", choices=["candidate", "stable", "stable-delta"], default="candidate")
     build_parser = sub.add_parser("build")
     build_parser.set_defaults(handler=build)
     build_parser.add_argument("--descriptor", type=Path, required=True)
@@ -678,6 +808,12 @@ def make_parser() -> argparse.ArgumentParser:
     assemble_parser.add_argument("--descriptor", type=Path, required=True)
     assemble_parser.add_argument("--artifacts-dir", type=Path, required=True)
     assemble_parser.add_argument("--out", type=Path, required=True)
+    assemble_stable_parser = sub.add_parser("assemble-stable")
+    assemble_stable_parser.set_defaults(handler=assemble_stable)
+    assemble_stable_parser.add_argument("--descriptor", type=Path, required=True)
+    assemble_stable_parser.add_argument("--prepared", type=Path, required=True)
+    assemble_stable_parser.add_argument("--supplemental-dir", type=Path, required=True)
+    assemble_stable_parser.add_argument("--out", type=Path, required=True)
     verify_parser = sub.add_parser("verify-prepared")
     verify_parser.set_defaults(handler=verify_prepared)
     verify_parser.add_argument("--descriptor", type=Path, required=True)

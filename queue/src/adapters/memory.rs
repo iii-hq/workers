@@ -63,6 +63,7 @@ impl QueueAdapter for MemoryAdapter {
         metadata: Option<Value>,
         condition_function_id: Option<String>,
         queue_config: Option<SubscriberQueueConfig>,
+        namespace: Option<String>,
     ) {
         self.inner
             .subscribe(
@@ -72,6 +73,7 @@ impl QueueAdapter for MemoryAdapter {
                 metadata,
                 condition_function_id,
                 queue_config,
+                namespace,
             )
             .await;
     }
@@ -220,7 +222,7 @@ mod tests {
         let adapter = MemoryAdapter::new(invoker.clone());
 
         adapter
-            .subscribe("demo", "sub-1", "fn-1", None, None, None)
+            .subscribe("demo", "sub-1", "fn-1", None, None, None, None)
             .await;
         adapter
             .enqueue("demo", json!({"hello": "world"}), None, None)

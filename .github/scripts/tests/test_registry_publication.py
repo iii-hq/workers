@@ -503,3 +503,102 @@ def test_channel_409_fails_even_when_a_readback_is_available(monkeypatch) -> Non
     monkeypatch.setattr(registry_publication, "request_json", request)
     with pytest.raises(RegistryPublicationError, match="CAS conflict"):
         registry_publication.assign_channel(API, KEY, WORKER, VERSION, "next", "1.2.2")
+
+
+CANDIDATE = "1.7.0-rc.2"
+STABLE = "1.7.0"
+
+
+def channels_response(next_version: str, latest_version: str) -> dict[str, object]:
+    if next_version == latest_version:
+        return {"versions": [
+            {"version": next_version, "tag": "latest", "tags": ["next", "latest"], "dependencies": []},
+        ]}
+    return {"versions": [
+        {"version": next_version, "tag": "next", "tags": ["next"], "dependencies": []},
+        {"version": latest_version, "tag": "latest", "tags": ["latest"], "dependencies": []},
+    ]}
+
+
+def test_finalize_posts_candidate_pair_and_reads_back_both_pointers(monkeypatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def request(method, url, body=None, **kwargs):
+        calls.append((method, url))
+        if url.endswith("/releases/finalize"):
+            assert body == {
+                "candidate_version": CANDIDATE,
+                "stable_version": STABLE,
+                "expected_latest_version": None,
+            }
+            assert kwargs["api_key"] == KEY
+            return 200, {"finalize": {"stable_version": STABLE}, "changed": True}
+        return 200, channels_response(STABLE, STABLE)
+
+    monkeypatch.setattr(registry_publication, "request_json", request)
+    result = registry_publication.finalize_release(API, KEY, WORKER, CANDIDATE, STABLE, "none")
+    assert result["state"] == "changed"
+    assert [method for method, _url in calls] == ["POST", "GET", "GET"]
+
+
+def test_finalize_200_changed_false_is_idempotent(monkeypatch) -> None:
+    def request(_method, url, _body=None, **_kwargs):
+        if url.endswith("/releases/finalize"):
+            return 200, {"finalize": {"stable_version": STABLE}, "changed": False}
+        return 200, channels_response(STABLE, STABLE)
+
+    monkeypatch.setattr(registry_publication, "request_json", request)
+    result = registry_publication.finalize_release(API, KEY, WORKER, CANDIDATE, STABLE, "1.6.0")
+    assert result["state"] == "unchanged"
+
+
+def test_finalize_409_is_idempotent_when_both_pointers_already_match(monkeypatch) -> None:
+    def request(_method, url, _body=None, **_kwargs):
+        if url.endswith("/releases/finalize"):
+            return 409, {"error": "stale"}
+        return 200, channels_response(STABLE, STABLE)
+
+    monkeypatch.setattr(registry_publication, "request_json", request)
+    result = registry_publication.finalize_release(API, KEY, WORKER, CANDIDATE, STABLE, "1.6.0")
+    assert result["state"] == "unchanged"
+
+
+def test_finalize_409_fails_when_latest_points_elsewhere(monkeypatch) -> None:
+    def request(_method, url, _body=None, **_kwargs):
+        if url.endswith("/releases/finalize"):
+            return 409, {"error": "stale"}
+        return 200, channels_response(STABLE, "1.6.0")
+
+    monkeypatch.setattr(registry_publication, "request_json", request)
+    with pytest.raises(RegistryPublicationError, match="finalize CAS conflict"):
+        registry_publication.finalize_release(API, KEY, WORKER, CANDIDATE, STABLE, "1.6.0")
+
+
+def test_finalize_timeout_is_recovered_when_both_pointers_match(monkeypatch) -> None:
+    def request(_method, url, _body=None, **_kwargs):
+        if url.endswith("/releases/finalize"):
+            raise TransportError("timeout")
+        return 200, channels_response(STABLE, STABLE)
+
+    monkeypatch.setattr(registry_publication, "request_json", request)
+    result = registry_publication.finalize_release(API, KEY, WORKER, CANDIDATE, STABLE, "1.6.0")
+    assert result["state"] == "recovered"
+    assert result["attempt"] == 1
+
+
+def test_finalize_rejects_a_pure_candidate_before_any_request(monkeypatch) -> None:
+    def request(*_args, **_kwargs):
+        raise AssertionError("must not reach the registry")
+
+    monkeypatch.setattr(registry_publication, "request_json", request)
+    with pytest.raises(RegistryPublicationError, match="finalization candidate must be an X.Y.Z-rc.N version"):
+        registry_publication.finalize_release(API, KEY, WORKER, STABLE, STABLE, "none")
+
+
+def test_finalize_blank_latest_precondition_is_rejected(monkeypatch) -> None:
+    def request(*_args, **_kwargs):
+        raise AssertionError("must not reach the registry")
+
+    monkeypatch.setattr(registry_publication, "request_json", request)
+    with pytest.raises(RegistryPublicationError, match="expected_latest_version is required"):
+        registry_publication.finalize_release(API, KEY, WORKER, CANDIDATE, STABLE, "")
