@@ -597,10 +597,15 @@ export function ReviewPane({
       }
       void loadReviewContents(descriptor.host, descriptor.root, descriptor.entry)
         .then<FileState>((contents) => ({ phase: 'ready', ...contents }))
-        .catch<FileState>((error: unknown) => ({
-          phase: 'error',
-          message: errorMessage(error),
-        }))
+        .catch<FileState>((error: unknown) => {
+          const message = errorMessage(error)
+          return {
+            phase: 'error',
+            message: message.includes('"C211"')
+              ? 'file is no longer on disk — a transient write (created and removed within the change window)'
+              : message,
+          }
+        })
         .then((state) => {
           const latest = availableLoadsRef.current.get(path)
           if (latest !== undefined && sameLoadDescriptor(latest, descriptor)) {
