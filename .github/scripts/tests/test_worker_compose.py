@@ -13,8 +13,8 @@ CATALOG = ROOT / ".deploy" / "workers.yaml"
 
 def test_private_catalog_has_exact_first_party_and_fixture_counts():
     workers = _lib.read_worker_catalog(CATALOG)
-    assert len(workers) == 75
-    assert sum(worker.publish for worker in workers.values()) == 69
+    assert len(workers) == 76
+    assert sum(worker.publish for worker in workers.values()) == 70
     assert sum(not worker.publish for worker in workers.values()) == 6
 
 
@@ -100,7 +100,7 @@ def test_release_toolchains_and_bundle_locks_are_explicit():
         else:
             assert artifact["runtime"] == {"name": "python", "version": "3.12.3"}
             assert artifact["package_manager"] == {"name": "uv", "version": "0.12.5"}
-    assert bundles == 15
+    assert bundles == 16
 
 
 def test_scrapling_release_bundle_vendors_dependencies():
