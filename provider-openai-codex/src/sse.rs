@@ -372,6 +372,40 @@ pub fn handle_chunk(
                 arguments_preview: None,
             });
         }
+        n if n.contains("function_call_arguments.done") => {
+            let full = chunk.get("arguments").and_then(Value::as_str).unwrap_or("");
+            if !full.is_empty() {
+                if let Some(last) = state.tool_calls.last_mut() {
+                    last.args_json = full.to_string();
+                }
+            }
+        }
+        n if n.contains("output_item.done") => {
+            let item = chunk.get("item").or_else(|| chunk.get("output_item"));
+            if let Some(item) = item
+                .filter(|item| item.get("type").and_then(Value::as_str) == Some("function_call"))
+            {
+                let full = item.get("arguments").and_then(Value::as_str).unwrap_or("");
+                if !full.is_empty() {
+                    let id = item
+                        .get("call_id")
+                        .or_else(|| item.get("id"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let idx = state
+                        .tool_calls
+                        .iter()
+                        .position(|tc| !id.is_empty() && tc.id == id);
+                    let call = match idx {
+                        Some(i) => state.tool_calls.get_mut(i),
+                        None => state.tool_calls.last_mut(),
+                    };
+                    if let Some(call) = call {
+                        call.args_json = full.to_string();
+                    }
+                }
+            }
+        }
         n if n.contains("completed") => {
             state.terminated = true;
             merge_usage(chunk, &mut state.usage);
@@ -518,6 +552,43 @@ mod tests {
                 assert_eq!(usage.input, Some(6));
                 assert_eq!(usage.cache_read, Some(4));
             }
+            other => panic!("want done, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_call_takes_arguments_from_arguments_done() {
+        let (_, events) = run(&[
+            json!({ "type": "response.output_item.added", "item": { "type": "function_call", "call_id": "c1", "name": "shell__exec" } }),
+            json!({ "type": "response.function_call_arguments.done", "arguments": "{\"cmd\":\"ls\"}" }),
+            json!({ "type": "response.completed" }),
+        ]);
+        match events.last().unwrap() {
+            AssistantMessageEvent::Done { message } => match &message.content[0] {
+                ContentBlock::FunctionCall { arguments, .. } => {
+                    assert_eq!(arguments["cmd"], "ls");
+                }
+                other => panic!("want function_call, got {other:?}"),
+            },
+            other => panic!("want done, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_call_takes_arguments_from_output_item_done() {
+        let (_, events) = run(&[
+            json!({ "type": "response.output_item.added", "item": { "type": "function_call", "call_id": "c2", "name": "shell__exec" } }),
+            json!({ "type": "response.output_item.done", "item": { "type": "function_call", "call_id": "c2", "arguments": "{\"cmd\":\"pwd\"}" } }),
+            json!({ "type": "response.completed" }),
+        ]);
+        match events.last().unwrap() {
+            AssistantMessageEvent::Done { message } => match &message.content[0] {
+                ContentBlock::FunctionCall { id, arguments, .. } => {
+                    assert_eq!(id, "c2");
+                    assert_eq!(arguments["cmd"], "pwd");
+                }
+                other => panic!("want function_call, got {other:?}"),
+            },
             other => panic!("want done, got {other:?}"),
         }
     }

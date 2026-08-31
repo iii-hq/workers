@@ -11,4 +11,3 @@ type Story = StoryObj
 
 export const MultiFunctionAgent: Story = scenarioStory('multi-function-agent')
 export const PendingApproval: Story = scenarioStory('pending-approval')
-export const HarnessSpawn: Story = scenarioStory('harness-spawn')

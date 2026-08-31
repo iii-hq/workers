@@ -17,11 +17,7 @@ import {
   EngineToolView,
 } from '@/components/chat/engine'
 import { FpFunctionIdLabel, FpToolView } from '@/components/chat/fp'
-import {
-  HarnessFunctionIdLabel,
-  HarnessSpawnToolView,
-  HarnessToolView,
-} from '@/components/chat/harness'
+import { HarnessFunctionIdLabel, HarnessToolView } from '@/components/chat/harness'
 import { RouterFunctionIdLabel, RouterToolView } from '@/components/chat/router'
 import {
   ScraplingFunctionIdLabel,
@@ -118,20 +114,10 @@ export const FIRST_PARTY_RENDERERS: readonly FunctionTriggerRenderer[] = [
     FunctionIdLabel: RouterFunctionIdLabel,
   },
   {
-    id: 'first-party/harness-spawn',
-    isMatch: HarnessSpawnToolView.isHarnessSpawnFunction,
-    tryRender: HarnessSpawnToolView.tryRender,
-    tryRenderRunning: HarnessSpawnToolView.tryRenderRunning,
-    tryRenderDisplay: HarnessSpawnToolView.tryRenderDisplay,
-    FunctionIdLabel: HarnessFunctionIdLabel,
-    metadata: { display: true },
-  },
-  {
     id: 'first-party/harness',
     isMatch: HarnessToolView.isHarnessFunction,
     tryRender: HarnessToolView.tryRender,
     tryRenderRunning: HarnessToolView.tryRenderRunning,
-    tryRenderPreview: HarnessToolView.tryRenderPreview,
     FunctionIdLabel: HarnessFunctionIdLabel,
   },
   {

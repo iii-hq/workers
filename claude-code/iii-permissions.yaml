@@ -1,7 +1,7 @@
 # Agent permissions for the claude-code worker.
 # Spec: docs/sops/new-worker.md § 7. First-match-wins.
 #
-# claude::run / claude::start (and the run::start_and_wait alias) spawn a full
+# claude::run / claude::start / claude::task (and the run::start_and_wait alias) spawn a full
 # Claude Code agent with the host's filesystem and shell — an agent invoking
 # those without human approval is a privilege escalation, so they are NOT
 # allow-listed and stay at the needs_approval default. Read-only introspection
@@ -11,5 +11,12 @@ version: 1
 rules:
   # internal config-reload callback — bus-internal, never agent-callable
   - '!claude::on-config-change'
+  # The console terminal is opened by a person: describe/activity/ui-content are
+  # plumbing, `activity` writes to the events stream on a session's behalf, and
+  # `auth::status` carries the operator's account, organization, and billing
+  # mode. The console reaches all of it as user-initiated calls, not this path.
+  - '!claude::terminal::*'
+  - '!claude::auth::status'
+  - '!claude::ui-content'
   - claude::status
   - claude::sessions::list

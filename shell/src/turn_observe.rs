@@ -23,7 +23,7 @@ use std::time::Duration;
 use notify::{RecursiveMode, Watcher};
 
 use crate::events::{
-    git_ignored, is_git_internal, is_noise_kind, is_own_temp, kind_of, merge_kinds,
+    ignored_under, is_git_internal, is_noise_kind, is_own_temp, kind_of, merge_kinds, resolve_kind,
 };
 use crate::turns::TurnLog;
 
@@ -171,6 +171,7 @@ async fn pump(
             return;
         };
         let mut batch: HashMap<String, &'static str> = HashMap::new();
+        let mut born: HashSet<String> = HashSet::new();
         let mut fold = |event: notify::Event| {
             if is_noise_kind(&event.kind) {
                 return;
@@ -186,8 +187,12 @@ async fn pump(
                 if kind != "deleted" && p.is_dir() {
                     continue;
                 }
+                let key = p.to_string_lossy().into_owned();
+                if kind == "created" {
+                    born.insert(key.clone());
+                }
                 batch
-                    .entry(p.to_string_lossy().into_owned())
+                    .entry(key)
                     .and_modify(|prev| *prev = merge_kinds(prev, kind))
                     .or_insert(kind);
             }
@@ -214,6 +219,11 @@ async fn pump(
         let changes: Vec<(String, &'static str)> = batch
             .drain()
             .filter(|(path, _)| !ignored.contains(path))
+            .filter_map(|(path, kind)| {
+                let on_disk = Path::new(&path).exists();
+                let kind = resolve_kind(kind, on_disk, born.contains(&path))?;
+                Some((path, kind))
+            })
             .collect();
         if changes.is_empty() {
             continue;
@@ -237,7 +247,7 @@ async fn ignored_set<'a>(root: &Path, paths: impl Iterator<Item = &'a String>) -
                 .map(|rel| (rel.to_string_lossy().into_owned(), abs))
         })
         .collect();
-    let ignored = git_ignored(root, rels.iter().map(|(rel, _)| rel)).await;
+    let ignored = ignored_under(root, rels.iter().map(|(rel, _)| rel)).await;
     rels.into_iter()
         .filter(|(rel, _)| ignored.contains(rel))
         .map(|(_, abs)| abs.clone())

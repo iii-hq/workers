@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: vi.fn() }));
@@ -166,6 +168,27 @@ describe('executeRun', () => {
     const sp = capture.options?.systemPrompt as { type: string; append?: string };
     expect(sp.append).toBe('house rules');
     expect(capture.options?.allowedTools).not.toContain('Bash(iii *)');
+  });
+
+  it('loads the iii plugin, which is where the hooks and the skill live', async () => {
+    // The SDK turns a local plugin into the CLI's own `--plugin-dir`, so this
+    // is the same directory a terminal session loads.
+    const { capture } = await runTurn({ prompt: 'x', session_id: 's1' });
+    const plugins = capture.options?.plugins as Array<{ type: string; path: string }> | undefined;
+    expect(plugins?.[0]?.type).toBe('local');
+    expect(plugins?.[0]?.path).toContain('iii-claude-code-plugin');
+
+    const manifest = JSON.parse(
+      readFileSync(join(plugins?.[0]?.path ?? '', '.claude-plugin/plugin.json'), 'utf8'),
+    );
+    expect(manifest.name).toBe('iii');
+    const hooks = JSON.parse(
+      readFileSync(join(plugins?.[0]?.path ?? '', 'hooks/hooks.json'), 'utf8'),
+    ).hooks;
+    expect(hooks.PreToolUse[0].hooks[0].command).toContain('claude::terminal::activity');
+    expect(
+      readFileSync(join(plugins?.[0]?.path ?? '', 'skills/iii-runtime/SKILL.md'), 'utf8'),
+    ).toContain('name: iii-runtime');
   });
 
   it('a caller-supplied system_prompt wins verbatim with nothing appended', async () => {

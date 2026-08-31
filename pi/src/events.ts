@@ -9,15 +9,21 @@ import type { IIIClient } from 'iii-sdk';
 const PROCESS_EPOCH = randomUUID();
 const seqBySession = new Map<string, number>();
 
-export function makeEmitter(iii: IIIClient, streamName: string) {
+/**
+ * `stream` may be a getter, and then it is read per event rather than captured:
+ * one emitter outlives every configuration reload, and a captured name keeps
+ * writing to a stream nobody reads any more.
+ */
+export function makeEmitter(iii: IIIClient, stream: string | (() => string)) {
   return async function emit(session_id: string, event: unknown): Promise<void> {
+    const stream_name = typeof stream === 'function' ? stream() : stream;
     const seq = seqBySession.get(session_id) ?? 0;
     seqBySession.set(session_id, seq + 1);
     const item_id = `${session_id}-${PROCESS_EPOCH}-${seq.toString().padStart(8, '0')}`;
     try {
       await iii.trigger({
         function_id: 'stream::set',
-        payload: { stream_name: streamName, group_id: session_id, item_id, data: event },
+        payload: { stream_name, group_id: session_id, item_id, data: event },
       });
     } catch (err) {
       console.warn(`stream::set failed for ${session_id}: ${String(err)}`);

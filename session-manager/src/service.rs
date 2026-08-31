@@ -507,7 +507,7 @@ impl SessionService {
                     timestamp: now,
                     revision: 0,
                     origin: req.origin.clone(),
-                    message: (*message).clone(),
+                    message: message.clone(),
                 },
                 Some(*message),
                 None,
@@ -600,7 +600,7 @@ impl SessionService {
                 timestamp: now,
                 revision: 0,
                 origin: req.origin.clone(),
-                message: message.clone(),
+                message: Box::new(message.clone()),
             };
             self.store.put_entry(&req.session_id, &entry).await?;
 
@@ -699,7 +699,7 @@ impl SessionService {
             }
         }
         if let Some(new_details) = req.details {
-            match &mut message {
+            match message.as_mut() {
                 AgentMessage::FunctionResult { details, .. } => *details = new_details,
                 AgentMessage::Custom { details, .. } => *details = Some(new_details),
                 _ => {
@@ -733,7 +733,7 @@ impl SessionService {
             event: SessionEvent::MessageUpdated(MessageUpdatedEvent {
                 session_id: req.session_id.clone(),
                 entry_id: req.entry_id.clone(),
-                message,
+                message: *message,
                 revision: new_revision,
                 origin: req.origin,
                 timestamp: now,
@@ -850,7 +850,7 @@ impl SessionService {
                     ..
                 } => MessageItem {
                     entry_id: id.clone(),
-                    message: Some(message.clone()),
+                    message: Some((**message).clone()),
                     custom: None,
                     origin: origin.clone(),
                 },

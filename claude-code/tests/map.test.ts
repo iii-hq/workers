@@ -110,11 +110,15 @@ describe('mapUsage', () => {
 });
 
 describe('message constructors', () => {
-  it('builds an assistant message with provider claude-code', () => {
-    const msg = makeAssistantMessage([{ type: 'text', text: 'hi' }], 'claude-opus-4-8', null);
+  it('names the AGENT that ran the turn, and the provider that served it', () => {
+    // Two different answers: `claude-code` is the worker on the bus,
+    // `anthropic` is who served the model. A reader given only a model cannot
+    // tell which agent produced the turn.
+    const msg = makeAssistantMessage([{ type: 'text', text: 'hi' }], 'claude-opus-5', null);
     expect(msg.role).toBe('assistant');
-    expect(msg.provider).toBe('claude-code');
-    expect(msg.stop_reason).toBe('end');
+    expect(msg.agent).toBe('claude-code');
+    expect(msg.provider).toBe('anthropic');
+    expect(msg.model).toBe('claude-opus-5');
   });
 
   it('builds a function_result message', () => {

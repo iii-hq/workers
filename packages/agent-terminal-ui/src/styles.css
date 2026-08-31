@@ -1,0 +1,122 @@
+@import "@xterm/xterm/css/xterm.css";
+
+/*
+ * The agent terminal page. Every rule is a class on this page's own markup —
+ * an injected page is already scoped by the console's `data-iii-ui` wrapper,
+ * and the class names carry the rest. Theming rides the console's tokens.
+ */
+
+.agent-terminal {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--color-panel);
+}
+
+.agent-terminal-viewport {
+  flex: 1;
+  min-height: 0;
+  padding: 8px 4px 8px 12px;
+}
+
+.agent-terminal-viewport .xterm {
+  height: 100%;
+}
+
+.agent-terminal-statusbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--color-edge);
+  color: var(--color-ink-faint);
+  font-size: 12px;
+}
+
+.agent-terminal-statusbar .agent-terminal-status-error {
+  color: var(--color-alert);
+}
+
+/*
+ * Which plan the session spends. Accent is reserved for actions, so the
+ * subscription case is neutral ink and only the two cases an operator might
+ * not expect — a metered key, or no credentials at all — carry a colour.
+ */
+.agent-terminal-billing {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  padding: 1px 8px;
+  border: 1px solid var(--color-edge);
+  border-radius: 999px;
+  color: var(--color-ink-faint);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.agent-terminal-billing-subscription {
+  color: var(--color-ink);
+}
+
+.agent-terminal-billing-api-key {
+  color: var(--color-notice, var(--color-ink));
+  border-color: var(--color-notice, var(--color-edge));
+}
+
+.agent-terminal-billing-none {
+  color: var(--color-alert);
+  border-color: var(--color-alert);
+}
+
+/* Font-size stepper: the same 8..40 value every terminal in the console
+   reads, so a change here moves shell's panes too. */
+.agent-terminal-font {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--color-ink-faint);
+  font-size: 11px;
+}
+
+.agent-terminal-font button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--color-edge);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.agent-terminal-font button:hover:not(:disabled) {
+  color: var(--color-ink);
+  border-color: var(--color-ink-faint);
+}
+
+.agent-terminal-font button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.agent-terminal-font output {
+  min-width: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Says what the value beside it IS. A status bar of bare numbers and plan
+   names makes the reader guess; two words each removes the guessing. */
+.agent-terminal-field-label {
+  color: var(--color-ink-faint);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}

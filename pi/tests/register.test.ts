@@ -51,6 +51,7 @@ describe('register', () => {
       'pi::status',
       'pi::steer',
       'pi::stop',
+      'pi::task',
       'run::start_and_wait',
     ]);
   });
