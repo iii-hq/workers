@@ -3,6 +3,7 @@ from pathlib import Path
 import yaml
 
 import _lib
+import deployment_targets
 import discover_changed_workers
 import validate_worker
 
@@ -108,3 +109,41 @@ def test_scrapling_release_bundle_vendors_dependencies():
     scrapling = document["workers"]["scrapling"]
     assert "dist/site-packages.tar.gz" in scrapling["artifact"]["include"]
     assert scrapling["artifact"]["install_command"][-1] == "--no-install-project"
+
+
+def test_every_rust_worker_ships_windows_or_justifies_its_absence():
+    """Windows must never be lost by silent omission again.
+
+    The deployment cutover dropped all three msvc triples from the catalog
+    without anyone declaring it, and the loss only surfaced when `latest`
+    stayed pinned to a pre-cutover version. A worker now either builds the
+    full Windows matrix or says in writing why it cannot.
+    """
+    document = yaml.safe_load(CATALOG.read_text(encoding="utf-8"))
+    windows = set(deployment_targets.WINDOWS_TARGETS)
+    without_windows = set()
+    for slug, entry in document["workers"].items():
+        artifact = entry["artifact"]
+        if artifact["kind"] != "rust-binary":
+            continue
+        declared = windows.intersection(artifact["targets"])
+        exception = artifact.get("windows_exception")
+        if declared:
+            assert declared == windows, f"{slug}: partial Windows matrix {sorted(declared)}"
+            assert not exception, f"{slug}: declares Windows targets and an exception"
+        else:
+            assert isinstance(exception, str) and exception.strip(), f"{slug}: silent Windows omission"
+            without_windows.add(slug)
+    # Audited against the Registry: every other worker published msvc binaries
+    # before the cutover, so anything joining this set is a regression.
+    assert without_windows == {
+        "acp",
+        "compose-ui",
+        "code-runner",
+        "context-manager",
+        "editor",
+        "lsp",
+        "sandbox-code-runner",
+        "shell",
+        "workflow",
+    }

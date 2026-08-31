@@ -24,8 +24,7 @@ def add_catalog_worker(root: Path, worker: str) -> None:
         "artifact": {
             "kind": "rust-binary",
             "binary": worker,
-            "candidate_targets": ["x86_64-unknown-linux-gnu"],
-            "stable_targets": ["x86_64-unknown-linux-gnu"],
+            "targets": ["x86_64-unknown-linux-gnu"],
             "windows_exception": "Windows support has not been validated for this worker",
         },
         "publish": True,

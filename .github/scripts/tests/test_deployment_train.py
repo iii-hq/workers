@@ -8,10 +8,8 @@ from pathlib import Path
 
 import pytest
 
-import deployment_targets
 import deployment_train
 from deployment_train import (
-    assemble_stable,
     build,
     build_frontends,
     build_oci_layout,
@@ -74,23 +72,20 @@ def descriptor(worker: str, source_sha: str, package_manifest_version: str) -> d
     })
 
 
-def rust_descriptor(
-    worker: str, source_sha: str, candidate_targets: list[str], stable_targets: list[str]
-) -> dict:
+def rust_descriptor(worker: str, source_sha: str, targets: list[str]) -> dict:
     selected = descriptor(worker, source_sha, "1.0.0-rc.1")
     selected["source"] = {"path": worker, "package_manifest": "Cargo.toml"}
     selected["artifact"] = {
         "kind": "rust-binary",
         "binary": worker,
-        "candidate_targets": candidate_targets,
-        "stable_targets": stable_targets,
+        "targets": targets,
         "toolchain": {"name": "rust", "version": "1.97.1"},
     }
     selected["runtime"] = {"environment": {}, "resources": {}, "exec": [worker]}
     selected["registry_projection"]["type"] = "binary"
     selected["build_units"] = [
         {"id": f"{worker}-{target}", "kind": "rust-binary", "target": target}
-        for target in candidate_targets
+        for target in targets
     ]
     return seal_descriptor(selected)
 
@@ -293,11 +288,7 @@ def test_rust_build_uses_deterministic_target_native_archive(
     binary.parent.mkdir(parents=True)
     binary.write_bytes(b"immutable executable\n")
     binary.chmod(0o755)
-    # build_units always describe the candidate profile; the Windows unit is
-    # resolved from the stable superset the way finalization builds it.
-    candidate_targets = ["x86_64-unknown-linux-gnu"] if target in deployment_targets.WINDOWS_TARGETS else [target]
-    stable_targets = candidate_targets + ([target] if target in deployment_targets.WINDOWS_TARGETS else [])
-    selected = rust_descriptor("smoke", source_sha, candidate_targets, stable_targets)
+    selected = rust_descriptor("smoke", source_sha, [target])
     descriptor_path = tmp_path / "deployment-descriptor.json"
     descriptor_path.write_text(json.dumps(selected), encoding="utf-8")
     monkeypatch.chdir(tmp_path)
@@ -465,58 +456,65 @@ def test_descriptor_frontends_install_once_and_build_each_explicit_output(tmp_pa
     assert (output_dir / "two/ui/dist/index.js").is_file()
 
 
-def test_matrix_candidate_profile_is_exactly_the_descriptor_build_units(
+def test_matrix_is_exactly_the_descriptor_build_units_windows_included(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    selected = rust_descriptor(
-        "smoke", "a" * 40,
-        ["x86_64-unknown-linux-gnu"],
-        ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"],
-    )
+    # Every deployment builds Windows, so the msvc triples ride the same matrix
+    # as the unix targets and land on GitHub-hosted Windows capacity.
+    selected = rust_descriptor("smoke", "a" * 40, [
+        "x86_64-unknown-linux-gnu",
+        "x86_64-pc-windows-msvc",
+        "i686-pc-windows-msvc",
+        "aarch64-pc-windows-msvc",
+    ])
     descriptor_path = tmp_path / "deployment-descriptor.json"
     descriptor_path.write_text(json.dumps(selected), encoding="utf-8")
 
-    assert matrix(argparse.Namespace(descriptor=descriptor_path, profile="candidate")) == 0
+    assert matrix(argparse.Namespace(descriptor=descriptor_path)) == 0
 
-    assert json.loads(capsys.readouterr().out) == {"include": [{
-        "unit": "smoke-x86_64-unknown-linux-gnu",
-        "kind": "rust-binary",
-        "target": "x86_64-unknown-linux-gnu",
-        "runner": "workers-release-linux-8core",
-    }]}
+    assert json.loads(capsys.readouterr().out) == {"include": [
+        {
+            "unit": "smoke-x86_64-unknown-linux-gnu",
+            "kind": "rust-binary",
+            "target": "x86_64-unknown-linux-gnu",
+            "runner": "workers-release-linux-8core",
+        },
+        {
+            "unit": "smoke-x86_64-pc-windows-msvc",
+            "kind": "rust-binary",
+            "target": "x86_64-pc-windows-msvc",
+            "runner": "windows-latest",
+        },
+        {
+            "unit": "smoke-i686-pc-windows-msvc",
+            "kind": "rust-binary",
+            "target": "i686-pc-windows-msvc",
+            "runner": "windows-latest",
+        },
+        {
+            "unit": "smoke-aarch64-pc-windows-msvc",
+            "kind": "rust-binary",
+            "target": "aarch64-pc-windows-msvc",
+            "runner": "windows-latest",
+        },
+    ]}
 
 
-def test_matrix_stable_delta_is_only_the_supplemental_windows_unit(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    selected = rust_descriptor(
-        "smoke", "a" * 40,
-        ["x86_64-unknown-linux-gnu"],
-        ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"],
-    )
-    descriptor_path = tmp_path / "deployment-descriptor.json"
-    descriptor_path.write_text(json.dumps(selected), encoding="utf-8")
-
-    assert matrix(argparse.Namespace(descriptor=descriptor_path, profile="stable-delta")) == 0
-
-    assert json.loads(capsys.readouterr().out) == {"include": [{
-        "unit": "smoke-x86_64-pc-windows-msvc",
-        "kind": "rust-binary",
-        "target": "x86_64-pc-windows-msvc",
-        "runner": "windows-latest",
-    }]}
-
-
-def test_matrix_stable_delta_is_empty_for_bundles(
+def test_matrix_of_a_bundle_is_its_single_untargeted_unit(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     selected = descriptor("smoke", "a" * 40, "0.1.0")
     descriptor_path = tmp_path / "deployment-descriptor.json"
     descriptor_path.write_text(json.dumps(selected), encoding="utf-8")
 
-    assert matrix(argparse.Namespace(descriptor=descriptor_path, profile="stable-delta")) == 0
+    assert matrix(argparse.Namespace(descriptor=descriptor_path)) == 0
 
-    assert json.loads(capsys.readouterr().out) == {"include": []}
+    assert json.loads(capsys.readouterr().out) == {"include": [{
+        "unit": "bundle",
+        "kind": "javascript-bundle",
+        "target": "none",
+        "runner": "workers-release-linux-8core",
+    }]}
 
 
 def _init_release_repo(tmp_path: Path, tags: list[str]) -> str:
@@ -544,9 +542,7 @@ def test_finalize_accepts_tagged_candidate_with_matching_stable(
 ) -> None:
     source_sha = _init_release_repo(tmp_path, ["smoke/v1.7.0-rc.2"])
     selected = rust_descriptor(
-        "smoke", source_sha,
-        ["x86_64-unknown-linux-gnu"],
-        ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"],
+        "smoke", source_sha, ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
     )
     descriptor_path = tmp_path / "deployment-descriptor.json"
     descriptor_path.write_text(json.dumps(selected), encoding="utf-8")
@@ -567,9 +563,7 @@ def test_finalize_rejects_candidate_without_rc_tag(
 ) -> None:
     source_sha = _init_release_repo(tmp_path, [])
     selected = rust_descriptor(
-        "smoke", source_sha,
-        ["x86_64-unknown-linux-gnu"],
-        ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"],
+        "smoke", source_sha, ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
     )
     descriptor_path = tmp_path / "deployment-descriptor.json"
     descriptor_path.write_text(json.dumps(selected), encoding="utf-8")
@@ -591,9 +585,7 @@ def test_finalize_rejects_stable_behind_existing_tagged_core(
 ) -> None:
     source_sha = _init_release_repo(tmp_path, ["smoke/v1.7.0-rc.2", "smoke/v2.0.0"])
     selected = rust_descriptor(
-        "smoke", source_sha,
-        ["x86_64-unknown-linux-gnu"],
-        ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"],
+        "smoke", source_sha, ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
     )
     descriptor_path = tmp_path / "deployment-descriptor.json"
     descriptor_path.write_text(json.dumps(selected), encoding="utf-8")
@@ -607,90 +599,4 @@ def test_finalize_rejects_stable_behind_existing_tagged_core(
             stable_version="1.7.0",
             descriptor_sha256=selected["descriptor_sha256"],
             descriptor=descriptor_path,
-        ))
-
-
-def _prepared_entry(path: Path, unit: str, role: str) -> dict:
-    return {
-        "unit": unit,
-        "name": path.name,
-        "role": role,
-        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-        "size": path.stat().st_size,
-    }
-
-
-def _write_rc_prepared(prepared_dir: Path) -> tuple[dict, Path, Path]:
-    """Writes a verified rc prepared directory (descriptor + inventory +
-    artifact bytes) for a worker whose stable profile adds one Windows unit."""
-    prepared_dir.mkdir()
-    selected = rust_descriptor(
-        "smoke", "a" * 40,
-        ["x86_64-unknown-linux-gnu"],
-        ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"],
-    )
-    descriptor_path = prepared_dir / "deployment-descriptor.json"
-    descriptor_path.write_text(json.dumps(selected), encoding="utf-8")
-    rc_artifact = prepared_dir / "smoke-x86_64-unknown-linux-gnu.tar.gz"
-    rc_artifact.write_bytes(b"candidate bytes")
-    prepared_path = prepared_dir / "prepared-artifacts.json"
-    prepared_path.write_text(json.dumps({
-        "contract": "prepared-artifacts",
-        "worker": "smoke",
-        "source_sha": "a" * 40,
-        "descriptor_sha256": selected["descriptor_sha256"],
-        "artifacts": [_prepared_entry(rc_artifact, "smoke-x86_64-unknown-linux-gnu", "binary")],
-    }), encoding="utf-8")
-    return selected, descriptor_path, prepared_path
-
-
-def test_assemble_stable_unions_rc_bytes_with_supplemental_builds(tmp_path: Path) -> None:
-    selected, descriptor_path, prepared_path = _write_rc_prepared(tmp_path / "prepared")
-    delta_dir = tmp_path / "supplemental" / "smoke-x86_64-pc-windows-msvc"
-    delta_dir.mkdir(parents=True)
-    delta_artifact = delta_dir / "smoke-x86_64-pc-windows-msvc.zip"
-    delta_artifact.write_bytes(b"windows bytes")
-    (delta_dir / "build-result.json").write_text(json.dumps({
-        "contract": "release-build-result",
-        "worker": "smoke",
-        "source_sha": "a" * 40,
-        "descriptor_sha256": selected["descriptor_sha256"],
-        "unit": "smoke-x86_64-pc-windows-msvc",
-        "artifacts": [{
-            "name": delta_artifact.name,
-            "role": "binary",
-            "sha256": hashlib.sha256(delta_artifact.read_bytes()).hexdigest(),
-            "size": delta_artifact.stat().st_size,
-        }],
-    }), encoding="utf-8")
-
-    out = tmp_path / "stable"
-    assert assemble_stable(argparse.Namespace(
-        descriptor=descriptor_path,
-        prepared=prepared_path,
-        supplemental_dir=tmp_path / "supplemental",
-        out=out,
-    )) == 0
-
-    stable = json.loads((out / "prepared-artifacts.json").read_text(encoding="utf-8"))
-    assert {entry["unit"] for entry in stable["artifacts"]} == {
-        "smoke-x86_64-unknown-linux-gnu", "smoke-x86_64-pc-windows-msvc",
-    }
-    rc_artifact = prepared_path.parent / "smoke-x86_64-unknown-linux-gnu.tar.gz"
-    assert deployment_train.sha256(out / rc_artifact.name) == deployment_train.sha256(rc_artifact)
-    assert (out / delta_artifact.name).read_bytes() == delta_artifact.read_bytes()
-    assert (out / "deployment-descriptor.json").read_bytes() == descriptor_path.read_bytes()
-
-
-def test_assemble_stable_rejects_missing_supplemental_build(tmp_path: Path) -> None:
-    _selected, descriptor_path, prepared_path = _write_rc_prepared(tmp_path / "prepared")
-    supplemental_dir = tmp_path / "supplemental"
-    supplemental_dir.mkdir()
-
-    with pytest.raises(SystemExit, match="stable units differ"):
-        assemble_stable(argparse.Namespace(
-            descriptor=descriptor_path,
-            prepared=prepared_path,
-            supplemental_dir=supplemental_dir,
-            out=tmp_path / "stable",
         ))
