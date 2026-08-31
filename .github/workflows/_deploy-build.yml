@@ -85,7 +85,9 @@ jobs:
           UNIT: ${{ inputs.unit }}
         run: |
           set -euo pipefail
-          pip install --quiet pyyaml
+          # jq-only validation: no pyyaml needed, and the x86_64 macOS release
+          # runner has no `pip` on PATH — an install line here fails the whole
+          # build unit before any assertion runs.
           test "$(jq -r .worker deployment-input/deployment-descriptor.json)" = "$WORKER"
           test "$(jq -r .source_sha deployment-input/deployment-descriptor.json)" = "$PREPARED_SHA"
           jq -e --arg unit "$UNIT" --arg target "$TARGET" \
