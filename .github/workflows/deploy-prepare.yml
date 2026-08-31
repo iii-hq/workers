@@ -162,7 +162,7 @@ jobs:
           set -euo pipefail
           {
             echo "prepared_sha=$(jq -r .source_sha deployment-input/deployment-descriptor.json)"
-            echo "matrix=$(python3 .github/scripts/deployment_train.py matrix --descriptor deployment-input/deployment-descriptor.json)"
+            echo "matrix=$(python3 .github/scripts/deployment_train.py matrix --descriptor deployment-input/deployment-descriptor.json --profile candidate)"
             echo "artifact=deployment-descriptor-$DEPLOYMENT_TARGET_ID-$STEP_ID"
             echo "frontend_artifact=deployment-frontend-$DEPLOYMENT_TARGET_ID-$STEP_ID"
           } >> "$GITHUB_OUTPUT"
@@ -237,7 +237,10 @@ jobs:
           name: deployment-prepared-${{ env.DEPLOYMENT_TARGET_ID }}
           path: deploy-prepared/
           if-no-files-found: error
-          retention-days: 7
+          # Fast path for release finalization: verified rc bytes must outlive
+          # the soak window, so keep them long enough to promote without a
+          # rebuild.
+          retention-days: 90
 
   report:
     if: always()

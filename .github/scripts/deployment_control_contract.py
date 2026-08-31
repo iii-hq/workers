@@ -21,6 +21,7 @@ import _lib
 PHASES = {
     "prepare",
     "publish",
+    "finalize",
     "verify",
 }
 PHASE_WORKFLOWS = {phase: f"deploy-{phase.replace('_', '-')}.yml" for phase in PHASES}
@@ -80,6 +81,19 @@ def deployment_channel(value: str) -> str:
 
 def target_version(value: str) -> str:
     return _lib.validate_deployment_target_version(value)
+
+
+def channel_target_version(channel: str, version: str) -> str:
+    """The channel/version-form gate: latest only ever receives pure versions."""
+    return _lib.validate_channel_target_version(channel, version)
+
+
+def candidate_version(value: str | None, stable: str) -> str | None:
+    """Validate the finalize-phase rc candidate against its stable version."""
+    if value is None:
+        return None
+    _lib.validate_finalization(value, stable)
+    return value
 
 
 def validate_executor(args: argparse.Namespace) -> None:
@@ -198,6 +212,19 @@ def write_result(args: argparse.Namespace) -> int:
     if args.workflow != PHASE_WORKFLOWS[args.phase]:
         raise ValueError(f"phase {args.phase} requires workflow {PHASE_WORKFLOWS[args.phase]}")
     prepared_sha = nullable(args.prepared_sha)
+    candidate = nullable(args.candidate_version)
+    if args.phase == "finalize":
+        # A finalize subject binds the rc candidate to its stable version: the
+        # bytes are the rc's, the channel move is latest, and no new source
+        # revision exists (prepared_sha is the rc's source_sha).
+        if candidate is None:
+            raise ValueError("finalize results require --candidate-version")
+        if args.channel != "latest":
+            raise ValueError("finalize results require channel=latest")
+        if prepared_sha != args.source_sha:
+            raise ValueError("finalize results require prepared_sha equal to source_sha")
+    elif candidate is not None:
+        raise ValueError(f"phase {args.phase} does not accept --candidate-version")
     payload = {
         "contract": "deployment-execution",
         "identity": {
@@ -221,9 +248,14 @@ def write_result(args: argparse.Namespace) -> int:
             "phase": args.phase,
             "source_sha": commit_sha(args.source_sha, "source_sha"),
             "prepared_sha": commit_sha(prepared_sha, "prepared_sha") if prepared_sha else None,
-            "target_version": target_version(args.target_version),
-            "channel": deployment_channel(args.channel),
+            "target_version": channel_target_version(deployment_channel(args.channel), args.target_version),
+            "channel": args.channel,
             "descriptor_sha256": sha256_hex(args.descriptor_sha256, "descriptor_sha256"),
+            **(
+                {"candidate_version": candidate_version(candidate, args.target_version)}
+                if args.phase == "finalize"
+                else {}
+            ),
         },
         "outcome": args.outcome,
         "effects": validate_effects(args.effects),
@@ -305,8 +337,8 @@ def authorize_dispatch(args: argparse.Namespace) -> int:
         "subject": {
             "worker": validate_worker(args.worker),
             "source_sha": commit_sha(args.source_sha, "source_sha"),
-            "target_version": target_version(args.target_version),
-            "channel": deployment_channel(args.channel),
+            "target_version": channel_target_version(deployment_channel(args.channel), args.target_version),
+            "channel": args.channel,
             "descriptor_sha256": sha256_hex(args.descriptor_sha256, "descriptor_sha256"),
         },
     }
@@ -391,6 +423,7 @@ def parser() -> argparse.ArgumentParser:
     write.add_argument("--phase", choices=sorted(PHASES), required=True)
     write.add_argument("--source-sha", required=True)
     write.add_argument("--prepared-sha", default="none")
+    write.add_argument("--candidate-version", default="none")
     write.add_argument("--target-version", required=True)
     write.add_argument("--channel", choices=["next", "latest"], required=True)
     write.add_argument("--descriptor-sha256", required=True)

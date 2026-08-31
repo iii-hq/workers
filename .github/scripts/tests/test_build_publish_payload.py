@@ -56,27 +56,23 @@ def test_target_version_is_independent_from_manifest_metadata_and_has_no_implici
     assert "tag" not in target
 
 
-def test_new_publish_target_rejects_legacy_numbered_rc() -> None:
+def test_publish_target_accepts_numbered_rc() -> None:
     projection = {
         "worker_name": "smoke", "type": "binary", "description": "smoke",
         "license": "Apache-2.0", "tags": [], "dependencies": [], "config": {},
         "experimental": False, "readme": "# Smoke\n",
     }
-    try:
-        build_payload(
-            registry_projection=projection,
-            published_version="2.0.0-rc.4",
-            repo_url="https://github.com/iii-hq/workers",
-            interface={"functions": [], "triggers": []},
-            artifacts={
-                "kind": "rust-binary",
-                "binaries": {"x86_64-unknown-linux-gnu": {"url": "https://example.test/smoke.tgz", "sha256": "b" * 64}},
-            },
-        )
-    except ValueError as error:
-        assert "deployment target version" in str(error)
-    else:
-        raise AssertionError("legacy numbered rc target was accepted")
+    payload = build_payload(
+        registry_projection=projection,
+        published_version="2.0.0-rc.4",
+        repo_url="https://github.com/iii-hq/workers",
+        interface={"functions": [], "triggers": []},
+        artifacts={
+            "kind": "rust-binary",
+            "binaries": {"x86_64-unknown-linux-gnu": {"url": "https://example.test/smoke.tgz", "sha256": "b" * 64}},
+        },
+    )
+    assert payload["version"] == "2.0.0-rc.4"
 
 
 def test_engine_builtins_are_not_deployment_targets() -> None:

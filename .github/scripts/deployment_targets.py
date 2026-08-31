@@ -14,6 +14,17 @@ DEFAULT_TARGETS = [
     "armv7-unknown-linux-gnueabihf",
 ]
 
+# Windows targets are stable-profile only: they are never built for release
+# candidates and only ever enter a worker's `stable_targets` by explicit
+# opt-in. x86_64 is the only supported triple today; i686/aarch64 msvc extend
+# this map without redesign when product support lands.
+WINDOWS_TARGETS = [
+    "x86_64-pc-windows-msvc",
+]
+
+# Canonical ordering for every declarable target across both profiles.
+ALL_TARGETS = [*DEFAULT_TARGETS, *WINDOWS_TARGETS]
+
 TARGET_RUNNERS = {
     "x86_64-apple-darwin": "macos-latest",
     "aarch64-apple-darwin": "macos-latest",
@@ -21,6 +32,7 @@ TARGET_RUNNERS = {
     "x86_64-unknown-linux-musl": "ubuntu-latest",
     "aarch64-unknown-linux-gnu": "ubuntu-22.04",
     "armv7-unknown-linux-gnueabihf": "ubuntu-22.04",
+    "x86_64-pc-windows-msvc": "windows-latest",
 }
 
 # The release runner group is restricted to the release workflows on main.
@@ -35,16 +47,19 @@ TARGET_LARGER_RUNNERS = {
     "x86_64-unknown-linux-musl": "workers-release-linux-8core",
     "aarch64-unknown-linux-gnu": "workers-release-linux-8core",
     "armv7-unknown-linux-gnueabihf": "workers-release-linux-8core",
+    # Windows builds only run at finalization (stable-delta) and use
+    # GitHub-hosted capacity until a dedicated pool proves necessary.
+    "x86_64-pc-windows-msvc": "windows-latest",
 }
 
 
-def normalize_targets(raw: object, *, deploy: str | None = "binary") -> list[str]:
-    """Return canonical targets, rejecting Windows and unknown triples.
+def normalize_targets(raw: object, *, deploy: str | None = "binary", allow_windows: bool = False) -> list[str]:
+    """Return canonical targets, rejecting unknown triples.
 
-    An omitted target list means every supported Unix target for binaries. A
-    non-binary worker has no executable target matrix, but an explicit Windows
-    entry is still rejected so manifests cannot silently advertise unsupported
-    artifacts.
+    An omitted target list means every supported Unix target for binaries.
+    Windows triples are accepted only when `allow_windows` is set — the
+    stable profile of an explicitly opted-in worker — so candidate manifests
+    can never silently advertise unsupported artifacts.
     """
     if raw is None or raw == "":
         return list(DEFAULT_TARGETS) if deploy == "binary" else []
@@ -64,10 +79,12 @@ def normalize_targets(raw: object, *, deploy: str | None = "binary") -> list[str
             if "windows" in target:
                 raise ValueError(f"Windows release target is not supported: {target}")
             raise ValueError(f"unknown release target: {target}")
+        if target in WINDOWS_TARGETS and not allow_windows:
+            raise ValueError(f"Windows release target is stable-profile only: {target}")
         if target in requested:
             raise ValueError(f"duplicate release target: {target}")
         requested.append(target)
 
     if deploy == "binary" and not requested:
         raise ValueError("binary workers must declare at least one Unix release target")
-    return [target for target in DEFAULT_TARGETS if target in requested]
+    return [target for target in ALL_TARGETS if target in requested]

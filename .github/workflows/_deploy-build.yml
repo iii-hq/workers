@@ -42,6 +42,11 @@ jobs:
   build:
     name: ${{ inputs.worker }} / ${{ inputs.unit }}
     runs-on: ${{ inputs.runner }}
+    defaults:
+      run:
+        # Windows runners default to pwsh; every run step here is written for
+        # bash, which the hosted Windows images ship too.
+        shell: bash
     permissions:
       actions: read
       contents: read
@@ -75,7 +80,8 @@ jobs:
 
       - name: Restore embedded frontend outputs
         if: inputs.kind == 'rust-binary'
-        run: rsync -a .release-frontend/ ./
+        # shutil, not rsync: Windows and macOS runners do not guarantee rsync.
+        run: python3 -c "import shutil; shutil.copytree('.release-frontend', '.', dirs_exist_ok=True)"
 
       - name: Validate immutable descriptor
         env:
@@ -90,9 +96,15 @@ jobs:
           # build unit before any assertion runs.
           test "$(jq -r .worker deployment-input/deployment-descriptor.json)" = "$WORKER"
           test "$(jq -r .source_sha deployment-input/deployment-descriptor.json)" = "$PREPARED_SHA"
-          jq -e --arg unit "$UNIT" --arg target "$TARGET" \
-            '.build_units | any(.id == $unit and ((.target // .platform // "none") == $target))' \
-            deployment-input/deployment-descriptor.json >/dev/null
+          # A supplemental stable-delta unit (a stable-only rust target such as
+          # Windows) is not in build_units — accept it when the descriptor
+          # declares the target in stable_targets beyond candidate_targets.
+          jq -e --arg unit "$UNIT" --arg target "$TARGET" '
+            (.build_units | any(.id == $unit and ((.target // .platform // "none") == $target)))
+            or (.artifact.kind == "rust-binary"
+              and ((.artifact.stable_targets - .artifact.candidate_targets) | any(. == $target))
+              and $unit == (.worker + "-" + $target))
+          ' deployment-input/deployment-descriptor.json >/dev/null
 
       - name: Rewrite SSH to HTTPS for public dependencies
         run: git config --local url."https://github.com/".insteadOf "ssh://git@github.com/"
