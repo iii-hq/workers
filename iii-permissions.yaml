@@ -125,6 +125,14 @@ rules:
   - '!harness::stop'
   - '!harness::on-config-change'
   - '!harness::sweep-pending'
+  # kanban: Console asset delivery and lifecycle sinks are engine plumbing.
+  # Run/task mutations stay at the needs_approval default; read-only board,
+  # model, and executor discovery are allowlisted below.
+  - '!kanban::ui-content'
+  - '!kanban::on-agent-task'
+  - '!kanban::on-harness-completed'
+  - '!kanban::on-session-changed'
+  - '!kanban::on-worktree-changed'
   # eval: durable orchestration internals are trigger/queue targets only.
   # Starting, cancelling, and deleting evaluations remain approval-gated by
   # the default. Status/result are read-only and the exact evaluator is pure.
@@ -299,6 +307,8 @@ rules:
   - worktree::get
   - worktree::status
   - worktree::validate
+  - kanban::executors::list
+  - kanban::models::list
   # editor: the reading half. editor::diff is pure (two strings in, a patch
   # out — no I/O at all); the rest read through the shell worker, so they reach
   # nothing shell::fs::read and shell::exec could not already reach.
