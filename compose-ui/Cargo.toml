@@ -1,0 +1,37 @@
+[workspace]
+
+[package]
+name = "compose-ui"
+version = "0.1.0"
+edition = "2021"
+description = "Compose project supervision in the Console: live container state, lifecycle actions, worker packages, and log tails."
+license = "Apache-2.0"
+repository = "https://github.com/iii-hq/workers"
+publish = false
+
+[[bin]]
+name = "compose-ui"
+path = "src/main.rs"
+
+[lib]
+name = "compose_ui"
+path = "src/lib.rs"
+
+[dependencies]
+iii-sdk = "=0.22.1-alpha.25"
+iii-console-ui = { path = "../crates/console-ui" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "fs", "io-util", "process"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+schemars = "0.8"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+clap = { version = "4", features = ["derive", "env"] }
+async-trait = "0.1"
+notify = "8"
+url = "2"
+
+[dev-dependencies]
+tempfile = "3"

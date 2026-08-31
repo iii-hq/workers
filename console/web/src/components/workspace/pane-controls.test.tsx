@@ -1,6 +1,28 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
-import { EdgeAddZone, ResizeHandle } from './pane-controls'
+import { EdgeAddZone, PanelDragHandle, ResizeHandle } from './pane-controls'
+
+describe('PanelDragHandle', () => {
+  it('is desktop-only and exposes pointer and keyboard reorder controls', () => {
+    const markup = renderToStaticMarkup(
+      <PanelDragHandle
+        index={1}
+        count={3}
+        onDragStart={vi.fn()}
+        onDragEnd={vi.fn()}
+        onMove={vi.fn()}
+      />,
+    )
+
+    expect(markup).toContain('aria-label="reorder panel 2"')
+    expect(markup).toContain(
+      'aria-keyshortcuts="ArrowLeft ArrowRight Home End"',
+    )
+    expect(markup).toContain('draggable="true"')
+    expect(markup).toContain('hidden')
+    expect(markup).toContain('sm:flex')
+  })
+})
 
 describe('EdgeAddZone', () => {
   it('keeps a generous idle hover target at both responsive widths', () => {
@@ -9,7 +31,7 @@ describe('EdgeAddZone', () => {
     )
 
     expect(markup).toContain('w-3 sm:w-4')
-    expect(markup).toContain('show the add-panel control (right edge)')
+    expect(markup).toContain('show Split right control')
     expect(markup).toContain('lucide-plus')
     expect(markup).not.toContain('edge-nudge')
     expect(markup).not.toContain('animation-delay:-5s')

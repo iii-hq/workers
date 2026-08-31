@@ -13,6 +13,7 @@
  */
 
 import type { View } from '@/hooks/use-hash-route'
+import { moveItem } from '@/lib/reorder'
 
 /** `chat`, `chat:<session-id>`, a routed view, or `ext:<page-id>`. */
 export type TabScreen = string
@@ -260,6 +261,34 @@ export function withPaneRemoved(
   paneId: string,
 ): WorkspaceTab {
   return withColumnRemoved(tab, tabPaneIds(tab).indexOf(paneId))
+}
+
+/**
+ * Move one pane to another pane's position. Every index-aligned part of the
+ * pane moves with it: its screen, stable identity, and stored width.
+ */
+export function withPaneMoved(
+  tab: WorkspaceTab,
+  paneId: string,
+  targetPaneId: string,
+): WorkspaceTab {
+  const paneIds = tabPaneIds(tab)
+  const from = paneIds.indexOf(paneId)
+  const to = paneIds.indexOf(targetPaneId)
+  if (from < 0 || to < 0 || from === to) return tab
+
+  const columns = tabColumns(tab)
+  const screens = Array.from(
+    { length: columns },
+    (_, index) => tab.screens[index] ?? null,
+  )
+  return {
+    ...tab,
+    columns,
+    screens: moveItem(screens, from, to),
+    paneIds: moveItem(paneIds, from, to),
+    sizes: moveItem(tabSizes(tab), from, to),
+  }
 }
 
 export const EXT_SCREEN_PREFIX = 'ext:'

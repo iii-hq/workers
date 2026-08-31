@@ -352,7 +352,7 @@ export function SecuritySources({
           <h3 id="security-scan-sources-title">Security sources</h3>
         </div>
         <Button variant="ghost" size="sm" onClick={onRefresh} disabled={loading || refreshing || loadingMore}>
-          <RefreshIcon size={14} className={refreshing ? 'is-spinning' : undefined} />
+          <RefreshIcon size={16} className={refreshing ? 'is-spinning' : undefined} />
           {refreshing ? 'refreshing' : stateCopy.action}
         </Button>
       </div>

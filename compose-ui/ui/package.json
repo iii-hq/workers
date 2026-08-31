@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit && node build.mjs",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "watch": "node build.mjs --watch"
   },
@@ -14,6 +15,7 @@
   "devDependencies": {
     "@types/react": "^19.2.14",
     "esbuild": "^0.25.0",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "vitest": "^4.1.10"
   }
 }

@@ -97,7 +97,7 @@ containers:
   compose-ui:
     worker: path://../compose-ui
     scripts:
-      run: pnpm install --ignore-workspace --ignore-scripts && pnpm build:bundle && node dist/bundle/index.mjs
+      run: cargo run --release
 ```
 
 A worker started by hand needs `III_NAMESPACE=<compose namespace>` or the

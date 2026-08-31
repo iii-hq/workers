@@ -1,0 +1,53 @@
+/*
+ * Streaming prose keeps ReactMarkdown's existing DOM stable. The surface
+ * animates once when the first content arrives; subsequent motion is applied
+ * only to top-level blocks that ReactMarkdown appends. Inline token updates
+ * remain instant by design.
+ */
+@keyframes assistant-stream-first-block-in {
+  from {
+    opacity: 0.35;
+    transform: translateY(4px);
+    filter: blur(1px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+@keyframes assistant-stream-appended-block-in {
+  from {
+    opacity: 0.45;
+    transform: translateY(4px);
+    filter: blur(1px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+.assistant-stream-surface.is-entering {
+  animation: assistant-stream-first-block-in var(--motion-duration-panel, 220ms)
+    var(--motion-ease-enter, cubic-bezier(0.22, 1, 0.36, 1)) both;
+}
+
+.assistant-stream-appended-block {
+  animation: assistant-stream-appended-block-in
+    var(--motion-duration-fast, 120ms)
+    var(--motion-ease-enter, cubic-bezier(0.22, 1, 0.36, 1)) both;
+  will-change: transform, opacity, filter;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .assistant-stream-surface.is-entering,
+  .assistant-stream-appended-block {
+    animation: none;
+    transform: none;
+    filter: none;
+    opacity: 1;
+  }
+}

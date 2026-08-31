@@ -24,6 +24,7 @@ import {
   withActiveTabId,
   withColumnAdded,
   withColumnRemoved,
+  withPaneMoved,
   withPaneRemoved,
   withScreenDetached,
   withScreenOpenedBeside,
@@ -299,7 +300,7 @@ describe('tabPaneIds', () => {
   })
 })
 
-describe('withColumnAdded / withColumnRemoved', () => {
+describe('panel column transforms', () => {
   const base: WorkspaceTab = { id: 't', columns: 1, screens: ['traces'] }
 
   it('adds an empty column on the chosen side at 1/(n+1) width', () => {
@@ -374,6 +375,22 @@ describe('withColumnAdded / withColumnRemoved', () => {
     expect(two.screens).toEqual(['traces', null])
     const total = (two.sizes ?? []).reduce((a, b) => a + b, 0)
     expect(total).toBeCloseTo(1)
+  })
+
+  it('moves the screen, pane identity, and width together', () => {
+    const tab: WorkspaceTab = {
+      id: 'movable',
+      columns: 3,
+      screens: ['chat', 'traces', null],
+      paneIds: ['pane-chat', 'pane-traces', 'pane-empty'],
+      sizes: [0.2, 0.3, 0.5],
+    }
+
+    const moved = withPaneMoved(tab, 'pane-chat', 'pane-empty')
+    expect(moved.screens).toEqual(['traces', null, 'chat'])
+    expect(moved.paneIds).toEqual(['pane-traces', 'pane-empty', 'pane-chat'])
+    expect(moved.sizes).toEqual([0.3, 0.5, 0.2])
+    expect(withPaneMoved(tab, 'missing', 'pane-empty')).toBe(tab)
   })
 
   it('round-trips through the validator with more than three columns', () => {

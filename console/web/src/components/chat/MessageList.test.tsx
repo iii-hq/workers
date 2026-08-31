@@ -4,6 +4,7 @@ import type {
   AssistantMessage,
   FunctionTriggerMessage,
   Message,
+  ThoughtMessage,
   UserMessage,
 } from '@/types/chat'
 import { MessageList } from './MessageList'
@@ -51,12 +52,19 @@ function transcript(): Message[] {
 }
 
 describe('MessageList function-trigger groups', () => {
-  it('renders only the latest call of a collapsed sequence and its summary', () => {
+  it('keeps lightweight call shells while mounting only the latest calls', () => {
     const html = renderToStaticMarkup(<MessageList messages={transcript()} />)
 
     expect(html.match(/data-message-role="function-call"/g)).toHaveLength(2)
+    expect(
+      html.match(/class="chat-activity-item" data-visible="true"/g),
+    ).toHaveLength(2)
+    expect(
+      html.match(/class="chat-activity-item" data-visible="false"/g),
+    ).toHaveLength(2)
     expect(html).toContain('3 triggers')
     expect(html).toContain('show all')
+    expect(html).toContain('data-active="false" aria-hidden="true"')
     expect(html).toContain(
       'The implementation uses one shared mapper; next I will update it.',
     )
@@ -69,6 +77,9 @@ describe('MessageList function-trigger groups', () => {
     )
 
     expect(html.match(/data-message-role="function-call"/g)).toHaveLength(4)
+    expect(
+      html.match(/class="chat-activity-item" data-visible="false"/g),
+    ).toBeNull()
     expect(html).toContain('show latest')
   })
 
@@ -80,6 +91,9 @@ describe('MessageList function-trigger groups', () => {
     // c1 hides behind the first group's collapse; the landing request must
     // expand that group in the same render so the row exists to center.
     expect(html.match(/data-message-role="function-call"/g)).toHaveLength(4)
+    expect(
+      html.match(/class="chat-activity-item" data-visible="false"/g),
+    ).toBeNull()
     expect(html).toContain('data-message-row="c1"')
     expect(html).toContain('show latest')
   })
@@ -90,7 +104,39 @@ describe('MessageList function-trigger groups', () => {
     )
 
     expect(html.match(/data-message-role="function-call"/g)).toHaveLength(2)
+    expect(
+      html.match(/class="chat-activity-item" data-visible="false"/g),
+    ).toHaveLength(2)
     expect(html).toContain('show all')
+  })
+
+  it('groups triggers separated only by completed, hidden thoughts', () => {
+    const completedThought = (id: string): ThoughtMessage => ({
+      id,
+      role: 'thought',
+      content: `reasoning ${id}`,
+      durationMs: 100,
+      streaming: false,
+      createdAt: 0,
+    })
+    const html = renderToStaticMarkup(
+      <MessageList
+        transcriptHydrated={false}
+        messages={[
+          call('c1'),
+          completedThought('t1'),
+          call('c2'),
+          call('c3'),
+          completedThought('t2'),
+          call('c4'),
+        ]}
+      />,
+    )
+
+    expect(html.match(/data-function-trigger-group=""/g)).toHaveLength(1)
+    expect(html).toContain('data-function-trigger-count="4"')
+    expect(html).toContain('4 triggers')
+    expect(html).not.toContain('2 triggers')
   })
 
   it('reveals a hidden wake pair when the landing targets its notification', () => {

@@ -48,7 +48,7 @@ const WORKSPACE_ACTIONS: ReadonlyArray<{
   detail: string
 }> = [
   { id: 'workspace.create', detail: 'Open an empty workspace' },
-  { id: 'panel.split', detail: 'Add a panel beside the current one' },
+  { id: 'panel.split', detail: 'Add an empty panel on the right' },
   { id: 'panel.next', detail: 'Move the keyboard to the panel on the right' },
   {
     id: 'panel.previous',
@@ -77,7 +77,7 @@ export interface PaletteWorkspace {
   create: () => void
   close: (id: string) => void
   step: (delta: 1 | -1) => void
-  split: () => void
+  split: (side: 'left' | 'right') => void
   focusPane: (delta: 1 | -1) => void
 }
 
@@ -186,7 +186,7 @@ export function PaletteHost({
 
     const workspaceRun: Record<WorkspaceActionId, () => void> = {
       'workspace.create': workspace.create,
-      'panel.split': workspace.split,
+      'panel.split': () => workspace.split('right'),
       'panel.next': () => workspace.focusPane(1),
       'panel.previous': () => workspace.focusPane(-1),
       'workspace.next': () => workspace.step(1),
@@ -205,9 +205,9 @@ export function PaletteHost({
     }
     const workspaceActions: PaletteEntry[] = WORKSPACE_ACTIONS.filter(
       ({ id }) => offered(id),
-    ).map(({ id, detail }) => {
+    ).flatMap(({ id, detail }) => {
       const definition = keybinding(id)
-      return {
+      const entry: PaletteEntry = {
         id: `action:${id}`,
         kind: 'action',
         title: definition.title,
@@ -216,6 +216,19 @@ export function PaletteHost({
         shortcut: bindingsFor(id, platform)[0],
         run: workspaceRun[id],
       }
+      if (id !== 'panel.split') return [entry]
+      return [
+        {
+          ...entry,
+          id: 'action:panel.split-left',
+          title: 'Split left',
+          detail: 'Add an empty panel on the left',
+          keywords: [...(entry.keywords ?? []), 'left'],
+          shortcut: undefined,
+          run: () => workspace.split('left'),
+        },
+        entry,
+      ]
     })
 
     // A worker-level command needs its page registered (the worker is here);

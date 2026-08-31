@@ -2,6 +2,7 @@ import type { MessageListRow } from '@/components/chat/function-trigger-groups'
 import type {
   AssistantMessage,
   FunctionTriggerMessage,
+  Message,
   SystemMessage,
   UserMessage,
 } from '@/types/chat'
@@ -9,7 +10,7 @@ import type {
 export interface TriggerActivityRow {
   kind: 'trigger-activity'
   id: string
-  message: SystemMessage
+  message: SystemMessage | UserMessage
   notification?: UserMessage
 }
 
@@ -26,13 +27,48 @@ export interface TimelineActivityGroupRow {
   summary?: AssistantMessage
 }
 
+/**
+ * React-facing identity for an activity. Durable transcript ids may replace
+ * optimistic ids during reconciliation; the harness function-call id remains
+ * stable across that handoff and is therefore the preferred presentation key.
+ */
+export function timelineActivityPresentationKey(
+  item: TimelineActivityItem,
+): string {
+  if (item.kind === 'function-trigger') {
+    return item.message.functionTriggerId ?? item.id
+  }
+  return item.id
+}
+
 export type TimelineMessageListRow =
   | Extract<MessageListRow, { kind: 'message' }>
   | TimelineActivityGroupRow
 
+type TimelineMessageRow = Extract<MessageListRow, { kind: 'message' }>
+
 type PairMember =
   | { side: 'notification'; key: string; message: UserMessage }
   | { side: 'record'; key: string; message: SystemMessage }
+
+/**
+ * Canonical identity shared by the two transcript entries of one trigger
+ * delivery. It is also suitable as the turn clock key while those entries
+ * arrive out of order.
+ */
+export function triggerActivityPairKey(message: Message): string | null {
+  if (message.role === 'user' && message.notification) {
+    return notificationPairKey(message.id)
+  }
+  if (
+    message.role === 'system' &&
+    message.kind === 'trigger-fired' &&
+    message.trigger
+  ) {
+    return recordPairKey(message.id)
+  }
+  return null
+}
 
 /**
  * Match the two durable entries that represent one Harness wake. The IDs are
@@ -45,7 +81,7 @@ export function triggerPairMember(row: MessageListRow): PairMember | null {
   const message = row.message
 
   if (message.role === 'user' && message.notification) {
-    const key = notificationPairKey(message.id)
+    const key = triggerActivityPairKey(message)
     return key ? { side: 'notification', key, message } : null
   }
 
@@ -54,7 +90,7 @@ export function triggerPairMember(row: MessageListRow): PairMember | null {
     message.kind === 'trigger-fired' &&
     message.trigger
   ) {
-    const key = recordPairKey(message.id)
+    const key = triggerActivityPairKey(message)
     return key ? { side: 'record', key, message } : null
   }
 
@@ -127,8 +163,6 @@ export function triggerActivityRows(
       ] => Boolean(pair[1].notification && pair[1].record),
     ),
   )
-  if (complete.size === 0) return [...rows]
-
   const output: TriggerAwareMessageListRow[] = []
   rows.forEach((row, index) => {
     const member = triggerPairMember(row)
@@ -138,7 +172,17 @@ export function triggerActivityRows(
     }
     const pair = complete.get(member.key)
     if (!pair) {
-      output.push(row)
+      // Give each half of a wake the same activity-group shape it will have
+      // after pairing. Late durable data then updates the existing
+      // TriggerActivityCard instead of reparenting and remounting it.
+      output.push({
+        kind: 'trigger-activity',
+        id: member.message.id,
+        message: member.message,
+        ...(member.side === 'notification'
+          ? { notification: member.message }
+          : {}),
+      })
       return
     }
     if (index !== pair.firstIndex) return
@@ -158,27 +202,44 @@ export function triggerActivityRows(
  * Put paired trigger fires and function calls in the same collapsible phase.
  * The first pass has already grouped contiguous calls; this pass treats those
  * groups and trigger activities as one stream, stopping at ordinary prose or
- * at an intermediate assistant summary. A fire immediately before the calls
- * it woke therefore participates in the existing "show all" behavior.
+ * at an intermediate assistant summary. Visible thoughts are interstitials:
+ * they keep their side of the stable activity group while it absorbs later
+ * calls. A fire immediately before the calls it woke therefore participates in
+ * the existing "show all" behavior without remounting those calls on handoff.
  */
 export function groupTimelineActivities(
   rows: readonly TriggerAwareMessageListRow[],
 ): TimelineMessageListRow[] {
   const output: TimelineMessageListRow[] = []
   let items: TimelineActivityItem[] = []
+  let leadingThoughts: TimelineMessageRow[] = []
+  let trailingThoughts: TimelineMessageRow[] = []
 
   const flush = (summary?: AssistantMessage) => {
-    if (items.length === 0) return
-    output.push({
-      kind: 'activity-group',
-      id: `activity-group:${items[0].id}`,
-      items,
-      ...(summary ? { summary } : {}),
-    })
+    output.push(...leadingThoughts)
+    if (items.length > 0) {
+      output.push({
+        kind: 'activity-group',
+        // Match the first durable row's presentation identity. A standalone
+        // wake that later becomes a paired/grouped activity then keeps the same
+        // outer React key instead of replaying its mount transition.
+        id: timelineActivityPresentationKey(items[0]),
+        items,
+        ...(summary ? { summary } : {}),
+      })
+    }
+    output.push(...trailingThoughts)
     items = []
+    leadingThoughts = []
+    trailingThoughts = []
   }
 
   for (const row of rows) {
+    if (row.kind === 'message' && row.message.role === 'thought') {
+      const thoughts = items.length === 0 ? leadingThoughts : trailingThoughts
+      thoughts.push(row)
+      continue
+    }
     if (row.kind === 'trigger-activity') {
       items.push(row)
       continue
@@ -193,7 +254,16 @@ export function groupTimelineActivities(
           }),
         ),
       )
-      if (row.summary) flush(row.summary)
+      // A fired activity can own the calls that follow it, but a later fire
+      // starts a new phase. Closing here keeps that directional relationship
+      // and prevents two groups from merging when an ephemeral thought between
+      // them leaves the transcript.
+      if (row.summary && trailingThoughts.length > 0) {
+        flush()
+        output.push({ kind: 'message', message: row.summary })
+      } else {
+        flush(row.summary)
+      }
       continue
     }
     flush()

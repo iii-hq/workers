@@ -9,8 +9,14 @@
  * empty pane on that side.
  */
 
-import { Plus } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { GripHorizontal, Plus } from 'lucide-react'
+import {
+  type DragEvent,
+  type KeyboardEvent,
+  useEffect,
+  useRef,
+  useState,
+} from 'react'
 import { hoverTitle } from '@/lib/keybindings/registry'
 import { cn } from '@/lib/utils'
 
@@ -20,6 +26,65 @@ const EDGE_REVEAL_MS = 200
 const EDGE_HIDE_MS = 150
 /** Keyboard resize step, as a fraction of the container width. */
 const KEY_STEP = 0.02
+
+interface PanelDragHandleProps {
+  index: number
+  count: number
+  disabled?: boolean
+  dragging?: boolean
+  onDragStart: (event: DragEvent<HTMLButtonElement>) => void
+  onDragEnd: () => void
+  onMove: (nextIndex: number) => void
+}
+
+/**
+ * Desktop-only panel reorder handle. Native drag keeps the gesture isolated
+ * from the hosted page, while arrow/Home/End keys offer the same operation
+ * without a pointer.
+ */
+export function PanelDragHandle({
+  index,
+  count,
+  disabled = false,
+  dragging = false,
+  onDragStart,
+  onDragEnd,
+  onMove,
+}: PanelDragHandleProps) {
+  const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (disabled) return
+    let next: number | null = null
+    if (event.key === 'ArrowLeft' && index > 0) next = index - 1
+    else if (event.key === 'ArrowRight' && index < count - 1) next = index + 1
+    else if (event.key === 'Home' && index > 0) next = 0
+    else if (event.key === 'End' && index < count - 1) next = count - 1
+    if (next === null) return
+    event.preventDefault()
+    onMove(next)
+  }
+
+  return (
+    <button
+      type="button"
+      draggable={!disabled}
+      disabled={disabled}
+      aria-label={`reorder panel ${index + 1}`}
+      aria-keyshortcuts="ArrowLeft ArrowRight Home End"
+      title="drag to reorder (arrow keys also work)"
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
+      onKeyDown={onKeyDown}
+      className={cn(
+        'absolute top-0 left-1/2 z-30 hidden h-5 w-10 -translate-x-1/2 items-center justify-center rounded-b-sm border-x border-b border-edge bg-panel text-ink-ghost shadow-sm sm:flex',
+        'cursor-grab opacity-40 transition-[color,opacity,background-color] hover:bg-surface-hover hover:text-ink hover:opacity-100 focus-visible:bg-surface-hover focus-visible:text-ink focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-accent active:cursor-grabbing',
+        disabled && 'cursor-default opacity-0',
+        dragging && 'cursor-grabbing bg-surface-hover text-ink opacity-100',
+      )}
+    >
+      <GripHorizontal aria-hidden className="size-4" />
+    </button>
+  )
+}
 
 interface ResizeHandleProps {
   /** Left pane's share in percent — the separator's aria value. */
@@ -182,6 +247,7 @@ export function EdgeAddZone({
   disabled = false,
   nudge = false,
 }: EdgeAddZoneProps) {
+  const splitLabel = `Split ${side}`
   const [revealed, setRevealed] = useState(false)
   const dwellRef = useRef<number | null>(null)
   const hideRef = useRef<number | null>(null)
@@ -252,11 +318,11 @@ export function EdgeAddZone({
         <button
           type="button"
           disabled={disabled}
-          aria-label={`add panel on the ${side}`}
+          aria-label={splitLabel}
           title={
             side === 'right'
-              ? hoverTitle(`add panel on the ${side}`, 'panel.split')
-              : `add panel on the ${side}`
+              ? hoverTitle(splitLabel, 'panel.split')
+              : splitLabel
           }
           onClick={() => {
             clearTimers()
@@ -266,15 +332,15 @@ export function EdgeAddZone({
           className={cn(
             'flex h-full w-full flex-col items-center justify-center gap-2 rounded-sm',
             'border border-dashed border-ink-ghost bg-panel/60 backdrop-blur-[2px]',
-            'font-mono text-[11px] lowercase text-ink-faint',
+            'font-mono text-[11px] text-ink-faint',
             'mx-1.5 hover:border-accent hover:text-ink transition-colors',
           )}
         >
           <Plus className="size-4" />
-          new panel
+          {splitLabel}
           {nudge ? (
             <span className="px-3 text-center text-[10px] leading-relaxed text-ink-ghost">
-              hover either screen edge — left or right — to add a panel
+              hover either screen edge — left or right — to split
             </span>
           ) : null}
         </button>
@@ -283,7 +349,7 @@ export function EdgeAddZone({
           <button
             type="button"
             disabled={disabled}
-            aria-label={`show the add-panel control (${side} edge)`}
+            aria-label={`show ${splitLabel} control`}
             onClick={() => {
               // Touch (and impatient mice): first tap reveals, second adds.
               clearTimers()
