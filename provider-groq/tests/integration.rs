@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{register_worker, IIIClient, InitOptions};
+use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
 use llm_router::register::register_router;
 use provider_groq::register::register_provider;
 use serde_json::{json, Value};
@@ -16,6 +16,12 @@ struct Engine {
     url: String,
     child: std::process::Child,
     dir: std::path::PathBuf,
+    /// In-memory `state::get`/`state::set` service for the whole test: the
+    /// engine no longer ships a state builtin (rc.8 rejects `iii-state` in
+    /// `config.yaml`), and both the router's registry persistence and the
+    /// provider's registration token ride these functions. Held here so it
+    /// survives router restarts within a test.
+    _state: IIIClient,
 }
 
 impl Drop for Engine {
@@ -24,6 +30,52 @@ impl Drop for Engine {
         let _ = self.child.wait();
         let _ = std::fs::remove_dir_all(&self.dir);
     }
+}
+
+fn test_init_options() -> InitOptions {
+    static NEXT_WORKER_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let mut metadata = iii_sdk::runtime::WorkerMetadata::default();
+    let worker_id = NEXT_WORKER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    metadata.name = format!("{}-test-{worker_id}", metadata.name);
+    InitOptions {
+        metadata: Some(metadata),
+        ..InitOptions::default()
+    }
+}
+
+/// Register the in-memory state service on its own worker identity.
+fn register_state_stub(iii: &IIIClient) {
+    type Store = std::sync::Mutex<std::collections::HashMap<(String, String), Value>>;
+    let store: Arc<Store> = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    let read = store.clone();
+    iii.register_function(
+        "state::get",
+        RegisterFunction::new_async(move |req: Value| {
+            let read = read.clone();
+            async move {
+                let scope = req["scope"].as_str().unwrap_or_default().to_string();
+                let key = req["key"].as_str().unwrap_or_default().to_string();
+                let value = read.lock().unwrap().get(&(scope, key)).cloned();
+                Ok::<_, iii_sdk::errors::Error>(value.unwrap_or(Value::Null))
+            }
+        }),
+    );
+    let write = store;
+    iii.register_function(
+        "state::set",
+        RegisterFunction::new_async(move |req: Value| {
+            let write = write.clone();
+            async move {
+                let scope = req["scope"].as_str().unwrap_or_default().to_string();
+                let key = req["key"].as_str().unwrap_or_default().to_string();
+                write
+                    .lock()
+                    .unwrap()
+                    .insert((scope, key), req["value"].clone());
+                Ok::<_, iii_sdk::errors::Error>(json!({ "ok": true }))
+            }
+        }),
+    );
 }
 
 fn engine_bin() -> Option<std::path::PathBuf> {
@@ -61,10 +113,6 @@ async fn spawn_engine() -> Option<Engine> {
   - name: iii-worker-manager
     config:
       port: {port}
-  - name: iii-pubsub
-    config:
-      adapter:
-        name: local
   - name: configuration
     config:
       adapter:
@@ -72,13 +120,6 @@ async fn spawn_engine() -> Option<Engine> {
         config:
           directory: {dir}/configuration
       ttl_seconds: 0
-  - name: iii-state
-    config:
-      adapter:
-        name: kv
-        config:
-          file_path: {dir}/state_store.db
-          store_method: file_based
 "#,
         port = port,
         dir = dir.display(),
@@ -99,7 +140,7 @@ async fn spawn_engine() -> Option<Engine> {
         .expect("spawn engine");
 
     let url = format!("ws://127.0.0.1:{port}");
-    let probe = register_worker(&url, InitOptions::default());
+    let probe = register_worker(&url, test_init_options());
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let ready = probe
@@ -122,7 +163,15 @@ async fn spawn_engine() -> Option<Engine> {
     }
     probe.shutdown();
 
-    Some(Engine { url, child, dir })
+    let state_iii = register_worker(&url, test_init_options());
+    register_state_stub(&state_iii);
+
+    Some(Engine {
+        url,
+        child,
+        dir,
+        _state: state_iii,
+    })
 }
 
 /// Self-skip macro: returns from the test when no engine is available.
@@ -238,11 +287,11 @@ async fn stub_upstream(completions_response: &'static str) -> StubUpstream {
 
 /// Boot router + provider on one engine; wait until the provider is listed.
 async fn boot_stack(engine_url: &str) -> (IIIClient, IIIClient) {
-    let router_iii = register_worker(engine_url, InitOptions::default());
+    let router_iii = register_worker(engine_url, test_init_options());
     register_router(router_iii.clone())
         .await
         .expect("router boots");
-    let provider_iii = register_worker(engine_url, InitOptions::default());
+    let provider_iii = register_worker(engine_url, test_init_options());
     register_provider(provider_iii.clone())
         .await
         .expect("provider boots");

@@ -13,8 +13,8 @@ CATALOG = ROOT / ".deploy" / "workers.yaml"
 
 def test_private_catalog_has_exact_first_party_and_fixture_counts():
     workers = _lib.read_worker_catalog(CATALOG)
-    assert len(workers) == 75
-    assert sum(worker.publish for worker in workers.values()) == 69
+    assert len(workers) == 76
+    assert sum(worker.publish for worker in workers.values()) == 70
     assert sum(not worker.publish for worker in workers.values()) == 6
 
 
