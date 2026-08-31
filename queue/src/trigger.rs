@@ -33,6 +33,7 @@ const FUNCTION_QUEUE_INVOCATION_TIMEOUT_MS: u64 = 30 * 60 * 1_000;
 /// while an invocation is in flight, and how long one sample may take.
 const ENGINE_EPOCH_PROBE_INTERVAL_MS: u64 = 1_000;
 const ENGINE_EPOCH_PROBE_TIMEOUT_MS: u64 = 3_000;
+const DEFAULT_NAMESPACE: &str = "default";
 
 /// The engine's boot identity: the earliest `connected_at_ms` among its
 /// in-process (`runtime == "engine"`) workers, which attach once at engine
@@ -87,8 +88,21 @@ pub trait Invoker: Send + Sync + 'static {
         function_id: &str,
         payload: Value,
         metadata: Option<Value>,
+        namespace: Option<&str>,
     ) -> Result<Option<Value>, String> {
         let _ = metadata;
+        let _ = namespace;
+        self.call(function_id, payload).await
+    }
+
+    /// Invoke a condition or support function in the subscriber namespace.
+    async fn call_in_namespace(
+        &self,
+        function_id: &str,
+        payload: Value,
+        namespace: Option<&str>,
+    ) -> Result<Option<Value>, String> {
+        let _ = namespace;
         self.call(function_id, payload).await
     }
 
@@ -133,7 +147,30 @@ impl IiiInvoker {
 #[async_trait]
 impl Invoker for IiiInvoker {
     async fn call(&self, function_id: &str, payload: Value) -> Result<Option<Value>, String> {
-        self.call_delivery(function_id, payload, None).await
+        self.call_delivery(function_id, payload, None, None).await
+    }
+
+    async fn call_in_namespace(
+        &self,
+        function_id: &str,
+        payload: Value,
+        namespace: Option<&str>,
+    ) -> Result<Option<Value>, String> {
+        let request = TriggerRequest {
+            function_id: function_id.to_string(),
+            payload,
+            action: None,
+            timeout_ms: None,
+        };
+        let request = match namespace {
+            Some(namespace) => request.namespace(namespace),
+            None => request.into(),
+        };
+        self.iii
+            .trigger(request)
+            .await
+            .map(Some)
+            .map_err(|e| e.to_string())
     }
 
     async fn call_with_timeout(
@@ -163,6 +200,7 @@ impl Invoker for IiiInvoker {
         function_id: &str,
         payload: Value,
         metadata: Option<Value>,
+        namespace: Option<&str>,
     ) -> Result<Option<Value>, String> {
         let request = TriggerRequest {
             function_id: function_id.to_string(),
@@ -170,12 +208,18 @@ impl Invoker for IiiInvoker {
             action: None,
             timeout_ms: Some(FUNCTION_QUEUE_INVOCATION_TIMEOUT_MS),
         };
-        match metadata {
-            Some(m) => self.iii.trigger(request.metadata(m)).await,
-            None => self.iii.trigger(request).await,
+        let mut request = match metadata {
+            Some(metadata) => request.metadata(metadata),
+            None => request.into(),
+        };
+        if let Some(namespace) = namespace {
+            request = request.namespace(namespace);
         }
-        .map(Some)
-        .map_err(|e| e.to_string())
+        self.iii
+            .trigger(request)
+            .await
+            .map(Some)
+            .map_err(|e| e.to_string())
     }
 
     async fn function_available(&self, function_id: &str, namespace: &str) -> Result<bool, String> {
@@ -258,6 +302,8 @@ pub struct RegisteredSubscriber {
     /// pointer the delivery hop resolves; dropping it makes every delivery an
     /// unresolvable fire.
     pub metadata: Option<Value>,
+    /// Namespace where the subscriber function and its condition function live.
+    pub namespace: Option<String>,
     pub spec: SubscriberSpec,
 }
 
@@ -350,6 +396,7 @@ impl QueueTriggerHandler {
                     registration.metadata.clone(),
                     registration.spec.condition_function_id.clone(),
                     Some(queue_config),
+                    registration.namespace.clone(),
                 )
                 .await;
         }
@@ -389,6 +436,7 @@ impl QueueTriggerHandler {
                     registration.metadata.clone(),
                     registration.spec.condition_function_id.clone(),
                     Some(queue_config),
+                    registration.namespace.clone(),
                 )
                 .await;
         }
@@ -434,6 +482,14 @@ impl TriggerHandler for QueueTriggerHandler {
             trigger_id: config.id,
             function_id: config.function_id,
             metadata: config.metadata,
+            // Older engines do not send this field. Their only namespace was
+            // `default`, so preserve that behavior explicitly instead of
+            // inheriting the queue worker's own namespace by accident.
+            namespace: Some(
+                config
+                    .namespace
+                    .unwrap_or_else(|| DEFAULT_NAMESPACE.to_string()),
+            ),
             spec,
         })
         .await
@@ -455,6 +511,8 @@ mod tests {
     use std::sync::Mutex as StdMutex;
 
     #[derive(Debug, Clone, PartialEq)]
+    // This test record keeps the complete subscribe call visible to assertions.
+    #[expect(clippy::large_enum_variant)]
     enum Call {
         Subscribe {
             topic: String,
@@ -463,6 +521,7 @@ mod tests {
             metadata: Option<Value>,
             condition_function_id: Option<String>,
             queue_config: Option<SubscriberQueueConfig>,
+            namespace: Option<String>,
         },
         Unsubscribe {
             topic: String,
@@ -500,6 +559,7 @@ mod tests {
             metadata: Option<Value>,
             condition_function_id: Option<String>,
             queue_config: Option<SubscriberQueueConfig>,
+            namespace: Option<String>,
         ) {
             self.calls.lock().unwrap().push(Call::Subscribe {
                 topic: topic.to_string(),
@@ -508,6 +568,7 @@ mod tests {
                 metadata,
                 condition_function_id,
                 queue_config,
+                namespace,
             });
         }
 
@@ -598,6 +659,7 @@ mod tests {
                     backoff_delay_ms: Some(1),
                     ..Default::default()
                 }),
+                namespace: Some(DEFAULT_NAMESPACE.to_string()),
             }]
         );
     }
@@ -610,12 +672,20 @@ mod tests {
         let (handler, mock) = handler_with_mock();
         let mut config = trigger_config("t1", "harness::trigger::deliver", json!({"queue": "q"}));
         config.metadata = Some(json!({ "__binding": "sub_abc" }));
+        config.namespace = Some("my-harness-ns".to_string());
         handler.register_trigger(config).await.unwrap();
 
-        let Call::Subscribe { id, metadata, .. } = &mock.calls()[0] else {
+        let Call::Subscribe {
+            id,
+            metadata,
+            namespace,
+            ..
+        } = &mock.calls()[0]
+        else {
             panic!("expected a Subscribe call");
         };
         assert_eq!(metadata, &Some(json!({ "__binding": "sub_abc" })));
+        assert_eq!(namespace.as_deref(), Some("my-harness-ns"));
         // The binding id is the durable subscription identity — it, not the
         // ephemeral trigger id, keys the adapter's queue.
         assert_eq!(id, "sub_abc");
@@ -625,10 +695,17 @@ mod tests {
         let new_adapter: Arc<dyn QueueAdapter> = new_mock.clone();
         handler.adapter.replace(new_adapter, "new-mock").await;
         handler.resubscribe_all().await;
-        let Call::Subscribe { id, metadata, .. } = &new_mock.calls()[0] else {
+        let Call::Subscribe {
+            id,
+            metadata,
+            namespace,
+            ..
+        } = &new_mock.calls()[0]
+        else {
             panic!("expected a Subscribe call");
         };
         assert_eq!(metadata, &Some(json!({ "__binding": "sub_abc" })));
+        assert_eq!(namespace.as_deref(), Some("my-harness-ns"));
         assert_eq!(id, "sub_abc");
     }
 
@@ -864,6 +941,7 @@ mod tests {
                 max_retries: Some(2),
                 ..Default::default()
             }),
+            namespace: Some(DEFAULT_NAMESPACE.to_string()),
         }));
         assert!(new_calls.contains(&Call::Subscribe {
             topic: "demo-2".to_string(),
@@ -872,6 +950,7 @@ mod tests {
             metadata: None,
             condition_function_id: None,
             queue_config: Some(SubscriberQueueConfig::default()),
+            namespace: Some(DEFAULT_NAMESPACE.to_string()),
         }));
         // The registrations map itself is untouched by the swap.
         assert_eq!(handler.registrations().await.len(), 2);
