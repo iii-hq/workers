@@ -272,29 +272,34 @@ workers:
   compose-ui:
     source:
       path: compose-ui
-      package_manifest: package.json
+      package_manifest: Cargo.toml
     artifact:
-      kind: javascript-bundle
-      workspace_root: compose-ui
-      runtime:
-        name: node
-        version: 22.20.0
-      package_manager:
-        name: pnpm
-        version: 11.13.1
-      lockfile: pnpm-lock.yaml
-      install_command:
-      - pnpm
-      - install
-      - --ignore-workspace
-      - --frozen-lockfile
-      build_command:
-      - pnpm
-      - run
-      - build:bundle
-      include:
-      - dist/bundle/index.mjs
-      - iii.worker.yaml
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: compose-ui
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: compose-ui/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
     publish: true
   computer:
     source:
