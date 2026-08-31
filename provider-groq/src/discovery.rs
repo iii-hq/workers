@@ -272,11 +272,14 @@ mod tests {
             models_url("http://127.0.0.1:9999/v1/chat/completions").as_deref(),
             Some("http://127.0.0.1:9999/v1/models")
         );
-        // unrecognized shape falls back to the public endpoint
+        // an unrecognized shape stays on the operator's host — the default
+        // host must never receive their credential
         assert_eq!(
             models_url("https://proxy.example/custom").as_deref(),
-            Some("https://api.groq.com/openai/v1/models")
+            Some("https://proxy.example/openai/v1/models")
         );
+        // underivable: no endpoint at all, the refresh fails instead
+        assert_eq!(models_url("not a url"), None);
     }
 
     /// A row exactly as `GET /models` returns it, captured from the live API.
