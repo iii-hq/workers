@@ -128,8 +128,12 @@ async fn check_condition(
     invoker: &dyn Invoker,
     condition_function_id: &str,
     data: Value,
+    namespace: Option<&str>,
 ) -> Result<bool, String> {
-    match invoker.call(condition_function_id, data).await {
+    match invoker
+        .call_in_namespace(condition_function_id, data, namespace)
+        .await
+    {
         Ok(Some(result)) => Ok(result.as_bool() != Some(false)),
         Ok(None) => {
             tracing::warn!(
@@ -192,6 +196,7 @@ impl QueueAdapter for RedisAdapter {
         metadata: Option<Value>,
         condition_function_id: Option<String>,
         _queue_config: Option<SubscriberQueueConfig>,
+        namespace: Option<String>,
     ) {
         let topic = topic.to_string();
         let id = id.to_string();
@@ -217,6 +222,7 @@ impl QueueAdapter for RedisAdapter {
         let id_for_task = id.clone();
         let function_id_for_task = function_id.clone();
         let metadata_for_task = metadata.clone();
+        let namespace_for_task = namespace.clone();
         let condition_function_id_for_task = condition_function_id.clone();
 
         tracing::debug!(topic = %topic_for_task, id = %id_for_task, function_id = %function_id_for_task, "Subscribing to Redis channel");
@@ -297,7 +303,14 @@ impl QueueAdapter for RedisAdapter {
                         condition_function_id = %condition_id,
                         "Checking trigger conditions"
                     );
-                    match check_condition(invoker.as_ref(), condition_id, data.clone()).await {
+                    match check_condition(
+                        invoker.as_ref(),
+                        condition_id,
+                        data.clone(),
+                        namespace_for_task.as_deref(),
+                    )
+                    .await
+                    {
                         Ok(true) => {}
                         Ok(false) => {
                             tracing::debug!(
@@ -320,10 +333,14 @@ impl QueueAdapter for RedisAdapter {
                 let invoker = Arc::clone(&invoker);
                 let function_id = function_id_for_task.clone();
                 let metadata = metadata_for_task.clone();
+                let namespace = namespace_for_task.clone();
                 let topic_for_call = topic_for_task.clone();
 
                 tokio::spawn(async move {
-                    if let Err(e) = invoker.call_delivery(&function_id, data, metadata).await {
+                    if let Err(e) = invoker
+                        .call_delivery(&function_id, data, metadata, namespace.as_deref())
+                        .await
+                    {
                         tracing::error!(
                             error = %e,
                             function_id = %function_id,

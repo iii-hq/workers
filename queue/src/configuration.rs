@@ -266,6 +266,7 @@ mod tests {
             _metadata: Option<serde_json::Value>,
             _condition_function_id: Option<String>,
             _queue_config: Option<crate::subscriber_config::SubscriberQueueConfig>,
+            _namespace: Option<String>,
         ) {
             self.subscribe_calls.fetch_add(1, Ordering::SeqCst);
         }
@@ -333,6 +334,7 @@ mod tests {
                 trigger_id: "t1".to_string(),
                 function_id: "backend".to_string(),
                 metadata: None,
+                namespace: None,
                 spec: SubscriberSpec {
                     queue: "demo".to_string(),
                     max_retries: None,
@@ -377,6 +379,7 @@ mod tests {
                 trigger_id: "t1".to_string(),
                 function_id: "backend".to_string(),
                 metadata: None,
+                namespace: None,
                 spec: SubscriberSpec {
                     queue: "demo".to_string(),
                     max_retries: None,

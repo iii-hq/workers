@@ -33,6 +33,9 @@ const FUNCTION_QUEUE_INVOCATION_TIMEOUT_MS: u64 = 30 * 60 * 1_000;
 /// while an invocation is in flight, and how long one sample may take.
 const ENGINE_EPOCH_PROBE_INTERVAL_MS: u64 = 1_000;
 const ENGINE_EPOCH_PROBE_TIMEOUT_MS: u64 = 3_000;
+const DEFAULT_NAMESPACE: &str = "default";
+const SUBSCRIPTION_NAMESPACE_SEPARATOR: char = '@';
+const SUBSCRIPTION_NAMESPACE_ESCAPE: char = '\\';
 
 /// The engine's boot identity: the earliest `connected_at_ms` among its
 /// in-process (`runtime == "engine"`) workers, which attach once at engine
@@ -87,8 +90,21 @@ pub trait Invoker: Send + Sync + 'static {
         function_id: &str,
         payload: Value,
         metadata: Option<Value>,
+        namespace: Option<&str>,
     ) -> Result<Option<Value>, String> {
         let _ = metadata;
+        let _ = namespace;
+        self.call(function_id, payload).await
+    }
+
+    /// Invoke a condition or support function in the subscriber namespace.
+    async fn call_in_namespace(
+        &self,
+        function_id: &str,
+        payload: Value,
+        namespace: Option<&str>,
+    ) -> Result<Option<Value>, String> {
+        let _ = namespace;
         self.call(function_id, payload).await
     }
 
@@ -133,7 +149,30 @@ impl IiiInvoker {
 #[async_trait]
 impl Invoker for IiiInvoker {
     async fn call(&self, function_id: &str, payload: Value) -> Result<Option<Value>, String> {
-        self.call_delivery(function_id, payload, None).await
+        self.call_delivery(function_id, payload, None, None).await
+    }
+
+    async fn call_in_namespace(
+        &self,
+        function_id: &str,
+        payload: Value,
+        namespace: Option<&str>,
+    ) -> Result<Option<Value>, String> {
+        let request = TriggerRequest {
+            function_id: function_id.to_string(),
+            payload,
+            action: None,
+            timeout_ms: None,
+        };
+        let request = match namespace {
+            Some(namespace) => request.namespace(namespace),
+            None => request.into(),
+        };
+        self.iii
+            .trigger(request)
+            .await
+            .map(Some)
+            .map_err(|e| e.to_string())
     }
 
     async fn call_with_timeout(
@@ -163,6 +202,7 @@ impl Invoker for IiiInvoker {
         function_id: &str,
         payload: Value,
         metadata: Option<Value>,
+        namespace: Option<&str>,
     ) -> Result<Option<Value>, String> {
         let request = TriggerRequest {
             function_id: function_id.to_string(),
@@ -170,12 +210,18 @@ impl Invoker for IiiInvoker {
             action: None,
             timeout_ms: Some(FUNCTION_QUEUE_INVOCATION_TIMEOUT_MS),
         };
-        match metadata {
-            Some(m) => self.iii.trigger(request.metadata(m)).await,
-            None => self.iii.trigger(request).await,
+        let mut request = match metadata {
+            Some(metadata) => request.metadata(metadata),
+            None => request.into(),
+        };
+        if let Some(namespace) = namespace {
+            request = request.namespace(namespace);
         }
-        .map(Some)
-        .map_err(|e| e.to_string())
+        self.iii
+            .trigger(request)
+            .await
+            .map(Some)
+            .map_err(|e| e.to_string())
     }
 
     async fn function_available(&self, function_id: &str, namespace: &str) -> Result<bool, String> {
@@ -258,6 +304,8 @@ pub struct RegisteredSubscriber {
     /// pointer the delivery hop resolves; dropping it makes every delivery an
     /// unresolvable fire.
     pub metadata: Option<Value>,
+    /// Namespace where the subscriber function and its condition function live.
+    pub namespace: Option<String>,
     pub spec: SubscriberSpec,
 }
 
@@ -268,19 +316,46 @@ impl RegisteredSubscriber {
     /// fresh empty queue and the old one sits bound to the exchange collecting
     /// a copy of every publish forever (the SDK mints a new trigger id per
     /// `register_trigger` call, so `trigger_id` itself cannot be the key).
-    /// A harness binding's `__binding` id is that identity; a plain SDK
-    /// subscriber falls back to its target function id — the pre-binding queue
-    /// naming, which also keeps existing deployments attached to their
-    /// backlogs across the upgrade. Distinct same-function subscribers without
-    /// a binding id therefore share one subscription (first registration's
-    /// config wins), exactly as they shared one function queue before.
-    fn subscription_key(&self) -> &str {
-        self.metadata
+    /// A harness binding's `__binding` id is the base identity; a plain SDK
+    /// subscriber falls back to its target function id. The effective
+    /// namespace is then folded into that base so equal bindings or functions
+    /// in different namespaces never share an adapter consumer or backlog.
+    /// `default` keeps the legacy suffix-less identity for ordinary keys, so
+    /// existing deployments stay attached to their durable queues.
+    fn subscription_key(&self) -> String {
+        let base = self
+            .metadata
             .as_ref()
             .and_then(|m| m.get("__binding"))
             .and_then(Value::as_str)
-            .unwrap_or(&self.function_id)
+            .unwrap_or(&self.function_id);
+        let escaped_base = escape_subscription_key_segment(base);
+        let namespace = self.namespace.as_deref().unwrap_or(DEFAULT_NAMESPACE);
+        if namespace == DEFAULT_NAMESPACE {
+            escaped_base
+        } else {
+            format!(
+                "{escaped_base}{SUBSCRIPTION_NAMESPACE_SEPARATOR}{}",
+                escape_subscription_key_segment(namespace)
+            )
+        }
     }
+}
+
+/// Escape the namespace separator and the escape character inside one
+/// subscription-key segment. This leaves the single unescaped `@` added by
+/// [`RegisteredSubscriber::subscription_key`] as an unambiguous namespace
+/// boundary.
+fn escape_subscription_key_segment(segment: &str) -> String {
+    segment
+        .replace(
+            SUBSCRIPTION_NAMESPACE_ESCAPE,
+            &format!("{SUBSCRIPTION_NAMESPACE_ESCAPE}{SUBSCRIPTION_NAMESPACE_ESCAPE}"),
+        )
+        .replace(
+            SUBSCRIPTION_NAMESPACE_SEPARATOR,
+            &format!("{SUBSCRIPTION_NAMESPACE_ESCAPE}{SUBSCRIPTION_NAMESPACE_SEPARATOR}"),
+        )
 }
 
 /// Merge the spec's legacy top-level `max_retries`/`backoff_ms` into its
@@ -337,7 +412,7 @@ impl QueueTriggerHandler {
     pub async fn resubscribe_all(&self) {
         let mut seen = HashSet::new();
         for registration in self.registrations().await {
-            let key = registration.subscription_key().to_string();
+            let key = registration.subscription_key();
             if !seen.insert((registration.spec.queue.clone(), key.clone())) {
                 continue; // registrations sharing a key share one subscription
             }
@@ -350,6 +425,7 @@ impl QueueTriggerHandler {
                     registration.metadata.clone(),
                     registration.spec.condition_function_id.clone(),
                     Some(queue_config),
+                    registration.namespace.clone(),
                 )
                 .await;
         }
@@ -375,7 +451,7 @@ impl QueueTriggerHandler {
         // subscriber whose previous trigger was never unregistered) share the
         // one live subscription instead of stacking duplicate consumers that
         // would each deliver every message again.
-        let key = registration.subscription_key().to_string();
+        let key = registration.subscription_key();
         let already_live = registrations
             .values()
             .any(|r| r.spec.queue == registration.spec.queue && r.subscription_key() == key);
@@ -389,6 +465,7 @@ impl QueueTriggerHandler {
                     registration.metadata.clone(),
                     registration.spec.condition_function_id.clone(),
                     Some(queue_config),
+                    registration.namespace.clone(),
                 )
                 .await;
         }
@@ -419,7 +496,7 @@ impl QueueTriggerHandler {
             .any(|r| r.spec.queue == registration.spec.queue && r.subscription_key() == key);
         if !still_shared {
             self.adapter
-                .unsubscribe(&registration.spec.queue, key)
+                .unsubscribe(&registration.spec.queue, &key)
                 .await;
         }
     }
@@ -434,6 +511,14 @@ impl TriggerHandler for QueueTriggerHandler {
             trigger_id: config.id,
             function_id: config.function_id,
             metadata: config.metadata,
+            // Older engines do not send this field. Their only namespace was
+            // `default`, so preserve that behavior explicitly instead of
+            // inheriting the queue worker's own namespace by accident.
+            namespace: Some(
+                config
+                    .namespace
+                    .unwrap_or_else(|| DEFAULT_NAMESPACE.to_string()),
+            ),
             spec,
         })
         .await
@@ -455,6 +540,8 @@ mod tests {
     use std::sync::Mutex as StdMutex;
 
     #[derive(Debug, Clone, PartialEq)]
+    // This test record keeps the complete subscribe call visible to assertions.
+    #[expect(clippy::large_enum_variant)]
     enum Call {
         Subscribe {
             topic: String,
@@ -463,6 +550,7 @@ mod tests {
             metadata: Option<Value>,
             condition_function_id: Option<String>,
             queue_config: Option<SubscriberQueueConfig>,
+            namespace: Option<String>,
         },
         Unsubscribe {
             topic: String,
@@ -500,6 +588,7 @@ mod tests {
             metadata: Option<Value>,
             condition_function_id: Option<String>,
             queue_config: Option<SubscriberQueueConfig>,
+            namespace: Option<String>,
         ) {
             self.calls.lock().unwrap().push(Call::Subscribe {
                 topic: topic.to_string(),
@@ -508,6 +597,7 @@ mod tests {
                 metadata,
                 condition_function_id,
                 queue_config,
+                namespace,
             });
         }
 
@@ -598,6 +688,7 @@ mod tests {
                     backoff_delay_ms: Some(1),
                     ..Default::default()
                 }),
+                namespace: Some(DEFAULT_NAMESPACE.to_string()),
             }]
         );
     }
@@ -610,26 +701,117 @@ mod tests {
         let (handler, mock) = handler_with_mock();
         let mut config = trigger_config("t1", "harness::trigger::deliver", json!({"queue": "q"}));
         config.metadata = Some(json!({ "__binding": "sub_abc" }));
+        config.namespace = Some("my-harness-ns".to_string());
         handler.register_trigger(config).await.unwrap();
 
-        let Call::Subscribe { id, metadata, .. } = &mock.calls()[0] else {
+        let Call::Subscribe {
+            id,
+            metadata,
+            namespace,
+            ..
+        } = &mock.calls()[0]
+        else {
             panic!("expected a Subscribe call");
         };
         assert_eq!(metadata, &Some(json!({ "__binding": "sub_abc" })));
-        // The binding id is the durable subscription identity — it, not the
-        // ephemeral trigger id, keys the adapter's queue.
-        assert_eq!(id, "sub_abc");
+        assert_eq!(namespace.as_deref(), Some("my-harness-ns"));
+        // The binding id plus namespace is the durable subscription identity;
+        // the ephemeral trigger id does not key the adapter's queue.
+        assert_eq!(id, "sub_abc@my-harness-ns");
 
         // And a hot-swap resubscribe carries it to the NEW adapter too.
         let new_mock = Arc::new(MockAdapter::default());
         let new_adapter: Arc<dyn QueueAdapter> = new_mock.clone();
         handler.adapter.replace(new_adapter, "new-mock").await;
         handler.resubscribe_all().await;
-        let Call::Subscribe { id, metadata, .. } = &new_mock.calls()[0] else {
+        let Call::Subscribe {
+            id,
+            metadata,
+            namespace,
+            ..
+        } = &new_mock.calls()[0]
+        else {
             panic!("expected a Subscribe call");
         };
         assert_eq!(metadata, &Some(json!({ "__binding": "sub_abc" })));
-        assert_eq!(id, "sub_abc");
+        assert_eq!(namespace.as_deref(), Some("my-harness-ns"));
+        assert_eq!(id, "sub_abc@my-harness-ns");
+    }
+
+    /// Equal queue/function pairs in different namespaces are independent
+    /// subscriptions. They must also remain independent after an adapter
+    /// hot-swap and when either trigger is removed.
+    #[tokio::test]
+    async fn namespaces_scope_subscription_identity_across_register_swap_and_unregister() {
+        let (handler, old_mock) = handler_with_mock();
+        let mut project_a = trigger_config("t-a", "backend", json!({"queue": "demo"}));
+        project_a.namespace = Some("project-a".to_string());
+        handler.register_trigger(project_a).await.unwrap();
+
+        let mut project_b = trigger_config("t-b", "backend", json!({"queue": "demo"}));
+        project_b.namespace = Some("project-b".to_string());
+        handler.register_trigger(project_b).await.unwrap();
+
+        let initial_calls = old_mock.calls();
+        assert_eq!(initial_calls.len(), 2);
+        assert!(initial_calls.iter().any(|call| matches!(
+            call,
+            Call::Subscribe { id, namespace, .. }
+                if id == "backend@project-a" && namespace.as_deref() == Some("project-a")
+        )));
+        assert!(initial_calls.iter().any(|call| matches!(
+            call,
+            Call::Subscribe { id, namespace, .. }
+                if id == "backend@project-b" && namespace.as_deref() == Some("project-b")
+        )));
+
+        let new_mock = Arc::new(MockAdapter::default());
+        let new_adapter: Arc<dyn QueueAdapter> = new_mock.clone();
+        handler.adapter.replace(new_adapter, "new-mock").await;
+        handler.resubscribe_all().await;
+
+        let swapped_calls = new_mock.calls();
+        assert_eq!(swapped_calls.len(), 2);
+        assert!(swapped_calls.iter().any(|call| matches!(
+            call,
+            Call::Subscribe { id, .. } if id == "backend@project-a"
+        )));
+        assert!(swapped_calls.iter().any(|call| matches!(
+            call,
+            Call::Subscribe { id, .. } if id == "backend@project-b"
+        )));
+
+        handler.unregister("t-a").await;
+        assert_eq!(
+            new_mock.calls().last().unwrap(),
+            &Call::Unsubscribe {
+                topic: "demo".to_string(),
+                id: "backend@project-a".to_string(),
+            }
+        );
+        assert_eq!(handler.registrations().await.len(), 1);
+    }
+
+    #[test]
+    fn subscription_identity_escapes_user_controlled_separator_characters() {
+        let registration = RegisteredSubscriber {
+            trigger_id: "t1".to_string(),
+            function_id: r"backend@v1\path".to_string(),
+            metadata: None,
+            namespace: Some(r"tenant@east\prod".to_string()),
+            spec: SubscriberSpec {
+                queue: "demo".to_string(),
+                max_retries: None,
+                backoff_ms: None,
+                condition_function_id: None,
+                queue_config: None,
+            },
+        };
+
+        assert_eq!(
+            registration.subscription_key(),
+            r"backend\@v1\\path@tenant\@east\\prod"
+        );
     }
 
     /// The SDK mints a fresh trigger id per registration, so a restarted
@@ -864,6 +1046,7 @@ mod tests {
                 max_retries: Some(2),
                 ..Default::default()
             }),
+            namespace: Some(DEFAULT_NAMESPACE.to_string()),
         }));
         assert!(new_calls.contains(&Call::Subscribe {
             topic: "demo-2".to_string(),
@@ -872,6 +1055,7 @@ mod tests {
             metadata: None,
             condition_function_id: None,
             queue_config: Some(SubscriberQueueConfig::default()),
+            namespace: Some(DEFAULT_NAMESPACE.to_string()),
         }));
         // The registrations map itself is untouched by the swap.
         assert_eq!(handler.registrations().await.len(), 2);

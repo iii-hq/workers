@@ -1,13 +1,16 @@
 //! `queue` binary entry.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use iii_queue::config::QueueConfig;
 use iii_queue::configuration;
 use iii_sdk::runtime::WorkerMetadata;
-use iii_sdk::{register_worker, InitOptions};
+use iii_sdk::{register_worker, InitOptions, WorkerIdentityMode};
+
+const REGISTRATION_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Parser, Debug)]
 #[command(name = "queue", about = "Durable queue worker for iii.")]
@@ -32,13 +35,6 @@ fn worker_metadata() -> WorkerMetadata {
         pid: Some(std::process::id()),
         telemetry: None,
         ..WorkerMetadata::default()
-    }
-}
-
-fn engine_worker_metadata() -> WorkerMetadata {
-    WorkerMetadata {
-        name: "queue-engine".to_string(),
-        ..worker_metadata()
     }
 }
 
@@ -84,9 +80,14 @@ async fn main() -> Result<()> {
         &cli.url,
         InitOptions {
             metadata: Some(worker_metadata()),
+            identity: WorkerIdentityMode::Managed,
             ..InitOptions::default()
         },
     ));
+    project_iii
+        .wait_until_registered(REGISTRATION_TIMEOUT)
+        .await
+        .context("waiting for queue worker registration")?;
     configuration::register_config(&project_iii, seed.as_ref())
         .await
         .map_err(anyhow::Error::msg)
@@ -105,19 +106,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Connect the project-scoped worker first. Compose observes that
-    // registration to verify III_NAMESPACE before this process opens the
-    // additional default-scoped connection for reserved engine::* providers.
-    let default_iii = Arc::new(register_worker(
-        &cli.url,
-        InitOptions {
-            metadata: Some(engine_worker_metadata()),
-            namespace: Some("default".to_string()),
-            ..InitOptions::default()
-        },
-    ));
-
-    let boot = iii_queue::boot::start(project_iii.clone(), default_iii.clone(), config).await?;
+    let boot = iii_queue::boot::start(project_iii.clone(), config).await?;
     configuration::register_config_trigger(
         &project_iii,
         boot.runtime.clone(),
@@ -139,6 +128,5 @@ async fn main() -> Result<()> {
     tracing::info!("queue worker shutting down");
     boot.shutdown().await;
     project_iii.shutdown_async().await;
-    default_iii.shutdown_async().await;
     Ok(())
 }

@@ -42,8 +42,12 @@ async fn check_condition(
     invoker: &dyn Invoker,
     condition_function_id: &str,
     data: Value,
+    namespace: Option<&str>,
 ) -> Result<bool, String> {
-    match invoker.call(condition_function_id, data).await {
+    match invoker
+        .call_in_namespace(condition_function_id, data, namespace)
+        .await
+    {
         Ok(Some(result)) => Ok(result.as_bool() != Some(false)),
         Ok(None) => {
             tracing::warn!(
@@ -95,6 +99,7 @@ impl Worker {
         subscription_id: String,
         function_id: String,
         metadata: Option<Value>,
+        namespace: Option<String>,
         condition_function_id: Option<String>,
         consumer_tag: String,
         queue_name: String,
@@ -162,6 +167,7 @@ impl Worker {
                                     &subscription_id,
                                     &function_id,
                                     metadata.as_ref(),
+                                    namespace.as_deref(),
                                     condition_function_id.as_deref(),
                                 )
                                 .await
@@ -179,6 +185,7 @@ impl Worker {
                             let subscription_id_clone = subscription_id.clone();
                             let function_id_clone = function_id.clone();
                             let metadata_clone = metadata.clone();
+                            let namespace_clone = namespace.clone();
                             let condition_function_id_clone = condition_function_id.clone();
                             let semaphore = self.semaphore.as_ref().map(Arc::clone);
                             tasks.spawn(async move {
@@ -195,6 +202,7 @@ impl Worker {
                                         &subscription_id_clone,
                                         &function_id_clone,
                                         metadata_clone.as_ref(),
+                                        namespace_clone.as_deref(),
                                         condition_function_id_clone.as_deref(),
                                     )
                                     .await
@@ -232,6 +240,8 @@ impl Worker {
         }
     }
 
+    // Keep the delivery and subscriber routing fields explicit at this broker boundary.
+    #[expect(clippy::too_many_arguments)]
     async fn process_delivery(
         &self,
         delivery: Delivery,
@@ -239,12 +249,19 @@ impl Worker {
         subscription_id: &str,
         function_id: &str,
         metadata: Option<&Value>,
+        namespace: Option<&str>,
         condition_function_id: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut job = JobParser::parse_from_delivery(&delivery)?;
 
         match self
-            .process_job(&job, function_id, metadata, condition_function_id)
+            .process_job(
+                &job,
+                function_id,
+                metadata,
+                namespace,
+                condition_function_id,
+            )
             .await
         {
             Ok(_) => {
@@ -282,6 +299,7 @@ impl Worker {
         job: &Job,
         function_id: &str,
         metadata: Option<&Value>,
+        namespace: Option<&str>,
         condition_function_id: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let invoker = Arc::clone(&self.invoker);
@@ -292,7 +310,7 @@ impl Worker {
                 condition_function_id = %condition_path,
                 "Checking trigger conditions"
             );
-            match check_condition(invoker.as_ref(), condition_path, data.clone()).await {
+            match check_condition(invoker.as_ref(), condition_path, data.clone(), namespace).await {
                 Ok(true) => {}
                 Ok(false) => {
                     tracing::debug!(
@@ -313,7 +331,7 @@ impl Worker {
         }
 
         match invoker
-            .call_delivery(function_id, data, metadata.cloned())
+            .call_delivery(function_id, data, metadata.cloned(), namespace)
             .await
         {
             Ok(_) => {

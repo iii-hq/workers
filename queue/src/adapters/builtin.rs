@@ -99,6 +99,7 @@ struct PollerConfig {
     /// The trigger's stored metadata, delivered with every message (the
     /// harness's `__binding` pointer — see `trigger.rs::RegisteredSubscriber`).
     metadata: Option<Value>,
+    namespace: Option<String>,
     condition_function_id: Option<String>,
     max_retries: u32,
     backoff_ms: u64,
@@ -237,6 +238,7 @@ impl QueueAdapter for BuiltinAdapter {
         metadata: Option<Value>,
         condition_function_id: Option<String>,
         queue_config: Option<SubscriberQueueConfig>,
+        namespace: Option<String>,
     ) {
         let key = (topic.to_string(), id.to_string());
         let mut subs = self.subscriptions.lock().await;
@@ -277,6 +279,7 @@ impl QueueAdapter for BuiltinAdapter {
             queue_name,
             function_id: function_id.to_string(),
             metadata,
+            namespace,
             condition_function_id,
             max_retries,
             backoff_ms,
@@ -968,6 +971,7 @@ async fn process_job(
         invoker.as_ref(),
         &cfg.function_id,
         cfg.metadata.clone(),
+        cfg.namespace.as_deref(),
         cfg.condition_function_id.as_deref(),
         job.payload.clone(),
     )
@@ -992,18 +996,22 @@ async fn invoke(
     invoker: &dyn Invoker,
     function_id: &str,
     metadata: Option<Value>,
+    namespace: Option<&str>,
     condition_function_id: Option<&str>,
     payload: Value,
 ) -> Result<(), String> {
     if let Some(condition_id) = condition_function_id {
-        match invoker.call(condition_id, payload.clone()).await {
+        match invoker
+            .call_in_namespace(condition_id, payload.clone(), namespace)
+            .await
+        {
             Ok(Some(Value::Bool(false))) => return Ok(()),
             Ok(_) => {}
             Err(err) => return Err(err),
         }
     }
     invoker
-        .call_delivery(function_id, payload, metadata)
+        .call_delivery(function_id, payload, metadata, namespace)
         .await
         .map(|_| ())
 }
@@ -1284,6 +1292,7 @@ mod tests {
     struct FakeInvoker {
         calls: Mutex<Vec<(String, Value)>>,
         delivery_metadata: Mutex<Vec<Option<Value>>>,
+        delivery_namespaces: Mutex<Vec<Option<String>>>,
         fail_backend: AtomicBool,
         condition_value: Mutex<Option<Value>>,
     }
@@ -1295,6 +1304,10 @@ mod tests {
 
         async fn delivery_metadata(&self) -> Vec<Option<Value>> {
             self.delivery_metadata.lock().await.clone()
+        }
+
+        async fn delivery_namespaces(&self) -> Vec<Option<String>> {
+            self.delivery_namespaces.lock().await.clone()
         }
     }
 
@@ -1320,8 +1333,13 @@ mod tests {
             function_id: &str,
             payload: Value,
             metadata: Option<Value>,
+            namespace: Option<&str>,
         ) -> Result<Option<Value>, String> {
             self.delivery_metadata.lock().await.push(metadata);
+            self.delivery_namespaces
+                .lock()
+                .await
+                .push(namespace.map(str::to_string));
             self.call(function_id, payload).await
         }
     }
@@ -1476,7 +1494,7 @@ mod tests {
         let adapter = BuiltinAdapter::with_poll_interval_ms(store.clone(), invoker.clone(), 5);
 
         adapter
-            .subscribe("demo", "sub1", "backend", None, None, None)
+            .subscribe("demo", "sub1", "backend", None, None, None, None)
             .await;
         adapter
             .enqueue("demo", json!({"hello": "world"}), None, None)
@@ -1501,10 +1519,10 @@ mod tests {
         let adapter = BuiltinAdapter::with_poll_interval_ms(store.clone(), invoker.clone(), 5);
 
         adapter
-            .subscribe("demo", "sub-a", "fn-a", None, None, None)
+            .subscribe("demo", "sub-a", "fn-a", None, None, None, None)
             .await;
         adapter
-            .subscribe("demo", "sub-b", "fn-b", None, None, None)
+            .subscribe("demo", "sub-b", "fn-b", None, None, None, None)
             .await;
 
         for i in 0..3 {
@@ -1526,7 +1544,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn same_function_subscriptions_each_receive_their_metadata() {
+    async fn same_function_subscriptions_receive_metadata_and_namespace() {
         let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
         let invoker = Arc::new(FakeInvoker::default());
         let adapter = BuiltinAdapter::with_poll_interval_ms(store, invoker.clone(), 5);
@@ -1539,6 +1557,7 @@ mod tests {
                 Some(json!({"binding": "a"})),
                 None,
                 None,
+                Some("project-a".to_string()),
             )
             .await;
         adapter
@@ -1549,6 +1568,7 @@ mod tests {
                 Some(json!({"binding": "b"})),
                 None,
                 None,
+                Some("project-b".to_string()),
             )
             .await;
         adapter
@@ -1570,6 +1590,10 @@ mod tests {
         assert_eq!(metadata.len(), 2);
         assert!(metadata.contains(&Some(json!({"binding": "a"}))));
         assert!(metadata.contains(&Some(json!({"binding": "b"}))));
+        let namespaces = invoker.delivery_namespaces().await;
+        assert_eq!(namespaces.len(), 2);
+        assert!(namespaces.contains(&Some("project-a".to_string())));
+        assert!(namespaces.contains(&Some("project-b".to_string())));
         adapter.shutdown().await;
     }
 
@@ -1613,6 +1637,7 @@ mod tests {
                     concurrency: Some(0),
                     ..Default::default()
                 }),
+                None,
             )
             .await;
         adapter
@@ -1645,6 +1670,7 @@ mod tests {
                     concurrency: Some(3),
                     ..Default::default()
                 }),
+                None,
             )
             .await;
         for i in 0..12 {
@@ -1683,6 +1709,7 @@ mod tests {
                     concurrency: Some(5),
                     ..Default::default()
                 }),
+                None,
             )
             .await;
         for i in 0..20 {
@@ -1723,6 +1750,7 @@ mod tests {
                     backoff_delay_ms: Some(1),
                     ..Default::default()
                 }),
+                None,
             )
             .await;
         adapter.enqueue("demo", json!("job"), None, None).await;
@@ -1754,10 +1782,10 @@ mod tests {
             })
         };
         adapter
-            .subscribe("demo", "sub-a", "fn-a", None, None, retry_cfg())
+            .subscribe("demo", "sub-a", "fn-a", None, None, retry_cfg(), None)
             .await;
         adapter
-            .subscribe("demo", "sub-b", "fn-b", None, None, retry_cfg())
+            .subscribe("demo", "sub-b", "fn-b", None, None, retry_cfg(), None)
             .await;
 
         adapter.enqueue("demo", json!("job"), None, None).await;
@@ -1800,6 +1828,7 @@ mod tests {
                     concurrency: Some(0),
                     ..Default::default()
                 }),
+                None,
             )
             .await;
         adapter.enqueue("demo", json!("queued"), None, None).await;
@@ -1819,7 +1848,7 @@ mod tests {
 
         // Re-arming under the same id resumes exactly where it left off.
         adapter
-            .subscribe("demo", "sub1", "backend", None, None, None)
+            .subscribe("demo", "sub1", "backend", None, None, None, None)
             .await;
         wait_until(|| {
             let invoker = invoker.clone();
@@ -1845,7 +1874,7 @@ mod tests {
         ));
 
         adapter
-            .subscribe("demo", "sub1", "backend", None, None, None)
+            .subscribe("demo", "sub1", "backend", None, None, None, None)
             .await;
         adapter.enqueue("demo", json!("inflight"), None, None).await;
         tokio::time::timeout(Duration::from_secs(1), invoker.started.notified())
@@ -1895,10 +1924,10 @@ mod tests {
             ..Default::default()
         });
         adapter
-            .subscribe("demo", "sub1", "backend", None, None, paused.clone())
+            .subscribe("demo", "sub1", "backend", None, None, paused.clone(), None)
             .await;
         adapter
-            .subscribe("other", "sub2", "backend", None, None, paused)
+            .subscribe("other", "sub2", "backend", None, None, paused, None)
             .await;
 
         let entered = store.entered.notified();
@@ -1959,6 +1988,7 @@ mod tests {
                 None,
                 Some("condition".to_string()),
                 None,
+                None,
             )
             .await;
         adapter
@@ -1983,10 +2013,10 @@ mod tests {
         let adapter = BuiltinAdapter::with_poll_interval_ms(store.clone(), invoker.clone(), 3);
 
         adapter
-            .subscribe("demo", "sub1", "backend", None, None, None)
+            .subscribe("demo", "sub1", "backend", None, None, None, None)
             .await;
         adapter
-            .subscribe("demo", "sub1", "other-backend", None, None, None)
+            .subscribe("demo", "sub1", "other-backend", None, None, None, None)
             .await;
         assert_eq!(adapter.subscriptions.lock().await.len(), 1);
         adapter.shutdown().await;
