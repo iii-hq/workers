@@ -182,7 +182,11 @@ def test_publish_is_retry_safe_and_effect_states_are_probe_derived():
     checkout = workflow["jobs"]["publish"]["steps"][0]
     assert "ref" not in checkout["with"]
     assert checkout["with"]["fetch-depth"] == 0
-    assert "deployment_effects.py classify" in publish
+    # Effect states pass straight from the probes to the result: with no
+    # pre-mutation probe there is no classification step to reinterpret them.
+    assert "deployment_effects.py" not in publish
+    assert 'echo "github_state=$github_state"' in publish
+    assert 'echo "image_channel_state=$image_channel_state"' in publish
     assert "PUBLISH_GITHUB_STATE" in publish
     assert "\n          GITHUB_STATE:" not in publish
     assert 'value=sys.argv[1].strip()' in publish
@@ -318,3 +322,14 @@ def test_macos_capacity_gate_proves_three_slots_in_both_release_pools():
     assert set(jobs["prove-arm-overlap"]["needs"]) == {
         "macos-arm-slot-1", "macos-arm-slot-2", "macos-arm-slot-3",
     }
+
+def test_deploy_train_workflows_never_install_python_packages() -> None:
+    # The self-hosted release runners are not guaranteed to have pip on PATH:
+    # a stray `pip install` under `set -euo pipefail` killed ten workers in the
+    # first nightly batch. The deploy train is jq/python-stdlib only; pyyaml is
+    # legitimately installed solely by deploy-descriptor-index.yml.
+    for path in WORKFLOWS.glob("deploy-*.yml"):
+        if path.name == "deploy-descriptor-index.yml":
+            continue
+        assert "pip install" not in path.read_text(encoding="utf-8"), path.name
+    assert "pip install" not in (WORKFLOWS / "_deploy-build.yml").read_text(encoding="utf-8")
