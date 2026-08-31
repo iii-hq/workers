@@ -578,12 +578,18 @@ run_compose_add() {
   local spec=$1 payload response
   payload=$(jq -cn --arg file "$compose_file" --arg worker "$spec" \
     '{file: $file, worker: $worker}')
-  log_command "iii trigger compose::add --port $engine_port --json '$payload'"
+  # `iii trigger` waits only 30s for the invocation result by default, far
+  # less than a cold registry install of the full graph on a CI runner —
+  # the CLI must wait as long as the add itself is allowed to run; the
+  # external `timeout` stays as the hard stop against a hung CLI.
+  log_command "iii trigger compose::add --port $engine_port --timeout-ms $((add_timeout_seconds * 1000)) --json '$payload'"
   if command -v timeout >/dev/null 2>&1; then
-    response=$(timeout --signal=TERM --kill-after=15s "$add_timeout_seconds" \
-      "$iii_bin" trigger compose::add --port "$engine_port" --json "$payload")
+    response=$(timeout --signal=TERM --kill-after=15s "$((add_timeout_seconds + 30))" \
+      "$iii_bin" trigger compose::add --port "$engine_port" \
+      --timeout-ms "$((add_timeout_seconds * 1000))" --json "$payload")
   else
-    response=$("$iii_bin" trigger compose::add --port "$engine_port" --json "$payload")
+    response=$("$iii_bin" trigger compose::add --port "$engine_port" \
+      --timeout-ms "$((add_timeout_seconds * 1000))" --json "$payload")
   fi
   printf '%s\n' "$response"
   # A container that failed to start comes back as JSON with status "failed",
