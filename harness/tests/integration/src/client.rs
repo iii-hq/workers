@@ -94,6 +94,20 @@ impl Client {
             .map_err(|error| error.to_string())?
     }
 
+    /// Call an engine function using all time left in the scenario.
+    ///
+    /// Scenario stimuli can legitimately be slower than routine control
+    /// calls. They still remain bounded by the shared scenario deadline.
+    pub async fn call_until_deadline(
+        &self,
+        function_id: &str,
+        payload: Value,
+        deadline: Deadline,
+    ) -> Result<Value, String> {
+        self.call_with_deadline(function_id, payload, deadline, u64::MAX)
+            .await
+    }
+
     pub async fn shutdown(&self) {
         self.iii.shutdown_async().await;
     }
