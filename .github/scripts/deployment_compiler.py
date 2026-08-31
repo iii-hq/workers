@@ -237,7 +237,10 @@ def validate_artifact(
     if kind not in ARTIFACT_KINDS:
         fail(f"workers.{worker}.artifact.kind is unsupported")
     allowed_fields = {
-        "rust-binary": {"kind", "toolchain", "binary", "targets", "frontends"},
+        "rust-binary": {
+            "kind", "toolchain", "binary", "candidate_targets", "stable_targets",
+            "windows_exception", "frontends",
+        },
         "javascript-bundle": {
             "kind", "workspace_root", "runtime", "package_manager", "lockfile",
             "install_command", "build_command", "include",
@@ -258,16 +261,41 @@ def validate_artifact(
         fail(f"{worker}: iii.worker.yaml deploy={deploy!r} conflicts with artifact.kind={kind!r}")
     if kind == "rust-binary":
         binary = artifact.get("binary")
-        targets = artifact.get("targets")
         if not isinstance(binary, str) or not binary:
             fail(f"workers.{worker}.artifact.binary is required")
         if binary != str(manifest.get("bin") or worker):
             fail(f"{worker}: public bin and private artifact.binary differ")
-        if not isinstance(targets, list) or not targets or any(not isinstance(target, str) for target in targets):
-            fail(f"workers.{worker}.artifact.targets must be a non-empty string array")
+        for field in ("candidate_targets", "stable_targets"):
+            targets = artifact.get(field)
+            if not isinstance(targets, list) or not targets or any(
+                not isinstance(target, str) or not target for target in targets
+            ):
+                fail(f"workers.{worker}.artifact.{field} must be a non-empty string array")
+            if len(set(targets)) != len(targets):
+                fail(f"workers.{worker}.artifact.{field} contains duplicate targets")
+        candidate_targets = artifact["candidate_targets"]
+        stable_targets = artifact["stable_targets"]
+        # Candidates are the nightly rc surface: Windows bytes only ever exist
+        # for finalized stable versions, built as the stable-delta profile.
+        windows_targets = [target for target in candidate_targets if "windows" in target]
+        if windows_targets:
+            fail(f"workers.{worker}.artifact.candidate_targets cannot include Windows targets: {windows_targets}")
+        missing = [target for target in candidate_targets if target not in stable_targets]
+        if missing:
+            fail(f"workers.{worker}: candidate_targets must be a subset of stable_targets, missing {missing}")
+        # Windows absence must be a justified decision, never a silent omission.
+        windows_declared = "x86_64-pc-windows-msvc" in stable_targets
+        windows_exception = artifact.get("windows_exception")
+        if windows_declared and windows_exception is not None:
+            fail(f"workers.{worker}: declares both Windows support and a windows_exception")
+        if not windows_declared and (not isinstance(windows_exception, str) or not windows_exception.strip()):
+            fail(
+                f"workers.{worker}: must either include x86_64-pc-windows-msvc in stable_targets "
+                "or justify its absence with windows_exception"
+            )
         public_targets = manifest.get("targets")
-        if public_targets is not None and public_targets != targets:
-            fail(f"{worker}: public targets and private artifact.targets differ")
+        if public_targets is not None and public_targets != stable_targets:
+            fail(f"{worker}: public targets and private artifact.stable_targets differ")
         toolchain = artifact.get("toolchain")
         if not isinstance(toolchain, dict) or set(toolchain) != {"name", "version"}:
             fail(f"workers.{worker}.artifact.toolchain must contain only name and version")
@@ -365,9 +393,12 @@ def validate_artifact(
 def build_units(worker: str, artifact: dict[str, Any]) -> list[dict[str, Any]]:
     kind = str(artifact["kind"])
     if kind == "rust-binary":
+        # Build units describe the candidate profile: release candidates only
+        # ever build these. Stable-delta units (Windows) are derived at
+        # finalization from stable_targets - candidate_targets.
         return [
             {"id": f"{worker}-{target}", "kind": kind, "target": target}
-            for target in artifact["targets"]
+            for target in artifact["candidate_targets"]
         ]
     if kind == "oci-image":
         return [

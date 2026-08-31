@@ -9,13 +9,15 @@ workers:
         name: rust
         version: 1.97.1
       binary: a2ui
-      targets: &id001
+      candidate_targets: &id001
       - x86_64-apple-darwin
       - aarch64-apple-darwin
       - x86_64-unknown-linux-gnu
       - x86_64-unknown-linux-musl
       - aarch64-unknown-linux-gnu
       - armv7-unknown-linux-gnueabihf
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: a2ui/ui
@@ -47,7 +49,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: iii-acp
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
     publish: true
   approval-gate:
     source:
@@ -59,7 +63,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: approval-gate
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: harness/ui
@@ -91,7 +97,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: bridge
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
     publish: true
   browser:
     source:
@@ -103,7 +111,15 @@ workers:
         name: rust
         version: 1.97.1
       binary: browser
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets:
+      - x86_64-apple-darwin
+      - aarch64-apple-darwin
+      - x86_64-unknown-linux-gnu
+      - x86_64-unknown-linux-musl
+      - aarch64-unknown-linux-gnu
+      - armv7-unknown-linux-gnueabihf
+      - x86_64-pc-windows-msvc
       frontends:
       - workspace_root: .
         source_path: browser/ui
@@ -135,7 +151,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: canvas
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: canvas/ui
@@ -194,12 +212,19 @@ workers:
         name: rust
         version: 1.97.1
       binary: code-runner
-      targets:
+      candidate_targets:
       - x86_64-apple-darwin
       - aarch64-apple-darwin
       - x86_64-unknown-linux-gnu
       - x86_64-unknown-linux-musl
       - aarch64-unknown-linux-gnu
+      stable_targets:
+      - x86_64-apple-darwin
+      - aarch64-apple-darwin
+      - x86_64-unknown-linux-gnu
+      - x86_64-unknown-linux-musl
+      - aarch64-unknown-linux-gnu
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: code-runner/ui
@@ -267,7 +292,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: codex
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
     publish: true
   compose-ui:
     source:
@@ -306,7 +333,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: computer
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: computer/ui
@@ -338,7 +367,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: console
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: console/ui
@@ -389,7 +420,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: context-manager
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: context-manager/ui
@@ -421,7 +454,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: cron
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: cron/ui
@@ -480,7 +515,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: database
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: database/ui
@@ -558,7 +595,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: devin
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
     publish: true
   document:
     source:
@@ -570,7 +609,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: document
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
     publish: true
   editor:
     source:
@@ -582,7 +623,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: editor
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: editor/ui
@@ -614,7 +657,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: email
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
     publish: true
   eval:
     source:
@@ -626,7 +671,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: eval
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: eval/ui
@@ -677,7 +724,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: fp
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
     publish: true
   github:
     source:
@@ -689,7 +738,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: github
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: github/ui
@@ -721,7 +772,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: grok
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
     publish: true
   harness:
     source:
@@ -733,7 +786,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: harness
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: harness/ui
@@ -777,7 +832,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: http
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
     publish: true
   iii-directory:
     source:
@@ -789,7 +846,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: iii-directory
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: iii-directory/ui
@@ -852,7 +911,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: image-resize
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
     publish: true
   kanban:
     source:
@@ -891,7 +952,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: llm-router
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: llm-router/ui
@@ -923,7 +986,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: lsp
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
     publish: true
   mcp:
     source:
@@ -935,7 +1000,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: mcp
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
     publish: true
   memory:
     source:
@@ -947,7 +1014,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: memory
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: memory/ui
@@ -979,7 +1048,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: memory-consolidate
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
     publish: true
   opencode:
     source:
@@ -1072,7 +1143,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: pdf
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: pdf/ui
@@ -1131,7 +1204,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: provider-anthropic
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: llm-router/ui
@@ -1163,7 +1238,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: provider-claude-code
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: llm-router/ui
@@ -1195,7 +1272,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: provider-command-code
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: llm-router/ui
@@ -1227,7 +1306,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: provider-deepseek
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: llm-router/ui
@@ -1259,7 +1340,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: provider-github-copilot
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: llm-router/ui
@@ -1291,7 +1374,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: provider-kimi
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: llm-router/ui
@@ -1323,7 +1408,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: provider-llamacpp
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: llm-router/ui
@@ -1355,7 +1442,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: provider-openai
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: llm-router/ui
@@ -1387,7 +1476,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: provider-openai-codex
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: llm-router/ui
@@ -1438,7 +1529,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: provider-opencode-go
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: llm-router/ui
@@ -1470,7 +1563,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: provider-openrouter
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: llm-router/ui
@@ -1502,7 +1597,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: provider-xai
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: llm-router/ui
@@ -1534,7 +1631,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: provider-zai
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: llm-router/ui
@@ -1566,7 +1665,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: pubsub
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
     publish: true
   queue:
     source:
@@ -1578,7 +1679,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: queue
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
     publish: true
   rbac-proxy:
     source:
@@ -1590,7 +1693,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: rbac-proxy
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
     publish: true
   fixture-rbac-proxy-harness:
     source:
@@ -1635,7 +1740,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: sandbox-code-runner
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: sandbox-code-runner/ui
@@ -1707,7 +1814,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: security-scan
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: security-scan/ui
@@ -1739,7 +1848,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: session-manager
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
     publish: true
   shell:
     source:
@@ -1751,13 +1862,21 @@ workers:
         name: rust
         version: 1.97.1
       binary: shell
-      targets:
+      candidate_targets:
       - x86_64-apple-darwin
       - aarch64-apple-darwin
       - x86_64-unknown-linux-gnu
       - x86_64-unknown-linux-musl
       - aarch64-unknown-linux-gnu
       - armv7-unknown-linux-gnueabihf
+      stable_targets:
+      - x86_64-apple-darwin
+      - aarch64-apple-darwin
+      - x86_64-unknown-linux-gnu
+      - x86_64-unknown-linux-musl
+      - aarch64-unknown-linux-gnu
+      - armv7-unknown-linux-gnueabihf
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: shell/ui
@@ -1840,7 +1959,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: slack
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
     publish: true
   state:
     source:
@@ -1852,7 +1973,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: state
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: state/ui
@@ -1884,7 +2007,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: storage
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: storage/ui
@@ -1952,7 +2077,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: tailscale
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: tailscale/ui
@@ -1984,7 +2111,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: telegram-bot
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
     publish: true
   vscode:
     source:
@@ -2023,7 +2152,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: web
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: web/ui
@@ -2055,7 +2186,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: workflow
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
     publish: true
   worktree:
     source:
@@ -2067,7 +2200,9 @@ workers:
         name: rust
         version: 1.97.1
       binary: worktree
-      targets: *id001
+      candidate_targets: *id001
+      stable_targets: *id001
+      windows_exception: Windows support has not been validated for this worker
       frontends:
       - workspace_root: .
         source_path: worktree/ui

@@ -648,6 +648,105 @@ def advance_next_floor(
     return {**result, "next": version}
 
 
+def finalize_release(
+    api_url: str,
+    api_key: str,
+    worker: str,
+    candidate_version: str,
+    stable_version: str,
+    expected_latest_version: str,
+) -> dict[str, Any]:
+    """Atomically point next and latest at the published stable version.
+
+    Uses the Registry's transactional finalize primitive: every precondition
+    is checked under the worker lock server-side, so a rejected call leaves
+    both channel pointers untouched. Readback after every attempt proves the
+    multi-tag move on the raw pointer surface, never trusting the response.
+    """
+    try:
+        _lib.validate_finalization(candidate_version, stable_version)
+    except ValueError as error:
+        raise RegistryPublicationError(str(error)) from error
+    if not expected_latest_version:
+        raise RegistryPublicationError("expected_latest_version is required for release finalization")
+
+    payload: dict[str, Any] = {
+        "candidate_version": candidate_version,
+        "stable_version": stable_version,
+        "expected_latest_version": None if expected_latest_version == "none" else expected_latest_version,
+    }
+    encoded_worker = urllib.parse.quote(worker, safe="")
+
+    def both_channels_settled() -> Readback:
+        next_pointer = read_channel(api_url, worker, "next")
+        latest_pointer = read_channel(api_url, worker, "latest")
+        for tag, pointer in (("next", next_pointer), ("latest", latest_pointer)):
+            if pointer.state in {"divergent", "unavailable"}:
+                return Readback(pointer.state, f"channel {tag}: {pointer.detail}")
+        if (
+            next_pointer.state == "equivalent"
+            and latest_pointer.state == "equivalent"
+            and next_pointer.detail == latest_pointer.detail == stable_version
+        ):
+            return Readback("equivalent", f"raw next and latest pointers equal {stable_version}")
+        return Readback(
+            "absent",
+            f"next points to {next_pointer.detail}, latest points to {latest_pointer.detail}",
+        )
+
+    last = "release finalization did not run"
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        transport_error: str | None = None
+        try:
+            status, body = request_json(
+                "POST",
+                f"{api_url.rstrip('/')}/w/{encoded_worker}/releases/finalize",
+                payload,
+                api_key=api_key,
+            )
+        except TransportError as error:
+            status, body = 0, {}
+            transport_error = str(error)
+        if status == 200:
+            finalize = body.get("finalize")
+            if not isinstance(finalize, dict) or finalize.get("stable_version") != stable_version:
+                raise RegistryPublicationError("finalize response returned a different stable version")
+        elif status == 409:
+            current = both_channels_settled()
+            if current.state == "equivalent":
+                return {
+                    "state": "unchanged",
+                    "attempt": attempt,
+                    "proof": current.detail,
+                    "candidate": candidate_version,
+                    "expected_latest": expected_latest_version,
+                }
+            raise RegistryPublicationError(
+                f"finalize CAS conflict: {json.dumps(body, sort_keys=True)}; {current.detail}"
+            )
+        elif status != 0 and not 500 <= status <= 599:
+            raise RegistryPublicationError(
+                f"release finalization failed with HTTP {status}: {json.dumps(body, sort_keys=True)}"
+            )
+
+        current = both_channels_settled()
+        if current.state == "equivalent":
+            changed = body.get("changed") if status == 200 else None
+            return {
+                "state": "unchanged" if changed is False else ("changed" if status == 200 else "recovered"),
+                "attempt": attempt,
+                "proof": current.detail,
+                "candidate": candidate_version,
+                "expected_latest": expected_latest_version,
+            }
+        if current.state in {"divergent", "unavailable"}:
+            raise RegistryPublicationError(f"finalized channels cannot be proved: {current.detail}")
+        last = current.detail if transport_error is None else f"{transport_error}; {current.detail}"
+        if attempt < MAX_ATTEMPTS:
+            _retry_delay(attempt)
+    raise RegistryPublicationError(f"finalization was not verified after {MAX_ATTEMPTS} attempts: {last}")
+
+
 def _api_key() -> str:
     value = os.environ.get("WORKERS_REGISTRY_API_KEY", "")
     if not value:
@@ -676,6 +775,13 @@ def main() -> int:
     channel_parser.add_argument("--expected-current-version", required=True)
     next_floor_parser = common("advance-next-floor")
     next_floor_parser.add_argument("--expected-next-version", required=True)
+    finalize_parser = subparsers.add_parser("finalize-release")
+    finalize_parser.add_argument("--api-url", required=True)
+    finalize_parser.add_argument("--worker", required=True)
+    finalize_parser.add_argument("--candidate-version", required=True)
+    finalize_parser.add_argument("--stable-version", required=True)
+    finalize_parser.add_argument("--expected-latest-version", required=True)
+    finalize_parser.add_argument("--out", type=pathlib.Path, required=True)
     args = parser.parse_args()
 
     try:
@@ -692,13 +798,22 @@ def main() -> int:
                 args.registry_tag,
                 args.expected_current_version,
             )
-        else:
+        elif args.command == "advance-next-floor":
             result = advance_next_floor(
                 args.api_url,
                 _api_key(),
                 args.worker,
                 args.version,
                 args.expected_next_version,
+            )
+        else:
+            result = finalize_release(
+                args.api_url,
+                _api_key(),
+                args.worker,
+                args.candidate_version,
+                args.stable_version,
+                args.expected_latest_version,
             )
         _write_receipt(args.out, result)
         print(json.dumps(result, sort_keys=True))

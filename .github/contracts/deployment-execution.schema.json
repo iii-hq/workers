@@ -15,13 +15,21 @@
       "required": ["worker", "phase", "source_sha", "prepared_sha", "target_version", "channel", "descriptor_sha256"],
       "properties": {
         "worker": { "$ref": "#/$defs/worker" },
-        "phase": { "enum": ["prepare", "publish", "verify"] },
+        "phase": { "enum": ["prepare", "publish", "finalize", "verify"] },
         "source_sha": { "$ref": "#/$defs/sha" },
         "prepared_sha": { "oneOf": [{ "$ref": "#/$defs/sha" }, { "type": "null" }] },
         "target_version": { "$ref": "#/$defs/deploymentVersion" },
         "channel": { "enum": ["next", "latest"] },
-        "descriptor_sha256": { "$ref": "#/$defs/sha256" }
-      }
+        "descriptor_sha256": { "$ref": "#/$defs/sha256" },
+        "candidate_version": { "$ref": "#/$defs/candidateVersion" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "phase": { "const": "finalize" } }, "required": ["phase"] },
+          "then": { "required": ["candidate_version"] },
+          "else": { "not": { "required": ["candidate_version"] } }
+        }
+      ]
     },
     "outcome": { "enum": ["succeeded", "failed", "canceled"] },
     "effects": {
@@ -79,7 +87,8 @@
     "uuid": { "type": "string", "format": "uuid" },
     "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-    "deploymentVersion": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:experimental|alpha|beta))?$" },
+    "deploymentVersion": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:experimental|alpha|beta|rc\\.[1-9][0-9]*))?$" },
+    "candidateVersion": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)-rc\\.[1-9][0-9]*$" },
     "worker": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$" },
     "identity": {
       "type": "object",
