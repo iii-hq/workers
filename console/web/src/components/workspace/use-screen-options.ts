@@ -55,8 +55,8 @@ const EXT_PAGE_PRESENTATION: Readonly<Record<string, PagePresentation>> = {
   },
   directory: {
     icon: FolderTree,
-    description: 'Skills, prompts and system prompts.',
-    keywords: ['skills', 'prompts', 'system', 'system-prompts'],
+    description: 'Skills and agent profiles.',
+    keywords: ['skills', 'agents', 'agent profiles', 'profiles'],
   },
   editor: {
     icon: Code,

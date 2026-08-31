@@ -6,7 +6,8 @@
  * the selection travels once and is frozen server-side for the whole session.
  *
  * The `custom` choice is vestigial: no surface renders that row any more —
- * authoring lives in the iii-directory UI's system-prompts tab — but
+ * authoring lives off-console, in `directory::system-prompts::create` /
+ * `update` or the `system-prompts/*.md` files themselves — but
  * `toSelection` still handles it so a value persisted by an older build keeps
  * working.
  */

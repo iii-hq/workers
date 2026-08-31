@@ -49,8 +49,8 @@ The scanner reads only direct `<agents_folder>/<id>.md` files. Nested files
 are ignored. Agent profile ids keep the current lowercase ASCII, digit, hyphen, and
 underscore validation.
 
-The current required frontmatter and non-empty body validation stays in
-place. Unknown frontmatter keys remain harmless, so fields that iii does not
+The current required frontmatter validation stays in place; the body — the
+system prompt — may be empty. Unknown frontmatter keys remain harmless, so fields that iii does not
 consume do not prevent a profile from loading. The keys iii consumes are
 `name`, `description`, `logo`, `skills`, `model`, `reasoning_effort`, `icon`,
 `color` and `extends`.
@@ -62,8 +62,10 @@ hops. The directory resolves the chain on every read — `list` and `get`
 serve resolved values, the harness never composes:
 
 - `system_prompt` = each ancestor's body root-first, then the profile's own
-  body, joined by a blank line. A profile without `extends` serves its own
-  body byte-for-byte.
+  body, joined by a blank line. A blank body contributes nothing, so a
+  profile with no prompt of its own serves its parent chain unchanged (and
+  the empty string when it has no parent). A profile with a non-blank body and
+  no `extends` serves that body byte-for-byte.
 - `skills`, `model` and `reasoning_effort` fall back to the nearest ancestor
   that sets them when the profile omits them. A non-empty `skills` list
   replaces the parent's filter (no union); an empty list means "not narrowed

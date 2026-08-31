@@ -23,8 +23,9 @@ interface SystemPromptPickerProps {
   onChange: (next: SystemPromptState) => void
   disabled?: boolean
   /**
-   * Offer the `custom…` free-text row. Authoring a prompt otherwise lives in
-   * the iii-directory UI's system-prompts tab.
+   * Offer the `custom…` free-text row. Authoring a prompt otherwise lives
+   * off-console: `directory::system-prompts::create` / `update`, or the
+   * `system-prompts/*.md` files themselves.
    */
   allowCustom?: boolean
   /** Text-only treatment used alongside the empty-state project sentence. */
@@ -164,8 +165,8 @@ export function SystemPromptPicker({
   const mobileSheet = useMediaQuery('(max-width: 767px)')
 
   /* Fetch on EVERY open (keeping the last list while loading): a prompt
-     added on disk or authored in the directory UI shows up on the next
-     open with no cache-invalidation plumbing. A failed load degrades to
+     added on disk or written by `directory::system-prompts::create` shows
+     up on the next open with no cache-invalidation plumbing. A failed load degrades to
      default + custom only (directory worker absent ≠ broken chat). */
   const handleOpenChange = useCallback(async (nextOpen: boolean) => {
     setOpen(nextOpen)

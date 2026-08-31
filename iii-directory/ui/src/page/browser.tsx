@@ -100,25 +100,21 @@ export interface FormContext extends ExtraFieldsContext {
 }
 
 export interface BrowserAdapter {
-  /** Singular noun for labels ("skill" / "prompt"). */
+  /** Singular noun for labels ("skill" / "agent profile"). */
   noun: string
-  /** Breadcrumb root segment ("skills" / "prompts"). */
+  /** Breadcrumb root segment ("skills" / "agents"). */
   crumbRoot: string
   /** Frontmatter keys that may carry the displayed name, in precedence
       order. Skills support both legacy `title` and standard `name`. */
   nameKeys?: readonly string[]
   /** Field inserted when the document has no declared name yet. */
   defaultNameKey?: string
-  /** Prompt names use the worker's lowercase identifier grammar. */
-  slugName?: boolean
-  /** Overrides the slug grammar for name validation on save — skills allow
-      slash-separated segments. */
+  /** Grammar the name must match when CREATING — skills allow
+      slash-separated segments. Unset: any name saves. */
   namePattern?: RegExp
-  /** Error copy shown when the name fails `namePattern` (falls back to the
-      slug message). */
+  /** Error copy shown when the name fails `namePattern` (falls back to a
+      generic slug message). */
   nameHint?: string
-  /** Prompt scanners reject an empty description; skills keep it optional. */
-  descriptionRequired?: boolean
   /** The entry's key is a slug SEPARATE from its free-text display name
       (agents: the id is the file stem, frontmatter `name` is display
       only). The name field stays free text; the id is derived from it
@@ -158,8 +154,8 @@ export interface BrowserAdapter {
   list(host: Host): Promise<BrowserRow[]>
   /** Load one entry's full on-disk content (frontmatter included). */
   load(host: Host, key: string): Promise<string>
-  /** Save; returns the entry's effective key after the write (a prompt
-      rename via frontmatter `name:` moves the selection along). */
+  /** Save; returns the entry's effective key after the write (a rename in
+      frontmatter moves the selection along). */
   save(host: Host, key: string, content: string): Promise<string>
   /** Create a NEW entry; returns its key. Omit to hide the "new" button. */
   create?(host: Host, name: string, content: string): Promise<string>
@@ -169,10 +165,9 @@ export interface BrowserAdapter {
   onChangeType: string
 }
 
-/** Starter frontmatter for a new entry — the scanner rejects a file without
- *  a `description`, so scaffold both required keys rather than a blank page. */
+/** Starter frontmatter for a new entry: scaffold the keys the editor's own
+ *  fields bind to rather than opening a blank page. */
 const NEW_TEMPLATE = '---\nname: \ndescription: ""\n---\n\n'
-const SLUG_NAME = /^[a-z0-9_-]+$/
 
 /** Derive a slug id from a free-text display name ("Release Captain" →
  * "release-captain"), used to prefill the id field while creating. */
@@ -313,7 +308,7 @@ export function CollectionBrowser({
   storageKey: string
   /** The page's command surface — shared across every mounted collection. */
   commands?: PageCommandsApi
-  /** Whether this collection is the one currently shown (all three stay
+  /** Whether this collection is the one currently shown (both stay
       mounted); only the active one registers page-level commands/keys. */
   active?: boolean
   /** An external panel request targeted this collection — open an entry or
@@ -569,22 +564,12 @@ export function CollectionBrowser({
     } else {
       // namePattern governs the CREATE id only: on update the frontmatter
       // name/title is a display field for skills (the id is the key), so a
-      // human-readable title must not block saving. Prompt updates keep the
-      // slug gate — there the frontmatter name IS a rename.
-      const pattern = creating
-        ? (adapter.namePattern ?? (adapter.slugName ? SLUG_NAME : null))
-        : adapter.slugName
-          ? SLUG_NAME
-          : null
+      // human-readable title must not block saving.
+      const pattern = creating ? adapter.namePattern : undefined
       if (pattern && !pattern.test(effectiveName)) {
         setSaveError(adapter.nameHint ?? 'enter a name using lowercase letters, numbers, hyphens or underscores')
         return
       }
-    }
-    const description = readFrontmatterField(draft, ['description']).value
-    if (adapter.descriptionRequired && !description.trim()) {
-      setSaveError('enter a description before saving')
-      return
     }
     if (creating) {
       if (!adapter.create) return
@@ -712,7 +697,7 @@ export function CollectionBrowser({
 
   // The collection's primary verbs, for the palette and for the keyboard
   // while this pane has the focus — only the visible collection registers,
-  // since all three stay mounted at once. The `/` and ⌘S raw handlers above
+  // since both stay mounted at once. The `/` and ⌘S raw handlers above
   // keep working as-is; these just make the same actions ⌘K-visible.
   useEffect(() => {
     if (!active) return
@@ -817,7 +802,7 @@ export function CollectionBrowser({
   const modelInvocationSimple = frontmatterFieldIsSimpleBoolean(draft, 'disable-model-invocation')
   const modelInvocationDisabled = /:\s*(?:true|True|TRUE)\s*$/.test(modelInvocationField.raw ?? '')
   const managedFields = [
-    { ...nameField, value: nameValue, bare: adapter.slugName },
+    { ...nameField, value: nameValue },
     { ...descriptionField, value: descriptionValue },
     ...(adapter.modelInvocationOption && modelInvocationSimple ? [{ ...modelInvocationField, bare: true }] : []),
     // Extra keys an adapter's custom controls own (agents: logo, skills):
@@ -1183,15 +1168,7 @@ export function CollectionBrowser({
                           entryKey: creating ? null : (loaded?.key ?? selected),
                           nameValue,
                           descriptionValue,
-                          setName: (next) =>
-                            editDraft(
-                              setFrontmatterField(
-                                draft,
-                                nameField.key,
-                                adapter.slugName ? next.toLowerCase() : next,
-                                adapter.slugName,
-                              ),
-                            ),
+                          setName: (next) => editDraft(setFrontmatterField(draft, nameField.key, next)),
                           setDescription: (next) => editDraft(setFrontmatterField(draft, descriptionField.key, next)),
                           creating,
                           dirty,
@@ -1209,9 +1186,7 @@ export function CollectionBrowser({
                           <label className="dir-ui-edit-field" htmlFor={`${fieldId}-name`}>
                             <span className="dir-ui-edit-label">
                               name
-                              {adapter.slugName ? (
-                                <span className="dir-ui-edit-hint">a–z · 0–9 · - · _</span>
-                              ) : adapter.separateId && creating ? (
+                              {adapter.separateId && creating ? (
                                 <span className="dir-ui-edit-hint">
                                   {slugify(nameValue) ? `→ ${slugify(nameValue)}.md` : 'the id derives from the name'}
                                 </span>
@@ -1220,20 +1195,9 @@ export function CollectionBrowser({
                             <Input
                               id={`${fieldId}-name`}
                               value={nameValue}
-                              onChange={(next) =>
-                                editDraft(
-                                  setFrontmatterField(
-                                    draft,
-                                    nameField.key,
-                                    adapter.slugName ? next.toLowerCase() : next,
-                                    adapter.slugName,
-                                  ),
-                                )
-                              }
+                              onChange={(next) => editDraft(setFrontmatterField(draft, nameField.key, next))}
                               placeholder={`${adapter.noun} name`}
-                              preserveCase={!adapter.slugName}
-                              required={adapter.slugName || adapter.nameRequired}
-                              pattern={adapter.slugName ? '[a-z0-9_-]+' : undefined}
+                              required={adapter.nameRequired}
                               spellCheck={false}
                               readOnly={readOnly}
                               className="dir-ui-edit-input"
@@ -1248,7 +1212,6 @@ export function CollectionBrowser({
                                 editDraft(setFrontmatterField(draft, descriptionField.key, event.currentTarget.value))
                               }
                               placeholder={`what this ${adapter.noun} is for…`}
-                              required={adapter.descriptionRequired}
                               readOnly={readOnly}
                               rows={2}
                               className="dir-ui-edit-textarea"

@@ -974,7 +974,7 @@ export function AgentForm(ctx: FormContext) {
 
             <CollapsibleSection
               title="System prompt"
-              description="Instructions sessions using this profile follow. With a parent, they are appended after the parent's resolved prompt."
+              description="Instructions sessions using this profile follow — the whole identity, with nothing built-in underneath. Optional: with a parent, empty runs the parent's prompt alone; with no parent, empty means no identity prompt at all."
               summary="Markdown"
             >
               <SystemPromptEditor draft={draft} editDraft={editDraft} readOnly={readOnly} />
