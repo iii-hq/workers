@@ -59,10 +59,14 @@ class TestValidateChannelTargetVersion:
     def test_next_accepts_numbered_rc(self):
         assert _lib.validate_channel_target_version("next", "1.2.3-rc.1") == "1.2.3-rc.1"
 
-    def test_next_accepts_pure_version_until_the_rc_flip_lands(self):
-        # Fase 1C tightens `next` to suffixed-only; until then any in-grammar
-        # version keeps the nightly window deployable.
-        assert _lib.validate_channel_target_version("next", "1.2.3") == "1.2.3"
+    def test_next_accepts_maturity_suffix(self):
+        assert _lib.validate_channel_target_version("next", "1.2.3-beta") == "1.2.3-beta"
+
+    def test_next_rejects_pure_version(self):
+        # A pure version is what finalization mints for `latest`; publishing one
+        # to `next` would make the two channels indistinguishable.
+        with pytest.raises(ValueError, match="prerelease version"):
+            _lib.validate_channel_target_version("next", "1.2.3")
 
     def test_latest_accepts_pure_version(self):
         assert _lib.validate_channel_target_version("latest", "1.2.3") == "1.2.3"

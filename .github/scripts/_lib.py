@@ -84,16 +84,17 @@ def validate_deployment_target_version(version: str) -> str:
 def validate_channel_target_version(channel: str, version: str) -> str:
     """Enforce the channel/version-form contract of the rc-first flow.
 
-    `latest` only ever receives pure MAJOR.MINOR.PATCH versions minted by
-    release finalization. `next` accepts any in-grammar version today; the
-    suffixed-only invariant for `next` lands after the rc flip is live, so the
-    nightly window never gets stuck between executor and orchestrator deploys.
+    The two channels carry disjoint version forms: `next` only ever serves a
+    prerelease under test, and `latest` only ever serves the pure
+    MAJOR.MINOR.PATCH minted from one by release finalization.
     """
     if channel not in {"next", "latest"}:
         raise ValueError("deployment channel must be next or latest")
     validate_deployment_target_version(version)
     if channel == "latest" and "-" in version:
         raise ValueError(f"latest deployments require a pure MAJOR.MINOR.PATCH version, got {version}")
+    if channel == "next" and "-" not in version:
+        raise ValueError(f"next deployments require a prerelease version, got {version}")
     return version
 
 
