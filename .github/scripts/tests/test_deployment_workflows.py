@@ -327,9 +327,9 @@ def test_deploy_train_workflows_never_install_python_packages() -> None:
     # The self-hosted release runners are not guaranteed to have pip on PATH:
     # a stray `pip install` under `set -euo pipefail` killed ten workers in the
     # first nightly batch. The deploy train is jq/python-stdlib only; pyyaml is
-    # legitimately installed solely by deploy-descriptor-index.yml.
-    for path in WORKFLOWS.glob("deploy-*.yml"):
-        if path.name == "deploy-descriptor-index.yml":
-            continue
-        assert "pip install" not in path.read_text(encoding="utf-8"), path.name
-    assert "pip install" not in (WORKFLOWS / "_deploy-build.yml").read_text(encoding="utf-8")
+    # legitimately installed solely by deploy-descriptor-index.yml (and the
+    # e2e harness workflow, which is not part of the train).
+    train = (set(ENTRYPOINTS) | REUSABLE) - {"_worker-e2e.yml"}
+    train |= {path.name for path in WORKFLOWS.glob("deploy-*.yml")} - {"deploy-descriptor-index.yml"}
+    for name in sorted(train):
+        assert "pip install" not in body(name), name

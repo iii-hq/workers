@@ -330,9 +330,6 @@ jobs:
         id: effects
         env:
           GH_TOKEN: ${{ github.token }}
-          PUBLISH_RESULT: ${{ needs.publish.result }}
-          REGISTRY_RESULT: ${{ needs.registry.result }}
-          IMAGE_CHANNEL_RESULT: ${{ needs.image_channel.result }}
           PUBLISHED_IMAGE_DIGEST: ${{ needs.publish.outputs.image_digest }}
         run: |
           set -euo pipefail
