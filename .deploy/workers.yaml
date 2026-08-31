@@ -290,9 +290,14 @@ workers:
         name: rust
         version: 1.97.1
       binary: compose-ui
-      candidate_targets: *id001
-      stable_targets: *id001
-      windows_exception: Windows support has not been validated for this worker
+      targets:
+      - x86_64-apple-darwin
+      - aarch64-apple-darwin
+      - x86_64-unknown-linux-gnu
+      - x86_64-unknown-linux-musl
+      - aarch64-unknown-linux-gnu
+      - armv7-unknown-linux-gnueabihf
+      windows_exception: not published to the Registry yet; no Windows build to restore
       frontends:
       - workspace_root: .
         source_path: compose-ui/ui

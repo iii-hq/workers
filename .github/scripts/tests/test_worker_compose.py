@@ -138,6 +138,7 @@ def test_every_rust_worker_ships_windows_or_justifies_its_absence():
     # before the cutover, so anything joining this set is a regression.
     assert without_windows == {
         "acp",
+        "compose-ui",
         "code-runner",
         "context-manager",
         "editor",
