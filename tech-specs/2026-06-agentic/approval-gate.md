@@ -320,9 +320,10 @@ self-describing (ids live inside the value) so the scan needs no key material.
 The worker owns one entry — id **`approval-gate`** — in the engine's built-in `configuration`
 worker, following the same pattern as [llm-router § Configuration](llm-router.md#configuration). At
 startup it calls `configuration::register` with the id, a JSON Schema, and an `initial_value`.
-Operators (and the console's Configuration screen, which renders the schema as a form) edit this
-entry — deployment approval defaults live here and nowhere else; the hook binding is a trigger
-registration, not configuration (see [The `approval::gate` hook](#the-approvalgate-hook)).
+Operators edit this entry in the console's Configuration screen: the registered schema validates
+values, while the approval-gate's explicit injected configuration UI renders the controls.
+Deployment approval defaults live here and nowhere else; the hook binding is a trigger registration,
+not configuration (see [The `approval::gate` hook](#the-approvalgate-hook)).
 
 ```jsonc
 // configuration entry "approval-gate"

@@ -47,6 +47,7 @@ pub const SWEEP_ID: &str = "workflow::sweep";
 fn spec() -> config_client::EntrySpec {
     config_client::EntrySpec {
         id: config_id(),
+        form_id: DEFAULT_CONFIG_ID,
         name: "Workflow",
         description: "Workflow worker settings: default node-pending timeout, \
                       cron sweep schedule, RPC dispatch timeout, and max node retries.",

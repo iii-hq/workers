@@ -3,6 +3,8 @@ import { Skeleton } from '@/components/ui/Skeleton'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { useExtProviderConfigForm } from '@/lib/ui-slots'
 import { cn } from '@/lib/utils'
+import { isObjectSchema } from '@/pages/Configuration/lib/schema/guard'
+import { validateConfig } from '@/pages/Configuration/lib/schema/validate'
 import type {
   JsonSchema,
   JsonValue,
@@ -18,8 +20,6 @@ import {
   SaveBar,
   type SaveStatus,
 } from '@/pages/Configuration/tabs/WorkersTab/SaveBar'
-import { isObjectSchema } from '@/pages/Configuration/tabs/WorkersTab/schema-form/guard'
-import { validateConfig } from '@/pages/Configuration/tabs/WorkersTab/schema-form/validate'
 import { providerForModel } from './model-picker-presentation'
 import { ProviderSettingsForm } from './ProviderSettingsForm'
 
@@ -191,7 +191,7 @@ export function ProviderConfigurationPanel({
   return (
     <div
       className={cn(
-        'configuration-surface workers-tab flex min-h-0 flex-1 flex-col',
+        'configuration-surface flex min-h-0 flex-1 flex-col',
         className,
       )}
     >

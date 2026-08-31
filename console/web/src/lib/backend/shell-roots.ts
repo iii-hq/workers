@@ -3,7 +3,7 @@
  * (`configuration::get { id: 'shell' }` → `value.fs.host_roots`), for the
  * filesystem-access management dialog's "always allowed (all sessions)" group.
  * Editing happens on the existing configuration editor
- * (`#/workers/configuration/shell`) — this is read-only here on purpose.
+ * (`#/configuration/workers/shell`) — this is read-only here on purpose.
  */
 
 import { getIiiClient } from '@/lib/iii-client'

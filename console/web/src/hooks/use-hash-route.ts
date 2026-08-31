@@ -16,8 +16,8 @@ export interface WorkersConfigurationRoute {
   /**
    * Whether the configuration surface is showing at all. Distinct from
    * `configurationId` so the narrow drill-in flow can sit on the list
-   * (`#/workers/configuration`, open with nothing selected) without
-   * falling back to the workers table.
+   * (`#/configuration/workers`, open with nothing selected) without
+   * falling back to General settings.
    */
   open: boolean
   configurationId: string | null
@@ -30,9 +30,10 @@ const CLOSED_CONFIGURATION_ROUTE: WorkersConfigurationRoute = {
   fieldPath: [],
 }
 
-const WORKERS_CONFIGURATION_ROOT = '#/workers/configuration'
-const WORKERS_CONFIGURATION_PREFIX = '#/workers/configuration/'
-const LEGACY_WORKERS_CONFIGURATION_PREFIX = '#/configuration/workers/'
+const WORKERS_CONFIGURATION_ROOT = '#/configuration/workers'
+const WORKERS_CONFIGURATION_PREFIX = '#/configuration/workers/'
+const LEGACY_WORKERS_CONFIGURATION_ROOT = '#/workers/configuration'
+const LEGACY_WORKERS_CONFIGURATION_PREFIX = '#/workers/configuration/'
 
 function decodeSegment(segment: string): string {
   try {
@@ -65,9 +66,12 @@ function parseConfigurationRouteWithPrefix(
 export function workersConfigurationRouteFromHash(
   hash: string,
 ): WorkersConfigurationRoute {
-  // Bare `#/workers/configuration`: the surface is open with nothing
+  // Bare `#/configuration/workers`: the surface is open with nothing
   // selected — the narrow flow's list page.
-  if (hash === WORKERS_CONFIGURATION_ROOT) {
+  if (
+    hash === WORKERS_CONFIGURATION_ROOT ||
+    hash === LEGACY_WORKERS_CONFIGURATION_ROOT
+  ) {
     return { open: true, configurationId: null, fieldPath: [] }
   }
   return (
@@ -88,8 +92,17 @@ export function hashForWorkersConfiguration(
   return `${WORKERS_CONFIGURATION_PREFIX}${suffix}`
 }
 
+export function hashForWorkersConfigurationList(): string {
+  return WORKERS_CONFIGURATION_ROOT
+}
+
 export function normalizeWorkersConfigurationHash(hash: string): string | null {
-  if (hash === '#/configuration/workers') return '#/workers'
+  if (
+    hash === LEGACY_WORKERS_CONFIGURATION_ROOT ||
+    hash === `${LEGACY_WORKERS_CONFIGURATION_ROOT}/`
+  ) {
+    return WORKERS_CONFIGURATION_ROOT
+  }
   const legacy = parseConfigurationRouteWithPrefix(
     hash,
     LEGACY_WORKERS_CONFIGURATION_PREFIX,
@@ -98,7 +111,7 @@ export function normalizeWorkersConfigurationHash(hash: string): string | null {
   return hashForWorkersConfiguration(legacy.configurationId, legacy.fieldPath)
 }
 
-function routeFromHash(rawHash: string): View | null {
+export function routeFromHash(rawHash: string): View | null {
   // Migrated pages (worktrees, memory, browser, github) resolve via `#/ext/<id>`.
   const hash = normalizeExtHash(rawHash)
   if (hash === '' || hash === '#' || hash === '#/' || hash === '#/traces') {
@@ -110,17 +123,17 @@ function routeFromHash(rawHash: string): View | null {
   // Backwards compat: `#/traces-v2` was the staging route while the rebuilt
   // traces view coexisted with the original; it IS `#/traces` now.
   if (hash === '#/traces-v2') return 'traces'
+  if (
+    hash === LEGACY_WORKERS_CONFIGURATION_ROOT ||
+    hash.startsWith(LEGACY_WORKERS_CONFIGURATION_PREFIX)
+  ) {
+    return 'configuration'
+  }
   if (hash === '#/workers' || hash.startsWith('#/workers/')) {
     return 'workers'
   }
   if (hash.startsWith('#/ext/')) {
     return 'ext'
-  }
-  if (hash === '#/configuration/workers') {
-    return 'workers'
-  }
-  if (hash.startsWith(LEGACY_WORKERS_CONFIGURATION_PREFIX)) {
-    return 'workers'
   }
   if (hash === '#/configuration' || hash.startsWith('#/configuration/')) {
     return 'configuration'
@@ -134,7 +147,7 @@ function routeFromHash(rawHash: string): View | null {
   return null
 }
 
-function hashFor(view: View): string {
+export function hashForView(view: View): string {
   switch (view) {
     case 'traces':
       return '#/traces'
@@ -174,7 +187,7 @@ export function useHashRoute(): [View, (next: View) => void] {
   }, [])
 
   const navigate = useCallback((next: View) => {
-    const targetHash = hashFor(next)
+    const targetHash = hashForView(next)
     if (window.location.hash !== targetHash) {
       window.location.hash = targetHash
     } else {
@@ -259,7 +272,6 @@ export function useExtPageRoute(): string | null {
 export function useWorkersConfigurationRoute(): [
   WorkersConfigurationRoute,
   (configurationId: string | null, fieldPath?: string[]) => void,
-  () => void,
 ] {
   const [route, setRoute] = useState<WorkersConfigurationRoute>(() => {
     if (typeof window === 'undefined') {
@@ -307,15 +319,5 @@ export function useWorkersConfigurationRoute(): [
     [],
   )
 
-  /** Leave the configuration surface entirely — back to the workers table. */
-  const close = useCallback(() => {
-    const targetHash = '#/workers'
-    if (window.location.hash !== targetHash) {
-      window.location.hash = targetHash
-    } else {
-      setRoute(CLOSED_CONFIGURATION_ROUTE)
-    }
-  }, [])
-
-  return [route, navigate, close]
+  return [route, navigate]
 }

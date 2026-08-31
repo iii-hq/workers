@@ -246,10 +246,14 @@ export function getExtPage(id: string): RegisteredPage | undefined {
 /** The injected form override for one configuration id (last wins). */
 export function getExtConfigForm(
   configurationId: string,
+  fallbackConfigurationId?: string,
 ): RegisteredConfigForm | undefined {
   const forms = configFormsStore.get()
-  for (let i = forms.length - 1; i >= 0; i--) {
-    if (forms[i].configurationId === configurationId) return forms[i]
+  for (const candidate of [configurationId, fallbackConfigurationId]) {
+    if (!candidate) continue
+    for (let i = forms.length - 1; i >= 0; i--) {
+      if (forms[i].configurationId === candidate) return forms[i]
+    }
   }
   return undefined
 }
@@ -355,14 +359,18 @@ export function useExtSessionTurnSummaries(): readonly RegisteredSessionTurnSumm
 /** The injected form override for one configuration id (last wins). */
 export function useExtConfigForm(
   configurationId: string,
+  fallbackConfigurationId?: string,
 ): RegisteredConfigForm | undefined {
   const forms = useSyncExternalStore(
     configFormsStore.subscribe,
     configFormsStore.get,
     () => EMPTY,
   )
-  for (let i = forms.length - 1; i >= 0; i--) {
-    if (forms[i].configurationId === configurationId) return forms[i]
+  for (const candidate of [configurationId, fallbackConfigurationId]) {
+    if (!candidate) continue
+    for (let i = forms.length - 1; i >= 0; i--) {
+      if (forms[i].configurationId === candidate) return forms[i]
+    }
   }
   return undefined
 }

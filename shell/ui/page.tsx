@@ -37,6 +37,7 @@ export default function setup(host: Host) {
   host.pages.register({
     id: 'shell',
     title: 'shell',
+    configurationId: 'shell',
     render: (props: PageRenderProps) => (
       <ShellExplorerPage
         host={host}

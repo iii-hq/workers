@@ -89,10 +89,10 @@ mod tests {
         }
     }
 
-    /// The Workers-tab configuration form ships in the same page asset.
-    /// Dropping the `host.configForms.register('code-runner', …)` call
-    /// silently falls the entry back to the console's generic schema form;
-    /// this catches it.
+    /// The worker-owned configuration form ships in the same page asset.
+    /// Dropping the `host.configForms.register('code-runner', …)` call leaves
+    /// this worker without an editable interface in global Settings; this
+    /// catches it.
     #[test]
     fn the_config_form_is_wired_in() {
         assert!(

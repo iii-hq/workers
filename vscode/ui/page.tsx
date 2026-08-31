@@ -5,6 +5,7 @@ export default function setup(host: Host) {
   host.pages.register({
     id: 'vscode',
     title: 'VS Code',
+    configurationId: 'vscode',
     render: (props) => <VscodePage host={host} {...props} />,
   });
 

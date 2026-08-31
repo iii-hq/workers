@@ -1,7 +1,7 @@
 //! Operator-facing runtime configuration (Path B: the authoritative value
-//! lives in the `configuration` worker; every field hot-reloads). The
-//! console renders the worker-config form from this schema, so every field
-//! carries a doc comment.
+//! lives in the `configuration` worker; every field hot-reloads). The schema
+//! validates drafts from the deliberate worker form in global Settings, so
+//! every field carries a doc comment.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

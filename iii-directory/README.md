@@ -101,7 +101,7 @@ a `configuration` trigger so it re-fetches on change.
 
 Persisted values default to `./data/configuration/iii-directory.yaml` (fs
 adapter). Edit that file directly, call `configuration::set id=iii-directory`,
-or use the console Workers tab — all three propagate without a redeploy.
+or use the Console's global Settings modal — all three propagate without a redeploy.
 
 ### Fields
 

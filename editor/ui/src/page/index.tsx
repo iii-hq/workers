@@ -45,6 +45,8 @@ import {
   Input,
   MarkdownPreview,
   type PageRenderProps,
+  PageHeader,
+  PageShell,
   PageSidebar,
   StatusDot,
 } from '@iii-dev/console-ui'
@@ -179,6 +181,7 @@ export function EditorPage({
   host,
   panelSide = 'left',
   commands,
+  onRequestClose,
 }: { host: Host } & Partial<PageRenderProps>) {
   const api = useMemo(() => createApi(host), [host])
   // Follows the console's own light/dark toggle, not the OS preference.
@@ -921,9 +924,8 @@ export function EditorPage({
   const lineCount = activeDraft ? activeDraft.draft.split('\n').length : 0
 
   return (
-    <div className="ed-root">
-      <header className="ed-head">
-        <span className="ed-brand">editor</span>
+    <PageShell className="ed-root">
+      <PageHeader title="Editor" onClose={onRequestClose}>
         {rootOpen ? (
           <>
             <span className="ed-commit">
@@ -963,7 +965,7 @@ export function EditorPage({
             {root || '…'}
           </button>
         )}
-      </header>
+      </PageHeader>
 
       <div className={`ed-body${panelSide === 'right' ? ' right' : ''}`}>
         <PageSidebar
@@ -1568,7 +1570,7 @@ export function EditorPage({
           </div>
         </DialogContent>
       </Dialog>
-    </div>
+    </PageShell>
   )
 }
 

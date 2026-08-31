@@ -1,4 +1,4 @@
-import { ChevronRight, Play, RotateCw, Settings, Square } from 'lucide-react'
+import { ChevronRight, Play, RotateCw, Square } from 'lucide-react'
 import { useState } from 'react'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
@@ -30,7 +30,6 @@ interface WorkersTableProps {
   pendingCompose?: PendingComposeAction | null
   onStop?: (name: string) => void
   onComposeAction?: (action: ComposeAction, container: string) => void
-  onConfigure?: (configurationId: string) => void
   className?: string
 }
 
@@ -39,7 +38,6 @@ const MANAGEMENT_VARIANT: Record<
   'default' | 'accent' | 'warn'
 > = {
   compose: 'accent',
-  config: 'default',
   supervisor: 'accent',
   standalone: 'warn',
   internal: 'default',
@@ -76,7 +74,6 @@ export function WorkersTable({
   pendingCompose,
   onStop,
   onComposeAction,
-  onConfigure,
   className,
 }: WorkersTableProps) {
   if (isLoading) {
@@ -101,7 +98,6 @@ export function WorkersTable({
         pendingCompose,
         onStop,
         onComposeAction,
-        onConfigure,
         className,
       }}
     />
@@ -114,7 +110,6 @@ function WorkersTableBody({
   pendingCompose,
   onStop,
   onComposeAction,
-  onConfigure,
   className,
 }: Omit<WorkersTableProps, 'isLoading'>) {
   // Only connected workers have a surface to show: `engine::workers::info`
@@ -184,7 +179,6 @@ function WorkersTableBody({
                       }
                     : undefined
                 }
-                onConfigure={onConfigure}
               />
             ))}
           </tbody>
@@ -225,7 +219,6 @@ interface WorkerTableRowProps {
   onToggle: () => void
   onStop?: (name: string) => void
   onComposeAction?: (action: ComposeAction) => void
-  onConfigure?: (configurationId: string) => void
 }
 
 const COMPOSE_ICON: Record<ComposeAction, typeof Play> = {
@@ -242,26 +235,9 @@ function WorkerTableRow({
   onToggle,
   onStop,
   onComposeAction,
-  onConfigure,
 }: WorkerTableRowProps) {
   const expandable = row.status === 'connected'
   const composeVerbs = composeActions(row)
-  const configureButton = row.configurationId ? (
-    <Button
-      variant="icon"
-      size="icon"
-      type="button"
-      aria-label={`configure ${row.name}`}
-      title={`configure ${row.name}`}
-      disabled={!onConfigure}
-      onClick={() => {
-        if (row.configurationId) onConfigure?.(row.configurationId)
-      }}
-    >
-      <Settings className="size-4" aria-hidden />
-    </Button>
-  ) : null
-
   const composeButtons =
     composeVerbs.length > 0
       ? composeVerbs.map((action) => {
@@ -392,7 +368,6 @@ function WorkerTableRow({
         </td>
         <td className="py-2.5 text-right">
           <div className="flex items-center justify-end gap-1">
-            {configureButton}
             {composeButtons}
             {fallbackStop}
           </div>

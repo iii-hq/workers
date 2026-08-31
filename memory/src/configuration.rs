@@ -59,6 +59,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
                         per-turn injection toggles and budgets, and the post-turn \
                         extraction model/window.",
         "schema": WorkerConfig::json_schema(),
+        "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
     if let Some(seed) = seed {
         payload["initial_value"] = seed.to_json();

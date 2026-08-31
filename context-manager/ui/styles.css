@@ -1,128 +1,27 @@
 [data-iii-ui="context-manager"] .ctx-cfg {
   display: flex;
-  flex-direction: column;
-  gap: 24px;
-  color: var(--color-ink);
-}
-
-[data-iii-ui="context-manager"] .ctx-cfg-intro {
-  max-width: 72ch;
-  margin: 0;
-  color: var(--color-ink-faint);
-  font-size: 13px;
-  line-height: 1.55;
-}
-
-[data-iii-ui="context-manager"] .ctx-cfg-section {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding-top: 20px;
-  border-top: 1px solid var(--color-rule-2);
-}
-
-[data-iii-ui="context-manager"] .ctx-cfg-section h3 {
-  margin: 0;
-  color: var(--color-ink);
-  font-size: 14px;
-  font-weight: 650;
-  line-height: 1.3;
-}
-
-[data-iii-ui="context-manager"] .ctx-cfg-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
-  gap: 18px 20px;
-}
-
-[data-iii-ui="context-manager"] .ctx-cfg-field {
-  display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 6px;
-}
-
-[data-iii-ui="context-manager"] .ctx-cfg-field-wide {
-  max-width: 640px;
-}
-
-[data-iii-ui="context-manager"] .ctx-cfg-field > label {
+  gap: 24px;
+  container-type: inline-size;
+  font-family: var(--font-sans, system-ui, sans-serif);
   color: var(--color-ink);
-  font-size: 12.5px;
-  font-weight: 550;
 }
 
-[data-iii-ui="context-manager"] .ctx-cfg-input {
-  width: 100%;
-  min-height: 34px;
-  box-sizing: border-box;
-  border: 1px solid var(--color-rule);
-  background: var(--color-bg);
-  color: var(--color-ink);
-  font: inherit;
-  font-size: 12.5px;
+[data-iii-ui="context-manager"] .ctx-cfg-control {
+  width: min(100%, 280px);
+  font-family: var(--font-mono, ui-monospace, monospace);
   font-variant-numeric: tabular-nums;
-  padding: 7px 10px;
 }
 
-[data-iii-ui="context-manager"] .ctx-cfg-input::placeholder {
-  color: var(--color-ink-faint);
-}
-
-[data-iii-ui="context-manager"] .ctx-cfg-input:focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 1px;
-}
-
-[data-iii-ui="context-manager"] .ctx-cfg-hint {
-  color: var(--color-ink-faint);
-  font-size: 11.5px;
-  line-height: 1.45;
-}
-
-[data-iii-ui="context-manager"] .ctx-cfg-check {
-  display: flex;
-  max-width: 640px;
-  align-items: flex-start;
-  gap: 9px;
-  cursor: pointer;
-}
-
-[data-iii-ui="context-manager"] .ctx-cfg-check input {
-  width: 15px;
-  height: 15px;
-  margin: 2px 0 0;
-  flex: 0 0 auto;
-  accent-color: var(--color-accent);
-}
-
-[data-iii-ui="context-manager"] .ctx-cfg-check input:focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 2px;
-}
-
-[data-iii-ui="context-manager"] .ctx-cfg-check span {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-[data-iii-ui="context-manager"] .ctx-cfg-check strong {
-  color: var(--color-ink);
-  font-size: 12.5px;
-  font-weight: 550;
-}
-
-[data-iii-ui="context-manager"] .ctx-cfg-check small {
-  color: var(--color-ink-faint);
-  font-size: 11.5px;
-  line-height: 1.45;
+[data-iii-ui="context-manager"] .ctx-cfg-number {
+  max-width: 180px;
 }
 
 [data-iii-ui="context-manager"] .ctx-cfg-errors {
-  border: 1px solid var(--color-alert);
   padding: 10px 12px;
-  color: var(--color-ink);
-  font-size: 12.5px;
-  line-height: 1.5;
+  border-left: 2px solid var(--color-alert);
+  background: color-mix(in srgb, var(--color-alert) 8%, transparent);
+  color: var(--color-alert);
+  font: 400 12px/1.5 var(--font-sans, system-ui, sans-serif);
 }

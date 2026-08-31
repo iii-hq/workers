@@ -180,7 +180,7 @@ budget and that highlighting still works.
 ## Configuration
 
 Runtime config lives in the `configuration` worker under id `editor`, so the
-console's Workers tab can edit it and every field hot-reloads — handlers read
+Console's global Settings modal can edit it and every field hot-reloads — handlers read
 the live snapshot per call, and nothing needs a restart. The block below is what
 gets seeded when nothing is stored yet, and `--config <path>` takes a file in
 that shape as an optional one-time seed that never overwrites a stored value.

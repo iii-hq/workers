@@ -133,4 +133,4 @@ fails loudly instead of silently racing the built-in worker for ownership of
 | Local unsubscribe | drops the ENTIRE topic entry (bug: kills co-subscribers) | removes only the given id (**deliberate fix**) |
 | Adapter hot-swap | gated build-first, resubscribe-before-swap | same |
 | Config entry id | legacy engine configuration | `pubsub` (new entry, seeded on first boot) |
-| Config schema shape | hand-built `oneOf` union (local/redis) | plain derive — accepted values identical, plainer console form |
+| Config schema shape | hand-built `oneOf` union (local/redis) | plain derive — accepted values identical; explicit Console form |

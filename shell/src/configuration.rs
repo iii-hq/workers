@@ -203,6 +203,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&ShellConfig>) -> Res
         "name": "Shell",
         "description": "Command denylist, timeout & output caps, and the fs jail.",
         "schema": ShellConfig::json_schema(),
+        "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
     if stored_value_absent(iii).await? {
         let candidate = match seed {

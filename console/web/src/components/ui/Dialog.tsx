@@ -27,10 +27,10 @@ export const DialogContent = React.forwardRef<
         {...props}
       >
         {children}
-        {/* Padded to a ~26px hit box (WCAG 2.2 SC 2.5.8 asks for 24) — the
-            bare 14px glyph was the smallest target in the product. The
-            right/top offsets compensate so the icon stays visually put. */}
-        <DialogPrimitive.Close className="absolute right-2.5 top-2.5 rounded-sm p-1.5 text-ink-faint hover:text-ink hover:bg-surface-hover transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+        <DialogPrimitive.Close
+          aria-label="Close"
+          className="absolute right-0.5 top-0.5 flex size-12 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:right-2 sm:top-2 sm:size-8"
+        >
           <X size={16} />
           <span className="sr-only">Close</span>
         </DialogPrimitive.Close>

@@ -42,16 +42,69 @@ pub fn default_grant_reask_limit() -> usize {
     3
 }
 
-/// JSON Schema for the `rules` array — string shorthands the console
-/// renders as an editable list. Matches what the gate actually evaluates:
-/// `parse_rules_from_config` reads each entry as a shorthand.
+/// JSON Schema for the `rules` array. It intentionally mirrors both forms
+/// accepted by [`parse_rules_from_config`]: compact string shorthands and
+/// structured rules with mode and argument constraints.
 fn rules_schema(_gen: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
     serde_json::from_value(json!({
         "type": "array",
         "description": "Permission rules for the gate hook (first match wins). Each entry is a string or object.\n\nString shorthands: bare id/glob → allow; prefix ! → deny; no match → hold.\n\nStructured objects: { \"function\": \"shell::*\", \"action\": \"allow\" | \"deny\", \"modes\": [\"auto\"] } — optional modes scope the rule to manual, auto, or full (omit for all modes). Use modes: [\"auto\"] on allow rules to seed the auto-mode trust list.\n\nExamples:\n• \"state::get\" — allow reads\n• \"shell::*\" — allow any shell worker call\n• \"!approval::*\" — deny the approval decision plane (shipped default)\n• { \"function\": \"web::fetch\", \"action\": \"allow\", \"modes\": [\"auto\"] } — auto-mode trust",
         "items": {
-            "type": "string",
-            "description": "Function id or glob. Allow: \"web::fetch\", \"coder::*\". Deny: \"!configuration::*\", \"!router::chat\"."
+            "oneOf": [
+                {
+                    "type": "string",
+                    "description": "Function id or glob. Allow: \"web::fetch\", \"coder::*\". Deny: \"!configuration::*\", \"!router::chat\"."
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["function", "action"],
+                    "properties": {
+                        "function": {
+                            "type": "string",
+                            "description": "Function id or glob to match."
+                        },
+                        "action": {
+                            "type": "string",
+                            "enum": ["allow", "deny"]
+                        },
+                        "rule_id": {
+                            "type": "string",
+                            "description": "Optional stable identifier included in decisions."
+                        },
+                        "modes": {
+                            "type": "array",
+                            "uniqueItems": true,
+                            "items": {
+                                "type": "string",
+                                "enum": ["manual", "auto", "full"]
+                            }
+                        },
+                        "args": {
+                            "type": "object",
+                            "description": "Argument constraints keyed by payload field.",
+                            "additionalProperties": {
+                                "oneOf": [
+                                    {
+                                        "type": "object",
+                                        "additionalProperties": false,
+                                        "required": ["equals"],
+                                        "properties": { "equals": {} }
+                                    },
+                                    {
+                                        "type": "object",
+                                        "additionalProperties": false,
+                                        "required": ["matches"],
+                                        "properties": {
+                                            "matches": { "type": "string" }
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+            ]
         },
         "default": default_rules_value(),
     }))
@@ -249,6 +302,26 @@ mod tests {
         assert_eq!(
             schema.get("example"),
             Some(&WorkerConfig::default().to_json())
+        );
+    }
+
+    #[test]
+    fn rules_schema_describes_shorthand_and_structured_rules() {
+        let schema = WorkerConfig::json_schema();
+        let variants = schema["properties"]["rules"]["items"]["oneOf"]
+            .as_array()
+            .expect("rules items expose both supported representations");
+        assert_eq!(variants[0]["type"], "string");
+        assert_eq!(variants[1]["type"], "object");
+        assert_eq!(variants[1]["required"], json!(["action", "function"]));
+        assert_eq!(
+            variants[1]["properties"]["modes"]["items"]["enum"],
+            json!(["manual", "auto", "full"])
+        );
+        assert!(
+            variants[1]["properties"]["args"]["additionalProperties"]["oneOf"]
+                .as_array()
+                .is_some_and(|constraints| constraints.len() == 2)
         );
     }
 

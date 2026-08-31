@@ -47,6 +47,10 @@ interface SelectProps<T extends string> {
   'aria-label'?: string
   /** Forwarded to the trigger; used to indicate the option list is still loading. */
   'aria-busy'?: boolean
+  /** Forwarded to the trigger when the selected value failed validation. */
+  'aria-invalid'?: React.AriaAttributes['aria-invalid']
+  /** IDs of validation or supporting text associated with the trigger. */
+  'aria-describedby'?: string
   /** Optional placeholder shown when no `value` matches an option. */
   placeholder?: string
   /** Heading used by the mobile sheet or in-sheet drill-in page. */
@@ -223,6 +227,8 @@ export function Select<T extends string>({
         type="button"
         aria-label={aria['aria-label']}
         aria-busy={aria['aria-busy']}
+        aria-invalid={aria['aria-invalid']}
+        aria-describedby={aria['aria-describedby']}
         aria-haspopup={embeddedInSheet ? undefined : 'dialog'}
         aria-expanded={open}
         data-state={open ? 'open' : 'closed'}
@@ -312,6 +318,8 @@ export function Select<T extends string>({
         ref={triggerRef}
         aria-label={aria['aria-label']}
         aria-busy={aria['aria-busy']}
+        aria-invalid={aria['aria-invalid']}
+        aria-describedby={aria['aria-describedby']}
         className={triggerClassName}
       >
         {/*

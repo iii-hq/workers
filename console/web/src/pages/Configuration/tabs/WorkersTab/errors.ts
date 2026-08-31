@@ -7,7 +7,7 @@
  *
  * We can't recover a JSON Pointer from every error, so the parser is
  * defensive: it always returns a human-readable `message`, and adds
- * `pointer` only when extraction succeeds. The `SchemaForm` keys its
+ * `pointer` only when extraction succeeds. Worker-owned forms key their
  * per-field error display off `pointer`; the `SaveBar` always shows the
  * `message` so the operator never loses sight of why their save failed.
  *

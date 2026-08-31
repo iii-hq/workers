@@ -1,115 +1,89 @@
-/**
- * Custom configuration form for the `llm-router` configuration entry —
- * registered through `host.configForms`, replacing the console's generic
- * schema-driven form for this worker only.
- *
- * One card per provider (api_key / api_url / max_tokens),
- * a default-provider picker fed by the configured provider ids, the stream
- * budget knobs, and the routing-heuristics table. The form edits the
- * working draft via `onChange`; dirty tracking, save/reset, validation and
- * the SaveBar stay host-owned. Mirrors compose_entry_schema
- * (llm-router/src/config/schema.rs).
- *
- * The one opinion this form adds over the generic one: an api_key that
- * holds a PLAIN-TEXT secret gets a warning steering the operator to
- * `${ENV_VAR}` syntax — the configuration worker expands env references on
- * read, so the entry (and every export of it) never needs to carry the
- * secret itself.
- */
+/** Purpose-built configuration form for the LLM router. */
 
-import { useEffect, useRef } from 'react'
 import {
+  Button,
   type ConfigFormProps,
+  Input,
   type JsonValue,
   Select,
   type SelectOption,
+  SettingsList,
+  SettingsRow,
+  SettingsSection,
+  Switch,
 } from '@iii-dev/console-ui'
-import { providerCardIds } from './provider-cards'
+import { type ReactNode, useEffect, useRef } from 'react'
+import { type ProviderFieldDefinition, providerCardIds, providerFieldDefinitions } from './provider-cards'
 
 type JsonObject = { [key: string]: JsonValue }
 
-function asObject(v: JsonValue | undefined): JsonObject {
-  return v && typeof v === 'object' && !Array.isArray(v) ? { ...v } : {}
+function asObject(value: JsonValue | undefined): JsonObject {
+  return value && typeof value === 'object' && !Array.isArray(value) ? { ...value } : {}
 }
 
-function asString(v: JsonValue | undefined): string {
-  return typeof v === 'string' ? v : ''
+function asString(value: JsonValue | undefined): string {
+  return typeof value === 'string' ? value : ''
 }
 
 /** `${VAR}` (exactly one reference, nothing else) — the recommended shape. */
-export function isEnvReference(v: string): boolean {
-  return /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(v.trim())
+export function isEnvReference(value: string): boolean {
+  return /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(value.trim())
 }
 
-/** Mentions an env reference somewhere (partial templating still counts). */
-function hasEnvReference(v: string): boolean {
-  return /\$\{[A-Za-z_][A-Za-z0-9_]*\}/.test(v)
+function hasEnvReference(value: string): boolean {
+  return /\$\{[A-Za-z_][A-Za-z0-9_]*\}/.test(value)
 }
 
-/** Suggest an env-var name for a provider: `ANTHROPIC_API_KEY`. */
-function suggestedEnvVar(providerId: string): string {
-  const slug = providerId.toUpperCase().replace(/[^A-Z0-9]+/g, '_')
-  return `${slug || 'PROVIDER'}_API_KEY`
+function suggestedEnvVar(providerId: string, fieldKey: string): string {
+  const slug = `${providerId}_${fieldKey}`.toUpperCase().replace(/[^A-Z0-9]+/g, '_')
+  return slug || 'PROVIDER_SECRET'
 }
 
-/**
- * Options for a provider picker: the configured ids, plus the current
- * value when it names a provider that is not connected (so an operator
- * can SEE a stale selection instead of the placeholder lying about it).
- */
-function providerOptions(
-  providerIds: string[],
-  current: string,
-): SelectOption[] {
+function providerOptions(providerIds: string[], current: string): SelectOption[] {
   const options = providerIds.map((id) => ({ value: id, label: id }))
   if (current && !providerIds.includes(current)) {
-    options.push({
-      value: current,
-      label: `${current} (not connected)`,
-    })
+    options.push({ value: current, label: `${current} (not connected)` })
   }
   return options
 }
 
-/** `300000` → `5m`, `90500` → `1m 30s`, `800` → `800ms`. */
 function formatMs(ms: number): string {
   if (ms < 1000) return `${ms}ms`
-  const s = Math.round(ms / 1000)
-  if (s < 60) return `${s}s`
-  const m = Math.floor(s / 60)
-  const rest = s % 60
-  return rest ? `${m}m ${rest}s` : `${m}m`
+  const seconds = Math.round(ms / 1000)
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  const rest = seconds % 60
+  return rest ? `${minutes}m ${rest}s` : `${minutes}m`
 }
 
-/**
- * The stream-budget knobs (mirrors RouterSettings defaults,
- * llm-router/src/settings.rs). `echo` renders the wire value in the
- * operator's unit so nobody has to parse 300000 as five minutes.
- */
 const SETTINGS_FIELDS = [
   {
     key: 'stream_timeout_ms',
-    label: 'stream timeout (ms)',
+    label: 'Stream timeout',
+    description: 'Maximum total time for a streaming response, in milliseconds.',
     defaultValue: 300_000,
     echo: formatMs,
   },
   {
     key: 'idle_timeout_ms',
-    label: 'idle timeout (ms)',
+    label: 'Idle timeout',
+    description: 'Maximum pause between stream events, in milliseconds.',
     defaultValue: 120_000,
     echo: formatMs,
   },
   {
     key: 'retry_max',
-    label: 'retry max',
+    label: 'Maximum retries',
+    description: 'Number of retry attempts after a retryable provider failure.',
     defaultValue: 2,
-    echo: (n: number) => (n === 1 ? '1 retry' : `${n} retries`),
+    echo: (value: number) => (value === 1 ? '1 retry' : `${value} retries`),
   },
   {
     key: 'output_token_max',
-    label: 'output token max',
+    label: 'Output token limit',
+    description: 'Router-wide ceiling for generated output tokens.',
     defaultValue: 32_000,
-    echo: (n: number) => `${n.toLocaleString()} tokens`,
+    echo: (value: number) => `${value.toLocaleString()} tokens`,
   },
 ] as const
 
@@ -118,170 +92,212 @@ export function LlmRouterConfigForm(props: ConfigFormProps) {
   const providers = asObject(value.providers)
   const providerIds = providerCardIds(props.schema, props.value)
   const settings = asObject(value.settings)
-  const heuristics = Array.isArray(value.routing_heuristics)
-    ? (value.routing_heuristics as JsonValue[])
-    : []
-
+  const heuristics = Array.isArray(value.routing_heuristics) ? (value.routing_heuristics as JsonValue[]) : []
   const commit = (patch: JsonObject) => props.onChange({ ...value, ...patch })
 
-  // Deep-link focus (#/workers/configuration/llm-router/<field>): the host
-  // only scroll-focuses the generic form's DOM ids, so honoring the request
-  // is this override's job.
+  // Canonical deep links use #/configuration/workers/llm-router/<field>.
+  // The injected form owns focus because the host cannot know its DOM shape.
   const rootRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    const field = props.focusField?.[0]
-    if (!field || !rootRef.current) return
-    const el = rootRef.current.querySelector<HTMLElement>(
-      `[data-field="${CSS.escape(field)}"]`,
-    )
-    el?.scrollIntoView({ block: 'center' })
-    el?.focus()
+    if (!props.focusField?.length || !rootRef.current) return
+    const exact = props.focusField.join('-')
+    const target =
+      rootRef.current.querySelector<HTMLElement>(`[data-field="${CSS.escape(exact)}"]`) ??
+      rootRef.current.querySelector<HTMLElement>(`[data-field="${CSS.escape(props.focusField[0])}"]`)
+    target?.scrollIntoView({ block: 'center' })
+    const focusable = target?.matches('input, button, [tabindex]')
+      ? target
+      : target?.querySelector<HTMLElement>('input, button, [tabindex]')
+    focusable?.focus()
   }, [props.focusField])
 
   return (
     <div className="llmr-cfg" ref={rootRef}>
-      <span className="llmr-cfg-caption">
-        custom form · shipped by the llm-router worker
-      </span>
-
-      <span className="llmr-cfg-label">default provider</span>
-      <div className="llmr-cfg-row" data-field="default_provider">
-        <Select
-          aria-label="default provider"
-          value={asString(value.default_provider) || undefined}
-          options={providerOptions(providerIds, asString(value.default_provider))}
-          placeholder="no default — heuristics only"
-          allowEmpty
-          emptyLabel="no default"
-          onClear={() => {
-            const next = { ...value }
-            delete next.default_provider
-            props.onChange(next)
-          }}
-          onChange={(id) => commit({ default_provider: id })}
-        />
-      </div>
-
-      <h3 className="llmr-cfg-heading">providers</h3>
-      {providerIds.length === 0 ? (
-        <div className="llmr-cfg-empty">
-          No providers connected yet — provider workers register themselves
-          here when they come up.
-        </div>
-      ) : (
-        providerIds.map((id) => (
-          <ProviderCard
-            key={id}
-            id={id}
-            slice={asObject(providers[id])}
-            onChange={(next) =>
-              commit({ providers: { ...providers, [id]: next } })
+      <SettingsSection title="Routing" description="Choose the fallback provider used when no routing rule matches.">
+        <SettingsList>
+          <SettingsRow
+            data-field="default_provider"
+            label="Default provider"
+            description="Requests fall back to this provider after all routing rules are evaluated."
+            control={
+              <div className="llmr-cfg-select">
+                <Select
+                  aria-label="Default provider"
+                  value={asString(value.default_provider) || undefined}
+                  options={providerOptions(providerIds, asString(value.default_provider))}
+                  placeholder="No default provider"
+                  allowEmpty
+                  emptyLabel="No default provider"
+                  onClear={() => {
+                    const next = { ...value }
+                    delete next.default_provider
+                    props.onChange(next)
+                  }}
+                  onChange={(id) => commit({ default_provider: id })}
+                />
+              </div>
             }
           />
-        ))
-      )}
+        </SettingsList>
+      </SettingsSection>
 
-      <h3 className="llmr-cfg-heading">stream budgets</h3>
-      <div className="llmr-cfg-grid">
-        {SETTINGS_FIELDS.map((f) => {
-          const set = typeof settings[f.key] === 'number'
-          const effective = set ? (settings[f.key] as number) : f.defaultValue
-          return (
-            <div key={f.key}>
-              <label className="llmr-cfg-label" htmlFor={`llmr-set-${f.key}`}>
-                {f.label}
-              </label>
-              <input
-                id={`llmr-set-${f.key}`}
-                className="llmr-cfg-input"
-                inputMode="numeric"
-                value={set ? String(settings[f.key]) : ''}
-                placeholder={String(f.defaultValue)}
-                onChange={(e) => {
-                  const next = { ...settings }
-                  const n = Number(e.target.value)
-                  if (e.target.value === '' || Number.isNaN(n)) {
-                    delete next[f.key]
-                  } else {
-                    next[f.key] = n
-                  }
-                  commit({ settings: next })
-                }}
+      <SettingsSection
+        data-field="providers"
+        title="Providers"
+        description="Credentials, endpoints, limits, and provider-specific settings."
+      >
+        {providerIds.length === 0 ? (
+          <SettingsList>
+            <SettingsRow
+              label="No providers connected"
+              description="Provider workers appear here after they register with the router."
+            />
+          </SettingsList>
+        ) : (
+          <div className="llmr-cfg-provider-stack">
+            {providerIds.map((id) => (
+              <ProviderCard
+                key={id}
+                id={id}
+                schema={props.schema}
+                rootValue={props.value}
+                slice={asObject(providers[id])}
+                onChange={(next) => commit({ providers: { ...providers, [id]: next } })}
               />
-              <div className="llmr-cfg-echo">
-                {set ? `= ${f.echo(effective)}` : `default · ${f.echo(effective)}`}
-              </div>
-            </div>
-          )
-        })}
-      </div>
-
-      <h3 className="llmr-cfg-heading">routing heuristics</h3>
-      <p className="llmr-cfg-hint">
-        First pattern (substring or regex) matching the requested model wins;
-        no match falls through to the default provider.
-      </p>
-      {heuristics.map((h, i) => {
-        const row = asObject(h)
-        const update = (patch: JsonObject) => {
-          const next = [...heuristics]
-          next[i] = { ...row, ...patch }
-          commit({ routing_heuristics: next })
-        }
-        return (
-          // Rows have no id; order IS the routing priority, so index keys
-          // are the honest choice here.
-          // biome-ignore lint/suspicious/noArrayIndexKey: positional rows
-          <div key={i} className="llmr-cfg-row llmr-cfg-heuristic">
-            <input
-              className="llmr-cfg-input"
-              value={asString(row.pattern)}
-              placeholder="pattern, e.g. gpt-"
-              aria-label={`heuristic ${i + 1} pattern`}
-              onChange={(e) => update({ pattern: e.target.value })}
-            />
-            <span className="llmr-cfg-arrow" aria-hidden>
-              →
-            </span>
-            <Select
-              aria-label={`heuristic ${i + 1} provider`}
-              value={asString(row.provider) || undefined}
-              options={providerOptions(providerIds, asString(row.provider))}
-              placeholder="provider"
-              onChange={(id) => update({ provider: id })}
-            />
-            <button
-              type="button"
-              className="llmr-cfg-remove"
-              aria-label={`remove heuristic ${i + 1}`}
-              onClick={() =>
-                commit({
-                  routing_heuristics: heuristics.filter((_, j) => j !== i),
-                })
-              }
-            >
-              ×
-            </button>
+            ))}
           </div>
-        )
-      })}
-      <button
-        type="button"
-        className="llmr-cfg-add"
-        onClick={() =>
-          commit({
-            routing_heuristics: [...heuristics, { pattern: '', provider: '' }],
-          })
+        )}
+      </SettingsSection>
+
+      <SettingsSection
+        data-field="settings"
+        title="Stream budgets"
+        description="Operational limits shared by every provider. Empty values use router defaults."
+      >
+        <SettingsList>
+          {SETTINGS_FIELDS.map((field) => {
+            const configured = typeof settings[field.key] === 'number'
+            const effective = configured ? (settings[field.key] as number) : field.defaultValue
+            return (
+              <SettingsRow
+                key={field.key}
+                data-field={`settings-${field.key}`}
+                label={field.label}
+                description={field.description}
+                meta={configured ? field.echo(effective) : `Default: ${field.echo(effective)}`}
+                control={
+                  <Input
+                    className="llmr-cfg-number"
+                    inputMode="numeric"
+                    type="number"
+                    step={field.key === 'retry_max' ? 1 : 'any'}
+                    min={field.key === 'retry_max' ? 0 : undefined}
+                    value={configured ? String(settings[field.key]) : ''}
+                    placeholder={String(field.defaultValue)}
+                    aria-label={field.label}
+                    onChange={(nextValue) => {
+                      const next = { ...settings }
+                      const number = Number(nextValue)
+                      if (nextValue === '' || Number.isNaN(number)) {
+                        delete next[field.key]
+                      } else {
+                        next[field.key] = number
+                      }
+                      commit({ settings: next })
+                    }}
+                  />
+                }
+              />
+            )
+          })}
+        </SettingsList>
+      </SettingsSection>
+
+      <SettingsSection
+        data-field="routing_heuristics"
+        title="Routing rules"
+        description="The first substring or regular-expression match wins."
+        action={
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() =>
+              commit({
+                routing_heuristics: [...heuristics, { pattern: '', provider: '' }],
+              })
+            }
+          >
+            Add rule
+          </Button>
         }
       >
-        + add heuristic
-      </button>
+        <SettingsList>
+          {heuristics.length === 0 ? (
+            <SettingsRow
+              label="No routing rules"
+              description="Requests use the default provider when no rules are configured."
+            />
+          ) : (
+            heuristics.map((heuristic, index) => {
+              const row = asObject(heuristic)
+              const update = (patch: JsonObject) => {
+                const next = [...heuristics]
+                next[index] = { ...row, ...patch }
+                commit({ routing_heuristics: next })
+              }
+              return (
+                <SettingsRow
+                  key={index}
+                  label={`Rule ${index + 1}`}
+                  control={
+                    <div className="llmr-cfg-heuristic">
+                      <Input
+                        value={asString(row.pattern)}
+                        placeholder="Pattern, for example gpt-"
+                        aria-label={`Rule ${index + 1} pattern`}
+                        onChange={(pattern) => update({ pattern })}
+                      />
+                      <span aria-hidden="true">→</span>
+                      <div className="llmr-cfg-select">
+                        <Select
+                          aria-label={`Rule ${index + 1} provider`}
+                          value={asString(row.provider) || undefined}
+                          options={providerOptions(providerIds, asString(row.provider))}
+                          placeholder="Provider"
+                          onChange={(provider) => update({ provider })}
+                        />
+                      </div>
+                    </div>
+                  }
+                  action={
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      aria-label={`Remove rule ${index + 1}`}
+                      onClick={() =>
+                        commit({
+                          routing_heuristics: heuristics.filter((_, candidate) => candidate !== index),
+                        })
+                      }
+                    >
+                      Remove
+                    </Button>
+                  }
+                />
+              )
+            })
+          )}
+        </SettingsList>
+      </SettingsSection>
 
       {props.errors && props.errors.size > 0 ? (
-        <div className="llmr-cfg-errors">
+        <div className="llmr-cfg-errors" role="alert">
           {[...props.errors].map(([path, message]) => (
             <div key={path}>
-              <code>{path}</code> {message}
+              {path ? `${path}: ` : ''}
+              {message}
             </div>
           ))}
         </div>
@@ -292,103 +308,205 @@ export function LlmRouterConfigForm(props: ConfigFormProps) {
 
 function ProviderCard({
   id,
+  schema,
+  rootValue,
   slice,
   onChange,
 }: {
   id: string
+  schema: Record<string, unknown> | null
+  rootValue: JsonValue
   slice: JsonObject
   onChange(next: JsonObject): void
 }) {
-  const apiKey = asString(slice.api_key)
-  // Plain text = something typed that is not an env reference. A partial
-  // reference (`sk-${SUFFIX}`) still embeds secret material, so only the
-  // pure `${VAR}` shape counts as safe.
-  const plainTextKey = apiKey.length > 0 && !isEnvReference(apiKey)
-  const set = (key: string, v: JsonValue | undefined) => {
+  const fields = providerFieldDefinitions(schema, rootValue, id)
+  const set = (key: string, nextValue: JsonValue | undefined) => {
     const next = { ...slice }
-    if (v === undefined) delete next[key]
-    else next[key] = v
+    if (nextValue === undefined) delete next[key]
+    else next[key] = nextValue
     onChange(next)
   }
 
   return (
-    <section className="llmr-cfg-card" data-field={`providers-${id}`}>
-      <header className="llmr-cfg-card-head">{id}</header>
+    <SettingsSection className="llmr-cfg-provider" data-field={`providers-${id}`} title={id}>
+      <SettingsList>
+        {fields.length === 0 ? (
+          <SettingsRow label="No settings required" description="This provider registers no configurable fields." />
+        ) : (
+          fields.map((field) => (
+            <ProviderFieldRow
+              key={field.key}
+              providerId={id}
+              field={field}
+              value={slice[field.key]}
+              configured={field.key in slice}
+              onChange={(nextValue) => set(field.key, nextValue)}
+            />
+          ))
+        )}
+      </SettingsList>
+    </SettingsSection>
+  )
+}
 
-      <label className="llmr-cfg-label" htmlFor={`llmr-${id}-api-key`}>
-        api key
-      </label>
-      <input
-        id={`llmr-${id}-api-key`}
-        className="llmr-cfg-input"
-        // Env references are not secrets — keep them readable; anything
-        // else gets masked like the generic password field.
-        type={apiKey === '' || isEnvReference(apiKey) ? 'text' : 'password'}
-        autoComplete="off"
-        spellCheck={false}
-        value={apiKey}
-        placeholder={`\${${suggestedEnvVar(id)}}`}
-        onChange={(e) => set('api_key', e.target.value || undefined)}
+function ProviderFieldRow({
+  providerId,
+  field,
+  value,
+  configured,
+  onChange,
+}: {
+  providerId: string
+  field: ProviderFieldDefinition
+  value: JsonValue | undefined
+  configured: boolean
+  onChange(value: JsonValue | undefined): void
+}) {
+  const fieldId = `llmr-${providerId}-${field.key}`
+  const description =
+    field.description ??
+    (field.required
+      ? 'Required by this provider.'
+      : field.defaultValue !== undefined
+        ? `Provider default: ${String(field.defaultValue)}`
+        : undefined)
+
+  if (field.kind === 'structured') {
+    return (
+      <SettingsRow
+        data-field={`providers-${providerId}-${field.key}`}
+        label={field.label}
+        description={description}
+        meta="Structured value preserved unchanged"
       />
-      {plainTextKey ? (
-        <div className="llmr-cfg-warning" role="alert">
-          <strong>plain-text secret</strong> — this key is stored verbatim in
-          the configuration entry (and every export of it). Set it as an
-          environment variable on the engine host and reference it instead:{' '}
-          <button
-            type="button"
-            className="llmr-cfg-envfix"
-            title="replace with the env reference"
-            onClick={() => set('api_key', `\${${suggestedEnvVar(id)}}`)}
-          >
-            {'${'}
-            {suggestedEnvVar(id)}
-            {'}'}
-          </button>{' '}
-          — the value expands when the entry is read, so the secret never
-          lands in the store.
-        </div>
-      ) : isEnvReference(apiKey) ? (
-        <div className="llmr-cfg-envok">
-          env reference — expands on read, secret stays out of the store
-        </div>
-      ) : hasEnvReference(apiKey) ? (
-        <div className="llmr-cfg-warning" role="alert">
-          partial env reference — the literal part is still stored as plain
-          text. Move the whole key into one variable.
-        </div>
-      ) : null}
+    )
+  }
 
-      <label className="llmr-cfg-label" htmlFor={`llmr-${id}-api-url`}>
-        api url
-      </label>
-      <input
-        id={`llmr-${id}-api-url`}
-        className="llmr-cfg-input"
-        value={asString(slice.api_url)}
-        placeholder="provider default"
-        spellCheck={false}
-        onChange={(e) => set('api_url', e.target.value || undefined)}
+  let control: ReactNode
+  if (field.kind === 'boolean') {
+    control = (
+      <Switch
+        checked={value === true || (!configured && field.defaultValue === true)}
+        onChange={(event) => onChange(event.currentTarget.checked)}
+        aria-label={field.label}
       />
-
-      <label className="llmr-cfg-label" htmlFor={`llmr-${id}-max-tokens`}>
-        max tokens
-      </label>
-      <input
-        id={`llmr-${id}-max-tokens`}
-        className="llmr-cfg-input"
-        inputMode="numeric"
-        value={typeof slice.max_tokens === 'number' ? String(slice.max_tokens) : ''}
-        placeholder="provider default"
-        onChange={(e) => {
-          const n = Number(e.target.value)
-          set(
-            'max_tokens',
-            e.target.value === '' || Number.isNaN(n) ? undefined : n,
-          )
+    )
+  } else if (field.enumValues && field.enumValues.length > 0) {
+    const current = asString(value)
+    const options = field.enumValues.map((entry) => ({
+      value: entry,
+      label: entry,
+    }))
+    if (current && !field.enumValues.includes(current)) {
+      options.push({ value: current, label: `${current} (current)` })
+    }
+    control = (
+      <div className="llmr-cfg-select">
+        <Select
+          aria-label={field.label}
+          value={current || undefined}
+          options={options}
+          placeholder="Use provider default"
+          allowEmpty={!field.required}
+          emptyLabel="Use provider default"
+          onClear={() => onChange(undefined)}
+          onChange={onChange}
+        />
+      </div>
+    )
+  } else if (field.kind === 'number' || field.kind === 'integer') {
+    control = (
+      <Input
+        id={fieldId}
+        className="llmr-cfg-number"
+        type="number"
+        step={field.kind === 'integer' ? 1 : 'any'}
+        inputMode="decimal"
+        value={typeof value === 'number' ? String(value) : ''}
+        placeholder={field.defaultValue !== undefined ? String(field.defaultValue) : 'Provider default'}
+        aria-label={field.label}
+        onChange={(nextValue) => {
+          if (nextValue === '') {
+            onChange(field.required ? '' : undefined)
+            return
+          }
+          const number = Number(nextValue)
+          onChange(Number.isNaN(number) ? nextValue : number)
         }}
       />
+    )
+  } else {
+    const text = asString(value)
+    const secret = field.writeOnly
+    control = (
+      <div className="llmr-cfg-secret-wrap">
+        <Input
+          id={fieldId}
+          type={secret && text && !isEnvReference(text) ? 'password' : 'text'}
+          autoComplete="off"
+          spellCheck={false}
+          value={text}
+          placeholder={
+            secret
+              ? `\${${suggestedEnvVar(providerId, field.key)}}`
+              : field.defaultValue !== undefined
+                ? String(field.defaultValue)
+                : 'Provider default'
+          }
+          aria-label={field.label}
+          onChange={(nextValue) => onChange(nextValue === '' && !field.required ? undefined : nextValue)}
+        />
+        {secret ? (
+          <SecretGuidance providerId={providerId} fieldKey={field.key} value={text} onChange={onChange} />
+        ) : null}
+      </div>
+    )
+  }
 
-    </section>
+  return (
+    <SettingsRow
+      data-field={`providers-${providerId}-${field.key}`}
+      label={field.label}
+      description={description}
+      control={control}
+      action={
+        configured && !field.required ? (
+          <Button type="button" variant="ghost" size="sm" onClick={() => onChange(undefined)}>
+            Reset
+          </Button>
+        ) : undefined
+      }
+    />
+  )
+}
+
+function SecretGuidance({
+  providerId,
+  fieldKey,
+  value,
+  onChange,
+}: {
+  providerId: string
+  fieldKey: string
+  value: string
+  onChange(value: JsonValue | undefined): void
+}) {
+  if (!value) return null
+  const environmentVariable = suggestedEnvVar(providerId, fieldKey)
+  if (isEnvReference(value)) {
+    return <div className="llmr-cfg-envok">Environment reference. The secret stays out of configuration storage.</div>
+  }
+  const partial = hasEnvReference(value)
+  return (
+    <div className="llmr-cfg-warning" role="alert">
+      {partial
+        ? 'This partial environment reference still stores literal secret text.'
+        : 'This secret will be stored as plain text.'}{' '}
+      <button type="button" className="llmr-cfg-envfix" onClick={() => onChange(`\${${environmentVariable}}`)}>
+        Use {'${'}
+        {environmentVariable}
+        {'}'}
+      </button>
+    </div>
   )
 }

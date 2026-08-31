@@ -81,6 +81,7 @@ export default function setup(host: Host) {
   host.pages.register({
     id: 'state-manager',            // page URL: #/ext/state-manager
     title: 'state',                 // nav label
+    configurationId: 'state',       // host adds the standard settings action
     render: () => <StateManagerPage host={host} />,
   })
   host.functionTriggers.register(createStateTriggerRenderer(host))
@@ -397,6 +398,15 @@ page with custom internals (the directory page's drill-in browser) may
 own its body but MUST keep `PageShell` + `PageHeader`. The shell
 explorer (`workers/shell/ui/src/page/index.tsx`) is the reference
 composition.
+
+When a page's worker has configuration, set `configurationId` on its
+`host.pages.register` entry. The Console then adds the standard settings icon
+to `PageHeader` and opens that worker inside the global Settings modal. Do not
+add a second settings icon, mount a worker-local configuration dialog, or
+navigate to the old Workers-screen editor. Pages without a configuration
+entry omit the property. Treat `configurationId` as the stable form-family id,
+not an instance name: a worker registered as `browser-team-a` still declares
+`configurationId: 'browser'`.
 
 `PageSidebar` is implemented by the Console host and resolves through the
 shared `/vendor/console-ui.js` module, so importing its behavior adds no bytes
@@ -757,8 +767,13 @@ for the complete authoring guide and test matrix.
 
 ### `host.configForms.register(configurationId, component)`
 
-Replace the schema-generated form for one configuration entry on the Workers
-tab (exact id match; last registration wins). Your component receives:
+Provide the settings interface for one stable configuration family in the
+global Settings modal (exact id match first; last registration wins). Workers
+whose runtime entry can be renamed with `III_CONFIG_NAME` register
+`metadata: { ui_form: '<default-id>' }` with `configuration::register`; the
+Console then reuses this family form for that runtime id. The Console does not
+generate a fallback form from JSON Schema: every configurable worker must
+register a deliberate interface. Your component receives:
 
 ```ts
 interface ConfigFormProps {
@@ -771,8 +786,15 @@ interface ConfigFormProps {
 }
 ```
 
-The form is render-level only: dirty tracking, validation, save/reset and the
-SaveBar stay host-owned. You draw the fields and call `onChange`.
+The form is render-level only: dirty tracking, schema validation, save/reset
+and the SaveBar stay host-owned. You draw deliberate fields and call
+`onChange`; the schema remains a validation contract, never a UI generator.
+Use the shared `SettingsSection`, `SettingsList`, `SettingsRow`, and `Switch`
+components for ordinary settings, with `Tabs` for useful peer sections and a
+purpose-built collection editor when operators add repeated entries. Never
+fall back to a raw JSON textarea. Forms render inside the canonical route
+`#/configuration/workers/<configurationId>` and must remain usable at narrow
+pane widths.
 
 ### `host.providerConfigForms.register(providerId, component)`
 
@@ -992,8 +1014,8 @@ Kill switch: `injectable_ui: false` in the console worker's `config.yaml`
 disables the trigger types, the `/ui` + `/vendor` routes, and the SPA loader
 (manifest answers `disabled: true`).
 
-Per-worker toggle: the Workers tab's **Console** entry renders a toggle
-board — one card per UI-shipping worker (title, description, and a switch;
+Per-worker toggle: global Settings → **Console** renders a toggle
+board — one row per UI-shipping worker (title, description, and a switch;
 enabled cards use the neutral selected recipe, disabled ones dim) — editing
 `injectableUi.disabledWorkers` in the `console` configuration entry. Saving
 applies live: the console worker subscribes to `configuration:updated` for

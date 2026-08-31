@@ -1,8 +1,8 @@
 //! Integration with the builtin `configuration` worker.
 //!
-//! The worker registers its config schema under the id `pubsub` (what the
-//! console renders as an editable form), reads the authoritative value before
-//! binding, and hot-applies `configuration:updated` events by rebuilding the
+//! The worker registers its config schema under the id `pubsub` (validated
+//! when its explicit global Settings form saves), reads the authoritative
+//! value before binding, and hot-applies `configuration:updated` events by rebuilding the
 //! backend adapter and rebinding the live subscriptions onto it.
 //!
 //! [`on_config_change`] is serialized end-to-end by an [`ApplyLock`]: the SDK
@@ -60,6 +60,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&PubSubConfig>) -> Re
         "name": "PubSub",
         "description": "PubSub worker settings — the pub/sub backend adapter (`local` in-process broadcast, or `redis` for cross-instance delivery). The adapter hot-swaps at runtime: a change rebuilds the backend and re-subscribes live subscriptions onto it.",
         "schema": PubSubConfig::json_schema(),
+        "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
     if should_seed_initial_value(iii).await? {
         let seed = seed.cloned().unwrap_or_default().normalized();

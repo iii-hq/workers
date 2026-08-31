@@ -69,6 +69,11 @@ import {
 } from '@/components/ui/PageChrome'
 import { Select } from '@/components/ui/Select'
 import { Selector } from '@/components/ui/Selector'
+import {
+  SettingsList,
+  SettingsRow,
+  SettingsSection,
+} from '@/components/ui/Settings'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { StatusPanel } from '@/components/ui/StatusPanel'
@@ -81,6 +86,7 @@ import {
   PanelBody,
   PanelHeader,
 } from '@/components/ui/Surface'
+import { Switch } from '@/components/ui/Switch'
 import {
   Table,
   TableBody,
@@ -166,9 +172,13 @@ const conformance: {
   Select: typeof ConsoleUi.Select
   SegmentedControl: typeof ConsoleUi.SegmentedControl
   Selector: typeof ConsoleUi.Selector
+  SettingsList: typeof ConsoleUi.SettingsList
+  SettingsRow: typeof ConsoleUi.SettingsRow
+  SettingsSection: typeof ConsoleUi.SettingsSection
   Skeleton: typeof ConsoleUi.Skeleton
   StatusDot: typeof ConsoleUi.StatusDot
   StatusPanel: typeof ConsoleUi.StatusPanel
+  Switch: typeof ConsoleUi.Switch
   Table: typeof ConsoleUi.Table
   TableBody: typeof ConsoleUi.TableBody
   TableCaption: typeof ConsoleUi.TableCaption
@@ -244,9 +254,13 @@ const conformance: {
   Select,
   SegmentedControl,
   Selector,
+  SettingsList,
+  SettingsRow,
+  SettingsSection,
   Skeleton,
   StatusDot,
   StatusPanel,
+  Switch,
   Table,
   TableBody,
   TableCaption,

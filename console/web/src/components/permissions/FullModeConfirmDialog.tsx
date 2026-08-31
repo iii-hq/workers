@@ -6,7 +6,7 @@ interface FullModeConfirmDialogProps {
   onOpenChange: (open: boolean) => void
   onConfirm: () => void
   /**
-   * Context-aware copy. The Configuration screen flow phrases it as
+   * Context-aware copy. The global Settings flow phrases it as
    * "for every new conversation"; the in-chat picker phrases it as
    * "for this conversation". The default works for the in-chat case.
    */

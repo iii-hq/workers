@@ -56,6 +56,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
                         branch prefix, prune schedule and expiry, land queue name, \
                         retry bound, and git/test timeouts.",
         "schema": WorkerConfig::json_schema(),
+        "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
     if let Some(seed) = seed {
         payload["initial_value"] = seed.to_json();

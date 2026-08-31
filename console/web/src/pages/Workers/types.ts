@@ -1,7 +1,6 @@
 /** How the worker is managed — drives badge copy and lifecycle affordances. */
 export type WorkerManagementKind =
   | 'compose'
-  | 'config'
   | 'supervisor'
   | 'standalone'
   | 'internal'
@@ -30,8 +29,6 @@ export interface WorkerRow {
   tag: string | null
   managementKind: WorkerManagementKind
   status: WorkerConnectionStatus
-  /** Configuration registry id for rows with editable worker configuration. */
-  configurationId: string | null
   /** When true the supervisor stop action is enabled (supervisor-managed + running). */
   stopEnabled: boolean
   /** Shown when stop is disabled. */
@@ -49,7 +46,6 @@ export interface WorkersFilterState {
 
 export const MANAGEMENT_ORDER: readonly WorkerManagementKind[] = [
   'compose',
-  'config',
   'supervisor',
   'standalone',
   'internal',
@@ -57,7 +53,6 @@ export const MANAGEMENT_ORDER: readonly WorkerManagementKind[] = [
 
 export const MANAGEMENT_LABEL: Record<WorkerManagementKind, string> = {
   compose: 'compose',
-  config: 'config',
   supervisor: 'managed',
   standalone: 'standalone',
   internal: 'internal',

@@ -7,6 +7,7 @@ export default function setup(host: Host) {
   host.pages.register({
     id: 'a2ui',
     title: 'A2UI',
+    configurationId: 'a2ui',
     render: (props) => <A2uiPage host={host} {...props} />,
   })
   host.functionTriggers.register(createA2uiTriggerRenderer(host))

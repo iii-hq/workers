@@ -7,9 +7,13 @@ import {
   DialogDescription,
   DialogTitle,
 } from '@/components/ui/Dialog'
+import { hashForWorkersConfiguration } from '@/hooks/use-hash-route'
 import { getShellHostRoots } from '@/lib/backend/shell-roots'
 
-const SHELL_HOST_ROOTS_HASH = '#/workers/configuration/shell/fs/host_roots'
+const SHELL_HOST_ROOTS_HASH = hashForWorkersConfiguration('shell', [
+  'fs',
+  'host_roots',
+])
 
 interface FilesystemAccessDialogProps {
   open: boolean

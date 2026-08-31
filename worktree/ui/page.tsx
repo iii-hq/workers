@@ -23,6 +23,7 @@ export default function setup(host: Host) {
   host.pages.register({
     id: 'worktree',
     title: 'worktrees',
+    configurationId: 'worktree',
     render: (props) => <WorktreesPage host={host} {...props} />,
   })
 

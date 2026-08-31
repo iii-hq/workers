@@ -43,6 +43,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
         "name": "Database",
         "description": "Connection pools for PostgreSQL, MySQL, and SQLite.",
         "schema": WorkerConfig::json_schema(),
+        "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
     if let Some(seed) = seed {
         payload["initial_value"] = seed.to_json();

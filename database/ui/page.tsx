@@ -13,8 +13,8 @@
  *   the live database over `database::query`/`database::listDatabases`.
  *   Registered with the host's render props so the page follows the pane
  *   (side, per-tab state, the standard close affordance).
- * - src/configuration/ — the configuration form for the `database` entry
- *   on the Workers tab, replacing the generic schema-driven editor.
+ * - src/configuration/ — the deliberate form for the `database` entry in
+ *   global Settings.
  *
  * Registrations go through `host` so the loader disposes them on hot
  * reload / worker disconnect.
@@ -33,6 +33,7 @@ export default function setup(host: Host) {
   host.pages.register({
     id: 'database',
     title: 'database',
+    configurationId: 'database',
     render: (props) => <DatabasePage host={host} {...props} />,
   })
 

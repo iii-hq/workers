@@ -12,7 +12,7 @@
  * - src/function-trigger-message/ — how every `browser::*` call renders in
  *   chat and the traces span tab (per-function terminal cards).
  * - src/configuration/ — the full-width, purpose-built browser settings
- *   editor used by the Console's worker configuration dialog.
+ *   editor used inside the Console's global Settings modal.
  *
  * Registrations go through `host` so the loader disposes them on hot reload /
  * worker disconnect.
@@ -33,6 +33,7 @@ export default function setup(host: Host) {
   host.pages.register({
     id: 'browser',
     title: 'browser',
+    configurationId: 'browser',
     render: (props) => <BrowserPage host={host} {...props} />,
   })
 

@@ -84,6 +84,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
                         and the auto-mode trust seed) and the agent permission \
                         rules.",
         "schema": WorkerConfig::json_schema(),
+        "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
     if let Some(seed) = seed {
         payload["initial_value"] = seed.to_json();

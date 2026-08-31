@@ -1,4 +1,4 @@
-import { Menu, Plus, Search, SettingsIcon, SquarePen, X } from 'lucide-react'
+import { Menu, Plus, Search, SettingsIcon, SquarePen } from 'lucide-react'
 import {
   type CSSProperties,
   Fragment,
@@ -43,6 +43,7 @@ import { TabStrip } from '@/components/workspace/TabStrip'
 import { useScreenOptions } from '@/components/workspace/use-screen-options'
 import {
   hashForExtPage,
+  hashForView,
   useExtPageRoute,
   useHashRoute,
   type View,
@@ -104,6 +105,7 @@ import {
   type WorkspaceTab,
 } from '@/lib/workspace-tabs'
 import { Configuration } from '@/pages/Configuration'
+import { useUnsavedGuard } from '@/pages/Configuration/tabs/WorkersTab/useUnsavedGuard'
 import { ExtPage } from '@/pages/Ext'
 import { TracesV2 } from '@/pages/TracesV2'
 import { Workers } from '@/pages/Workers'
@@ -194,6 +196,8 @@ export function App({
   injectableUiRuntime?: Promise<InjectableUiRuntime>
 }) {
   const [theme, setTheme] = useTheme()
+  const { setDirty: setSettingsDirty, tryNavigate: trySettingsNavigation } =
+    useUnsavedGuard({ guardHashNavigation: true })
   const [view, setView] = useHashRoute()
   const extPageId = useExtPageRoute()
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
@@ -370,17 +374,22 @@ export function App({
     if (primary) {
       lastHashScreenRef.current = primary
       const extId = extPageIdForScreen(primary)
-      if (extId) window.location.hash = hashForExtPage(extId)
-      else setView(primary as View)
+      const targetHash = extId
+        ? hashForExtPage(extId)
+        : hashForView(primary as View)
+      window.location.replace(targetHash)
     } else {
       lastHashScreenRef.current = lastTabViewRef.current
-      setView(lastTabViewRef.current)
+      window.location.replace(hashForView(lastTabViewRef.current))
     }
-  }, [setView])
+  }, [])
+  const requestCloseSettings = useCallback(() => {
+    trySettingsNavigation(closeSettings)
+  }, [closeSettings, trySettingsNavigation])
   const toggleSettings = useCallback(() => {
-    if (view === 'configuration') closeSettings()
+    if (view === 'configuration') requestCloseSettings()
     else setView('configuration')
-  }, [view, setView, closeSettings])
+  }, [view, setView, requestCloseSettings])
   const layoutSource = workspace.layoutSource
   const lastLayoutSourceRef = useRef(layoutSource)
   useEffect(() => {
@@ -531,7 +540,9 @@ export function App({
           <ConfigurationOverlay
             theme={theme}
             onThemeChange={setTheme}
-            onClose={closeSettings}
+            onDirtyChange={setSettingsDirty}
+            tryNavigate={trySettingsNavigation}
+            onClose={requestCloseSettings}
           />
         ) : null}
         <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
@@ -1814,46 +1825,44 @@ function Header({
 interface ConfigurationOverlayProps {
   theme: ReturnType<typeof useTheme>[0]
   onThemeChange: (next: ReturnType<typeof useTheme>[0]) => void
+  onDirtyChange: (dirty: boolean) => void
+  tryNavigate: (action: () => void) => boolean
   onClose: () => void
 }
 
 /**
- * Console settings as a PAGE over the workspace — never a tab screen (the
- * tab model rejects it; `screenForView` maps the route to null). The
- * workspace stays mounted underneath, so closing restores the panes
- * exactly as they were. Deep-linkable via `#/configuration`; Escape or
- * the close affordance returns to the last tab-backed view.
+ * Console settings in one modal over the workspace — never a tab screen (the
+ * tab model rejects it; `screenForView` maps the route to null). The workspace
+ * stays mounted underneath, so closing restores the panes exactly as they
+ * were. Deep-linkable via `#/configuration` and its worker sub-routes.
  */
 function ConfigurationOverlay({
   theme,
   onThemeChange,
+  onDirtyChange,
+  tryNavigate,
   onClose,
 }: ConfigurationOverlayProps) {
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    document.addEventListener('keydown', onKeyDown)
-    return () => document.removeEventListener('keydown', onKeyDown)
-  }, [onClose])
-
   return (
-    <div className="fixed inset-0 z-40 flex flex-col bg-bg">
-      <div className="flex h-12 shrink-0 items-center justify-end pr-6">
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="close settings"
-          title="close settings (esc)"
-          className="font-mono text-[14px] leading-none w-8 h-8 flex items-center justify-center rounded-sm border border-transparent text-ink-faint hover:text-ink hover:bg-surface-hover transition-colors focus-visible:border-accent focus-visible:outline-none"
-        >
-          <X className="w-4 h-4" />
-        </button>
-      </div>
-      <div className="flex-1 min-h-0 flex flex-col">
-        <Configuration theme={theme} onThemeChange={onThemeChange} />
-      </div>
-    </div>
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose()
+      }}
+    >
+      <DialogContent className="flex h-[calc(100dvh-1rem)] max-h-[calc(100dvh-1rem)] w-[calc(100vw-1rem)] max-w-6xl flex-col overflow-hidden rounded-xl p-0 shadow-floating sm:h-[min(52rem,calc(100dvh-3rem))] sm:max-h-[calc(100dvh-3rem)] sm:w-[calc(100vw-3rem)]">
+        <DialogTitle className="sr-only">Settings</DialogTitle>
+        <DialogDescription className="sr-only">
+          Configure the console and registered workers.
+        </DialogDescription>
+        <Configuration
+          theme={theme}
+          onThemeChange={onThemeChange}
+          onDirtyChange={onDirtyChange}
+          tryNavigate={tryNavigate}
+        />
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -1890,40 +1899,40 @@ function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
           )
           .filter(([, entries]) => entries.length > 0)
           .map(([group, entries]) => (
-          <section key={group} className="mt-4">
-            <h3 className="text-[11px] uppercase tracking-[0.18em] text-ink-ghost">
-              {group}
-            </h3>
-            <ul className="mt-1 divide-y divide-rule-2 border-t border-b border-rule-2">
-              {entries.map((entry) => (
-                <li
-                  key={entry.id}
-                  className="flex items-center justify-between gap-6 py-2 font-mono text-[12px] text-ink"
-                >
-                  <span className="text-ink-faint">{entry.title}</span>
-                  {/* Alternatives, not one chord: without a separator `tab`
+            <section key={group} className="mt-4">
+              <h3 className="text-[11px] uppercase tracking-[0.18em] text-ink-ghost">
+                {group}
+              </h3>
+              <ul className="mt-1 divide-y divide-rule-2 border-t border-b border-rule-2">
+                {entries.map((entry) => (
+                  <li
+                    key={entry.id}
+                    className="flex items-center justify-between gap-6 py-2 font-mono text-[12px] text-ink"
+                  >
+                    <span className="text-ink-faint">{entry.title}</span>
+                    {/* Alternatives, not one chord: without a separator `tab`
                       and `shift tab` read as a single four-key press. */}
-                  <span className="flex shrink-0 items-center gap-2">
-                    {resolveBindings(entry.bindings, platform).map(
-                      (binding, index) => (
-                        <Fragment key={binding}>
-                          {index > 0 ? (
-                            <span className="text-ink-ghost">or</span>
-                          ) : null}
-                          <KeyCombo
-                            binding={binding}
-                            platform={platform}
-                            digitRange={entry.digitIndex}
-                          />
-                        </Fragment>
-                      ),
-                    )}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </section>
-        ))}
+                    <span className="flex shrink-0 items-center gap-2">
+                      {resolveBindings(entry.bindings, platform).map(
+                        (binding, index) => (
+                          <Fragment key={binding}>
+                            {index > 0 ? (
+                              <span className="text-ink-ghost">or</span>
+                            ) : null}
+                            <KeyCombo
+                              binding={binding}
+                              platform={platform}
+                              digitRange={entry.digitIndex}
+                            />
+                          </Fragment>
+                        ),
+                      )}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ))}
       </DialogContent>
     </Dialog>
   )

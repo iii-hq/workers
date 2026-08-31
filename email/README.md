@@ -102,7 +102,7 @@ The worker owns one entry in the `configuration` worker (id `email`, or
 daemon writes that entry from the manifest defaults merged with the
 container's `config_override`; on a bare engine the built-in default
 (no accounts) is seeded on first boot, and `configuration::set` or the
-console config panel edit it afterwards. The worker hot-reloads on every
+worker's form in the Console's global Settings modal edits it afterwards. The worker hot-reloads on every
 `configuration:updated`: limit changes swap the snapshot, account changes
 respawn the IMAP supervisors and drop pooled sessions. A value that fails
 validation is rejected and the previous accounts stay live;

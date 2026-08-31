@@ -69,8 +69,8 @@ mod tests {
 
     #[test]
     fn embedded_page_registers_the_config_form() {
-        // The configuration form ships inside page.js; a build that lost it
-        // silently reverts the Workers tab to the generic schema editor.
+        // The configuration form ships inside page.js; a build that loses it
+        // leaves database without its editable interface in global Settings.
         assert!(
             PAGE_JS.contains("configForms"),
             "built page.js no longer registers the configuration form"

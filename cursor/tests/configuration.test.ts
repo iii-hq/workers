@@ -57,6 +57,7 @@ describe('Cursor configuration', () => {
   it('registers and fetches the configuration through typed worker calls', async () => {
     const iii = new MockIII();
     iii.configValue = { ...defaultConfig(), api_key: 'key_runtime' };
+    process.env.III_CONFIG_NAME = 'cursor-team';
 
     await registerCursorConfig(iii.asClient());
     const runtime = await fetchRuntime(iii.asClient());
@@ -66,8 +67,9 @@ describe('Cursor configuration', () => {
       (call) => call.function_id === 'configuration::register',
     );
     expect(registration?.payload).toMatchObject({
-      id: 'cursor',
+      id: 'cursor-team',
       name: 'Cursor',
+      metadata: { ui_form: 'cursor' },
       initial_value: expect.objectContaining({ api_key: API_KEY_ENV_REFERENCE }),
       schema: expect.objectContaining({ type: 'object' }),
     });

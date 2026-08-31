@@ -18,7 +18,6 @@ function snapshot(partial: Partial<RawWorkersSnapshot>): RawWorkersSnapshot {
   return {
     engineWorkers: [],
     supervisorWorkers: [],
-    configurations: [],
     infoByName: new Map(),
     compose: null,
     ...partial,
@@ -84,22 +83,18 @@ describe('mergeWorkers with compose', () => {
     expect(composeActions(found)).toEqual(['stop', 'restart'])
   })
 
-  it('compose wins over supervisor and config classification', () => {
+  it('compose wins over supervisor classification', () => {
     const rows = mergeWorkers(
       snapshot({
         engineWorkers: [engineWorker('llm-router')],
         supervisorWorkers: [
           { name: 'llm-router', running: true, pid: 1, version: '1' },
         ],
-        configurations: [
-          { id: 'llm-router', name: 'llm-router', description: '', schema: {} },
-        ],
         compose,
       }),
     )
     expect(rows.find((r) => r.name === 'llm-router')).toMatchObject({
       managementKind: 'compose',
-      configurationId: 'llm-router',
     })
   })
 

@@ -24,6 +24,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
         "name": "computer",
         "description": "Endpoint, OS label, session cap, timeouts, and screencast rate for the computer worker.",
         "schema": WorkerConfig::json_schema(),
+        "metadata": { "ui_form": CONFIG_ID },
     });
     if let Some(seed) = seed {
         payload["initial_value"] = seed.to_json();

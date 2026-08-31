@@ -372,11 +372,8 @@ export const workerFixtures = [
  * types so the fixtures stay structurally identical to what the
  * `configuration` worker actually returns.
  *
- * Two consumers:
- *   - `SchemaForm.stories.tsx` maps over `SCHEMA_EXAMPLES` to render one live
- *     `SchemaForm` per field-type variation.
- *   - `WorkersTab.stories.tsx` drives a master-detail harness from
- *     `WORKER_CONFIG_FIXTURES` + `mockValidate`.
+ * These shapes remain useful to stories that need realistic configuration
+ * payloads without coupling them to a particular editor implementation.
  */
 
 function isObject(value: JsonValue): value is { [key: string]: JsonValue } {
@@ -384,7 +381,7 @@ function isObject(value: JsonValue): value is { [key: string]: JsonValue } {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Schema-form field variations                                       */
+/*  Configuration schema field variations                              */
 /* ------------------------------------------------------------------ */
 
 export interface SchemaExample {

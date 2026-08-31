@@ -40,6 +40,9 @@ const RETRY_BACKOFF_MS: u64 = 250;
 /// `configuration::register`.
 pub struct EntrySpec {
     pub id: &'static str,
+    /// Stable injectable configuration-form family. Unlike `id`, this never
+    /// changes when a supervisor assigns `III_CONFIG_NAME`.
+    pub form_id: &'static str,
     pub name: &'static str,
     pub description: &'static str,
     pub schema: Value,
@@ -57,17 +60,22 @@ pub async fn register(
     spec: &EntrySpec,
     seed: Option<Value>,
 ) -> Result<(), String> {
-    let mut payload = json!({
-        "id": spec.id,
-        "name": spec.name,
-        "description": spec.description,
-        "schema": spec.schema,
-    });
+    let mut payload = registration_payload(spec);
     if fetch(iii, spec.id).await?.is_none() {
         payload["initial_value"] = seed.unwrap_or_else(|| spec.default_value.clone());
     }
     trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
     Ok(())
+}
+
+fn registration_payload(spec: &EntrySpec) -> Value {
+    json!({
+        "id": spec.id,
+        "name": spec.name,
+        "description": spec.description,
+        "schema": spec.schema,
+        "metadata": { "ui_form": spec.form_id },
+    })
 }
 
 /// The stored value, or `None` when nothing is stored yet (a `NOT_FOUND`
@@ -286,6 +294,22 @@ mod tests {
     /// available engine-free (the same trick the workers' own tests use).
     fn client() -> Arc<IIIClient> {
         Arc::new(IIIClient::new("ws://127.0.0.1:1"))
+    }
+
+    #[test]
+    fn registration_keeps_runtime_id_separate_from_form_family() {
+        let spec = EntrySpec {
+            id: "web-team-a",
+            form_id: "web",
+            name: "Web",
+            description: "Web settings",
+            schema: json!({ "type": "object" }),
+            default_value: json!({}),
+        };
+
+        let payload = registration_payload(&spec);
+        assert_eq!(payload["id"], "web-team-a");
+        assert_eq!(payload["metadata"]["ui_form"], "web");
     }
 
     fn some_binding(iii: &IIIClient) -> Option<Trigger> {

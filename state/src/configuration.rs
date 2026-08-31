@@ -1,8 +1,8 @@
 //! Integration with the `configuration` dependency worker for runtime config values.
 //!
-//! The worker registers its config schema under the id `state` (what the
-//! console renders as an editable form), reads the authoritative value before
-//! binding, and hot-applies `configuration:updated` events onto the shared
+//! The worker registers its config schema under the id `state` (validated
+//! when its explicit global Settings form saves), reads the authoritative
+//! value before binding, and hot-applies `configuration:updated` events onto the shared
 //! [`crate::functions::ConfigCell`].
 //!
 //! ## Three apply tiers (builtin parity, `state.rs:337-402`)
@@ -69,6 +69,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&StateConfig>) -> Res
         "name": "State",
         "description": "State store settings — storage adapter (kv/redis), trigger fan-out gate, max value size, and file-store flush cadence.",
         "schema": StateConfig::json_schema(),
+        "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
     if should_seed_initial_value(iii).await? {
         let seed = seed.cloned().unwrap_or_default().normalized();

@@ -5,10 +5,12 @@
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit && node build.mjs",
+    "test": "node --test configuration-forms.test.mjs",
     "watch": "node build.mjs --watch"
   },
   "dependencies": {
-    "@iii-dev/console-ui": "workspace:*"
+    "@iii-dev/console-ui": "workspace:*",
+    "lucide-react": "^1.16.0"
   },
   "devDependencies": {
     "@types/react": "^19.2.14",

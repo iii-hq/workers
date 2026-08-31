@@ -201,6 +201,7 @@ export default function setup(host: Host) {
   host.pages.register({
     id: 'mywork-manager',           // page URL: #/ext/mywork-manager
     title: 'Mywork',                // nav label
+    configurationId: 'mywork',      // host adds the standard settings action
     render: (props) => <MyworkPage host={host} {...props} />,
   })
 
@@ -222,8 +223,9 @@ The package exports page chrome; `List`/`ListItem`, `Card`, `CollapsibleCard`, `
 `IconButton`, and semantic `Table` parts; line `Tabs` and `SegmentedControl`;
 `Selector` and `Select`; buttons, inputs, dialogs, menus and tooltips;
 status/empty/loading components; Markdown and JSON renderers; the terminal atoms (`AnsiText`,
-`TerminalStream`, `TerminalCommandLine`); `CodeEditor`, `FileDiff`, and
-`WorkerConfigurationDialog`. It also exports the stable `uiClasses` recipes
+`TerminalStream`, `TerminalCommandLine`); `CodeEditor`, `FileDiff`; and
+settings primitives (`SettingsSection`, `SettingsList`, `SettingsRow`,
+`Switch`). It also exports the stable `uiClasses` recipes
 and canonical `tokens` inventory. Read `packages/console-ui/index.d.ts` for
 the authoritative names and props.
 
@@ -283,6 +285,15 @@ Put content straight into `PageMain`. Keep `onRequestClose` wired to
 `PageHeader.onClose`. Keep header actions few and essential; at narrow widths,
 move secondary actions into a `DropdownMenu` rather than allowing the header
 to wrap or overflow.
+
+When the page's worker has a configuration entry, set `configurationId` on
+`host.pages.register`. The Console then places one consistent settings action
+in `PageHeader` and opens the worker in the global Settings modal. Do not add a
+second Configure action or mount `WorkerConfigurationDialog`; that component
+exists only as a compatibility bridge for older bundles. This is the stable
+form-family id: keep `configurationId: 'browser'` even when a runtime instance
+uses `III_CONFIG_NAME=browser-team-a`; its `configuration::register` payload
+must carry `metadata: { ui_form: 'browser' }`.
 
 ### Responsive structure: pane width, not viewport width
 
@@ -494,7 +505,7 @@ the nav. Its `render` receives:
 |---|---|
 | `host.functionTriggers` | Custom chat/trace renderers. Match only the worker's function ids and return `null` to fall through. `message.description` is the harness's short activity label. Set renderer `metadata: { display: true }` only for successful rich artifacts that should remain visible while raw details are collapsed; the hint applies to the renderer that returned the winning node. If raw data contains secrets, implement a pure, total, cycle-safe `redactRaw`; the raw tab and copy action otherwise expose the original input/output. |
 | `host.triggerRenderers?` | Layered trigger presentation. Match the inner `triggerType`. `tryRender` supplies the source section; optional `tryRenderDetails` and `tryRenderDisplay` replace the expanded Terminal content and compact timeline content; `redactRaw` filters raw registration/fire values. Every slot falls through on `null`. Feature-detect for older consoles. |
-| `host.configForms` | Replace one configuration form. Render fields and call `onChange`; the host retains dirty tracking, validation, save, and reset. Honor `focusField`. Pass `{ layout: 'full' }` as the third `register` argument only when the form is a workbench that owns its internal scrolling; the default `contained` layout keeps the centered host column. |
+| `host.configForms` | Provide the deliberate UI for one configuration entry in global Settings. There is no schema-generated fallback: every configurable worker must register a form. Render purpose-built fields and call `onChange`; the schema validates but never generates UI, and the host retains dirty tracking, save, and reset. Use `SettingsSection`/`SettingsList`/`SettingsRow`/`Switch` for ordinary settings, never a raw JSON textarea, and honor `focusField`. Pass `{ layout: 'full' }` only when the form is a workbench that owns its internal scrolling; the default `contained` layout keeps the centered host column. |
 | `host.providerConfigForms?` | Replace the form body for one exact `llm-router` provider id inside the chat model picker. Use it for provider-owned OAuth, device flow, or companion-app login. The host retains the provider slice, schema validation, dirty guard, save/reset, and model refresh; the component receives `{ providerId, schema, value, onChange, errors, configured, available, modelCount }`. Feature-detect for older consoles. Never solicit plaintext API keys here—direct operators to the provider's declared environment variable. |
 | `host.chat?` | Optional chat integrations: session chips, turn summaries and transcript renderers, plus `selectConversation?` for explicit worker-driven navigation and `composerModel?` for the live model selection (including unsaved drafts). Feature-detect the namespace and each newer method. |
 | `host.iii` | The tab's bus client: `trigger(functionId, payload?, {timeoutMs?})`, `on(functionId, handler)` (returns un-listen), `registerTrigger({type, function_id, config})` (returns un-register), `addConnectionStateListener`, `browserId`. Injected UI *acts* by invoking its own worker's functions. |
@@ -631,6 +642,8 @@ disable/disconnect fallback.
 The UI is done only when:
 
 - `PageShell` + `PageHeader` are present and the close action works;
+- every configurable page declares `configurationId`, and every configuration
+  entry has a registered, purpose-built `host.configForms` interface;
 - the narrow flow exposes every action without horizontal page overflow;
 - focus is visible, controls have names, and narrow targets are at least 44 px;
 - selected rows, cards, tabs, chips, and segments remain neutral in both themes;

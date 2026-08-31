@@ -514,10 +514,12 @@ function patch(current: Record<string, JsonValue>, key: string, next?: JsonValue
 7. End with inline root errors if no field can own them; keep field errors next
    to their controls.
 
-Use the generic schema form when labels, descriptions, types, and validation
-already produce a clear UI. Add a custom worker form when configuration needs
-conditional fields, domain grouping, connection tests, humanized units,
-restart semantics, complex dictionaries/arrays, or worker-specific actions.
+Every configurable worker must provide a deliberate `host.configForms`
+interface. There is no generic schema-form fallback: use the schema for draft
+validation, never for UI generation. Even a simple configuration deserves
+purpose-written labels, grouping, defaults, and reload semantics; use richer
+conditional fields, connection tests, humanized units, dictionaries, arrays,
+or worker-specific actions when the domain calls for them.
 
 ### Handle secrets and authentication safely
 

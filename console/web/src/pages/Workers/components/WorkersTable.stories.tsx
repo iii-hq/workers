@@ -41,7 +41,6 @@ function WorkersHarness({
   pendingCompose,
   onStop,
   onComposeAction,
-  onConfigure,
 }: {
   rows: WorkerRow[]
   isLoading?: boolean
@@ -50,7 +49,6 @@ function WorkersHarness({
   pendingCompose?: PendingComposeAction | null
   onStop?: (name: string) => void
   onComposeAction?: (action: ComposeAction, container: string) => void
-  onConfigure?: (configurationId: string) => void
 }) {
   const [filters, setFilters] = useState<WorkersFilterState>({
     search: '',
@@ -92,7 +90,6 @@ function WorkersHarness({
             pendingCompose={pendingCompose}
             onStop={onStop}
             onComposeAction={onComposeAction}
-            onConfigure={onConfigure}
           />
         </div>
       </TooltipProvider>
@@ -112,7 +109,6 @@ type Story = StoryObj<typeof meta>
 export const Default: Story = {
   args: {
     rows: WORKERS_FIXTURE_ROWS,
-    onConfigure: () => undefined,
   },
 }
 
@@ -120,7 +116,6 @@ export const FilteredByTag: Story = {
   args: {
     rows: WORKERS_FIXTURE_ROWS,
     initialTag: 'platform',
-    onConfigure: () => undefined,
   },
 }
 
@@ -145,7 +140,6 @@ export const StopEnabled: Story = {
   args: {
     rows: supervisorRows,
     onStop: () => undefined,
-    onConfigure: () => undefined,
   },
 }
 
@@ -167,7 +161,6 @@ export const ComposeManaged: Story = {
     rows: [...WORKERS_FIXTURE_COMPOSE_ROWS, ...WORKERS_FIXTURE_ROWS],
     initialManagement: 'compose',
     onComposeAction: () => undefined,
-    onConfigure: () => undefined,
   },
 }
 
@@ -187,7 +180,6 @@ export const ComposeActionPending: Story = {
 export const ExpandedSurface: Story = {
   args: {
     rows: WORKERS_FIXTURE_ROWS.filter((r) => r.name === 'harness'),
-    onConfigure: () => undefined,
   },
   play: async ({ canvasElement }) => {
     const toggle = canvasElement.querySelector<HTMLButtonElement>(

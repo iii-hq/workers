@@ -2240,15 +2240,53 @@
   }
 }
 
-/* --- configuration form (Workers tab + shared config dialog) ---------- */
+/* --- configuration form (global Settings) ----------------------------- */
 [data-iii-ui="database"] .db-cfg {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
+  min-width: 0;
+  container: db-config / inline-size;
 }
-[data-iii-ui="database"] .db-cfg-caption {
-  font-size: 11px;
-  color: var(--color-ink-ghost);
+
+[data-iii-ui="database"] .db-cfg-history {
+  min-width: 0;
+}
+
+[data-iii-ui="database"] .db-cfg-history-input {
+  width: 132px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="database"] .db-cfg-connections-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+[data-iii-ui="database"] .db-cfg-connections-head > div {
+  min-width: 0;
+}
+
+[data-iii-ui="database"] .db-cfg-connections-head h3,
+[data-iii-ui="database"] .db-cfg-connections-head p {
+  margin: 0;
+}
+
+[data-iii-ui="database"] .db-cfg-connections-head h3 {
+  color: var(--color-ink);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+[data-iii-ui="database"] .db-cfg-connections-head p {
+  max-width: 64ch;
+  padding-top: 3px;
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  line-height: 1.45;
 }
 [data-iii-ui="database"] .db-cfg-empty {
   padding: 16px;
@@ -2299,6 +2337,9 @@
   border-radius: 999px;
   border: 1px solid var(--color-rule-2);
   color: var(--color-ink-faint);
+}
+[data-iii-ui="database"] .db-cfg-driver-summary {
+  background: var(--color-bg);
 }
 [data-iii-ui="database"] .db-cfg-driver-postgres,
 [data-iii-ui="database"] .db-cfg-driver-mysql,
@@ -2360,6 +2401,43 @@
   padding: 6px 8px;
   min-width: 0;
 }
+[data-iii-ui="database"] .db-cfg-template-control {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+[data-iii-ui="database"] .db-cfg-template-kind {
+  grid-column: 1 / -1;
+  justify-self: start;
+  padding: 2px 6px;
+  border: 1px solid var(--color-rule);
+  border-radius: 999px;
+  color: var(--color-ink-faint);
+  font-size: 10px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+[data-iii-ui="database"] .db-cfg-template-input {
+  width: 100%;
+}
+[data-iii-ui="database"] .db-cfg-template-replace {
+  min-height: 30px;
+  padding: 4px 8px;
+  border: 1px solid var(--color-rule);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-ink-faint);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+[data-iii-ui="database"] .db-cfg-template-replace:hover {
+  border-color: var(--color-ink-ghost);
+  color: var(--color-ink);
+}
 [data-iii-ui="database"] .db-cfg-input:focus,
 [data-iii-ui="database"] .db-cfg-select:focus,
 [data-iii-ui="database"] .db-cfg-name:focus-visible {
@@ -2370,6 +2448,15 @@
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
+}
+[data-iii-ui="database"] .db-cfg-trust {
+  width: 100%;
+  flex: 1 0 100%;
+  background: var(--color-bg);
+}
+
+[data-iii-ui="database"] .db-cfg-row > .db-cfg-warn {
+  flex: 1 0 100%;
 }
 [data-iii-ui="database"] .db-cfg-row > .db-cfg-field {
   flex: 1 1 160px;
@@ -2411,7 +2498,8 @@
   gap: 8px;
   align-items: stretch;
 }
-[data-iii-ui="database"] .db-cfg-test {
+[data-iii-ui="database"] .db-cfg-test,
+[data-iii-ui="database"] .db-cfg-reveal {
   font-size: 12px;
   white-space: nowrap;
   color: var(--color-ink-faint);
@@ -2421,7 +2509,8 @@
   padding: 3px 10px;
   cursor: pointer;
 }
-[data-iii-ui="database"] .db-cfg-test:hover:not(:disabled) {
+[data-iii-ui="database"] .db-cfg-test:hover:not(:disabled),
+[data-iii-ui="database"] .db-cfg-reveal:hover {
   color: var(--color-accent);
   border-color: var(--color-accent);
 }
@@ -2440,4 +2529,278 @@
 }
 [data-iii-ui="database"] .db-cfg-test-fail {
   color: var(--color-alert);
+}
+
+@container db-config (max-width: 620px) {
+  [data-iii-ui="database"] .db-cfg-connections-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  [data-iii-ui="database"] .db-cfg-add {
+    min-height: 44px;
+    align-self: stretch;
+    font-size: 14px;
+  }
+
+  [data-iii-ui="database"] .db-cfg-card {
+    padding: 12px 10px;
+  }
+
+  [data-iii-ui="database"] .db-cfg-card-head {
+    flex-wrap: wrap;
+  }
+
+  [data-iii-ui="database"] .db-cfg-name {
+    min-height: 44px;
+    flex: 1 1 12ch;
+    font-size: 16px;
+  }
+
+  [data-iii-ui="database"] .db-cfg-remove,
+  [data-iii-ui="database"] .db-cfg-test,
+  [data-iii-ui="database"] .db-cfg-reveal {
+    min-height: 44px;
+    font-size: 14px;
+  }
+
+  [data-iii-ui="database"] .db-cfg-url-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  [data-iii-ui="database"] .db-cfg-url-row .db-cfg-grow {
+    flex: 0 0 auto;
+    width: 100%;
+  }
+
+  [data-iii-ui="database"] .db-cfg-input,
+  [data-iii-ui="database"] .db-cfg-select {
+    min-height: 44px;
+    font-size: 16px;
+  }
+
+  [data-iii-ui="database"] .db-cfg-history-input {
+    width: 100%;
+    text-align: left;
+  }
+}
+
+/* Configuration master-detail layout. The shared Settings primitives own the
+   row surface, typography, dividers, and responsive label/control alignment. */
+[data-iii-ui="database"] .db-cfg-connections,
+[data-iii-ui="database"] .db-cfg-master-detail,
+[data-iii-ui="database"] .db-cfg-master,
+[data-iii-ui="database"] .db-cfg-detail,
+[data-iii-ui="database"] .db-cfg-detail-section {
+  min-width: 0;
+}
+
+[data-iii-ui="database"] .db-cfg-empty {
+  display: flex;
+  min-height: 180px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 6px;
+  padding: 28px 20px;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-md, 8px);
+  background: var(--color-surface);
+  text-align: center;
+}
+
+[data-iii-ui="database"] .db-cfg-empty strong,
+[data-iii-ui="database"] .db-cfg-empty p {
+  margin: 0;
+}
+
+[data-iii-ui="database"] .db-cfg-empty strong {
+  color: var(--color-ink);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+[data-iii-ui="database"] .db-cfg-empty p {
+  max-width: 46ch;
+  color: var(--color-ink-faint);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+[data-iii-ui="database"] .db-cfg-empty .db-cfg-add {
+  align-self: center;
+  margin-top: 8px;
+  min-height: 36px;
+  padding: 7px 14px;
+  border-color: var(--color-rule-2);
+  background: var(--color-bg);
+  color: var(--color-ink);
+}
+
+[data-iii-ui="database"] .db-cfg-add,
+[data-iii-ui="database"] .db-cfg-remove,
+[data-iii-ui="database"] .db-cfg-test,
+[data-iii-ui="database"] .db-cfg-reveal,
+[data-iii-ui="database"] .db-cfg-template-replace {
+  min-height: 32px;
+}
+
+[data-iii-ui="database"] .db-cfg-master-detail {
+  display: grid;
+  grid-template-columns: minmax(190px, 230px) minmax(0, 1fr);
+  align-items: start;
+  gap: 24px;
+}
+
+[data-iii-ui="database"] .db-cfg-master {
+  position: sticky;
+  top: 0;
+}
+
+[data-iii-ui="database"] .db-cfg-connection-list {
+  background: var(--color-sidebar, var(--color-surface));
+}
+
+[data-iii-ui="database"]
+  .db-cfg-connection-row.is-active
+  > .iii-ui-settings-row__inner {
+  background: var(--color-surface-selected);
+}
+
+[data-iii-ui="database"] .db-cfg-connection-select {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+[data-iii-ui="database"] .db-cfg-connection-select:focus-visible {
+  border-radius: 3px;
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+}
+
+[data-iii-ui="database"] .db-cfg-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+[data-iii-ui="database"] .db-cfg-detail:focus {
+  outline: none;
+}
+
+[data-iii-ui="database"] .db-cfg-detail:focus-visible {
+  border-radius: var(--radius-md, 8px);
+  outline: 2px solid var(--color-ring);
+  outline-offset: 4px;
+}
+
+[data-iii-ui="database"] .db-cfg-name {
+  width: min(220px, 100%);
+  padding: 6px 8px;
+  border-color: var(--color-rule);
+  background: var(--color-bg);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+[data-iii-ui="database"] .db-cfg-detail .db-cfg-input,
+[data-iii-ui="database"] .db-cfg-detail .db-cfg-select {
+  width: min(340px, 100%);
+}
+
+[data-iii-ui="database"] .db-cfg-detail .db-cfg-template-control {
+  width: min(440px, 100%);
+}
+
+[data-iii-ui="database"] .db-cfg-url-setting .iii-ui-settings-row__control,
+[data-iii-ui="database"] .db-cfg-url-row {
+  width: 100%;
+}
+
+[data-iii-ui="database"] .db-cfg-url-row .db-cfg-input {
+  width: auto;
+}
+
+[data-iii-ui="database"] .db-cfg-notice {
+  padding: 10px 12px;
+  border-left: 2px solid var(--color-alert);
+  border-radius: 0 6px 6px 0;
+  background: var(--color-alert-muted);
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+[data-iii-ui="database"] .db-cfg-remove:focus-visible,
+[data-iii-ui="database"] .db-cfg-add:focus-visible,
+[data-iii-ui="database"] .db-cfg-test:focus-visible,
+[data-iii-ui="database"] .db-cfg-reveal:focus-visible,
+[data-iii-ui="database"] .db-cfg-template-replace:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+}
+
+@container db-config (max-width: 760px) {
+  [data-iii-ui="database"] .db-cfg-master-detail {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 20px;
+  }
+
+  [data-iii-ui="database"] .db-cfg-master {
+    position: static;
+  }
+
+  [data-iii-ui="database"] .db-cfg-connection-select {
+    display: flex;
+    min-height: 48px;
+    align-items: center;
+  }
+}
+
+@container db-config (max-width: 620px) {
+  [data-iii-ui="database"] .db-cfg-empty strong,
+  [data-iii-ui="database"] .db-cfg-empty p,
+  [data-iii-ui="database"] .db-cfg-empty .db-cfg-add {
+    font-size: 16px;
+  }
+
+  [data-iii-ui="database"] .db-cfg-empty .db-cfg-add {
+    min-height: 48px;
+  }
+
+  [data-iii-ui="database"] .db-cfg-detail {
+    gap: 20px;
+  }
+
+  [data-iii-ui="database"] .db-cfg-detail .db-cfg-input,
+  [data-iii-ui="database"] .db-cfg-detail .db-cfg-select,
+  [data-iii-ui="database"] .db-cfg-detail .db-cfg-template-control,
+  [data-iii-ui="database"] .db-cfg-name {
+    width: 100%;
+  }
+
+  [data-iii-ui="database"] .db-cfg-template-control {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  [data-iii-ui="database"] .db-cfg-template-kind {
+    grid-column: 1;
+  }
+
+  [data-iii-ui="database"] .db-cfg-template-replace {
+    width: 100%;
+    min-height: 48px;
+    white-space: normal;
+  }
 }

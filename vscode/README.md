@@ -40,7 +40,7 @@ Calling `vscode::start` again for the same folder returns the running server. `v
 
 ## Configuration
 
-`config.yaml` seeds the `configuration` worker on first boot; after that the live value under the id `vscode` is authoritative and hot-reloads, so the Console's configuration panel is the place to change it.
+`config.yaml` seeds the `configuration` worker on first boot; after that the live value under the id `vscode` is authoritative and hot-reloads, so the Console's global Settings modal is the place to change it.
 
 ```yaml
 code_executable: ""          # path to the VS Code CLI; empty = `code` on PATH

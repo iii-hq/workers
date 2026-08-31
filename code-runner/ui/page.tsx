@@ -9,8 +9,8 @@
  *
  * - src/function-trigger-message/ — the per-op cards (run, register_function,
  *   teardown)
- * - src/configuration/           — custom form for the `code-runner`
- *   configuration entry on the Workers tab
+ * - src/configuration/           — deliberate form for the `code-runner`
+ *   configuration entry in global Settings
  * - src/lib/shared.tsx            — the frame the cards share
  *
  * Registrations go through `host` so the loader disposes them on hot reload /

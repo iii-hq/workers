@@ -1,7 +1,6 @@
 /**
- * Custom configuration form for the `code-runner` configuration entry —
- * registered through `host.configForms`, replacing the console's generic
- * schema-driven form for this worker only.
+ * Deliberate configuration form for the `code-runner` entry, registered
+ * through `host.configForms` and rendered inside global Settings.
  *
  * The form edits the working draft via `onChange`; dirty tracking,
  * save/reset, and error mapping stay host-owned (the console's SaveBar
@@ -12,8 +11,8 @@
  * which it is, so an operator knows what to expect from the save.
  */
 
-import { useEffect, useRef } from 'react'
 import type { ConfigFormProps, JsonValue } from '@iii-dev/console-ui'
+import { useEffect, useRef } from 'react'
 
 type JsonObject = { [key: string]: JsonValue }
 
@@ -62,11 +61,7 @@ export function CodeRunnerConfigForm(props: ConfigFormProps) {
     props.onChange(next)
   }
 
-  const numberField = (
-    field: keyof typeof DEFAULTS,
-    label: string,
-    hint?: string,
-  ) => (
+  const numberField = (field: keyof typeof DEFAULTS, label: string, hint?: string) => (
     <div className="cr-cfg-field">
       <label htmlFor={`cr-cfg-${field}`}>{label}</label>
       <input
@@ -83,9 +78,8 @@ export function CodeRunnerConfigForm(props: ConfigFormProps) {
     </div>
   )
 
-  // Deep-link focus (`#/workers/configuration/code-runner/<field>`): the
-  // host's own scroll+focus targets schema-form DOM ids, so a custom form
-  // honors `focusField` itself.
+  // Deep-link focus (`#/configuration/workers/code-runner/<field>`): each
+  // explicit form owns the field markup, so it also honors `focusField`.
   const rootRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
     const field = props.focusField?.[0]
@@ -93,9 +87,7 @@ export function CodeRunnerConfigForm(props: ConfigFormProps) {
     // CSS.escape: the field name rides in on the URL fragment, and an
     // unescaped `"` or `]` makes querySelector throw during commit —
     // unmounting the whole form instead of skipping the focus.
-    const target = rootRef.current.querySelector<HTMLElement>(
-      `[data-field="${CSS.escape(field)}"]`,
-    )
+    const target = rootRef.current.querySelector<HTMLElement>(`[data-field="${CSS.escape(field)}"]`)
     target?.focus()
     target?.scrollIntoView({ block: 'center' })
   }, [props.focusField])
@@ -103,24 +95,20 @@ export function CodeRunnerConfigForm(props: ConfigFormProps) {
   const resultBytes = numberOr(value.max_result_bytes, DEFAULTS.max_result_bytes)
   const streamBytes = numberOr(value.max_stream_bytes, DEFAULTS.max_stream_bytes)
   const footprintMb =
-    numberOr(value.max_runtimes, DEFAULTS.max_runtimes) *
-    numberOr(value.scratch_mb, DEFAULTS.scratch_mb)
+    numberOr(value.max_runtimes, DEFAULTS.max_runtimes) * numberOr(value.scratch_mb, DEFAULTS.scratch_mb)
 
   return (
     <div className="cr-cfg-form" ref={rootRef}>
-      <span className="cr-cfg-caption">
-        custom form · shipped by the code-runner worker
-      </span>
+      <span className="cr-cfg-caption">custom form · shipped by the code-runner worker</span>
 
       <div className="cr-cfg-section">
         <span className="cr-cfg-section-title">
           output caps <span className="cr-cfg-live">hot-applies on save</span>
         </span>
         <span className="hint">
-          Oversized run echoes are what flood a session's context: over the
-          cap, `result` becomes an omission marker (write big values to
-          iii.files instead) and stdout/stderr keep head+tail around a
-          truncation marker. 0 turns a cap off.
+          Oversized run echoes are what flood a session's context: over the cap, `result` becomes an omission marker
+          (write big values to iii.files instead) and stdout/stderr keep head+tail around a truncation marker. 0 turns a
+          cap off.
         </span>
         {numberField('max_result_bytes', 'max result bytes', bytesHint(resultBytes))}
         {numberField('max_stream_bytes', 'max bytes per stream (stdout / stderr)', bytesHint(streamBytes))}
@@ -136,18 +124,13 @@ export function CodeRunnerConfigForm(props: ConfigFormProps) {
             data-field="inject_guidance"
             type="checkbox"
             checked={value.inject_guidance !== false}
-            onChange={(e) =>
-              props.onChange({ ...value, inject_guidance: e.target.checked })
-            }
+            onChange={(e) => props.onChange({ ...value, inject_guidance: e.target.checked })}
           />
-          <label htmlFor="cr-cfg-inject_guidance">
-            inject code-runner usage guidance into agent system prompts
-          </label>
+          <label htmlFor="cr-cfg-inject_guidance">inject code-runner usage guidance into agent system prompts</label>
         </span>
         <span className="hint">
-          The pre-generate hook that teaches agents this worker's surface
-          (return conventions, keep/runtime_id, register_function). Off, the
-          hook answers with a no-op and agents see only the function catalog.
+          The pre-generate hook that teaches agents this worker's surface (return conventions, keep/runtime_id,
+          register_function). Off, the hook answers with a no-op and agents see only the function catalog.
         </span>
       </div>
 
@@ -161,8 +144,7 @@ export function CodeRunnerConfigForm(props: ConfigFormProps) {
 
       <div className="cr-cfg-section">
         <span className="cr-cfg-section-title">
-          runtimes &amp; memory{' '}
-          <span className="cr-cfg-restart">applies at next worker restart</span>
+          runtimes &amp; memory <span className="cr-cfg-restart">applies at next worker restart</span>
         </span>
         {numberField('max_runtimes', 'max live runtimes (both engines)')}
         {numberField('idle_ttl_secs', 'idle TTL (seconds before an unused runtime is reaped)')}
