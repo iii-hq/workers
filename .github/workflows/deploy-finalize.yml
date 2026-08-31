@@ -47,11 +47,6 @@ jobs:
       actions: read
       contents: read
       id-token: write
-    outputs:
-      matrix: ${{ steps.matrix.outputs.matrix }}
-      has_supplemental: ${{ steps.matrix.outputs.has_supplemental }}
-      descriptor_artifact: ${{ steps.matrix.outputs.descriptor_artifact }}
-      frontend_artifact: ${{ steps.matrix.outputs.frontend_artifact }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -216,144 +211,17 @@ jobs:
           python3 .github/scripts/deployment_control_contract.py authorize-dispatch --api-url "$RELEASE_CONTROL_API_URL" --repository '${{ github.repository }}' --step-id "$STEP_ID" --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' --workflow 'deploy-finalize.yml' --event '${{ github.event_name }}' --sha '${{ github.sha }}' --deployment-batch-id "$DEPLOYMENT_BATCH_ID" --deployment-target-id "$DEPLOYMENT_TARGET_ID" --attempt-id "$ATTEMPT_ID" --dispatch-nonce "$DISPATCH_NONCE" --plan-hash "$PLAN_HASH" --worker "$WORKER" --source-sha "$SOURCE_SHA" --target-version "$TARGET_VERSION" --channel "$DEPLOYMENT_CHANNEL" --descriptor-sha256 "$DESCRIPTOR_SHA256"
           python3 .github/scripts/deployment_train.py finalize --worker "$WORKER" --source-sha "$SOURCE_SHA" --candidate-version "$SOURCE_RC_VERSION" --stable-version "$TARGET_VERSION" --descriptor-sha256 "$DESCRIPTOR_SHA256" --descriptor deploy-prepared/deployment-descriptor.json
 
-      - name: Resolve descriptor-owned frontend metadata
-        id: frontend
-        run: >-
-          python3 .github/scripts/deployment_train.py frontend-metadata
-          --descriptor deploy-prepared/deployment-descriptor.json
-          --github-output "$GITHUB_OUTPUT"
-
-      - name: Install descriptor-pinned pnpm
-        if: steps.frontend.outputs.count != '0'
-        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
-        with:
-          version: ${{ steps.frontend.outputs.package_manager_version }}
-
-      - name: Install descriptor-pinned Node.js
-        if: steps.frontend.outputs.count != '0'
-        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
-        with:
-          node-version: ${{ steps.frontend.outputs.runtime_version }}
-
-      - name: Resolve frontend pnpm store
-        if: steps.frontend.outputs.count != '0'
-        id: frontend-pnpm
-        run: echo "store_path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
-
-      - name: Cache descriptor-pinned frontend dependencies
-        if: steps.frontend.outputs.count != '0'
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: ${{ steps.frontend-pnpm.outputs.store_path }}
-          key: deployment-frontend-${{ steps.frontend.outputs.package_manager_version }}-node${{ steps.frontend.outputs.runtime_version }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.frontend.outputs.lock_sha256 }}
-
-      - name: Build embedded frontends once
-        run: >-
-          python3 .github/scripts/deployment_train.py build-frontends
-          --descriptor deploy-prepared/deployment-descriptor.json
-          --out .release-frontend
-
-      - name: Export supplemental build matrix
-        id: matrix
-        run: |
-          set -euo pipefail
-          matrix=$(python3 .github/scripts/deployment_train.py matrix \
-            --descriptor deploy-prepared/deployment-descriptor.json \
-            --profile stable-delta)
-          has_supplemental=false
-          if [[ "$(jq '.include | length' <<<"$matrix")" != 0 ]]; then has_supplemental=true; fi
-          {
-            echo "matrix=$matrix"
-            echo "has_supplemental=$has_supplemental"
-            echo "descriptor_artifact=deployment-descriptor-$DEPLOYMENT_TARGET_ID-$STEP_ID"
-            echo "frontend_artifact=deployment-frontend-$DEPLOYMENT_TARGET_ID-$STEP_ID"
-          } >> "$GITHUB_OUTPUT"
-
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        with:
-          name: deployment-source-prepared-${{ env.DEPLOYMENT_TARGET_ID }}
-          path: deploy-prepared/
-          if-no-files-found: error
-          retention-days: 7
-
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        with:
-          name: deployment-descriptor-${{ env.DEPLOYMENT_TARGET_ID }}-${{ env.STEP_ID }}
-          path: deploy-prepared/deployment-descriptor.json
-          if-no-files-found: error
-          retention-days: 7
-
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        with:
-          name: deployment-frontend-${{ env.DEPLOYMENT_TARGET_ID }}-${{ env.STEP_ID }}
-          path: .release-frontend/
-          if-no-files-found: error
-          include-hidden-files: true
-          retention-days: 7
-
-  build_supplemental:
-    needs: guard
-    if: needs.guard.outputs.has_supplemental == 'true'
-    permissions:
-      actions: read
-      contents: read
-      id-token: write
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.guard.outputs.matrix) }}
-    uses: ./.github/workflows/_deploy-build.yml
-    with:
-      worker: ${{ inputs.worker }}
-      prepared_sha: ${{ inputs.source_sha }}
-      descriptor_artifact: ${{ needs.guard.outputs.descriptor_artifact }}
-      frontend_artifact: ${{ needs.guard.outputs.frontend_artifact }}
-      target: ${{ matrix.target }}
-      unit: ${{ matrix.unit }}
-      kind: ${{ matrix.kind }}
-      runner: ${{ matrix.runner }}
-
-  assemble:
-    needs: [guard, build_supplemental]
-    if: always() && needs.guard.result == 'success' && (needs.build_supplemental.result == 'success' || needs.build_supplemental.result == 'skipped')
-    runs-on: workers-release-linux-8core
-    permissions:
-      actions: read
-      contents: read
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          persist-credentials: false
-          sparse-checkout: .github/scripts
-
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
-        with:
-          name: deployment-source-prepared-${{ env.DEPLOYMENT_TARGET_ID }}
-          path: deploy-prepared
-
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
-        continue-on-error: true
-        with:
-          pattern: release-build-${{ inputs.worker }}-*
-          path: release-builds
-
-      - name: Assemble the stable release from rc bytes and supplements
-        run: |
-          set -euo pipefail
-          python3 .github/scripts/deployment_train.py assemble-stable \
-            --descriptor deploy-prepared/deployment-descriptor.json \
-            --prepared deploy-prepared/prepared-artifacts.json \
-            --supplemental-dir release-builds \
-            --out deploy-prepared-stable
-
+      # Every rc builds every target, Windows included, so the soaked bytes are
+      # already the whole release: they are re-uploaded verbatim, never rebuilt.
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: deployment-prepared-${{ env.DEPLOYMENT_TARGET_ID }}
-          path: deploy-prepared-stable/
+          path: deploy-prepared/
           if-no-files-found: error
           retention-days: 90
 
   publish:
-    needs: assemble
+    needs: guard
     runs-on: workers-release-linux-8core
     permissions:
       actions: read
@@ -375,7 +243,7 @@ jobs:
           name: deployment-prepared-${{ env.DEPLOYMENT_TARGET_ID }}
           path: deploy-prepared
 
-      - name: Verify assembled stable bytes
+      - name: Verify the promoted rc bytes
         run: |
           set -euo pipefail
           test "$(jq -r .worker deploy-prepared/deployment-descriptor.json)" = "$WORKER"
@@ -610,7 +478,7 @@ jobs:
 
   report:
     if: always()
-    needs: [guard, build_supplemental, assemble, publish, registry, promote, image_channel]
+    needs: [guard, publish, registry, promote, image_channel]
     runs-on: workers-release-linux-8core
     permissions:
       actions: read
@@ -767,8 +635,6 @@ jobs:
         if: always()
         env:
           GUARD_RESULT: ${{ needs.guard.result }}
-          BUILD_SUPPLEMENTAL_RESULT: ${{ needs.build_supplemental.result }}
-          ASSEMBLE_RESULT: ${{ needs.assemble.result }}
           PUBLISH_RESULT: ${{ needs.publish.result }}
           REGISTRY_RESULT: ${{ needs.registry.result }}
           PROMOTE_RESULT: ${{ needs.promote.result }}

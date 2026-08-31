@@ -48,11 +48,7 @@ jobs:
           python3 - <<'PY'
           import json
           import os
-          import sys
           from pathlib import Path
-
-          sys.path.insert(0, ".github/scripts")
-          import deployment_train
 
           descriptor = json.loads(Path("deploy-prepared/deployment-descriptor.json").read_text())
           prepared = json.loads(Path("deploy-prepared/prepared-artifacts.json").read_text())
@@ -64,13 +60,7 @@ jobs:
           base = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/{os.environ['GITHUB_TAG']}"
           artifacts = [entry for entry in prepared["artifacts"] if entry["role"] != "checksum"]
           if kind == "rust-binary":
-              # The stable inventory covers the full stable profile, so the
-              # unit-to-target map must too: candidate units plus the
-              # supplemental stable-delta units built at finalization.
-              targets = {
-                  unit["id"]: unit["target"]
-                  for unit in deployment_train.profile_units(descriptor, "stable")
-              }
+              targets = {unit["id"]: unit["target"] for unit in descriptor["build_units"]}
               artifact_payload = {
                   "kind": kind,
                   "binaries": {

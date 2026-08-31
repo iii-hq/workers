@@ -530,10 +530,9 @@ def read_worker_catalog(path: Path | None = None) -> dict[str, WorkerSpec]:
         if not isinstance(manifest, str) or not manifest:
             raise ValueError(f"{catalog_path}: workers.{catalog_id}.source.package_manifest is required")
         if artifact_kind == "rust-binary":
-            for field in ("candidate_targets", "stable_targets"):
-                targets = artifact.get(field)
-                if not isinstance(targets, list) or not targets or not all(isinstance(target, str) for target in targets):
-                    raise ValueError(f"{catalog_path}: workers.{catalog_id}.artifact.{field} must be non-empty")
+            targets = artifact.get("targets")
+            if not isinstance(targets, list) or not targets or not all(isinstance(target, str) for target in targets):
+                raise ValueError(f"{catalog_path}: workers.{catalog_id}.artifact.targets must be non-empty")
             if not isinstance(binary, str) or not binary:
                 raise ValueError(f"{catalog_path}: workers.{catalog_id}.artifact.binary is required")
         public = read_iii_worker_yaml(worker_path)

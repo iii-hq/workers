@@ -96,14 +96,8 @@ jobs:
           # build unit before any assertion runs.
           test "$(jq -r .worker deployment-input/deployment-descriptor.json)" = "$WORKER"
           test "$(jq -r .source_sha deployment-input/deployment-descriptor.json)" = "$PREPARED_SHA"
-          # A supplemental stable-delta unit (a stable-only rust target such as
-          # Windows) is not in build_units — accept it when the descriptor
-          # declares the target in stable_targets beyond candidate_targets.
           jq -e --arg unit "$UNIT" --arg target "$TARGET" '
-            (.build_units | any(.id == $unit and ((.target // .platform // "none") == $target)))
-            or (.artifact.kind == "rust-binary"
-              and ((.artifact.stable_targets - .artifact.candidate_targets) | any(. == $target))
-              and $unit == (.worker + "-" + $target))
+            .build_units | any(.id == $unit and ((.target // .platform // "none") == $target))
           ' deployment-input/deployment-descriptor.json >/dev/null
 
       - name: Rewrite SSH to HTTPS for public dependencies

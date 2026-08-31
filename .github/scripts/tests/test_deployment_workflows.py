@@ -138,7 +138,7 @@ def test_descriptor_index_independently_verifies_approved_compiler_bytes():
     assert "Verify approved compiler bytes" in text
     assert (
         "APPROVED_COMPILER_DIGEST: "
-        "2b471d87f21887e4dbac0e8b8c70f91ea7297cddada8538523ac74414cc0f236"
+        "8dca9bcf5f11dcf1982183b5570fd07a84c2cb87f633b1da4124a1464b35f861"
     ) in text
     assert 'digest.update(b"iii-workers-deployment-compiler\\0")' in text
     assert 'Path(".github/scripts/deployment_compiler.py").read_bytes()' in text
@@ -158,6 +158,8 @@ def test_release_prepare_fans_one_job_per_compiled_build_unit():
     assert "deployment_train.py frontend-metadata" in text
     assert "deployment_train.py build-frontends" in text
     assert "deployment_train.py matrix" in text
+    # One profile, one matrix: the descriptor's build_units are the whole fan-out.
+    assert "--profile" not in text
     assert "matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}" in text
     assert "unit: ${{ matrix.unit }}" in text
     assert '--target-version "$TARGET_VERSION"' in text
@@ -253,12 +255,14 @@ def test_finalize_serializes_with_publish_per_worker():
 
 
 def test_prepared_artifacts_outlive_the_soak_window():
-    # Verified rc bytes are the finalization fast path: both the prepare
-    # assemble and the finalize assemble must keep them for 90 days.
+    # Verified rc bytes are the finalization fast path: prepare uploads them and
+    # finalize re-uploads the very same bytes, so both must keep them 90 days.
     for name in ("deploy-prepare.yml", "deploy-finalize.yml"):
         workflow = yaml.safe_load(body(name))
         uploads = [
-            step for step in workflow["jobs"]["assemble"]["steps"]
+            step
+            for job in workflow["jobs"].values()
+            for step in job.get("steps", [])
             if str(step.get("uses", "")).startswith("actions/upload-artifact@")
             and str(step.get("with", {}).get("name", "")).startswith("deployment-prepared-")
         ]
@@ -266,12 +270,21 @@ def test_prepared_artifacts_outlive_the_soak_window():
         assert uploads[0]["with"]["retention-days"] == 90, name
 
 
-def test_finalize_promotes_rc_bytes_through_the_train_contracts():
+def test_finalize_promotes_the_rc_bytes_verbatim_with_no_supplemental_build():
+    # Every deployment builds every target, Windows included, so what soaked on
+    # @next is already the whole release: finalization promotes those bytes
+    # verbatim. A supplemental build here would publish @latest bytes that no
+    # rc ever exercised.
     text = body("deploy-finalize.yml")
+    workflow = yaml.safe_load(text)
     assert "deployment_train.py finalize" in text
-    assert "deployment_train.py matrix" in text
-    assert "--profile stable-delta" in text
-    assert "deployment_train.py assemble-stable" in text
+    assert "build_supplemental" not in workflow["jobs"]
+    assert "build_supplemental" not in text
+    assert "_deploy-build.yml" not in text
+    assert "deployment_train.py matrix" not in text
+    assert "assemble-stable" not in text
+    assert "stable-delta" not in text
+    assert "--profile" not in text
 
 
 def test_registry_finalize_is_atomic_and_never_moves_channels_piecewise():
