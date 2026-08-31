@@ -57,7 +57,6 @@ describe('functionTriggerGroups', () => {
     const rows = functionTriggerGroups([
       intro,
       call('c1'),
-      thought('settled'),
       call('c2'),
       resultAndNext,
       call('c3'),
@@ -79,16 +78,76 @@ describe('functionTriggerGroups', () => {
     expect(rows[3]).toEqual({ kind: 'message', message: final })
   })
 
-  it('keeps a streaming thought in place as a live boundary', () => {
+  it('keeps a streaming thought visible without splitting the call group', () => {
     const liveThought = thought('live', true)
     const rows = functionTriggerGroups([call('c1'), liveThought, call('c2')])
 
     expect(rows.map((row) => row.kind)).toEqual([
       'function-trigger-group',
       'message',
+    ])
+    expect(rows[0]).toMatchObject({
+      id: 'function-trigger-group:c1',
+      calls: [{ id: 'c1' }, { id: 'c2' }],
+    })
+    expect(rows[1]).toEqual({ kind: 'message', message: liveThought })
+  })
+
+  it('groups calls across completed thoughts once their surface is hidden', () => {
+    const settledThought = thought('settled')
+    const rows = functionTriggerGroups([call('c1'), settledThought, call('c2')])
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      kind: 'function-trigger-group',
+      calls: [{ id: 'c1' }, { id: 'c2' }],
+    })
+  })
+
+  it('keeps the group identity stable while a completed thought exits', () => {
+    const liveThought = thought('settled', true)
+    const settledThought = thought('settled')
+    const liveRows = functionTriggerGroups([call('c1'), liveThought])
+    const rows = functionTriggerGroups(
+      [call('c1'), settledThought, call('c2')],
+      new Set(['settled']),
+    )
+
+    expect(rows.map((row) => row.kind)).toEqual([
+      'function-trigger-group',
+      'message',
+    ])
+    expect(rows[0]).toMatchObject({
+      id: 'function-trigger-group:c1',
+      calls: [{ id: 'c1' }, { id: 'c2' }],
+    })
+    expect(liveRows[0]).toMatchObject({
+      id: 'function-trigger-group:c1',
+      calls: [{ id: 'c1' }],
+    })
+    expect(liveRows[1]).toEqual({ kind: 'message', message: liveThought })
+    expect(rows[1]).toEqual({ kind: 'message', message: settledThought })
+  })
+
+  it('keeps a leading thought before the first call during handoff', () => {
+    const liveThought = thought('leading', true)
+    const settledThought = thought('leading')
+    const liveRows = functionTriggerGroups([liveThought])
+    const exitRows = functionTriggerGroups(
+      [settledThought, call('c1')],
+      new Set(['leading']),
+    )
+
+    expect(liveRows).toEqual([{ kind: 'message', message: liveThought }])
+    expect(exitRows.map((row) => row.kind)).toEqual([
+      'message',
       'function-trigger-group',
     ])
-    expect(rows[1]).toEqual({ kind: 'message', message: liveThought })
+    expect(exitRows[0]).toEqual({ kind: 'message', message: settledThought })
+    expect(exitRows[1]).toMatchObject({
+      id: 'function-trigger-group:c1',
+      calls: [{ id: 'c1' }],
+    })
   })
 
   it('recognizes legacy progress messages by the following call', () => {

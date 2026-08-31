@@ -91,7 +91,6 @@ describe('EmptyState', () => {
       />,
     )
 
-    expect(html).toContain('Choose an agent profile')
     expect(html).toContain('aria-expanded="false"')
     expect(html).toContain('data-open="false"')
     expect(html).toContain('Use Engineer agent profile')
@@ -124,5 +123,23 @@ describe('EmptyState', () => {
 
     expect(html).toContain('Use Researcher agent profile')
     expect(html).toMatch(/Use Researcher agent profile[^>]*aria-pressed="true"/)
+  })
+
+  it('offers to create the first agent profile in Directory', () => {
+    const html = renderToStaticMarkup(
+      <EmptyState
+        variant="ready"
+        systemPrompt={DEFAULT_SYSTEM_PROMPT_STATE}
+        onSystemPromptChange={() => {}}
+        agentEntries={[]}
+      />,
+    )
+
+    expect(html).toContain('Create your first agent profile')
+    expect(html).toContain(
+      'Save instructions, a model, and skills once, then reuse them in any session.',
+    )
+    expect(html).toContain('Create agent profile')
+    expect(html).not.toContain('No agent profiles are available yet.')
   })
 })

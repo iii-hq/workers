@@ -7,6 +7,7 @@ import { Wordmark } from '@/components/ui/Wordmark'
 import type { InstallStage } from '@/hooks/use-harness-status'
 import { type AgentEntry, listAgents } from '@/lib/backend/directory-prompts'
 import { getIiiClient } from '@/lib/iii-client'
+import { requestPanelOpen } from '@/lib/panel-context'
 import { normalizeErrorMessage } from '@/lib/providers'
 import { cn } from '@/lib/utils'
 import type {
@@ -403,9 +404,6 @@ function AgentGallery({
 }) {
   return (
     <div className="pb-3 text-left">
-      <div className="mb-2 font-sans text-base font-medium text-ink-faint sm:text-sm">
-        Choose an agent profile
-      </div>
       {loading ? (
         <div
           className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 p-1"
@@ -421,9 +419,32 @@ function AgentGallery({
           instead.
         </p>
       ) : entries.length === 0 ? (
-        <p className="rounded-md bg-panel-raised px-3 py-4 font-sans text-base text-ink-faint shadow-raised sm:text-sm">
-          No agent profiles are available yet.
-        </p>
+        <div className="rounded-md bg-panel-raised p-4 shadow-raised">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex min-w-0 flex-col gap-1">
+              <p className="text-pretty font-sans text-base font-medium text-ink sm:text-sm">
+                Create your first agent profile
+              </p>
+              <p className="text-pretty font-sans text-base/7 text-ink-faint sm:text-sm/6">
+                Save instructions, a model, and skills once, then reuse them in
+                any session.
+              </p>
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              className="w-full shrink-0 sm:w-auto"
+              onClick={() =>
+                requestPanelOpen({
+                  pageId: 'directory',
+                  context: { collection: 'agents', action: 'create' },
+                })
+              }
+            >
+              Create agent profile
+            </Button>
+          </div>
+        </div>
       ) : (
         <ul
           // biome-ignore lint/a11y/noRedundantRoles: keep list semantics when CSS resets remove markers.

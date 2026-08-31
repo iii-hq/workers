@@ -6,7 +6,7 @@ import {
   TOPO,
   type TopologyContainer,
   type TopologyInput,
-} from '../ui/src/page/topology-layout.js'
+} from './topology-layout'
 
 function container(name: string, startAfter: string[] = [], state = 'ready'): TopologyContainer {
   return {
@@ -56,7 +56,7 @@ describe('assignLevels', () => {
 describe('layoutTopology', () => {
   it('lays columns left to right by level with the engine feeding level zero', () => {
     const layout = layoutTopology(input)
-    const x = (name: string) => layout.nodes.find((n) => n.container.name === name)?.x ?? Number.NaN
+    const x = (name: string) => layout.nodes.find((node) => node.container.name === name)?.x ?? Number.NaN
     expect(x('state')).toBe(x('console'))
     expect(x('llm-router')).toBeGreaterThan(x('state'))
     expect(x('harness')).toBeGreaterThan(x('llm-router'))
@@ -64,7 +64,7 @@ describe('layoutTopology', () => {
     expect(layout.engine.x).toBe(TOPO.pad)
     expect(layout.group.x).toBeGreaterThan(layout.engine.x + layout.engine.w)
     expect(layout.width).toBeGreaterThan(layout.group.x + layout.group.w)
-    expect(layout.nodes.map((n) => n.container.name)).toEqual([
+    expect(layout.nodes.map((node) => node.container.name)).toEqual([
       'console',
       'state',
       'web',
@@ -76,7 +76,7 @@ describe('layoutTopology', () => {
 
   it('draws one edge per declared dependency and engine edges for roots', () => {
     const layout = layoutTopology(input)
-    const keys = layout.edges.map((e) => e.key).sort()
+    const keys = layout.edges.map((edge) => edge.key).sort()
     expect(keys).toEqual(
       [
         'engine→console',
@@ -90,9 +90,9 @@ describe('layoutTopology', () => {
         'state→provider-openai',
       ].sort(),
     )
-    const edge = layout.edges.find((e) => e.key === 'state→llm-router')
-    const from = layout.nodes.find((n) => n.container.name === 'state')
-    const to = layout.nodes.find((n) => n.container.name === 'llm-router')
+    const edge = layout.edges.find((candidate) => candidate.key === 'state→llm-router')
+    const from = layout.nodes.find((node) => node.container.name === 'state')
+    const to = layout.nodes.find((node) => node.container.name === 'llm-router')
     expect(edge?.start).toEqual({ x: from!.x + from!.w, y: from!.y + from!.h / 2 })
     expect(edge?.end).toEqual({ x: to!.x, y: to!.y + to!.h / 2 })
     expect(edge!.midX).toBeGreaterThan(edge!.start.x)
@@ -115,8 +115,8 @@ describe('related', () => {
   })
 
   it('never includes the container itself', () => {
-    const r = related([container('a', ['b']), container('b', ['a'])], 'a')
-    expect(r.upstream.has('a')).toBe(false)
-    expect(r.downstream.has('a')).toBe(false)
+    const result = related([container('a', ['b']), container('b', ['a'])], 'a')
+    expect(result.upstream.has('a')).toBe(false)
+    expect(result.downstream.has('a')).toBe(false)
   })
 })

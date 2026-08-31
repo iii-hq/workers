@@ -61,7 +61,7 @@ describe('TriggerActivityCard', () => {
     expect(html).toContain('iii-ui-card')
     expect(html).toContain('iii-ui-collapsible-card')
     expect(html).toContain('iii-ui-collapsible-card__trigger')
-    expect(html).toContain('p-4 select-none sm:p-3')
+    expect(html).toContain('trigger-activity-collapsible__trigger')
     expect(html).toContain('iii-ui-collapsible-card__content')
     expect(html).toContain('aria-expanded="true"')
     expect(html).toContain('aria-hidden="false"')
@@ -138,6 +138,7 @@ describe('TriggerActivityCard', () => {
     expect(html).toContain('This trigger fired, but its delivery failed.')
     expect(html).toContain('Attempted call payload')
     expect(html).toContain('Delivery failed')
+    expect(html).toContain('class="activity-status-icon" data-status="error"')
     expect(html).toContain('state.created')
     expect(html).toContain('deploy::release')
   })
@@ -205,7 +206,7 @@ describe('TriggerActivityCard', () => {
     expect(html).not.toContain('Binding remains active')
   })
 
-  it('collapses a fire to its metadata action instead of the Trigger fired card', () => {
+  it('keeps a compact fire header while the full card stays mounted and collapsed', () => {
     const html = renderToStaticMarkup(
       createElement(TriggerActivityCard, {
         record: record('e_trigfired_sub_1_1', {
@@ -228,13 +229,19 @@ describe('TriggerActivityCard', () => {
     expect(html).toContain('data-timeline-activity-kind="trigger"')
     expect(html).toContain('data-icon="trigger"')
     expect(html).toContain('lucide-chevron-right')
-    expect(html).toContain('left-full')
+    expect(html).not.toContain('left-full')
+    expect(html).toContain('class="activity-status-icon" data-status="done"')
+    expect(html).toContain('data-activity-status-layer="error"')
+    expect(html).toContain('data-activity-status-layer="done"')
     expect(html.indexOf('lucide-check')).toBeLessThan(
       html.indexOf('data-timeline-activity-kind="trigger"'),
     )
     expect(html).toContain('data-expanded="false"')
-    expect(html).not.toContain('Trigger fired')
-    expect(html).not.toContain('explorer-messages</div>')
+    expect(html).toContain('iii-ui-collapsible-card')
+    expect(html).toContain('iii-ui-collapsible-card__content')
+    expect(html).toContain('aria-hidden="true"')
+    expect(html).toContain('Trigger fired')
+    expect(html).toContain('explorer-messages</span>')
   })
 
   it('preserves actionable non-fire notification prose', () => {

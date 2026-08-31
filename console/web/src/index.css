@@ -130,11 +130,17 @@
 
   /* transitions.dev motion scale. These semantic tokens are shared by the
      dropdown, sheet, and in-panel page recipes in ui-recipes.css. */
+  --duration-stagger: 40ms;
+  --duration-micro: 80ms;
   --duration-quick: 150ms;
   --duration-fast: 250ms;
   --duration-medium: 350ms;
   --duration-slow: 400ms;
+  --duration-very-slow: 500ms;
   --ease-smooth-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: ease-in-out;
+  --ease-linear: linear;
+  --distance-micro: 4px;
   --distance-base: 8px;
   --scale-medium: 0.97;
   --scale-tiny: 0.99;

@@ -261,6 +261,13 @@ export const agentsAdapter: BrowserAdapter = {
 
 type Collection = 'skills' | 'system-prompts' | 'agents'
 
+interface PendingCollectionAction {
+  id: number
+  collection: Collection
+  key?: string
+  action?: 'create'
+}
+
 const COLLECTIONS: { value: Collection; label: string }[] = [
   { value: 'skills', label: 'Skills' },
   { value: 'system-prompts', label: 'System Prompts' },
@@ -282,15 +289,10 @@ export function DirectoryPage({
   commands,
 }: { host: Host } & Partial<PageRenderProps>) {
   const [collection, setCollection] = useState<Collection>('skills')
-  const [pendingOpen, setPendingOpen] = useState<{
-    id: number
-    collection: Collection
-    key: string
-  } | null>(null)
+  const [pendingOpen, setPendingOpen] = useState<PendingCollectionAction | null>(null)
 
-  // A palette row (see palette.ts) selects a collection + entry here once
-  // the page is open. `panelContext.id` is monotonic, so a repeated
-  // identical click still re-applies.
+  // Panel context can open a palette entry or start a collection's creation
+  // flow. `panelContext.id` is monotonic, so a repeated action still applies.
   const appliedContextRef = useRef(0)
   useEffect(() => {
     if (!panelContext || panelContext.id === appliedContextRef.current) return
@@ -298,22 +300,26 @@ export function DirectoryPage({
     const context = panelContext.context as {
       collection?: string
       key?: string
+      action?: string
     } | null
     const collectionValue = context?.collection
     if (
       !context ||
       typeof collectionValue !== 'string' ||
-      typeof context.key !== 'string' ||
       !COLLECTIONS.some((c) => c.value === collectionValue)
     ) {
       return
     }
     const nextCollection = collectionValue as Collection
+    const opensEntry = typeof context.key === 'string'
+    const startsCreate = context.action === 'create'
+    if (!opensEntry && !startsCreate) return
     setCollection(nextCollection)
     setPendingOpen({
       id: panelContext.id,
       collection: nextCollection,
-      key: context.key,
+      ...(opensEntry ? { key: context.key } : {}),
+      ...(startsCreate ? { action: 'create' } : {}),
     })
   }, [panelContext])
 

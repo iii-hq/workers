@@ -51,6 +51,25 @@ interface TriggerActivityCardProps {
   defaultOpen?: boolean
 }
 
+function TriggerActivityOutcomeIcon({ failed }: { failed: boolean }) {
+  const status = failed ? 'error' : 'done'
+
+  return (
+    <span
+      aria-hidden="true"
+      className="activity-status-icon"
+      data-status={status}
+    >
+      <span data-activity-status-layer="error">
+        <X strokeWidth={2.5} className="size-4 stroke-alert" />
+      </span>
+      <span data-activity-status-layer="done">
+        <Check strokeWidth={2.5} className="size-4 stroke-muted-foreground" />
+      </span>
+    </span>
+  )
+}
+
 /** One host-owned card for registration delivery, fire, and retirement state. */
 export function TriggerActivityCard({
   record,
@@ -131,112 +150,104 @@ export function TriggerActivityCard({
     (renderer) => renderer.tryRenderDetails?.(activity) ?? null,
   )
   const eventText = activityEventText(activity)
+  const fireFailed =
+    activity.outcome === 'skipped' || activity.outcome === 'delivery_failed'
 
-  // A successful fire reads like a settled function call in the timeline:
-  // one checkmark and the event text. Clicking swaps in the existing full
-  // card already expanded; collapsing the card returns to this row.
-  if (activity.kind === 'fired' && !open) {
-    return (
-      <section
-        className="overflow-visible bg-transparent"
-        data-message-id={activity.id}
-        data-message-role="trigger-activity"
-        data-trigger-activity-kind={activity.kind}
-        data-expanded="false"
+  const expandedSummary = (
+    <div className="flex min-w-0 items-start gap-3">
+      <div
+        className={cn(
+          'flex size-12 shrink-0 items-center justify-center rounded-md sm:size-10',
+          activity.kind === 'retirement' ? 'bg-surface' : 'bg-warn-muted',
+        )}
       >
-        <button
-          type="button"
-          onClick={() => setOpen(true)}
-          aria-expanded="false"
-          aria-label={`Show trigger details for ${eventText}`}
-          className="group flex w-full min-w-0 cursor-pointer items-center gap-2 py-1.5 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:py-1"
-        >
-          {activity.outcome === 'skipped' ||
-          activity.outcome === 'delivery_failed' ? (
-            <X
-              aria-hidden
-              strokeWidth={2.5}
-              className="size-4 shrink-0 stroke-alert"
-            />
-          ) : (
-            <Check
-              aria-hidden
-              strokeWidth={2.5}
-              className="size-4 shrink-0 stroke-muted-foreground"
-            />
+        <TriggerIcon
+          aria-hidden
+          className={cn(
+            'size-6 shrink-0 sm:size-5',
+            activity.kind === 'retirement' ? 'fill-ink-ghost' : 'fill-warn',
           )}
-          <TimelineActivityTrail kind="trigger" />
-          <div className="min-w-0 flex-1 truncate font-sans text-sm text-muted-foreground sm:text-[0.8125rem]">
-            {display?.node ?? eventText}
+        />
+      </div>
+
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1 font-sans text-base sm:text-sm">
+          <div className="font-semibold text-ink">{title}</div>
+          <span aria-hidden className="text-ink-ghost">
+            ·
+          </span>
+          <div className="flex min-w-0 items-baseline gap-2 text-ink-faint">
+            <span className="min-w-0 truncate" title={source}>
+              {source}
+            </span>
+            <span aria-hidden className="shrink-0 text-ink-ghost">
+              →
+            </span>
+            <span className="min-w-0 truncate" title={target}>
+              {target}
+            </span>
           </div>
-          <TimelineActivityDisclosure />
-        </button>
-      </section>
-    )
-  }
+        </div>
+        <p className="text-pretty font-sans text-base text-ink-faint sm:text-sm">
+          {activity.kind === 'fired'
+            ? (activity.action ?? activityDescription(activity))
+            : activityDescription(activity)}
+        </p>
+      </div>
+    </div>
+  )
 
   return (
     <article
       className="w-full"
+      data-message-id={activity.id}
       data-message-role="trigger-activity"
       data-trigger-activity-kind={activity.kind}
+      data-expanded={activity.kind === 'fired' ? open : undefined}
     >
       <CollapsibleCard
         open={activity.kind === 'fired' ? open : undefined}
         onOpenChange={activity.kind === 'fired' ? setOpen : undefined}
-        className="@container"
+        className={cn(
+          '@container',
+          activity.kind === 'fired' && 'trigger-activity-collapsible',
+          activity.kind === 'fired' &&
+            !open &&
+            'trigger-activity-collapsible--compact',
+        )}
       >
-        <CollapsibleCardTrigger className="p-4 select-none sm:p-3">
-          {display?.node ?? (
-            <div className="flex min-w-0 items-start gap-3">
-              <div
-                className={cn(
-                  'flex size-12 shrink-0 items-center justify-center rounded-md sm:size-10',
-                  activity.kind === 'retirement'
-                    ? 'bg-surface'
-                    : 'bg-warn-muted',
-                )}
-              >
-                <TriggerIcon
-                  aria-hidden
-                  className={cn(
-                    'size-6 shrink-0 sm:size-5',
-                    activity.kind === 'retirement'
-                      ? 'fill-ink-ghost'
-                      : 'fill-warn',
-                  )}
-                />
+        <CollapsibleCardTrigger
+          aria-label={
+            activity.kind === 'fired'
+              ? `${open ? 'Hide' : 'Show'} trigger details for ${eventText}`
+              : undefined
+          }
+          className={
+            activity.kind === 'fired'
+              ? 'group trigger-activity-collapsible__trigger select-none'
+              : 'p-4 select-none sm:p-3'
+          }
+        >
+          {activity.kind === 'fired' ? (
+            <div className="flex w-full min-w-0 items-center gap-2">
+              <TriggerActivityOutcomeIcon failed={fireFailed} />
+              <TimelineActivityTrail kind="trigger" />
+              <div className="min-w-0 flex-1 truncate font-sans text-sm text-muted-foreground sm:text-[0.8125rem]">
+                {display?.node ?? eventText}
               </div>
-
-              <div className="flex min-w-0 flex-1 flex-col gap-1">
-                <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1 font-sans text-base sm:text-sm">
-                  <div className="font-semibold text-ink">{title}</div>
-                  <span aria-hidden className="text-ink-ghost">
-                    ·
-                  </span>
-                  <div className="flex min-w-0 items-baseline gap-2 text-ink-faint">
-                    <span className="min-w-0 truncate" title={source}>
-                      {source}
-                    </span>
-                    <span aria-hidden className="shrink-0 text-ink-ghost">
-                      →
-                    </span>
-                    <span className="min-w-0 truncate" title={target}>
-                      {target}
-                    </span>
-                  </div>
-                </div>
-                <p className="text-pretty font-sans text-base text-ink-faint sm:text-sm">
-                  {activity.kind === 'fired'
-                    ? (activity.action ?? activityDescription(activity))
-                    : activityDescription(activity)}
-                </p>
-              </div>
+              <TimelineActivityDisclosure />
             </div>
+          ) : (
+            (display?.node ?? expandedSummary)
           )}
         </CollapsibleCardTrigger>
 
         <CollapsibleCardContent>
+          {activity.kind === 'fired' ? (
+            <div className="border-t border-edge p-4 sm:p-3">
+              {expandedSummary}
+            </div>
+          ) : null}
           <Tabs
             value={tab}
             onValueChange={(value) => setTab(value as 'terminal' | 'json')}

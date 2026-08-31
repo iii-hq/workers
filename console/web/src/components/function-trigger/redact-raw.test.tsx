@@ -131,7 +131,10 @@ describe('compact activity presentation', () => {
     expect(out).toContain('data-timeline-activity-kind="function"')
     expect(out).toContain('>ƒ</div>')
     expect(out).toContain('lucide-chevron-right')
-    expect(out).toContain('left-full')
+    expect(out).not.toContain('left-full')
+    expect(out).toContain('class="activity-status-icon"')
+    expect(out).toContain('data-activity-status-layer="running"')
+    expect(out).toContain('data-activity-status-layer="done"')
     expect(out.indexOf('lucide-check')).toBeLessThan(
       out.indexOf('data-timeline-activity-kind="function"'),
     )
@@ -155,6 +158,11 @@ describe('compact activity presentation', () => {
     expect(out).toContain('function-trigger-shimmer')
     expect(out).toContain('animate-spin')
     expect(out).toContain('stroke-trigger-running')
+    expect(out).toContain('data-function-status="running"')
+    expect(out).toContain('data-function-status-text="pending"')
+    expect(out).toContain('data-function-status-text="running"')
+    expect(out).toContain('data-function-status-text="error"')
+    expect(out).toContain('data-function-status-text="done"')
     expect(out).not.toContain('triggering ')
   })
 
@@ -429,6 +437,31 @@ describe('agent activity and prominent injected content', () => {
     expect(out).not.toContain('raw json')
   })
 
+  it('keeps a display-marked renderer in the same host slot while it settles', () => {
+    register({
+      metadata: { display: true },
+      tryRenderRunning: () => <div>worker artifact · running</div>,
+      tryRender: () => <div>worker artifact · settled</div>,
+    })
+
+    const running = collapsedHtml({
+      running: true,
+      output: undefined,
+      durationMs: undefined,
+    })
+    const settled = collapsedHtml()
+
+    expect(running).toContain('data-function-display-slot=""')
+    expect(running).toContain('data-state="running"')
+    expect(running).toContain('worker artifact · running')
+    expect(running.match(/data-function-display-slot/g)).toHaveLength(1)
+
+    expect(settled).toContain('data-function-display-slot=""')
+    expect(settled).toContain('data-state="done"')
+    expect(settled).toContain('worker artifact · settled')
+    expect(settled.match(/data-function-display-slot/g)).toHaveLength(1)
+  })
+
   it('keeps the display surface mounted while its details expand underneath', () => {
     register({
       metadata: { display: true, displayAction: 'expand' },
@@ -450,6 +483,33 @@ describe('agent activity and prominent injected content', () => {
     expect(expanded).toContain('Hide details for sandbox-code-runner::run')
     expect(expanded).toContain('aria-expanded="true"')
     expect(expanded).not.toContain('fcall-chrome')
+  })
+
+  it('keeps expandable renderer details in place when the receipt replaces its running header', () => {
+    register({
+      metadata: { display: true, displayAction: 'expand' },
+      tryRenderRunning: () => <div>persistent trigger details</div>,
+      tryRender: () => <div>persistent trigger details</div>,
+      tryRenderDisplay: (current) =>
+        current.running ? null : <div>trigger receipt</div>,
+    })
+
+    const running = collapsedHtml({
+      running: true,
+      output: undefined,
+      durationMs: undefined,
+    })
+    const settled = collapsedHtml()
+
+    expect(running).toContain('data-function-renderer-details-slot=""')
+    expect(running).toContain('persistent trigger details')
+    expect(running).toContain('aria-expanded="true"')
+    expect(running).not.toContain('trigger receipt')
+
+    expect(settled).toContain('data-function-renderer-details-slot=""')
+    expect(settled).toContain('persistent trigger details')
+    expect(settled).toContain('trigger receipt')
+    expect(settled).toContain('aria-expanded="false"')
   })
 
   it('hides an unmarked renderer when collapsed but uses it when expanded', () => {

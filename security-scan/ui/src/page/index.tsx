@@ -167,7 +167,7 @@ function RunListRow({
                 onOpenChat()
               }}
             >
-              <ChatIcon size={14} />
+              <ChatIcon size={16} />
             </Button>
           ) : null}
           {stoppable || run.status === 'cancelling' ? (
@@ -472,7 +472,7 @@ export function SecurityScanPage({
               title="Analysis budgets, operator model, and the repository allowlist"
               onClick={openConfiguration}
             >
-              <SettingsIcon size={14} />
+              <SettingsIcon size={16} />
               <span>configure</span>
             </Button>
             <Button
@@ -484,7 +484,7 @@ export function SecurityScanPage({
               onClick={refresh}
               disabled={loading}
             >
-              <RefreshIcon size={14} className={refreshing ? 'is-spinning' : undefined} />
+              <RefreshIcon size={16} className={refreshing ? 'is-spinning' : undefined} />
               <span>refresh</span>
             </Button>
           </>
@@ -546,7 +546,7 @@ export function SecurityScanPage({
                 <div className="security-scan-ui-filter">
                   <label htmlFor="security-scan-repository-filter">repository</label>
                   <div className="security-scan-ui-input-wrap">
-                    <SearchIcon size={14} />
+                    <SearchIcon size={16} />
                     <Input
                       ref={repositoryFilterRef}
                       id="security-scan-repository-filter"

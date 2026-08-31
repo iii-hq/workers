@@ -237,6 +237,169 @@ a.iii-ui-list-item,
   transition-timing-function: var(--motion-ease-enter);
 }
 
+/* Timeline activity state swaps. Icons remain stacked in one layout slot so
+ * a running glyph can hand off to its settled glyph instead of being replaced
+ * between frames. Text follows the same no-timer, data-state-driven pattern. */
+.activity-status-icon {
+  position: relative;
+  display: inline-grid;
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 1rem;
+  place-items: center;
+}
+
+.activity-status-icon > [data-activity-status-layer] {
+  grid-area: 1 / 1;
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  visibility: hidden;
+  filter: blur(var(--blur-small));
+  transform: scale(0.82);
+  pointer-events: none;
+  transition:
+    opacity var(--motion-duration-fast) var(--motion-ease-exit),
+    filter var(--motion-duration-fast) var(--motion-ease-exit),
+    transform var(--motion-duration-control) var(--motion-ease-exit),
+    visibility 0s linear var(--motion-duration-control);
+}
+
+.activity-status-icon[data-status="pending"]
+  > [data-activity-status-layer="pending"],
+.activity-status-icon[data-status="running"]
+  > [data-activity-status-layer="running"],
+.activity-status-icon[data-status="error"]
+  > [data-activity-status-layer="error"],
+.activity-status-icon[data-status="done"]
+  > [data-activity-status-layer="done"] {
+  opacity: 1;
+  visibility: visible;
+  filter: blur(0);
+  transform: scale(1);
+  transition-timing-function: var(--motion-ease-enter);
+  transition-delay: 0s;
+}
+
+.function-trigger-status-copy {
+  display: grid;
+  min-width: 0;
+}
+
+.function-trigger-status-copy > [data-function-status-text] {
+  grid-area: 1 / 1;
+  min-width: 0;
+  overflow: hidden;
+  opacity: 0;
+  visibility: hidden;
+  filter: blur(var(--blur-small));
+  transform: translateY(-0.125rem);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+  transition:
+    opacity var(--motion-duration-fast) var(--motion-ease-exit),
+    filter var(--motion-duration-fast) var(--motion-ease-exit),
+    transform var(--motion-duration-control) var(--motion-ease-exit),
+    visibility 0s linear var(--motion-duration-control);
+}
+
+.function-trigger-status-copy[data-status="pending"]
+  > [data-function-status-text="pending"],
+.function-trigger-status-copy[data-status="running"]
+  > [data-function-status-text="running"],
+.function-trigger-status-copy[data-status="error"]
+  > [data-function-status-text="error"],
+.function-trigger-status-copy[data-status="done"]
+  > [data-function-status-text="done"] {
+  opacity: 1;
+  visibility: visible;
+  filter: blur(0);
+  transform: translateY(0);
+  pointer-events: auto;
+  transition-timing-function: var(--motion-ease-enter);
+  transition-delay: 0s;
+}
+
+/* A fired trigger uses the same CollapsibleCard while compact and expanded.
+ * The transparent state is only presentation; the mounted disclosure content
+ * remains available for the existing grid-track expansion transition. */
+.trigger-activity-collapsible--compact {
+  overflow: visible;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+.trigger-activity-collapsible {
+  transition:
+    border-color var(--motion-duration-control) var(--motion-ease-standard),
+    background-color var(--motion-duration-control) var(--motion-ease-standard),
+    box-shadow var(--motion-duration-panel) var(--motion-ease-standard);
+}
+
+.trigger-activity-collapsible > .trigger-activity-collapsible__trigger {
+  padding: 0.375rem 0;
+  transition:
+    padding var(--motion-duration-panel) var(--motion-ease-standard),
+    background-color var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+.trigger-activity-collapsible[data-state="open"]
+  > .trigger-activity-collapsible__trigger {
+  padding: 1rem;
+  transition-timing-function: var(--motion-ease-enter);
+}
+
+@media (max-width: 640px) {
+  .trigger-activity-collapsible > .trigger-activity-collapsible__trigger {
+    padding-block: 0.25rem;
+  }
+
+  .trigger-activity-collapsible[data-state="open"]
+    > .trigger-activity-collapsible__trigger {
+    padding: 0.75rem;
+  }
+}
+
+.function-trigger-active-collapsible[data-disabled="true"] {
+  opacity: 1;
+}
+
+.function-renderer-presence {
+  display: grid;
+}
+
+.function-renderer-presence__layer {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+
+.function-renderer-presence[data-transitioning="true"]
+  > .function-renderer-presence__layer[data-layer="outgoing"] {
+  animation: function-renderer-layer-out var(--duration-quick)
+    var(--ease-in-out) both;
+  pointer-events: none;
+}
+
+.function-renderer-presence[data-transitioning="true"]
+  > .function-renderer-presence__layer[data-layer="current"] {
+  animation: function-renderer-layer-in var(--duration-quick) var(--ease-in-out)
+    both;
+}
+
+@keyframes function-renderer-layer-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes function-renderer-layer-in {
+  from {
+    opacity: 0;
+  }
+}
+
 .iii-ui-card__header,
 .iii-ui-panel__header {
   display: flex;
@@ -799,6 +962,20 @@ a.iii-ui-list-item,
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .activity-status-icon > [data-activity-status-layer],
+  .function-trigger-status-copy > [data-function-status-text],
+  .trigger-activity-collapsible,
+  .trigger-activity-collapsible > .trigger-activity-collapsible__trigger {
+    filter: none;
+    transform: none;
+    transition: none;
+  }
+
+  .function-renderer-presence[data-transitioning="true"]
+    > .function-renderer-presence__layer {
+    animation: none;
+  }
+
   .iii-ui-motion-panel,
   .iii-ui-motion-overlay,
   .iii-ui-motion-dropdown,

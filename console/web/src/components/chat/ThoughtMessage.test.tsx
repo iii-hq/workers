@@ -22,11 +22,25 @@ describe('ThoughtMessage', () => {
 
     expect(html).toContain('Thought…')
     expect(html).toContain('Inspecting the message stream')
+    expect(html).toContain('data-state="streaming"')
+    expect(html).toContain('chat-thought__viewport')
   })
 
   it('removes the thought subtree after streaming completes', () => {
     expect(
       renderToStaticMarkup(<ThoughtMessage message={thought(false)} />),
     ).toBe('')
+  })
+
+  it('exposes an explicit settling state to a parent presence manager', () => {
+    const html = renderToStaticMarkup(
+      <ThoughtMessage message={thought(false)} settling />,
+    )
+
+    expect(html).toContain('data-state="settling"')
+    expect(html).toContain('aria-hidden="true"')
+    expect(html).toContain('inert=""')
+    expect(html).toContain('Inspecting the message stream')
+    expect(html).not.toContain('class="h-[10px] w-[5px]"')
   })
 })

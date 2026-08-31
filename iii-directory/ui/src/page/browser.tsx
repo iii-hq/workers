@@ -316,10 +316,10 @@ export function CollectionBrowser({
   /** Whether this collection is the one currently shown (all three stay
       mounted); only the active one registers page-level commands/keys. */
   active?: boolean
-  /** A palette row picked this collection's entry — open it (see
-      palette.ts + the page's panelContext handler). `id` is monotonic, so
-      a repeated identical selection still re-applies. */
-  pendingOpen?: { id: number; key: string } | null
+  /** An external panel request targeted this collection — open an entry or
+      start its creation flow. `id` is monotonic, so a repeated identical
+      action still re-applies. */
+  pendingOpen?: { id: number; key?: string; action?: 'create' } | null
 }) {
   const [rows, setRows] = useState<BrowserRow[] | null>(null)
   const [listError, setListError] = useState<string | null>(null)
@@ -494,13 +494,6 @@ export function CollectionBrowser({
     [host, adapter, storageKey, guardDirty],
   )
 
-  const appliedOpenRef = useRef(0)
-  useEffect(() => {
-    if (!pendingOpen || pendingOpen.id === appliedOpenRef.current) return
-    appliedOpenRef.current = pendingOpen.id
-    open(pendingOpen.key)
-  }, [pendingOpen, open])
-
   /** Blank editor for a new entry. Most collections count their scaffold as
       unsaved work; custom forms can treat it as a pristine visual baseline. */
   const startCreate = useCallback(() => {
@@ -520,6 +513,17 @@ export function CollectionBrowser({
       setStaleOnDisk(false)
     })
   }, [storageKey, guardDirty, adapter])
+
+  const appliedOpenRef = useRef(0)
+  useEffect(() => {
+    if (!pendingOpen || pendingOpen.id === appliedOpenRef.current) return
+    appliedOpenRef.current = pendingOpen.id
+    if (pendingOpen.action === 'create') {
+      startCreate()
+    } else if (pendingOpen.key) {
+      open(pendingOpen.key)
+    }
+  }, [pendingOpen, open, startCreate])
 
   // External change (download / update from anywhere): refresh the list;
   // reload the open entry only when the editor has no unsaved edits.

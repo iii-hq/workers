@@ -1,5 +1,12 @@
 import { Check, Copy, Loader2, X } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import {
+  type ReactNode,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { CopyMessageButton } from '@/components/chat/CopyMessageButton'
 import {
   TimelineActivityDisclosure,
@@ -25,6 +32,7 @@ import {
 } from '@/components/ui/CollapsibleCard'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
+import { useMediaQuery } from '@/hooks/use-media-query'
 import { copyTextToClipboard } from '@/lib/clipboard'
 import { formatCallDuration } from '@/lib/format-call-duration'
 import { JsonHighlight } from '@/lib/syntax'
@@ -235,6 +243,277 @@ function FunctionIdentityRow({ functionId }: { functionId: string }) {
   )
 }
 
+type FunctionTriggerStatus = 'pending' | 'running' | 'error' | 'done'
+
+const FUNCTION_TRIGGER_STATUSES: readonly FunctionTriggerStatus[] = [
+  'pending',
+  'running',
+  'error',
+  'done',
+]
+
+interface RendererLayer {
+  key: string
+  node: ReactNode
+}
+
+interface RendererSwapState {
+  outgoing: RendererLayer | null
+  target: 'terminal' | 'display'
+}
+
+/**
+ * A worker may expose a full running terminal and a compact settled display.
+ * Keep the outgoing presentation for one state-swap while the incoming node
+ * mounts in the same host-owned slot. Renderers that keep the same
+ * presentation key (FileChangesCard, for example) reconcile normally and
+ * preserve their local state instead of being remounted.
+ */
+function FunctionRendererPresence({
+  children,
+  presentation,
+}: {
+  children: ReactNode
+  presentation: 'terminal' | 'display'
+}) {
+  const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
+  const committedLayerRef = useRef<RendererLayer>({
+    key: presentation,
+    node: children,
+  })
+  const [swapState, setSwapState] = useState<RendererSwapState>(() => ({
+    outgoing: null,
+    target: presentation,
+  }))
+  let renderedSwapState = swapState
+
+  // React explicitly supports adjusting a component's own state during
+  // render. Unlike mutating refs here, this update is discarded if a
+  // concurrent render is abandoned; committedLayerRef always describes the
+  // presentation users actually saw.
+  if (swapState.target !== presentation) {
+    renderedSwapState = {
+      target: presentation,
+      outgoing: reducedMotion ? null : committedLayerRef.current,
+    }
+    setSwapState(renderedSwapState)
+  }
+
+  useLayoutEffect(() => {
+    committedLayerRef.current = { key: presentation, node: children }
+  }, [children, presentation])
+
+  useEffect(() => {
+    if (!renderedSwapState.outgoing) return
+    const swapDuration = Number.parseFloat(
+      getComputedStyle(document.documentElement).getPropertyValue(
+        '--duration-quick',
+      ),
+    )
+    const timer = window.setTimeout(
+      () =>
+        setSwapState((current) =>
+          current.target === presentation
+            ? { ...current, outgoing: null }
+            : current,
+        ),
+      reducedMotion ? 0 : Number.isFinite(swapDuration) ? swapDuration : 150,
+    )
+    return () => window.clearTimeout(timer)
+  }, [presentation, reducedMotion, renderedSwapState.outgoing])
+
+  return (
+    <div
+      className="function-renderer-presence"
+      data-transitioning={Boolean(renderedSwapState.outgoing)}
+    >
+      {renderedSwapState.outgoing ? (
+        <div
+          key={renderedSwapState.outgoing.key}
+          className="function-renderer-presence__layer"
+          data-layer="outgoing"
+          aria-hidden="true"
+          inert
+        >
+          {renderedSwapState.outgoing.node}
+        </div>
+      ) : null}
+      <div
+        key={presentation}
+        className="function-renderer-presence__layer"
+        data-layer="current"
+      >
+        {children}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * All status glyphs occupy one persistent slot. A state attribute changes
+ * which layer is visible, giving CSS both the outgoing and incoming glyphs
+ * for the spinner -> check/error handoff without delaying the real state.
+ */
+function FunctionTriggerStatusIcon({
+  expanded,
+  status,
+}: {
+  expanded: boolean
+  status: FunctionTriggerStatus
+}) {
+  return (
+    <span
+      aria-hidden="true"
+      className="activity-status-icon"
+      data-status={status}
+    >
+      <span data-activity-status-layer="pending">
+        <StatusDot tone="warn" />
+      </span>
+      <span data-activity-status-layer="running">
+        <Loader2
+          strokeWidth={2}
+          className={cn(
+            'size-4 stroke-trigger-running motion-reduce:animate-none',
+            status === 'running' && 'animate-spin',
+          )}
+        />
+      </span>
+      <span data-activity-status-layer="error">
+        <X strokeWidth={2.5} className="size-4 stroke-alert" />
+      </span>
+      <span data-activity-status-layer="done">
+        <Check
+          strokeWidth={2.5}
+          className={cn(
+            'size-4',
+            expanded ? 'stroke-ok' : 'stroke-muted-foreground',
+          )}
+        />
+      </span>
+    </span>
+  )
+}
+
+interface FunctionTriggerStatusCopyProps {
+  denied: boolean
+  description?: string
+  durationMs?: number
+  expanded: boolean
+  filesystemAccess: boolean
+  functionId: string
+  hideGenericVerb: boolean
+  preview: string | null
+  ran: boolean
+  status: FunctionTriggerStatus
+  unresolvedTarget: boolean
+}
+
+/**
+ * Status copy uses the same layered-state pattern as the icon. Keeping every
+ * state in one grid slot avoids replacing the text node at the exact moment
+ * a call settles; inactive layers are hidden from both interaction and AT.
+ */
+function FunctionTriggerStatusCopy({
+  denied,
+  description,
+  durationMs,
+  expanded,
+  filesystemAccess,
+  functionId,
+  hideGenericVerb,
+  preview,
+  ran,
+  status,
+  unresolvedTarget,
+}: FunctionTriggerStatusCopyProps) {
+  const copyFor = (layer: FunctionTriggerStatus) => {
+    const settled = layer === 'error' || layer === 'done'
+
+    if (description) {
+      return (
+        <>
+          <span
+            className={cn(
+              layer === 'running' &&
+                layer === status &&
+                'function-trigger-shimmer',
+            )}
+          >
+            {description}
+          </span>
+          {settled && expanded && typeof durationMs === 'number' ? (
+            <span className="text-ink-faint">
+              {' '}
+              for{' '}
+              <span className="tabular-nums">
+                {formatCallDuration(durationMs)}
+              </span>
+            </span>
+          ) : null}
+        </>
+      )
+    }
+
+    return (
+      <>
+        {layer === 'pending' ? (
+          <>
+            <span>
+              {filesystemAccess
+                ? 'needs filesystem access to run'
+                : 'waiting for your approval to run'}
+            </span>{' '}
+          </>
+        ) : layer === 'running' ? (
+          hideGenericVerb ? null : (
+            <>Triggering </>
+          )
+        ) : layer === 'error' ? (
+          denied ? null : (
+            <>Failed </>
+          )
+        ) : ran ? (
+          <>Triggered </>
+        ) : null}
+        {layer === 'running' && unresolvedTarget ? (
+          <span className="text-ink-faint">…</span>
+        ) : layer === status ? (
+          <FunctionIdLabel functionId={functionId} />
+        ) : (
+          <span className="text-ink">{functionId}</span>
+        )}
+        {settled && preview ? (
+          <span className="text-ink-ghost"> ({preview})</span>
+        ) : null}
+        {settled && typeof durationMs === 'number' ? (
+          <span className="text-ink-faint">
+            {' '}
+            for{' '}
+            <span className="tabular-nums">
+              {formatCallDuration(durationMs)}
+            </span>
+          </span>
+        ) : null}
+      </>
+    )
+  }
+
+  return (
+    <span className="function-trigger-status-copy" data-status={status}>
+      {FUNCTION_TRIGGER_STATUSES.map((layer) => (
+        <span
+          key={layer}
+          aria-hidden={layer === status ? undefined : true}
+          data-function-status-text={layer}
+        >
+          {copyFor(layer)}
+        </span>
+      ))}
+    </span>
+  )
+}
+
 /**
  * One-line `key: value` digest of the request args for the collapsed header —
  * what separates three settled calls to the same function without expanding
@@ -328,7 +607,6 @@ export function FunctionTriggerCard({
   const hasCustomTerminal = customTerminal != null
   const displayCustomTerminal =
     !pending &&
-    !running &&
     hasCustomTerminal &&
     terminalRender?.renderer.metadata?.display === true
   const customDisplay = displayCustomTerminal
@@ -336,7 +614,7 @@ export function FunctionTriggerCard({
     : null
   const displayAction = terminalRender?.renderer.metadata?.displayAction
   const expandableCustomDisplay =
-    displayCustomTerminal && displayAction === 'expand' && customDisplay
+    displayCustomTerminal && displayAction === 'expand'
   // The top request pane renders only while the call is in flight and no
   // richer view covers it; the settled (done) branch below renders its own
   // request/response panes, so showing it there would duplicate the pane.
@@ -390,27 +668,61 @@ export function FunctionTriggerCard({
   // one line that renders without anyone expanding the card.
   const preview = argsPreview(rawInput)
   const description = message.description?.trim() || undefined
+  const status: FunctionTriggerStatus = pending
+    ? 'pending'
+    : running
+      ? 'running'
+      : errored
+        ? 'error'
+        : 'done'
 
   if (expandableCustomDisplay) {
+    const detailsOpen = running || open
+
     return (
       <section
         className="function-trigger-surface"
         data-message-id={message.id}
         data-message-role="function-call"
         data-function-id={message.functionId}
-        data-expanded={open}
-        data-function-status={errored ? 'error' : 'done'}
+        data-expanded={detailsOpen}
+        data-function-status={status}
       >
         <CollapsibleCard
-          open={open}
+          open={detailsOpen}
           onOpenChange={setOpen}
-          className="@container"
+          disabled={running}
+          className="@container function-trigger-active-collapsible"
         >
           <CollapsibleCardTrigger
             className="p-4 select-none sm:p-3"
-            aria-label={`${open ? 'Hide' : 'Show'} details for ${message.functionId}`}
+            aria-label={`${detailsOpen ? 'Hide' : 'Show'} details for ${message.functionId}`}
           >
-            {customDisplay}
+            <FunctionRendererPresence
+              presentation={customDisplay != null ? 'display' : 'terminal'}
+            >
+              {customDisplay ?? (
+                <div className="flex min-w-0 items-center gap-2">
+                  <FunctionTriggerStatusIcon expanded status={status} />
+                  <TimelineActivityTrail kind="function" />
+                  <div className="min-w-0 flex-1 font-mono text-[0.8125rem] text-ink">
+                    <FunctionTriggerStatusCopy
+                      denied={denied}
+                      description={description}
+                      durationMs={message.durationMs}
+                      expanded
+                      filesystemAccess={!!filesystemAccess}
+                      functionId={message.functionId}
+                      hideGenericVerb={!!hideGenericVerb}
+                      preview={preview}
+                      ran={ran}
+                      status={status}
+                      unresolvedTarget={!!message.unresolvedTarget}
+                    />
+                  </div>
+                </div>
+              )}
+            </FunctionRendererPresence>
           </CollapsibleCardTrigger>
           <CollapsibleCardContent>
             <Tabs
@@ -425,7 +737,9 @@ export function FunctionTriggerCard({
                 </TabsList>
               </div>
               <TabsContent value="terminal" className="p-4 sm:p-3">
-                {customTerminal}
+                <div data-function-renderer-details-slot="">
+                  {customTerminal}
+                </div>
               </TabsContent>
               <TabsContent value="json" className="p-4 sm:p-3">
                 <div className="flex min-w-0 flex-col gap-3">
@@ -456,9 +770,7 @@ export function FunctionTriggerCard({
         pending ? `action required for ${message.functionId}` : undefined
       }
       tabIndex={pending ? -1 : undefined}
-      data-function-status={
-        pending ? 'pending' : running ? 'running' : errored ? 'error' : 'done'
-      }
+      data-function-status={status}
     >
       {/* The copy affordance must be a sibling of the collapse toggle
           (nested buttons are invalid HTML): the labeled toggle carries the
@@ -481,35 +793,15 @@ export function FunctionTriggerCard({
             expandedSurface ? 'flex py-2 pl-3' : 'flex flex-1 py-1.5 sm:py-1',
           )}
         >
-          <div className="flex min-w-0 items-center gap-2">
-            {pending ? (
-              <StatusDot tone="warn" className="shrink-0" />
-            ) : running ? (
-              <Loader2
-                aria-hidden
-                strokeWidth={2}
-                className="size-4 h-lh shrink-0 animate-spin stroke-trigger-running motion-reduce:animate-none"
-              />
-            ) : errored ? (
-              <X
-                aria-hidden
-                strokeWidth={2.5}
-                className="size-4 shrink-0 stroke-alert"
-              />
-            ) : (
-              <Check
-                aria-hidden
-                strokeWidth={2.5}
-                className={cn(
-                  'size-4 shrink-0',
-                  expandedSurface ? 'stroke-ok' : 'stroke-muted-foreground',
-                )}
-              />
-            )}
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <FunctionTriggerStatusIcon
+              expanded={expandedSurface}
+              status={status}
+            />
             <TimelineActivityTrail kind="function" />
             <div
               className={cn(
-                'min-w-0 truncate',
+                'min-w-0 flex-1',
                 expandedSurface
                   ? 'font-mono text-[0.8125rem] text-ink'
                   : cn(
@@ -520,47 +812,19 @@ export function FunctionTriggerCard({
                     ),
               )}
             >
-              {description ? (
-                <span className={cn(running && 'function-trigger-shimmer')}>
-                  {description}
-                </span>
-              ) : pending ? (
-                <>
-                  <span>
-                    {filesystemAccess
-                      ? 'needs filesystem access to run'
-                      : 'waiting for your approval to run'}
-                  </span>{' '}
-                </>
-              ) : hideGenericVerb ? null : running ? (
-                <>Triggering </>
-              ) : errored && !denied ? (
-                <>Failed </>
-              ) : ran ? (
-                <>Triggered </>
-              ) : null}
-              {!description ? (
-                running && message.unresolvedTarget ? (
-                  <span className="text-ink-faint">…</span>
-                ) : (
-                  <FunctionIdLabel functionId={message.functionId} />
-                )
-              ) : null}
-              {!description && !pending && !running && preview ? (
-                <span className="text-ink-ghost"> ({preview})</span>
-              ) : null}
-              {!pending &&
-              !running &&
-              (!description || expandedSurface) &&
-              typeof message.durationMs === 'number' ? (
-                <span className="text-ink-faint">
-                  {' '}
-                  for{' '}
-                  <span className="tabular-nums">
-                    {formatCallDuration(message.durationMs)}
-                  </span>
-                </span>
-              ) : null}
+              <FunctionTriggerStatusCopy
+                denied={denied}
+                description={description}
+                durationMs={message.durationMs}
+                expanded={expandedSurface}
+                filesystemAccess={!!filesystemAccess}
+                functionId={message.functionId}
+                hideGenericVerb={!!hideGenericVerb}
+                preview={preview}
+                ran={ran}
+                status={status}
+                unresolvedTarget={!!message.unresolvedTarget}
+              />
             </div>
           </div>
         </button>
@@ -608,7 +872,25 @@ export function FunctionTriggerCard({
           ) : showRequestPaneAbove ? (
             <ValuePane label="request" value={rawInput} />
           ) : null}
-          {running && !pending ? (
+          {!pending && displayCustomTerminal ? (
+            <div className="border-t border-rule-2 bg-paper-2">
+              <button
+                type="button"
+                aria-expanded={showRawDetails}
+                onClick={() => setShowRawDetails((value) => !value)}
+                className="w-full cursor-pointer px-3 py-2 text-left font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
+              >
+                {showRawDetails ? 'hide' : 'show'} raw request and response
+              </button>
+              {showRawDetails ? (
+                <>
+                  <ValuePane label="request" value={rawInput} />
+                  <ValuePane label="response" value={rawOutput} bordered />
+                </>
+              ) : null}
+            </div>
+          ) : null}
+          {running && !pending && !displayCustomTerminal ? (
             streamingTail !== undefined ? (
               <StreamingArgsPane text={streamingTail} />
             ) : hasCustomTerminal ? (
@@ -617,28 +899,8 @@ export function FunctionTriggerCard({
               <ValuePane label="response" value={rawOutput} bordered />
             )
           ) : null}
-          {!pending && !running ? (
-            displayCustomTerminal ? (
-              <>
-                {customDisplay ? customTerminal : null}
-                <div className="border-t border-rule-2 bg-paper-2">
-                  <button
-                    type="button"
-                    aria-expanded={showRawDetails}
-                    onClick={() => setShowRawDetails((value) => !value)}
-                    className="w-full cursor-pointer px-3 py-2 text-left font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-accent"
-                  >
-                    {showRawDetails ? 'hide' : 'show'} raw request and response
-                  </button>
-                  {showRawDetails ? (
-                    <>
-                      <ValuePane label="request" value={rawInput} />
-                      <ValuePane label="response" value={rawOutput} bordered />
-                    </>
-                  ) : null}
-                </div>
-              </>
-            ) : hasCustomTerminal ? (
+          {!pending && !running && !displayCustomTerminal ? (
+            hasCustomTerminal ? (
               <Tabs
                 value={tab}
                 onValueChange={(v) => setTab(v as 'terminal' | 'json')}
@@ -664,22 +926,18 @@ export function FunctionTriggerCard({
         </div>
       ) : null}
 
-      {displayCustomTerminal && (!open || !customDisplay) ? (
-        displayAction === 'expand' && customDisplay ? (
-          <button
-            type="button"
-            aria-expanded={open}
-            aria-label={`Show details for ${message.functionId}`}
-            onClick={() => setOpen(true)}
-            className="w-full cursor-pointer pt-1 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+      {displayCustomTerminal ? (
+        <div
+          className={cn('function-trigger-display-slot', !open && 'pt-1')}
+          data-function-display-slot=""
+          data-state={status}
+        >
+          <FunctionRendererPresence
+            presentation={customDisplay != null ? 'display' : 'terminal'}
           >
-            {customDisplay}
-          </button>
-        ) : (
-          <div className={cn(!open && 'pt-1')}>
             {customDisplay ?? customTerminal}
-          </div>
-        )
+          </FunctionRendererPresence>
+        </div>
       ) : null}
 
       {pending && filesystemAccess ? (

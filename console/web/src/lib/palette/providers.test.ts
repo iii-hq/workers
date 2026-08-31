@@ -6,7 +6,12 @@ import {
   searchPaletteSources,
 } from './providers'
 import { loadRecents, recentOf, recordRecent } from './recents'
-import { DEFAULT_KINDS, groupEntries, parseQuery, scoreEntry } from './sources'
+import {
+  BARE_SEARCH_KINDS,
+  groupEntries,
+  parseQuery,
+  scoreEntry,
+} from './sources'
 
 const noop = () => {}
 
@@ -28,10 +33,10 @@ describe('parseQuery', () => {
     expect(parseQuery('@standup', 'all').kinds).toEqual(new Set(['chat']))
   })
 
-  it('otherwise searches navigation, or the chip filter', () => {
+  it('otherwise searches all lightweight entries, or the chip filter', () => {
     expect(parseQuery(' open file ', 'all')).toEqual({
       prefix: null,
-      kinds: new Set(DEFAULT_KINDS),
+      kinds: new Set(BARE_SEARCH_KINDS),
       text: 'open file',
     })
     expect(parseQuery('x', 'worker').kinds).toEqual(new Set(['worker']))

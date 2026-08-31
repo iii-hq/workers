@@ -3,12 +3,14 @@ import type { MessageListRow } from '@/components/chat/function-trigger-groups'
 import type {
   FunctionTriggerMessage,
   SystemMessage,
+  ThoughtMessage,
   TriggerFiredData,
   UserMessage,
 } from '@/types/chat'
 import {
   collapsedTimelineActivities,
   groupTimelineActivities,
+  timelineActivityPresentationKey,
   triggerActivityRows,
 } from './grouping'
 
@@ -106,12 +108,15 @@ describe('triggerActivityRows', () => {
     expect(rows[0]?.kind).toBe('trigger-activity')
   })
 
-  it('leaves unpaired entries visible', () => {
+  it('normalizes unpaired wake halves into stable activity rows', () => {
     const rows = [
       row(notification('e_fire_sub_1_0')),
       row(fired('e_trigfired_sub_2_0', 'sub_2')),
     ]
-    expect(triggerActivityRows(rows)).toEqual(rows)
+    expect(triggerActivityRows(rows)).toMatchObject([
+      { kind: 'trigger-activity', id: 'e_fire_sub_1_0' },
+      { kind: 'trigger-activity', id: 'e_trigfired_sub_2_0' },
+    ])
   })
 
   it('does not pair matching labels with different durable ids', () => {
@@ -119,7 +124,10 @@ describe('triggerActivityRows', () => {
       row(notification('e_fire_sub_1_0')),
       row(fired('e_trigfired_sub_1_1')),
     ]
-    expect(triggerActivityRows(rows)).toEqual(rows)
+    expect(triggerActivityRows(rows)).toMatchObject([
+      { kind: 'trigger-activity', id: 'e_fire_sub_1_0' },
+      { kind: 'trigger-activity', id: 'e_trigfired_sub_1_1' },
+    ])
   })
 })
 
@@ -147,12 +155,27 @@ describe('groupTimelineActivities', () => {
     expect(grouped).toHaveLength(1)
     expect(grouped[0]).toMatchObject({
       kind: 'activity-group',
+      id: 'e_fire_sub_1_3',
       items: [
         { kind: 'trigger-activity' },
         { kind: 'function-trigger', id: 'call-1' },
         { kind: 'function-trigger', id: 'call-2' },
       ],
     })
+  })
+
+  it('uses the harness call id as stable React presentation identity', () => {
+    const message = {
+      ...call('optimistic-message-id'),
+      functionTriggerId: 'harness-call-id',
+    }
+    expect(
+      timelineActivityPresentationKey({
+        kind: 'function-trigger',
+        id: message.id,
+        message,
+      }),
+    ).toBe('harness-call-id')
   })
 
   it('keeps the fire with its calls when the durable record arrives later', () => {
@@ -171,6 +194,90 @@ describe('groupTimelineActivities', () => {
       kind: 'activity-group',
       items: [
         { kind: 'trigger-activity' },
+        { kind: 'function-trigger', id: 'call-1' },
+      ],
+    })
+  })
+
+  it('starts a new phase when a fired activity follows existing calls', () => {
+    const grouped = groupTimelineActivities([
+      {
+        kind: 'function-trigger-group',
+        id: 'function-trigger-group:call-1',
+        calls: [call('call-1')],
+      },
+      {
+        kind: 'trigger-activity',
+        id: 'fire-2',
+        message: fired('e_trigfired_sub_1_2'),
+      },
+      {
+        kind: 'function-trigger-group',
+        id: 'function-trigger-group:call-2',
+        calls: [call('call-2')],
+      },
+    ])
+
+    expect(grouped).toHaveLength(2)
+    expect(grouped[0]).toMatchObject({
+      kind: 'activity-group',
+      id: 'call-1',
+      items: [{ kind: 'function-trigger', id: 'call-1' }],
+    })
+    expect(grouped[1]).toMatchObject({
+      kind: 'activity-group',
+      id: 'fire-2',
+      items: [
+        { kind: 'trigger-activity', id: 'fire-2' },
+        { kind: 'function-trigger', id: 'call-2' },
+      ],
+    })
+  })
+
+  it('keeps a wake group stable while thinking hands off to its first call', () => {
+    const thought: ThoughtMessage = {
+      id: 'thought-1',
+      role: 'thought',
+      content: 'Choosing the next tool',
+      streaming: true,
+      durationMs: 0,
+      createdAt: 1,
+    }
+    const wake = {
+      kind: 'trigger-activity' as const,
+      id: 'fire-1',
+      message: fired('e_trigfired_sub_1_1'),
+    }
+    const calls = {
+      kind: 'function-trigger-group' as const,
+      id: 'function-trigger-group:call-1',
+      calls: [call('call-1')],
+    }
+
+    const visible = groupTimelineActivities([
+      wake,
+      { kind: 'message', message: thought },
+      calls,
+    ])
+    const hidden = groupTimelineActivities([wake, calls])
+
+    expect(visible.map((row) => row.kind)).toEqual([
+      'activity-group',
+      'message',
+    ])
+    expect(visible[0]).toMatchObject({
+      id: 'fire-1',
+      items: [
+        { kind: 'trigger-activity', id: 'fire-1' },
+        { kind: 'function-trigger', id: 'call-1' },
+      ],
+    })
+    expect(visible[1]).toEqual({ kind: 'message', message: thought })
+    expect(hidden).toHaveLength(1)
+    expect(hidden[0]).toMatchObject({
+      id: 'fire-1',
+      items: [
+        { kind: 'trigger-activity', id: 'fire-1' },
         { kind: 'function-trigger', id: 'call-1' },
       ],
     })
