@@ -6,6 +6,7 @@ import {
   mapMessageContent,
   mapToolResultContent,
   mapUsage,
+  messageModel,
   toolFunctionId,
 } from '../src/map.js';
 import type { AgentMessage } from '../src/types.js';
@@ -19,6 +20,29 @@ describe('toolFunctionId', () => {
   it('maps MCP tool names to bus-style ids', () => {
     expect(toolFunctionId('mcp__github__create_issue')).toBe('github::create_issue');
     expect(toolFunctionId('mcp__filesystem__read_file')).toBe('filesystem::read_file');
+  });
+
+  it('keeps the server of a namespaced extension tool, and names an unnamed one', () => {
+    // A terminal session reports tool names the extension read off pi, which
+    // carry their server without the `mcp__` prefix.
+    expect(toolFunctionId('github__create_issue')).toBe('github::create_issue');
+    expect(toolFunctionId('')).toBe('pi::tool');
+  });
+});
+
+describe('messageModel', () => {
+  it('prefers the model that actually answered over the configured one', () => {
+    // pi resolves its own model when the caller names none, so the config's
+    // empty string is a fallback — and a nameless agent reads as broken in the
+    // console beside a named one.
+    expect(messageModel({ model: 'gpt-5.5', provider: 'openai' }, '')).toBe('gpt-5.5');
+    expect(messageModel({ model: 'gpt-5.5' }, 'anthropic/claude')).toBe('gpt-5.5');
+  });
+
+  it('falls back when the message names none', () => {
+    expect(messageModel({}, 'openai/gpt-4o-mini')).toBe('openai/gpt-4o-mini');
+    expect(messageModel(null, 'openai/gpt-4o-mini')).toBe('openai/gpt-4o-mini');
+    expect(messageModel({ model: '' }, '')).toBe('');
   });
 });
 
@@ -111,10 +135,21 @@ describe('mapUsage', () => {
 });
 
 describe('message constructors', () => {
-  it('builds an assistant message with provider pi', () => {
-    const msg = makeAssistantMessage([{ type: 'text', text: 'hi' }], 'anthropic/claude', null);
+  it('names the AGENT that ran the turn, and the provider that served it', () => {
+    // Two different answers: `pi` is the worker on the bus, `openai` is who
+    // served the model. A reader given only a model cannot tell which agent
+    // produced it — which is how a pi turn rendered as a nameless "Agent".
+    const msg = makeAssistantMessage(
+      [{ type: 'text', text: 'hi' }],
+      'gpt-5.5',
+      null,
+      'end',
+      'openai',
+    );
     expect(msg.role).toBe('assistant');
-    expect(msg.provider).toBe('pi');
+    expect(msg.agent).toBe('pi');
+    expect(msg.provider).toBe('openai');
+    expect(msg.model).toBe('gpt-5.5');
     expect(msg.stop_reason).toBe('end');
   });
 

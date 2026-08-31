@@ -17,17 +17,26 @@ import type { IIIClient } from 'iii-sdk';
 import { z } from 'zod';
 import type { Config } from './config.js';
 import type { Emit } from './events.js';
-import { III_CONTEXT_PROMPT } from './iii-prompt.js';
+import { fetchIiiContext } from './iii-context.js';
 import {
   lastAssistant,
   makeAssistantMessage,
   makeFunctionResult,
   mapMessageContent,
+  messageModel,
+  messageProvider,
   mapToolResultContent,
   mapUsage,
   toolFunctionId,
   type ToolCallIndex,
 } from './map.js';
+import {
+  appendTranscript,
+  linkChildSession,
+  recordTaskOutcome,
+  setSessionStatus,
+} from './session-link.js';
+import { runTurnSpan } from './trace.js';
 import { buildSession } from './session.js';
 import { listSessions, loadSession, saveSession } from './state.js';
 import type { AgentMessage, FunctionResultMessage, SessionRecord } from './types.js';
@@ -43,6 +52,12 @@ const RunPayloadSchema = z.object({
     .string()
     .optional()
     .describe('iii session id; reuse to resume the same Pi conversation'),
+  parent_session_id: z
+    .string()
+    .optional()
+    .describe(
+      'The session delegating this run. Written to the child session metadata, which is what nests it under its parent in the console — the same link a harness sub-agent carries.',
+    ),
   prompt: z.string().optional().describe('The user prompt for this turn'),
   messages: z
     .array(MessageSchema)
@@ -75,6 +90,20 @@ const RunPayloadSchema = z.object({
 export type RunPayload = z.infer<typeof RunPayloadSchema>;
 export { RunPayloadSchema };
 
+/**
+ * A delegated task. Same shape as a run, except the work is named `task` and
+ * required: an orchestrator firing a trigger has one thing to say, and a
+ * sub-agent with no task is a bug rather than an empty turn.
+ */
+const TaskPayloadSchema = RunPayloadSchema.omit({ prompt: true, messages: true }).extend({
+  task: z
+    .string()
+    .min(1)
+    .describe(
+      "The child's self-contained goal. It cannot see the caller's context, so name every resource it needs.",
+    ),
+});
+
 const SessionIdSchema = z.object({
   session_id: z.string().describe('iii session id returned by pi::run / pi::start'),
 });
@@ -95,6 +124,7 @@ function jsonSchema(schema: z.ZodType): Record<string, unknown> {
 
 const RUN_REQUEST_FORMAT = jsonSchema(RunPayloadSchema);
 const SESSION_ID_FORMAT = jsonSchema(SessionIdSchema);
+const TASK_REQUEST_FORMAT = jsonSchema(TaskPayloadSchema);
 const STEER_REQUEST_FORMAT = jsonSchema(SteerPayloadSchema);
 
 const UsageSchema = z.object({
@@ -216,7 +246,28 @@ export async function executeRun(
   live.set(session_id, placeholder);
 
   try {
-    return await runReserved(iii, cfg, emit, emitRaw, payload, session_id, prompt, placeholder);
+    // A run that names a parent is a sub-agent: give it a linked session first,
+    // because `parent_session_id` only applies on creation, and that link is
+    // what nests it in the console.
+    const linked = payload.parent_session_id
+      ? await linkChildSession(iii, {
+          sessionId: session_id,
+          parentSessionId: payload.parent_session_id,
+          task: prompt,
+        })
+      : { linked: false, detail: '' };
+    if (linked.linked) await setSessionStatus(iii, session_id, 'working');
+    // One turn, one traced scope, with the identity keys the harness stamps.
+    const result = await runTurnSpan(
+      'pi::run turn',
+      { sessionId: session_id, turnId: randomUUID(), kind: 'pi.run', message: prompt },
+      () => runReserved(iii, cfg, emit, emitRaw, payload, session_id, prompt, placeholder),
+    ).catch(async (err) => {
+      if (linked.linked) await setSessionStatus(iii, session_id, 'error', String(err));
+      throw err;
+    });
+    if (linked.linked) await setSessionStatus(iii, session_id, 'done');
+    return result;
   } finally {
     if (live.get(session_id) === placeholder) live.delete(session_id);
   }
@@ -253,10 +304,12 @@ async function runReserved(
   if (payload.model) record.model = payload.model;
 
   // iii context teaches discovery through the CLI; prepend it on a fresh
-  // session only — on resume it is already in the conversation history.
+  // session only — on resume it is already in the conversation history. The
+  // text comes from the `iii-directory` worker, which owns it: this worker
+  // keeps no copy of the prompt or of the skills index.
   const iiiContext = payload.iii_context ?? cfg.iii_context;
-  const promptText =
-    iiiContext && !prior?.session_file ? `${III_CONTEXT_PROMPT}\n\n---\n\n${prompt}` : prompt;
+  const context = iiiContext && !prior?.session_file ? await fetchIiiContext(iii) : null;
+  const promptText = context?.text ? `${context.text}\n\n---\n\n${prompt}` : prompt;
 
   const session = await buildSession({
     cwd: record.cwd || undefined,
@@ -298,7 +351,16 @@ async function runReserved(
       const message = event.message as { role?: string } | undefined;
       if (message?.role !== 'assistant') return;
       const content = mapMessageContent(message);
-      const assistant = makeAssistantMessage(content, record.model, record.usage);
+      // pi resolves the model per turn; remember which one answered so the
+      // record, the fallback message and `pi::status` all name it.
+      record.model = messageModel(message, record.model);
+      const assistant = makeAssistantMessage(
+        content,
+        record.model,
+        record.usage,
+        'end',
+        messageProvider(message),
+      );
       transcript.push(assistant);
       const text = content
         .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
@@ -428,6 +490,82 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
       description:
         'Start a Pi turn and return immediately; watch agent::events (group_id = session_id) for progress and turn_end.',
       request_format: RUN_REQUEST_FORMAT,
+      response_format: START_RESPONSE_FORMAT,
+    },
+  );
+
+  // The sub-agent entrypoint an orchestrator FIRES rather than calls: a trigger
+  // bound to this id delivers a task, the ids come back at once, and the
+  // outcome arrives the way a harness sub-agent's does — on `agent::events`,
+  // in the child session, never as a return value the caller waits for.
+  iii.registerFunction(
+    'pi::task',
+    async (payload: unknown) => {
+      const parsed = TaskPayloadSchema.parse(payload ?? {});
+      const session_id = parsed.session_id ?? randomUUID();
+      if (live.has(session_id)) {
+        return {
+          session_id,
+          started: false,
+          busy: true,
+          reason: 'a run is already active for this session',
+        };
+      }
+      const run: RunPayload = {
+        ...parsed,
+        session_id,
+        prompt: parsed.task,
+      };
+      // Fire-and-forget, and REACTIVE: the caller is not held open for the
+      // length of an agent run. When the task settles, its outcome is written
+      // to state under `agent_tasks/<session id>`, which is what an
+      // orchestrator binds a `state` trigger to and gets woken by — the same
+      // shape a harness sub-agent uses, with no polling and no blocking call.
+      // The turn is persisted as well as streamed. `agent::events` is a live
+      // tape — a console window opened after the run has nothing to replay
+      // from it, which is why a finished sub-agent rendered blank with
+      // `message_count: 0`. The session manager is the durable side, so the
+      // transcript is written there when the turn ends.
+      const transcript: unknown[] = [];
+      const record: Emit = async (sid, event) => {
+        await emit(sid, event);
+        if ((event as { type?: string }).type === 'agent_end') {
+          const messages = (event as { messages?: unknown[] }).messages ?? [];
+          transcript.push(...messages);
+        }
+      };
+      void executeRun(iii, getCfg(), record, emitRaw, run)
+        .then(async (result) => {
+          await appendTranscript(iii, session_id, parsed.task, transcript);
+          await recordTaskOutcome(iii, {
+            session_id,
+            parent_session_id: parsed.parent_session_id,
+            agent: 'pi',
+            task: parsed.task,
+            status: 'done',
+            result: typeof result.result === 'string' ? result.result : undefined,
+            updated_at_ms: Date.now(),
+          });
+        })
+        .catch(async (err) => {
+          console.error(`pi::task background run failed for ${session_id}: ${String(err)}`);
+          await markSessionError(iii, session_id);
+          await recordTaskOutcome(iii, {
+            session_id,
+            parent_session_id: parsed.parent_session_id,
+            agent: 'pi',
+            task: parsed.task,
+            status: 'error',
+            error: String(err),
+            updated_at_ms: Date.now(),
+          });
+        });
+      return { session_id, started: true };
+    },
+    {
+      description:
+        'Delegate one task to Pi and return its session id immediately — the sub-agent shape: it never parks the caller. The outcome is written to state under scope `agent_tasks`, key the child session id, so bind a `state` trigger on that BEFORE calling and be woken by it; progress streams onto agent::events (group_id = session_id). Pass `parent_session_id` to nest the child under the session that delegated it.',
+      request_format: TASK_REQUEST_FORMAT,
       response_format: START_RESPONSE_FORMAT,
     },
   );

@@ -529,8 +529,12 @@ function AssistantMessage({
       data-message-role="assistant"
     >
       <header className="flex flex-wrap items-center gap-2 font-sans text-base text-ink-ghost sm:text-sm">
+        {/* An agent worker names itself on the message; the harness's own
+            turns do not. Fall back to the session's configured profile name,
+            then to the literal "Agent" — a model id is not a name, since two
+            agents can run the same model. */}
         <span className="font-medium text-ink-faint">
-          {agentName ?? 'Agent'}
+          {message.agent || agentName || 'Agent'}
         </span>
         {copySource !== undefined && !message.streaming ? (
           <CopyMessageButton

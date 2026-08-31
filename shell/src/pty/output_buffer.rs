@@ -88,6 +88,25 @@ impl OutputBuffer {
             next_sequence: self.next_sequence,
         }
     }
+
+    /// What the buffer holds right now, for `shell::pty::sessions`.
+    pub fn stats(&self) -> BufferStats {
+        BufferStats {
+            sequence: self.next_sequence.saturating_sub(1),
+            frames: self.frames.len(),
+            frame_bytes: self.total_bytes,
+            truncated: self.dropped_through_sequence > 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BufferStats {
+    /// Sequence of the last frame produced (0 before the first one).
+    pub sequence: u64,
+    pub frames: usize,
+    pub frame_bytes: usize,
+    pub truncated: bool,
 }
 
 #[cfg(test)]

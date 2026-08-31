@@ -60,6 +60,13 @@
           },
           {
             "properties": {
+              "agent": {
+                "description": "The AGENT worker that produced this turn (`claude-code`, `pi`), when one says so. Distinct from `provider`, which names who served the model: two agents can run the same model, and a reader given only a model cannot tell which agent answered. Optional, because the harness's own turns have no agent worker to name.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "content": {
                 "items": {
                   "$ref": "#/definitions/ContentBlock"

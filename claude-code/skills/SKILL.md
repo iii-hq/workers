@@ -3,7 +3,8 @@ name: claude-code
 description: >-
   Run headless Claude Code turns over the iii bus — file edits, shell, and
   web against any host directory — with verbatim message streaming, session
-  resume, and full Agent SDK option pass-through.
+  resume, and full Agent SDK option pass-through. Also serves Claude Code as
+  an interactive terminal page on the console.
 ---
 
 # claude-code
@@ -80,3 +81,27 @@ instead of bolting anything onto this one.
 - `claude::sessions::list` — every session this worker has run.
 - `run::start_and_wait` — alias for `claude::run` under the entrypoint the
   console and acp worker drive, so both run Claude Code with no changes.
+
+## The terminal half
+
+The same worker also runs Claude Code as a terminal page on the console: it
+installs the CLI on the terminal host (the `shell` worker's), equips a
+workspace with the iii skills and engine notes, and opens Claude in a
+`shell::pty` session. A person opens it; the session's turns stream onto
+`agent::events` with the same frames a `claude::run` turn produces, so both
+halves render alike. Use it when an operator wants to talk to Claude Code
+interactively — with login handled in the terminal — or wants an agent that
+can scaffold and register new iii workers from inside the engine. `pi`
+is the same terminal shape with the pi agent.
+
+Boundaries:
+
+- `claude::terminal::describe`, `claude::terminal::activity`, and
+  `claude::ui-content` are console plumbing, flagged internal. Do not call
+  them; a terminal is opened by a person, from the page.
+- The command is fixed to Claude Code. Use the `shell` worker for anything
+  else — including `shell::pty::sessions` to see what a terminal is doing.
+- The workspace must be reachable by the `shell` worker: it owns the session.
+- `claude::auth::status` reports which plan a terminal session spends
+  (subscription vs API key, and an API key silently outranks a subscription
+  login). The page shows it in the status bar; agents are denied it.

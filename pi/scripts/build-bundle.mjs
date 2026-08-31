@@ -13,6 +13,10 @@
  *   2. `@earendil-works/pi-coding-agent` runs the agent loop in-process,
  *      so there is no native CLI to resolve at runtime — unlike the
  *      subprocess-backed agent SDKs, the bundle is self-contained.
+ *   3. The console page assets are compiled in through
+ *      `src/ui-assets.generated.ts` (written by `ui/build.mjs`), so run
+ *      `npm run build:ui` before bundling or the worker ships without its
+ *      terminal page.
  */
 
 import { readFile } from 'node:fs/promises';

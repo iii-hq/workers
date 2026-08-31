@@ -2568,6 +2568,28 @@
   width: 20px;
   height: 20px;
 }
+[data-iii-ui="shell"] .shui-terminal-font {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-terminal-font-label {
+  margin-right: 2px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+[data-iii-ui="shell"] .shui-terminal-font output {
+  min-width: 17px;
+  text-align: center;
+}
+[data-iii-ui="shell"] .shui-terminal-font .shui-terminal-action:disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
 [data-iii-ui="shell"] .shui-terminal-jump {
   position: absolute;
   right: 12px;
