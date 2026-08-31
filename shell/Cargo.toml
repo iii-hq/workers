@@ -2,7 +2,7 @@
 
 [package]
 name = "shell"
-version = "0.11.13-rc.3"
+version = "0.12.0"
 edition = "2021"
 publish = false
 
@@ -37,6 +37,7 @@ url = "2"
 base64 = "0.22"
 walkdir = "2"
 globset = "0.4"
+ignore = "0.4"
 sha2 = "0.10"
 portable-pty = "0.9.0"
 

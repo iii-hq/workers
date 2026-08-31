@@ -32,8 +32,34 @@ type PiMessage = { role?: string; content?: unknown };
 
 export type ToolCallIndex = Map<string, { function_id: string; started_at: number }>;
 
+/**
+ * pi's built-in tools are this worker's; a namespaced name keeps its server.
+ *
+ * One function for both halves. A headless turn and a terminal turn have to
+ * name the same tool the same way, or the console shows one agent calling
+ * `pi::bash` beside another calling something else for the same work.
+ */
 export function toolFunctionId(name: string): string {
-  return name.startsWith('mcp__') ? name.replace(/^mcp__/, '').replace(/__/g, '::') : `pi::${name}`;
+  if (!name) return 'pi::tool';
+  if (name.startsWith('mcp__')) return name.replace(/^mcp__/, '').replace(/__/g, '::');
+  return name.includes('__') ? name.replace(/__/g, '::') : `pi::${name}`;
+}
+
+/**
+ * The model that actually answered. pi resolves one per turn — its settings
+ * default when the caller named none — and puts it on the message, so the
+ * configured value ("" for "pi decides") is a fallback, not the answer. Without
+ * this the console renders a nameless agent beside a named one.
+ */
+export function messageModel(message: unknown, fallback: string): string {
+  const named = (message as { model?: unknown } | null)?.model;
+  return typeof named === 'string' && named ? named : fallback;
+}
+
+/** The provider that served that model, when pi names one. */
+export function messageProvider(message: unknown): string {
+  const named = (message as { provider?: unknown } | null)?.provider;
+  return typeof named === 'string' ? named : '';
 }
 
 /** Extract the text/thinking blocks from a Pi assistant message. */
@@ -79,6 +105,7 @@ export function makeAssistantMessage(
   model: string,
   usage: Usage | null,
   stop_reason = 'end',
+  provider = '',
 ): AssistantMessage {
   return {
     role: 'assistant',
@@ -87,7 +114,11 @@ export function makeAssistantMessage(
     error_message: null,
     usage,
     model,
-    provider: 'pi',
+    // `agent` is this worker; `provider` is whoever served the model. pi runs
+    // on whichever provider its auth store is set up for, so the two are
+    // different answers and a reader needs both.
+    agent: 'pi',
+    provider,
     timestamp: Date.now(),
   };
 }

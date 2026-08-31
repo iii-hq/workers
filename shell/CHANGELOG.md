@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.12.0
+
+### Added
+
+- **A page can take back its own orphaned session** — `shell::pty::adopt`
+  re-owns an UNATTACHED session without a reconnect token, for the browser
+  that lost its storage while the agent kept working. It refuses a session
+  someone is attached to, and refuses a console page that is not the
+  session's own; credentials rotate, so the previous owner's are dead.
+  `shell::pty::sessions` now reports each session's `ui` — which console page
+  it belongs to, never which browser — so a page can recognise its orphan.
+
+- **The terminal's type size is the reader's choice** — every pane carries a
+  stepper (8–40 px, 14 by default; Ctrl or ⌘ + scroll does the same), and the
+  size is stored per browser rather than in this worker's configuration: the
+  same engine read from a laptop and from a wall display wants two different
+  answers. Every terminal the console renders shares the one value, agent-CLI
+  pages included, and a change refits the pane so the PTY hears the new
+  geometry through the ordinary resize path.
+
+- **A PTY session can run one named program** — `shell::pty::open` takes
+  `program`, `args`, and `env`. Without them a session is still the user's
+  login shell. A caller that can open a login shell can already run any
+  program by typing it, so this is reach rather than privilege: it lets a
+  session BE one program, with no shell around it, which is what an agent CLI
+  in a console page needs. Per-session `env` follows the same deny-only rule
+  as `shell::exec`'s per-call env — an exec-hijacking key (`PATH`, `LD_*`,
+  `DYLD_*`, `BASH_ENV`, ...) refuses the whole call.
+- **`shell::pty::sessions`** — live sessions with their program, cwd, status,
+  last sequence number, replayable frames/bytes, and current output target.
+  No credentials. It separates a terminal that shows nothing because nothing
+  was produced from one whose frames the browser dropped.
+
+### Fixed
+
+- **A per-call env key now has to BE a key.** `shell::exec`, `shell::exec_bg`
+  and `shell::pty::open` checked the deny-list against the string handed in,
+  and an environment entry is one `key=value` string — so `PATH=/tmp/evil`
+  read as an unknown (therefore allowed) name, passed the `PATH` rule, and
+  still handed the child a `PATH`. A key must now be an environment variable
+  name (`[A-Za-z_][A-Za-z0-9_]*`): an empty key, a key holding a NUL, and any
+  key carrying `=` are refused (`S210` on the exec surface).
+
+### Changed
+
+- The output handler a session may deliver to is validated by SHAPE rather
+  than by this worker's own page:
+  `iii::<worker>-ui::pty-output::console-<browser-id>`. A worker that runs its
+  own program in a session serves its own console page and therefore its own
+  handler; a session still cannot be pointed at an arbitrary function.
+- The `shell::pty::*` functions are tagged `trace_hidden`, so the console's
+  traces page no longer opens with one span group per keystroke and redraw.
+  They are one funnel click away (see `docs/sops/trace-hidden-functions.md`).
+
 ## 0.10.3
 
 ### Fixed

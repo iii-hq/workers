@@ -21,6 +21,13 @@ engine ids directly. One wrapper survives for callers that can only
 reach the `directory::` namespace: `directory::engine::functions::info`
 proxies a single function's schema (see its row below).
 
+This worker is where an agent's identity text LIVES. `skills/system-prompts/iii-runtime.md`
+ships here and is the one copy of "how to work against a live iii engine" —
+`claude-code` and `pi` fetch it with `directory::system-prompts::get
+name=iii-runtime` (plus `directory::skills::index`) for both their headless
+turns and their console terminals, rather than compiling a prompt of their own.
+Edit that file and every agent reads the edit; no worker release involved.
+
 Skills and system prompts are sourced from `skills_folder`; agent profiles
 use the dedicated `agents_folder`. Writes are the
 **`directory::skills::download*`** functions, which pull markdown from either

@@ -61,6 +61,22 @@ rules:
   # build-error string (e.g. a host_root path). Operators/console reach it via
   # the privileged dispatch path that bypasses this agent gate.
   - '!shell::config-status'
+  # The agent-CLI terminals (the terminal halves of claude-code and pi) are opened by
+  # a person from the console: their describe/activity/ui-content surfaces are
+  # plumbing, `activity` writes to the events stream on the session's behalf,
+  # and `auth::status` carries the operator's account, organization, and
+  # billing mode. The console reaches all of it as user-initiated calls, not
+  # this path.
+  - '!claude::terminal::*'
+  - '!claude::auth::status'
+  - '!claude::ui-content'
+  - '!pi::terminal::*'
+  - '!pi::auth::status'
+  - '!pi::ui-content'
+  # Read-only terminal diagnostics (program, cwd, sequence, replay state — no
+  # credentials), allowed ahead of the lifecycle deny below so an agent asked
+  # why a terminal shows nothing can answer without an operator.
+  - shell::pty::sessions
   # Interactive PTY lifecycle is driven only by the console UI.
   - '!shell::pty::*'
   - '!oauth::anthropic::login'

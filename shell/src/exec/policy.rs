@@ -92,8 +92,30 @@ pub const DANGEROUS_ENV_KEYS: &[&str] = &[
 /// (PATH/IFS/HOME, glibc lookup paths, interpreter startup keys).
 /// Case-sensitive: env var names are case-sensitive on Unix and the
 /// dangerous names are upper-case.
-fn is_dangerous_env_key(key: &str) -> bool {
+/// Shared with the PTY surface, which applies the same deny-only rule to a
+/// session's per-call env.
+pub fn is_dangerous_env_key(key: &str) -> bool {
     key.starts_with("LD_") || key.starts_with("DYLD_") || DANGEROUS_ENV_KEYS.contains(&key)
+}
+
+/// True when `key` is not an environment variable NAME, and therefore says
+/// nothing reliable about the variable the child will actually receive.
+///
+/// This gate exists for the deny-list above, not for tidiness. An environment
+/// is a list of `key=value` strings: a key that carries its own `=` is
+/// serialized verbatim, so `PATH=/tmp/evil` is checked as the harmless name
+/// `PATH=/tmp/evil`, reaches the child as `PATH=/tmp/evil=<value>`, and hands
+/// it a `PATH` the `PATH` rule was written to refuse. An empty key and a key
+/// holding a NUL are refused for the same reason: what arrives is not what was
+/// checked. The accepted shape is the portable one, `[A-Za-z_][A-Za-z0-9_]*`.
+/// Shared with the PTY surface, which gates a session's env the same way.
+pub fn is_invalid_env_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    match chars.next() {
+        None => true,
+        Some(first) if !(first.is_ascii_alphabetic() || first == '_') => true,
+        Some(_) => !chars.all(|c| c.is_ascii_alphanumeric() || c == '_'),
+    }
 }
 
 /// Validated per-call exec overrides, ready to apply in `build_command`.
@@ -269,6 +291,16 @@ fn static_code(code: &str) -> &'static str {
 /// the agent always knows whether its env took effect.
 fn validate_env(env: &BTreeMap<String, String>) -> Result<BTreeMap<String, String>, ExecError> {
     for key in env.keys() {
+        if is_invalid_env_key(key) {
+            return Err(ExecError::new(
+                "S210",
+                format!(
+                    "env key '{key}' is not an environment variable name \
+                     ([A-Za-z_][A-Za-z0-9_]*); a key carrying '=' would set a \
+                     different variable than the one checked"
+                ),
+            ));
+        }
         if is_dangerous_env_key(key) {
             return Err(ExecError::new(
                 "S210",
@@ -407,6 +439,22 @@ mod tests {
             Some("/work/session-7")
         );
         assert_eq!(scope_root_for_target(&Target::Host, None), None);
+    }
+
+    #[test]
+    fn a_key_that_smuggles_its_own_assignment_is_not_a_key() {
+        // `PATH=/tmp/evil` is not the name `PATH`, so the deny-list says
+        // nothing about it — and an environment entry is one `key=value`
+        // string, so the child would receive a PATH regardless.
+        assert!(!is_dangerous_env_key("PATH=/tmp/evil"));
+        assert!(is_invalid_env_key("PATH=/tmp/evil"));
+
+        for key in ["", "=", "9LIVES", "A B", "NUL\0KEY", "FOO.BAR", "FOO-BAR"] {
+            assert!(is_invalid_env_key(key), "{key:?} must be refused");
+        }
+        for key in ["PATH", "NODE_ENV", "_HIDDEN", "III_URL", "x9"] {
+            assert!(!is_invalid_env_key(key), "{key} is a usable name");
+        }
     }
 
     #[test]

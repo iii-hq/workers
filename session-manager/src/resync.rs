@@ -113,7 +113,7 @@ fn entry_event(
         } if *revision > 0 => SessionEvent::MessageUpdated(MessageUpdatedEvent {
             session_id: session_id.to_string(),
             entry_id: id.clone(),
-            message: message.clone(),
+            message: (**message).clone(),
             revision: *revision,
             origin: origin.clone(),
             timestamp: *timestamp,
@@ -130,7 +130,7 @@ fn entry_event(
             session_id: session_id.to_string(),
             entry_id: id.clone(),
             parent_id: parent_id.clone(),
-            message: Some(message.clone()),
+            message: Some((**message).clone()),
             custom: None,
             origin: origin.clone(),
             timestamp: *timestamp,
@@ -229,10 +229,10 @@ mod tests {
             timestamp: 2,
             revision,
             origin: None,
-            message: AgentMessage::User {
+            message: Box::new(AgentMessage::User {
                 content: vec![],
                 timestamp: 2,
-            },
+            }),
         }
     }
 

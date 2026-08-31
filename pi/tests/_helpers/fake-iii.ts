@@ -42,6 +42,14 @@ export function fakeIii(): FakeIii {
         return null;
       }
       if (req.function_id === 'state::get') return state.get(`${scope}/${key}`) ?? null;
+      // The iii context lives in the `iii-directory` worker, so a turn that
+      // wants it asks the bus for it — these are the two calls it makes.
+      if (req.function_id === 'directory::system-prompts::get') {
+        return { name: payload.name, body: '# iii runtime\n\niii trigger engine::functions::list' };
+      }
+      if (req.function_id === 'directory::skills::index') {
+        return { body: '# Skills index\n\n## shell\n\nRun commands.', workers_count: 1 };
+      }
       if (req.function_id === 'state::list') {
         return [...state.entries()].filter(([k]) => k.startsWith(`${scope}/`)).map(([, v]) => v);
       }

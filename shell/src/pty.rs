@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -28,13 +28,16 @@ mod session;
 use output_buffer::OutputFrame;
 use output_buffer::{OutputBuffer, MAX_OUTPUT_BUFFER_BYTES};
 pub use protocol::{
-    AttachRequest, AttachResponse, CloseRequest, CloseResponse, DetachRequest, DetachResponse,
-    OpenRequest, OpenResponse, ResizeRequest, ResizeResponse, WriteRequest, WriteResponse,
+    AdoptRequest, AttachRequest, AttachResponse, CloseRequest, CloseResponse, DetachRequest,
+    DetachResponse, OpenRequest, OpenResponse, ResizeRequest, ResizeResponse, SessionSummary,
+    SessionsRequest, SessionsResponse, WriteRequest, WriteResponse,
 };
 use session::{SessionControl, SessionStatus};
 
 const MAX_SESSIONS: usize = 16;
 const MAX_INPUT_BYTES: usize = 64 * 1024;
+const OUTPUT_FUNCTION_INFIX: &str = "::pty-output::console-";
+#[cfg(test)]
 const OUTPUT_FUNCTION_PREFIX: &str = "iii::shell-ui::pty-output::console-";
 const TERMINATION_POLL_INTERVAL: StdDuration = StdDuration::from_millis(10);
 const PORTABLE_TERMINATION_WAIT: StdDuration = StdDuration::from_secs(2);
@@ -71,7 +74,7 @@ struct PtySession {
     output: Mutex<OutputBuffer>,
     status: Mutex<SessionStatus>,
     cwd: String,
-    #[cfg(test)]
+    program: Option<String>,
     pid: Option<u32>,
     #[cfg(unix)]
     process_group: Mutex<Option<libc::pid_t>>,
@@ -164,9 +167,25 @@ impl PtyManager {
         let spawn_cwd = cwd.clone();
         let cols = req.cols;
         let rows = req.rows;
-        let program = self.program.clone();
+        // The configured program (tests, and any future policy) wins over the
+        // request, so a fixed-program deployment stays fixed.
+        let program = match &self.program {
+            Some(program) => Some(program.to_string()),
+            None => req.program.clone().filter(|program| !program.is_empty()),
+        };
+        let args = req.args.clone().unwrap_or_default();
+        let env = req.env.clone().unwrap_or_default();
+        reject_dangerous_env(&env)?;
+        let spawn_program = program.clone();
         let spawned = tokio::task::spawn_blocking(move || {
-            spawn_process(&spawn_cwd, cols, rows, program.as_deref())
+            spawn_process(
+                &spawn_cwd,
+                cols,
+                rows,
+                spawn_program.as_deref(),
+                &args,
+                &env,
+            )
         })
         .await
         .map_err(|error| format!("terminal spawn task failed: {error}"))?
@@ -193,7 +212,7 @@ impl PtyManager {
             output: Mutex::new(OutputBuffer::new(MAX_OUTPUT_BUFFER_BYTES)),
             status: Mutex::new(SessionStatus::Attached),
             cwd: cwd.display().to_string(),
-            #[cfg(test)]
+            program: program.clone(),
             pid,
             #[cfg(unix)]
             process_group: Mutex::new(process_group),
@@ -219,6 +238,7 @@ impl PtyManager {
             reconnect_token,
             pid,
             cwd: cwd.display().to_string(),
+            program,
         };
         if let Some(request_key) = request_key {
             open_requests.insert(request_key, response.clone());
@@ -450,6 +470,100 @@ impl PtyManager {
         })
     }
 
+    /// Take back a session whose reconnect token is gone.
+    ///
+    /// A browser that loses its storage loses the token, and the program keeps
+    /// running with nobody able to reach it — an agent still working in a
+    /// workspace, invisible. Adoption is the way back, under two rules that
+    /// keep it from being a way in:
+    ///
+    /// 1. The session must be unattached. A live viewer's terminal can never
+    ///    be taken; only one nobody is holding.
+    /// 2. The new output handler must name the same console page as the old
+    ///    one, so the claude page adopts claude sessions and nothing else. The
+    ///    browser id may differ — that is the whole point — but the page may
+    ///    not.
+    ///
+    /// Credentials rotate, so whatever the previous owner still held is dead.
+    pub async fn adopt(&self, req: AdoptRequest) -> Result<AttachResponse, String> {
+        validate_size(req.cols, req.rows)?;
+        validate_output_function_id(&req.output_function_id)?;
+        let caller_worker_id = require_caller(req.caller_worker_id.as_deref())?;
+        let session = self.session(&req.session_id).await?;
+        let lifecycle = session.lifecycle.lock().await;
+        ensure_session_open(&lifecycle)?;
+
+        {
+            let control = session.control.lock().await;
+            let wanted = output_ui_name(&req.output_function_id);
+            let held = output_ui_name(control.output_function_id());
+            if wanted.is_none() || wanted != held {
+                return Err("terminal session belongs to another console page".to_string());
+            }
+        }
+
+        resize_session(session.clone(), req.cols, req.rows).await?;
+
+        let mut control = session.control.lock().await;
+        let replay = session
+            .output
+            .lock()
+            .map_err(|_| "terminal output lock poisoned".to_string())?
+            .frames_after(req.after_sequence);
+        let credentials = control.adopt(caller_worker_id, &req.output_function_id)?;
+        let mut status = session
+            .status
+            .lock()
+            .map_err(|_| "terminal status lock poisoned".to_string())?;
+        if !matches!(*status, SessionStatus::Exited { .. }) {
+            *status = SessionStatus::Attached;
+        }
+        let status = status.clone();
+
+        Ok(AttachResponse {
+            access_key: credentials.access_key,
+            reconnect_token: credentials.reconnect_token,
+            frames: replay.frames,
+            truncated: replay.truncated,
+            next_sequence: replay.next_sequence,
+            cwd: session.cwd.clone(),
+            status,
+        })
+    }
+
+    /// Read-only view of what the worker holds, for diagnosing a terminal
+    /// that shows nothing: how far the sequence got, how much is still
+    /// replayable, and where output is going. No credentials.
+    pub async fn sessions(&self) -> SessionsResponse {
+        let sessions = self.sessions.read().await.clone();
+        let mut summaries = Vec::with_capacity(sessions.len());
+        for (session_id, session) in sessions {
+            let stats = match session.output.lock() {
+                Ok(output) => output.stats(),
+                Err(_) => continue,
+            };
+            let control = session.control.lock().await;
+            let attached = control.status() == SessionStatus::Attached;
+            summaries.push(SessionSummary {
+                session_id,
+                cwd: session.cwd.clone(),
+                program: session.program.clone(),
+                pid: session.pid,
+                status: control.status(),
+                sequence: stats.sequence,
+                frames: stats.frames,
+                frame_bytes: stats.frame_bytes,
+                truncated: stats.truncated,
+                output_function_id: attached.then(|| control.output_function_id().to_string()),
+                ui: output_ui_name(control.output_function_id()).map(str::to_string),
+            });
+        }
+        summaries.sort_by(|left, right| left.session_id.cmp(&right.session_id));
+        SessionsResponse {
+            sessions: summaries,
+        }
+    }
+
     async fn session(&self, session_id: &str) -> Result<Arc<PtySession>, String> {
         let sessions = self.sessions.read().await;
         sessions
@@ -616,8 +730,8 @@ pub fn register(iii: &IIIClient, manager: PtyManager) {
                 let manager = manager.clone();
                 async move { manager.open(req).await.map_err(Error::Handler) }
             })
-            .description("Open a persistent host PTY running the user's login shell.")
-            .metadata(serde_json::json!({ "internal": true })),
+            .description("Open a persistent host PTY running the user's login shell, or the program named in `program`.")
+            .metadata(serde_json::json!({ "internal": true, "trace_hidden": true })),
         );
     }
     {
@@ -629,7 +743,7 @@ pub fn register(iii: &IIIClient, manager: PtyManager) {
                 async move { manager.write(req).await.map_err(Error::Handler) }
             })
             .description("Write base64-encoded keyboard input to a PTY session.")
-            .metadata(serde_json::json!({ "internal": true })),
+            .metadata(serde_json::json!({ "internal": true, "trace_hidden": true })),
         );
     }
     {
@@ -641,7 +755,7 @@ pub fn register(iii: &IIIClient, manager: PtyManager) {
                 async move { manager.resize(req).await.map_err(Error::Handler) }
             })
             .description("Resize a PTY session in terminal columns and rows.")
-            .metadata(serde_json::json!({ "internal": true })),
+            .metadata(serde_json::json!({ "internal": true, "trace_hidden": true })),
         );
     }
     {
@@ -653,7 +767,7 @@ pub fn register(iii: &IIIClient, manager: PtyManager) {
                 async move { manager.detach(req).await.map_err(Error::Handler) }
             })
             .description("Detach a browser output target while retaining its PTY session.")
-            .metadata(serde_json::json!({ "internal": true })),
+            .metadata(serde_json::json!({ "internal": true, "trace_hidden": true })),
         );
     }
     {
@@ -665,7 +779,34 @@ pub fn register(iii: &IIIClient, manager: PtyManager) {
                 async move { manager.attach(req).await.map_err(Error::Handler) }
             })
             .description("Attach to a retained PTY session and replay buffered output.")
-            .metadata(serde_json::json!({ "internal": true })),
+            .metadata(serde_json::json!({ "internal": true, "trace_hidden": true })),
+        );
+    }
+    {
+        let manager = manager.clone();
+        iii.register_function(
+            "shell::pty::adopt",
+            RegisterFunction::new_async(move |req: AdoptRequest| {
+                let manager = manager.clone();
+                async move { manager.adopt(req).await.map_err(Error::Handler) }
+            })
+            .description(
+                "Take back an unattached PTY session whose reconnect token is gone, from the console page that owns it. Refuses a session someone is attached to, and a page that is not the session's own.",
+            )
+            .metadata(serde_json::json!({ "internal": true, "trace_hidden": true })),
+        );
+    }
+    {
+        let manager = manager.clone();
+        iii.register_function(
+            "shell::pty::sessions",
+            RegisterFunction::new_async(move |_req: SessionsRequest| {
+                let manager = manager.clone();
+                async move { Ok::<_, Error>(manager.sessions().await) }
+            })
+            .description(
+                "Live PTY sessions with their program, cwd, sequence, replay buffer size, and output target. Diagnostics only — no credentials.",
+            ),
         );
     }
     iii.register_function(
@@ -675,7 +816,7 @@ pub fn register(iii: &IIIClient, manager: PtyManager) {
             async move { manager.close(req).await.map_err(Error::Handler) }
         })
         .description("Terminate and close a PTY session.")
-        .metadata(serde_json::json!({ "internal": true })),
+        .metadata(serde_json::json!({ "internal": true, "trace_hidden": true })),
     );
 }
 
@@ -684,6 +825,8 @@ fn spawn_process(
     cols: u16,
     rows: u16,
     program: Option<&str>,
+    args: &[String],
+    env: &BTreeMap<String, String>,
 ) -> anyhow::Result<SpawnedPty> {
     let pair = native_pty_system().openpty(PtySize {
         rows,
@@ -692,13 +835,22 @@ fn spawn_process(
         pixel_height: 0,
     })?;
     let mut command = match program {
-        Some(program) => CommandBuilder::new(program),
+        Some(program) => {
+            let mut command = CommandBuilder::new(program);
+            command.args(args);
+            command
+        }
         None => CommandBuilder::new_default_prog(),
     };
     command.cwd(cwd);
     command.env("TERM", "xterm-256color");
     command.env("COLORTERM", "truecolor");
     command.env("TERM_PROGRAM", "iii");
+    // Per-call env last: a caller may override TERM* for its own program, and
+    // the dangerous keys are already refused before the spawn.
+    for (key, value) in env {
+        command.env(key, value);
+    }
 
     let child = pair.slave.spawn_command(command)?;
     let reader = pair.master.try_clone_reader()?;
@@ -720,10 +872,53 @@ fn validate_size(cols: u16, rows: u16) -> Result<(), String> {
     Ok(())
 }
 
+/// Per-session env is deny-only, exactly like `shell::exec`'s per-call env:
+/// the exec-hijacking keys are never settable, everything else is.
+fn reject_dangerous_env(env: &BTreeMap<String, String>) -> Result<(), String> {
+    for key in env.keys() {
+        // Syntax first, and for the deny-list's sake: an environment entry is
+        // one `key=value` string, so a key carrying its own `=` is checked
+        // under one name and delivered under another — `PATH=/tmp/evil` passes
+        // the `PATH` rule and still hands the child a `PATH`.
+        if crate::exec::policy::is_invalid_env_key(key) {
+            return Err(format!(
+                "terminal env key '{key}' is not an environment variable name \
+                 ([A-Za-z_][A-Za-z0-9_]*); remove it"
+            ));
+        }
+        if crate::exec::policy::is_dangerous_env_key(key) {
+            return Err(format!(
+                "terminal env key '{key}' is never settable (exec-hijacking key); remove it"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Output goes to a browser-registered console handler and nowhere else:
+/// `iii::<worker>-ui::pty-output::console-<browser-id>`. The `<worker>-ui`
+/// segment is not pinned to the shell's own page, because a worker that runs
+/// its own program in a session (an agent CLI) owns its own console page and
+/// therefore its own handler prefix. The SHAPE is what carries the guarantee
+/// — a session cannot be pointed at an arbitrary function on the bus.
 fn validate_output_function_id(function_id: &str) -> Result<(), String> {
-    let Some(browser_id) = function_id.strip_prefix(OUTPUT_FUNCTION_PREFIX) else {
-        return Err("terminal output function is not a shell UI handler".to_string());
+    let malformed = || "terminal output function is not a console UI handler".to_string();
+    let Some(rest) = function_id.strip_prefix("iii::") else {
+        return Err(malformed());
     };
+    let Some((ui, browser_id)) = rest.split_once(OUTPUT_FUNCTION_INFIX) else {
+        return Err(malformed());
+    };
+    let ui_name = ui.strip_suffix("-ui").ok_or_else(malformed)?;
+    if ui_name.is_empty()
+        || ui_name.len() > 64
+        || !ui_name.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
+        || !ui_name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        return Err(malformed());
+    }
     if browser_id.is_empty()
         || browser_id.len() > 128
         || !browser_id
@@ -733,6 +928,16 @@ fn validate_output_function_id(function_id: &str) -> Result<(), String> {
         return Err("terminal output function has an invalid browser id".to_string());
     }
     Ok(())
+}
+
+/// The `<name>` in `iii::<name>-ui::pty-output::console-<browser>`: which
+/// console page a handler belongs to, with the browser it belongs to left out.
+fn output_ui_name(function_id: &str) -> Option<&str> {
+    function_id
+        .strip_prefix("iii::")?
+        .split_once(OUTPUT_FUNCTION_INFIX)?
+        .0
+        .strip_suffix("-ui")
 }
 
 fn require_caller(caller_worker_id: Option<&str>) -> Result<&str, String> {
@@ -1051,6 +1256,7 @@ mod tests {
 
     use super::*;
 
+    #[derive(Debug)]
     struct HarnessOpen {
         session_id: String,
         access_key: String,
@@ -1169,10 +1375,48 @@ mod tests {
             }
         }
 
+        /// A manager with no configured program, so the request decides what
+        /// the session runs — the shape another worker's console page uses.
+        async fn unpinned() -> Self {
+            let workspace = tempfile::tempdir().unwrap();
+            let config = CoderConfig {
+                base_paths: vec![workspace.path().to_path_buf()],
+                ..CoderConfig::default()
+            };
+            let resolver = Arc::new(PathResolver::new(&config).unwrap());
+            let manager = PtyManager::new(
+                IIIClient::new("ws://127.0.0.1:1"),
+                Arc::new(RwLock::new(resolver)),
+            );
+
+            Self {
+                manager,
+                caller_worker_id: "pty-test-worker".to_string(),
+                cwd: workspace.path().display().to_string(),
+                output_function_id: format!(
+                    "iii::claude-ui::pty-output::console-{}",
+                    Uuid::new_v4()
+                ),
+                _workspace: workspace,
+            }
+        }
+
         async fn open(&self) -> HarnessOpen {
+            self.open_request(None, None, None).await.unwrap()
+        }
+
+        async fn open_request(
+            &self,
+            program: Option<&str>,
+            args: Option<Vec<String>>,
+            env: Option<BTreeMap<String, String>>,
+        ) -> Result<HarnessOpen, String> {
             let opened = self
                 .manager
                 .open(OpenRequest {
+                    program: program.map(str::to_string),
+                    args,
+                    env,
                     request_id: None,
                     cwd: self.cwd.clone(),
                     cols: 80,
@@ -1180,14 +1424,13 @@ mod tests {
                     output_function_id: self.output_function_id.clone(),
                     caller_worker_id: Some(self.caller_worker_id.clone()),
                 })
-                .await
-                .unwrap();
+                .await?;
 
-            HarnessOpen {
+            Ok(HarnessOpen {
                 session_id: opened.session_id,
                 access_key: opened.access_key,
                 reconnect_token: opened.reconnect_token,
-            }
+            })
         }
 
         async fn write(&self, opened: &HarnessOpen, data: &[u8]) {
@@ -1310,6 +1553,9 @@ mod tests {
         let opened = harness
             .manager
             .open(OpenRequest {
+                program: None,
+                args: None,
+                env: None,
                 request_id: None,
                 cwd: harness.cwd.clone(),
                 cols: 80,
@@ -1350,6 +1596,9 @@ mod tests {
         let harness = PtyTestHarness::new("/bin/sh").await;
         let request_id = Uuid::new_v4().to_string();
         let open = || OpenRequest {
+            program: None,
+            args: None,
+            env: None,
             request_id: Some(request_id.clone()),
             cwd: harness.cwd.clone(),
             cols: 80,
@@ -1595,6 +1844,9 @@ mod tests {
         let open_task = tokio::spawn(async move {
             open_manager
                 .open(OpenRequest {
+                    program: None,
+                    args: None,
+                    env: None,
                     request_id: None,
                     cwd,
                     cols: 80,
@@ -1920,6 +2172,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_page_adopts_its_own_orphan_without_a_token() {
+        // What a browser that lost its storage looks like from here: the
+        // session is detached, and the caller has no reconnect token to offer.
+        let harness = PtyTestHarness::new("/bin/sh").await;
+        let opened = harness.open().await;
+        harness.detach(&opened).await;
+        let another_browser = format!("{OUTPUT_FUNCTION_PREFIX}{}", Uuid::new_v4());
+
+        let adopted = harness
+            .manager
+            .adopt(AdoptRequest {
+                session_id: opened.session_id.clone(),
+                output_function_id: another_browser.clone(),
+                cols: 80,
+                rows: 24,
+                after_sequence: 0,
+                caller_worker_id: Some(harness.caller_worker_id.clone()),
+            })
+            .await
+            .unwrap();
+
+        assert_ne!(adopted.access_key, opened.access_key);
+        assert_ne!(adopted.reconnect_token, opened.reconnect_token);
+        // The old credentials are dead, so the previous owner cannot write to
+        // a terminal it no longer holds.
+        assert!(harness
+            .manager
+            .attach(AttachRequest {
+                request_id: None,
+                session_id: opened.session_id.clone(),
+                reconnect_token: opened.reconnect_token.clone(),
+                output_function_id: another_browser,
+                cols: 80,
+                rows: 24,
+                after_sequence: 0,
+                caller_worker_id: Some(harness.caller_worker_id.clone()),
+            })
+            .await
+            .is_err());
+        assert!(
+            harness
+                .close(&opened.session_id, &adopted.access_key)
+                .await
+                .closed
+        );
+    }
+
+    #[tokio::test]
+    async fn adoption_refuses_a_live_terminal_and_a_foreign_page() {
+        let harness = PtyTestHarness::new("/bin/sh").await;
+        let opened = harness.open().await;
+        let request = |output: String| AdoptRequest {
+            session_id: opened.session_id.clone(),
+            output_function_id: output,
+            cols: 80,
+            rows: 24,
+            after_sequence: 0,
+            caller_worker_id: Some(harness.caller_worker_id.clone()),
+        };
+
+        // Someone is watching this terminal: it is not up for adoption.
+        let attached = harness
+            .manager
+            .adopt(request(format!(
+                "{OUTPUT_FUNCTION_PREFIX}{}",
+                Uuid::new_v4()
+            )))
+            .await;
+        assert_eq!(
+            attached.unwrap_err(),
+            "terminal session is attached; detach it before adopting"
+        );
+
+        // Detached, but another worker's page may not claim it.
+        harness.detach(&opened).await;
+        let foreign = harness
+            .manager
+            .adopt(request(format!(
+                "iii::pi-ui::pty-output::console-{}",
+                Uuid::new_v4()
+            )))
+            .await;
+        assert_eq!(
+            foreign.unwrap_err(),
+            "terminal session belongs to another console page"
+        );
+
+        harness.close_all().await;
+    }
+
+    #[tokio::test]
     async fn explicit_close_releases_detached_session_permit() {
         let harness = PtyTestHarness::new("/bin/sh").await;
         let opened = harness.open().await;
@@ -2003,7 +2346,8 @@ mod tests {
     fn interactive_shell_preserves_cwd_and_round_trips_input() {
         let tmp = tempfile::tempdir().unwrap();
         let expected = tmp.path().canonicalize().unwrap();
-        let mut pty = spawn_process(&expected, 80, 24, Some("/bin/sh")).unwrap();
+        let mut pty =
+            spawn_process(&expected, 80, 24, Some("/bin/sh"), &[], &BTreeMap::new()).unwrap();
         pty.master
             .resize(PtySize {
                 rows: 40,
@@ -2068,6 +2412,134 @@ mod tests {
                 .is_ok()
         );
         assert!(validate_output_function_id(&format!("{OUTPUT_FUNCTION_PREFIX}bad_id")).is_err());
+    }
+
+    #[test]
+    fn output_target_accepts_another_workers_console_page() {
+        let browser = Uuid::new_v4();
+        // A worker that runs its own program in a session serves its own
+        // console page, so its handler prefix is its own.
+        assert!(validate_output_function_id(&format!(
+            "iii::claude-ui::pty-output::console-{browser}"
+        ))
+        .is_ok());
+        assert!(
+            validate_output_function_id(&format!("iii::pi-ui::pty-output::console-{browser}"))
+                .is_ok()
+        );
+        // Still a console UI handler and nothing else.
+        assert!(validate_output_function_id(&format!(
+            "iii::claude::pty-output::console-{browser}"
+        ))
+        .is_err());
+        assert!(validate_output_function_id(&format!(
+            "worker::claude-ui::pty-output::console-{browser}"
+        ))
+        .is_err());
+        assert!(validate_output_function_id(&format!(
+            "iii::Claude_Code-ui::pty-output::console-{browser}"
+        ))
+        .is_err());
+        assert!(validate_output_function_id("iii::-ui::pty-output::console-abc").is_err());
+        assert!(
+            validate_output_function_id("iii::shell-ui::pty-output::console-").is_err(),
+            "an empty browser id is not a target"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_requested_program_runs_instead_of_the_login_shell() {
+        let harness = PtyTestHarness::unpinned().await;
+        let opened = harness
+            .open_request(
+                Some("/bin/sh"),
+                Some(vec![
+                    "-c".to_string(),
+                    "echo iii-program-marker; sleep 30".to_string(),
+                ]),
+                None,
+            )
+            .await
+            .expect("session opens with a program");
+
+        harness
+            .wait_for_output(&opened.session_id, "iii-program-marker")
+            .await;
+
+        let sessions = harness.manager.sessions().await.sessions;
+        assert_eq!(sessions.len(), 1);
+        let session = &sessions[0];
+        assert_eq!(session.program.as_deref(), Some("/bin/sh"));
+        assert!(session.sequence > 0, "{session:?}");
+        assert!(session.frames > 0, "{session:?}");
+        assert!(session.frame_bytes > 0, "{session:?}");
+        assert!(!session.truncated, "{session:?}");
+        assert_eq!(
+            session.output_function_id.as_deref(),
+            Some(harness.output_function_id.as_str())
+        );
+
+        harness.detach(&opened).await;
+        let detached = &harness.manager.sessions().await.sessions[0];
+        assert!(
+            detached.output_function_id.is_none(),
+            "a detached session has no output target: {detached:?}"
+        );
+
+        let _ = harness.manager.close_all().await;
+    }
+
+    #[tokio::test]
+    async fn requested_env_reaches_the_program() {
+        let harness = PtyTestHarness::unpinned().await;
+        let mut env = BTreeMap::new();
+        env.insert("III_ACTIVITY_URL".to_string(), "iii-env-marker".to_string());
+        let opened = harness
+            .open_request(
+                Some("/bin/sh"),
+                Some(vec![
+                    "-c".to_string(),
+                    "printf '%s\\n' \"$III_ACTIVITY_URL\"; sleep 30".to_string(),
+                ]),
+                Some(env),
+            )
+            .await
+            .expect("session opens with env");
+
+        harness
+            .wait_for_output(&opened.session_id, "iii-env-marker")
+            .await;
+        let _ = harness.manager.close_all().await;
+    }
+
+    #[tokio::test]
+    async fn a_dangerous_env_key_refuses_the_session() {
+        let harness = PtyTestHarness::unpinned().await;
+        let mut env = BTreeMap::new();
+        env.insert("LD_PRELOAD".to_string(), "/tmp/evil.so".to_string());
+        let error = harness
+            .open_request(Some("/bin/sh"), None, Some(env))
+            .await
+            .expect_err("an exec-hijacking key must refuse the session");
+        assert!(error.contains("LD_PRELOAD"), "{error}");
+        assert!(
+            harness.manager.sessions().await.sessions.is_empty(),
+            "a refused open leaves no session behind"
+        );
+    }
+
+    #[test]
+    fn session_env_refuses_exec_hijacking_keys() {
+        let mut env = BTreeMap::new();
+        env.insert("III_AGENT".to_string(), "claude".to_string());
+        assert!(reject_dangerous_env(&env).is_ok());
+
+        for key in ["PATH", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES", "BASH_ENV"] {
+            let mut env = BTreeMap::new();
+            env.insert(key.to_string(), "/tmp/evil".to_string());
+            let error = reject_dangerous_env(&env).expect_err("dangerous key must be refused");
+            assert!(error.contains(key), "{error}");
+        }
     }
 
     #[test]

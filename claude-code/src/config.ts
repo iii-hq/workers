@@ -50,9 +50,44 @@ const ConfigSchema = z.object({
     .string()
     .default('')
     .describe('Path to the claude CLI; empty = resolve on PATH'),
+  terminal: z
+    .object({
+      executable: z
+        .string()
+        .default('')
+        .describe(
+          'Path to the claude binary on the TERMINAL host. Empty: resolve `claude` on PATH there, installing it first when auto_install is on. Unrelated to claude_executable, which is this worker’s own host.',
+        ),
+      args: z
+        .array(z.string())
+        .default([])
+        .describe('Extra argv appended to every terminal session'),
+      workspace_dir: z
+        .string()
+        .default('')
+        .describe(
+          "Directory the terminal starts in. Empty: `claude-code` under the shell worker's primary root. Must be inside shell's jail — shell owns the terminal.",
+        ),
+      auto_install: z
+        .boolean()
+        .default(true)
+        .describe('Install Claude Code from https://claude.ai/install.sh when it is missing'),
+      setup_workspace: z
+        .boolean()
+        .default(true)
+        .describe(
+          'Keep the workspace equipped on every boot: the iii skills, the engine notes, and the hooks that report activity',
+        ),
+    })
+    .prefault({})
+    .describe('The console terminal page: what runs when a person opens `claude` in the console'),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
+
+/** The console terminal's slice, on its own so a test can build one. */
+export const TerminalConfigSchema = ConfigSchema.shape.terminal;
+export type TerminalConfig = Config['terminal'];
 
 /**
  * The slice managed by the `configuration` worker. `engine_url` is excluded —

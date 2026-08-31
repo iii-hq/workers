@@ -100,7 +100,7 @@ def test_release_toolchains_and_bundle_locks_are_explicit():
         else:
             assert artifact["runtime"] == {"name": "python", "version": "3.12.3"}
             assert artifact["package_manager"] == {"name": "uv", "version": "0.12.5"}
-    assert bundles == 15
+    assert bundles == 16
 
 
 def test_scrapling_release_bundle_vendors_dependencies():

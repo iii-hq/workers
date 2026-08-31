@@ -720,6 +720,7 @@ function assistantSegments(
           id,
           role: 'assistant',
           content: block.text,
+          agent: message.agent,
           model: message.model,
           stopReason: message.stop_reason,
           createdAt: message.timestamp,

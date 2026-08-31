@@ -4,8 +4,8 @@ language: javascript
 deploy: bundle
 manifest: package.json
 license: Apache-2.0
-tags: [coding-agent, claude, anthropic, cli, headless]
-description: Claude Code as an iii worker — claude::* functions run headless Claude Code turns, mirror raw messages onto claude::events, and stream AgentEvent frames onto agent::events.
+tags: [coding-agent, claude, anthropic, cli, headless, terminal, console-ui]
+description: Claude Code as an iii worker — claude::* runs headless turns and claude::terminal::* runs the same CLI in a shell::pty session on its own console page. Both mirror raw messages onto claude::events and stream AgentEvent frames onto agent::events.
 
 runtime:
   kind: javascript
@@ -16,3 +16,9 @@ scripts:
 dependencies:
   state: "^0.22.2"
   iii-stream: "0.x"
+  configuration: "0.x"
+  # The terminal half: shell::pty runs the CLI, shell::exec installs it and
+  # equips the workspace, coder::read-file reads the files back.
+  shell: "^0.12.0"
+  # The page this worker injects.
+  console: "^1.9.11"

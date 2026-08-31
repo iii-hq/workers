@@ -198,6 +198,75 @@ out explicitly below:
 
 No separate install: `iii trigger compose::add worker=shell` brings the whole surface.
 
+## Terminal sessions (`shell::pty::*`)
+
+The console's terminal runs on this worker: `shell::pty::open` starts a
+persistent host PTY, `write` sends base64 keystrokes, `resize` follows the
+pane, `attach`/`detach` survive a reload (buffered output replays from a
+sequence number, out of a 2 MiB ring buffer), and `close` terminates the
+session. These are console plumbing — flagged `internal` and `trace_hidden`,
+so their spans stay out of the default trace view; one span per keystroke
+buries the work worth reading.
+
+A session runs the user's login shell by default, or the program a caller
+names:
+
+| Field on `open` | Meaning |
+|---|---|
+| `program` | Program to run instead of the login shell, resolved on PATH. A caller that can open a login shell can already run any program by typing it, so this is reach, not privilege — it is what lets a session BE one program, with no shell around it. |
+| `args` | argv for `program`; ignored without it. |
+| `env` | Extra environment for the session. Deny-only exactly like `shell::exec`'s per-call `env`: an exec-hijacking key (`PATH`, `LD_*`, `DYLD_*`, `BASH_ENV`, ...) refuses the whole call, and so does a key that is not a variable name (`[A-Za-z_][A-Za-z0-9_]*`) — a key like `PATH=/tmp/evil` would otherwise carry its own assignment past the `PATH` rule. |
+
+`cwd` resolves through the same jail as `shell::fs::*`, so what it can reach is
+whatever that config says:
+
+- `fs.host_roots` set: a session can only start inside a configured root.
+- `fs.allow_unjailed: true` with `fs.host_roots` empty (**the shipped
+  default**): there is no root to be inside, and `cwd` reaches the real
+  filesystem, held back only by `fs.denylist_paths`.
+
+Either way this bounds where a session STARTS. A login shell can then `cd`
+anywhere its user can, which is the point of a terminal.
+
+Output goes to a browser-registered console handler and nowhere else:
+`iii::<worker>-ui::pty-output::console-<browser-id>`. The `<worker>-ui`
+segment is not pinned to this worker's own page — a worker that runs its own
+program in a session serves its own console page, and therefore its own
+handler — but the shape is enforced, so a session can never be pointed at an
+arbitrary function on the bus.
+
+Each pane carries a font-size stepper (8–40 px, 14 by default; Ctrl or ⌘ +
+scroll does the same). The size is a browser preference rather than a worker
+setting — the same person reading the same engine from a laptop and from a
+wall display wants two different answers — so it is stored per browser and
+read by every terminal the console renders, this worker's panes and the
+agent-CLI pages alike. A change refits the pane, which resizes the PTY
+through the ordinary `shell::pty::resize` path.
+
+### Taking a session back (`shell::pty::adopt`)
+
+The reconnect token is what proves a caller opened a session, and a browser
+that loses its storage loses the token while the program keeps running — an
+agent still working in a workspace nobody can reach. `shell::pty::adopt` is
+the way back, under two rules that keep it from being a way in:
+
+- **The session must be unattached.** A terminal someone is watching is never
+  taken from them; only one nobody holds.
+- **The new output handler must name the same console page as the old one.**
+  The browser id may differ — that is the point — but `iii::claude-ui::…`
+  cannot adopt a session whose output went to `iii::pi-ui::…`.
+
+Credentials rotate on adoption, so whatever the previous owner still held
+stops working, and an in-flight retry of the old attach cannot resurrect it.
+`shell::pty::sessions` is how a page finds its orphan: every session reports
+`ui`, the console page it belongs to (a page, never a browser), whether or not
+anyone is attached.
+
+`shell::pty::sessions` lists live sessions with their program, cwd, status,
+last sequence number, replayable frames and bytes, and current output target.
+No credentials: it exists to separate a terminal that shows nothing because
+no output arrived from one whose frames the browser dropped.
+
 ## Two surfaces, one contract
 
 `shell::fs::*` and `coder::*` are two views of the same filesystem, served by

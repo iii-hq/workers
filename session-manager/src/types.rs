@@ -131,6 +131,13 @@ pub enum AgentMessage {
         warnings: Option<Vec<String>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         usage: Option<Usage>,
+        /// The AGENT worker that produced this turn (`claude-code`, `pi`),
+        /// when one says so. Distinct from `provider`, which names who served
+        /// the model: two agents can run the same model, and a reader given
+        /// only a model cannot tell which agent answered. Optional, because
+        /// the harness's own turns have no agent worker to name.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
         model: String,
         provider: String,
         /// Milliseconds since epoch.
@@ -230,7 +237,7 @@ pub enum SessionEntry {
         /// Opaque writer-supplied correlation (e.g. `{ turn_id }`).
         #[serde(skip_serializing_if = "Option::is_none")]
         origin: Option<JsonMap>,
-        message: AgentMessage,
+        message: Box<AgentMessage>,
     },
     /// Bookkeeping *about* the conversation that is not a message at
     /// all (e.g. the harness's compaction record).

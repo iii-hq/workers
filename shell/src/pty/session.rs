@@ -89,6 +89,36 @@ impl SessionControl {
         })
     }
 
+    /// Hand a detached session to a new owner without a reconnect token.
+    ///
+    /// Only a session nobody holds can be adopted: an attached session keeps
+    /// its owner, so this can never take a terminal away from a live viewer.
+    /// The caller still has to pass the page-family check outside this type —
+    /// here the rule is simply that unattached is the only adoptable state.
+    pub fn adopt(
+        &mut self,
+        owner_worker_id: &str,
+        output_function_id: &str,
+    ) -> Result<SessionCredentials, String> {
+        if self.status == SessionStatus::Attached {
+            return Err("terminal session is attached; detach it before adopting".to_string());
+        }
+        let (access_key, reconnect_token) = new_credential_pair(new_credential);
+        self.owner_worker_id = owner_worker_id.to_string();
+        self.output_function_id = output_function_id.to_string();
+        self.access_key = access_key;
+        self.reconnect_token = reconnect_token;
+        self.status = SessionStatus::Attached;
+        // A rotated pair invalidates whatever the previous owner still held,
+        // and an in-flight retry of the old attach must not resurrect it.
+        self.last_attach_request_id = None;
+        self.last_attach_reconnect_token = None;
+        Ok(SessionCredentials {
+            access_key: self.access_key.clone(),
+            reconnect_token: self.reconnect_token.clone(),
+        })
+    }
+
     pub fn detach(&mut self, access_key: &str, caller_worker_id: &str) -> Result<(), String> {
         self.authenticate(access_key, caller_worker_id)?;
         self.status = SessionStatus::Detached;
@@ -183,6 +213,54 @@ mod tests {
         assert!(control
             .attach(&reconnect, None, "owner-3", "output-3")
             .is_err());
+    }
+
+    #[test]
+    fn an_unattached_session_can_be_adopted_without_a_token() {
+        // The browser that opened it lost its storage: no token, and a program
+        // still running that nobody can reach.
+        let mut control = SessionControl::new("owner-1", "output-1");
+        let access = control.access_key().to_string();
+        let reconnect = control.reconnect_token().to_string();
+        control.detach(&access, "owner-1").unwrap();
+
+        let adopted = control.adopt("owner-2", "output-2").unwrap();
+
+        assert_ne!(adopted.access_key, access);
+        assert_ne!(adopted.reconnect_token, reconnect);
+        assert_eq!(control.status(), SessionStatus::Attached);
+        assert_eq!(control.output_function_id(), "output-2");
+        // Whatever the previous owner still held is dead.
+        assert!(control.authenticate(&access, "owner-1").is_err());
+        assert!(!control.can_attach(&reconnect, None));
+    }
+
+    #[test]
+    fn an_attached_session_is_never_taken_from_its_viewer() {
+        let mut control = SessionControl::new("owner-1", "output-1");
+        let access = control.access_key().to_string();
+
+        assert!(control.adopt("owner-2", "output-2").is_err());
+
+        // The live viewer keeps working, untouched.
+        assert_eq!(control.status(), SessionStatus::Attached);
+        assert!(control.authenticate(&access, "owner-1").is_ok());
+    }
+
+    #[test]
+    fn adoption_closes_the_door_on_a_replayed_attach() {
+        // An attach retry is idempotent by request id; after an adoption that
+        // retry must not resurrect the previous owner.
+        let mut control = SessionControl::new("owner-1", "output-1");
+        let reconnect = control.reconnect_token().to_string();
+        let rotated = control
+            .attach(&reconnect, Some("request-1"), "owner-1", "output-1")
+            .unwrap();
+        control.detach(&rotated.access_key, "owner-1").unwrap();
+
+        control.adopt("owner-2", "output-2").unwrap();
+
+        assert!(!control.can_attach(&reconnect, Some("request-1")));
     }
 
     #[test]
