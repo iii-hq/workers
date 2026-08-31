@@ -159,6 +159,25 @@ describe('reconcileTraceVisibility', () => {
     expect(kept).toEqual([])
   })
 
+  it('keeps failed traces visible even when every span is hidden', () => {
+    const bars = [
+      bar({ id: 's1', groupKey: 'harness::send', workerKey: 'harness' }),
+    ]
+    const kept = reconcileTraceVisibility(
+      new Map(),
+      bars,
+      [
+        row('t-error', 'harness::send', {
+          status: 'error',
+          workers: ['harness'],
+        }),
+      ],
+      selection({ hiddenGroups: new Set(['harness::send']) }),
+    )
+
+    expect(ids(kept)).toEqual(['t-error'])
+  })
+
   it('hides default-hidden internal fan-outs, shows them once the family is revealed', () => {
     const bars = [bar({ id: 's1', internalKey: 'session events' })]
     const rows = [

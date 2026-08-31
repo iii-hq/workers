@@ -6,7 +6,7 @@
 # (registerTrigger in runner.ts); we don't list them here.
 #
 # The harness registers `storage::object-{created,deleted}` triggers against
-# both `scratch-local` (rustfs webhook) and `scratch-s3` (SQS poller →
+# both `scratch-local` (native in-process dispatch) and `scratch-s3` (SQS poller →
 # ElasticMQ via the minio-sqs-bridge fixture). R2 triggers are out of scope
 # for the e2e harness — covered separately via Rust integration tests.
 
@@ -24,6 +24,8 @@ workers:
       providers:
         local:
           data_dir: ./data/storage
+          http:
+            bind_address: 127.0.0.1:0
 
       buckets:
         scratch-local:

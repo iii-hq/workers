@@ -11,12 +11,12 @@ const INSTALL_LINES: Array<
   | { kind: 'cmd'; text: string; comment?: string }
   | { kind: 'out'; text: string }
 > = [
-  { kind: 'cmd', text: 'iii worker add harness' },
+  { kind: 'cmd', text: 'iii trigger compose::add worker=harness' },
   { kind: 'out', text: 'llm-router connected — providers self-register' },
   { kind: 'out', text: 'session-manager connected — 6 trigger types live' },
   { kind: 'out', text: 'context-manager connected' },
   { kind: 'out', text: 'harness connected — the loop is live' },
-  { kind: 'cmd', text: 'iii worker add approval-gate', comment: '# optional' },
+  { kind: 'cmd', text: 'iii trigger compose::add worker=approval-gate', comment: '# optional' },
   { kind: 'out', text: 'approval-gate bound to harness::hook::pre_trigger' },
 ]
 

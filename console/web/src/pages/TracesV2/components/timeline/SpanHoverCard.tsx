@@ -72,7 +72,7 @@ export function SpanHoverCard({
       }}
     >
       <div
-        className="bg-panel border border-rule px-3 py-2.5 min-w-[200px]"
+        className="rounded-md bg-panel-raised shadow-floating px-3 py-2.5 min-w-[200px]"
         style={{ maxWidth: CARD_MAX_WIDTH }}
       >
         <div className="font-mono text-[12.5px] text-ink leading-tight mb-1.5 break-all lowercase">
@@ -90,13 +90,13 @@ export function SpanHoverCard({
 
         <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[10px] font-mono">
           <div className="flex justify-between gap-2">
-            <span className="text-ink-faint lowercase">duration</span>
+            <span className="text-ink-faint">Duration</span>
             <span className="text-accent tabular-nums">
               {formatDuration(duration)}
             </span>
           </div>
           <div className="flex justify-between gap-2">
-            <span className="text-ink-faint lowercase">start</span>
+            <span className="text-ink-faint">Start</span>
             <span className="text-ink tabular-nums">
               {relativeStart
                 ? formatRelative(span.startTime)
@@ -104,7 +104,7 @@ export function SpanHoverCard({
             </span>
           </div>
           <div className="flex justify-between gap-2">
-            <span className="text-ink-faint lowercase">status</span>
+            <span className="text-ink-faint">Status</span>
             <span className={cn('lowercase', STATUS_TEXT[tone])}>
               {statusLabel}
             </span>
@@ -120,7 +120,7 @@ export function SpanHoverCard({
         </div>
 
         {tracePercent != null && (
-          <div className="mt-2 h-1 bg-rule-2 overflow-hidden">
+          <div className="mt-2 h-1 bg-surface overflow-hidden">
             <div
               className="h-full bg-accent"
               style={{

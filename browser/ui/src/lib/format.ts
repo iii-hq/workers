@@ -18,3 +18,10 @@ export function formatMtime(unixSecs: number, now = Date.now()): string {
   if (months < 12) return `${months}mo ago`
   return `${Math.floor(months / 12)}y ago`
 }
+
+/** Bytes to a short human size ("64kb", "1.2mb"). */
+export function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes}b`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)}kb`
+  return `${(bytes / (1024 * 1024)).toFixed(1)}mb`
+}

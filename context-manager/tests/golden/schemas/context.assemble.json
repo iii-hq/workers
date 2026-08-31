@@ -265,6 +265,16 @@
               "null"
             ]
           },
+          "max_result_tokens": {
+            "default": null,
+            "description": "Per-result cap override for this call; `null` uses the worker config (default 20000), `0` disables the cap pass.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "previous_summary": {
             "default": null,
             "description": "Persisted summary from a prior compaction (see the spec's \"The compaction round trip\"); rendered into the system prompt and used as the anchor if compaction triggers again.",
@@ -639,6 +649,17 @@
           }
         ]
       },
+      "parts": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "default": null,
+        "description": "Named auxiliary texts to count individually with the same estimator. Counted in `breakdown.by_part` only; never added to the assembled context.",
+        "type": [
+          "object",
+          "null"
+        ]
+      },
       "system_prompt": {
         "default": null,
         "description": "Base system prompt to prepend/merge.",
@@ -869,11 +890,23 @@
       "Applied": {
         "description": "What the pipeline actually did this call.",
         "properties": {
+          "capped_parts": {
+            "description": "Results rewritten by the unconditional per-result cap pass.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "capped_tokens": {
+            "description": "Estimated tokens freed by the cap pass.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
           "compacted": {
             "type": "boolean"
           },
           "initial_token_count": {
-            "description": "Full estimated request size before pruning or compaction, including the system prompt, tool schemas, and provider framing overhead.",
+            "description": "Full estimated request size before capping, pruning, or compaction, including the system prompt, tool schemas, and provider framing overhead.",
             "format": "uint64",
             "minimum": 0.0,
             "type": "integer"
@@ -922,10 +955,91 @@
           }
         },
         "required": [
+          "capped_parts",
+          "capped_tokens",
           "compacted",
           "initial_token_count",
           "pruned",
           "pruned_tokens"
+        ],
+        "type": "object"
+      },
+      "AssembleBreakdown": {
+        "description": "Where the returned `token_count` sits, by category — the same sums the pipeline already maintains, exposed so callers can render a context breakdown without re-counting: `token_count` equals the by_role sum plus `system_prompt_tokens`, `tools_tokens`, and the request overhead.",
+        "properties": {
+          "by_part": {
+            "additionalProperties": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "description": "Per-part estimates for the request's `parts`, keyed by the caller's names; present when the request carried `parts`.",
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "by_role": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/ByRoleTokens"
+              }
+            ],
+            "description": "The returned messages' tokens by role."
+          },
+          "estimator": {
+            "$ref": "#/definitions/EstimatorName"
+          },
+          "system_prompt_tokens": {
+            "description": "Estimated tokens of the returned system prompt (any compaction summary section included).",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "tools_tokens": {
+            "description": "Estimated tokens of the invocation schemas.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "by_role",
+          "estimator",
+          "system_prompt_tokens",
+          "tools_tokens"
+        ],
+        "type": "object"
+      },
+      "ByRoleTokens": {
+        "description": "Per-role token breakdown of the `messages` array.",
+        "properties": {
+          "assistant": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "custom": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "function_result": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "user": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "assistant",
+          "custom",
+          "function_result",
+          "user"
         ],
         "type": "object"
       },
@@ -1070,6 +1184,14 @@
         ],
         "type": "string"
       },
+      "EstimatorName": {
+        "description": "Which estimator produced the count.",
+        "enum": [
+          "tokenizer",
+          "heuristic"
+        ],
+        "type": "string"
+      },
       "ModelResolvedWire": {
         "description": "How the model limits were resolved.",
         "enum": [
@@ -1148,6 +1270,9 @@
       "applied": {
         "$ref": "#/definitions/Applied"
       },
+      "breakdown": {
+        "$ref": "#/definitions/AssembleBreakdown"
+      },
       "effective_max_output_tokens": {
         "description": "Effective output allocation used to derive `usable`. This is the router-resolved request limit, not the model catalog ceiling.",
         "format": "uint64",
@@ -1182,6 +1307,7 @@
     },
     "required": [
       "applied",
+      "breakdown",
       "effective_max_output_tokens",
       "messages",
       "model_resolved",

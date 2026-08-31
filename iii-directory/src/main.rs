@@ -5,23 +5,27 @@
 //!   2. Connect to the iii engine over WebSocket.
 //!   3. Register the custom trigger types
 //!      `directory::skills::on-change` /
-//!      `directory::prompts::on-change` (fan-out targets for
-//!      `directory::skills::download`).
+//!      `directory::system-prompts::on-change` /
+//!      `directory::agents::on-change`.
 //!   4. Register every public function against the engine — every
-//!      registration sits under `directory::*` (skills, prompts,
-//!      registry HTTP proxy).
+//!      registration sits under `directory::*` (search, skills, system
+//!      prompts, agents, registry, and one engine-info wrapper).
 //!   5. (Optional) Subscribe to `worker` trigger for auto-download on
 //!      worker add events and run a boot reconcile for missing skills.
-//!   6. Sleep on Ctrl+C, then `shutdown_async` cleanly.
+//!   6. Start the filesystem watch so external edits under the directory
+//!      roots fire the matching `on-change` (best-effort, never fatal).
+//!   7. Sleep on Ctrl+C, then `shutdown_async` cleanly.
 //!
 //! Write paths are `directory::skills::download*` (bulk materialization)
-//! and `directory::skills::update` / `directory::prompts::update`
-//! (single-file edits). Read-side surfaces (`directory::skills::list`,
-//! `directory::skills::get`, `directory::prompts::*`,
-//! `directory::registry::*`) source from the configured `skills_folder`
-//! on disk or proxy to the public registry over HTTP. Engine introspection is handled by the engine natively —
-//! call `engine::functions::list`, `engine::triggers::list`, etc.,
-//! directly.
+//! and `directory::skills::{update,create,delete}` /
+//! `directory::system-prompts::{update,create,delete}` /
+//! `directory::agents::{update,create,delete}` (single-file edits). Read-side
+//! surfaces include search, skills, system prompts, agents, and registry.
+//! Filesystem content comes from the configured `skills_folder`
+//! on disk (plus the read-only `agents_skills_folder` for system-installed
+//! agent skills); registry calls proxy the public registry over HTTP. Engine
+//! introspection is native, with `directory::engine::functions::info` retained
+//! as a narrow wrapper for restricted callers.
 
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
@@ -48,7 +52,7 @@ use iii_directory::{configuration, functions, manifest, trigger_types};
 #[derive(Parser, Debug)]
 #[command(
     name = "iii-directory",
-    about = "Engine introspection (functions / triggers / workers), workers registry proxy, and filesystem-backed skill + prompt reader."
+    about = "Engine introspection, workers registry proxy, filesystem-backed skills, system prompts, and agent profiles, plus lexical function search with a conditional pre-generate hint."
 )]
 struct Cli {
     /// Optional YAML seed used to populate `initial_value` on the first
@@ -133,6 +137,7 @@ async fn main() -> Result<()> {
     tracing::info!(
         skills_folder = %cfg.resolved_skills_folder().display(),
         local_skills_folder = %cfg.local_skills_folder().display(),
+        agents_folder = %cfg.resolved_agents_folder().display(),
         registry_url = %cfg.registry_base(),
         filter_unregistered = cfg.filter_unregistered,
         auto_download = cfg.auto_download,
@@ -161,7 +166,30 @@ async fn main() -> Result<()> {
     );
     functions::log_fs_health(&cfg_handle.load_full());
 
-    // Injectable console UI: the skills & prompts editor page, the
+    // Function search: seed the engine-catalog snapshot (best effort — the
+    // functions-available push refreshes it), register
+    // directory::search_functions + its internal hook/preview/listener, and
+    // reconcile the pre-generate hint binding with the inject_hint knob.
+    let search_catalog: functions::search::CatalogCell =
+        Arc::new(tokio::sync::RwLock::new(Arc::new(Vec::new())));
+    if functions::search::refresh_catalog(&iii, &search_catalog)
+        .await
+        .is_err()
+    {
+        tracing::warn!("search catalog refresh failed; starting with an empty catalog");
+    }
+    let search_deps = functions::search::Deps {
+        config: cfg_handle.clone(),
+        catalog: search_catalog,
+        sessions: Arc::default(),
+        registry_cache: registry_cache.clone(),
+    };
+    functions::search::register(&iii, &search_deps);
+    functions::search::bind_best_effort(&iii);
+    let hint_binding = iii_directory::hook::HintBindingState::default();
+    iii_directory::hook::apply(&iii, &hint_binding, cfg_handle.load().inject_hint);
+
+    // Injectable console UI: the directory editor page, the
     // directory::* function-trigger renderer, and the configuration form.
     iii_directory::ui::register(&iii);
 
@@ -186,16 +214,89 @@ async fn main() -> Result<()> {
         registry_cache,
         registered_cache,
         boot_topology,
+        hint_binding,
     );
     configuration::register_config_trigger(&iii, state)
         .context("registering configuration change trigger")?;
 
-    let fn_count = if auto_download { 14 } else { 13 };
-    tracing::info!(
-        "iii-directory ready: {} directory::* functions + 2 custom trigger types + \
-         configuration hot-reload",
-        fn_count
-    );
+    // Filesystem watch: external edits under the directory roots fire the
+    // matching on-change with { op: "external" }. Failure to start is a
+    // degradation (tabs refresh on interaction only), never fatal.
+    let cfg_now = cfg_handle.load_full();
+    let mut watch_roots = vec![iii_directory::watch::WatchRoot {
+        path: cfg_now.resolved_skills_folder(),
+        kind: iii_directory::watch::WatchRootKind::Directory,
+    }];
+    let local_root = cfg_now.local_skills_folder();
+    if local_root != watch_roots[0].path {
+        watch_roots.push(iii_directory::watch::WatchRoot {
+            path: local_root,
+            kind: iii_directory::watch::WatchRootKind::Directory,
+        });
+    }
+    // Profile roots: the read-write project root is always watched; the
+    // user-global `~/.iii/agents` root only when it already exists — this
+    // worker edits profiles there in place but never materializes the
+    // directory itself.
+    for (i, profiles_root) in cfg_now.resolved_agents_roots().into_iter().enumerate() {
+        if i > 0 && !profiles_root.is_dir() {
+            continue;
+        }
+        if !watch_roots.iter().any(|root| root.path == profiles_root) {
+            watch_roots.push(iii_directory::watch::WatchRoot {
+                path: profiles_root,
+                kind: iii_directory::watch::WatchRootKind::AgentProfiles,
+            });
+        }
+    }
+    // The agent-skills roots (project + user-global) are watched only when
+    // they already exist. This worker must never materialize (or write)
+    // `.agents/skills` / `~/.agents/skills` — they are owned by external
+    // agent tooling.
+    for agent_skills_root in cfg_now.resolved_agents_skills_roots() {
+        if agent_skills_root.is_dir()
+            && !watch_roots
+                .iter()
+                .any(|root| root.path == agent_skills_root)
+        {
+            watch_roots.push(iii_directory::watch::WatchRoot {
+                path: agent_skills_root,
+                kind: iii_directory::watch::WatchRootKind::AgentSkills,
+            });
+        }
+    }
+    let watch_iii = iii.clone();
+    // Named fields, not a tuple: transposing two positional subscriber sets
+    // would compile, pass every test, and route pasted system prompts to the
+    // wrong subscribers.
+    let watch_sets = trigger_types::RegisteredTriggerTypes {
+        skills: registered.skills.clone(),
+        system_prompts: registered.system_prompts.clone(),
+        agents: registered.agents.clone(),
+    };
+    let rt = tokio::runtime::Handle::current();
+    let _fs_watch = match iii_directory::watch::spawn_fs_watch(watch_roots, move |kind| {
+        let set = match kind {
+            iii_directory::fs_source::SourceKind::Skill => watch_sets.skills.clone(),
+            iii_directory::fs_source::SourceKind::SystemPrompt => watch_sets.system_prompts.clone(),
+            iii_directory::fs_source::SourceKind::Agent => watch_sets.agents.clone(),
+        };
+        let iii = watch_iii.clone();
+        rt.spawn(async move {
+            trigger_types::dispatch(&iii, &set, serde_json::json!({ "op": "external" })).await;
+        });
+    }) {
+        Ok(h) => {
+            tracing::info!("fs watch active on directory roots");
+            Some(h)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "fs watch disabled");
+            None
+        }
+    };
+
+    tracing::info!("iii-directory ready");
 
     tokio::signal::ctrl_c().await?;
     tracing::info!("iii-directory shutting down");
@@ -248,15 +349,14 @@ fn setup_auto_download(
     let iii_sub = iii.clone();
     tokio::spawn(async move {
         for attempt in 1..=5 {
-            let result = iii_sub.register_trigger(RegisterTriggerInput {
-                trigger_type: "worker".to_string(),
-                function_id: "directory::__on_worker_added".to_string(),
-                config: json!({
+            let result = iii_sub.register_trigger(RegisterTriggerInput::new(
+                "worker".to_string(),
+                "directory::__on_worker_added".to_string(),
+                json!({
                     "operations": ["add"],
                     "stages": ["done"]
                 }),
-                metadata: None,
-            });
+            ));
             match result {
                 Ok(_) => {
                     tracing::info!("subscribed to worker trigger for auto-download");
@@ -356,14 +456,13 @@ async fn reconcile_one(
 async fn fetch_worker_list_with_retry(iii: &IIIClient) -> Option<Vec<serde_json::Value>> {
     const MAX_ATTEMPTS: u32 = 6;
     for attempt in 1..=MAX_ATTEMPTS {
-        let result = iii
-            .trigger(TriggerRequest {
-                function_id: "worker::list".to_string(),
-                payload: json!({}),
-                action: None,
-                timeout_ms: Some(10_000),
-            })
-            .await;
+        let request = TriggerRequest {
+            function_id: "worker::list".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(10_000),
+        };
+        let result = iii.trigger(request.namespace("default")).await;
 
         match result {
             Ok(val) => {

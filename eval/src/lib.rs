@@ -1,5 +1,7 @@
-//! Durable A/B evaluation of prompts and system prompts over harness turns.
+//! Live session comparison, with durable prompt experiments kept as an
+//! advanced surface.
 
+pub mod comparison;
 pub mod contract;
 pub mod error;
 pub mod events;

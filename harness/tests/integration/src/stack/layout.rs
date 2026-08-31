@@ -78,6 +78,10 @@ impl RunLayout {
         self.root.join("skills")
     }
 
+    pub fn agents_dir(&self) -> PathBuf {
+        self.root.join("agents")
+    }
+
     pub(crate) fn log_path(&self, log_name: &str, extension: &str) -> anyhow::Result<PathBuf> {
         validate_component("log name", log_name)?;
         validate_component("log extension", extension)?;

@@ -6,9 +6,14 @@
  * Wire source: `iii-directory/src/functions/*.rs`
  *   - skills.rs        — directory::skills::list / get / index
  *   - download.rs      — directory::skills::download (+ _from_registry / _from_repo)
- *   - update.rs        — directory::skills::update / directory::prompts::update
- *   - prompts.rs       — directory::prompts::list / get
+ *   - update.rs        — directory::skills::update / create and
+ *                        directory::system-prompts::* updates
  *   - registry.rs      — directory::registry::workers::list / info
+ *
+ * The `::delete` ids (skills, system-prompts) are deliberately
+ * absent: their `{ name }` / `{ id }` in/out shape has no dedicated view,
+ * and the console's generic JSON card is the right rendering for a delete
+ * confirmation.
  */
 import { z } from 'zod'
 import { unwrapEnvelope } from '../lib/envelope'
@@ -21,18 +26,22 @@ export const DIRECTORY_FUNCTION_IDS = [
   'directory::skills::download_from_registry',
   'directory::skills::download_from_repo',
   'directory::skills::update',
-  'directory::prompts::list',
-  'directory::prompts::get',
-  'directory::prompts::update',
+  'directory::skills::create',
+  'directory::system-prompts::list',
+  'directory::system-prompts::get',
+  'directory::system-prompts::update',
+  'directory::system-prompts::create',
+  'directory::agents::list',
+  'directory::agents::get',
+  'directory::agents::update',
+  'directory::agents::create',
   'directory::registry::workers::list',
   'directory::registry::workers::info',
 ] as const
 
 export type DirectoryFunctionId = (typeof DIRECTORY_FUNCTION_IDS)[number]
 
-const DIRECTORY_FUNCTION_ID_SET: ReadonlySet<string> = new Set<string>(
-  DIRECTORY_FUNCTION_IDS,
-)
+const DIRECTORY_FUNCTION_ID_SET: ReadonlySet<string> = new Set<string>(DIRECTORY_FUNCTION_IDS)
 
 export function isDirectoryFunction(id: string): id is DirectoryFunctionId {
   return DIRECTORY_FUNCTION_ID_SET.has(id)
@@ -77,6 +86,7 @@ export const skillsGetResponseSchema = z.object({
   title: z.string(),
   type: z.string().nullable().optional(),
   function_id: z.string().nullable().optional(),
+  path: z.string().optional(),
   body: z.string(),
   raw: z.string().nullable().optional(),
   modified_at: z.string(),
@@ -109,12 +119,11 @@ export type SkillsDownloadRequest = z.infer<typeof skillsDownloadRequestSchema>
 export const skillsDownloadResponseSchema = z.object({
   namespace: z.string(),
   skills_written: z.array(z.string()),
-  prompts_written: z.array(z.string()),
+  system_prompts_written: z.array(z.string()),
+  agents_written: z.array(z.string()),
   source: z.unknown(),
 })
-export type SkillsDownloadResponse = z.infer<
-  typeof skillsDownloadResponseSchema
->
+export type SkillsDownloadResponse = z.infer<typeof skillsDownloadResponseSchema>
 
 /* ---------------- skills::update ---------------- */
 
@@ -134,55 +143,117 @@ export const skillsUpdateResponseSchema = z.object({
 })
 export type SkillsUpdateResponse = z.infer<typeof skillsUpdateResponseSchema>
 
-/* ---------------- prompts::list ---------------- */
+/* ---------------- system-prompts::list ---------------- */
 
-export const promptsListRequestSchema = z.object({})
-export type PromptsListRequest = z.infer<typeof promptsListRequestSchema>
+export const systemPromptsListRequestSchema = z.object({})
+export type SystemPromptsListRequest = z.infer<typeof systemPromptsListRequestSchema>
 
-export const promptEntrySchema = z.object({
+export const systemPromptEntrySchema = z.object({
   name: z.string(),
   description: z.string(),
   modified_at: z.string(),
 })
-export type PromptEntry = z.infer<typeof promptEntrySchema>
+export type SystemPromptEntry = z.infer<typeof systemPromptEntrySchema>
 
-export const promptsListResponseSchema = z.object({
-  prompts: z.array(promptEntrySchema),
+export const systemPromptsListResponseSchema = z.object({
+  prompts: z.array(systemPromptEntrySchema),
 })
-export type PromptsListResponse = z.infer<typeof promptsListResponseSchema>
+export type SystemPromptsListResponse = z.infer<typeof systemPromptsListResponseSchema>
 
-/* ---------------- prompts::get ---------------- */
+/* ---------------- system-prompts::get ---------------- */
 
-export const promptsGetRequestSchema = z.object({
+export const systemPromptsGetRequestSchema = z.object({
   name: z.string(),
   raw: z.boolean().optional(),
 })
-export type PromptsGetRequest = z.infer<typeof promptsGetRequestSchema>
+export type SystemPromptsGetRequest = z.infer<typeof systemPromptsGetRequestSchema>
 
-export const promptsGetResponseSchema = z.object({
+export const systemPromptsGetResponseSchema = z.object({
   name: z.string(),
   description: z.string(),
   body: z.string(),
   raw: z.string().nullable().optional(),
   modified_at: z.string(),
 })
-export type PromptsGetResponse = z.infer<typeof promptsGetResponseSchema>
+export type SystemPromptsGetResponse = z.infer<typeof systemPromptsGetResponseSchema>
 
-/* ---------------- prompts::update ---------------- */
+/* ---------------- system-prompts::update ---------------- */
 
-export const promptsUpdateRequestSchema = z.object({
+export const systemPromptsUpdateRequestSchema = z.object({
   name: z.string(),
   content: z.string(),
 })
-export type PromptsUpdateRequest = z.infer<typeof promptsUpdateRequestSchema>
+export type SystemPromptsUpdateRequest = z.infer<typeof systemPromptsUpdateRequestSchema>
 
-export const promptsUpdateResponseSchema = z.object({
+export const systemPromptsUpdateResponseSchema = z.object({
   name: z.string(),
   description: z.string(),
   bytes: z.number(),
   modified_at: z.string(),
 })
-export type PromptsUpdateResponse = z.infer<typeof promptsUpdateResponseSchema>
+export type SystemPromptsUpdateResponse = z.infer<typeof systemPromptsUpdateResponseSchema>
+
+/* ---------------- agents::list ---------------- */
+
+export const agentEntrySchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string(),
+  logo: z.string().nullable().optional(),
+  skill_count: z.number().nullable().optional(),
+  model: z.string().nullable().optional(),
+  icon: z.string().nullable().optional(),
+  color: z.string().nullable().optional(),
+  modified_at: z.string(),
+})
+export type AgentEntry = z.infer<typeof agentEntrySchema>
+
+export const agentsListResponseSchema = z.object({
+  agents: z.array(agentEntrySchema),
+})
+export type AgentsListResponse = z.infer<typeof agentsListResponseSchema>
+
+/* ---------------- agents::get ---------------- */
+
+export const agentsGetRequestSchema = z.object({
+  id: z.string(),
+  raw: z.boolean().optional(),
+})
+export type AgentsGetRequest = z.infer<typeof agentsGetRequestSchema>
+
+export const agentsGetResponseSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string(),
+  logo: z.string().nullable().optional(),
+  system_prompt: z.string(),
+  skills: z.array(z.string()),
+  unknown_skills: z.array(z.string()),
+  model: z.string().nullable().optional(),
+  icon: z.string().nullable().optional(),
+  color: z.string().nullable().optional(),
+  raw: z.string().nullable().optional(),
+  modified_at: z.string(),
+})
+export type AgentsGetResponse = z.infer<typeof agentsGetResponseSchema>
+
+/* ---------------- agents::update / create ---------------- */
+
+export const agentsUpdateRequestSchema = z.object({
+  id: z.string(),
+  content: z.string(),
+})
+export type AgentsUpdateRequest = z.infer<typeof agentsUpdateRequestSchema>
+
+export const agentsUpdateResponseSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string(),
+  logo: z.string().nullable().optional(),
+  bytes: z.number(),
+  modified_at: z.string(),
+})
+export type AgentsUpdateResponse = z.infer<typeof agentsUpdateResponseSchema>
 
 /* ---------------- registry::workers::list ---------------- */
 
@@ -190,9 +261,7 @@ export const registryWorkersListRequestSchema = z.object({
   search: z.string().optional(),
   cursor: z.string().nullable().optional(),
 })
-export type RegistryWorkersListRequest = z.infer<
-  typeof registryWorkersListRequestSchema
->
+export type RegistryWorkersListRequest = z.infer<typeof registryWorkersListRequestSchema>
 
 export const registryWorkerAuthorSchema = z.object({
   name: z.string().nullable().optional(),
@@ -233,9 +302,7 @@ export const registryWorkersListResponseSchema = z.object({
   workers: z.array(registryWorkerSchema),
   pagination: registryPaginationSchema,
 })
-export type RegistryWorkersListResponse = z.infer<
-  typeof registryWorkersListResponseSchema
->
+export type RegistryWorkersListResponse = z.infer<typeof registryWorkersListResponseSchema>
 
 /* ---------------- registry::workers::info ---------------- */
 
@@ -244,9 +311,7 @@ export const registryWorkerInfoRequestSchema = z.object({
   version: z.string().nullable().optional(),
   tag: z.string().nullable().optional(),
 })
-export type RegistryWorkerInfoRequest = z.infer<
-  typeof registryWorkerInfoRequestSchema
->
+export type RegistryWorkerInfoRequest = z.infer<typeof registryWorkerInfoRequestSchema>
 
 export const apiReferenceFunctionSchema = z.object({
   name: z.string(),
@@ -275,13 +340,8 @@ export type ApiReferenceShape = z.infer<typeof apiReferenceSchema>
 export const skillsTreeSkillSchema = z.object({
   path: z.string(),
 })
-export const skillsTreePromptSchema = z.object({
-  name: z.string(),
-  description: z.string().nullable().optional(),
-})
 export const skillsTreeSchema = z.object({
   skills: z.array(skillsTreeSkillSchema).optional(),
-  prompts: z.array(skillsTreePromptSchema).optional(),
 })
 export type SkillsTreeShape = z.infer<typeof skillsTreeSchema>
 
@@ -291,24 +351,16 @@ export const registryWorkerInfoResponseSchema = z.object({
   api_reference: apiReferenceSchema,
   skills_tree: skillsTreeSchema,
 })
-export type RegistryWorkerInfoResponse = z.infer<
-  typeof registryWorkerInfoResponseSchema
->
+export type RegistryWorkerInfoResponse = z.infer<typeof registryWorkerInfoResponseSchema>
 
 /* ---------------- generic helpers ---------------- */
 
-export function safeParseRequest<T>(
-  schema: z.ZodType<T>,
-  value: unknown,
-): T | null {
+export function safeParseRequest<T>(schema: z.ZodType<T>, value: unknown): T | null {
   const parsed = schema.safeParse(value ?? {})
   return parsed.success ? parsed.data : null
 }
 
-export function safeParseResponse<T>(
-  schema: z.ZodType<T>,
-  value: unknown,
-): T | null {
+export function safeParseResponse<T>(schema: z.ZodType<T>, value: unknown): T | null {
   const parsed = schema.safeParse(unwrapEnvelope(value))
   return parsed.success ? parsed.data : null
 }

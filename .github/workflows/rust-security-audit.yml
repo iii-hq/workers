@@ -1,0 +1,71 @@
+name: Rust dependency audit
+
+on:
+  pull_request:
+    paths:
+      - '**/Cargo.lock'
+  schedule:
+    - cron: '23 9 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-dependency-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2.85.13
+        with:
+          tool: cargo-audit@0.22.2
+          fallback: none
+
+      - name: Audit Rust lockfiles
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+
+          lockfiles=()
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            while IFS= read -r -d '' lockfile; do
+              [[ -f "$lockfile" ]] && lockfiles+=("$lockfile")
+            done < <(git diff --name-only -z "$BASE_SHA...$HEAD_SHA" -- '**/Cargo.lock')
+          else
+            while IFS= read -r -d '' lockfile; do
+              lockfiles+=("${lockfile#./}")
+            done < <(find . -name Cargo.lock -not -path '*/target/*' -print0 | sort -z)
+          fi
+
+          if (( ${#lockfiles[@]} == 0 )); then
+            echo "No Rust lockfiles selected."
+            exit 0
+          fi
+
+          status=0
+          # No --no-fetch on the later iterations: the yanked check resolves
+          # crates against the index entries fetched by THIS invocation, so a
+          # --no-fetch pass only sees whatever the first lockfile happened to
+          # warm — every additional lockfile in a PR then fails its yanked
+          # lookups with "No such crate in crates.io index". The repeat
+          # advisory-db fetch is a fast no-op once the clone is fresh.
+          for lockfile in "${lockfiles[@]}"; do
+            echo "::group::cargo audit --file $lockfile"
+            cargo audit --file "$lockfile" || status=1
+            echo "::endgroup::"
+          done
+
+          echo "Audited ${#lockfiles[@]} lockfile(s)." >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"

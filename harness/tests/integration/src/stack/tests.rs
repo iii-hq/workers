@@ -17,6 +17,8 @@ fn layout_allocates_the_stable_run_tree() {
         layout.root.join("engine/engine.yaml")
     );
     assert_eq!(layout.stack_manifest_path(), layout.root.join("stack.json"));
+    assert_eq!(layout.skills_dir(), layout.root.join("skills"));
+    assert_eq!(layout.agents_dir(), layout.root.join("agents"));
     assert!(layout.engine_dir.is_dir());
     assert!(layout.seeds_dir.is_dir());
     assert!(layout.logs_dir.is_dir());
@@ -24,6 +26,22 @@ fn layout_allocates_the_stable_run_tree() {
     let scenario = layout.scenario_dir("INT-001").unwrap();
     assert_eq!(scenario, layout.root.join("scenarios/INT-001"));
     assert!(scenario.is_dir());
+}
+
+#[test]
+fn directory_seed_separates_agent_and_skill_roots() {
+    let artifacts = tempfile::tempdir().unwrap();
+    let layout = RunLayout::allocate(artifacts.path(), "run-001").unwrap();
+    let seed = config::render_seed("iii-directory", &layout).unwrap();
+
+    assert_eq!(
+        seed["skills_folder"],
+        serde_json::json!(layout.skills_dir().to_string_lossy())
+    );
+    assert_eq!(
+        seed["agents_folder"],
+        serde_json::json!(layout.agents_dir().to_string_lossy())
+    );
 }
 
 #[test]
@@ -100,4 +118,30 @@ async fn boot_failure_carries_a_complete_typed_teardown() {
     };
     assert!(failure.teardown.complete());
     assert!(format!("{:#}", failure.error).contains("missing --worker-bin"));
+}
+
+#[tokio::test]
+async fn integration_engine_receives_telemetry_opt_out() {
+    let artifacts = tempfile::tempdir().unwrap();
+    let layout = RunLayout::allocate(artifacts.path(), "run-engine-env").unwrap();
+    let marker = layout.root.join("engine-telemetry-env.txt");
+    let args = vec![
+        "-c".to_string(),
+        "printf '%s' \"$III_TELEMETRY_ENABLED\" > \"$1\"".to_string(),
+        "engine-test".to_string(),
+        marker.to_string_lossy().into_owned(),
+    ];
+    let mut stack = Stack::for_tests(layout.clone());
+
+    stack
+        .spawn_engine_logged(
+            "engine",
+            PathBuf::from("/bin/sh").as_path(),
+            &args,
+            &layout.root,
+        )
+        .unwrap();
+    stack.wait_for_early_exit().await.unwrap();
+
+    assert_eq!(std::fs::read_to_string(marker).unwrap(), "false");
 }

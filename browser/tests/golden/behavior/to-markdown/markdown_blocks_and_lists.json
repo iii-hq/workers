@@ -1,0 +1,11 @@
+{
+  "function": "browser::to-markdown",
+  "case": "markdown_blocks_and_lists",
+  "request": {
+    "html": "\n         <div><blockquote><p>one<br>two</p><ul><li>A<ul><li>B<ul><li>C</li></ul></li></ul></li><li>D</li></ul></blockquote>\n         <ol start=\"3\"><li>Three</li><li><p>Four</p></li></ol>\n         <dl><dt> Term one </dt><dd>definition\nline</dd><dt>Next</dt><dd><b>bold</b></dd></dl>\n         <pre>\n  a * b\n`tick`\n</pre></div><p>after</p>\n     "
+  },
+  "ok": {
+    "format": "markdown",
+    "content": "> one  \n> two\n>\n> * A\n>   + B\n>     - C\n> * D\n\n3. Three\n4. Four\n\nTerm one\n:   definition\n    line\n\nNext\n:   **bold**\n\n```\n  a * b\n`tick`\n```\n\nafter"
+  }
+}

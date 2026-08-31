@@ -1,0 +1,56 @@
+{
+  "description": "Stop an in-flight security-scan run. Queued and materializing runs are marked cancelled; analyzing runs stop the Harness turn and clean up the isolated checkout.",
+  "function_id": "security-scan::cancel",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "run_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "run_id"
+    ],
+    "title": "SecurityScanCancelRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "RunStatusV1": {
+        "enum": [
+          "queued",
+          "materializing",
+          "materialized",
+          "dispatching",
+          "analyzing",
+          "completed",
+          "failed",
+          "cancelling",
+          "cancelled"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "deduplicated": {
+        "type": "boolean"
+      },
+      "run_id": {
+        "type": "string"
+      },
+      "status": {
+        "$ref": "#/definitions/RunStatusV1"
+      }
+    },
+    "required": [
+      "deduplicated",
+      "run_id",
+      "status"
+    ],
+    "title": "SecurityScanCancelResponseV1",
+    "type": "object"
+  }
+}

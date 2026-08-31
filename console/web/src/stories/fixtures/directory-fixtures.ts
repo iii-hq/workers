@@ -2,7 +2,6 @@ import type { FunctionTriggerMessage } from '@/types/chat'
 import { wrapHarness } from './sandbox-fixtures'
 
 const now = Date.now()
-const NOW_ISO = new Date(now).toISOString()
 const YESTERDAY_ISO = new Date(now - 86_400_000).toISOString()
 const LAST_WEEK_ISO = new Date(now - 7 * 86_400_000).toISOString()
 
@@ -42,6 +41,7 @@ export const directorySkillsListDone = base(
           'Create a fresh sandbox VM. Pair with sandbox::exec to run commands inside it.',
         bytes: 1840,
         modified_at: YESTERDAY_ISO,
+        disable_model_invocation: false,
       },
       {
         id: 'sandbox/skills/sandbox/exec',
@@ -51,6 +51,7 @@ export const directorySkillsListDone = base(
         description: 'Run a single command in an existing sandbox.',
         bytes: 1602,
         modified_at: YESTERDAY_ISO,
+        disable_model_invocation: false,
       },
       {
         id: 'sandbox/index',
@@ -61,6 +62,7 @@ export const directorySkillsListDone = base(
           'Read-write VMs for the agent. Use create to provision one, exec/run to interact.',
         bytes: 920,
         modified_at: LAST_WEEK_ISO,
+        disable_model_invocation: true,
       },
     ],
   }),
@@ -107,6 +109,7 @@ Create a fresh sandbox VM.
 \`\`\`
 `,
     modified_at: YESTERDAY_ISO,
+    disable_model_invocation: false,
   }),
 )
 
@@ -151,7 +154,6 @@ export const directorySkillsDownloadRepo = base(
       'sandbox/skills/sandbox/exec',
       'sandbox/skills/sandbox/stop',
     ],
-    prompts_written: ['sandbox/prompts/getting-started'],
     source: {
       kind: 'repo',
       repo: 'https://github.com/iii-hq/sandbox',
@@ -168,54 +170,12 @@ export const directorySkillsDownloadRegistry = base(
   {
     namespace: 'pdfkit',
     skills_written: ['pdfkit/index', 'pdfkit/skills/pdfkit/render'],
-    prompts_written: [],
     source: {
       kind: 'registry',
       worker: 'pdfkit',
       spec: { kind: 'version', value: '1.0.0' },
     },
   },
-)
-
-/* ---------------- directory::prompts::list ---------------- */
-
-export const directoryPromptsListDone = base(
-  'dir-prompts-list',
-  'directory::prompts::list',
-  {},
-  wrapHarness({
-    prompts: [
-      {
-        name: 'sandbox/getting-started',
-        description: 'Walks the agent through creating + using a sandbox VM.',
-        modified_at: YESTERDAY_ISO,
-      },
-      {
-        name: 'todo-app/quickstart',
-        description: 'Set up the demo todo worker and exercise every function.',
-        modified_at: LAST_WEEK_ISO,
-      },
-    ],
-  }),
-)
-
-/* ---------------- directory::prompts::get ---------------- */
-
-export const directoryPromptsGetDone = base(
-  'dir-prompts-get',
-  'directory::prompts::get',
-  { name: 'sandbox/getting-started' },
-  wrapHarness({
-    name: 'sandbox/getting-started',
-    description: 'Walks the agent through creating + using a sandbox VM.',
-    body: `Hello! Here's how to spin up a sandbox:
-
-1. Call \`sandbox::create\` to provision a VM.
-2. Use \`sandbox::exec\` to run shell commands inside it.
-3. When done, call \`sandbox::stop\` to release resources.
-`,
-    modified_at: NOW_ISO,
-  }),
 )
 
 /* ---------------- directory::registry::workers::list ---------------- */
@@ -296,7 +256,6 @@ export const directoryRegistryInfoDone = base(
         { path: 'pdfkit/index' },
         { path: 'pdfkit/skills/pdfkit/render' },
       ],
-      prompts: [],
     },
   }),
 )
@@ -309,8 +268,6 @@ export const directoryFixtures = [
   directorySkillsIndexDone,
   directorySkillsDownloadRepo,
   directorySkillsDownloadRegistry,
-  directoryPromptsListDone,
-  directoryPromptsGetDone,
   directoryRegistryListDone,
   directoryRegistryInfoDone,
 ] as const

@@ -33,7 +33,8 @@ pub struct WorkerConfig {
     #[serde(default = "default_max_depth")]
     pub max_depth: u32,
 
-    /// Fan-out budget: non-terminal children of a turn past this is refused.
+    /// Fan-out budget: child sessions created by a turn past this are refused;
+    /// appending work to an existing eligible session does not consume a slot.
     #[serde(default = "default_max_children")]
     pub max_children: u32,
 
@@ -88,14 +89,6 @@ pub struct WorkerConfig {
     /// is clamped to — `null` makes ask mode a plain chat loop.
     #[serde(default = "default_functions")]
     pub default_functions: Option<FunctionPolicy>,
-
-    /// Use the provider-served identity prompt (`router::system_prompt::get`)
-    /// as the turn's system prompt. Off (the default) pins every turn to the
-    /// harness's embedded default prompt; on trusts the provider prompt to
-    /// track the harness's actual surface. Sub-agents are unaffected: they
-    /// always take the embedded sub-agent prompt.
-    #[serde(default = "default_provider_identity_prompt")]
-    pub provider_identity_prompt: bool,
 
     /// Working-directory root stamped onto the FIRST turn of a session whose
     /// send carries no `metadata.fs_scope.root`. Absent/null → the harness
@@ -210,7 +203,8 @@ fn default_max_depth() -> u32 {
     3
 }
 fn default_max_children() -> u32 {
-    // Per-turn spawn total (fire-and-forget spawns settle instantly). Live
+    // Per-turn child-session creation total (re-tasking an existing session
+    // does not consume another slot). Live
     // testing showed 6-wide fan-outs are a mundane ask ("one worker per
     // planet") that forced workarounds at 5; 8 covers the ordinary case
     // while the guard still stops runaways.
@@ -265,10 +259,6 @@ fn default_functions() -> Option<FunctionPolicy> {
         expose: Default::default(),
     })
 }
-fn default_provider_identity_prompt() -> bool {
-    false
-}
-
 fn expand_env(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut rest = input;
@@ -311,7 +301,6 @@ impl Default for WorkerConfig {
             stream_coalesce_ms: default_stream_coalesce_ms(),
             sweep_expression: default_sweep_expression(),
             default_functions: default_functions(),
-            provider_identity_prompt: default_provider_identity_prompt(),
             default_filesystem_root: None,
         }
     }

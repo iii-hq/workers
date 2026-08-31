@@ -1,7 +1,7 @@
 //! Workers registry source: HTTP GET to
 //! `{registry_url}/w/{worker}/skills?version=… | ?tag=…`, parses the
-//! response shape documented below, and writes both skills and prompts
-//! into `<skills_folder>/<worker>/`.
+//! response shape documented below, and writes accepted skills into
+//! `<skills_folder>/<worker>/` and agent profiles into `agents_folder`.
 //!
 //! Response shape (from the workers registry):
 //!
@@ -12,30 +12,21 @@
 //!   "skills": [
 //!     { "path": "contacts.md", "content": "…" },
 //!     { "path": "emails/index.md", "content": "…" }
-//!   ],
-//!   "prompts": [
-//!     {
-//!       "name": "send-email",
-//!       "description": "compose and send a transactional email",
-//!       "args_schema": { "…": "…" },
-//!       "content": "…"
-//!     }
 //!   ]
 //! }
 //! ```
 //!
-//! Skills are written verbatim under the worker namespace. Prompts are
-//! materialised as `<worker>/prompts/<name>.md` with a YAML frontmatter
-//! block declaring `name`, `description`, and (when present)
-//! `args_schema`.
+//! Skills are written verbatim under the worker namespace. Exact
+//! `agents/<id>.md` entries are routed to the agent profile root. A
+//! structured registry `prompts` field is ignored.
 
 use std::path::Path;
 
 use serde::Deserialize;
-use serde_json::Value;
+
+use crate::functions::prompts::validate_name;
 
 use super::{build_http_client, validate_relative_path, write_file_atomic, DownloadResult};
-use crate::functions::prompts::validate_name as validate_prompt_name;
 
 /// Specifier for which version of a worker's skills to pull.
 ///
@@ -71,16 +62,6 @@ struct SkillEntry {
 }
 
 #[derive(Debug, Deserialize)]
-struct PromptEntry {
-    name: String,
-    #[serde(default)]
-    description: String,
-    #[serde(default)]
-    args_schema: Option<Value>,
-    content: String,
-}
-
-#[derive(Debug, Deserialize)]
 struct WorkerSkillsResponse {
     #[serde(default)]
     name: Option<String>,
@@ -89,8 +70,6 @@ struct WorkerSkillsResponse {
     version: Option<String>,
     #[serde(default)]
     skills: Vec<SkillEntry>,
-    #[serde(default)]
-    prompts: Vec<PromptEntry>,
 }
 
 /// Validate the worker name. Mirrors the `^[a-z0-9][a-z0-9_-]*$`
@@ -126,17 +105,27 @@ pub enum RegistryDownloadOutcome {
     NotFound,
 }
 
-/// HTTP GET the worker's skills bundle, parse the response, and write
-/// every entry under `<skills_folder>/<worker>/`. The HTTP request and
-/// the file writes are bounded by `timeout_ms` collectively.
+/// HTTP GET the worker's directory bundle, parse the response, and route
+/// skills and agent profiles to their configured roots. The HTTP request
+/// and file writes are bounded by `timeout_ms` collectively.
 pub async fn download(
     registry_base: &str,
     worker: &str,
     spec: &VersionSpec,
     skills_folder: &Path,
+    agents_folder: &Path,
     timeout_ms: u64,
 ) -> Result<DownloadResult, String> {
-    match download_typed(registry_base, worker, spec, skills_folder, timeout_ms).await? {
+    match download_typed(
+        registry_base,
+        worker,
+        spec,
+        skills_folder,
+        agents_folder,
+        timeout_ms,
+    )
+    .await?
+    {
         RegistryDownloadOutcome::Ok(result) => Ok(result),
         RegistryDownloadOutcome::NotFound => Err(format!(
             "D310 not_found: registry worker {worker:?} has no published skills bundle. \
@@ -153,6 +142,7 @@ pub async fn download_typed(
     worker: &str,
     spec: &VersionSpec,
     skills_folder: &Path,
+    agents_folder: &Path,
     timeout_ms: u64,
 ) -> Result<RegistryDownloadOutcome, String> {
     validate_worker_name(worker)?;
@@ -203,7 +193,7 @@ pub async fn download_typed(
         }
     }
 
-    let result = write_response(worker, parsed, skills_folder)?;
+    let result = write_response(worker, parsed, skills_folder, agents_folder)?;
     Ok(RegistryDownloadOutcome::Ok(result))
 }
 
@@ -233,6 +223,7 @@ fn write_response(
     worker: &str,
     mut response: WorkerSkillsResponse,
     skills_folder: &Path,
+    agents_folder: &Path,
 ) -> Result<DownloadResult, String> {
     let dest_root = skills_folder.join(worker);
     std::fs::create_dir_all(&dest_root)
@@ -248,58 +239,57 @@ fn write_response(
         let normalized = strip_leading_skills_segment(&skill.path);
         let rel = validate_relative_path(normalized)
             .map_err(|e| format!("invalid skill path {:?}: {e}", skill.path))?;
+        if let Some(id) = bundle_agent_id(&rel) {
+            if validate_name(id).is_err() {
+                continue;
+            }
+            write_file_atomic(
+                &agents_folder.join(format!("{id}.md")),
+                skill.content.as_bytes(),
+            )?;
+            result.agents_written.push(id.to_string());
+            continue;
+        }
+        let Some(kind) = crate::fs_source::classify_rel_path(&rel) else {
+            continue;
+        };
+        if kind == crate::fs_source::SourceKind::Agent {
+            continue;
+        }
         let dest = dest_root.join(&rel);
         write_file_atomic(&dest, skill.content.as_bytes())?;
-        result
-            .skills_written
-            .push(rel.to_string_lossy().replace('\\', "/"));
-    }
 
-    for prompt in response.prompts {
-        validate_prompt_name(&prompt.name)
-            .map_err(|e| format!("invalid prompt name {:?}: {e}", prompt.name))?;
-        let body = render_prompt_body(&prompt)?;
-        let dest = dest_root
-            .join("prompts")
-            .join(format!("{}.md", prompt.name));
-        write_file_atomic(&dest, body.as_bytes())?;
-        result.prompts_written.push(prompt.name);
+        // The registry calls every entry in `skills[]` a "skill", but the shared
+        // classifier rejects `prompts/` paths and reports system prompts to their
+        // own on-change bucket. That bucket uses the bare file stem; the skills
+        // bucket keeps the path.
+        match kind {
+            crate::fs_source::SourceKind::SystemPrompt
+                if rel.extension().is_some_and(|e| e == "md") =>
+            {
+                if let Some(stem) = super::git::stem_of(&rel) {
+                    result.system_prompts_written.push(stem);
+                }
+            }
+            _ => result
+                .skills_written
+                .push(rel.to_string_lossy().replace('\\', "/")),
+        }
     }
 
     Ok(result)
 }
 
-/// Compose the on-disk markdown for a prompt: a YAML frontmatter block
-/// declaring `name`, `description`, and optional `args_schema`,
-/// followed by the prompt body verbatim.
-fn render_prompt_body(prompt: &PromptEntry) -> Result<String, String> {
-    let mut frontmatter = serde_yaml::Mapping::new();
-    frontmatter.insert("name".into(), prompt.name.clone().into());
-    let description = prompt.description.trim();
-    frontmatter.insert("description".into(), description.into());
-    if let Some(schema) = &prompt.args_schema {
-        let yaml_value = serde_yaml::to_value(schema)
-            .map_err(|e| format!("encode args_schema for {:?}: {e}", prompt.name))?;
-        frontmatter.insert("args_schema".into(), yaml_value);
+fn bundle_agent_id(rel: &Path) -> Option<&str> {
+    if rel.parent()? != Path::new(crate::fs_source::AGENTS_SEGMENT) || rel.extension()? != "md" {
+        return None;
     }
-    let yaml = serde_yaml::to_string(&frontmatter)
-        .map_err(|e| format!("encode frontmatter for {:?}: {e}", prompt.name))?;
-
-    let mut out = String::new();
-    out.push_str("---\n");
-    out.push_str(yaml.trim_end());
-    out.push_str("\n---\n");
-    out.push_str(&prompt.content);
-    if !prompt.content.ends_with('\n') {
-        out.push('\n');
-    }
-    Ok(out)
+    rel.file_stem()?.to_str().filter(|id| !id.is_empty())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn validate_worker_name_accepts_simple() {
@@ -329,37 +319,37 @@ mod tests {
     }
 
     #[test]
-    fn render_prompt_body_includes_frontmatter_and_body() {
-        let entry = PromptEntry {
-            name: "send-email".into(),
-            description: "compose and send".into(),
-            args_schema: Some(json!({ "type": "object" })),
-            content: "Compose a friendly email.\n".into(),
-        };
-        let body = render_prompt_body(&entry).unwrap();
-        assert!(body.starts_with("---\n"), "got: {body}");
-        assert!(body.contains("name: send-email"));
-        assert!(body.contains("description: compose and send"));
-        assert!(body.contains("args_schema"));
-        assert!(body.contains("Compose a friendly email."));
-        assert!(body.ends_with('\n'));
+    fn write_response_ignores_structured_command_prompts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let response: WorkerSkillsResponse = serde_json::from_str(
+            r##"{
+                "name": "resend",
+                "version": "1.2.3",
+                "skills": [
+                    { "path": "index.md", "content": "# resend\n" },
+                    { "path": "emails/send-email.md", "content": "# send-email\n" }
+                ],
+                "prompts": [{ "name": "send-email", "content": "Body." }]
+            }"##,
+        )
+        .unwrap();
+        let result = write_response("resend", response, tmp.path(), tmp.path()).unwrap();
+        assert_eq!(result.namespace, "resend");
+        assert_eq!(result.skills_written.len(), 2);
+        assert!(!tmp.path().join("resend/prompts/send-email.md").exists());
+
+        let index = std::fs::read_to_string(tmp.path().join("resend/index.md")).unwrap();
+        assert_eq!(index, "# resend\n");
     }
 
     #[test]
-    fn render_prompt_body_omits_args_schema_when_absent() {
-        let entry = PromptEntry {
-            name: "simple".into(),
-            description: "just text".into(),
-            args_schema: None,
-            content: "Hello.".into(),
-        };
-        let body = render_prompt_body(&entry).unwrap();
-        assert!(!body.contains("args_schema"));
-        assert!(body.ends_with("Hello.\n"));
-    }
-
-    #[test]
-    fn write_response_lays_out_namespace_and_prompts_subdir() {
+    fn write_response_classifies_system_prompt_path_in_skills_array() {
+        // The registry response only has ONE array for markdown files —
+        // `skills[]` — so a bundle that ships a system prompt lists it there
+        // too, at a path under `system-prompts/`. It must still land in
+        // `system_prompts_written` (and fire `system-prompts::on-change`,
+        // not `skills::on-change`), exactly like `git.rs::copy_recursive`
+        // classifies a cloned repo's tree.
         let tmp = tempfile::tempdir().unwrap();
         let response = WorkerSkillsResponse {
             name: Some("resend".into()),
@@ -370,28 +360,82 @@ mod tests {
                     content: "# resend\n".into(),
                 },
                 SkillEntry {
-                    path: "emails/send-email.md".into(),
-                    content: "# send-email\n".into(),
+                    path: "system-prompts/reviewer.md".into(),
+                    content: "---\ndescription: reviews PRs\n---\nBody.\n".into(),
                 },
             ],
-            prompts: vec![PromptEntry {
-                name: "send-email".into(),
-                description: "compose and send".into(),
-                args_schema: None,
-                content: "Body.".into(),
+        };
+        let result = write_response("resend", response, tmp.path(), tmp.path()).unwrap();
+        assert_eq!(result.skills_written, vec!["index.md".to_string()]);
+        assert_eq!(result.system_prompts_written, vec!["reviewer".to_string()]);
+
+        // Still lands on disk at the path the registry sent — only the
+        // REPORTED bucket (and thus which on-change trigger fires) changes.
+        let sys =
+            std::fs::read_to_string(tmp.path().join("resend/system-prompts/reviewer.md")).unwrap();
+        assert!(sys.contains("Body."));
+    }
+
+    #[test]
+    fn write_response_routes_agent_to_dedicated_root() {
+        let skills = tempfile::tempdir().unwrap();
+        let agents = tempfile::tempdir().unwrap();
+        let response = WorkerSkillsResponse {
+            name: Some("harness".into()),
+            version: Some("1.2.3".into()),
+            skills: vec![SkillEntry {
+                path: "agents/reviewer.md".into(),
+                content: "---\nname: Reviewer\n---\nReview changes.\n".into(),
             }],
         };
-        let result = write_response("resend", response, tmp.path()).unwrap();
-        assert_eq!(result.namespace, "resend");
-        assert_eq!(result.skills_written.len(), 2);
-        assert_eq!(result.prompts_written, vec!["send-email"]);
 
-        let index = std::fs::read_to_string(tmp.path().join("resend/index.md")).unwrap();
-        assert_eq!(index, "# resend\n");
-        let prompt =
-            std::fs::read_to_string(tmp.path().join("resend/prompts/send-email.md")).unwrap();
-        assert!(prompt.starts_with("---\n"));
-        assert!(prompt.contains("Body."));
+        let result = write_response("harness", response, skills.path(), agents.path()).unwrap();
+
+        assert_eq!(result.agents_written, vec!["reviewer"]);
+        assert!(agents.path().join("reviewer.md").is_file());
+        assert!(!skills.path().join("harness/agents/reviewer.md").exists());
+    }
+
+    #[test]
+    fn write_response_ignores_invalid_agent_id() {
+        let skills = tempfile::tempdir().unwrap();
+        let agents = tempfile::tempdir().unwrap();
+        let response = WorkerSkillsResponse {
+            name: Some("harness".into()),
+            version: None,
+            skills: vec![SkillEntry {
+                path: "agents/Bad-Id.md".into(),
+                content: "---\nname: Bad\n---\nBody.\n".into(),
+            }],
+        };
+
+        let result = write_response("harness", response, skills.path(), agents.path()).unwrap();
+
+        assert!(result.agents_written.is_empty());
+        assert!(!agents.path().join("Bad-Id.md").exists());
+    }
+
+    #[test]
+    fn write_response_ignores_nested_agent_path() {
+        let skills = tempfile::tempdir().unwrap();
+        let agents = tempfile::tempdir().unwrap();
+        let response = WorkerSkillsResponse {
+            name: Some("harness".into()),
+            version: None,
+            skills: vec![SkillEntry {
+                path: "agents/review/reviewer.md".into(),
+                content: "---\nname: Reviewer\n---\nBody.\n".into(),
+            }],
+        };
+
+        let result = write_response("harness", response, skills.path(), agents.path()).unwrap();
+
+        assert_eq!(result.total_files(), 0);
+        assert!(!agents.path().join("review/reviewer.md").exists());
+        assert!(!skills
+            .path()
+            .join("harness/agents/review/reviewer.md")
+            .exists());
     }
 
     #[test]
@@ -423,9 +467,8 @@ mod tests {
                 path: "skills/SKILL.md".into(),
                 content: "# skill\n".into(),
             }],
-            prompts: vec![],
         };
-        let result = write_response("iii", response, tmp.path()).unwrap();
+        let result = write_response("iii", response, tmp.path(), tmp.path()).unwrap();
         // Lands at iii/SKILL.md, NOT iii/skills/SKILL.md.
         assert!(tmp.path().join("iii/SKILL.md").is_file());
         assert!(!tmp.path().join("iii/skills/SKILL.md").exists());
@@ -449,9 +492,8 @@ mod tests {
                     content: "# canonical\n".into(),
                 },
             ],
-            prompts: vec![],
         };
-        let result = write_response("iii-directory", response, tmp.path()).unwrap();
+        let result = write_response("iii-directory", response, tmp.path(), tmp.path()).unwrap();
         assert!(tmp.path().join("iii-directory/SKILL.md").is_file());
         assert!(!tmp.path().join("iii-directory/index.md").exists());
         assert_eq!(
@@ -471,27 +513,8 @@ mod tests {
                 path: "../../../etc/passwd".into(),
                 content: "x".into(),
             }],
-            prompts: vec![],
         };
-        let err = write_response("resend", response, tmp.path()).unwrap_err();
+        let err = write_response("resend", response, tmp.path(), tmp.path()).unwrap_err();
         assert!(err.contains("invalid skill path"), "got: {err}");
-    }
-
-    #[test]
-    fn write_response_rejects_invalid_prompt_name() {
-        let tmp = tempfile::tempdir().unwrap();
-        let response = WorkerSkillsResponse {
-            name: None,
-            version: None,
-            skills: vec![],
-            prompts: vec![PromptEntry {
-                name: "Bad Name".into(),
-                description: "x".into(),
-                args_schema: None,
-                content: "y".into(),
-            }],
-        };
-        let err = write_response("resend", response, tmp.path()).unwrap_err();
-        assert!(err.contains("invalid prompt name"), "got: {err}");
     }
 }

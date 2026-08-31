@@ -2,16 +2,15 @@
 //! in-memory snapshot → register functions → bind and reconcile the
 //! configuration trigger → emit `router::ready`.
 //!
-//! Every registration below is a direct `iii_sdk` call:
-//! `iii.register_function(id, RegisterFunction::new_async(...))` for the
-//! function surface and `iii.register_trigger(RegisterTriggerInput { .. })`
-//! for trigger bindings. Router events fan out via worker-owned trigger types
-//! (`triggers::RouterEvents`).
+//! Function registrations use `iii_sdk` directly, with the shared typed
+//! registration adapter where malformed payloads have a stable public error
+//! code. Trigger bindings use `RegisterTriggerInput::new(...)`. Router events
+//! fan out via worker-owned trigger types (`triggers::RouterEvents`).
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 
@@ -29,6 +28,7 @@ use crate::config::entry::{read_entry_value, register_entry, EntryWriteLock};
 use crate::config::on_changed::make_on_config_changed;
 use crate::config::schema::provider_entry_schema;
 use crate::config::state::{new_config_cell, ConfigCell};
+use crate::provider_scaffold::registration::typed_async_with_bad_request;
 use crate::registry::availability::make_provider_list;
 use crate::registry::register::make_provider_register;
 use crate::registry::resolve::{make_provider_resolve, make_update_credential};
@@ -36,7 +36,7 @@ use crate::registry::store::RegistryStore;
 use crate::surface;
 use crate::triggers::RouterEvents;
 use crate::types::errors::invalid_request_from_serde;
-use crate::types::router::ConfigChangedEvent;
+use crate::types::router::{ConfigChangedEvent, FunctionsChangedEvent, RouterAck};
 
 /// `metadata.internal = true` keeps a registration out of the default
 /// `engine::functions::list`: orchestrator/provider plumbing, invoked by id.
@@ -68,7 +68,6 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
         let schema = provider_entry_schema(
             rec.declaration.config_schema.as_ref(),
             &serde_json::to_value(rec.declaration.defaults.clone()).unwrap_or(Value::Null),
-            rec.declaration.system_prompt.as_deref(),
         );
         provider_schemas.insert(rec.declaration.id.clone(), schema);
     }
@@ -93,7 +92,7 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
         let (iii_for_chat, pipeline) = (iii.clone(), pipeline.clone());
         iii.register_function(
             surface::CHAT_ID,
-            RegisterFunction::new_async_with_bad_request(
+            typed_async_with_bad_request(
                 move |input: ChatFnInput| {
                     let (iii, pipeline) = (iii_for_chat.clone(), pipeline.clone());
                     async move {
@@ -111,7 +110,7 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
     }
     iii.register_function(
         surface::COMPLETE_ID,
-        RegisterFunction::new_async_with_bad_request(
+        typed_async_with_bad_request(
             make_complete(iii.clone(), pipeline.clone()),
             invalid_request_from_serde,
         )
@@ -172,15 +171,6 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             .description(surface::PROVIDER_LIST_DESC),
     );
     iii.register_function(
-        surface::SYSTEM_PROMPT_GET_ID,
-        RegisterFunction::new_async(crate::system_prompt::make_system_prompt_get(
-            config.clone(),
-            registry.clone(),
-        ))
-        .description(surface::SYSTEM_PROMPT_GET_DESC)
-        .metadata(internal_meta()),
-    );
-    iii.register_function(
         surface::ROUTE_ID,
         RegisterFunction::new_async(crate::routing::make_route(
             registry.clone(),
@@ -192,7 +182,7 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
     );
     iii.register_function(
         surface::PROVIDER_REGISTER_ID,
-        RegisterFunction::new_async_with_bad_request(
+        typed_async_with_bad_request(
             make_provider_register(
                 iii.clone(),
                 registry.clone(),
@@ -224,7 +214,7 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
     );
     iii.register_function(
         surface::MODELS_RECONCILE_ID,
-        RegisterFunction::new_async_with_bad_request(
+        typed_async_with_bad_request(
             make_models_reconcile(registry.clone(), catalog.clone(), events.clone()),
             invalid_request_from_serde,
         )
@@ -261,12 +251,11 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             .description(surface::ON_CONFIG_CHANGED_DESC)
             .metadata(json!({ "internal": true, "trace_hidden": true })),
     );
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "configuration".into(),
-        function_id: surface::ON_CONFIG_CHANGED_ID.into(),
-        config: json!({ "configuration_id": "llm-router", "event_types": ["configuration:updated"] }),
-        metadata: None,
-    })?;
+    iii.register_trigger(RegisterTriggerInput::new(
+        "configuration",
+        surface::ON_CONFIG_CHANGED_ID,
+        json!({ "configuration_id": "llm-router", "event_types": ["configuration:updated"] }),
+    ))?;
 
     // Close the boot race between the initial fetch and trigger binding by
     // running the SAME operation the trigger runs: one reconcile keeps the
@@ -286,27 +275,60 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
     // The ready fan-out only reaches providers whose `router::ready` binding
     // still exists — and the engine drops those bindings when THIS worker
     // (the trigger type's owner) disconnects, so providers that outlived a
-    // router restart never hear it. Nudge every restored provider directly:
+    // router restart never hear it. Nudge every provider directly:
     // `provider::<id>::on_router_ready` is the deterministic per-provider
     // handler (same one the fan-out targets), a live provider re-declares —
     // flipping the boot-reset availability back up — and a dead one is
     // function_not_found, which is exactly the right answer. Detached: boot
     // must not block on provider round-trips.
+    //
+    // The provider set comes from the ENGINE, not `registry.ids()`: the
+    // persisted registry is empty on any stack whose state worker runs
+    // in-memory, and then this repair reached nobody. See
+    // `registry::rediscover`.
     {
         let iii = iii.clone();
-        let ids = registry.ids().await;
         tokio::spawn(async move {
-            for id in ids {
-                let _ = iii
-                    .trigger(TriggerRequest {
-                        function_id: format!("provider::{id}::on_router_ready"),
-                        payload: json!({}),
-                        action: None,
-                        timeout_ms: Some(10_000),
-                    })
-                    .await;
-            }
+            let count = crate::registry::rediscover::nudge_live_providers(&iii).await;
+            tracing::debug!(
+                providers = count,
+                "boot: nudged live providers to re-declare"
+            );
         });
+    }
+
+    // A provider that reconnects to the engine while the router stays up gets
+    // its FUNCTIONS replayed by the SDK, but not its catalog — that is
+    // application state this worker holds, and nothing re-pushes it until the
+    // provider's own periodic timer (three minutes for openai-codex). Watch
+    // the engine's registration stream and re-run the same nudge, so a
+    // returning provider is resolvable in seconds instead of minutes.
+    {
+        let iii_handler = iii.clone();
+        let sweep = crate::registry::rediscover::spawn_debounced_sweep(iii_handler);
+        iii.register_function(
+            surface::ON_FUNCTIONS_CHANGED_ID,
+            RegisterFunction::new_async(move |_event: FunctionsChangedEvent| {
+                let sweep = sweep.clone();
+                async move {
+                    // Coalesce the boot burst: the handler only marks work
+                    // pending, the sweep task fires once it goes quiet.
+                    sweep.request();
+                    Ok::<RouterAck, Error>(RouterAck { ok: true })
+                }
+            })
+            .description(surface::ON_FUNCTIONS_CHANGED_DESC)
+            .metadata(json!({ "internal": true, "trace_hidden": true })),
+        );
+        if let Err(e) = iii.register_trigger(RegisterTriggerInput::new(
+            "engine::functions-available",
+            surface::ON_FUNCTIONS_CHANGED_ID,
+            json!({}),
+        )) {
+            // Best-effort: without it providers still recover on their own
+            // timer, exactly as before this binding existed.
+            tracing::warn!(error = %e, "binding engine::functions-available failed; provider re-discovery falls back to each provider's periodic refresh");
+        }
     }
 
     Ok(RouterRefs {

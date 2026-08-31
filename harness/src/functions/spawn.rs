@@ -2,7 +2,7 @@
 //! Sub-agents). Fire-and-forget: the caller gets the child's ids immediately
 //! and never its result. Designed to be called by the model through
 //! `agent_trigger`; the dispatch layer records the child linkage on a `Done`
-//! checkpoint (fan-out guard, status, stop cascade).
+//! checkpoint (creation count, status, stop cascade).
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -14,6 +14,46 @@ use crate::prompt::{Mode, SystemPromptStrategy};
 use crate::types::model::ThinkingLevel;
 use crate::types::output::OutputContract;
 use crate::types::turn::FunctionPolicy;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentIcon {
+    Agent,
+    Code,
+    Search,
+    Terminal,
+    Database,
+    Test,
+    Review,
+    Docs,
+    Design,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentColor {
+    Neutral,
+    Blue,
+    Purple,
+    Teal,
+    Green,
+    Amber,
+    Rose,
+}
+
+/// Display-only identity for a spawned child. The name becomes the session
+/// title; icon and color are closed semantic tokens consumed by UIs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SubagentDisplay {
+    /// Short functional name, such as `Frontend` or `Explorer`. Leading and
+    /// trailing whitespace is removed; the result must be 1-48 characters.
+    #[schemars(length(min = 1, max = 48))]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<SubagentIcon>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<SubagentColor>,
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct SpawnOptions {
@@ -47,6 +87,11 @@ pub struct SpawnOptions {
     /// `ask`-mode child is further capped at the configured default policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub functions: Option<FunctionPolicy>,
+    /// Exact skill ids advertised to the child. On a fresh child, omitted or
+    /// empty means all. A reused child inherits when omitted and resets to all
+    /// when empty. Explicit changes require no active child turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<Vec<String>>,
     /// Grant this child the orchestration surface. Default false: a spawned
     /// child is a LEAF — its policy gains deny globs for `harness::spawn`,
     /// `harness::send`, `engine::register_trigger`, `engine::unregister_trigger`
@@ -54,8 +99,8 @@ pub struct SpawnOptions {
     /// updates shared state without spawning, messaging sessions, or touching
     /// trigger registrations. `true` skips those denies; the child still never
     /// exceeds its parent's policy.
-    #[serde(default)]
-    pub orchestrator: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orchestrator: Option<bool>,
     /// Fan-out guard for the child's own spawns.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_children: Option<u32>,
@@ -74,6 +119,22 @@ pub struct SpawnRequest {
     /// every resolved required selector literally (for example `Use database
     /// db: "primary"`); the child cannot infer resources from the parent.
     pub task: MessageInput,
+    /// Run the child as a directory agent profile (`directory::agents::*`
+    /// id). The profile's resolved system prompt (its `extends` chain
+    /// composed by the directory) becomes the child's whole identity — no
+    /// shared identity underneath, only the `mode` paragraph in front — its
+    /// skill filter applies when `options.skills` is omitted, its `model`
+    /// slots between an explicit `model` and the parent's, and its name/icon
+    /// become the display defaults. Which agent profile to name is the
+    /// prompt's decision. Refused combined with `options.system_prompt`, and
+    /// when the profile's `extends` chain does not resolve.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// Optional display-only identity for the child session. This never affects
+    /// session ids, policy, routing, or execution. On named-session reuse the
+    /// existing session title and metadata are retained.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<SubagentDisplay>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -118,4 +179,60 @@ pub async fn handle(deps: &Deps, req: SpawnRequest) -> Result<SpawnResponse, Har
         child_turn_id: ids.turn_id,
         reused: ids.reused,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn spawn_skills_option_is_ids_only_on_the_wire() {
+        let value = serde_json::to_value(SpawnOptions {
+            skills: Some(vec!["review".into()]),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(value["skills"], json!(["review"]));
+    }
+
+    #[test]
+    fn orchestrator_round_trips_unset_and_both_values() {
+        let unset: SpawnOptions = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(unset.orchestrator, None);
+        assert!(!serde_json::to_value(&unset)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("orchestrator"));
+        for value in [true, false] {
+            let opts: SpawnOptions =
+                serde_json::from_value(json!({ "orchestrator": value })).unwrap();
+            assert_eq!(opts.orchestrator, Some(value));
+        }
+    }
+
+    #[test]
+    fn display_tokens_are_closed_on_the_wire() {
+        let request: SpawnRequest = serde_json::from_value(json!({
+            "task": "build the interface",
+            "display": { "name": "Frontend", "icon": "code", "color": "blue" }
+        }))
+        .unwrap();
+        let display = request.display.unwrap();
+        assert_eq!(display.name, "Frontend");
+        assert_eq!(display.icon, Some(SubagentIcon::Code));
+        assert_eq!(display.color, Some(SubagentColor::Blue));
+
+        assert!(serde_json::from_value::<SpawnRequest>(json!({
+            "task": "x",
+            "display": { "name": "Unsafe", "icon": "<svg>" }
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<SpawnRequest>(json!({
+            "task": "x",
+            "display": { "name": "Unsafe", "color": "#ff00ff" }
+        }))
+        .is_err());
+    }
 }

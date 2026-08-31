@@ -52,6 +52,40 @@ struct GetSessionResponse {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+struct EnsureSessionResponse {
+    meta: LoadedSessionMeta,
+    created: bool,
+}
+
+/// Atomic result of `session::ensure`: creation classification and the exact
+/// metadata record it classified under the session-manager's target lock.
+pub struct EnsureSessionOutcome {
+    pub created: bool,
+    pub metadata: serde_json::Map<String, Value>,
+}
+
+fn parse_ensure_response(
+    session_id: &str,
+    response: Value,
+) -> Result<EnsureSessionOutcome, HarnessError> {
+    let parsed: EnsureSessionResponse = serde_json::from_value(response).map_err(|error| {
+        HarnessError::Dependency(format!(
+            "session::ensure returned a malformed response for {session_id}: {error}"
+        ))
+    })?;
+    if parsed.meta.session_id != session_id {
+        return Err(HarnessError::Dependency(format!(
+            "session::ensure returned session_id `{}` for requested `{session_id}`",
+            parsed.meta.session_id
+        )));
+    }
+    Ok(EnsureSessionOutcome {
+        created: parsed.created,
+        metadata: parsed.meta.metadata.unwrap_or_default(),
+    })
+}
+
+#[derive(Debug, Clone, Deserialize)]
 struct ListSessionsResponse {
     sessions: Vec<LoadedSessionMeta>,
     #[serde(default)]
@@ -181,14 +215,16 @@ impl SessionClient {
     }
 
     /// Idempotently ensure a session exists, applying `metadata` on creation.
-    /// Returns whether this call CREATED the session — `false` means it already
-    /// existed and the supplied metadata (e.g. parent linkage) was NOT applied.
+    /// Returns the atomic creation classification plus the stored metadata;
+    /// when `created` is false, supplied metadata (e.g. parent linkage) was not
+    /// applied. Malformed responses fail closed rather than being mistaken for
+    /// reuse.
     pub async fn ensure(
         &self,
         session_id: &str,
         title: Option<&str>,
         metadata: Option<&Value>,
-    ) -> Result<bool, HarnessError> {
+    ) -> Result<EnsureSessionOutcome, HarnessError> {
         let mut payload = json!({ "session_id": session_id });
         if let Some(t) = title {
             payload["title"] = json!(t);
@@ -197,10 +233,7 @@ impl SessionClient {
             payload["metadata"] = m.clone();
         }
         let resp = self.call("session::ensure", payload).await?;
-        Ok(resp
-            .get("created")
-            .and_then(Value::as_bool)
-            .unwrap_or(false))
+        parse_ensure_response(session_id, resp)
     }
 
     /// Create a fresh session, returning its id.
@@ -221,6 +254,22 @@ impl SessionClient {
             .and_then(Value::as_str)
             .map(str::to_string)
             .ok_or_else(|| HarnessError::Dependency("session::create: no session_id".into()))
+    }
+
+    /// Replace one session's metadata after the caller has merged against an
+    /// authoritative read. `session::set-meta` is whole-object replacement,
+    /// so accepting the complete map here makes that hazard explicit.
+    pub async fn set_metadata(
+        &self,
+        session_id: &str,
+        metadata: serde_json::Map<String, Value>,
+    ) -> Result<(), HarnessError> {
+        self.call(
+            "session::set-meta",
+            json!({ "session_id": session_id, "metadata": metadata }),
+        )
+        .await?;
+        Ok(())
     }
 
     /// Set the coarse session status (idle/working/done/error).
@@ -537,5 +586,38 @@ mod tests {
             "custom records must not be message-wrapped (stored as kind: message, \
              returned with custom: None, invisible to the read-back)"
         );
+    }
+
+    #[test]
+    fn ensure_response_is_strict_and_keeps_the_atomic_metadata() {
+        let outcome = parse_ensure_response(
+            "s_1",
+            json!({
+                "created": false,
+                "meta": {
+                    "session_id": "s_1",
+                    "metadata": { "parent_session_id": "s_parent" }
+                }
+            }),
+        )
+        .unwrap();
+        assert!(!outcome.created);
+        assert_eq!(outcome.metadata["parent_session_id"], "s_parent");
+
+        let malformed = parse_ensure_response("s_1", json!({ "meta": { "session_id": "s_1" } }))
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(malformed.contains("malformed response"), "{malformed}");
+
+        let mismatched = parse_ensure_response(
+            "s_1",
+            json!({ "created": true, "meta": { "session_id": "s_2" } }),
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(mismatched.contains("s_2"), "{mismatched}");
+        assert!(mismatched.contains("s_1"), "{mismatched}");
     }
 }

@@ -169,9 +169,11 @@ async fn run_git_clone(
 /// `source_dir` of the calling [`download`]; we use it to record what
 /// was written into the [`DownloadResult`].
 ///
-/// Markdown files under `prompts/` segments are recorded in
-/// `prompts_written` (by file stem) so the caller can fire
-/// `prompts::on-change` selectively. All other files are recorded as
+/// Each file's relative path is classified via
+/// [`crate::fs_source::classify_rel_path`]. Markdown files under
+/// `system-prompts/` are recorded in `system_prompts_written` (by file
+/// stem) so the caller can fire the matching `on-change` trigger selectively.
+/// Agent-profile paths are ignored; all other files are recorded as
 /// `skills_written` (by relative path under the namespace).
 fn copy_recursive(
     src: &Path,
@@ -206,6 +208,12 @@ fn copy_recursive(
         if file_type.is_dir() {
             copy_recursive(&entry.path(), dest_root, result, &next_rel)?;
         } else if file_type.is_file() {
+            let Some(kind) = crate::fs_source::classify_rel_path(&next_rel) else {
+                continue;
+            };
+            if kind == crate::fs_source::SourceKind::Agent {
+                continue;
+            }
             let bytes = std::fs::read(entry.path())
                 .map_err(|e| format!("read {}: {e}", entry.path().display()))?;
             write_file_atomic(&dest, &bytes)?;
@@ -215,25 +223,31 @@ fn copy_recursive(
             // ignore validation errors (path is already constructed)
             let _ = validate_relative_path(&rel_str);
 
-            if is_prompt_relpath(&next_rel) && next_rel.extension().is_some_and(|e| e == "md") {
-                let stem = next_rel
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("")
-                    .to_string();
-                if !stem.is_empty() {
-                    result.prompts_written.push(stem);
+            match kind {
+                crate::fs_source::SourceKind::SystemPrompt
+                    if next_rel.extension().is_some_and(|e| e == "md") =>
+                {
+                    if let Some(stem) = stem_of(&next_rel) {
+                        result.system_prompts_written.push(stem);
+                    }
                 }
-            } else {
-                result.skills_written.push(rel_str);
+                _ => result.skills_written.push(rel_str),
             }
         }
     }
     Ok(())
 }
 
-fn is_prompt_relpath(rel: &Path) -> bool {
-    rel.components().any(|c| c.as_os_str() == "prompts")
+/// File stem (filename without extension) as an owned `String`, or
+/// `None` if the path has no stem or the stem is empty. `pub(crate)`
+/// because both download sources need it: this module's
+/// `copy_recursive` and `registry::write_response` report system prompt
+/// paths by their bare stem. One implementation keeps that in lockstep.
+pub(crate) fn stem_of(p: &Path) -> Option<String> {
+    p.file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 #[cfg(test)]
@@ -258,11 +272,59 @@ mod tests {
     }
 
     #[test]
-    fn is_prompt_relpath_detects_segment() {
-        assert!(is_prompt_relpath(Path::new("prompts/foo.md")));
-        assert!(is_prompt_relpath(Path::new("a/prompts/b.md")));
-        assert!(!is_prompt_relpath(Path::new("foo/bar.md")));
-        assert!(!is_prompt_relpath(Path::new("promptsx/foo.md")));
+    fn bundle_copy_ignores_command_prompts_and_keeps_system_prompts() {
+        // Build a fake cloned tree: 1 skill, 1 ignored command prompt, 1 system prompt.
+        let src = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(src.path().join("prompts")).unwrap();
+        std::fs::create_dir_all(src.path().join("system-prompts")).unwrap();
+        std::fs::write(src.path().join("guide.md"), "# G\n").unwrap();
+        std::fs::write(
+            src.path().join("prompts/cmd.md"),
+            "---\ndescription: c\n---\nB\n",
+        )
+        .unwrap();
+        std::fs::write(
+            src.path().join("system-prompts/sys.md"),
+            "---\ndescription: s\n---\nB\n",
+        )
+        .unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let mut result = DownloadResult::new("ns");
+        copy_recursive(
+            src.path(),
+            &dest.path().join("ns"),
+            &mut result,
+            std::path::Path::new(""),
+        )
+        .unwrap();
+        assert_eq!(result.skills_written, vec!["guide.md".to_string()]);
+        assert_eq!(result.system_prompts_written, vec!["sys".to_string()]);
+        assert!(!dest.path().join("ns/prompts/cmd.md").exists());
+        assert_eq!(result.total_files(), 2);
+    }
+
+    #[test]
+    fn bundle_copy_ignores_agent_profiles() {
+        let src = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(src.path().join("agents")).unwrap();
+        std::fs::write(
+            src.path().join("agents/reviewer.md"),
+            "---\nname: Reviewer\n---\nReview.\n",
+        )
+        .unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let mut result = DownloadResult::new("ns");
+
+        copy_recursive(
+            src.path(),
+            &dest.path().join("ns"),
+            &mut result,
+            std::path::Path::new(""),
+        )
+        .unwrap();
+
+        assert!(result.agents_written.is_empty());
+        assert!(!dest.path().join("ns/agents/reviewer.md").exists());
     }
 
     // ── validate_repo_url ─────────────────────────────────────────────

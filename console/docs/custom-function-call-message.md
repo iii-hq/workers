@@ -2,6 +2,11 @@
 
 How to add bespoke UI for `function-call` chat messages in the console, instead of falling back to the default request/response JSON panes.
 
+Trigger registration, firing, and retirement use a separate source-renderer
+contract. See
+[`../web/docs/custom-trigger-components.md`](../web/docs/custom-trigger-components.md)
+and match its normalized `triggerType`, not `engine::register_trigger`.
+
 This is the end-to-end authoring guide: architecture, the message contract, the parser/view layer, how to wire a new family into the host component, and the two Storybook surfaces (fixture galleries + Playground scenarios) every renderer must ship with.
 
 **Reference implementations** (five families are wired today):
@@ -10,7 +15,7 @@ This is the end-to-end authoring guide: architecture, the message contract, the 
 |--------|--------|-----------|---------|
 | `sandbox::*` | [`../web/src/components/chat/sandbox/`](../web/src/components/chat/sandbox) | `isSandboxFunction` | 15 tools, terminal + raw-json tabs, approval previews, shared error handling |
 | `engine::*::list` | [`../web/src/components/chat/engine/`](../web/src/components/chat/engine) | `isEngineListFunction` | read-only list/info views, no preview |
-| `directory::*` | [`../web/src/components/chat/directory/`](../web/src/components/chat/directory) | `isDirectoryFunction` | skills / prompts / registry views |
+| `directory::*` | [`../web/src/components/chat/directory/`](../web/src/components/chat/directory) | `isDirectoryFunction` | skills / system prompts / agents / registry views |
 | `web::fetch` | [`../web/src/components/chat/web/`](../web/src/components/chat/web) | `isWebFunction` | single tool — smallest end-to-end example |
 | `worker::*` | [`../web/src/components/chat/worker/`](../web/src/components/chat/worker) | `isWorkerFunction` | lifecycle ops, request JSON used as preview |
 

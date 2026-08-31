@@ -20,8 +20,8 @@ pub struct AdapterEntry {
 #[derive(Serialize, Deserialize, Debug, Clone, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct StateConfig {
-    /// Storage adapter selection: `kv` (default; in-process, in_memory or
-    /// file_based) or `redis`. Restart-tier: changing it at runtime is logged
+    /// Storage adapter selection: `kv` (default; in-process, file_based or
+    /// in_memory) or `redis`. Restart-tier: changing it at runtime is logged
     /// and takes effect at the next worker start.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(schema_with = "state_adapter_schema")]
@@ -104,10 +104,11 @@ impl StateConfig {
     }
 }
 
-/// Storage backend for the file-backed `kv` adapter: `in_memory` (volatile,
-/// process-lifetime storage, lost on shutdown — not for production) or
-/// `file_based` (persisted under `file_path`, flushed on the `save_interval_ms`
-/// cadence). Variants are intentionally doc-free so schemars emits a flat
+/// Storage backend for the `kv` adapter: `file_based` (the default; persisted
+/// under `file_path`, flushed on the `save_interval_ms` cadence and on
+/// shutdown) or `in_memory` (volatile, process-lifetime storage, lost on
+/// shutdown — not for production).
+/// Variants are intentionally doc-free so schemars emits a flat
 /// string `enum` (a single select) rather than a per-variant `oneOf` that a
 /// schema-driven UI renders as "variant 1", "variant 2".
 #[derive(Serialize, Deserialize, Debug, Clone, JsonSchema, PartialEq, Eq)]
@@ -121,13 +122,14 @@ pub enum KvStoreMethod {
 #[derive(Serialize, Deserialize, Debug, Clone, JsonSchema, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct KvAdapterConfig {
-    /// Storage backend. `in_memory` (the default) keeps data only for the
-    /// process lifetime; `file_based` persists it under `file_path`.
+    /// Storage backend. `file_based` (the default) persists data under
+    /// `file_path`; `in_memory` keeps it only for the process lifetime.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub store_method: Option<KvStoreMethod>,
 
     /// Directory for file-based storage. Only used when `store_method` is
-    /// `file_based`. Defaults to `kv_store_data.db`.
+    /// `file_based`. Defaults to `data/state`, resolved against
+    /// `III_COMPOSE_DIR` when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_path: Option<String>,
 

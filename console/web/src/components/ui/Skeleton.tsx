@@ -10,7 +10,7 @@ export function Skeleton({ className, ...props }: SkeletonProps) {
     <span
       aria-hidden
       className={cn(
-        'inline-block bg-panel skeleton-pulse align-middle',
+        'inline-block rounded-xs bg-surface skeleton-pulse align-middle',
         className,
       )}
       {...props}

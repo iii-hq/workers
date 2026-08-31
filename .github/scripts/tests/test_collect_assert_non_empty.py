@@ -14,8 +14,8 @@ TYPED_SCHEMA = {"type": "object", "properties": {"x": {"type": "string"}}}
 ANYVALUE_SCHEMA = {"$schema": "http://json-schema.org/draft-07/schema#", "title": "AnyValue"}
 
 
-def write_payload(path: Path, *, functions: list) -> None:
-    path.write_text(json.dumps({"functions": functions, "triggers": []}))
+def write_payload(path: Path, *, functions: list, triggers: list | None = None) -> None:
+    path.write_text(json.dumps({"functions": functions, "triggers": triggers or []}))
 
 
 def typed_fn(name: str = "smoke::ping") -> dict:
@@ -33,7 +33,7 @@ class TestAssertNonEmpty:
         )
         assert r.returncode == 0, r.stderr
 
-    def test_fails_when_functions_empty(self, tmp_path):
+    def test_fails_when_interface_empty(self, tmp_path):
         out = tmp_path / "interface.json"
         write_payload(out, functions=[])
         r = subprocess.run(
@@ -43,6 +43,16 @@ class TestAssertNonEmpty:
         )
         assert r.returncode != 0
         assert "empty" in (r.stderr + r.stdout).lower()
+
+    def test_passes_when_interface_is_trigger_only(self, tmp_path):
+        out = tmp_path / "interface.json"
+        write_payload(out, functions=[], triggers=[{"name": "smoke::on-event"}])
+        r = subprocess.run(
+            [sys.executable, str(SCRIPT),
+             "--assert-non-empty", "--assert-file", str(out)],
+            capture_output=True, text=True,
+        )
+        assert r.returncode == 0, r.stderr
 
     def test_fails_when_functions_key_missing(self, tmp_path):
         out = tmp_path / "interface.json"

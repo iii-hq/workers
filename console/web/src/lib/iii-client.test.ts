@@ -5,12 +5,23 @@
  * a second session's send died silently while another session streamed).
  */
 
-import { describe, expect, it } from 'vitest'
-import type { ISdk, RemoteFunctionHandler } from 'iii-browser-sdk'
-import { wrapSdk } from './iii-client'
+import type {
+  InitOptions,
+  ISdk,
+  RemoteFunctionHandler,
+  TriggerRequest,
+} from 'iii-browser-sdk'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import {
+  __resetIiiClientForTests,
+  __setIiiClientDepsForTests,
+  getIiiClient,
+  wrapSdk,
+} from './iii-client'
 
 function fakeSdk() {
   const functions = new Map<string, RemoteFunctionHandler>()
+  const triggers: TriggerRequest[] = []
   const sdk = {
     registerFunction(id: string, handler: RemoteFunctionHandler) {
       // Mirror iii-browser-sdk's duplicate guard (dist/index.mjs:291).
@@ -24,11 +35,14 @@ function fakeSdk() {
       }
     },
     registerTrigger: () => ({ unregister: () => {} }),
-    trigger: async () => null,
+    trigger: async (request: TriggerRequest) => {
+      triggers.push(request)
+      return null
+    },
     addConnectionStateListener: () => () => {},
     shutdown: async () => {},
   } as unknown as ISdk
-  return { sdk, functions }
+  return { sdk, functions, triggers }
 }
 
 const BROWSER_ID = 'console-test'
@@ -88,5 +102,79 @@ describe('wrapSdk on() fan-out', () => {
 
     await functions.get(SDK_ID)?.({ session_id: 's4' })
     expect(seen).toEqual([{ session_id: 's4' }])
+  })
+})
+
+describe('namespaced browser connection', () => {
+  afterEach(() => {
+    __resetIiiClientForTests()
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  it('passes the console runtime namespace to iii-browser-sdk', async () => {
+    const { sdk } = fakeSdk()
+    const calls: Array<{ url: string; options?: InitOptions }> = []
+    __setIiiClientDepsForTests({
+      resolveWsUrl: () => 'ws://console.test/ws',
+      resolveNamespace: async () => 'project-a',
+      makeBrowserId: () => BROWSER_ID,
+      registerWorker: (url, options) => {
+        calls.push({ url, options })
+        return sdk
+      },
+    })
+
+    await getIiiClient()
+
+    expect(calls).toEqual([
+      {
+        url: 'ws://console.test/ws',
+        options: { namespace: 'project-a' },
+      },
+    ])
+  })
+
+  it('inherits project calls and routes engine control-plane calls to default', async () => {
+    const { sdk, triggers } = fakeSdk()
+    const client = wrapSdk(sdk, BROWSER_ID)
+
+    await client.trigger('router::models::list', {})
+    await client.trigger('engine::functions::list', {})
+    await client.trigger('configuration::get', {})
+    await client.trigger('worker::list', {})
+
+    expect(triggers.map((request) => request.namespace)).toEqual([
+      undefined,
+      'default',
+      'default',
+      'default',
+    ])
+  })
+
+  it('warns when runtime namespace discovery falls back to default', async () => {
+    const { sdk } = fakeSdk()
+    const calls: Array<{ options?: InitOptions }> = []
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.stubGlobal('window', { location: { href: 'http://console.test/' } })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 503 })),
+    )
+    __setIiiClientDepsForTests({
+      resolveWsUrl: () => 'ws://console.test/ws',
+      makeBrowserId: () => BROWSER_ID,
+      registerWorker: (_url, options) => {
+        calls.push({ options })
+        return sdk
+      },
+    })
+
+    await getIiiClient()
+
+    expect(calls).toEqual([{ options: undefined }])
+    expect(warn).toHaveBeenCalledWith(
+      'Runtime namespace request failed with HTTP 503; connecting to default',
+    )
   })
 })

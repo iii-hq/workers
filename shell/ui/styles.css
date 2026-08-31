@@ -1,0 +1,3078 @@
+@import "@xterm/xterm/css/xterm.css";
+
+/*
+ * The shell worker's console stylesheet, shipped as its own
+ * `console:style` asset (shell/styles.css). Every rule is scoped under
+ * `[data-iii-ui="shell"]`, the wrapper the console mounts around every
+ * injected render — page and function-trigger message alike. Styling
+ * uses the console's design tokens, so light/dark theming is free.
+ */
+
+/* ── shared text tones ──────────────────────────────────────────────── */
+
+[data-iii-ui="shell"] .t-ink {
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .t-faint {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .t-ghost {
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="shell"] .t-accent {
+  color: var(--color-accent);
+}
+[data-iii-ui="shell"] .t-warn {
+  color: var(--color-warn);
+}
+[data-iii-ui="shell"] .t-alert {
+  color: var(--color-alert);
+}
+[data-iii-ui="shell"] .num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── card chrome (function-trigger views) ───────────────────────────── */
+
+[data-iii-ui="shell"] .shui-card {
+  border-top: 1px solid var(--color-rule-2);
+  background: var(--color-bg);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+[data-iii-ui="shell"] .shui-card.pad {
+  padding: 12px;
+}
+[data-iii-ui="shell"] .shui-card.scroll-x {
+  overflow-x: auto;
+}
+
+[data-iii-ui="shell"] .shui-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 12px;
+  row-gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-rule-2);
+  background: var(--color-paper-2);
+}
+[data-iii-ui="shell"] .shui-head.preview {
+  border-bottom: 0;
+}
+
+[data-iii-ui="shell"] .shui-cmd {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+  color: var(--color-ink);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+[data-iii-ui="shell"] .shui-cmd .cmd-text {
+  margin-left: 8px;
+}
+
+[data-iii-ui="shell"] .shui-prompt {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--color-accent);
+}
+[data-iii-ui="shell"] .shui-prompt.pulse {
+  animation: shui-pulse 1.2s ease-in-out infinite;
+}
+@keyframes shui-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+[data-iii-ui="shell"] .shui-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+[data-iii-ui="shell"] .shui-chips.end {
+  margin-left: auto;
+}
+
+[data-iii-ui="shell"] .shui-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--color-rule-2);
+  background: var(--color-paper-2);
+  padding: 2px 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-chip .k {
+  color: var(--color-ink-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+[data-iii-ui="shell"] .shui-chip .v {
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="shell"] .shui-chip.warn {
+  border-color: var(--color-warn);
+  color: var(--color-warn);
+}
+[data-iii-ui="shell"] .shui-chip.warn .k {
+  color: var(--color-warn);
+}
+
+/* Badge add-on: numerals without the badge's uppercase tracking. */
+[data-iii-ui="shell"] .shui-pill-flat {
+  text-transform: none;
+  letter-spacing: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="shell"] .shui-body {
+  background: var(--color-bg);
+  padding: 8px 12px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+[data-iii-ui="shell"] .shui-body.stream-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 12px;
+}
+[data-iii-ui="shell"] .shui-stream-gap {
+  height: 4px;
+}
+
+[data-iii-ui="shell"] .shui-running {
+  background: var(--color-bg);
+  padding: 12px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--color-ink-faint);
+  font-style: italic;
+}
+
+[data-iii-ui="shell"] .shui-empty {
+  padding: 12px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui="shell"] .shui-foot {
+  background: var(--color-paper-2);
+  border-top: 1px solid var(--color-rule-2);
+  padding: 6px 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+[data-iii-ui="shell"] .shui-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+}
+[data-iii-ui="shell"] .shui-pre.out {
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-pre.err {
+  color: var(--color-warn);
+}
+[data-iii-ui="shell"] .shui-pre.detail {
+  color: var(--color-ink-faint);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+[data-iii-ui="shell"] .shui-slab {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+[data-iii-ui="shell"] .shui-slab.warn {
+  border-left: 2px solid var(--color-warn);
+}
+[data-iii-ui="shell"] .shui-slab.accent {
+  border-left: 2px solid var(--color-accent);
+}
+[data-iii-ui="shell"] .shui-slab.alert {
+  border-left: 2px solid var(--color-alert);
+}
+
+[data-iii-ui="shell"] .shui-line {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+[data-iii-ui="shell"] .shui-row.gap8 {
+  gap: 8px;
+}
+[data-iii-ui="shell"] .shui-baseline-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+  color: var(--color-ink);
+}
+
+[data-iii-ui="shell"] .shui-inline-code {
+  background: var(--color-paper-2);
+  border: 1px solid var(--color-rule-2);
+  padding: 2px 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  color: var(--color-ink);
+  word-break: break-all;
+}
+
+[data-iii-ui="shell"] .shui-note {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--color-ink-faint);
+  font-style: italic;
+}
+[data-iii-ui="shell"] .shui-note.plain {
+  font-style: normal;
+}
+
+[data-iii-ui="shell"] .shui-resolved-argv {
+  color: var(--color-ink-faint);
+  margin-top: 4px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+[data-iii-ui="shell"] .shui-action-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--color-bg);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+[data-iii-ui="shell"] .shui-action-line .sym {
+  font-weight: 600;
+  flex-shrink: 0;
+}
+[data-iii-ui="shell"] .shui-action-line .sym.tone-accent {
+  color: var(--color-accent);
+}
+[data-iii-ui="shell"] .shui-action-line .sym.tone-warn {
+  color: var(--color-warn);
+}
+[data-iii-ui="shell"] .shui-action-line .sym.tone-ink {
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-action-line .body {
+  min-width: 0;
+  color: var(--color-ink);
+  word-break: break-all;
+}
+
+/* ── tables ─────────────────────────────────────────────────────────── */
+
+[data-iii-ui="shell"] .shui-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-table th {
+  text-align: left;
+  font-weight: 400;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-ink-faint);
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--color-rule-2);
+}
+[data-iii-ui="shell"] .shui-table thead tr.head-paper {
+  background: var(--color-paper-2);
+}
+[data-iii-ui="shell"] .shui-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--color-rule-2);
+}
+[data-iii-ui="shell"] .shui-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+[data-iii-ui="shell"] .shui-table .r {
+  text-align: right;
+}
+[data-iii-ui="shell"] .shui-table .pad-l {
+  padding-left: 12px;
+}
+[data-iii-ui="shell"] .shui-table .pad-r {
+  padding-right: 12px;
+}
+[data-iii-ui="shell"] .shui-table td.icon {
+  width: 20px;
+}
+[data-iii-ui="shell"] .shui-table tr.total {
+  background: var(--color-paper-2);
+}
+[data-iii-ui="shell"] .shui-table tr.total td {
+  border-bottom: 0;
+}
+[data-iii-ui="shell"] .shui-table tr.total .label {
+  color: var(--color-ink-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 11px;
+}
+[data-iii-ui="shell"] .shui-table-footnote {
+  padding: 6px 12px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--color-ink-ghost);
+  border-top: 1px solid var(--color-rule-2);
+}
+[data-iii-ui="shell"] .shui-status-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+[data-iii-ui="shell"] .shui-fs-icon {
+  width: 16px;
+  height: 16px;
+  color: var(--color-ink-faint);
+  vertical-align: text-bottom;
+}
+[data-iii-ui="shell"] .shui-err-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-warn);
+  cursor: help;
+}
+
+/* ── grep/search match lists ────────────────────────────────────────── */
+
+[data-iii-ui="shell"] .shui-match-list {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.55;
+}
+[data-iii-ui="shell"] .shui-match {
+  border-bottom: 1px solid var(--color-rule-2);
+  padding: 6px 12px;
+}
+[data-iii-ui="shell"] .shui-match:last-child {
+  border-bottom: 0;
+}
+[data-iii-ui="shell"] .shui-match .loc {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-match .shui-pre {
+  margin-top: 2px;
+}
+[data-iii-ui="shell"] .shui-hl {
+  background: color-mix(in oklab, var(--color-accent) 15%, transparent);
+  color: var(--color-accent);
+}
+
+/* ── error cards ────────────────────────────────────────────────────── */
+
+[data-iii-ui="shell"] .shui-err-label {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-doclink {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-accent);
+  text-decoration: none;
+  width: fit-content;
+}
+[data-iii-ui="shell"] .shui-doclink:hover {
+  text-decoration: underline;
+}
+[data-iii-ui="shell"] .shui-streams {
+  margin-top: 4px;
+  border: 1px solid var(--color-rule-2);
+  border-radius: 2px;
+  overflow: hidden;
+}
+[data-iii-ui="shell"] .shui-denial-list {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--color-ink-faint);
+}
+
+/* ── the explorer page ──────────────────────────────────────────────── */
+
+[data-iii-ui="shell"] .shui-workspace-frame > * {
+  position: relative;
+}
+
+[data-iii-ui="shell"] .shui-sidebar {
+  --shui-explorer-bg: var(--color-panel-raised);
+  --shui-tree-file-muted: color-mix(
+    in srgb,
+    var(--color-ink-faint) 80%,
+    var(--shui-explorer-bg)
+  );
+  font-family:
+    system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: var(--shui-explorer-bg);
+  position: relative;
+}
+
+/* Image preview — centered, contained, own scroll for oversized zooms. */
+[data-iii-ui="shell"] .shui-image-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+[data-iii-ui="shell"] .shui-image-thumb {
+  display: flex;
+  max-width: 100%;
+  max-height: 100%;
+  min-height: 0;
+}
+[data-iii-ui="shell"] .shui-image-wrap--inline {
+  flex: none;
+  display: block;
+  padding: 20px;
+  text-align: center;
+}
+[data-iii-ui="shell"] .shui-image-wrap--inline .shui-image-thumb {
+  display: inline-flex;
+}
+[data-iii-ui="shell"] .shui-image-wrap--inline img {
+  max-height: 70vh;
+  border: none;
+  background: transparent;
+}
+[data-iii-ui="shell"] .shui-image-wrap img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border: 1px solid var(--color-edge);
+  background: var(--color-surface);
+}
+[data-iii-ui="shell"] .shui-side-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px;
+  border-bottom: 1px solid var(--color-edge);
+}
+[data-iii-ui="shell"] .shui-side-tabs .spacer,
+[data-iii-ui="shell"] .shui-editor-head .spacer {
+  flex: 1;
+}
+
+[data-iii-ui="shell"] .shui-side-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-ink-faint);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-side-tab:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-side-tab.active {
+  color: var(--color-ink);
+  background: var(--color-surface-active);
+}
+[data-iii-ui="shell"] .shui-side-tab-icon {
+  width: 16px;
+  height: 16px;
+}
+
+[data-iii-ui="shell"] .shui-page-header {
+  overflow: visible;
+  z-index: 8;
+}
+[data-iii-ui="shell"] .shui-page-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  overflow: visible;
+}
+[data-iii-ui="shell"] .shui-header-root-wrap {
+  display: block;
+  max-width: min(220px, 24vw);
+}
+[data-iii-ui="shell"] .shui-header-root-select {
+  display: block;
+  max-width: 100%;
+}
+[data-iii-ui="shell"] .shui-header-root-select > button {
+  width: auto;
+  max-width: 100%;
+  height: 24px;
+  min-height: 24px;
+  padding: 0 4px;
+  border: 0;
+  outline: 0;
+  color: var(--color-ink-ghost);
+  background: transparent;
+  font: inherit;
+}
+[data-iii-ui="shell"] .shui-header-root-select > button:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-header-root-select > button:focus-visible {
+  color: var(--color-ink);
+  outline: 1px solid var(--color-rule-focus);
+  outline-offset: 1px;
+}
+
+[data-iii-ui="shell"] .shui-collapse-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-ink-faint);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-collapse-btn:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+
+/* Labels show only the last two segments of the root (title carries the
+   full absolute path), so no scroll/ellipsis tricks are needed. */
+[data-iii-ui="shell"] .shui-root-select,
+[data-iii-ui="shell"] .shui-root-label {
+  margin: 6px;
+  padding: 3px 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--color-ink-faint);
+  border: 1px solid var(--color-edge);
+  background: var(--color-surface);
+  border-radius: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-iii-ui="shell"] .shui-root-select {
+  width: calc(100% - 12px);
+}
+
+[data-iii-ui="shell"] .shui-side-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+[data-iii-ui="shell"] .shui-tree-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+[data-iii-ui="shell"] .shui-tree-filter-shell {
+  flex: none;
+  padding: 8px 8px 1px;
+}
+[data-iii-ui="shell"] .shui-tree-filter {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: 28px;
+  color: var(--color-ink);
+  background: color-mix(in srgb, var(--color-ink) 2.5%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-ink) 8%, transparent);
+  border-radius: 10px;
+  box-sizing: border-box;
+}
+[data-iii-ui="shell"] .shui-tree-filter:focus-within {
+  border-color: color-mix(in srgb, var(--color-ink) 20%, transparent);
+}
+[data-iii-ui="shell"] .shui-tree-filter-search {
+  width: 16px;
+  height: 16px;
+  margin-left: 8px;
+  flex: none;
+  color: var(--shui-tree-file-muted);
+}
+[data-iii-ui="shell"] .shui-tree-filter input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0 6px 0 0;
+  border: 0;
+  outline: 0;
+  color: var(--color-ink);
+  background: transparent;
+  font:
+    400 14px / 18px system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+}
+[data-iii-ui="shell"] .shui-tree-filter input::placeholder {
+  color: var(--shui-tree-file-muted);
+  opacity: 1;
+}
+[data-iii-ui="shell"] .shui-tree-filter-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 25px;
+  height: 25px;
+  margin-right: 1px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  color: var(--shui-tree-file-muted);
+  background: transparent;
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-tree-filter-clear:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-tree-filter-clear:focus-visible {
+  outline: 1px solid var(--color-rule-focus);
+  outline-offset: -2px;
+}
+[data-iii-ui="shell"] .shui-tree-filter-clear svg {
+  width: 16px;
+  height: 16px;
+}
+[data-iii-ui="shell"] .shui-tree-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  padding: 3px 8px 0;
+  overflow: hidden;
+}
+[data-iii-ui="shell"] .shui-tree {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+[data-iii-ui="shell"] .shui-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+[data-iii-ui="shell"] .shui-tree-stage .shui-side-note {
+  align-self: flex-start;
+  padding: 8px 6px;
+  font-family:
+    system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+}
+
+[data-iii-ui="shell"] .shui-side-note {
+  padding: 10px 12px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  color: var(--color-ink-faint);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+[data-iii-ui="shell"] .shui-side-note.warn {
+  color: var(--color-warn);
+}
+[data-iii-ui="shell"] .shui-side-note.ghost {
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="shell"] .shui-side-note.head {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 11px;
+  padding-bottom: 4px;
+}
+[data-iii-ui="shell"] .shui-side-note.pad {
+  padding: 24px;
+}
+
+[data-iii-ui="shell"] .shui-linkish {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-accent);
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-linkish:disabled {
+  color: var(--color-ink-ghost);
+  cursor: default;
+}
+
+/* git changes tree */
+[data-iii-ui="shell"] .shui-git-tree {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* search */
+[data-iii-ui="shell"] .shui-search {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+[data-iii-ui="shell"] .shui-search-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-edge);
+}
+[data-iii-ui="shell"] .shui-search-opts {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+[data-iii-ui="shell"] .shui-search-opts .opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-search-opts .shui-linkish {
+  margin-left: auto;
+}
+[data-iii-ui="shell"] .shui-search-results {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 8px;
+  overflow: auto;
+}
+[data-iii-ui="shell"] .shui-search-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 12px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  background: transparent;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+[data-iii-ui="shell"] .shui-search-row:hover {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-search-row .loc {
+  color: var(--color-accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] .shui-search-row .loc .line {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-search-row .text {
+  color: var(--color-ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* editor file tabs — preview tabs render italic (VS Code semantics) */
+[data-iii-ui="shell"] .shui-editor-tabs {
+  display: flex;
+  align-items: stretch;
+  overflow-x: auto;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--color-edge);
+  background: var(--color-panel-raised);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+[data-iii-ui="shell"] .shui-etab {
+  display: inline-flex;
+  align-items: center;
+  border-right: 1px solid var(--color-edge);
+  max-width: 200px;
+  flex-shrink: 0;
+}
+[data-iii-ui="shell"] .shui-etab.active {
+  background: var(--color-surface-selected);
+  box-shadow: inset 0 2px 0 var(--color-edge);
+}
+[data-iii-ui="shell"] .shui-etab .open {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 5px 2px 5px 10px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  color: var(--color-ink-faint);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-iii-ui="shell"] .shui-etab.active .open {
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-etab.preview .open {
+  font-style: italic;
+}
+[data-iii-ui="shell"] .shui-etab .close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin: 0 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--color-ink-ghost);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+[data-iii-ui="shell"] .shui-etab .close:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-x-icon {
+  width: 16px;
+  height: 16px;
+}
+[data-iii-ui="shell"] .shui-main-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+}
+[data-iii-ui="shell"] .shui-main-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+[data-iii-ui="shell"] .shui-editor-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--color-edge);
+  background: var(--color-panel-raised);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  color: var(--color-ink);
+  min-width: 0;
+}
+[data-iii-ui="shell"] .shui-editor-head .path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] .shui-editor-head .meta {
+  color: var(--color-ink-ghost);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+[data-iii-ui="shell"] .shui-dirty {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  flex-shrink: 0;
+}
+[data-iii-ui="shell"] .shui-ro-note {
+  font-size: 11px;
+  color: var(--color-ink-faint);
+  flex-shrink: 0;
+}
+[data-iii-ui="shell"] .shui-ro-note.warn {
+  color: var(--color-warn);
+}
+[data-iii-ui="shell"] .shui-save-btn {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-accent-fg);
+  background: var(--color-accent);
+  border: 0;
+  border-radius: 2px;
+  padding: 4px 10px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+[data-iii-ui="shell"] .shui-save-btn:disabled {
+  color: var(--color-ink-ghost);
+  background: var(--color-surface);
+  cursor: default;
+}
+[data-iii-ui="shell"] .shui-editor-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+[data-iii-ui="shell"] .shui-diff-stats {
+  display: inline-flex;
+  gap: 6px;
+  flex-shrink: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+}
+[data-iii-ui="shell"] .shui-diff-stats .add {
+  color: var(--color-git-added, #4d9a57);
+}
+[data-iii-ui="shell"] .shui-diff-stats .del {
+  color: var(--color-git-deleted, #c05353);
+}
+[data-iii-ui="shell"] .shui-diff {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.55;
+  padding: 4px 0 12px;
+}
+[data-iii-ui="shell"] .shui-diff-line {
+  display: grid;
+  grid-template-columns: 3.6em 1.2em 1fr;
+  align-items: start;
+}
+[data-iii-ui="shell"] .shui-diff-line.del .code {
+  opacity: 0.72;
+}
+[data-iii-ui="shell"] .shui-diff-verb {
+  font-weight: 600;
+}
+[data-iii-ui="shell"] .shui-diff-line .ln {
+  text-align: right;
+  padding-right: 8px;
+  color: var(--color-ink-ghost);
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="shell"] .shui-diff-line .mark {
+  user-select: none;
+  color: var(--color-ink-muted);
+}
+[data-iii-ui="shell"] .shui-diff-line .code {
+  white-space: pre-wrap;
+  word-break: break-all;
+  padding-right: 12px;
+  min-width: 0;
+}
+[data-iii-ui="shell"] .shui-diff-line.add {
+  background: color-mix(
+    in srgb,
+    var(--color-git-added, #4d9a57) 12%,
+    transparent
+  );
+}
+[data-iii-ui="shell"] .shui-diff-line.add .mark {
+  color: var(--color-git-added, #4d9a57);
+}
+[data-iii-ui="shell"] .shui-diff-line.del {
+  background: color-mix(
+    in srgb,
+    var(--color-git-deleted, #c05353) 12%,
+    transparent
+  );
+}
+[data-iii-ui="shell"] .shui-diff-line.del .mark {
+  color: var(--color-git-deleted, #c05353);
+}
+[data-iii-ui="shell"] .shui-diff-line.add .shui-dl-emph {
+  background: color-mix(
+    in srgb,
+    var(--color-git-added, #4d9a57) 30%,
+    transparent
+  );
+  border-radius: 2px;
+}
+[data-iii-ui="shell"] .shui-diff-line.del .shui-dl-emph {
+  background: color-mix(
+    in srgb,
+    var(--color-git-deleted, #c05353) 30%,
+    transparent
+  );
+  border-radius: 2px;
+}
+[data-iii-ui="shell"] .shui-diff-fold {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  border-top: 1px solid var(--color-line);
+  border-bottom: 1px solid var(--color-line);
+  background: var(--color-surface);
+  color: var(--color-ink-muted);
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 12px 3px 4.2em;
+  cursor: pointer;
+  margin: 2px 0;
+}
+[data-iii-ui="shell"] .shui-diff-fold:hover {
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-tok-str {
+  color: var(--color-syn-string, #7a9646);
+}
+[data-iii-ui="shell"] .shui-tok-com {
+  color: var(--color-ink-ghost);
+  font-style: italic;
+}
+[data-iii-ui="shell"] .shui-tok-num {
+  color: var(--color-syn-number, #b0803c);
+}
+[data-iii-ui="shell"] .shui-tok-kw {
+  color: var(--color-syn-keyword, #7b6bb0);
+}
+
+/* Multi-file review. The shell owns navigation and file collapse while the
+   Console-owned diff renderer provides syntax, hunks, and intraline changes. */
+[data-iii-ui="shell"] .shui-review-toolbar {
+  position: relative;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 10px;
+  flex: none;
+  border-bottom: 1px solid var(--color-edge);
+  background: var(--color-panel-raised);
+  color: var(--color-ink-faint);
+  font:
+    400 13px / 18px system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+}
+[data-iii-ui="shell"] .shui-review-toolbar .spacer {
+  flex: 1;
+}
+[data-iii-ui="shell"] .shui-review-scope {
+  color: var(--color-ink);
+  font-weight: 500;
+}
+[data-iii-ui="shell"] .shui-review-scope-wrap {
+  position: relative;
+  flex: none;
+}
+[data-iii-ui="shell"] .shui-review-scope-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-ink);
+  font:
+    500 13px / 18px system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  cursor: pointer;
+  transition:
+    background-color var(--motion-duration-control) var(--motion-ease-standard),
+    color var(--motion-duration-control) var(--motion-ease-standard);
+}
+[data-iii-ui="shell"] .shui-review-scope-button .menu-icon {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-review-scope-button:hover,
+[data-iii-ui="shell"] .shui-review-scope-button[aria-expanded="true"] {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-review-scope-button:focus-visible {
+  outline: 1px solid var(--color-rule-focus);
+  outline-offset: -2px;
+}
+[data-iii-ui="shell"] .shui-review-scope-button svg {
+  width: 16px;
+  height: 16px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-review-scope-menu {
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 0;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  width: min(280px, calc(100vw - 32px));
+  max-height: min(420px, 65vh);
+  overflow-y: auto;
+  padding: 5px;
+  border: 1px solid var(--color-edge);
+  border-radius: 12px;
+  background: var(--color-panel-raised);
+  box-shadow: 0 12px 36px rgb(0 0 0 / 32%);
+}
+[data-iii-ui="shell"] .shui-review-scope-menu button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-review-scope-menu button:hover {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"]
+  .shui-review-scope-menu
+  button
+  > span:not(.menu-icon-gap, .scope-selected) {
+  min-width: 0;
+  flex: 1;
+}
+[data-iii-ui="shell"] .shui-review-scope-menu button > .menu-icon {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-review-scope-menu button > svg,
+[data-iii-ui="shell"] .shui-review-scope-menu .menu-icon-gap {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+[data-iii-ui="shell"] .shui-review-scope-menu .submenu-back {
+  font-weight: 500;
+}
+[data-iii-ui="shell"] .shui-review-menu-label {
+  padding: 8px 9px 3px;
+  color: var(--color-ink-ghost);
+  font: 500 10px / 14px var(--font-mono, ui-monospace, monospace);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+[data-iii-ui="shell"] .shui-review-scope-menu .scope-menu-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+[data-iii-ui="shell"] .shui-review-scope-menu .scope-menu-main small {
+  flex: none;
+  color: var(--color-ink-ghost);
+  font: 400 11px / 14px var(--font-mono, ui-monospace, monospace);
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="shell"] .shui-review-scope-menu .scope-selected {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+}
+[data-iii-ui="shell"] .shui-review-scope-menu .scope-selected svg {
+  width: 16px;
+  height: 16px;
+}
+[data-iii-ui="shell"] .shui-review-menu-separator {
+  height: 1px;
+  margin: 4px;
+  background: var(--color-edge);
+}
+[data-iii-ui="shell"] .shui-review-scope-menu .scope-detail {
+  align-items: flex-start;
+  min-height: 42px;
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+[data-iii-ui="shell"] .shui-review-scope-menu .scope-detail > svg {
+  margin-top: 2px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-review-scope-menu .scope-detail-main {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+}
+[data-iii-ui="shell"] .shui-review-scope-menu .scope-detail-main > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] .shui-review-scope-menu .scope-detail-main code,
+[data-iii-ui="shell"] .shui-review-scope-menu .scope-detail-main small {
+  color: var(--color-ink-ghost);
+  font: 400 10px / 14px var(--font-mono, ui-monospace, monospace);
+}
+[data-iii-ui="shell"] .shui-review-scope-note {
+  padding: 9px;
+  color: var(--color-ink-ghost);
+  font-size: 12px;
+}
+[data-iii-ui="shell"] .shui-review-scope-note.warn {
+  color: var(--color-warn);
+}
+[data-iii-ui="shell"] .shui-review-count {
+  flex: none;
+  color: var(--color-ink-faint);
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] .shui-review-scope-error {
+  max-width: 130px;
+  overflow: hidden;
+  color: var(--color-warn);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] .shui-review-total {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="shell"] .shui-review-total.add {
+  color: var(--color-git-added, #40c977);
+}
+[data-iii-ui="shell"] .shui-review-total.del {
+  color: var(--color-git-deleted, #fa423e);
+}
+[data-iii-ui="shell"] .shui-review-toolbar .active {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-diff-style-icon {
+  width: 16px;
+  height: 16px;
+}
+[data-iii-ui="shell"] .shui-diff-style-icon .frame {
+  fill: none;
+  stroke: currentcolor;
+  stroke-width: 1.2;
+  opacity: 0.75;
+}
+[data-iii-ui="shell"] .shui-diff-style-icon .del {
+  fill: var(--color-git-deleted, #c05353);
+}
+[data-iii-ui="shell"] .shui-diff-style-icon .add {
+  fill: var(--color-git-added, #4d9a57);
+}
+[data-iii-ui="shell"] .shui-review-menu-content {
+  min-width: 248px;
+}
+[data-iii-ui="shell"] .shui-review-jump > button {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  justify-content: center;
+  gap: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-review-jump > button:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-review-jump > button > span:not(:first-child),
+[data-iii-ui="shell"] .shui-review-jump > button > svg:last-child {
+  display: none;
+}
+[data-iii-ui="shell"] .shui-review-jump > button > span:first-child {
+  color: inherit;
+}
+[data-iii-ui="shell"] .shui-review-jump > button > span:first-child svg {
+  width: 16px;
+  height: 16px;
+}
+[data-iii-ui="shell"] .shui-review-jump-list {
+  width: min(420px, 80vw);
+}
+[data-iii-ui="shell"] .shui-review-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+}
+[data-iii-ui="shell"] .shui-review-option .menu-icon {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-review-option .menu-icon svg {
+  width: 16px;
+  height: 16px;
+}
+[data-iii-ui="shell"] .shui-review-option .check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-left: auto;
+}
+[data-iii-ui="shell"] .shui-review-option .check svg {
+  width: 16px;
+  height: 16px;
+}
+[data-iii-ui="shell"] .shui-review-option-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+}
+[data-iii-ui="shell"] .shui-review-option-copy small {
+  color: var(--color-ink-ghost);
+  font-size: 11px;
+  line-height: 15px;
+}
+[data-iii-ui="shell"] .shui-review-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  scroll-padding-top: 36px;
+  background: var(--color-panel);
+}
+[data-iii-ui="shell"] .shui-review-file {
+  min-width: 0;
+  border-bottom: 1px solid var(--color-edge);
+  scroll-margin-top: 0;
+}
+[data-iii-ui="shell"] .shui-review-file-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px;
+  border: 0;
+  border-bottom: 1px solid var(--color-edge);
+  background: var(--color-panel-raised);
+  color: var(--color-ink-faint);
+  font:
+    400 13px / 18px system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  text-align: left;
+}
+[data-iii-ui="shell"] .shui-review-file-head {
+  transition:
+    background-color var(--motion-duration-control) var(--motion-ease-standard),
+    color var(--motion-duration-control) var(--motion-ease-standard);
+}
+[data-iii-ui="shell"] .shui-review-file.active > .shui-review-file-head,
+[data-iii-ui="shell"] .shui-review-file-head:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-review-file-toggle .chevron {
+  transition: transform var(--motion-duration-control) var(--motion-ease-standard);
+}
+[data-iii-ui="shell"] .shui-review-file-toggle .chevron.open {
+  transform: rotate(90deg);
+}
+[data-iii-ui="shell"] .shui-review-file > :not(.shui-review-file-head) {
+  animation: shui-review-reveal var(--motion-duration-panel) var(--motion-ease-enter) both;
+}
+@keyframes shui-review-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+[data-iii-ui="shell"] .shui-review-file-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+  align-self: stretch;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-review-file-toggle > svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+[data-iii-ui="shell"] {
+  --shui-icon-blue: light-dark(#1a85d4, #69b1ff);
+  --shui-icon-cyan: light-dark(#1ca1c7, #68cdf2);
+  --shui-icon-gray: light-dark(#84848a, #adadb1);
+  --shui-icon-green: light-dark(#199f43, #5ecc71);
+  --shui-icon-indigo: light-dark(#693acf, #9d6afb);
+  --shui-icon-mauve: light-dark(#594c5b, #79697b);
+  --shui-icon-orange: light-dark(#d47628, #ffa359);
+  --shui-icon-pink: light-dark(#d32a61, #ff678d);
+  --shui-icon-purple: light-dark(#a631be, #d568ea);
+  --shui-icon-red: light-dark(#d52c36, #ff6762);
+  --shui-icon-teal: light-dark(#17a5af, #64d1db);
+  --shui-icon-vermilion: light-dark(#ff8c5b, #d5512f);
+  --shui-icon-yellow: light-dark(#d5a910, #ffd452);
+}
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="astro"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="database"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="vite"] {
+  color: var(--shui-icon-purple);
+}
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="babel"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="browserslist"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="javascript"] {
+  color: var(--shui-icon-yellow);
+}
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="bash"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="markdown"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="svgo"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="vue"] {
+  color: var(--shui-icon-green);
+}
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="biome"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="c"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="cpp"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="docker"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="python"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="typescript"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="vscode"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="webpack"] {
+  color: var(--shui-icon-blue);
+}
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="bootstrap"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="css"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="eslint"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="terraform"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="wasm"] {
+  color: var(--shui-icon-indigo);
+}
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="bun"] {
+  color: var(--shui-icon-mauve);
+}
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="claude"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="html"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="json"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="rust"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="svg"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="swift"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="zig"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="zip"] {
+  color: var(--shui-icon-orange);
+}
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="go"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="react"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="tailwind"] {
+  color: var(--shui-icon-cyan);
+}
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="graphql"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="image"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="sass"] {
+  color: var(--shui-icon-pink);
+}
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="mcp"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="prettier"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="table"] {
+  color: var(--shui-icon-teal);
+}
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="npm"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="postcss"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="ruby"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="svelte"],
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="yml"] {
+  color: var(--shui-icon-red);
+}
+[data-iii-ui="shell"] .shui-file-type-icon[data-token="text"] {
+  color: var(--shui-icon-gray);
+}
+[data-iii-ui="shell"] .shui-editor-preview {
+  height: 100%;
+  overflow: auto;
+  background: var(--color-panel);
+}
+[data-iii-ui="shell"] .shui-editor-preview .shui-rich-preview {
+  min-height: 100%;
+}
+[data-iii-ui="shell"] .shui-file-type-icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--shui-icon-gray);
+}
+[data-iii-ui="shell"] .shui-review-file-toggle .path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] .shui-review-file-head .shui-diff-stats {
+  margin-left: auto;
+}
+[data-iii-ui="shell"] .shui-review-file-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-review-file-action {
+  transition:
+    background-color var(--motion-duration-control) var(--motion-ease-standard),
+    color var(--motion-duration-control) var(--motion-ease-standard);
+}
+[data-iii-ui="shell"] .shui-review-file-action:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-active);
+}
+[data-iii-ui="shell"] .shui-review-file-action.primary {
+  color: var(--color-accent-fg);
+  background: var(--color-accent);
+}
+[data-iii-ui="shell"] .shui-review-file-action:disabled {
+  color: var(--color-ink-ghost);
+  background: transparent;
+  cursor: default;
+}
+[data-iii-ui="shell"] .shui-review-file-action:focus-visible {
+  outline: 1px solid var(--color-rule-focus);
+  outline-offset: -2px;
+}
+[data-iii-ui="shell"] .shui-review-file-action svg {
+  width: 16px;
+  height: 16px;
+}
+[data-iii-ui="shell"] .shui-whole-file-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: 1px;
+  background: var(--color-edge);
+}
+[data-iii-ui="shell"] .shui-whole-file-split > * {
+  min-width: 0;
+  background: var(--color-panel);
+}
+[data-iii-ui="shell"] .shui-whole-file-side {
+  position: relative;
+  min-height: 100%;
+  background: var(--color-panel);
+}
+[data-iii-ui="shell"] .shui-whole-file-placeholder {
+  position: sticky;
+  top: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin: 16px auto;
+  padding: 20px 24px;
+  width: max-content;
+  max-width: calc(100% - 32px);
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-ink-faint);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  text-align: center;
+}
+[data-iii-ui="shell"] .shui-whole-file-placeholder svg {
+  width: 16px;
+  height: 16px;
+}
+[data-iii-ui="shell"] .shui-whole-file-title {
+  color: var(--color-ink);
+  font-weight: 500;
+}
+[data-iii-ui="shell"] .shui-whole-file-detail {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="shell"] .shui-review-notice {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 10px 0;
+  padding: 10px 12px;
+  box-shadow: none;
+  font-family: var(--font-sans);
+}
+[data-iii-ui="shell"] .shui-review-notice-icon {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-review-notice-icon > svg {
+  width: 18px;
+  height: 18px;
+}
+[data-iii-ui="shell"] .shui-review-notice.warn .shui-review-notice-icon {
+  color: var(--color-warn);
+}
+[data-iii-ui="shell"] .shui-review-notice-copy {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+[data-iii-ui="shell"] .shui-review-notice-title {
+  overflow: hidden;
+  color: var(--color-ink);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] .shui-review-notice-detail {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-ink-faint);
+  font: 400 11px / 16px var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] .shui-review-notice-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+[data-iii-ui="shell"] .shui-review-message:has(.shui-review-inline-action) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  margin: 8px 10px 0;
+  padding: 10px 12px;
+  color: var(--color-ink-faint);
+  font-family: var(--font-sans);
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  background: var(--color-surface);
+}
+[data-iii-ui="shell"]
+  .shui-review-message:has(.shui-review-inline-action)
+  > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] .shui-review-inline-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 4px 9px;
+  color: var(--color-ink);
+  font: 500 12px / 16px var(--font-sans);
+  text-transform: capitalize;
+  white-space: nowrap;
+  border: 1px solid var(--color-edge);
+  border-radius: 5px;
+  background: var(--color-bg);
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-review-inline-action:hover {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-review-inline-action:focus-visible {
+  outline: 1px solid var(--color-rule-focus);
+  outline-offset: 1px;
+}
+[data-iii-ui="shell"] .shui-review-diff {
+  display: block;
+}
+[data-iii-ui="shell"] .shui-rich-preview {
+  display: block;
+  width: 100%;
+  min-height: 420px;
+  border: 0;
+  background: white;
+}
+[data-iii-ui="shell"] .shui-rich-preview-image {
+  display: block;
+  max-width: 100%;
+  max-height: 70vh;
+  margin: 0 auto;
+  padding: 20px;
+  object-fit: contain;
+}
+[data-iii-ui="shell"] .shui-markdown-preview {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 28px 32px 48px;
+  color: var(--color-ink);
+  font:
+    400 15px / 1.65 system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+}
+[data-iii-ui="shell"] .shui-markdown-preview :first-child {
+  margin-top: 0;
+}
+[data-iii-ui="shell"] .shui-markdown-preview :last-child {
+  margin-bottom: 0;
+}
+
+/* Chat footer summary. The button is deliberately compact because it shares
+   the composer's high-density control band; the elevated surface exists only
+   while the file list is open. */
+[data-iii-ui="shell"] .shui-chat-summary {
+  position: relative;
+  margin: 0 0 4px auto;
+  font: 400 11px / 16px var(--font-mono, ui-monospace, monospace);
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-chat-summary-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  padding: 3px 8px;
+  border: 1px solid var(--color-edge);
+  border-radius: 999px;
+  background: var(--color-surface);
+  color: var(--color-ink-faint);
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-chat-summary-pill:hover,
+[data-iii-ui="shell"] .shui-chat-summary-pill[aria-expanded="true"] {
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-chat-summary-pill:active {
+  transform: translateY(1px);
+}
+[data-iii-ui="shell"] .shui-chat-summary-pill:focus-visible,
+[data-iii-ui="shell"] .shui-chat-summary-file:focus-visible {
+  outline: 1px solid var(--color-rule-focus);
+  outline-offset: 2px;
+}
+[data-iii-ui="shell"] .shui-chat-summary-pill .files-icon {
+  width: 16px;
+  height: 16px;
+  color: var(--color-accent);
+}
+[data-iii-ui="shell"] .shui-chat-summary .add {
+  color: var(--color-git-added, #40c977);
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="shell"] .shui-chat-summary .del {
+  color: var(--color-git-deleted, #fa423e);
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="shell"] .shui-chat-summary-pill .chevron {
+  width: 16px;
+  height: 16px;
+  transition: transform var(--motion-duration-fast) var(--motion-ease-standard);
+}
+[data-iii-ui="shell"] .shui-chat-summary-pill .chevron.open {
+  transform: rotate(180deg);
+}
+[data-iii-ui="shell"] .shui-chat-summary-popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 6;
+  width: min(380px, calc(100vw - 32px));
+  overflow: hidden;
+  border: 1px solid var(--color-edge);
+  border-radius: 10px;
+  background: var(--color-panel-raised);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 24%);
+}
+[data-iii-ui="shell"] .shui-chat-summary-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 34px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--color-edge);
+  color: var(--color-ink-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+[data-iii-ui="shell"] .shui-chat-summary-head > :first-child {
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-chat-summary-files {
+  max-height: min(280px, 42vh);
+  overflow-y: auto;
+  padding: 4px;
+}
+[data-iii-ui="shell"] .shui-chat-summary-file {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 7px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-chat-summary-file:hover {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-chat-summary-file .path {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] .shui-chat-summary-file .stats {
+  display: inline-flex;
+  gap: 7px;
+  flex: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-iii-ui="shell"] .shui-chat-summary-pill .chevron {
+    transition: none;
+  }
+}
+
+/* Contextual file-change cards retained from the console improvements. */
+[data-iii-ui="shell"] .shui-view-file-btn {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-sm, 6px);
+  background: transparent;
+  padding: 4px 9px 4px 7px;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+}
+[data-iii-ui="shell"] .shui-view-file-btn:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-view-file-btn:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+[data-iii-ui="shell"] .shui-view-file-btn svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+}
+
+/* ── prominent file-change artifact (coder::* chat calls) ──────────── */
+
+[data-iii-ui="shell"] .shui-file-changes {
+  overflow: hidden;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--color-bg);
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-file-changes-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--color-rule-2);
+  background: var(--color-paper-2);
+}
+[data-iii-ui="shell"] .shui-file-changes-icon {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-file-changes-title-group {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+[data-iii-ui="shell"] .shui-file-changes-title {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] .shui-file-changes-totals,
+[data-iii-ui="shell"] .shui-file-change-stats {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="shell"] .shui-file-changes-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+[data-iii-ui="shell"] .shui-file-change-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--color-rule-2);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+}
+[data-iii-ui="shell"] .shui-file-change-path {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] button.shui-file-change-path {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+[data-iii-ui="shell"] button.shui-file-change-path:hover {
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+[data-iii-ui="shell"] button.shui-file-change-path:focus-visible,
+[data-iii-ui="shell"] .shui-file-change-view:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+[data-iii-ui="shell"] .shui-file-change-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+}
+[data-iii-ui="shell"] .shui-file-change-view {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-sm, 6px);
+  background: transparent;
+  padding: 4px 8px 4px 6px;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] .shui-file-change-view:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-file-change-view svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+}
+[data-iii-ui="shell"] .shui-file-changes .is-added {
+  color: var(--color-ok);
+}
+[data-iii-ui="shell"] .shui-file-changes .is-deleted,
+[data-iii-ui="shell"] .shui-file-changes .is-failed {
+  /* Small diff counters need AA contrast in both themes: mixing toward ink
+     darkens alert on light surfaces and lightens it on dark surfaces. */
+  color: color-mix(in oklab, var(--color-alert) 70%, var(--color-ink));
+}
+[data-iii-ui="shell"] .shui-file-changes .is-created,
+[data-iii-ui="shell"] .shui-file-changes .is-updated,
+[data-iii-ui="shell"] .shui-file-changes .is-unchanged,
+[data-iii-ui="shell"] .shui-file-changes .is-running {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-file-changes-more {
+  display: flex;
+  width: 100%;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 0;
+  background: var(--color-paper-2);
+  padding: 7px 12px;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+}
+[data-iii-ui="shell"] .shui-file-changes-more:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-file-changes-more:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+[data-iii-ui="shell"] .shui-file-changes-more svg {
+  width: 16px;
+  height: 16px;
+  transition: transform var(--motion-duration-control)
+    var(--motion-ease-standard);
+}
+[data-iii-ui="shell"] .shui-file-changes-more svg.is-expanded {
+  transform: rotate(180deg);
+}
+
+@media (max-width: 520px) {
+  [data-iii-ui="shell"] .shui-view-file-btn {
+    min-height: 48px;
+  }
+  [data-iii-ui="shell"] .shui-file-changes-title-group {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 3px;
+  }
+  [data-iii-ui="shell"] .shui-file-change-row {
+    align-items: flex-start;
+    gap: 8px;
+  }
+  [data-iii-ui="shell"] .shui-file-change-actions {
+    gap: 6px;
+  }
+  [data-iii-ui="shell"] .shui-file-change-view {
+    min-width: 48px;
+    min-height: 48px;
+    justify-content: center;
+    padding: 0;
+  }
+  [data-iii-ui="shell"] .shui-file-change-view span {
+    display: none;
+  }
+}
+[data-iii-ui="shell"] .shui-workspace-frame {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  overflow: hidden;
+  /* The page is injected into a console panel, so the viewport says nothing
+     about the room it actually has: two shell panels side by side on a
+     desktop are each narrower than a phone. Responsive rules key off this. */
+  container: shui-page / inline-size;
+}
+[data-iii-ui="shell"] .shui-workspace-frame.terminal-bottom {
+  flex-direction: column;
+}
+[data-iii-ui="shell"] .shui-workspace-frame.terminal-right {
+  flex-direction: row;
+}
+[data-iii-ui="shell"] .shui-workspace-frame > :first-child {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+[data-iii-ui="shell"] .shui-terminal-panel {
+  position: relative;
+  min-height: 0;
+  min-width: 0;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--color-bg, #111);
+}
+[data-iii-ui="shell"] .shui-terminal-panel[data-terminal-dock="bottom"] {
+  width: 100%;
+  min-height: 160px;
+  max-height: calc(100% - 120px);
+  border-top: 1px solid var(--color-edge);
+}
+[data-iii-ui="shell"] .shui-terminal-panel[data-terminal-dock="right"] {
+  height: 100%;
+  min-width: 160px;
+  max-width: calc(100% - 240px);
+  border-left: 1px solid var(--color-edge);
+}
+[data-iii-ui="shell"] .shui-terminal-panel[data-terminal-dock="editor"] {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+}
+[data-iii-ui="shell"] .shui-terminal-workspace {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+[data-iii-ui="shell"] .shui-terminal-tabs {
+  flex: none;
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  min-height: 32px;
+  padding-right: 6px;
+  border-bottom: 1px solid var(--color-edge);
+  scrollbar-width: thin;
+}
+[data-iii-ui="shell"] .shui-terminal-tab-strip {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+[data-iii-ui="shell"] .shui-terminal-bar-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  padding-left: 8px;
+}
+[data-iii-ui="shell"] .shui-terminal-dock-group {
+  display: inline-flex;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid var(--color-edge);
+  border-radius: 5px;
+}
+[data-iii-ui="shell"] .shui-terminal-dock-group .shui-terminal-action {
+  width: 22px;
+  height: 20px;
+  border-radius: 0;
+}
+[data-iii-ui="shell"] .shui-terminal-tab {
+  flex: none;
+  display: flex;
+  align-items: center;
+  /* One rhythm across the row: the label, its actions and the tab's right
+     edge share the same gap, so the close button never looks pushed against
+     the divider. */
+  gap: 2px;
+  padding-right: 4px;
+  min-width: 0;
+  color: var(--color-ink-faint);
+  border-right: 1px solid var(--color-edge);
+  background: var(--color-bg);
+}
+[data-iii-ui="shell"] .shui-terminal-tab.active {
+  color: var(--color-ink);
+  background: var(--color-surface-active);
+  box-shadow: inset 0 -1px 0 var(--color-edge);
+}
+[data-iii-ui="shell"] .shui-terminal-tab .shui-terminal-tab-action[aria-label^="Rename"] {
+  opacity: 0;
+}
+[data-iii-ui="shell"] .shui-terminal-tab:hover .shui-terminal-tab-action[aria-label^="Rename"],
+[data-iii-ui="shell"] .shui-terminal-tab:focus-within .shui-terminal-tab-action[aria-label^="Rename"] {
+  opacity: 1;
+}
+[data-iii-ui="shell"] .shui-terminal-tab-select {
+  max-width: 150px;
+  padding: 7px 2px 7px 10px;
+  overflow: hidden;
+  color: inherit;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-terminal-tab-action,
+[data-iii-ui="shell"] .shui-terminal-tab-new {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* The strip stretches its children, so an unsized button grows to the full
+     tab height and its icon stops sharing a centre line with the tab label.
+     Fixing the box and centring it with auto margins keeps rename, close and
+     new-tab optically aligned with the text beside them. */
+  width: 20px;
+  min-width: 20px;
+  height: 20px;
+  margin: auto 0;
+  padding: 0;
+  color: var(--color-ink-ghost);
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-terminal-tab-action:hover,
+[data-iii-ui="shell"] .shui-terminal-tab-new:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-terminal-tab-action svg,
+[data-iii-ui="shell"] .shui-terminal-tab-new svg {
+  width: 16px;
+  height: 16px;
+}
+[data-iii-ui="shell"] .shui-terminal-tab-input {
+  width: 110px;
+  margin: 3px;
+  padding: 3px 5px;
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  border: 1px solid var(--color-rule-focus);
+  border-radius: 2px;
+  background: var(--color-bg);
+  outline: none;
+}
+[data-iii-ui="shell"] .shui-terminal-layout {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+[data-iii-ui="shell"] .shui-terminal-split {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+[data-iii-ui="shell"] .shui-terminal-split.horizontal {
+  flex-direction: row;
+}
+[data-iii-ui="shell"] .shui-terminal-split.vertical {
+  flex-direction: column;
+}
+[data-iii-ui="shell"] .shui-terminal-split-child {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+[data-iii-ui="shell"] .shui-terminal-split-separator {
+  z-index: 2;
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: var(--color-edge);
+  touch-action: none;
+}
+[data-iii-ui="shell"]
+  .shui-terminal-split.horizontal
+  > .shui-terminal-split-separator {
+  width: 5px;
+  cursor: ew-resize;
+}
+[data-iii-ui="shell"]
+  .shui-terminal-split.vertical
+  > .shui-terminal-split-separator {
+  height: 5px;
+  cursor: ns-resize;
+}
+[data-iii-ui="shell"] .shui-terminal-split-separator:hover,
+[data-iii-ui="shell"] .shui-terminal-split-separator:focus-visible {
+  background: var(--color-accent);
+  outline: none;
+}
+[data-iii-ui="shell"] .shui-terminal-pane-slot {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px transparent;
+}
+[data-iii-ui="shell"] .shui-terminal-pane-slot.focused {
+  box-shadow: inset 0 0 0 1px
+    color-mix(in srgb, var(--color-accent) 55%, transparent);
+}
+[data-iii-ui="shell"] .shui-terminal-workspace-error {
+  flex: none;
+  padding: 5px 9px;
+  color: var(--color-warn);
+  font-size: 11px;
+  border-bottom: 1px solid
+    color-mix(in srgb, var(--color-warn) 25%, transparent);
+}
+[data-iii-ui="shell"] .shui-terminal-empty {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  color: var(--color-ink-ghost);
+  font-family: var(--font-sans);
+  font-size: 12px;
+}
+[data-iii-ui="shell"] .shui-terminal-resize {
+  position: absolute;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  touch-action: none;
+}
+[data-iii-ui="shell"] .shui-terminal-resize span {
+  display: block;
+  border-radius: 999px;
+  background: var(--color-ink-ghost);
+}
+[data-iii-ui="shell"]
+  .shui-terminal-panel[data-terminal-dock="bottom"]
+  > .shui-terminal-resize {
+  top: -4px;
+  left: 0;
+  width: 100%;
+  height: 9px;
+  cursor: ns-resize;
+}
+[data-iii-ui="shell"]
+  .shui-terminal-panel[data-terminal-dock="bottom"]
+  > .shui-terminal-resize
+  span {
+  width: 36px;
+  height: 3px;
+}
+[data-iii-ui="shell"]
+  .shui-terminal-panel[data-terminal-dock="right"]
+  > .shui-terminal-resize {
+  top: 0;
+  left: -4px;
+  width: 9px;
+  height: 100%;
+  cursor: ew-resize;
+}
+[data-iii-ui="shell"]
+  .shui-terminal-panel[data-terminal-dock="right"]
+  > .shui-terminal-resize
+  span {
+  width: 3px;
+  height: 36px;
+}
+[data-iii-ui="shell"] .shui-terminal-resize:hover span,
+[data-iii-ui="shell"] .shui-terminal-resize:focus-visible span {
+  background: var(--color-accent);
+}
+[data-iii-ui="shell"] .shui-terminal {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+}
+[data-iii-ui="shell"] .shui-terminal-status {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  color: var(--color-ink-faint);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  background: color-mix(in srgb, var(--color-ink) 5%, transparent);
+}
+[data-iii-ui="shell"] .shui-terminal-status.error,
+[data-iii-ui="shell"] .shui-terminal-status.exited {
+  color: var(--color-warn);
+  background: color-mix(in srgb, var(--color-warn) 10%, transparent);
+}
+[data-iii-ui="shell"] .shui-terminal-status-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  color: inherit;
+  font: inherit;
+  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-terminal-status-action:hover {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+[data-iii-ui="shell"] .shui-terminal-status-action svg {
+  width: 16px;
+  height: 16px;
+}
+[data-iii-ui="shell"] .shui-terminal-hud {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-bg) 88%, transparent);
+  backdrop-filter: blur(6px);
+  pointer-events: none;
+}
+[data-iii-ui="shell"] .shui-terminal:hover .shui-terminal-hud,
+[data-iii-ui="shell"] .shui-terminal-hud:focus-within {
+  opacity: 1;
+  pointer-events: auto;
+}
+[data-iii-ui="shell"] .shui-terminal-pane-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 24px;
+  padding: 2px 4px 2px 9px;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  border-bottom: 1px solid var(--color-edge);
+}
+[data-iii-ui="shell"] .shui-terminal-pane-cwd {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] .shui-terminal-pane-bar .shui-terminal-action {
+  width: 20px;
+  height: 20px;
+}
+[data-iii-ui="shell"] .shui-terminal-jump {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  color: var(--color-ink);
+  border: 1px solid var(--color-edge);
+  border-radius: 999px;
+  background: var(--color-surface-active);
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-terminal-jump svg {
+  width: 16px;
+  height: 16px;
+}
+[data-iii-ui="shell"] .shui-terminal-action {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  color: var(--color-ink-faint);
+  background: transparent;
+  cursor: pointer;
+  transition: transform var(--motion-duration-fast) var(--motion-ease-enter);
+}
+[data-iii-ui="shell"] .shui-terminal-action:hover,
+[data-iii-ui="shell"] .shui-terminal-action.active {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-terminal-action:active {
+  transform: scale(0.97);
+}
+[data-iii-ui="shell"] .shui-terminal-action:focus-visible {
+  outline: 1px solid var(--color-rule-focus);
+  outline-offset: 1px;
+}
+[data-iii-ui="shell"] .shui-terminal-action:disabled,
+[data-iii-ui="shell"] .shui-terminal-tab-new:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+[data-iii-ui="shell"] .shui-terminal-action svg {
+  width: 16px;
+  height: 16px;
+}
+[data-iii-ui="shell"] .shui-terminal-error {
+  flex: none;
+  padding: 5px 10px;
+  overflow: hidden;
+  color: var(--color-warn);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-bottom: 1px solid
+    color-mix(in srgb, var(--color-warn) 25%, transparent);
+}
+[data-iii-ui="shell"] .shui-xterm {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  padding: 8px 10px;
+  background: var(--color-bg, #111);
+}
+[data-iii-ui="shell"] .shui-xterm-host {
+  width: 100%;
+  height: 100%;
+}
+[data-iii-ui="shell"] .shui-xterm .xterm {
+  width: 100%;
+  height: 100%;
+}
+[data-iii-ui="shell"] .shui-xterm .xterm-viewport {
+  background-color: transparent;
+  scrollbar-color: var(--color-ink-ghost) transparent;
+}
+[data-iii-ui="shell"] .shui-etab-icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+@media (max-width: 760px) {
+  [data-iii-ui="shell"] .shui-terminal-bar-actions {
+    gap: 2px;
+    padding-left: 4px;
+  }
+  [data-iii-ui="shell"] .shui-terminal-tab-select {
+    max-width: 92px;
+  }
+  [data-iii-ui="shell"] .shui-terminal-tab-action {
+    width: 22px;
+    min-width: 22px;
+  }
+  [data-iii-ui="shell"] .shui-terminal-pane-cwd {
+    display: none;
+  }
+}
+
+/* Agent runs watched in the terminal surface ------------------------------ */
+
+[data-iii-ui='shell'] .shell-agent-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+[data-iii-ui='shell'] .shell-agent-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+[data-iii-ui='shell'] .shell-agent-title {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+}
+
+[data-iii-ui='shell'] .shell-agent-session,
+[data-iii-ui='shell'] .shell-agent-status {
+  font-size: 0.72rem;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='shell'] .shell-agent-status {
+  margin-left: auto;
+}
+
+[data-iii-ui='shell'] .shell-agent-prompt {
+  margin: 0;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.8rem;
+  color: var(--color-ink-faint);
+  border-bottom: 1px solid var(--color-border);
+}
+
+[data-iii-ui='shell'] .shell-agent-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+[data-iii-ui='shell'] .shell-agent-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+[data-iii-ui='shell'] .shell-agent-end,
+[data-iii-ui='shell'] .shell-agent-hint {
+  font-size: 0.76rem;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='shell'] .shell-agent-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+[data-iii-ui='shell'] .shell-agent-card-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+[data-iii-ui='shell'] .shell-agent-card-note {
+  font-size: 0.72rem;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='shell'] .shell-agent-input {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.6rem;
+  border-top: 1px solid var(--color-border);
+}
+
+[data-iii-ui='shell'] .shell-agent-input > *:first-child {
+  flex: 1;
+}
+
+[data-iii-ui='shell'] .shui-launcher {
+  display: grid;
+  grid-template-columns: repeat(2, 8.5rem);
+  gap: 0.6rem;
+}
+
+[data-iii-ui='shell'] .shui-launcher-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  height: 6.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-bg-subtle);
+  color: var(--color-ink-faint);
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+[data-iii-ui='shell'] .shui-launcher-card:hover {
+  color: var(--color-ink);
+  border-color: var(--color-border-strong, var(--color-border));
+}
+
+[data-iii-ui='shell'] .shui-launcher-icon {
+  width: 20px;
+  height: 20px;
+}
+
+/* Workspace browser -------------------------------------------------------- */
+
+[data-iii-ui='shell'] .shui-browser {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+[data-iii-ui='shell'] .shui-browser-crumbs {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 10px;
+  overflow-x: auto;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--color-edge);
+}
+
+[data-iii-ui='shell'] .shui-browser-crumb-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+[data-iii-ui='shell'] .shui-browser-crumb-group svg {
+  width: 16px;
+  height: 16px;
+}
+
+[data-iii-ui='shell'] .shui-browser-crumb {
+  padding: 1px 4px;
+  color: inherit;
+  font: inherit;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+
+[data-iii-ui='shell'] .shui-browser-crumb:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-active);
+}
+
+[data-iii-ui='shell'] .shui-browser-list {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 2px;
+  padding: 10px;
+  overflow-y: auto;
+}
+
+[data-iii-ui='shell'] .shui-browser-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  overflow: hidden;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+
+[data-iii-ui='shell'] .shui-browser-entry:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-active);
+}
+
+[data-iii-ui='shell'] .shui-browser-entry.dir {
+  color: var(--color-ink);
+}
+
+[data-iii-ui='shell'] .shui-browser-entry-icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+[data-iii-ui='shell'] .shui-browser-empty {
+  grid-column: 1 / -1;
+  padding: 12px 8px;
+  font-size: 12px;
+}
+
+/* Narrow panels — phones, and desktop panels split small ------------------- */
+
+@container shui-page (max-width: 720px) {
+  [data-iii-ui='shell'] .shui-review-toolbar {
+    gap: 6px;
+    padding: 0 6px;
+  }
+
+  [data-iii-ui='shell'] .shui-review-file-head {
+    gap: 6px;
+    padding: 0 6px;
+  }
+
+  [data-iii-ui='shell'] .shui-review-notice {
+    grid-template-columns: 32px minmax(0, 1fr);
+  }
+
+  [data-iii-ui='shell'] .shui-review-notice-actions {
+    grid-column: 2;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  [data-iii-ui='shell'] .shui-sidebar {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 6;
+    width: min(100%, 320px) !important;
+  }
+
+  /* A side-by-side split at this width gives each pane a few characters, so
+     panes stack whichever way they were split. */
+  [data-iii-ui='shell'] .shui-terminal-split.horizontal {
+    flex-direction: column;
+  }
+
+  [data-iii-ui='shell']
+    .shui-terminal-split.horizontal
+    > .shui-terminal-split-separator {
+    width: auto;
+    height: 5px;
+    cursor: ns-resize;
+  }
+
+  [data-iii-ui='shell'] .shui-workspace-frame.terminal-right {
+    flex-direction: column;
+  }
+
+  [data-iii-ui='shell'] .shui-terminal-panel[data-terminal-dock='right'] {
+    width: 100% !important;
+    height: 45%;
+    max-width: none;
+    border-left: 0;
+    border-top: 1px solid var(--color-edge);
+  }
+
+  [data-iii-ui='shell']
+    .shui-terminal-panel[data-terminal-dock='right']
+    > .shui-terminal-resize {
+    top: 0;
+    right: auto;
+    left: 0;
+    width: 100%;
+    height: 7px;
+    cursor: ns-resize;
+  }
+
+  [data-iii-ui='shell'] .shui-terminal-action,
+  [data-iii-ui='shell'] .shui-terminal-tab-action,
+  [data-iii-ui='shell'] .shui-terminal-tab-new {
+    width: 30px;
+    min-width: 30px;
+    height: 30px;
+  }
+
+  [data-iii-ui='shell'] .shui-terminal-dock-group .shui-terminal-action {
+    width: 28px;
+    height: 26px;
+  }
+
+  /* The rename pencil is a hover affordance; touch has no hover, and the tab
+     still renames on double tap. */
+  [data-iii-ui='shell']
+    .shui-terminal-tab
+    .shui-terminal-tab-action[aria-label^='Rename'] {
+    display: none;
+  }
+
+  /* Same for the pane cluster: hover never fires on touch, so it becomes a
+     bar of its own above the output. */
+  [data-iii-ui='shell'] .shui-terminal-hud {
+    position: static;
+    order: -1;
+    justify-content: flex-end;
+    opacity: 1;
+    border: 0;
+    border-bottom: 1px solid var(--color-edge);
+    border-radius: 0;
+    background: transparent;
+    backdrop-filter: none;
+    pointer-events: auto;
+  }
+
+  [data-iii-ui='shell'] .shui-launcher {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: min(100%, 20rem);
+  }
+
+  [data-iii-ui='shell'] .shui-browser-list {
+    grid-template-columns: 1fr;
+  }
+
+  [data-iii-ui='shell']
+    .shui-review-message:has(.shui-review-inline-action) {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+  }
+
+  [data-iii-ui='shell']
+    .shui-review-message:has(.shui-review-inline-action)
+    > span {
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
+  [data-iii-ui='shell'] .shui-review-inline-action {
+    justify-self: start;
+  }
+}
+
+[data-iii-ui='shell'] .shui-sidebar-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  padding: 0;
+  border: 0;
+  background: color-mix(in srgb, #000 42%, transparent);
+}
+
+/* new file / folder actions beside the tree filter */
+[data-iii-ui="shell"] .shui-tree-filter-shell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+[data-iii-ui="shell"] .shui-tree-filter-shell .shui-tree-filter {
+  flex: 1;
+  min-width: 0;
+}
+[data-iii-ui="shell"] .shui-tree-new-actions {
+  display: flex;
+  gap: 2px;
+}
+[data-iii-ui="shell"] .shui-tree-new-row {
+  padding: 4px 8px 6px;
+  border-bottom: 1px solid var(--color-rule-2);
+}
+[data-iii-ui="shell"] .shui-tree-new-row input {
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid var(--color-rule);
+  border-radius: 4px;
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+[data-iii-ui="shell"] .shui-tree-new-error {
+  margin-top: 4px;
+  color: var(--color-warn);
+  font-size: 11px;
+}

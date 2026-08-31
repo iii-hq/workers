@@ -54,7 +54,7 @@ fn worker_manifest_uses_the_standalone_queue_worker() {
 
     assert_eq!(
         dependencies.get(serde_yaml::Value::String("queue".into())),
-        Some(&serde_yaml::Value::String("^0.21.2".into()))
+        Some(&serde_yaml::Value::String("^0.21.5".into()))
     );
     assert!(!dependencies.contains_key(serde_yaml::Value::String("iii-queue".into())));
 }
@@ -70,7 +70,7 @@ fn worker_manifest_uses_the_standalone_state_worker() {
 
     assert_eq!(
         dependencies.get(serde_yaml::Value::String("state".into())),
-        Some(&serde_yaml::Value::String("^0.21.3".into()))
+        Some(&serde_yaml::Value::String("^0.22.2".into()))
     );
     assert!(!dependencies.contains_key(serde_yaml::Value::String("iii-state".into())));
 }
@@ -86,7 +86,37 @@ fn worker_manifest_uses_the_standalone_cron_worker() {
 
     assert_eq!(
         dependencies.get(serde_yaml::Value::String("cron".into())),
-        Some(&serde_yaml::Value::String("^0.21.0".into()))
+        Some(&serde_yaml::Value::String("^0.21.9".into()))
     );
     assert!(!dependencies.contains_key(serde_yaml::Value::String("iii-cron".into())));
+}
+
+#[test]
+fn worker_manifest_uses_the_tested_harness_stack() {
+    let manifest_path = format!("{}/iii.worker.yaml", env!("CARGO_MANIFEST_DIR"));
+    let source = std::fs::read_to_string(manifest_path).expect("read iii.worker.yaml");
+    let manifest: serde_yaml::Value = serde_yaml::from_str(&source).expect("parse worker manifest");
+    let dependencies = manifest["dependencies"]
+        .as_mapping()
+        .expect("dependencies is a mapping");
+
+    for (worker, version) in [
+        ("session-manager", "^1.0.13"),
+        ("llm-router", "^1.4.12"),
+        ("provider-openai-codex", "^0.4.4"),
+        ("context-manager", "^1.1.3"),
+        ("iii-directory", "^1.2.3"),
+        ("provider-anthropic", "^1.2.8"),
+        ("provider-openai", "^1.2.7"),
+        ("shell", "^0.11.9"),
+        ("console", "^1.9.11"),
+    ] {
+        assert_eq!(
+            dependencies.get(serde_yaml::Value::String(worker.into())),
+            Some(&serde_yaml::Value::String(version.into())),
+            "unexpected {worker} dependency version"
+        );
+    }
+
+    assert!(!dependencies.contains_key(serde_yaml::Value::String("scrapling".into())));
 }

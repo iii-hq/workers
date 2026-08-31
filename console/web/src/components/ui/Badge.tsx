@@ -1,19 +1,21 @@
 import type * as React from 'react'
 import { cn } from '@/lib/utils'
 
-type BadgeVariant = 'default' | 'warn' | 'alert' | 'accent'
+export type BadgeVariant = 'default' | 'ok' | 'warn' | 'alert' | 'accent'
 
 const variantTone: Record<BadgeVariant, string> = {
-  default: 'text-ink-faint',
-  warn: 'text-warn',
-  alert: 'text-alert',
-  accent: 'text-accent',
+  default: 'bg-surface text-ink-faint',
+  ok: 'bg-ok-muted text-ok',
+  warn: 'bg-warn-muted text-warn',
+  alert: 'bg-alert-muted text-alert',
+  accent: 'bg-accent-muted text-accent',
 }
 
-interface BadgeProps extends React.HTMLAttributes<HTMLSpanElement> {
+export interface BadgeProps extends React.HTMLAttributes<HTMLSpanElement> {
   variant?: BadgeVariant
 }
 
+/** Compact semantic status label shared by the Console and worker UIs. */
 export function Badge({
   variant = 'default',
   className,
@@ -23,10 +25,11 @@ export function Badge({
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1 font-mono text-[11px] font-medium uppercase tracking-[0.06em]',
+        'inline-flex max-w-full items-center gap-1 rounded-full px-2.5 py-1 font-sans text-base font-medium sm:text-xs',
         variantTone[variant],
         className,
       )}
+      data-badge-variant={variant}
       {...props}
     >
       {children}

@@ -177,13 +177,13 @@ config.
 - [worker-and-cli.md](worker-and-cli.md) — packaging: the Rust binary and file
   layout (mirroring `coder`), the `clap` CLI surface, the `codegen::generate` /
   `::preview` / `::languages` functions with their request/response schemas,
-  `iii.worker.yaml`, deployment, dependencies, testing (golden + downstream
+  `worker-compose.yaml`, deployment, dependencies, testing (golden + downstream
   compile), and boundaries / non-goals.
 
 ## Prior art
 
 - [`coder`](../../coder) — the path-jailed binary worker whose
-  `src/main.rs` clap setup, `iii.worker.yaml` (`deploy: binary`, multi-target),
+  `src/main.rs` clap setup, `worker-compose.yaml` (`deploy: binary`, multi-target),
   and `--manifest` flag this worker mirrors for CLI + packaging.
 - [`graphql-codegen`](https://the-guild.dev/graphql/codegen) — the prior-art
   whose **multi-output `generates:` model**, `DO NOT EDIT` banners, and

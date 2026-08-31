@@ -32,6 +32,21 @@ fn unique(prefix: &str) -> String {
     format!("{prefix}-{}", Uuid::new_v4())
 }
 
+/// Boot config for e2e: the shipped default store_method is file_based, so an
+/// unpinned boot would write `./data/state` in the test cwd and leak state
+/// across tests and runs. Every boot here pins in_memory.
+fn in_memory_config() -> StateConfig {
+    // Extend the default (keeping triggers_enabled etc.) rather than building
+    // from bare JSON, which would drop the default knobs to None.
+    StateConfig {
+        adapter: Some(
+            serde_json::from_value(json!({"name": "kv", "config": {"store_method": "in_memory"}}))
+                .expect("valid in-memory adapter config"),
+        ),
+        ..StateConfig::default()
+    }
+}
+
 async fn call(iii: &iii_sdk::IIIClient, function_id: &str, payload: Value) -> Result<Value, Error> {
     iii.trigger(TriggerRequest {
         function_id: function_id.to_string(),
@@ -97,7 +112,7 @@ async fn set_then_get_roundtrip_with_old_value_parity() {
     let Some(iii) = engine::connect_fresh().await else {
         return;
     };
-    let boot = iii_state::boot::start(iii.clone(), StateConfig::default())
+    let boot = iii_state::boot::start(iii.clone(), in_memory_config())
         .await
         .expect("state worker should boot");
 
@@ -148,7 +163,7 @@ async fn set_accepts_data_alias() {
     let Some(iii) = engine::connect_fresh().await else {
         return;
     };
-    let boot = iii_state::boot::start(iii.clone(), StateConfig::default())
+    let boot = iii_state::boot::start(iii.clone(), in_memory_config())
         .await
         .expect("state worker should boot");
 
@@ -176,7 +191,7 @@ async fn delete_returns_old_value_and_missing_is_null() {
     let Some(iii) = engine::connect_fresh().await else {
         return;
     };
-    let boot = iii_state::boot::start(iii.clone(), StateConfig::default())
+    let boot = iii_state::boot::start(iii.clone(), in_memory_config())
         .await
         .expect("state worker should boot");
 
@@ -214,7 +229,7 @@ async fn update_applies_ops_and_reports_errors() {
     let Some(iii) = engine::connect_fresh().await else {
         return;
     };
-    let boot = iii_state::boot::start(iii.clone(), StateConfig::default())
+    let boot = iii_state::boot::start(iii.clone(), in_memory_config())
         .await
         .expect("state worker should boot");
 
@@ -272,7 +287,7 @@ async fn list_and_list_groups() {
     let Some(iii) = engine::connect_fresh().await else {
         return;
     };
-    let boot = iii_state::boot::start(iii.clone(), StateConfig::default())
+    let boot = iii_state::boot::start(iii.clone(), in_memory_config())
         .await
         .expect("state worker should boot");
 
@@ -353,7 +368,7 @@ async fn state_trigger_fires_with_event_payload() {
     let Some(iii) = engine::connect_fresh().await else {
         return;
     };
-    let boot = iii_state::boot::start(iii.clone(), StateConfig::default())
+    let boot = iii_state::boot::start(iii.clone(), in_memory_config())
         .await
         .expect("state worker should boot");
 
@@ -372,12 +387,11 @@ async fn state_trigger_fires_with_event_payload() {
         }),
     );
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: iii_state::TRIGGER_TYPE.to_string(),
-        function_id: "e2e::on_state".to_string(),
-        config: json!({"scope": scope}),
-        metadata: None,
-    })
+    iii.register_trigger(RegisterTriggerInput::new(
+        iii_state::TRIGGER_TYPE.to_string(),
+        "e2e::on_state".to_string(),
+        json!({"scope": scope}),
+    ))
     .expect("register state trigger");
     wait_for_trigger_count(&boot.triggers, 1).await;
 
@@ -434,7 +448,7 @@ async fn condition_false_blocks_null_passes() {
     let Some(iii) = engine::connect_fresh().await else {
         return;
     };
-    let boot = iii_state::boot::start(iii.clone(), StateConfig::default())
+    let boot = iii_state::boot::start(iii.clone(), in_memory_config())
         .await
         .expect("state worker should boot");
 
@@ -483,19 +497,17 @@ async fn condition_false_blocks_null_passes() {
         );
     }
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: iii_state::TRIGGER_TYPE.to_string(),
-        function_id: "e2e::backend_false".to_string(),
-        config: json!({"scope": scope, "condition_function_id": "e2e::cond_false"}),
-        metadata: None,
-    })
+    iii.register_trigger(RegisterTriggerInput::new(
+        iii_state::TRIGGER_TYPE.to_string(),
+        "e2e::backend_false".to_string(),
+        json!({"scope": scope, "condition_function_id": "e2e::cond_false"}),
+    ))
     .expect("register false-condition trigger");
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: iii_state::TRIGGER_TYPE.to_string(),
-        function_id: "e2e::backend_null".to_string(),
-        config: json!({"scope": scope, "condition_function_id": "e2e::cond_null"}),
-        metadata: None,
-    })
+    iii.register_trigger(RegisterTriggerInput::new(
+        iii_state::TRIGGER_TYPE.to_string(),
+        "e2e::backend_null".to_string(),
+        json!({"scope": scope, "condition_function_id": "e2e::cond_null"}),
+    ))
     .expect("register null-condition trigger");
     wait_for_trigger_count(&boot.triggers, 2).await;
 
@@ -524,7 +536,7 @@ async fn max_value_bytes_rejects_oversized_set() {
     let Some(iii) = engine::connect_fresh().await else {
         return;
     };
-    let boot = iii_state::boot::start(iii.clone(), StateConfig::default())
+    let boot = iii_state::boot::start(iii.clone(), in_memory_config())
         .await
         .expect("state worker should boot");
 
@@ -550,12 +562,11 @@ async fn max_value_bytes_rejects_oversized_set() {
             }
         }),
     );
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: iii_state::TRIGGER_TYPE.to_string(),
-        function_id: "e2e::on_state_cfg".to_string(),
-        config: json!({"scope": scope}),
-        metadata: None,
-    })
+    iii.register_trigger(RegisterTriggerInput::new(
+        iii_state::TRIGGER_TYPE.to_string(),
+        "e2e::on_state_cfg".to_string(),
+        json!({"scope": scope}),
+    ))
     .expect("register state trigger");
     wait_for_trigger_count(&boot.triggers, 1).await;
 
@@ -564,7 +575,7 @@ async fn max_value_bytes_rejects_oversized_set() {
     call(
         &iii,
         "configuration::set",
-        json!({"id": configuration::CONFIG_ID, "value": {"max_value_bytes": 10}}),
+        json!({"id": configuration::config_id(), "value": {"max_value_bytes": 10}}),
     )
     .await
     .expect("configuration::set max_value_bytes");
@@ -606,7 +617,7 @@ async fn max_value_bytes_rejects_oversized_set() {
     call(
         &iii,
         "configuration::set",
-        json!({"id": configuration::CONFIG_ID, "value": {"triggers_enabled": false}}),
+        json!({"id": configuration::config_id(), "value": {"triggers_enabled": false}}),
     )
     .await
     .expect("configuration::set triggers_enabled=false");
@@ -630,7 +641,7 @@ async fn max_value_bytes_rejects_oversized_set() {
     call(
         &iii,
         "configuration::set",
-        json!({"id": configuration::CONFIG_ID, "value": StateConfig::default().to_json()}),
+        json!({"id": configuration::config_id(), "value": in_memory_config().to_json()}),
     )
     .await
     .expect("restore default configuration");
@@ -659,7 +670,7 @@ async fn claim_namespace_lifecycle() {
     let Some(iii) = engine::connect_fresh_named(&name).await else {
         return;
     };
-    let boot = iii_state::boot::start(iii.clone(), StateConfig::default())
+    let boot = iii_state::boot::start(iii.clone(), in_memory_config())
         .await
         .expect("state worker should boot");
 
@@ -741,12 +752,11 @@ async fn claim_namespace_lifecycle() {
             }
         }),
     );
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: iii_state::TRIGGER_TYPE.to_string(),
-        function_id: "e2e::on_private".to_string(),
-        config: json!({"scope": private_scope}),
-        metadata: None,
-    })
+    iii.register_trigger(RegisterTriggerInput::new(
+        iii_state::TRIGGER_TYPE.to_string(),
+        "e2e::on_private".to_string(),
+        json!({"scope": private_scope}),
+    ))
     .expect("register trigger on the private scope");
     wait_for_trigger_count(&boot.triggers, 1).await;
 
@@ -967,7 +977,7 @@ async fn cas_misses_and_barrier_fan_in_via_bus() {
     let Some(iii) = engine::connect_fresh().await else {
         return;
     };
-    let boot = iii_state::boot::start(iii.clone(), StateConfig::default())
+    let boot = iii_state::boot::start(iii.clone(), in_memory_config())
         .await
         .expect("state worker should boot");
 

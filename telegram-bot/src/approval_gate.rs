@@ -115,15 +115,14 @@ pub fn start_watch(
 
     tokio::spawn(async move {
         for attempt in 1..=5 {
-            match iii.register_trigger(RegisterTriggerInput {
-                trigger_type: "worker".to_string(),
-                function_id: WATCH_FN_ID.to_string(),
-                config: json!({
+            match iii.register_trigger(RegisterTriggerInput::new(
+                "worker".to_string(),
+                WATCH_FN_ID.to_string(),
+                json!({
                     "operations": ["add", "remove"],
                     "stages": ["done"]
                 }),
-                metadata: None,
-            }) {
+            )) {
                 Ok(_) => {
                     tracing::info!("subscribed to worker trigger for approval-gate presence");
                     return;

@@ -8,9 +8,17 @@ import {
   type LexicalEditor,
   type TextNode,
 } from 'lexical'
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { fuzzyFilterSlash, type SlashCommand } from '@/lib/slash-commands'
+import { listSkills } from '@/lib/backend/directory-prompts'
+import { getIiiClient } from '@/lib/iii-client'
+import {
+  fuzzyFilterSlash,
+  mergeSlashEntries,
+  SLASH_COMMANDS,
+  type SlashCommand,
+  setDynamicSlashEntries,
+} from '@/lib/slash-commands'
 import { FlipMenu } from './FlipMenu'
 
 class SlashCommandOption extends MenuOption {
@@ -26,15 +34,26 @@ interface SlashCommandsPluginProps {
   menuOpenRef?: React.RefObject<boolean>
 }
 
-// Anchored at column 0 so `/` mid-sentence ("either/or") doesn't fire.
-const SLASH_PATTERN = /^\/(\w*)$/
+// Anchored at column 0 so `/` mid-sentence ("either/or") doesn't fire. The
+// query is either a plain built-in slug or the `/skill:<id>` form (ids are
+// `/`-separated paths) — a bare second `/`
+// ("/home/…") disarms the palette at once instead of shadowing a typed path.
+const SLASH_PATTERN = /^\/(skill:[\w./-]*|[\w-]*)$/
 
-function slashTriggerFn(text: string, _editor: LexicalEditor) {
+export function slashTriggerFn(text: string, _editor: LexicalEditor) {
   const match = text.match(SLASH_PATTERN)
   if (!match) return null
+  const query = match[1] ?? ''
+  if (
+    !query.startsWith('skill:') &&
+    !SLASH_COMMANDS.some((command) =>
+      command.command.slice(1).startsWith(query),
+    )
+  )
+    return null
   return {
     leadOffset: 0,
-    matchingString: match[1] ?? '',
+    matchingString: query,
     replaceableString: match[0],
   }
 }
@@ -44,12 +63,36 @@ export function SlashCommandsPlugin({
 }: SlashCommandsPluginProps = {}) {
   const [query, setQuery] = useState<string | null>(null)
 
+  /* Directory-backed skills, refetched on EVERY open and published to the
+     module registry that gates submit-time expansion. A failed or absent
+     directory worker degrades to built-ins only. */
+  const [dynamic, setDynamic] = useState<SlashCommand[] | null>(null)
+  const loadingRef = useRef(false)
+  const loadDynamic = useCallback(async () => {
+    if (loadingRef.current) return
+    loadingRef.current = true
+    try {
+      const client = await getIiiClient()
+      const skills = await listSkills(client).catch(() => [])
+      const entries = skills.map((s) => ({
+        command: `/skill:${s.id}`,
+        description: s.description || s.title,
+      }))
+      setDynamic(entries)
+      setDynamicSlashEntries(entries)
+    } catch {
+      /* No client: keep whatever list the last open produced. */
+    } finally {
+      loadingRef.current = false
+    }
+  }, [])
+
   const options = useMemo(
     () =>
-      fuzzyFilterSlash(query ?? '').map(
+      fuzzyFilterSlash(query ?? '', mergeSlashEntries(dynamic ?? [])).map(
         (entry) => new SlashCommandOption(entry),
       ),
-    [query],
+    [query, dynamic],
   )
 
   const onSelectOption = useCallback(
@@ -75,6 +118,7 @@ export function SlashCommandsPlugin({
       onSelectOption={onSelectOption}
       onOpen={() => {
         if (menuOpenRef) menuOpenRef.current = true
+        void loadDynamic()
       }}
       onClose={() => {
         if (menuOpenRef) menuOpenRef.current = false

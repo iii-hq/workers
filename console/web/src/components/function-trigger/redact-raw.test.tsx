@@ -1,0 +1,462 @@
+/**
+ * `redactRaw` — an injected renderer's declaration of what the card's RAW
+ * exits may show (types/injectable-ui.ts).
+ *
+ * The card always mounts a `raw json` tab rendering `message.input` /
+ * `message.output`, with a copy button beside each pane, so a renderer that
+ * redacts a capability inside its own card has NOT contained it. Both exits
+ * are pinned here: what the panes render (server-rendered HTML) and what the
+ * copy button copies (`paneCopyText` — the single derivation `ValuePane`
+ * hands `PaneShell`; console/web has no DOM in unit tests, so the clipboard
+ * is pinned at that seam rather than by clicking).
+ *
+ * `@/lib/ui-slots` is mocked because `useSyncExternalStore` would hand back
+ * the (always empty) server snapshot under `renderToStaticMarkup`; the
+ * fencing, `rawRedactor` and the panes below it are the real code. `Tabs` is
+ * mocked to a passthrough because Radix renders only the ACTIVE tab — and
+ * the leaking pane is the inactive one.
+ */
+
+import { renderToStaticMarkup } from 'react-dom/server'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { RegisteredRenderer } from '@/lib/ui-slots'
+import type { FunctionTriggerMessage } from '@/types/chat'
+import type { FunctionTriggerRenderer } from '@/types/injectable-ui'
+import { FunctionTriggerCard, paneCopyText } from './FunctionTriggerCard'
+import {
+  firstRendered,
+  functionTriggerRenderers,
+  RAW_REDACTION_FAILED,
+  rawRedactor,
+} from './renderer-registry'
+
+const { injected } = vi.hoisted(() => ({
+  injected: [] as RegisteredRenderer[],
+}))
+
+vi.mock('@/lib/ui-slots', () => ({
+  useExtRenderers: () => injected,
+}))
+
+vi.mock('@/components/ui/Tabs', () => ({
+  Tabs: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
+  TabsList: ({ children }: { children?: React.ReactNode }) => (
+    <div>{children}</div>
+  ),
+  TabsTrigger: ({ children }: { children?: React.ReactNode }) => (
+    <button type="button">{children}</button>
+  ),
+  TabsContent: ({ children }: { children?: React.ReactNode }) => (
+    <div>{children}</div>
+  ),
+}))
+
+const SECRET = 'rt-3f9a2c1e-7b64-4d0a-9c11-5e8ab2d4f077'
+const MASKED = 'rt-3f9a…'
+const FN = 'sandbox-code-runner::run'
+
+/** A worker-shaped redactor: every string, object keys included. */
+function maskDeep(value: unknown): unknown {
+  if (typeof value === 'string') return value.replaceAll(SECRET, MASKED)
+  if (value === null || typeof value !== 'object') return value
+  if (Array.isArray(value)) return value.map(maskDeep)
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([k, v]) => [
+      maskDeep(k),
+      maskDeep(v),
+    ]),
+  )
+}
+
+function register(renderer: Partial<FunctionTriggerRenderer>) {
+  injected.push({
+    scope: 'sandbox-code-runner',
+    path: 'sandbox-code-runner/page.js',
+    renderer: {
+      id: 'sandbox-code-runner/page.js#test',
+      isMatch: (functionId) => functionId === FN,
+      tryRender: () => null,
+      ...renderer,
+    },
+  })
+}
+
+function message(
+  extra: Partial<FunctionTriggerMessage> = {},
+): FunctionTriggerMessage {
+  return {
+    id: 'm1',
+    role: 'function-trigger',
+    functionId: FN,
+    createdAt: 0,
+    input: { runtime_id: SECRET, code: `// ran in ${SECRET}` },
+    output: { registered: [`sandbox-code-runner::${SECRET}::foo`] },
+    durationMs: 12,
+    ...extra,
+  }
+}
+
+function html(extra: Partial<FunctionTriggerMessage> = {}): string {
+  return renderToStaticMarkup(
+    <FunctionTriggerCard message={message(extra)} defaultOpen />,
+  )
+}
+
+function collapsedHtml(extra: Partial<FunctionTriggerMessage> = {}): string {
+  return renderToStaticMarkup(<FunctionTriggerCard message={message(extra)} />)
+}
+
+/**
+ * What the card's two copy buttons would put on the clipboard: the same
+ * resolution the card does (`rawRedactor` over the live dispatch list), then
+ * the pane's own copy-text derivation.
+ */
+function copyTexts(extra: Partial<FunctionTriggerMessage> = {}): string[] {
+  const m = message(extra)
+  const redact = rawRedactor(functionTriggerRenderers(injected), m.functionId)
+  return [m.input, m.output].map((v) => paneCopyText(redact ? redact(v) : v))
+}
+
+beforeEach(() => {
+  injected.length = 0
+})
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
+describe('compact activity presentation', () => {
+  it('keeps a function marker visible and moves the disclosure chevron outside', () => {
+    const out = collapsedHtml({ description: 'Updating project files' })
+
+    expect(out).toContain('data-timeline-activity-kind="function"')
+    expect(out).toContain('>ƒ</div>')
+    expect(out).toContain('lucide-chevron-right')
+    expect(out).toContain('left-full')
+    expect(out.indexOf('lucide-check')).toBeLessThan(
+      out.indexOf('data-timeline-activity-kind="function"'),
+    )
+  })
+
+  it('uses the muted foreground token for the agent description', () => {
+    expect(collapsedHtml({ description: 'Updating project files' })).toContain(
+      'text-muted-foreground',
+    )
+  })
+
+  it('shimmers the running description beside a loading indicator', () => {
+    const out = collapsedHtml({
+      description: 'Updating project files',
+      running: true,
+      output: undefined,
+      durationMs: undefined,
+    })
+
+    expect(out).toContain('text-trigger-running')
+    expect(out).toContain('function-trigger-shimmer')
+    expect(out).toContain('animate-spin')
+    expect(out).toContain('stroke-trigger-running')
+    expect(out).not.toContain('triggering ')
+  })
+
+  it('shows an incrementally resolved function id without the generic fallback', () => {
+    const out = collapsedHtml({
+      functionId: 'state::se',
+      input: { _streaming: '{"function":"state::se' },
+      running: true,
+      unresolvedTarget: false,
+      output: undefined,
+      durationMs: undefined,
+    })
+
+    expect(out).toContain('state::se')
+    expect(out).not.toContain('triggering ')
+  })
+})
+
+describe('a renderer that declares redactRaw', () => {
+  beforeEach(() => {
+    register({ redactRaw: maskDeep })
+  })
+
+  it('redacts both panes of the default (no custom terminal) card', () => {
+    const out = html()
+    expect(out).not.toContain(SECRET)
+    expect(out).toContain(MASKED)
+  })
+
+  it('redacts both panes of the raw json tab behind a custom terminal', () => {
+    injected.length = 0
+    // A card that renders none of the payload: the raw tab is exactly the
+    // exposure this test exists for.
+    register({
+      redactRaw: maskDeep,
+      tryRender: () => <span>custom terminal</span>,
+    })
+    const out = html()
+    expect(out).toContain('custom terminal')
+    expect(out).toContain('Raw JSON')
+    expect(out).not.toContain(SECRET)
+    expect(out).toContain(MASKED)
+  })
+
+  it('redacts the in-flight response pane and the streaming args tail', () => {
+    expect(html({ running: true })).not.toContain(SECRET)
+    const streaming = html({
+      running: true,
+      output: undefined,
+      input: { _streaming: `{"runtime_id":"${SECRET}"` },
+    })
+    expect(streaming).not.toContain(SECRET)
+    expect(streaming).toContain(MASKED)
+  })
+
+  it('redacts the pending-approval request pane', () => {
+    const out = html({
+      pendingApproval: true,
+      output: undefined,
+      durationMs: undefined,
+    })
+    expect(out).not.toContain(SECRET)
+    expect(out).toContain(MASKED)
+  })
+
+  it('redacts what the copy buttons copy', () => {
+    const copied = copyTexts()
+    expect(copied).toHaveLength(2)
+    for (const text of copied) {
+      expect(text).not.toContain(SECRET)
+      expect(text).toContain(MASKED)
+    }
+  })
+
+  it('redacts the copy of a result envelope, whose copy text is the whole value', () => {
+    const [, response] = copyTexts({
+      output: {
+        content: [{ type: 'text', text: `ran in ${SECRET}` }],
+        details: { runtime_id: SECRET },
+      },
+    })
+    expect(response).not.toContain(SECRET)
+    expect(response).toContain(MASKED)
+  })
+})
+
+describe('without a matching redactRaw', () => {
+  // These are the positive controls: they prove the payload's secret reaches
+  // the HTML (and the clipboard) verbatim through the very same code path,
+  // so the `not.toContain` assertions above are not vacuous.
+  it('leaves the raw panes untouched when the renderer declares none', () => {
+    register({})
+    expect(html()).toContain(SECRET)
+    expect(copyTexts()[0]).toContain(SECRET)
+  })
+
+  it('leaves a message the renderer does not claim untouched', () => {
+    register({ redactRaw: maskDeep })
+    expect(html({ functionId: 'shell::run' })).toContain(SECRET)
+  })
+
+  it('is untouched when nothing is injected at all', () => {
+    expect(html()).toContain(SECRET)
+  })
+})
+
+describe('a throwing redactRaw', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    register({
+      redactRaw: () => {
+        throw new Error('boom')
+      },
+    })
+  })
+
+  it('fails closed: the placeholder renders, never the raw value', () => {
+    const out = html()
+    expect(out).not.toContain(SECRET)
+    expect(out).toContain('redaction failed')
+  })
+
+  it('fails closed on the copy path too', () => {
+    for (const text of copyTexts()) {
+      expect(text).not.toContain(SECRET)
+      expect(text).toBe(RAW_REDACTION_FAILED)
+    }
+  })
+})
+
+describe('rawRedactor', () => {
+  it('picks the first renderer that both claims the id and declares redactRaw', () => {
+    const renderers: FunctionTriggerRenderer[] = [
+      { id: 'a', isMatch: () => true, tryRender: () => null },
+      {
+        id: 'b',
+        isMatch: (f) => f === FN,
+        tryRender: () => null,
+        redactRaw: () => 'b',
+      },
+      {
+        id: 'c',
+        isMatch: () => true,
+        tryRender: () => null,
+        redactRaw: () => 'c',
+      },
+    ]
+    expect(rawRedactor(renderers, FN)?.({})).toBe('b')
+    expect(rawRedactor(renderers, 'other::fn')?.({})).toBe('c')
+    expect(rawRedactor(renderers.slice(0, 1), FN)).toBeUndefined()
+  })
+})
+
+describe('injected renderer dispatch', () => {
+  it('does not call render methods when isMatch rejects the function id', () => {
+    const tryRender = vi.fn(() => <span>wrong settled renderer</span>)
+    const tryRenderRunning = vi.fn(() => <span>wrong running renderer</span>)
+    const tryRenderPreview = vi.fn(() => <span>wrong preview renderer</span>)
+    const tryRenderDisplay = vi.fn(() => <span>wrong display renderer</span>)
+    register({
+      isMatch: () => false,
+      tryRender,
+      tryRenderRunning,
+      tryRenderPreview,
+      tryRenderDisplay,
+    })
+    const [renderer] = functionTriggerRenderers(injected)
+    const m = message({ functionId: 'coder::tree' })
+
+    expect(renderer.tryRender(m)).toBeNull()
+    expect(renderer.tryRenderRunning?.(m)).toBeNull()
+    expect(renderer.tryRenderPreview?.(m)).toBeNull()
+    expect(renderer.tryRenderDisplay?.(m)).toBeNull()
+    expect(tryRender).not.toHaveBeenCalled()
+    expect(tryRenderRunning).not.toHaveBeenCalled()
+    expect(tryRenderPreview).not.toHaveBeenCalled()
+    expect(tryRenderDisplay).not.toHaveBeenCalled()
+  })
+
+  it('falls through a non-matching renderer to the matching owner', () => {
+    const wrong = vi.fn(() => <span>wrong renderer</span>)
+    const right = vi.fn(() => <span>right renderer</span>)
+    register({
+      id: 'shell/page.js#agent-run',
+      isMatch: () => false,
+      tryRender: wrong,
+      metadata: { display: true },
+    })
+    register({
+      id: 'worker/page.js#coder',
+      isMatch: (functionId) => functionId === 'coder::tree',
+      tryRender: right,
+    })
+    const m = message({ functionId: 'coder::tree' })
+    const rendered = firstRendered(functionTriggerRenderers(injected), (r) =>
+      r.tryRender(m),
+    )
+
+    expect(rendered?.renderer.id).toBe('worker/page.js#coder')
+    expect(wrong).not.toHaveBeenCalled()
+    expect(right).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the first-party function view when an earlier display renderer does not match', () => {
+    const NullView = () => null
+    const accidental = vi.fn(() => <NullView />)
+    register({
+      id: 'shell/page.js#agent-run',
+      isMatch: () => false,
+      tryRender: accidental,
+      metadata: { display: true },
+    })
+
+    const out = html({
+      functionId: 'coder::tree',
+      input: { path: '.' },
+      output: {
+        path: '/workspace/project',
+        root: {
+          name: 'project',
+          kind: 'dir',
+          size: 0,
+          mtime: 1_760_000_000,
+          children: [
+            {
+              name: 'README.md',
+              kind: 'file',
+              size: 128,
+              mtime: 1_760_000_000,
+            },
+          ],
+        },
+      },
+    })
+
+    expect(accidental).not.toHaveBeenCalled()
+    expect(out).toContain('/workspace/project')
+    expect(out).toContain('README.md')
+  })
+})
+
+describe('agent activity and prominent injected content', () => {
+  it('uses the short description as the collapsed activity label', () => {
+    const out = collapsedHtml({ description: 'Updating project files' })
+    expect(out).toContain('Updating project files')
+    expect(out).not.toContain('triggered ')
+    expect(out).toContain('data-expanded="false"')
+    expect(out).toContain('bg-transparent')
+    expect(out).not.toContain('fcall-chrome')
+  })
+
+  it('restores the raised card surface when the activity is expanded', () => {
+    const out = html({ description: 'Updating project files' })
+    expect(out).toContain('data-expanded="true"')
+    expect(out).toContain('fcall-chrome')
+    expect(out).toContain('rounded-md')
+  })
+
+  it('reveals the concrete function identity inside the expanded details', () => {
+    const out = html({ description: 'Updating project files' })
+    expect(out).toContain('copy function id')
+    expect(out).toContain('sandbox-code-runner::')
+  })
+
+  it('shows display-marked renderer content while details stay collapsed', () => {
+    register({
+      metadata: { display: true },
+      tryRender: () => <div>worker-owned artifact</div>,
+    })
+    const out = collapsedHtml({ description: 'Updating project files' })
+    expect(out).toContain('worker-owned artifact')
+    expect(out).not.toContain('raw json')
+  })
+
+  it('keeps the display surface mounted while its details expand underneath', () => {
+    register({
+      metadata: { display: true, displayAction: 'expand' },
+      tryRender: () => <div>full trigger details</div>,
+      tryRenderDisplay: () => <div>trigger registered summary</div>,
+    })
+
+    const closed = collapsedHtml({ description: 'Registering a trigger' })
+    expect(closed).toContain('trigger registered summary')
+    expect(closed).toContain('full trigger details')
+    expect(closed).toContain('Show details for sandbox-code-runner::run')
+    expect(closed).toContain('aria-expanded="false"')
+    expect(closed).toContain('aria-hidden="true"')
+    expect(closed).not.toContain('fcall-chrome')
+
+    const expanded = html({ description: 'Registering a trigger' })
+    expect(expanded).toContain('full trigger details')
+    expect(expanded).toContain('trigger registered summary')
+    expect(expanded).toContain('Hide details for sandbox-code-runner::run')
+    expect(expanded).toContain('aria-expanded="true"')
+    expect(expanded).not.toContain('fcall-chrome')
+  })
+
+  it('hides an unmarked renderer when collapsed but uses it when expanded', () => {
+    register({ tryRender: () => <div>compact terminal</div> })
+    const message = { description: 'Running a compact action' }
+
+    expect(collapsedHtml(message)).not.toContain('compact terminal')
+    expect(html(message)).toContain('compact terminal')
+  })
+})

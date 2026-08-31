@@ -9,24 +9,25 @@ interface InputProps
   value: string
   onChange: (next: string) => void
   /**
-   * Opt out of the default `lowercase` text-transform. Use for fields that
-   * carry verbatim user input (API keys, URLs with mixed case) where visual
-   * lowercasing would mislead even though the underlying value is preserved.
+   * @deprecated Inputs now preserve the entered case by default. Retained so
+   * older injected UIs keep compiling while they remove the prop.
    */
   preserveCase?: boolean
 }
 
 export const Input = React.forwardRef<HTMLInputElement, InputProps>(
-  ({ className, value, onChange, preserveCase, ...rest }, ref) => (
+  (
+    { className, value, onChange, preserveCase: _preserveCase, ...rest },
+    ref,
+  ) => (
     <input
       ref={ref}
       value={value}
       onChange={(e) => onChange(e.currentTarget.value)}
       className={cn(
-        'w-full border border-rule bg-bg px-3 h-9 text-ink font-mono text-[13px]',
-        !preserveCase && 'lowercase',
-        'placeholder:text-ink-faint',
-        'focus:outline-none focus:border-ink transition-colors',
+        'h-9 w-full rounded-sm border border-transparent bg-surface px-3 font-sans text-[13px] text-ink',
+        'placeholder:text-ink-ghost',
+        'hover:bg-surface-hover focus:outline-none focus:border-rule-focus focus:ring-[3px] focus:ring-accent/10 transition-[border-color,box-shadow,background-color]',
         'disabled:opacity-40 disabled:pointer-events-none',
         className,
       )}

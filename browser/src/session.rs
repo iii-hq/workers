@@ -5,14 +5,16 @@
 //! the live feed the console UI subscribes to.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use chromiumoxide::browser::{Browser, BrowserConfig};
+use chromiumoxide::cdp::browser_protocol::browser as cdp_browser;
 use chromiumoxide::cdp::browser_protocol::dom;
+use chromiumoxide::cdp::browser_protocol::fetch as cdp_fetch;
 use chromiumoxide::cdp::browser_protocol::log as cdp_log;
 use chromiumoxide::cdp::browser_protocol::network as cdp_network;
 use chromiumoxide::cdp::js_protocol::runtime;
@@ -21,10 +23,12 @@ use futures::StreamExt;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::config::{SharedConfig, WorkerConfig};
+use crate::config::{
+    origin_label, origin_policy_config_key_for, origin_policy_for, SharedConfig, WorkerConfig,
+};
 use crate::events::{
-    Bounds, ConsoleEventPayload, Emitter, EventKind, NavigatedEvent, PickedElement, PickedEvent,
-    SessionStoppedEvent,
+    Bounds, ConsoleEventPayload, DownloadChangedEvent, Emitter, EventKind, NavigatedEvent,
+    PickedElement, PickedEvent, SessionStoppedEvent,
 };
 
 /// Truncation caps for values that end up in ring buffers and event
@@ -42,6 +46,32 @@ pub fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+fn temp_nonce() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0)
+}
+
+fn create_private_temp_dir(
+    prefix: &str,
+    owner: &str,
+    nonce: u128,
+) -> std::io::Result<std::path::PathBuf> {
+    let path = std::env::temp_dir().join(format!(
+        "{prefix}-{}-{owner}-{nonce:032x}",
+        std::process::id()
+    ));
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(&path)?;
+    Ok(path)
 }
 
 pub fn truncate(s: &str, max: usize) -> String {
@@ -114,6 +144,51 @@ pub struct NetworkEntry {
     pub failed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+/// One entry in a session's navigation history.
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+pub struct HistoryVisit {
+    pub url: String,
+    pub title: String,
+    pub timestamp: i64,
+}
+
+/// How many navigations a session keeps for the history panel.
+const HISTORY_CAP: usize = 200;
+
+/// How many downloads a session keeps; the oldest record and its file are
+/// dropped past this, like the other per-session buffers.
+const DOWNLOADS_CAP: usize = 100;
+
+/// How many upload staging directories a session retains while the page may
+/// still read their files.
+const UPLOAD_DIRS_CAP: usize = 16;
+
+fn remove_oldest_upload_dir(upload_dirs: &mut Vec<std::path::PathBuf>) -> Result<(), String> {
+    let Some(oldest) = upload_dirs.first() else {
+        return Ok(());
+    };
+    match std::fs::remove_dir_all(oldest) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("remove oldest upload staging dir failed: {error}")),
+    }
+    upload_dirs.remove(0);
+    Ok(())
+}
+
+/// A download Chromium started, tracked by its CDP guid.
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+pub struct DownloadRecord {
+    pub guid: String,
+    pub file_name: String,
+    pub url: String,
+    /// `in_progress`, `completed`, or `canceled`.
+    pub state: String,
+    pub received_bytes: u64,
+    pub total_bytes: u64,
+    pub started_ms: i64,
 }
 
 pub struct RingBuffer<T> {
@@ -275,8 +350,12 @@ pub struct Session {
     /// Viewport captured at launch. Config viewport is a session-start
     /// setting (a running session keeps the browser it launched with), so
     /// per-call consumers read these fields, not the live config.
-    pub viewport_width: u32,
-    pub viewport_height: u32,
+    /// The live viewport the session renders at. Set at launch, then tracked
+    /// to the console pane's size by browser::resize (or overridden by the
+    /// device toolbar), so the streamed frame fills the pane with no
+    /// letterboxing and click coordinates map 1:1.
+    pub viewport_width: AtomicU32,
+    pub viewport_height: AtomicU32,
     pub created_ms: i64,
     /// Temp profile dir removed on shutdown. None in persistent
     /// `user_data_dir` mode.
@@ -317,6 +396,23 @@ pub struct Session {
     /// Cross-call state for `browser::execute`; lives until the session
     /// stops.
     pub exec_state: Mutex<serde_json::Value>,
+    /// Serializes explicit navigation, execute, and file-input attachment.
+    pub navigation_lock: tokio::sync::Mutex<()>,
+    /// Loud policy denial captured by the session navigation gate for the
+    /// explicit navigation or execute call currently holding the lock.
+    navigation_error: Mutex<Option<String>>,
+    /// Committed top-document navigations, newest last, for the history
+    /// panel and address-bar suggestions. Capped like the other buffers.
+    pub history: Mutex<Vec<HistoryVisit>>,
+    /// Downloads Chromium started in this session, by CDP guid. None for
+    /// attached sessions, where the worker does not own the download policy.
+    pub downloads: Mutex<Vec<DownloadRecord>>,
+    /// Where `allowAndName` writes files (named by guid); removed on stop.
+    pub downloads_dir: Option<std::path::PathBuf>,
+    /// File-input staging directories retained while Chromium may still read
+    /// their paths, then removed on stop.
+    upload_dirs: Mutex<Vec<std::path::PathBuf>>,
+    upload_counter: AtomicU64,
     pick_counter: AtomicU64,
     tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
@@ -326,8 +422,135 @@ impl Session {
         self.last_used_ms.store(now_ms() as u64, Ordering::Relaxed);
     }
 
+    pub fn clear_navigation_error(&self) {
+        *self
+            .navigation_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+
+    pub fn record_navigation_error(&self, error: String) {
+        let mut slot = self
+            .navigation_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if slot.is_none() {
+            *slot = Some(error);
+        }
+    }
+
+    pub fn take_navigation_error(&self) -> Option<String> {
+        self.navigation_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+    }
+
+    pub fn viewport(&self) -> (u32, u32) {
+        (
+            self.viewport_width.load(Ordering::Relaxed),
+            self.viewport_height.load(Ordering::Relaxed),
+        )
+    }
+
+    pub fn set_viewport(&self, width: u32, height: u32) {
+        self.viewport_width.store(width, Ordering::Relaxed);
+        self.viewport_height.store(height, Ordering::Relaxed);
+    }
+
     pub fn last_used_ms(&self) -> i64 {
         self.last_used_ms.load(Ordering::Relaxed) as i64
+    }
+
+    /// Record a committed navigation. Consecutive visits to the same URL
+    /// collapse (a reload is not a new entry); the buffer is capped.
+    pub fn record_visit(&self, url: &str, title: &str) {
+        if url.is_empty() || url == "about:blank" {
+            return;
+        }
+        let mut history = self.history.lock().unwrap_or_else(|p| p.into_inner());
+        if history.last().is_some_and(|last| last.url == url) {
+            if let Some(last) = history.last_mut() {
+                if !title.is_empty() {
+                    last.title = title.to_string();
+                }
+                last.timestamp = now_ms();
+            }
+            return;
+        }
+        history.push(HistoryVisit {
+            url: url.to_string(),
+            title: title.to_string(),
+            timestamp: now_ms(),
+        });
+        let len = history.len();
+        if len > HISTORY_CAP {
+            history.drain(0..len - HISTORY_CAP);
+        }
+    }
+
+    /// Note a download beginning; later progress updates it by guid.
+    pub fn download_begin(&self, guid: &str, file_name: &str, url: &str) {
+        let mut downloads = self.downloads.lock().unwrap_or_else(|p| p.into_inner());
+        if downloads.iter().any(|d| d.guid == guid) {
+            return;
+        }
+        downloads.push(DownloadRecord {
+            guid: guid.to_string(),
+            file_name: file_name.to_string(),
+            url: url.to_string(),
+            state: "in_progress".to_string(),
+            received_bytes: 0,
+            total_bytes: 0,
+            started_ms: now_ms(),
+        });
+        if downloads.len() > DOWNLOADS_CAP {
+            let overflow = downloads.len() - DOWNLOADS_CAP;
+            let evicted: Vec<DownloadRecord> = downloads.drain(0..overflow).collect();
+            if let Some(dir) = &self.downloads_dir {
+                for record in evicted {
+                    let _ = std::fs::remove_file(dir.join(&record.guid));
+                }
+            }
+        }
+    }
+
+    /// Update a download's progress and state by guid.
+    pub fn download_progress(&self, guid: &str, received: u64, total: u64, state: &str) -> bool {
+        let mut downloads = self.downloads.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(record) = downloads.iter_mut().find(|d| d.guid == guid) {
+            record.received_bytes = received;
+            record.total_bytes = total.max(received);
+            record.state = state.to_string();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn remove_download_file(&self, guid: &str) {
+        if guid.contains(['/', '\\']) || guid.contains("..") {
+            return;
+        }
+        if let Some(dir) = &self.downloads_dir {
+            let _ = std::fs::remove_file(dir.join(guid));
+        }
+    }
+
+    pub fn create_upload_dir(&self) -> Result<std::path::PathBuf, String> {
+        let mut upload_dirs = self
+            .upload_dirs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if upload_dirs.len() >= UPLOAD_DIRS_CAP {
+            remove_oldest_upload_dir(&mut upload_dirs)?;
+        }
+        let sequence = self.upload_counter.fetch_add(1, Ordering::Relaxed) + 1;
+        let owner = format!("{}-{sequence}", self.id);
+        let path = create_private_temp_dir("iii-browser-upload", &owner, temp_nonce())
+            .map_err(|error| format!("create upload staging dir failed: {error}"))?;
+        upload_dirs.push(path.clone());
+        Ok(path)
     }
 
     pub fn next_seq(&self) -> u64 {
@@ -462,6 +685,9 @@ impl Session {
                 if let Some(dir) = &self.ephemeral_profile {
                     let _ = std::fs::remove_dir_all(dir);
                 }
+                if let Some(dir) = &self.downloads_dir {
+                    let _ = std::fs::remove_dir_all(dir);
+                }
             }
             SessionKind::Attached { owns_page } => {
                 if owns_page {
@@ -470,6 +696,14 @@ impl Session {
                     }
                 }
             }
+        }
+        for dir in self
+            .upload_dirs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .drain(..)
+        {
+            let _ = std::fs::remove_dir_all(dir);
         }
     }
 }
@@ -559,6 +793,7 @@ impl Sessions {
         };
         let slot = self.counter.fetch_add(1, Ordering::Relaxed) + 1;
         let (browser_config, ephemeral_profile) = build_browser_config(&cfg, headless, slot)?;
+        let origin_gate_enabled = origin_gate_configured(&cfg);
 
         let (browser, mut handler) = Browser::launch(browser_config)
             .await
@@ -572,10 +807,12 @@ impl Sessions {
             }
         });
 
-        let page = match browser
-            .new_page(url.as_deref().unwrap_or("about:blank"))
-            .await
-        {
+        let initial_url = if origin_gate_enabled {
+            "about:blank"
+        } else {
+            url.as_deref().unwrap_or("about:blank")
+        };
+        let page = match browser.new_page(initial_url).await {
             Ok(p) => p,
             Err(e) => {
                 handler_task.abort();
@@ -589,6 +826,24 @@ impl Sessions {
         let _ = page.execute(cdp_log::EnableParams::default()).await;
         let _ = page.execute(cdp_network::EnableParams::default()).await;
 
+        // Let the session download files, named by guid into a per-session
+        // dir the worker owns, with progress events. Best-effort: a browser
+        // that refuses leaves downloads disabled, not the session broken.
+        // The dir name carries a nonce so it cannot be squatted in advance,
+        // and it is created fresh, owner-only, refusing a pre-existing path.
+        let downloads_dir =
+            create_private_temp_dir("iii-browser-dl", &slot.to_string(), temp_nonce()).ok();
+        if let Some(downloads_dir) = &downloads_dir {
+            if let Ok(params) = cdp_browser::SetDownloadBehaviorParams::builder()
+                .behavior(cdp_browser::SetDownloadBehaviorBehavior::AllowAndName)
+                .download_path(downloads_dir.to_string_lossy().to_string())
+                .events_enabled(true)
+                .build()
+            {
+                let _ = page.execute(params).await;
+            }
+        }
+
         let id = format!("b{slot}");
         let now = now_ms();
         let session = Arc::new(Session {
@@ -596,8 +851,8 @@ impl Sessions {
             headless,
             kind: SessionKind::Launched,
             read_only,
-            viewport_width: cfg.viewport_width,
-            viewport_height: cfg.viewport_height,
+            viewport_width: AtomicU32::new(cfg.viewport_width),
+            viewport_height: AtomicU32::new(cfg.viewport_height),
             created_ms: now,
             ephemeral_profile,
             latest_frame: Mutex::new(None),
@@ -615,16 +870,46 @@ impl Sessions {
             generation: AtomicU64::new(1),
             snapshot_keys: Mutex::new(None),
             exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),
+            navigation_lock: tokio::sync::Mutex::new(()),
+            navigation_error: Mutex::new(None),
+            history: Mutex::new(Vec::new()),
+            downloads: Mutex::new(Vec::new()),
+            downloads_dir,
+            upload_dirs: Mutex::new(Vec::new()),
+            upload_counter: AtomicU64::new(0),
             pick_counter: AtomicU64::new(0),
             tasks: Mutex::new(vec![handler_task]),
         });
 
-        let pumps = spawn_event_pumps(self.clone(), session.clone()).await;
+        let pumps =
+            match spawn_event_pumps(self.clone(), session.clone(), origin_gate_enabled).await {
+                Ok(pumps) => pumps,
+                Err(error) => {
+                    session.shutdown().await;
+                    return Err(error);
+                }
+            };
         session
             .tasks
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .extend(pumps);
+
+        if origin_gate_enabled {
+            if let Some(url) = url.as_deref() {
+                session.clear_navigation_error();
+                let navigation = session.page.goto(url).await;
+                let policy_error = session.take_navigation_error();
+                if let Some(error) = policy_error {
+                    session.shutdown().await;
+                    return Err(error);
+                }
+                if let Err(error) = navigation {
+                    session.shutdown().await;
+                    return Err(format!("failed to open page: {error}"));
+                }
+            }
+        }
 
         self.lock().insert(id, session.clone());
         Ok(session)
@@ -649,6 +934,7 @@ impl Sessions {
                 cfg.max_sessions
             ));
         }
+        let origin_gate_enabled = origin_gate_configured(&cfg);
 
         let (browser, mut handler) = Browser::connect(cdp_url.clone())
             .await
@@ -667,7 +953,11 @@ impl Sessions {
                 Err(e) => Err(e),
             },
             None => browser
-                .new_page(url.as_deref().unwrap_or("about:blank"))
+                .new_page(if origin_gate_enabled {
+                    "about:blank"
+                } else {
+                    url.as_deref().unwrap_or("about:blank")
+                })
                 .await
                 .map(|p| (p, true))
                 .map_err(|e| format!("failed to open tab: {e}")),
@@ -691,8 +981,8 @@ impl Sessions {
             headless: false,
             kind: SessionKind::Attached { owns_page },
             read_only,
-            viewport_width: cfg.viewport_width,
-            viewport_height: cfg.viewport_height,
+            viewport_width: AtomicU32::new(cfg.viewport_width),
+            viewport_height: AtomicU32::new(cfg.viewport_height),
             created_ms: now,
             ephemeral_profile: None,
             latest_frame: Mutex::new(None),
@@ -710,16 +1000,47 @@ impl Sessions {
             generation: AtomicU64::new(1),
             snapshot_keys: Mutex::new(None),
             exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),
+            navigation_lock: tokio::sync::Mutex::new(()),
+            navigation_error: Mutex::new(None),
+            history: Mutex::new(Vec::new()),
+            downloads: Mutex::new(Vec::new()),
+            downloads_dir: None,
+            upload_dirs: Mutex::new(Vec::new()),
+            upload_counter: AtomicU64::new(0),
             pick_counter: AtomicU64::new(0),
             tasks: Mutex::new(vec![handler_task]),
         });
 
-        let pumps = spawn_event_pumps(self.clone(), session.clone()).await;
+        let pumps =
+            match spawn_event_pumps(self.clone(), session.clone(), origin_gate_enabled).await {
+                Ok(pumps) => pumps,
+                Err(error) => {
+                    self.release_adopted_page(&session);
+                    session.shutdown().await;
+                    return Err(error);
+                }
+            };
         session
             .tasks
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .extend(pumps);
+
+        if origin_gate_enabled && owns_page {
+            if let Some(url) = url.as_deref() {
+                session.clear_navigation_error();
+                let navigation = session.page.goto(url).await;
+                let policy_error = session.take_navigation_error();
+                if let Some(error) = policy_error {
+                    session.shutdown().await;
+                    return Err(error);
+                }
+                if let Err(error) = navigation {
+                    session.shutdown().await;
+                    return Err(format!("failed to open tab: {error}"));
+                }
+            }
+        }
 
         self.lock().insert(id, session.clone());
         Ok(session)
@@ -807,6 +1128,16 @@ impl Sessions {
         }
     }
 
+    fn release_adopted_page(&self, session: &Session) {
+        if let SessionKind::Attached { owns_page: false } = session.kind {
+            let target = session.page.target_id().as_ref().to_string();
+            self.adopted_targets
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&target);
+        }
+    }
+
     /// Remove + shut down. Returns whether the session was running —
     /// stopping an unknown id succeeds (delete semantics: the caller wants
     /// it gone, and it is).
@@ -814,13 +1145,7 @@ impl Sessions {
         let session = self.lock().remove(id);
         match session {
             Some(session) => {
-                if let SessionKind::Attached { owns_page: false } = session.kind {
-                    let target = session.page.target_id().as_ref().to_string();
-                    self.adopted_targets
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .remove(&target);
-                }
+                self.release_adopted_page(&session);
                 // Drop any handoff parked on this session so its call
                 // unblocks (its receiver errors) instead of waiting for the
                 // full timeout against a dead page.
@@ -1041,6 +1366,33 @@ impl Sessions {
     /// Release a screencast consumer. Stops the Chromium screencast on the
     /// 1->0 transition, leaving it running while any other consumer remains
     /// (so stopping a recording never cuts off a UI viewer). Never underflows.
+    /// Force a fresh screencast frame (e.g. after a viewport resize) without
+    /// racing the acquire/release counter: hold a consumer slot of our own
+    /// while re-issuing StartScreencast, so a real viewer's release cannot
+    /// hit the 1 -> 0 stop transition mid-restart. With no other viewer the
+    /// acquire starts and the release stops the cast; both are the counted
+    /// paths, so the counter and the CDP state stay in step.
+    pub async fn nudge_screencast(&self, session: &Arc<Session>) {
+        if self.acquire_screencast(session).await.is_err() {
+            return;
+        }
+        if session
+            .screencast_consumers
+            .load(std::sync::atomic::Ordering::Relaxed)
+            > 1
+        {
+            use chromiumoxide::cdp::browser_protocol::page as cdp_page;
+            let quality = self.config.load().screenshot_quality as i64;
+            let restart = cdp_page::StartScreencastParams::builder()
+                .format(cdp_page::StartScreencastFormat::Jpeg)
+                .quality(quality)
+                .every_nth_frame(1)
+                .build();
+            let _ = session.page.execute(restart).await;
+        }
+        self.release_screencast(session).await;
+    }
+
     pub async fn release_screencast(&self, session: &Arc<Session>) {
         use chromiumoxide::cdp::browser_protocol::page as cdp_page;
         let prev = session
@@ -1123,7 +1475,7 @@ fn build_browser_config(
         (dir.clone(), Some(dir))
     } else {
         (
-            std::path::PathBuf::from(&cfg.user_data_dir).join(format!("session-{slot}")),
+            iii_worker_paths::resolve_path(&cfg.user_data_dir).join(format!("session-{slot}")),
             None,
         )
     };
@@ -1147,15 +1499,105 @@ fn build_browser_config(
     Ok((builder.build()?, ephemeral))
 }
 
+fn origin_gate_configured(config: &WorkerConfig) -> bool {
+    config.origin_policies.is_some() || config.default_origin_policy.is_some()
+}
+
+fn origin_access_denial(config: &WorkerConfig, url: &str) -> Option<String> {
+    if origin_policy_for(config, url).access {
+        return None;
+    }
+    Some(format!(
+        "origin '{}' is denied by {} (access)",
+        origin_label(url),
+        origin_policy_config_key_for(config, url)
+    ))
+}
+
 /// Arm the per-session CDP event listeners. Each pump owns one event stream,
 /// pushes into the ring buffer, and (console + pick) forwards to trigger
 /// subscribers.
 async fn spawn_event_pumps(
     sessions: Arc<Sessions>,
     session: Arc<Session>,
-) -> Vec<tokio::task::JoinHandle<()>> {
+    origin_gate_enabled: bool,
+) -> Result<Vec<tokio::task::JoinHandle<()>>, String> {
     let mut tasks = Vec::new();
     let page = &session.page;
+
+    if origin_gate_enabled {
+        let main_frame = page
+            .mainframe()
+            .await
+            .map_err(|error| format!("origin policy gate failed to read main frame: {error}"))?
+            .ok_or_else(|| "origin policy gate found no main frame".to_string())?;
+        let mut events = page
+            .event_listener::<cdp_fetch::EventRequestPaused>()
+            .await
+            .map_err(|error| format!("origin policy gate failed to listen: {error}"))?;
+        let document_pattern = cdp_fetch::RequestPattern::builder()
+            .resource_type(cdp_network::ResourceType::Document)
+            .build();
+        page.execute(
+            cdp_fetch::EnableParams::builder()
+                .pattern(document_pattern)
+                .build(),
+        )
+        .await
+        .map_err(|error| format!("origin policy gate failed to enable: {error}"))?;
+
+        let s = session.clone();
+        let sx = sessions.clone();
+        tasks.push(tokio::spawn(async move {
+            while let Some(event) = events.next().await {
+                let is_top_document = event.resource_type == cdp_network::ResourceType::Document
+                    && event.frame_id == main_frame;
+                if !is_top_document {
+                    let _ = s
+                        .page
+                        .execute(cdp_fetch::ContinueRequestParams::new(
+                            event.request_id.clone(),
+                        ))
+                        .await;
+                    continue;
+                }
+
+                let denial = {
+                    let config = sx.config.load();
+                    origin_access_denial(&config, &event.request.url)
+                };
+                if let Some(error) = denial {
+                    s.record_navigation_error(error);
+                    if let Err(command_error) = s
+                        .page
+                        .execute(cdp_fetch::FailRequestParams::new(
+                            event.request_id.clone(),
+                            cdp_network::ErrorReason::BlockedByClient,
+                        ))
+                        .await
+                    {
+                        tracing::warn!(
+                            session_id = %s.id,
+                            error = %command_error,
+                            "origin policy request failure command failed"
+                        );
+                    }
+                } else if let Err(command_error) = s
+                    .page
+                    .execute(cdp_fetch::ContinueRequestParams::new(
+                        event.request_id.clone(),
+                    ))
+                    .await
+                {
+                    tracing::debug!(
+                        session_id = %s.id,
+                        error = %command_error,
+                        "origin policy request continue failed"
+                    );
+                }
+            }
+        }));
+    }
 
     // console.* calls
     if let Ok(mut events) = page
@@ -1334,6 +1776,19 @@ async fn spawn_event_pumps(
                     continue; // subframes don't invalidate top-document refs
                 }
                 s.clear_refs();
+                // A cross-process navigation kills a running screencast with
+                // the old renderer; restart it so the stream never blanks.
+                sx.nudge_screencast(&s).await;
+                // A wedged renderer must not stall the navigation pump on a
+                // title read; after a short wait the visit records untitled.
+                let title =
+                    tokio::time::timeout(std::time::Duration::from_secs(2), s.page.get_title())
+                        .await
+                        .ok()
+                        .and_then(|r| r.ok())
+                        .flatten()
+                        .unwrap_or_default();
+                s.record_visit(&event.frame.url, &title);
                 sx.emitter
                     .emit(
                         EventKind::Navigated,
@@ -1341,6 +1796,44 @@ async fn spawn_event_pumps(
                         &NavigatedEvent {
                             session_id: s.id.clone(),
                             url: event.frame.url.clone(),
+                            timestamp: now_ms(),
+                        },
+                    )
+                    .await;
+            }
+        }));
+    }
+
+    // same-document navigations (hash routes, pushState): single-page apps
+    // move this way, so they count as visits and emit the same event
+    if let Ok(mut events) = page
+        .event_listener::<chromiumoxide::cdp::browser_protocol::page::EventNavigatedWithinDocument>(
+        )
+        .await
+    {
+        let s = session.clone();
+        let sx = sessions.clone();
+        tasks.push(tokio::spawn(async move {
+            while let Some(event) = events.next().await {
+                let main_frame = s.page.mainframe().await.ok().flatten();
+                if main_frame.is_some_and(|id| id != event.frame_id) {
+                    continue;
+                }
+                let title =
+                    tokio::time::timeout(std::time::Duration::from_secs(2), s.page.get_title())
+                        .await
+                        .ok()
+                        .and_then(|r| r.ok())
+                        .flatten()
+                        .unwrap_or_default();
+                s.record_visit(&event.url, &title);
+                sx.emitter
+                    .emit(
+                        EventKind::Navigated,
+                        &s.id,
+                        &NavigatedEvent {
+                            session_id: s.id.clone(),
+                            url: event.url.clone(),
                             timestamp: now_ms(),
                         },
                     )
@@ -1405,7 +1898,82 @@ async fn spawn_event_pumps(
         }));
     }
 
-    tasks
+    // downloads: guid-named files land in the session's download dir; the
+    // begin/progress events feed the downloads panel. Only armed when the
+    // worker owns the download policy.
+    if session.downloads_dir.is_some() {
+        if let Ok(mut events) = page
+            .event_listener::<cdp_browser::EventDownloadWillBegin>()
+            .await
+        {
+            let s = session.clone();
+            let sx = sessions.clone();
+            tasks.push(tokio::spawn(async move {
+                while let Some(event) = events.next().await {
+                    if !origin_policy_for(&sx.config.load(), &event.url).downloads {
+                        let _ = s
+                            .page
+                            .execute(cdp_browser::CancelDownloadParams::new(event.guid.clone()))
+                            .await;
+                        s.remove_download_file(&event.guid);
+                        continue;
+                    }
+                    s.download_begin(&event.guid, &event.suggested_filename, &event.url);
+                    emit_download_changed(&sx, &s).await;
+                }
+            }));
+        }
+        if let Ok(mut events) = page
+            .event_listener::<cdp_browser::EventDownloadProgress>()
+            .await
+        {
+            let s = session.clone();
+            let sx = sessions.clone();
+            tasks.push(tokio::spawn(async move {
+                // Chromium reports progress very often on a fast download;
+                // terminal states always emit, in-flight ones at most every
+                // 250ms so the bus is not flooded.
+                let mut last_emit = std::time::Instant::now() - std::time::Duration::from_secs(1);
+                while let Some(event) = events.next().await {
+                    let state = match event.state {
+                        cdp_browser::DownloadProgressState::InProgress => "in_progress",
+                        cdp_browser::DownloadProgressState::Completed => "completed",
+                        cdp_browser::DownloadProgressState::Canceled => "canceled",
+                    };
+                    let recorded = s.download_progress(
+                        &event.guid,
+                        event.received_bytes as u64,
+                        event.total_bytes as u64,
+                        state,
+                    );
+                    if !recorded {
+                        s.remove_download_file(&event.guid);
+                        continue;
+                    }
+                    if state != "in_progress" || last_emit.elapsed().as_millis() >= 250 {
+                        last_emit = std::time::Instant::now();
+                        emit_download_changed(&sx, &s).await;
+                    }
+                }
+            }));
+        }
+    }
+
+    Ok(tasks)
+}
+
+async fn emit_download_changed(sessions: &Arc<Sessions>, session: &Arc<Session>) {
+    sessions
+        .emitter
+        .emit(
+            EventKind::DownloadChanged,
+            &session.id,
+            &DownloadChangedEvent {
+                session_id: session.id.clone(),
+                timestamp: now_ms(),
+            },
+        )
+        .await;
 }
 
 async fn push_and_emit(sessions: &Arc<Sessions>, session: &Arc<Session>, entry: ConsoleEntry) {
@@ -1713,5 +2281,40 @@ mod tests {
         assert_eq!(b.y, 20.0);
         assert_eq!(b.width, 100.0);
         assert_eq!(b.height, 40.0);
+    }
+
+    #[test]
+    fn private_temp_dir_is_fresh_and_owner_only() {
+        let owner = format!("test-{}", temp_nonce());
+        let nonce = temp_nonce();
+        let path = create_private_temp_dir("iii-browser-dir-test", &owner, nonce).unwrap();
+        assert!(create_private_temp_dir("iii-browser-dir-test", &owner, nonce).is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700);
+        }
+        std::fs::remove_dir(path).unwrap();
+    }
+
+    #[test]
+    fn upload_dir_cap_removes_the_oldest_directory() {
+        let owner = format!("upload-cap-test-{}", temp_nonce());
+        let root = create_private_temp_dir("iii-browser-dir-test", &owner, temp_nonce()).unwrap();
+        let mut upload_dirs = Vec::new();
+        for index in 0..UPLOAD_DIRS_CAP {
+            let path = root.join(index.to_string());
+            std::fs::create_dir(&path).unwrap();
+            upload_dirs.push(path);
+        }
+        let oldest = upload_dirs[0].clone();
+
+        remove_oldest_upload_dir(&mut upload_dirs).unwrap();
+
+        assert_eq!(upload_dirs.len(), UPLOAD_DIRS_CAP - 1);
+        assert!(!oldest.exists());
+        assert_eq!(upload_dirs[0], root.join("1"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

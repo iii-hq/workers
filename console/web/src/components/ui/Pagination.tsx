@@ -28,16 +28,16 @@ export function Pagination({
   return (
     <div
       className={cn(
-        'flex items-center justify-between gap-4 font-mono text-[12px] text-ink-faint lowercase',
+        'flex items-center justify-between gap-4 font-sans text-[12px] text-ink-faint',
         className,
       )}
     >
       <div className="flex items-center gap-2">
-        <span className="uppercase tracking-[0.06em] text-[11px]">show</span>
+        <span className="text-[11px] font-medium">Show</span>
         <select
           value={pageSize}
           onChange={(e) => onPageSizeChange(Number(e.target.value))}
-          className="border border-rule bg-bg text-ink font-mono text-[12px] px-1.5 py-0.5 rounded-none focus:outline-none focus:border-accent"
+          className="rounded-sm border border-transparent bg-surface px-1.5 py-0.5 font-sans text-[12px] text-ink focus:border-rule-focus focus:outline-none"
         >
           {pageSizeOptions.map((opt) => (
             <option key={opt} value={opt}>
@@ -57,9 +57,9 @@ export function Pagination({
           disabled={currentPage <= 1}
           onClick={() => onPageChange(currentPage - 1)}
         >
-          <ChevronLeft className="w-3.5 h-3.5" />
+          <ChevronLeft className="size-4" />
         </Button>
-        <span className="uppercase tracking-[0.06em] text-[11px]">
+        <span className="text-[11px] font-medium">
           page {currentPage} of {totalPages}
         </span>
         <Button
@@ -69,7 +69,7 @@ export function Pagination({
           disabled={currentPage >= totalPages}
           onClick={() => onPageChange(currentPage + 1)}
         >
-          <ChevronRight className="w-3.5 h-3.5" />
+          <ChevronRight className="size-4" />
         </Button>
       </div>
     </div>

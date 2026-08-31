@@ -5,6 +5,11 @@ import {
   StatusPill,
 } from '@/components/chat/sandbox/shared'
 import {
+  ImageThumbnailButton,
+  ImageViewer,
+  useImageViewer,
+} from '@/components/ui/ImageViewer'
+import {
   safeParseRequest,
   safeParseResponse,
   screenshotRequestSchema,
@@ -31,7 +36,7 @@ export function ScreenshotView({
         <MetaRow>
           <StatusPill label="capturing…" variant="default" />
           <Chip>{req.fetcher ?? 'dynamic'}</Chip>
-          {req.full_page ? <Chip>full page</Chip> : null}
+          {req.full_page ? <Chip>Full page</Chip> : null}
         </MetaRow>
         <ActionLine symbol="→" tone="ink">
           <span className="break-all">{req.url}</span>
@@ -62,7 +67,7 @@ export function ScreenshotView({
         <StatusPill label="screenshot" variant="accent" />
         <Chip>{req?.fetcher ?? 'dynamic'}</Chip>
         <Chip>{mime.replace('image/', '')}</Chip>
-        {req?.full_page ? <Chip>full page</Chip> : null}
+        {req?.full_page ? <Chip>Full page</Chip> : null}
         {images.length > 1 ? <Chip>{images.length} tiles</Chip> : null}
         <Chip>
           <span className="tabular-nums">{sizeKb}</span>
@@ -74,12 +79,17 @@ export function ScreenshotView({
       </ActionLine>
       <div className="px-3 py-3 space-y-2">
         {images.map((b, i) => (
-          <img
+          <ScreenshotImage
+            // biome-ignore lint/suspicious/noArrayIndexKey: tiles are positional
             key={i}
             src={`data:${b.mime || mime};base64,${b.data}`}
             alt={caption || `screenshot of ${url || 'page'}`}
-            loading="lazy"
-            className="max-w-full max-h-[420px] border border-rule-2 bg-paper-2"
+            title={
+              images.length > 1
+                ? `screenshot ${i + 1} of ${images.length} of ${url || 'page'}`
+                : caption || `screenshot of ${url || 'page'}`
+            }
+            description={url}
           />
         ))}
         {caption ? (
@@ -92,6 +102,44 @@ export function ScreenshotView({
   )
 }
 
+function ScreenshotImage({
+  src,
+  alt,
+  title,
+  description,
+}: {
+  src: string
+  alt: string
+  title: string
+  description?: string
+}) {
+  const viewer = useImageViewer()
+  return (
+    <>
+      <ImageThumbnailButton
+        title={title}
+        onClick={viewer.show}
+        className="block max-w-full"
+      >
+        <img
+          src={src}
+          alt={alt}
+          loading="lazy"
+          className="max-h-[420px] max-w-full border border-rule-2 bg-paper-2"
+        />
+      </ImageThumbnailButton>
+      <ImageViewer
+        open={viewer.open}
+        onOpenChange={viewer.setOpen}
+        src={src}
+        alt={alt}
+        title={title}
+        description={description}
+      />
+    </>
+  )
+}
+
 export function ScreenshotPreview({ input }: { input: unknown }) {
   const req = safeParseRequest(screenshotRequestSchema, input)
   if (!req) return null
@@ -101,7 +149,7 @@ export function ScreenshotPreview({ input }: { input: unknown }) {
         <StatusPill label="permission to screenshot" variant="warn" />
         <Chip>{req.fetcher ?? 'dynamic'}</Chip>
         {req.format ? <Chip>{req.format}</Chip> : null}
-        {req.full_page ? <Chip>full page</Chip> : null}
+        {req.full_page ? <Chip>Full page</Chip> : null}
       </MetaRow>
       <ActionLine symbol="→" tone="ink">
         <span className="break-all">{req.url}</span>

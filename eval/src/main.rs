@@ -17,7 +17,7 @@ use eval::{functions, manifest, queue, state, ui};
 #[derive(Parser, Debug)]
 #[command(
     name = "eval",
-    about = "Durable same-model A/B prompt evaluation over harness turns."
+    about = "Live comparison of Harness session metrics, with prompt experiments as an advanced surface."
 )]
 struct Cli {
     #[arg(long, env = "III_URL", default_value = "ws://127.0.0.1:49134")]
@@ -106,12 +106,7 @@ fn bind_triggers(iii: &Arc<iii_sdk::IIIClient>) -> Vec<Trigger> {
             json!({ "expression": "*/15 * * * * *" }),
         ),
     ] {
-        match iii.register_trigger(RegisterTriggerInput {
-            trigger_type: trigger_type.into(),
-            function_id: function_id.into(),
-            config,
-            metadata: None,
-        }) {
+        match iii.register_trigger(RegisterTriggerInput::new(trigger_type, function_id, config)) {
             Ok(handle) => handles.push(handle),
             Err(error) => tracing::warn!(
                 trigger_type,

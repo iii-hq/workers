@@ -1,0 +1,27 @@
+{
+  "name": "@iii-workers/a2ui-ui",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    "./surface": "./src/surface.tsx",
+    "./types": "./src/types.ts"
+  },
+  "scripts": {
+    "build": "tsc --noEmit && node build.mjs",
+    "watch": "node build.mjs --watch",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@iii-dev/console-ui": "workspace:*",
+    "fflate": "^0.8.2"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.14",
+    "esbuild": "^0.25.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "typescript": "^5.9.2",
+    "vitest": "^4.1.6"
+  }
+}

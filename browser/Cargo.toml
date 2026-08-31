@@ -1,10 +1,16 @@
 [workspace]
+members = ["."]
+exclude = ["vendor/cssselect", "vendor/curl_impersonate_sys", "vendor/rustpython-sre_engine", "vendor/xmloxide"]
 
 [package]
 name = "browser"
-version = "0.1.7"
+version = "0.2.7-rc.2"
 edition = "2021"
 publish = false
+
+[features]
+default = []
+scrapling-compat = ["dep:curl_impersonate_sys", "curl_impersonate_sys/certified"]
 
 [[bin]]
 name = "browser"
@@ -15,12 +21,17 @@ name = "browser"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.21.6"
+iii-sdk = "=0.22.1-alpha.25"
+iii-worker-paths = { path = "../crates/worker-paths" }
+iii-config-client = { path = "../crates/config-client" }
 iii-console-ui = { path = "../crates/console-ui" }
 arc-swap = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "process"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "process", "net"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# preserve_order: the scrapling goldens are byte-compared against
+# Python-generated schemas, so JSON object key order is load-bearing
+# (tests/behavior.rs also relies on Map::shift_remove, IndexMap-only).
+serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml = "0.9"
 anyhow = "1"
 tracing = "0.1"
@@ -34,7 +45,44 @@ url = "2"
 regex = "1"
 chromiumoxide = "0.9"
 
+cssselect = { path = "vendor/cssselect" }
+xmloxide = { path = "vendor/xmloxide", default-features = false }
+rustpython-sre_engine = { path = "vendor/rustpython-sre_engine" }
+curl_impersonate_sys = { path = "vendor/curl_impersonate_sys", optional = true }
+html-escape = "0.2"
+encoding_rs = "0.8"
+psl = "=2.1.180"
+rusqlite = { version = "=0.31.0", features = ["bundled"] }
+uuid = { version = "1", features = ["v4"] }
+libc = "0.2"
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
+# Safe-mode browser::fetch uses this bounded rustls client. Certified compat
+# builds route the same public function through the pinned curl-impersonate
+# archive above.
+# `charset` is load-bearing, not optional: without it `Response::text()` is a
+# lossy UTF-8 decode, so a Shift-JIS or ISO-8859-1 page would come back as
+# replacement characters WHILE the envelope reported its real encoding. The
+# compression features matter for the same reason — a server that gzips
+# unasked would otherwise be decoded as binary garbage.
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls", "json", "cookies", "socks", "charset", "gzip", "brotli", "deflate", "zstd",
+] }
+ipnet = "2"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+jpeg-encoder = "0.7.1"
+siphasher = "1.0.3"
+
 [dev-dependencies]
 serde_json = "1"
 which = "8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal"] }
+
+# Release binary size: strip drops DWARF debug info (panic backtraces become
+# unresolved addresses); thin LTO + a single codegen unit let the optimizer
+# dead-strip and deduplicate across crate boundaries. Together: 35.8 -> 23.0
+# MiB, at the cost of a few extra minutes per release build. No feature,
+# dependency, or runtime behavior changes.
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1

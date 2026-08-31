@@ -5,6 +5,16 @@ import {
   MetaRow,
   StatusPill,
 } from '@/components/chat/sandbox/shared'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableFrame,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableViewport,
+} from '@/components/ui/Table'
 import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
 import {
@@ -154,7 +164,7 @@ function FetchSuccessPane({ req, method, result }: FetchSuccessPaneProps) {
         </Chip>
         {result.bytes_truncated ? (
           <Chip className="text-warn border-warn/40">
-            <span className="uppercase tracking-[0.06em]">truncated</span>
+            <span>Truncated</span>
           </Chip>
         ) : null}
         {result.redirect_chain && result.redirect_chain.length > 0 ? (
@@ -229,18 +239,30 @@ function ResponseHeaders({ headers }: { headers: Record<string, string> }) {
         </span>
       </button>
       {open ? (
-        <table className="w-full font-mono text-[11.5px] text-ink border-t border-rule-2">
-          <tbody>
-            {entries.map(([key, value]) => (
-              <tr key={key} className="border-b border-rule-2 last:border-b-0">
-                <td className="px-3 py-1 text-ink-faint align-top w-[30%]">
-                  {key}
-                </td>
-                <td className="px-3 py-1 text-ink break-all">{value}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <TableViewport className="border-t border-rule-2">
+          <TableFrame className="px-3">
+            <Table density="compact" aria-label="Response headers">
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-[30%]">Header</TableHead>
+                  <TableHead>Value</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {entries.map(([key, value]) => (
+                  <TableRow key={key}>
+                    <TableCell className="font-code text-ink-faint">
+                      {key}
+                    </TableCell>
+                    <TableCell className="break-all font-code text-ink">
+                      {value}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableFrame>
+        </TableViewport>
       ) : null}
     </div>
   )
@@ -252,7 +274,7 @@ function Body({ result }: { result: Extract<FetchResult, { ok: true }> }) {
       <div className="px-3 py-2 border-b border-rule-2">
         <div className="flex items-center gap-2 mb-1.5">
           <Chip>
-            <span className="uppercase tracking-[0.06em]">base64</span>
+            <span>Base64</span>
           </Chip>
           <span className="font-mono text-[11px] text-ink-faint tabular-nums">
             {result.body.length} chars

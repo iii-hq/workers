@@ -1,5 +1,6 @@
-//! Integration with the `configuration` worker — register the schema, fetch
-//! the authoritative value at boot, and hot-reload it when it changes.
+//! Integration with the builtin `configuration` worker (plumbing shared via
+//! `crates/config-client`) — register the schema, fetch the authoritative
+//! value at boot, and hot-reload it when it changes.
 //!
 //! `sweep_expression` is the one STRUCTURAL field (the cron binding for the
 //! node-timeout sweep). On a change the handler re-binds the trigger live
@@ -9,70 +10,67 @@
 //! [`Deps::cfg`](crate::functions::Deps::cfg); a change swaps the snapshot.
 
 use std::sync::Arc;
-use std::time::Duration;
 
+use iii_config_client as config_client;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::trigger::Trigger;
-use iii_sdk::{IIIClient, RegisterFunction};
-use serde_json::{json, Value};
+use iii_sdk::IIIClient;
+use serde_json::json;
 
 use crate::config::WorkerConfig;
 // Reuse the ConfigCell type declared in functions::mod — do NOT redefine.
 use crate::functions::ConfigCell;
 
-pub const CONFIG_ID: &str = "workflow";
-const CONFIG_FN_ID: &str = "workflow::on-config-change";
+pub const DEFAULT_CONFIG_ID: &str = "workflow";
+
+/// The configuration entry this worker owns.
+///
+/// `III_CONFIG_NAME` when a supervisor set it, else the built-in name. A worker
+/// that hardcodes its id turns that id into a global scarce name: two instances
+/// share one entry and take turns overwriting it, and each write wakes both.
+/// Being told which entry is its own is what lets them differ.
+pub fn config_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::var("III_CONFIG_NAME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| DEFAULT_CONFIG_ID.to_string())
+    })
+    .as_str()
+}
+pub const CONFIG_FN_ID: &str = "workflow::on-config-change";
 pub const SWEEP_ID: &str = "workflow::sweep";
 
-const CONFIG_TIMEOUT_MS: u64 = 5_000;
-const CONFIG_RETRIES: u32 = 3;
-const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
-
-/// Register the `workflow` configuration schema. The built-in default is seeded
-/// as `initial_value` only when nothing is stored yet (safe to call every boot).
-pub async fn register_config(iii: &IIIClient) -> Result<(), String> {
-    let mut payload = json!({
-        "id": CONFIG_ID,
-        "name": "Workflow",
-        "description": "Workflow worker settings: default node-pending timeout, \
-                        cron sweep schedule, RPC dispatch timeout, and max node retries.",
-        "schema": WorkerConfig::json_schema(),
-    });
-    if should_seed_default_value(iii).await? {
-        payload["initial_value"] = WorkerConfig::default().to_json();
+fn spec() -> config_client::EntrySpec {
+    config_client::EntrySpec {
+        id: config_id(),
+        name: "Workflow",
+        description: "Workflow worker settings: default node-pending timeout, \
+                      cron sweep schedule, RPC dispatch timeout, and max node retries.",
+        schema: WorkerConfig::json_schema(),
+        default_value: WorkerConfig::default().to_json(),
     }
-    trigger_with_retry(iii, "configuration::register", payload).await?;
-    Ok(())
+}
+
+/// Register the `workflow` configuration schema. The built-in default is
+/// seeded as `initial_value` only when nothing is stored yet (safe to call
+/// every boot).
+pub async fn register_config(iii: &IIIClient) -> Result<(), String> {
+    config_client::register(iii, &spec(), None).await
 }
 
 /// Read the live `workflow` configuration (env-expanded by the configuration
 /// worker — `from_json` does NOT re-expand).
 pub async fn fetch_config(iii: &IIIClient) -> Result<WorkerConfig, String> {
-    let value = try_get_config_value(iii)
-        .await?
-        .ok_or_else(|| format!("configuration `{CONFIG_ID}` not found"))?;
-    if value.is_null() {
-        tracing::info!("no configuration value found; using built-in default configuration");
-        return Ok(WorkerConfig::default());
-    }
-    WorkerConfig::from_json(&value)
-}
-
-async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
-    match try_get_config_value(iii).await? {
-        None => Ok(true),
-        Some(value) if value.is_null() => Ok(true),
-        Some(_) => Ok(false),
-    }
-}
-
-/// Returns `Ok(None)` when the entry does not exist.
-async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_with_retry(iii, "configuration::get", json!({ "id": CONFIG_ID })).await {
-        Ok(resp) => Ok(resp.get("value").cloned()),
-        Err(e) if e.to_ascii_uppercase().contains("NOT_FOUND") => Ok(None),
-        Err(e) => Err(e),
+    match config_client::fetch(iii, config_id()).await? {
+        Some(v) => WorkerConfig::from_json(&v),
+        None => {
+            tracing::info!("no configuration value found; using built-in default configuration");
+            Ok(WorkerConfig::default())
+        }
     }
 }
 
@@ -83,53 +81,53 @@ pub async fn apply_config(cell: &ConfigCell, cfg: WorkerConfig) {
     *cell.write().await = Arc::new(cfg);
 }
 
-/// Live handle for the one hot-reloadable trigger binding — the cron sweep.
+/// Live handles for the hot-reloadable trigger bindings: the cron sweep and
+/// the pre-generate guidance hook (bound only while `inject_guidance` is on).
 pub struct TriggerHandles {
     pub sweep: std::sync::Mutex<Option<Trigger>>,
+    pub guidance: config_client::BindingSlot,
 }
 
-/// Best-effort binding: the cron trigger type always exists (engine built-in),
-/// but a transient failure must not brick boot — it surfaces as a `None` handle.
-fn bind(iii: &IIIClient, trigger_type: &str, function_id: &str, config: Value) -> Option<Trigger> {
-    match iii.register_trigger(RegisterTriggerInput {
-        trigger_type: trigger_type.to_string(),
-        function_id: function_id.to_string(),
-        config,
-        metadata: None,
-    }) {
-        Ok(handle) => {
-            tracing::info!(trigger_type, function_id, "trigger binding requested");
-            Some(handle)
-        }
-        Err(e) => {
-            tracing::warn!(trigger_type, function_id, error = %e, "trigger binding failed");
-            None
-        }
-    }
-}
-
-/// Bind the three harness hooks (turn-completed → wake, pre-trigger → stamp-reply,
-/// pre-generate → inject-guidance). One shot: if the harness is not up yet, the
-/// engine parks each binding as a pending intent and activates it when the trigger
-/// type registers (recoverable triggers, iii #1962) — and re-parks/re-activates
-/// them across harness restarts. Nothing to watch or retry.
+/// Bind the two always-on harness hooks (turn-completed → wake, pre-trigger →
+/// stamp-reply). One shot: if the harness is not up yet, the engine parks each
+/// binding as a pending intent and activates it when the trigger type registers
+/// (recoverable triggers, iii #1962) — and re-parks/re-activates them across
+/// harness restarts. Nothing to watch or retry. The pre-generate guidance hook
+/// is NOT bound here — it follows the `inject_guidance` config knob via
+/// [`apply_guidance`].
 pub fn setup_harness_hooks(iii: &IIIClient) {
     let _ = bind_turn_completed(iii);
     let _ = bind_pre_trigger_hook(iii);
-    let _ = bind_pre_generate_hook(iii);
     tracing::info!(
         "workflow harness hooks registered: turn-completed → wake, pre-trigger → \
-         stamp-reply, pre-generate → inject-guidance (guidance injection active)"
+         stamp-reply"
     );
 }
 
-/// (Re)bind the cron node-timeout sweep from the current config.
+/// Reconcile the live `workflow::inject-guidance` binding with the configured
+/// `inject_guidance` value: on → bind once; off → unregister and drop the
+/// handle. Idempotent under repeated config events, and a failed bind retries
+/// on the next event.
+pub fn apply_guidance(iii: &IIIClient, handles: &TriggerHandles, enabled: bool) {
+    handles.guidance.reconcile(
+        enabled,
+        || bind_pre_generate_hook(iii),
+        "inject_guidance on: appending workflow guidance to agent system prompts",
+        "inject_guidance off: workflow guidance stays out of agent system prompts",
+    );
+}
+
+/// (Re)bind the cron node-timeout sweep from the current config. Best-effort
+/// (the cron trigger type always exists, but a transient failure must not
+/// brick boot): a failure surfaces as a `None` handle.
 pub fn bind_sweep(iii: &IIIClient, cfg: &WorkerConfig) -> Option<Trigger> {
-    bind(
+    config_client::try_bind(
         iii,
-        "cron",
-        SWEEP_ID,
-        json!({ "expression": cfg.sweep_expression }),
+        RegisterTriggerInput::new(
+            "cron".to_string(),
+            SWEEP_ID.to_string(),
+            json!({ "expression": cfg.sweep_expression }),
+        ),
     )
 }
 
@@ -138,11 +136,13 @@ pub fn bind_sweep(iii: &IIIClient, cfg: &WorkerConfig) -> Option<Trigger> {
 /// top-level turns, so a `parent_session_id` filter would never match. The cron
 /// sweep is the durable fallback if this best-effort bind fails (harness not up).
 fn bind_turn_completed(iii: &IIIClient) -> Option<Trigger> {
-    bind(
+    config_client::try_bind(
         iii,
-        "harness::turn-completed",
-        crate::functions::wake::WAKE_ID,
-        json!({}),
+        RegisterTriggerInput::new(
+            "harness::turn-completed".to_string(),
+            crate::functions::wake::WAKE_ID.to_string(),
+            json!({}),
+        ),
     )
 }
 
@@ -156,11 +156,13 @@ fn bind_turn_completed(iii: &IIIClient) -> Option<Trigger> {
 /// auto-stamp (the run still happens; it only loses console nesting / reply
 /// delivery on that one call) — strictly better than denying it.
 fn bind_pre_trigger_hook(iii: &IIIClient) -> Option<Trigger> {
-    bind(
+    config_client::try_bind(
         iii,
-        "harness::hook::pre-trigger",
-        crate::functions::stamp_reply::STAMP_REPLY_ID,
-        json!({ "functions": ["workflow::start"], "on_error": "fail_open", "timeout_ms": 30000 }),
+        RegisterTriggerInput::new(
+            "harness::hook::pre-trigger".to_string(),
+            crate::functions::stamp_reply::STAMP_REPLY_ID.to_string(),
+            json!({ "functions": ["workflow::start"], "on_error": "fail_open", "timeout_ms": 30000 }),
+        ),
     )
 }
 
@@ -172,11 +174,16 @@ fn bind_pre_trigger_hook(iii: &IIIClient) -> Option<Trigger> {
 /// if this hook ever errored or timed out; a missing guidance line must never block
 /// a turn. Best-effort bind like the others.
 fn bind_pre_generate_hook(iii: &IIIClient) -> Option<Trigger> {
-    bind(
+    config_client::try_bind(
         iii,
-        "harness::hook::pre-generate",
-        crate::functions::inject_guidance::GUIDANCE_HOOK_ID,
-        json!({ "on_error": "fail_open" }),
+        RegisterTriggerInput::new(
+            "harness::hook::pre-generate".to_string(),
+            crate::functions::inject_guidance::GUIDANCE_HOOK_ID.to_string(),
+            json!({ "on_error": "fail_open" }),
+        )
+        .with_metadata(json!({
+            "inject_prompt": crate::functions::inject_guidance::WORKFLOW_GUIDANCE
+        })),
     )
 }
 
@@ -192,58 +199,31 @@ fn rebind_slot(slot: &std::sync::Mutex<Option<Trigger>>, new: Option<Trigger>) {
     }
 }
 
-/// Internal `workflow::on-config-change` trigger payload.
-#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
-pub struct OnConfigChangeEvent {
-    /// Configuration id that changed (advisory; the handler re-fetches).
-    #[serde(default)]
-    pub id: Option<String>,
-}
-
-/// Ack returned by the internal `workflow::on-config-change` handler.
-#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
-pub struct OnConfigChangeResponse {
-    pub ok: bool,
-}
-
-/// Register the internal config-change handler and bind a `configuration`
-/// trigger. `handles` holds the live cron `Trigger` the handler re-binds when
-/// `sweep_expression` changes.
+/// Register the internal `workflow::on-config-change` handler and bind a
+/// `configuration` trigger. `handles` holds the live cron `Trigger` the
+/// handler re-binds when `sweep_expression` changes. Every delivery runs the
+/// reload under the shared lock (fetch inside it); the returned
+/// [`config_client::Reload`] lets boot run one extra pass to close the
+/// fetch→bind gap.
 pub fn register_config_trigger(
     iii: &Arc<IIIClient>,
     cell: ConfigCell,
     handles: Arc<TriggerHandles>,
-) -> Result<(), Error> {
-    let cell_for_fn = cell.clone();
-    let handles_for_fn = handles.clone();
+) -> Result<config_client::Reload, Error> {
     let engine = iii.clone();
-    iii.register_function(
+    config_client::on_change(
+        iii,
+        config_id(),
         CONFIG_FN_ID,
-        RegisterFunction::new_async(move |_event: OnConfigChangeEvent| {
-            let cell = cell_for_fn.clone();
-            let handles = handles_for_fn.clone();
+        "Internal: hot-reload workflow config — re-binds the cron sweep on a \
+         sweep_expression change and swaps the per-call tuning snapshot otherwise.",
+        move || {
             let engine = engine.clone();
-            async move {
-                on_config_change(&engine, &cell, &handles).await;
-                Ok::<OnConfigChangeResponse, Error>(OnConfigChangeResponse { ok: true })
-            }
-        })
-        .description(
-            "Internal: hot-reload workflow config — re-binds the cron sweep on a \
-             sweep_expression change and swaps the per-call tuning snapshot otherwise.",
-        ),
-    );
-
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "configuration".to_string(),
-        function_id: CONFIG_FN_ID.to_string(),
-        config: json!({
-            "configuration_id": CONFIG_ID,
-            "event_types": ["configuration:updated"],
-        }),
-        metadata: None,
-    })?;
-    Ok(())
+            let cell = cell.clone();
+            let handles = handles.clone();
+            async move { on_config_change(&engine, &cell, &handles).await }
+        },
+    )
 }
 
 /// Reload from the AUTHORITATIVE configuration. The caller-supplied trigger
@@ -280,42 +260,10 @@ async fn on_config_change(iii: &IIIClient, cell: &ConfigCell, handles: &TriggerH
         }
     }
 
+    let inject = applied.inject_guidance;
     apply_config(cell, applied).await;
-    tracing::info!("workflow configuration reloaded");
-}
-
-async fn trigger_with_retry(
-    iii: &IIIClient,
-    function_id: &str,
-    payload: Value,
-) -> Result<Value, String> {
-    let mut last_err = String::new();
-    for attempt in 1..=CONFIG_RETRIES {
-        match iii
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload: payload.clone(),
-                action: None,
-                timeout_ms: Some(CONFIG_TIMEOUT_MS),
-            })
-            .await
-        {
-            Ok(v) => return Ok(v),
-            Err(e) => {
-                last_err = e.to_string();
-                if attempt < CONFIG_RETRIES {
-                    tracing::warn!(function_id, attempt, error = %last_err, "configuration RPC failed; retrying");
-                    tokio::time::sleep(Duration::from_millis(
-                        CONFIG_RETRY_BACKOFF_MS * u64::from(attempt),
-                    ))
-                    .await;
-                }
-            }
-        }
-    }
-    Err(format!(
-        "{function_id} failed after {CONFIG_RETRIES} attempts: {last_err}"
-    ))
+    apply_guidance(iii, handles, inject);
+    tracing::info!(inject_guidance = inject, "workflow configuration reloaded");
 }
 
 #[cfg(test)]

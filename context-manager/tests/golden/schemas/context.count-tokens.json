@@ -533,6 +533,17 @@
         ],
         "description": "Tokenizer selection; falls back to a generic estimator."
       },
+      "parts": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "default": null,
+        "description": "Named auxiliary texts to count individually with the same estimator (for example the segments a system prompt is built from). Counted in `by_part` only; never added to `tokens`.",
+        "type": [
+          "object",
+          "null"
+        ]
+      },
       "system_prompt": {
         "default": null,
         "description": "Counted on top of the messages when present.",
@@ -604,6 +615,18 @@
       }
     },
     "properties": {
+      "by_part": {
+        "additionalProperties": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "description": "Per-part estimates for the request's `parts`, keyed by the caller's names; present when the request carried `parts`.",
+        "type": [
+          "object",
+          "null"
+        ]
+      },
       "by_role": {
         "anyOf": [
           {
@@ -623,6 +646,15 @@
         "format": "uint64",
         "minimum": 0.0,
         "type": "integer"
+      },
+      "tools_tokens": {
+        "description": "The `tools` share of `tokens`; present when the request carried `tools`.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
       }
     },
     "required": [

@@ -227,12 +227,6 @@
           "null"
         ]
       },
-      "system_prompt": {
-        "type": [
-          "string",
-          "null"
-        ]
-      },
       "token": {
         "description": "Registration token proving ownership on re-register (omit on first declare).",
         "type": [
@@ -255,7 +249,7 @@
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "registration_token: spec adaptation — the engine exposes no caller identity, so identity binding is a bearer token; only its sha256 hash is persisted.",
+    "description": "`registration_token` is the provider ownership credential; only its sha256 hash is persisted. Engine caller metadata is not an authorization identity because worker names are self-reported.",
     "properties": {
       "id": {
         "type": "string"

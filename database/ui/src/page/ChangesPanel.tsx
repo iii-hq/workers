@@ -12,7 +12,13 @@
  * clients' writes.
  */
 
-import { Badge, Button, EmptyState, type Host, StatusDot } from '@iii-dev/console-ui'
+import {
+  Badge,
+  Button,
+  EmptyState,
+  type Host,
+  StatusDot,
+} from '@iii-dev/console-ui'
 import { useEffect, useState } from 'react'
 import { History, RefreshCw } from './icons'
 import { type RowChange, useRowChanges } from './useRowChanges'
@@ -23,11 +29,20 @@ const HistoryIcon = (p: { className?: string }) => <History size={28} {...p} />
 const FRESH_MS = 4000
 
 const OP_LABEL: Record<string, string> = {
-  insert: 'insert',
-  update: 'update',
-  delete: 'delete',
-  other: 'other',
+  insert: 'Insert',
+  update: 'Update',
+  delete: 'Delete',
+  other: 'Other',
 }
+
+/**
+ * The capture-mode caveat, shown on demand. It used to live only in a title
+ * attribute the idle copy told you to hover — unreachable by keyboard, touch,
+ * or a screen reader. The badge is a real disclosure button now; the tooltip
+ * stays for mouse users.
+ */
+const CAPTURE_NOTE =
+  'Following committed writes to this table. A connection using statement capture reports only writes made through this worker; one using native capture reports every client. Delivery is best effort — reload to be certain.'
 
 export function ChangesPanel({
   host,
@@ -43,6 +58,7 @@ export function ChangesPanel({
   kind?: string
   onRefresh?: () => void
 }) {
+  const [capOpen, setCapOpen] = useState(false)
   // A view is never the target of a write. The worker keys every change on the
   // table the statement actually touched, so a binding on a view matches
   // nothing and would sit at "following" forever while rows visibly change
@@ -62,8 +78,8 @@ export function ChangesPanel({
     return (
       <EmptyState
         icon={HistoryIcon}
-        title="no table selected"
-        description="pick a table in the tree to follow the writes landing in it."
+        title="No table selected"
+        description="Pick a table in the tree to follow the writes landing in it."
       />
     )
   }
@@ -73,7 +89,7 @@ export function ChangesPanel({
       <EmptyState
         icon={HistoryIcon}
         title={`${table} is a view`}
-        description="changes are reported against the table a statement writes to, so a view never reports any of its own. select one of the tables it reads from to follow the writes behind it."
+        description="Changes are reported against the table a statement writes to, so a view never reports any of its own. Select one of the tables it reads from to follow the writes behind it."
       />
     )
   }
@@ -82,18 +98,23 @@ export function ChangesPanel({
     return (
       <EmptyState
         icon={HistoryIcon}
-        title="this worker does not announce row changes"
-        description="run `iii worker update database` to follow writes as they commit."
+        title="This worker does not announce row changes"
+        description="Run `iii worker update database` to follow writes as they commit."
       />
     )
   }
 
   return (
     <div className="db-changes">
-      <div className="db-changes-bar">
-        <FreshnessBadge status={feed.status} lastAt={feed.lastAt} />
+      <div className="db-changes-bar db-toolbar">
+        <FreshnessBadge
+          status={feed.status}
+          lastAt={feed.lastAt}
+          expanded={capOpen}
+          onToggle={() => setCapOpen((v) => !v)}
+        />
         <span className="db-changes-target">{table}</span>
-        <div className="db-erd-spacer" />
+        <div className="db-toolbar-spacer" />
         {feed.pending > 0 && onRefresh ? (
           <Button
             variant="ghost"
@@ -103,24 +124,30 @@ export function ChangesPanel({
               onRefresh()
             }}
           >
-            <RefreshCw size={13} aria-hidden />
-            reload rows ({feed.pending})
+            <RefreshCw size={16} aria-hidden />
+            Reload rows · {feed.pending}
           </Button>
         ) : null}
       </div>
 
+      {capOpen ? <p className="db-changes-capnote">{CAPTURE_NOTE}</p> : null}
+
       {feed.changes.length === 0 ? (
-        <div className="db-changes-idle">
-          <p>nothing yet.</p>
-          <p className="db-changes-hint">
-            writes to <code>{table}</code> appear here as they commit. what counts as a write depends on this
-            connection's capture mode — hover the indicator above.
-          </p>
-        </div>
+        <EmptyState
+          icon={HistoryIcon}
+          title="Nothing yet"
+          description={`Writes to ${table} appear here as they commit. What counts as a write depends on this connection's capture mode — the "Following" indicator above explains it.`}
+        />
       ) : (
-        <ol className="db-changes-list">
-          {feed.changes.map((c, i) => (
-            <ChangeRow key={`${c.seen}-${i}`} change={c} />
+        // role="log": arrivals are announced politely without stealing focus —
+        // the whole point of a feed whose job is telling you about writes.
+        <ol
+          className="db-changes-list"
+          role="log"
+          aria-label={`writes to ${table}`}
+        >
+          {feed.changes.map((c) => (
+            <ChangeRow key={c.seq} change={c} />
           ))}
         </ol>
       )}
@@ -134,11 +161,15 @@ function ChangeRow({ change }: { change: RowChange }) {
   const rows = change.affected_rows
   return (
     <li className={`db-change${fresh ? ' fresh' : ''}`}>
-      <span className={`db-change-op op-${change.op}`}>{OP_LABEL[change.op] ?? change.op}</span>
+      <span className={`db-change-op op-${change.op}`}>
+        {OP_LABEL[change.op] ?? change.op}
+      </span>
       <span className="db-change-rows">
         {rows} {rows === 1 ? 'row' : 'rows'}
       </span>
-      {change.returning?.length ? <Badge variant="default">{change.returning.length} returned</Badge> : null}
+      {change.returning?.length ? (
+        <Badge variant="default">{change.returning.length} returned</Badge>
+      ) : null}
       <span className="db-change-at" title={new Date(change.at).toISOString()}>
         {relative(age)}
       </span>
@@ -155,27 +186,40 @@ function ChangeRow({ change }: { change: RowChange }) {
  * carries the caveat rather than a word in the badge implying more than is
  * true.
  */
-function FreshnessBadge({ status, lastAt }: { status: string; lastAt: number | null }) {
+function FreshnessBadge({
+  status,
+  lastAt,
+  expanded,
+  onToggle,
+}: {
+  status: string
+  lastAt: number | null
+  expanded: boolean
+  onToggle: () => void
+}) {
   const bound = status === 'bound'
   const recent = lastAt != null && Date.now() - lastAt < 10_000
   return (
-    <span
+    <button
+      type="button"
       className="db-freshness"
-      title={
-        bound
-          ? 'following committed writes to this table. a connection using statement capture reports only writes made through this worker; one using native capture reports every client. delivery is best effort — reload to be certain.'
-          : 'not following this table.'
-      }
+      onClick={onToggle}
+      aria-expanded={expanded}
+      title={bound ? CAPTURE_NOTE : 'not following this table.'}
     >
       <StatusDot tone={bound ? 'accent' : 'ink'} pulse={bound && recent} />
-      <span>{bound ? 'following' : 'not following'}</span>
-      {lastAt != null ? <span className="db-freshness-at">· last {relative(Date.now() - lastAt)}</span> : null}
-    </span>
+      <span>{bound ? 'Following' : 'Not following'}</span>
+      {lastAt != null ? (
+        <span className="db-freshness-at">
+          · Last {relative(Date.now() - lastAt)}
+        </span>
+      ) : null}
+    </button>
   )
 }
 
 function relative(ms: number): string {
-  if (ms < 1000) return 'just now'
+  if (ms < 1000) return 'Just now'
   const s = Math.floor(ms / 1000)
   if (s < 60) return `${s}s ago`
   const m = Math.floor(s / 60)

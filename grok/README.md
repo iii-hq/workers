@@ -5,7 +5,7 @@ The [xAI Grok CLI](https://docs.x.ai) as an iii worker: the Grok agent exposed a
 ## Install
 
 ```bash
-iii worker add grok
+iii trigger compose::add worker=grok
 ```
 
 Requires the Grok CLI on the host and `XAI_API_KEY` in the worker environment. See [docs.x.ai](https://docs.x.ai) for CLI installation and authentication.
@@ -24,7 +24,7 @@ From zero to a Grok turn over the bus:
 
 ```bash
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
-iii worker add grok
+iii trigger compose::add worker=grok
 iii   # starts the engine + worker
 ```
 
@@ -122,7 +122,7 @@ iii trigger grok::run --timeout-ms 300000 \
   --json '{"prompt":"List every worker connected to this engine and what each one does.","cwd":"/tmp"}'
 ```
 
-With the context on, Grok reaches for `iii trigger engine::workers::list` itself and reports the live mesh — every worker and what it does — instead of guessing from `ps` and config files:
+With the context on, Grok reaches for `iii trigger engine::workers::list` itself and reports the live iii worker functionality — every worker and what it does — instead of guessing from `ps` and config files:
 
 ![Grok answering a live-system question by querying the engine through the iii CLI](https://raw.githubusercontent.com/iii-hq/workers/main/grok/assets/iii-context.png)
 

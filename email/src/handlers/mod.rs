@@ -1,6 +1,8 @@
 use iii_sdk::IIIClient;
 use std::sync::Arc;
 
+use crate::configuration::AppState;
+
 pub mod accounts;
 pub mod attachment;
 pub mod flag;
@@ -12,17 +14,13 @@ pub mod send;
 
 pub const REGISTERED_FN_COUNT: usize = 8;
 
-pub fn register_all(
-    iii: &Arc<IIIClient>,
-    cfg: &Arc<crate::config::WorkerConfig>,
-    pool: &Arc<crate::provider::imap::ImapPool>,
-) {
-    send::register(iii, cfg);
-    accounts::register(iii, cfg);
-    list::register(iii, pool);
-    get::register(iii, pool);
-    search::register(iii, pool);
-    flag::register(iii, pool);
-    move_::register(iii, pool);
-    attachment::register(iii, pool);
+pub fn register_all(iii: &Arc<IIIClient>, state: &AppState) {
+    send::register(iii, &state.cell);
+    accounts::register(iii, &state.cell);
+    list::register(iii, &state.pool);
+    get::register(iii, &state.pool);
+    search::register(iii, &state.pool);
+    flag::register(iii, &state.pool);
+    move_::register(iii, &state.pool);
+    attachment::register(iii, &state.pool);
 }

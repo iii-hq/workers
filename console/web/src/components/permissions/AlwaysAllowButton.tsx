@@ -49,6 +49,7 @@ export function AlwaysAllowButton({
       <Button
         variant="pill"
         size="sm"
+        data-message-action="always-allow"
         onClick={handleClick}
         disabled={disabled || submitting}
         title={

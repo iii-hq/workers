@@ -18,7 +18,7 @@ export interface IconProps {
 }
 
 function Svg({
-  size = 14,
+  size = 16,
   children,
   className,
   style,
@@ -108,6 +108,14 @@ export function Check(props: IconProps) {
   return (
     <Svg {...props}>
       <path d="M20 6 9 17l-5-5" />
+    </Svg>
+  )
+}
+
+export function ChevronLeft(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="m15 18-6-6 6-6" />
     </Svg>
   )
 }

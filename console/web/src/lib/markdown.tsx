@@ -3,6 +3,18 @@ import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { FileMentionPill } from '@/components/chat/lexical/FileMentionNode'
 import { FunctionMentionPill } from '@/components/chat/lexical/FunctionMentionNode'
+import {
+  Table,
+  TableBody,
+  TableCaption,
+  TableCell,
+  TableFooter,
+  TableFrame,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableViewport,
+} from '@/components/ui/Table'
 import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
 
@@ -197,7 +209,7 @@ const components: Components = {
     const isBlock = typeof className === 'string' && /language-/.test(className)
     if (isBlock) {
       return (
-        <code className={cn('font-mono', className)} {...rest}>
+        <code className={cn('font-code', className)} {...rest}>
           {children}
         </code>
       )
@@ -205,7 +217,7 @@ const components: Components = {
     return (
       <code
         className={cn(
-          'font-mono text-[12.5px] border border-rule-2 bg-paper-2 text-ink px-1 py-0.5',
+          'font-code text-[12.5px] border border-rule-2 bg-paper-2 text-ink px-1 py-0.5',
           className,
         )}
         {...rest}
@@ -231,14 +243,14 @@ const components: Components = {
       return (
         <JsonHighlight
           code={source.replace(/\n$/, '')}
-          className="border border-rule my-4"
+          className="rounded-md border border-rule-2 my-4"
         />
       )
     }
     return (
       <pre
         className={cn(
-          'border border-rule bg-bg overflow-x-auto px-5 py-4 my-4 font-mono text-[12.5px] leading-[1.55] text-ink',
+          'rounded-md border border-rule-2 bg-bg overflow-x-auto px-5 py-4 my-4 font-code text-[12.5px] leading-[1.55] text-ink',
           className,
         )}
         {...rest}
@@ -270,36 +282,26 @@ const components: Components = {
     )
   },
   table: ({ className, ...rest }) => (
-    <div className="my-4 overflow-x-auto border border-rule">
-      <table
-        className={cn(
-          'w-full border-collapse font-mono text-[13px] text-ink',
-          className,
-        )}
-        {...rest}
-      />
-    </div>
+    <TableViewport className="my-4">
+      <TableFrame>
+        <Table density="compact" className={className} {...rest} />
+      </TableFrame>
+    </TableViewport>
   ),
   thead: ({ className, ...rest }) => (
-    <thead className={cn('bg-panel', className)} {...rest} />
+    <TableHeader className={className} {...rest} />
   ),
-  th: ({ className, ...rest }) => (
-    <th
-      className={cn(
-        'text-left px-3 py-2 border-b border-rule font-medium text-[11px] uppercase tracking-[0.06em] text-ink-faint',
-        className,
-      )}
-      {...rest}
-    />
+  tbody: ({ className, ...rest }) => (
+    <TableBody className={className} {...rest} />
   ),
-  td: ({ className, ...rest }) => (
-    <td
-      className={cn(
-        'px-3 py-2 border-b border-rule-2 last:border-b-0',
-        className,
-      )}
-      {...rest}
-    />
+  tfoot: ({ className, ...rest }) => (
+    <TableFooter className={className} {...rest} />
+  ),
+  tr: ({ className, ...rest }) => <TableRow className={className} {...rest} />,
+  th: ({ className, ...rest }) => <TableHead className={className} {...rest} />,
+  td: ({ className, ...rest }) => <TableCell className={className} {...rest} />,
+  caption: ({ className, ref: _ref, ...rest }) => (
+    <TableCaption className={className} {...rest} />
   ),
 }
 

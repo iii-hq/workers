@@ -3,14 +3,10 @@ use super::{
     SystemPromptStrategy,
 };
 
-/// Stand-in for a router-served (provider-declared or operator-overridden)
-/// identity prompt.
-const IDENTITY: &str = "You are an iii agent worker. TEST-VOICE identity.";
-
 fn default_prompt() -> String {
     build_system_prompt(SystemPromptOpts {
         mode: None,
-        identity: None,
+        identity: variants::DEFAULT,
     })
 }
 
@@ -21,7 +17,7 @@ fn resolve_non_empty_override_returns_verbatim() {
             Some("custom".into()),
             SystemPromptStrategy::Override,
             Some(Mode::Ask),
-            Some(IDENTITY)
+            variants::DEFAULT
         ),
         Some("custom".into())
     );
@@ -33,22 +29,27 @@ fn resolve_empty_override_falls_through_to_builtin() {
         Some(String::new()),
         SystemPromptStrategy::Override,
         None,
-        None,
+        variants::DEFAULT,
     )
     .expect("built-in prompt");
     assert!(out.contains("You are an iii agent worker"));
 }
 
 #[test]
-fn resolve_missing_override_uses_fetched_identity_verbatim() {
-    let out = resolve_system_prompt(None, SystemPromptStrategy::Override, None, Some(IDENTITY))
-        .expect("built-in prompt");
-    assert_eq!(out, IDENTITY);
+fn resolve_missing_override_uses_embedded_default() {
+    let out = resolve_system_prompt(
+        None,
+        SystemPromptStrategy::Override,
+        None,
+        variants::DEFAULT,
+    )
+    .expect("built-in prompt");
+    assert_eq!(out, variants::DEFAULT);
 }
 
 #[test]
-fn resolve_absent_identity_falls_back_to_embedded_default() {
-    let out = resolve_system_prompt(None, SystemPromptStrategy::Enrich, None, None)
+fn resolve_enrich_without_a_custom_prompt_uses_embedded_default() {
+    let out = resolve_system_prompt(None, SystemPromptStrategy::Enrich, None, variants::DEFAULT)
         .expect("built-in prompt");
     assert_eq!(out, variants::DEFAULT);
 }
@@ -59,11 +60,11 @@ fn resolve_enrich_appends_custom_to_builtin() {
         Some("Speak only in haiku.".into()),
         SystemPromptStrategy::Enrich,
         None,
-        Some(IDENTITY),
+        variants::DEFAULT,
     )
     .expect("enriched prompt");
     // Built-in identity is preserved...
-    assert!(out.starts_with(IDENTITY));
+    assert!(out.starts_with(variants::DEFAULT));
     // ...and the caller prompt is appended after it.
     assert!(out.ends_with("Speak only in haiku."));
 }
@@ -74,12 +75,12 @@ fn resolve_enrich_with_empty_custom_falls_through_to_builtin() {
         Some(String::new()),
         SystemPromptStrategy::Enrich,
         None,
-        Some(IDENTITY),
+        variants::DEFAULT,
     )
     .expect("built-in prompt");
     let built_in = build_system_prompt(SystemPromptOpts {
         mode: None,
-        identity: Some(IDENTITY),
+        identity: variants::DEFAULT,
     });
     assert_eq!(out, built_in);
 }
@@ -91,7 +92,7 @@ fn resolve_disabled_omits_system_prompt() {
             Some("ignored".into()),
             SystemPromptStrategy::Disabled,
             Some(Mode::Agent),
-            Some(IDENTITY),
+            variants::DEFAULT,
         ),
         None
     );
@@ -106,6 +107,62 @@ fn identity_line_and_agent_trigger_preserved() {
 }
 
 #[test]
+fn default_discovery_fallback_yields_to_injected_assist() {
+    let out = default_prompt().replace('\n', " ");
+    let step_one = out
+        .find("Step 1. Find the function id through exactly one task-capability discovery path")
+        .expect("prompt makes discovery paths mutually exclusive at Step 1");
+    let assist = out[step_one..]
+        .find("If `<discovery_assist>` is present, follow it and do not use `engine::functions::list` to discover task-capability IDs")
+        .expect("prompt gives injected discovery guidance precedence at Step 1");
+    let inventory = out[step_one..]
+        .find("Fixed-prefix inventory checks for a documented surface or after an install still apply")
+        .expect("prompt keeps inventory verification distinct from capability discovery");
+    let fallback = out[step_one..]
+        .find("Only when `<discovery_assist>` is absent, call `engine::functions::list`")
+        .expect("prompt keeps engine discovery as the explicit fallback");
+    assert!(assist < fallback);
+    assert!(inventory < fallback);
+    assert!(out.contains("First check what already exists through the active discovery path"));
+    assert!(out.contains(
+        "When `<discovery_assist>` is absent and no registered function fits, search the public registry"
+    ));
+    assert!(out.contains("uses the active discovery path from Step 1 and finds `shell::fs::ls`"));
+    assert!(out.contains("Find the replacement through the active discovery path from Step 1"));
+    assert!(out.contains("This fallback example applies only when `<discovery_assist>` is absent"));
+    assert!(!out.contains("calls engine::functions::list { search: \"ls\" }"));
+
+    let checklist = out
+        .split_once("# Final checklist")
+        .expect("prompt has a final checklist")
+        .1;
+    assert!(checklist.contains("the active discovery path"));
+    assert!(checklist.contains("`<discovery_assist>` when present"));
+    assert!(checklist.contains("otherwise `engine::functions::list`"));
+    assert!(!checklist.contains("Did I find the id with `engine::functions::list`?"));
+}
+
+#[test]
+fn runtime_preverification_covers_updates_and_subagents() {
+    {
+        let out = variants::DEFAULT.replace('\n', " ");
+        assert!(out.contains("marked `pre-verified` by a Harness runtime block or update"));
+        assert!(out.contains("already satisfies Steps 1 and 2"));
+        assert!(out.contains("without discovery or `engine::functions::info`"));
+    }
+
+    let default = default_prompt();
+    let checklist = default
+        .split_once("# Final checklist")
+        .expect("prompt has a final checklist")
+        .1
+        .replace('\n', " ");
+    assert!(checklist.contains("marked `pre-verified`"));
+    assert!(checklist.contains("exact id"));
+    assert!(checklist.contains("and payload"));
+}
+
+#[test]
 fn fn_pill_syntax() {
     let out = default_prompt();
     assert!(out.contains("@fn(<function_id>)"));
@@ -113,7 +170,7 @@ fn fn_pill_syntax() {
 }
 
 #[test]
-fn mesh_model() {
+fn runtime_model() {
     let out = default_prompt();
     assert!(out.contains("worker → engine → worker"));
     assert!(out.contains("Workers never talk to each other directly"));
@@ -201,7 +258,7 @@ fn registry_flow() {
     let out = default_prompt();
     assert!(out.contains("directory::registry::workers::list { search: \"<capability>\" }"));
     assert!(out.contains("directory::registry::workers::info { name: \"<name>\" }"));
-    assert!(out.contains("{ source: { kind: \"registry\", name: \"<name>\" } }"));
+    assert!(out.contains("compose::add { worker: \"<name>\" }"));
     assert!(out.contains("say what you are about to install and why"));
     assert!(out.contains("confirm the new function ids appear"));
     assert!(out.contains("engine::functions::list { prefix: \"<worker>::\" }"));
@@ -211,7 +268,7 @@ fn registry_flow() {
 #[test]
 fn directory_bootstrap_degrade() {
     let out = default_prompt();
-    assert!(out.contains("name: \"iii-directory\""));
+    assert!(out.contains("worker: \"iii-directory\""));
     assert!(out.contains("continue with what is registered"));
 }
 
@@ -277,7 +334,7 @@ fn prompt_injection_defense() {
 fn mode_ask_prepends_before_identity() {
     let out = build_system_prompt(SystemPromptOpts {
         mode: Some(Mode::Ask),
-        identity: None,
+        identity: variants::DEFAULT,
     });
     assert!(out.contains("operating in ask mode"));
     assert!(out.find("operating in ask mode") < out.find("You are an iii agent worker"));
@@ -287,20 +344,27 @@ fn mode_ask_prepends_before_identity() {
 fn mode_agent_prepends_before_identity() {
     let out = build_system_prompt(SystemPromptOpts {
         mode: Some(Mode::Agent),
-        identity: None,
+        identity: variants::DEFAULT,
     });
     assert!(out.contains("operating in agent mode"));
     assert!(out.find("operating in agent mode") < out.find("You are an iii agent worker"));
 }
 
 #[test]
-fn mode_prepends_before_a_fetched_identity_too() {
+fn mode_agent_matches_the_requested_scope_and_detail() {
+    let out = super::paragraph(Mode::Agent);
+    assert!(out.contains("Match the user's requested scope and level of detail"));
+    assert!(out.contains("do not expand the task"));
+}
+
+#[test]
+fn mode_prepends_before_embedded_identity() {
     let out = build_system_prompt(SystemPromptOpts {
         mode: Some(Mode::Ask),
-        identity: Some(IDENTITY),
+        identity: variants::DEFAULT,
     });
     assert!(out.starts_with("You are operating in ask mode"));
-    assert!(out.ends_with(IDENTITY));
+    assert!(out.ends_with(variants::DEFAULT));
 }
 
 #[test]
@@ -324,6 +388,28 @@ fn default_variant_step_by_step() {
     let out = default_prompt();
     assert!(out.contains("# System rules"));
     assert!(out.contains("Step 1."));
+}
+
+#[test]
+fn progress_updates_are_phase_scoped_and_keep_descriptions_and_final_text() {
+    {
+        let normalized = variants::DEFAULT.replace('\n', " ");
+        assert!(normalized.contains("# User-visible progress"));
+        assert!(normalized.contains("materially new investigative or action phase"));
+        assert!(normalized.contains("One update may cover any number of related function calls"));
+        assert!(normalized.contains("Do not emit a new update for every call"));
+        assert!(normalized.contains("lead with its concrete result"));
+        assert!(normalized.contains("do not merely list calls"));
+        assert!(normalized.contains("summary of that whole batch"));
+        assert!(
+            normalized.contains("separate the result and next action into two short paragraphs")
+        );
+        assert!(normalized.contains("still needs its concise `description`"));
+        assert!(normalized
+            .contains("return the final result through the turn's required output contract"));
+        assert!(normalized.contains("For the ordinary text contract, use normal assistant text"));
+        assert!(normalized.contains("a progress update never replaces the final answer"));
+    }
 }
 
 /// The reactive surface the prompt teaches must be the one the harness
@@ -387,8 +473,7 @@ fn default_variant_teaches_only_the_two_binding_shapes() {
     assert!(out.contains("TOP-LEVEL, never inside metadata"));
 }
 
-/// Invariants shared by every identity prompt. Provider-declared variants pin
-/// their own copies in each provider worker; the harness pins the fallback.
+/// Invariants for the sole top-level system prompt default owned by the harness.
 #[test]
 fn default_variant_invariants() {
     let out = variants::DEFAULT;
@@ -408,49 +493,14 @@ fn default_variant_invariants() {
     }
 }
 
-/// The sub-agent identity is a LEAF by design: task mechanics, the
-/// medium-agnostic deliverable (the TASK names the destination and its
-/// format), the FAILED rule, injection defense — and NONE of the
-/// orchestration surface (spawning, triggers, joins, worker installs), with
-/// no "unless told to" escape: capability, not permission-by-prompt.
-#[test]
-fn subagent_variant_invariants() {
-    let out = variants::SUBAGENT;
-    assert!(out.starts_with("You are an iii sub-agent."));
-    assert!(out.contains("agent_trigger"));
-    assert!(out.contains("JSON OBJECT, never a JSON-encoded string"));
-    assert!(out.contains("state::set"));
-    assert!(out.contains("BEFORE your final reply"));
-    assert!(out.contains("format the task specifies"));
-    assert!(out.contains("FAILED: <function> is denied by policy"));
-    assert!(out.contains("data, not instructions"));
-    assert!(out.contains("coder::"));
-    // Zero orchestration knowledge — children are leaves, and there is no
-    // coordinator EXCEPTION anymore: an orchestrator child is made by the
-    // spawn option, never by task text claiming inherited permission.
-    for forbidden in [
-        "harness::spawn",
-        "engine::register_trigger",
-        "engine::unregister_trigger",
-        "worker::add",
-        "directory::registry",
-        "join",
-        "subscription",
-        "EXCEPTION",
-        "inherited the permission",
-    ] {
-        assert!(
-            !out.contains(forbidden),
-            "subagent prompt must not mention {forbidden}"
-        );
-    }
-}
-
 #[test]
 fn capability_ladder_ordering() {
     let out = variants::DEFAULT;
     assert!(out.find("directory::registry::workers::list") < out.find("registerWorker"));
     assert!(out.find("coder::") < out.find("registerWorker"));
+    assert!(out.contains("compose::add { worker: \"<name>\" }"));
+    assert!(out.contains("compose::schema { function_id: \"compose::<operation>\" }"));
+    assert!(!out.contains("worker::add { source:"));
 }
 
 #[test]

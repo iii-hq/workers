@@ -120,8 +120,12 @@ describe('parseNotification', () => {
     expect(p).toEqual({ name: 'rx-done', payload: { op: 'insert', n: 1 } })
   })
 
-  it('rejects non-object payloads and non-notification content', () => {
-    expect(parseNotification('[notification] x: [1,2]')).toBeNull()
+  it('accepts arbitrary JSON payloads and rejects non-notification prose', () => {
+    expect(parseNotification('[notification] x: [1,2]')).toEqual({
+      name: 'x',
+      payload: [1, 2],
+    })
+    expect(parseNotification('[notification] 42')).toEqual({ payload: 42 })
     expect(parseNotification('[notification] x: not json')).toBeNull()
     expect(parseNotification('plain user text')).toBeNull()
   })
@@ -134,6 +138,7 @@ describe('resolveRegistrations', () => {
     trigger_type: 'database::row-changed',
     config: { db: 'mysql', table: 't' },
     label: 'ledger',
+    metadata: { action: 'ledger row changed' },
   }
   const regOutput = {
     content: [{ type: 'text', text: '{"subscription_id":"sub_1"}' }],
@@ -146,7 +151,7 @@ describe('resolveRegistrations', () => {
     ]
     const rows = new Map([['sub_1', row({ config: { db: 'mysql' } })]])
     const out = resolveRegistrations(messages, rows)
-    expect(out.get('m2')).toEqual({
+    expect(out.get('m2')).toMatchObject({
       summary: 'database::row-changed',
       detail: {
         config: { db: 'mysql' },
@@ -154,6 +159,12 @@ describe('resolveRegistrations', () => {
         once: false,
         label: undefined,
         function_id: undefined,
+      },
+      activity: {
+        triggerType: 'database::row-changed',
+        config: { db: 'mysql' },
+        delivery: { kind: 'notify' },
+        lifecycle: { state: 'active', once: false, fires: 0 },
       },
     })
   })
@@ -181,9 +192,49 @@ describe('resolveRegistrations', () => {
     ]
     const rows = new Map([['sub_1', row({ config: undefined })]])
     const out = resolveRegistrations(messages, rows)
-    expect(out.get('m2')).toEqual({
+    expect(out.get('m2')).toMatchObject({
       summary: 'from register call',
       detail: regInput,
+      activity: {
+        triggerType: 'database::row-changed',
+        config: { db: 'mysql', table: 't' },
+        label: 'ledger',
+        action: 'ledger row changed',
+      },
+    })
+  })
+
+  it('uses the richer register call for a reconstructed ghost with config', () => {
+    const input = {
+      ...regInput,
+      conditions: [{ type: 'field', path: '/ready', equals: true }],
+      lifecycle: { max_fires: 3, expires_at: 2_000 },
+    }
+    const messages: Message[] = [
+      registerCall('m1', input, regOutput),
+      fireMsg('m2', {
+        subscription_id: 'sub_1',
+        retired: true,
+        trigger_type: 'database::row-changed',
+        config: { db: 'mysql', table: 't' },
+      }),
+    ]
+    const rows = new Map([
+      [
+        'sub_1',
+        row({
+          fired: true,
+          config: { db: 'mysql', table: 't' },
+          conditions: undefined,
+          maxFires: undefined,
+          expiresAt: undefined,
+        }),
+      ],
+    ])
+    const activity = resolveRegistrations(messages, rows).get('m2')?.activity
+    expect(activity).toMatchObject({
+      conditions: [{ type: 'field', path: '/ready', equals: true }],
+      lifecycle: { maxFires: 3, expiresAt: 2_000 },
     })
   })
 
@@ -242,6 +293,20 @@ describe('resolveRegistrations', () => {
     ]
     const out = resolveRegistrations(messages, undefined)
     expect(out.get('e_notify_sub_1')?.detail).toEqual(regInput)
+  })
+
+  it('falls back to the name for an ambiguous ordinal legacy notify id', () => {
+    const messages: Message[] = [
+      registerCall('m1', regInput, regOutput),
+      fireMsg('m2', {
+        subscription_id: 'sub_1',
+        target: 'harness::send',
+        label: 'rx-done',
+      }),
+      notifMsg('e_notify_sub_1_7', '[notification] rx-done: {"op":"insert"}'),
+    ]
+    const out = resolveRegistrations(messages, undefined)
+    expect(out.get('e_notify_sub_1_7')?.detail).toEqual(regInput)
   })
 
   it('does not correlate a notification to a call-target fire', () => {

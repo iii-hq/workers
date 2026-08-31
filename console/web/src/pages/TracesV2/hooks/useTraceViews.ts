@@ -14,10 +14,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useState } from 'react'
 import {
-  type ConsoleConfigValue,
-  fetchConsoleConfigValue,
-  setConsoleConfigValue,
-} from '@/lib/console-config'
+  CONSOLE_CONFIG_QUERY_KEY,
+  consoleConfigWriter,
+} from '@/hooks/lib/console-config-writer'
+import type { ConsoleConfigValue } from '@/lib/console-config'
 import {
   DEFAULT_VIEW_ID,
   newViewId,
@@ -28,8 +28,6 @@ import {
   withActiveViewId,
   withViews,
 } from '../lib/tracesViews'
-
-const CONSOLE_CONFIG_QUERY_KEY = ['consoleConfig']
 
 export interface UseTraceViewsReturn {
   views: TracesView[]
@@ -46,10 +44,11 @@ export interface UseTraceViewsReturn {
 
 export function useTraceViews(): UseTraceViewsReturn {
   const qc = useQueryClient()
+  const writer = consoleConfigWriter(qc)
 
   const { data, isLoading } = useQuery<ConsoleConfigValue | null>({
     queryKey: CONSOLE_CONFIG_QUERY_KEY,
-    queryFn: fetchConsoleConfigValue,
+    queryFn: () => writer.readForQuery(),
     staleTime: 30_000,
     retry: 1,
   })
@@ -72,19 +71,16 @@ export function useTraceViews(): UseTraceViewsReturn {
   const activeViewId =
     chosenViewId === undefined ? (serverViewId ?? null) : chosenViewId
 
-  // One mutation funnel: take the freshest server value, transform the whole
-  // entry value, write it back, then refresh the cache.
+  // One mutation funnel through the shared writer: the transform is applied
+  // optimistically, rebased on the freshest server value when its turn
+  // comes, and published to the cache by the writer, never by this hook.
   const mutation = useMutation({
     mutationFn: async (
       transform: (value: ConsoleConfigValue) => ConsoleConfigValue,
     ) => {
-      const current = (await fetchConsoleConfigValue()) ?? {}
-      const next = transform(current)
-      await setConsoleConfigValue(next)
+      const next = writer.enqueue(transform, data ?? {})
+      await writer.whenIdle()
       return next
-    },
-    onSuccess: (next) => {
-      qc.setQueryData(CONSOLE_CONFIG_QUERY_KEY, next)
     },
   })
 

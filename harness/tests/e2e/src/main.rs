@@ -10,6 +10,7 @@ use crate::suite::{run_suite, SubjectConfig, SuiteRunConfig};
 
 mod catalog;
 mod context;
+mod dashboard;
 mod judge;
 mod report;
 mod scenarios;
@@ -33,6 +34,9 @@ enum Command {
     /// Print a human-readable summary from a saved results.json.
     #[command(alias = "inspect")]
     Report(ReportArgs),
+    /// Run E2E scenarios and compare local executions in a browser.
+    #[command(alias = "serve")]
+    Dashboard(dashboard::DashboardArgs),
 }
 
 #[derive(Debug, Args)]
@@ -68,7 +72,7 @@ struct RunArgs {
     #[arg(long, default_value_t = 1)]
     runs: u32,
 
-    /// Retry transient provider and transport failures, never quality or resource failures.
+    /// Retry transient provider and transport failures, never hard-gate or resource failures.
     #[arg(long, env = "HARNESS_E2E_TECHNICAL_RETRIES", default_value_t = 1)]
     technical_retries: u8,
 
@@ -115,6 +119,7 @@ async fn main() -> Result<()> {
         Command::Models(args) => models(args).await,
         Command::Run(args) => run(args).await,
         Command::Report(args) => report(args),
+        Command::Dashboard(args) => dashboard::serve(args).await,
     }
 }
 
@@ -122,6 +127,16 @@ async fn models(args: ModelsArgs) -> Result<()> {
     let context = context::E2eContext::connect(&args.url)
         .await
         .context("connect to the iii stack")?;
+    if !context.function_exists("harness::send").await? {
+        bail!(
+            "connected iii stack does not expose harness::send; verify --url points to the Harness stack"
+        );
+    }
+    if !context.function_exists("router::models::list").await? {
+        bail!(
+            "connected Harness stack does not expose router::models::list; start its llm-router before loading models"
+        );
+    }
     let result = catalog::list(&context, args.provider.as_deref()).await;
     context.shutdown().await;
     let models = result?;
@@ -166,15 +181,8 @@ async fn run(args: RunArgs) -> Result<()> {
 
     print!("{}", outcome.report.summary(false));
     println!("report: {}", outcome.report_path.display());
-    if !outcome.report.passed && outcome.report.has_ci_blocking_failure() {
-        bail!("E2E suite failed");
-    }
     if !outcome.report.passed {
-        tracing::warn!(
-            path = %outcome.report_path.display(),
-            "E2E quality score is below the scenario threshold but remains advisory"
-        );
-        return Ok(());
+        bail!("E2E suite failed");
     }
     tracing::info!(path = %outcome.report_path.display(), "E2E quality suite passed");
     Ok(())
@@ -240,6 +248,18 @@ mod tests {
         assert_eq!(args.output, PathBuf::from("target/e2e"));
         assert_eq!(args.technical_retries, 1);
         assert_eq!(args.progress_interval_seconds, 15);
+    }
+
+    #[test]
+    fn dashboard_is_available_as_serve_alias() {
+        for name in ["dashboard", "serve"] {
+            let cli = Cli::try_parse_from(["harness-e2e", name]).unwrap();
+            let Command::Dashboard(args) = cli.command else {
+                panic!("expected dashboard command");
+            };
+            assert_eq!(args.listen.to_string(), "127.0.0.1:4173");
+            assert_eq!(args.url, "ws://127.0.0.1:49134");
+        }
     }
 
     #[test]

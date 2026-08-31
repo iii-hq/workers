@@ -1,4 +1,4 @@
-"""Guidance injection: pure mutation logic + the one-shot hook bind."""
+"""Guidance injection: pure mutation logic + the config-driven hook bind."""
 
 from __future__ import annotations
 
@@ -8,13 +8,22 @@ from typing import Any
 from src import guidance
 
 
+class FakeTrigger:
+    def __init__(self):
+        self.unregistered = False
+
+    def unregister(self):
+        self.unregistered = True
+
+
 class FakeIII:
-    """Duck-types the slice of IIIClient that guidance.setup touches."""
+    """Duck-types the slice of IIIClient that guidance touches."""
 
     def __init__(self):
         self.functions: dict[str, dict[str, Any]] = {}
         self.handlers: dict[str, Any] = {}
         self.trigger_binds: list[dict[str, Any]] = []
+        self.trigger_handles: list[FakeTrigger] = []
 
     def register_function(self, function_id, handler, **kwargs):
         self.functions[function_id] = kwargs
@@ -22,6 +31,9 @@ class FakeIII:
 
     def register_trigger(self, spec):
         self.trigger_binds.append(spec)
+        handle = FakeTrigger()
+        self.trigger_handles.append(handle)
+        return handle
 
 
 # ---- pure mutation logic ----------------------------------------------------
@@ -64,22 +76,46 @@ def test_guidance_names_the_full_surface():
         assert needle in guidance.GUIDANCE, f"missing: {needle}"
 
 
-# ---- setup: one-shot bind ----------------------------------------------------
+# ---- config-driven bind ------------------------------------------------------
 
 
-def test_setup_registers_hook_and_binds_one_shot():
+def test_register_hook_registers_the_function_without_binding():
     iii = FakeIII()
-    guidance.setup(iii)
+    guidance.register_hook(iii)
 
     assert set(iii.functions) == {guidance.HOOK_ID}
     kwargs = iii.functions[guidance.HOOK_ID]
     assert kwargs["request_format"].get("type"), "untyped request schema"
     assert kwargs["response_format"].get("type"), "untyped response schema"
+    # Registering the function is inert: no binding until apply(True).
+    assert iii.trigger_binds == []
 
+
+def test_apply_binds_on_and_unbinds_off_idempotently():
+    iii = FakeIII()
+    state = guidance.GuidanceState()
+
+    # Off with no binding: nothing happens.
+    guidance.apply(iii, state, False)
+    assert iii.trigger_binds == []
+
+    # On: binds exactly once, with the declarative inject_prompt metadata.
+    guidance.apply(iii, state, True)
+    guidance.apply(iii, state, True)
     assert iii.trigger_binds == [
         {
             "type": guidance.HOOK_TRIGGER_TYPE,
             "function_id": guidance.HOOK_ID,
             "config": {"on_error": "fail_open"},
+            "metadata": {"inject_prompt": guidance.GUIDANCE},
         }
     ]
+
+    # Off: unregisters the live handle and empties the slot.
+    guidance.apply(iii, state, False)
+    assert iii.trigger_handles[0].unregistered
+    assert state.trigger is None
+
+    # Back on: binds a fresh handle.
+    guidance.apply(iii, state, True)
+    assert len(iii.trigger_binds) == 2

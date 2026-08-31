@@ -626,6 +626,7 @@ mod tests {
                 parent: None,
                 parent_session_id: None,
                 reactive_depth: None,
+                context: None,
             },
         };
         let observations = vec![

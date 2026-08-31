@@ -1,0 +1,307 @@
+name: browser scrapling E2E
+run-name: Test · browser_scrapling_e2e · ${{ github.event_name }}
+
+on:
+  pull_request:
+    paths:
+      - 'browser/**'
+      - '.github/workflows/browser-scrapling-e2e.yml'
+  schedule:
+    - cron: '0 4 * * *'
+
+concurrency:
+  group: browser-scrapling-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  e2e:
+    name: Harness
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --local url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # 1.97.1
+        with:
+          toolchain: 1.97.1
+
+      - name: Cache cargo registry & build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: browser
+
+      # browser/build.rs builds the injectable console UI (browser/ui) via
+      # pnpm and PANICS if pnpm is missing, so this step is required for the
+      # `cargo build --release --bin browser` inside run-tests.sh. Version
+      # comes from the repo-root package.json `packageManager` field.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+
+      - name: Install Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: browser/tests/e2e/workers/harness/package-lock.json
+
+      - name: Install iii engine (next)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 \
+            https://install.iii.dev/iii/main/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Verify engine
+        run: iii --version
+
+      - name: Run harness
+        working-directory: browser/tests/e2e
+        run: ./run-tests.sh
+
+      - name: Upload report on failure
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: browser-scrapling-e2e-report
+          path: |
+            browser/tests/e2e/reports/
+          retention-days: 7
+
+  tier1-compat:
+    name: Compat certification · ${{ matrix.target }}
+    if: github.event_name != 'schedule'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            chrome: target/scrapling-chromium/x86_64-unknown-linux-gnu/chrome-linux64/chrome
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            chrome: target/scrapling-chromium/aarch64-unknown-linux-gnu/chrome-linux/chrome
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # 1.97.1
+        with:
+          toolchain: 1.97.1
+          components: rustfmt, clippy
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+
+      - name: Install Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12.13'
+
+      - name: Install uv
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+
+      - name: Cache cargo registry & build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: browser
+
+      - name: Fetch and verify pinned artifacts
+        working-directory: browser
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: |
+          ./scripts/fetch_curl_impersonate_artifacts.sh "$BUILD_TARGET"
+          ./scripts/fetch_chromium_artifacts.sh fetch "$BUILD_TARGET"
+
+      - name: Rust formatting
+        working-directory: browser
+        run: cargo fmt --all -- --check
+
+      - name: Strict Clippy
+        working-directory: browser
+        env:
+          SCRAPLING_CHROMIUM_EXECUTABLE: ${{ github.workspace }}/browser/${{ matrix.chrome }}
+        run: cargo clippy --all-targets --all-features --no-deps -- -D warnings
+
+      - name: Rust tests
+        working-directory: browser
+        env:
+          PYTHONHASHSEED: '0'
+          SCRAPLING_CHROMIUM_EXECUTABLE: ${{ github.workspace }}/browser/${{ matrix.chrome }}
+        run: cargo test --all-targets --all-features -- --test-threads=1
+
+      - name: Console UI tests and build
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --dir browser/ui test
+          pnpm --dir browser/ui build
+
+      - name: Parser and regex fork checks
+        working-directory: browser
+        env:
+          PYTHONHASHSEED: '0'
+        run: |
+          cargo test --manifest-path vendor/cssselect/Cargo.toml --all-targets
+          cargo clippy --manifest-path vendor/cssselect/Cargo.toml --all-targets --no-deps -- -D warnings
+          cargo test --manifest-path vendor/xmloxide/Cargo.toml --all-targets
+          cargo clippy --manifest-path vendor/xmloxide/Cargo.toml --all-targets --no-deps -- -D warnings
+          cargo test --manifest-path vendor/rustpython-sre_engine/Cargo.toml --all-targets
+          cargo clippy --manifest-path vendor/rustpython-sre_engine/Cargo.toml --all-targets --no-deps -- -D warnings
+          python vendor/rustpython-sre_engine/tests/differential.py --cases 10000 --max-mismatches 30
+
+      - name: Public-wrapper compatibility differentials
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        working-directory: browser
+        env:
+          PYTHONHASHSEED: '0'
+        run: |
+          uv venv --python 3.12.13 .oracle
+          uv pip sync --python .oracle/bin/python --require-hashes oracle/requirements.lock
+          .oracle/bin/python scripts/gen_goldens.py check --parser-runtime
+          .oracle/bin/python scripts/differential_parser.py --oracle-check parser-runtime --cases 10000 --max-mismatches 20
+          .oracle/bin/python scripts/differential_http.py --oracle-check parser-runtime
+
+      - name: Curl binding tests
+        working-directory: browser
+        run: |
+          cargo test --manifest-path vendor/curl_impersonate_sys/Cargo.toml --all-targets --features certified
+          cargo clippy --manifest-path vendor/curl_impersonate_sys/Cargo.toml --all-targets --features certified --no-deps -- -D warnings
+
+  # Compat certification is limited to Linux x86_64/aarch64. Keep every
+  # other release target visible without allowing a best-effort safe compile
+  # failure to block the Tier-1 parity gate.
+  non-tier1-safe-compile:
+    name: Safe compile · ${{ matrix.target }}
+    if: github.event_name != 'schedule'
+    continue-on-error: true
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          - target: i686-pc-windows-msvc
+            os: windows-latest
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: armv7-unknown-linux-gnueabihf
+            os: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+
+      - name: Install Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '22'
+
+      - name: Install Linux cross compiler
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: |
+          sudo apt-get update
+          case "$BUILD_TARGET" in
+            x86_64-unknown-linux-musl)
+              sudo apt-get install -y musl-tools
+              ;;
+            armv7-unknown-linux-gnueabihf)
+              sudo apt-get install -y gcc-arm-linux-gnueabihf libc6-dev-armhf-cross
+              ;;
+          esac
+
+      - name: Install Rust target
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # 1.97.1
+        with:
+          toolchain: 1.97.1
+          targets: ${{ matrix.target }}
+
+      - name: Check safe build
+        env:
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+        run: cargo check --manifest-path browser/Cargo.toml --target ${{ matrix.target }}
+
+  nightly-differentials:
+    name: Million-case parser and regex differentials
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # 1.97.1
+        with:
+          toolchain: 1.97.1
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+
+      - name: Install Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '22'
+
+      - name: Install Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12.13'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+
+      - name: Cache cargo registry & build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: browser
+
+      - name: Run deterministic differentials
+        working-directory: browser
+        env:
+          PYTHONHASHSEED: '0'
+        run: |
+          uv venv --python 3.12.13 .oracle
+          uv pip sync --python .oracle/bin/python --require-hashes oracle/requirements.lock
+          .oracle/bin/python scripts/differential_parser.py --oracle-check parser-runtime --cases 1000000 --max-mismatches 20
+          .oracle/bin/python vendor/rustpython-sre_engine/tests/differential.py --cases 1000000 --max-mismatches 30

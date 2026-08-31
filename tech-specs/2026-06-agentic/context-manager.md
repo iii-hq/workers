@@ -61,22 +61,33 @@ usable = max(0, (input_limit ?? (context_window - max_output_tokens)) - reserved
 `thinking_budget` is `thinking_budgets[thinking_level]` when the caller passes
 `options.thinking_level` and the model declares budgets, else 0 — this is how assemble leaves room
 for the reasoning tokens a thinking tier consumes. A 200k model with defaults yields ~180k usable; a
-32k model yields ~12k. Compaction/pruning trigger when running tokens cross `usable`.
+32k model yields ~12k. Compaction triggers when running tokens cross `usable`; capping and pruning
+now run on every call, before that check.
 
 ## Structural invariants
 
-Whatever pruning or compaction does, the returned context must still be accepted by providers:
+Whatever capping, pruning, or compaction does, the returned context must still be accepted by providers:
 
 - **Call/result pairing.** A `function_call` and its `function_result` always land on the same side
   of any boundary: the compaction tail never starts between an assistant's call and its result
   (providers reject orphaned results), so tail selection only cuts at user/assistant turn
   boundaries.
 - **Prune replaces, never removes.** Pruning rewrites a verbose output's content to a single text
-  placeholder (`[output pruned: was ~N tokens]`); the block, the message, and the
-  `function_call_id` linkage all survive.
+  placeholder (`[output of {function_id} pruned: was ~N tokens; re-call it if still needed]`); the
+  block, the message, and the `function_call_id` linkage all survive. The unconditional per-result
+  cap pass (see `context::assemble`) replaces the same way, with its own marker: `[…result capped:
+  was ~N tokens; middle omitted; re-call {function_id} with narrower arguments if the omitted
+  middle is needed]`.
 - **`custom` messages are app-facing.** `context::assemble` excludes `role: "custom"` messages from
   the model-facing list (and their tokens from the count) — they have no provider wire mapping (see
   [README § Messages](README.md#messages-the-many-message-types)).
+- **Image normalization is model-facing only.** Before token accounting,
+  `context::assemble` normalizes images in its cloned model-facing view. A known
+  text-only model receives placeholders. For a known vision model, tool images
+  age after the next assistant response and user images age when a later user
+  turn begins after a response. Unknown capability keeps images. Live images
+  cost a fixed 4,096-token heuristic budget; base64 bytes are never counted as
+  text. The caller's transcript is unchanged.
 
 ## Functions
 
@@ -84,7 +95,8 @@ Whatever pruning or compaction does, the returned context must still be accepted
   history. The main "sync messages with context" entry point.
 - `context::compact` — Summarise older history into a single compaction summary and return the
   preserved tail. Transient: the caller uses the result; the session keeps its full transcript.
-- `context::prune` — Strip/truncate verbose function outputs without summarising. A cheaper first pass.
+- `context::prune` — Strip/truncate verbose function outputs without summarising. The cheap policy
+  pass, run on every call (not just when over budget).
 - `context::count-tokens` — Estimate token usage for a set of messages (+ optional invocation schema /
   system) vs a model.
 
@@ -133,11 +145,10 @@ in [README.md § Cross-cutting contracts](README.md#cross-cutting-contracts).
 
 ### `context::assemble`
 
-Build a model-ready context. Applies prune and/or compaction as needed to fit `usable`, in this
-order: count the complete request -> (if over) prune function outputs -> (if still over) compact
-the head -> (if still over) replace oversized function results with bounded transcript references
--> assemble the final list. A successful response has the hard postcondition
-`token_count <= usable`.
+Build a model-ready context. Applies, in this order: media-normalize -> cap oversized single
+results (always) -> prune aged function outputs (always) -> (if over budget) compact the head ->
+(if still over) emergency-reduce -> return the budgeted list, or a structured overflow if nothing fits. A
+successful response has the hard postcondition `token_count <= usable`.
 
 - Invocation: **sync**
 
@@ -155,6 +166,7 @@ type AssembleRequest = {
     tail_turns?: number;           // user+assistant pairs always kept verbatim (default 2)
     allow_compaction?: boolean;    // default true
     allow_prune?: boolean;         // default true
+    max_result_tokens?: number;    // per-call cap override; null = config default (20000), 0 disables the cap pass
     protected_functions?: string[];    // function_ids exempt from the normal prune pass
     thinking_level?: ThinkingLevel;    // reserve the model's thinking budget for this tier
     lease_key?: string;            // compaction mutual-exclusion key (e.g. a session id); default: hash of the message set
@@ -175,6 +187,8 @@ type AssembleResponse = {
   applied: {
     pruned: boolean;
     pruned_tokens: number;
+    capped_parts: number;
+    capped_tokens: number;
     compacted: boolean;
     summary?: string;              // present when compacted; the caller should persist it (see below)
     tail_start_index?: number | null; // index into the request messages where the verbatim tail begins
@@ -183,16 +197,21 @@ type AssembleResponse = {
 };
 ```
 
+The per-result cap pass is a safety ceiling, not a policy choice: unlike prune, it has no age,
+protection, or error exemption — a `details` payload carrying `"status": "denied"` keeps its
+details, but nothing else is spared. It traverses message-level and inline results, joins text
+blocks with provider-visible newlines, and includes the fixed 4,096-token allowance per image.
+
 The emergency reduction pass is a safety boundary, not a preference. It may replace a recent or
-normally protected `function_result` when that single result would otherwise overflow the model.
-The replacement preserves message order and `function_call_id`, and carries a bounded reference
-with the original size, hash, preview, and transcript retrieval hint; the durable session transcript
-retains the full result.
+normally protected message-level or inline `function_result` when that single result would otherwise
+overflow the model. The replacement preserves message order, inline host-message siblings, and
+`function_call_id`, and carries a bounded reference with the original size, hash, preview, and
+transcript retrieval hint; the durable session transcript retains the full result.
 
 Errors (thrown): `messages is required`; `could not resolve model limits` (only when neither inline
 limits nor `llm-router` are available and the fallback is explicitly disabled); `context/overflow`
-when no safe combination of pruning and compaction can fit the complete request. An overflow error
-never includes a model-ready response for the caller to send anyway.
+when the request still exceeds the budget after capping, pruning, compaction, and emergency
+reduction. An overflow error never includes a model-ready response for the caller to send anyway.
 
 Example:
 
@@ -210,7 +229,7 @@ Example:
   "token_count": 24,
   "usable": 180000,
   "model_resolved": "router",
-  "applied": { "pruned": false, "pruned_tokens": 0, "compacted": false }
+  "applied": { "pruned": false, "pruned_tokens": 0, "capped_parts": 0, "capped_tokens": 0, "compacted": false }
 }
 ```
 
@@ -283,8 +302,9 @@ worker log and callers should treat it as "compaction unavailable".
 
 ### `context::prune`
 
-Replace verbose function outputs with placeholders without summarising. Walks `function_result`
-content newest to oldest, freeing outputs outside a protected token window. Per the
+Replace verbose function outputs with a `[output of {function_id} pruned: was ~N tokens; re-call
+it if still needed]` placeholder, without summarising. Walks `function_result` content newest to
+oldest, freeing outputs outside a protected token window. Per the
 [structural invariants](#structural-invariants), pruning rewrites content in place — it never
 removes a block or message, so call/result pairing survives.
 

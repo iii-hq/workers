@@ -1,8 +1,17 @@
 import { Search, X } from 'lucide-react'
 import { Input } from '@/components/ui/Input'
 import { cn } from '@/lib/utils'
-import type { WorkerRow, WorkersFilterState } from '../types'
-import { distinctRuntimes, distinctTags } from '../types'
+import type {
+  WorkerManagementKind,
+  WorkerRow,
+  WorkersFilterState,
+} from '../types'
+import {
+  distinctManagement,
+  distinctRuntimes,
+  distinctTags,
+  MANAGEMENT_LABEL,
+} from '../types'
 
 interface WorkersFiltersProps {
   rows: WorkerRow[]
@@ -21,10 +30,12 @@ export function WorkersFilters({
 }: WorkersFiltersProps) {
   const tags = distinctTags(rows)
   const runtimes = distinctRuntimes(rows)
+  const management = distinctManagement(rows)
   const hasActive =
     filters.search.trim() !== '' ||
     filters.tag !== null ||
-    filters.runtime !== null
+    filters.runtime !== null ||
+    filters.management !== null
 
   return (
     <div className={cn('flex flex-col gap-3', className)}>
@@ -32,7 +43,7 @@ export function WorkersFilters({
         <div className="relative flex-1 min-w-[200px] max-w-md">
           <Search
             aria-hidden
-            className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-ink-faint pointer-events-none"
+            className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-ink-faint pointer-events-none"
           />
           <Input
             value={filters.search}
@@ -49,13 +60,31 @@ export function WorkersFilters({
             onClick={onClear}
             className="inline-flex items-center gap-1 font-mono text-[12px] text-ink-faint hover:text-ink lowercase"
           >
-            <X className="w-3 h-3" aria-hidden />
+            <X className="size-4" aria-hidden />
             clear filters
           </button>
         ) : null}
       </div>
-      {(tags.length > 0 || runtimes.length > 0) && (
+      {(management.length > 1 || tags.length > 0 || runtimes.length > 0) && (
         <div className="flex flex-wrap items-center gap-2">
+          {management.length > 1 ? (
+            <FilterChipGroup
+              label="managed by"
+              options={management}
+              labelFor={(kind) =>
+                MANAGEMENT_LABEL[kind as WorkerManagementKind]
+              }
+              selected={filters.management}
+              onSelect={(kind) =>
+                onFilterChange({
+                  management:
+                    filters.management === kind
+                      ? null
+                      : (kind as WorkerManagementKind),
+                })
+              }
+            />
+          ) : null}
           {tags.length > 0 ? (
             <FilterChipGroup
               label="tag"
@@ -89,6 +118,7 @@ interface FilterChipGroupProps {
   options: string[]
   selected: string | null
   onSelect: (value: string) => void
+  labelFor?: (value: string) => string
 }
 
 function FilterChipGroup({
@@ -96,6 +126,7 @@ function FilterChipGroup({
   options,
   selected,
   onSelect,
+  labelFor = (value) => value,
 }: FilterChipGroupProps) {
   return (
     <div className="flex flex-wrap items-center gap-1.5">
@@ -117,7 +148,7 @@ function FilterChipGroup({
                 : 'bg-bg text-ink-faint border-rule hover:border-ink hover:text-ink',
             )}
           >
-            {opt}
+            {labelFor(opt)}
           </button>
         )
       })}

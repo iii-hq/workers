@@ -7,8 +7,8 @@ Update ingress uses a session-manager-style `updates` adapter: **polling** (defa
 ## Install
 
 ```bash
-iii worker add harness session-manager llm-router context-manager approval-gate
-iii worker add telegram-bot
+iii trigger compose::add worker=harness worker=session-manager worker=llm-router \
+  worker=context-manager worker=approval-gate worker=telegram-bot
 ```
 
 ## Quickstart (polling — default)

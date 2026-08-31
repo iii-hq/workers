@@ -69,6 +69,14 @@
       "response_format": {
         "default": null
       },
+      "session_id": {
+        "default": null,
+        "description": "Stable conversation identity, forwarded separately from the per-turn request id.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "system_prompt": {
         "default": null,
         "type": [
@@ -102,13 +110,46 @@
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
+      "ErrorKind": {
+        "enum": [
+          "auth_expired",
+          "rate_limited",
+          "context_overflow",
+          "transient",
+          "permanent"
+        ],
+        "type": "string"
+      },
       "ErrorShape": {
         "properties": {
           "code": {
             "type": "string"
           },
+          "detail": {
+            "description": "Provider/transport diagnostics for logs and expandable UI details. `message` remains the stable, user-facing explanation.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ErrorKind"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "message": {
             "type": "string"
+          },
+          "retryable": {
+            "type": [
+              "boolean",
+              "null"
+            ]
           }
         },
         "required": [

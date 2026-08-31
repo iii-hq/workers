@@ -1,0 +1,27 @@
+{
+  "function": "browser::extract",
+  "case": "comments_removed_and_text_merged",
+  "request": {
+    "html": "<p>a<!--gone-->b<![CDATA[c]]>d</p>",
+    "selectors": [
+      {
+        "name": "text",
+        "xpath": "//p/text()",
+        "all": true
+      },
+      {
+        "name": "html",
+        "css": "p",
+        "html": true
+      }
+    ]
+  },
+  "ok": {
+    "extracted": {
+      "text": [
+        "abd"
+      ],
+      "html": "<p>abd</p>"
+    }
+  }
+}

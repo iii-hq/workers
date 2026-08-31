@@ -4,24 +4,33 @@
 
 pub mod act;
 pub mod attach;
+pub mod clear_data;
 pub mod console;
+pub mod cookies;
 pub mod doctor;
 pub mod dom;
+pub mod downloads;
 pub mod evaluate;
 pub mod execute;
+pub mod find_in_page;
 pub mod frame;
 pub mod handoff;
 pub mod hint;
 pub mod history;
+pub mod history_list;
 pub mod navigate;
 pub mod network;
 pub mod overlays;
+pub mod pdf;
 pub mod pick;
 pub mod recording;
+pub mod resize;
 pub mod screenshot;
 pub mod sessions;
 pub mod snapshot;
 pub mod styles;
+pub mod upload;
+pub mod zoom;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,10 +40,13 @@ use base64::Engine;
 use chromiumoxide::cdp::browser_protocol::accessibility as cdp_ax;
 use chromiumoxide::cdp::browser_protocol::css as cdp_css;
 use chromiumoxide::cdp::browser_protocol::dom as cdp_dom;
+use chromiumoxide::cdp::browser_protocol::emulation as cdp_emulation;
 use chromiumoxide::cdp::browser_protocol::input;
+use chromiumoxide::cdp::browser_protocol::network as cdp_network;
 use chromiumoxide::cdp::browser_protocol::overlay;
 use chromiumoxide::cdp::browser_protocol::page as cdp_page;
 use chromiumoxide::cdp::browser_protocol::page::CaptureScreenshotFormat;
+use chromiumoxide::cdp::browser_protocol::storage as cdp_storage;
 use chromiumoxide::cdp::js_protocol::runtime as cdp_rt;
 use chromiumoxide::page::ScreenshotParams;
 use iii_sdk::errors::Error;
@@ -42,7 +54,8 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::json;
 use tokio::time::timeout;
 
-use crate::events::{EventKind, HandoffRequestedEvent, SessionStartedEvent};
+use crate::config::{origin_label, origin_policy_config_key_for, origin_policy_for, WorkerConfig};
+use crate::events::{EventKind, HandoffRequestedEvent, HandoffResolvedEvent, SessionStartedEvent};
 use crate::session::{now_ms, Session, Sessions};
 
 pub const SESSIONS_START_ID: &str = "browser::sessions::start";
@@ -83,8 +96,8 @@ pub const SCREENSHOT_DESC: &str =
 pub const ACT_ID: &str = "browser::act";
 pub const ACT_DESC: &str =
     "Interact with the page: click (left/right/middle, single or double), hover, type, press, \
-     or scroll. Address elements with a [ref=eN] handle from browser::snapshot (or a pick), or \
-     raw viewport coordinates.";
+     scroll, or drag (press at the start point, glide to x2/y2, release). Address elements with \
+     a [ref=eN] handle from browser::snapshot (or a pick), or raw viewport coordinates.";
 pub const EVALUATE_ID: &str = "browser::evaluate";
 pub const EVALUATE_DESC: &str =
     "Evaluate a JavaScript expression in the page and return its completion value. Use for \
@@ -171,6 +184,58 @@ pub const PICK_STOP_ID: &str = "browser::pick::stop";
 pub const PICK_STOP_DESC: &str =
     "Internal: leave DevTools inspect mode without picking. Idempotent. Not an agent \
      function.";
+pub const FIND_IN_PAGE_ID: &str = "browser::find-in-page";
+pub const FIND_IN_PAGE_DESC: &str =
+    "Find text in the page like the browser's find bar: highlights every match in the live \
+     document, scrolls the current one into view, and steps with next / previous. close \
+     clears the highlights. Returns count and the 1-based index.";
+pub const ZOOM_ID: &str = "browser::zoom";
+pub const ZOOM_DESC: &str =
+    "Zoom the page in, out, to a level (50-200 %) or back to 100 %, the way the browser's \
+     zoom menu does. The viewport keeps its size; the page scales inside it. The level \
+     belongs to the loaded document and resets on navigation.";
+pub const PDF_ID: &str = "browser::pdf";
+pub const PDF_DESC: &str =
+    "Print the page to a PDF (the browser's Print -> Save as PDF) and return it base64 with \
+     a file name from the title.";
+pub const HISTORY_LIST_ID: &str = "browser::history::list";
+pub const HISTORY_LIST_DESC: &str =
+    "The session's visited pages, newest first, for a history panel or address-bar \
+     suggestions. Filter with query. Distinct from browser::history, which moves back / \
+     forward / reloads.";
+pub const CLEAR_DATA_ID: &str = "browser::clear-data";
+pub const CLEAR_DATA_DESC: &str =
+    "Clear the session's browsing data (cookies, cache, storage), like the browser's Clear \
+     browsing data. Scoped to this session's browser context.";
+pub const DOWNLOADS_LIST_ID: &str = "browser::downloads::list";
+pub const DOWNLOADS_LIST_DESC: &str =
+    "The files this session downloaded (name, url, size, state), newest first. Downloads are \
+     allowed and named per session; read one with browser::download.";
+pub const DOWNLOAD_ID: &str = "browser::download";
+pub const DOWNLOAD_DESC: &str =
+    "Read one downloaded file's bytes by guid (from browser::downloads::list), base64, for \
+     saving or attaching to the chat.";
+pub const DOWNLOAD_REMOVE_ID: &str = "browser::download::remove";
+pub const DOWNLOAD_REMOVE_DESC: &str =
+    "Forget a download and delete its file from the session's download dir.";
+pub const UPLOAD_ID: &str = "browser::upload";
+pub const UPLOAD_DESC: &str =
+    "Attach up to eight base64 files to exactly one input[type=file] selected by CSS. Files are \
+     staged privately for the session and removed when it stops.";
+pub const RESIZE_ID: &str = "browser::resize";
+pub const RESIZE_DESC: &str =
+    "Set the session's live viewport size (CSS pixels). The console calls this as its browser \
+     pane resizes so the streamed frame fills the pane with no letterboxing and clicks map \
+     1:1; the device toolbar calls it with a preset. Clamped 200..4000.";
+pub const COOKIES_LIST_ID: &str = "browser::cookies::list";
+pub const COOKIES_LIST_DESC: &str =
+    "The cookies visible to the session's current page (name, value, domain, path, flags).";
+pub const COOKIES_SET_ID: &str = "browser::cookies::set";
+pub const COOKIES_SET_DESC: &str =
+    "Set cookies on the session, like importing a cookie file. A cookie without a domain is \
+     scoped to the current page's URL. same_site is Strict, Lax, or None.";
+pub const COOKIES_CLEAR_ID: &str = "browser::cookies::clear";
+pub const COOKIES_CLEAR_DESC: &str = "Clear all of the session's cookies.";
 
 /// One wire-surface entry: everything the golden schema test pins.
 pub struct FunctionSpec {
@@ -256,6 +321,43 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<pick::PickStartInput, pick::AckOutput>(PICK_START_ID, PICK_START_DESC),
         spec::<pick::PickResolveInput, pick::AckOutput>(PICK_RESOLVE_ID, PICK_RESOLVE_DESC),
         spec::<pick::PickStopInput, pick::AckOutput>(PICK_STOP_ID, PICK_STOP_DESC),
+        spec::<find_in_page::FindInput, find_in_page::FindOutput>(
+            FIND_IN_PAGE_ID,
+            FIND_IN_PAGE_DESC,
+        ),
+        spec::<zoom::ZoomInput, zoom::ZoomOutput>(ZOOM_ID, ZOOM_DESC),
+        spec::<pdf::PdfInput, pdf::PdfOutput>(PDF_ID, PDF_DESC),
+        spec::<history_list::HistoryListInput, history_list::HistoryListOutput>(
+            HISTORY_LIST_ID,
+            HISTORY_LIST_DESC,
+        ),
+        spec::<clear_data::ClearDataInput, clear_data::ClearDataOutput>(
+            CLEAR_DATA_ID,
+            CLEAR_DATA_DESC,
+        ),
+        spec::<downloads::DownloadsListInput, downloads::DownloadsListOutput>(
+            DOWNLOADS_LIST_ID,
+            DOWNLOADS_LIST_DESC,
+        ),
+        spec::<downloads::DownloadInput, downloads::DownloadOutput>(DOWNLOAD_ID, DOWNLOAD_DESC),
+        spec::<downloads::DownloadRemoveInput, downloads::DownloadRemoveOutput>(
+            DOWNLOAD_REMOVE_ID,
+            DOWNLOAD_REMOVE_DESC,
+        ),
+        spec::<upload::UploadInput, upload::UploadOutput>(UPLOAD_ID, UPLOAD_DESC),
+        spec::<resize::ResizeInput, resize::ResizeOutput>(RESIZE_ID, RESIZE_DESC),
+        spec::<cookies::CookiesListInput, cookies::CookiesListOutput>(
+            COOKIES_LIST_ID,
+            COOKIES_LIST_DESC,
+        ),
+        spec::<cookies::CookiesSetInput, cookies::CookiesSetOutput>(
+            COOKIES_SET_ID,
+            COOKIES_SET_DESC,
+        ),
+        spec::<cookies::CookiesClearInput, cookies::CookiesClearOutput>(
+            COOKIES_CLEAR_ID,
+            COOKIES_CLEAR_DESC,
+        ),
     ]
 }
 
@@ -289,11 +391,48 @@ pub fn register_all(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     register_pick_start(iii, sessions);
     register_pick_resolve(iii, sessions);
     register_pick_stop(iii, sessions);
+    register_find_in_page(iii, sessions);
+    register_zoom(iii, sessions);
+    register_pdf(iii, sessions);
+    register_history_list(iii, sessions);
+    register_clear_data(iii, sessions);
+    register_downloads_list(iii, sessions);
+    register_download(iii, sessions);
+    register_download_remove(iii, sessions);
+    register_upload(iii, sessions);
+    register_resize(iii, sessions);
+    register_cookies_list(iii, sessions);
+    register_cookies_set(iii, sessions);
+    register_cookies_clear(iii, sessions);
     tracing::info!("all functions registered");
 }
 
 fn handler_err(msg: impl Into<String>) -> Error {
     Error::Handler(msg.into())
+}
+
+/// Download guids are used as file names under the session's download dir;
+/// reject anything that could escape it before it reaches the filesystem.
+fn ensure_safe_guid(guid: &str) -> Result<(), Error> {
+    if guid.contains(['/', '\\']) || guid.contains("..") {
+        return Err(handler_err("download guids never contain path parts"));
+    }
+    Ok(())
+}
+
+/// `scheme://host[:port]` of a url, for the storage origin. None for
+/// about:blank and other origin-less pages.
+fn origin_of(url: &str) -> Option<String> {
+    let (scheme, rest) = url.split_once("://")?;
+    if scheme != "http" && scheme != "https" {
+        return None;
+    }
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if host.is_empty() {
+        None
+    } else {
+        Some(format!("{scheme}://{host}"))
+    }
 }
 
 fn get_session(sessions: &Sessions, id: &str) -> Result<Arc<Session>, Error> {
@@ -319,6 +458,59 @@ fn ensure_writable(session: &Session, what: &str) -> Result<(), Error> {
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum OriginPermission {
+    Access,
+    Downloads,
+    Uploads,
+    Scripting,
+}
+
+impl OriginPermission {
+    fn key(self) -> &'static str {
+        match self {
+            Self::Access => "access",
+            Self::Downloads => "downloads",
+            Self::Uploads => "uploads",
+            Self::Scripting => "scripting",
+        }
+    }
+
+    fn allowed(self, config: &WorkerConfig, url: &str) -> bool {
+        let policy = origin_policy_for(config, url);
+        match self {
+            Self::Access => policy.access,
+            Self::Downloads => policy.downloads,
+            Self::Uploads => policy.uploads,
+            Self::Scripting => policy.scripting,
+        }
+    }
+}
+
+fn check_origin_permission(
+    config: &WorkerConfig,
+    url: &str,
+    permission: OriginPermission,
+) -> Result<(), String> {
+    if permission.allowed(config, url) {
+        return Ok(());
+    }
+    Err(format!(
+        "origin '{}' is denied by {} ({})",
+        origin_label(url),
+        origin_policy_config_key_for(config, url),
+        permission.key()
+    ))
+}
+
+fn ensure_origin_permission(
+    config: &WorkerConfig,
+    url: &str,
+    permission: OriginPermission,
+) -> Result<(), Error> {
+    check_origin_permission(config, url, permission).map_err(handler_err)
+}
+
 fn register_sessions_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     let sx = sessions.clone();
     iii.register_function(
@@ -327,7 +519,9 @@ fn register_sessions_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             let sx = sx.clone();
             async move {
                 if let Some(url) = &req.url {
-                    sessions::check_scheme(&sx.config.load(), url).map_err(handler_err)?;
+                    let config = sx.config.load();
+                    sessions::check_scheme(&config, url).map_err(handler_err)?;
+                    ensure_origin_permission(&config, url, OriginPermission::Access)?;
                 }
                 let session = sx
                     .start(req.url, req.headful, req.read_only.unwrap_or(false))
@@ -340,6 +534,16 @@ fn register_sessions_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     .ok()
                     .flatten()
                     .unwrap_or_else(|| "about:blank".to_string());
+                let title = tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    session.page.get_title(),
+                )
+                .await
+                .ok()
+                .and_then(|r| r.ok())
+                .flatten()
+                .unwrap_or_default();
+                session.record_visit(&url, &title);
                 sx.emitter
                     .emit(
                         EventKind::SessionStarted,
@@ -513,18 +717,25 @@ fn register_navigate(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
             async move {
                 let cfg = sx.config.load_full();
                 sessions::check_scheme(&cfg, &req.url).map_err(handler_err)?;
+                ensure_origin_permission(&cfg, &req.url, OriginPermission::Access)?;
                 let session = get_session(&sx, &req.session_id)?;
                 session.touch();
                 let wait = Duration::from_millis(cfg.clamp_timeout(req.timeout_ms));
+                let _navigation = session.navigation_lock.lock().await;
+                session.clear_navigation_error();
 
-                session
-                    .page
-                    .goto(req.url.as_str())
-                    .await
-                    .map_err(|e| handler_err(format!("navigation failed: {e}")))?;
+                if let Err(error) = session.page.goto(req.url.as_str()).await {
+                    if let Some(policy_error) = session.take_navigation_error() {
+                        return Err(handler_err(policy_error));
+                    }
+                    return Err(handler_err(format!("navigation failed: {error}")));
+                }
                 let timed_out = timeout(wait, session.page.wait_for_navigation())
                     .await
                     .is_err();
+                if let Some(policy_error) = session.take_navigation_error() {
+                    return Err(handler_err(policy_error));
+                }
 
                 let url = session.page.url().await.ok().flatten().unwrap_or(req.url);
                 let title = session.page.get_title().await.ok().flatten();
@@ -654,13 +865,14 @@ fn register_screenshot(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     details: screenshot::ScreenshotDetails {
                         session_id: session.id.clone(),
                         url,
-                        width: session.viewport_width,
-                        height: session.viewport_height,
+                        width: session.viewport().0,
+                        height: session.viewport().1,
                     },
                 })
             }
         })
-        .description(SCREENSHOT_DESC),
+        .description(SCREENSHOT_DESC)
+        .metadata(json!({ "display": true })),
     );
 }
 
@@ -772,6 +984,63 @@ async fn dispatch_hover(session: &Session, x: f64, y: f64) -> Result<(), Error> 
     Ok(())
 }
 
+/// Press at (x1, y1), glide to (x2, y2) over a few steps, release. The
+/// interpolated moves make the drag read as a real gesture so listeners that
+/// track pointer movement (drawing surfaces, sliders) follow it.
+async fn dispatch_drag(session: &Session, x1: f64, y1: f64, x2: f64, y2: f64) -> Result<(), Error> {
+    use input::{DispatchMouseEventParams, DispatchMouseEventType, MouseButton};
+    let send = |params| async {
+        session
+            .page
+            .execute(params)
+            .await
+            .map_err(|e| handler_err(format!("mouse event failed: {e}")))?;
+        Ok::<(), Error>(())
+    };
+    let moved = DispatchMouseEventParams::builder()
+        .r#type(DispatchMouseEventType::MouseMoved)
+        .x(x1)
+        .y(y1)
+        .build()
+        .map_err(handler_err)?;
+    send(moved).await?;
+    let pressed = DispatchMouseEventParams::builder()
+        .r#type(DispatchMouseEventType::MousePressed)
+        .x(x1)
+        .y(y1)
+        .button(MouseButton::Left)
+        .click_count(1)
+        .build()
+        .map_err(handler_err)?;
+    send(pressed).await?;
+    move_ghost_cursor(session, x1, y1, true).await;
+    const STEPS: i64 = 8;
+    for step in 1..=STEPS {
+        let t = step as f64 / STEPS as f64;
+        let (xi, yi) = (x1 + (x2 - x1) * t, y1 + (y2 - y1) * t);
+        let step_move = DispatchMouseEventParams::builder()
+            .r#type(DispatchMouseEventType::MouseMoved)
+            .x(xi)
+            .y(yi)
+            .button(MouseButton::Left)
+            .build()
+            .map_err(handler_err)?;
+        send(step_move).await?;
+        // Glide the ghost cursor with the drag so a viewer watching the
+        // stream sees the gesture, not a jump to the end.
+        move_ghost_cursor(session, xi, yi, false).await;
+    }
+    let released = DispatchMouseEventParams::builder()
+        .r#type(DispatchMouseEventType::MouseReleased)
+        .x(x2)
+        .y(y2)
+        .button(MouseButton::Left)
+        .click_count(1)
+        .build()
+        .map_err(handler_err)?;
+    send(released).await
+}
+
 fn register_act(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     let sx = sessions.clone();
     iii.register_function(
@@ -870,8 +1139,8 @@ fn register_act(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                             action_point(&session, &req).await?
                         } else {
                             (
-                                session.viewport_width as f64 / 2.0,
-                                session.viewport_height as f64 / 2.0,
+                                session.viewport().0 as f64 / 2.0,
+                                session.viewport().1 as f64 / 2.0,
                             )
                         };
                         let delta_y = req.delta_y.unwrap_or(600.0);
@@ -891,9 +1160,18 @@ fn register_act(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                             .map_err(|e| handler_err(format!("scroll failed: {e}")))?;
                         format!("scrolled {delta_y:.0}px")
                     }
+                    "drag" => {
+                        let (x1, y1) = action_point(&session, &req).await?;
+                        let (x2, y2) = match (req.x2, req.y2) {
+                            (Some(x), Some(y)) => (x, y),
+                            _ => return Err(handler_err("drag needs x2 and y2")),
+                        };
+                        dispatch_drag(&session, x1, y1, x2, y2).await?;
+                        format!("dragged ({x1:.0}, {y1:.0}) to ({x2:.0}, {y2:.0})")
+                    }
                     other => {
                         return Err(handler_err(format!(
-                            "unknown action '{other}' (click, hover, type, press, scroll)"
+                            "unknown action '{other}' (click, hover, type, press, scroll, drag)"
                         )))
                     }
                 };
@@ -953,8 +1231,12 @@ fn register_execute(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 let session = get_session(&sx, &req.session_id)?;
                 ensure_writable(&session, "browser::execute")?;
                 session.touch();
-                let cfg = sx.config.load();
+                let cfg = sx.config.load_full();
                 let wait = Duration::from_millis(cfg.clamp_timeout(req.timeout_ms));
+                let _navigation = session.navigation_lock.lock().await;
+                let page_url = session.page.url().await.ok().flatten().unwrap_or_default();
+                ensure_origin_permission(&cfg, &page_url, OriginPermission::Scripting)?;
+                session.clear_navigation_error();
 
                 let state_json = {
                     let state = session.exec_state.lock().unwrap_or_else(|p| p.into_inner());
@@ -968,7 +1250,11 @@ fn register_execute(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     .return_by_value(true)
                     .build()
                     .map_err(handler_err)?;
+
                 let evaluated = timeout(wait, session.page.execute(params)).await;
+                if let Some(error) = session.take_navigation_error() {
+                    return Err(handler_err(error));
+                }
                 session.touch();
 
                 let current_state = || {
@@ -1119,6 +1405,18 @@ fn register_handoff(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     .page
                     .evaluate(handoff::remove_script(&handoff_id))
                     .await;
+                sx.emitter
+                    .emit(
+                        EventKind::HandoffResolved,
+                        &req.session_id,
+                        &HandoffResolvedEvent {
+                            session_id: req.session_id.clone(),
+                            handoff_id: handoff_id.clone(),
+                            via: via.to_string(),
+                            timestamp: now_ms(),
+                        },
+                    )
+                    .await;
                 session.touch();
                 let url = session.page.url().await.ok().flatten().unwrap_or_default();
                 Ok::<_, Error>(handoff::HandoffOutput {
@@ -1220,6 +1518,14 @@ fn register_doctor(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     max_sessions: cfg.max_sessions,
                     active_sessions,
                     allowed_schemes: cfg.allowed_schemes.clone(),
+                    configured_origin_policies: cfg
+                        .origin_policies
+                        .as_ref()
+                        .map(|policies| policies.len() as u64)
+                        .unwrap_or(0),
+                    default_origin_policy_set: cfg.default_origin_policy.is_some(),
+                    allow_history_access: cfg.allow_history_access,
+                    allow_cookie_import: cfg.allow_cookie_import,
                     attach_enabled: cfg.allow_attach,
                     recording_available,
                     issues,
@@ -1384,6 +1690,647 @@ fn register_pick_stop(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         })
         .description(PICK_STOP_DESC)
         .metadata(json!({ "internal": true })),
+    );
+}
+
+/// Runs an injected script and reads one JSON field from its completion
+/// value, for the find / zoom helpers that keep their state in the page.
+async fn evaluate_json(
+    session: &Session,
+    script: String,
+    what: &str,
+) -> Result<serde_json::Value, Error> {
+    let evaluated = session
+        .page
+        .evaluate(script)
+        .await
+        .map_err(|e| handler_err(format!("{what} failed: {e}")))?;
+    evaluated
+        .value()
+        .cloned()
+        .ok_or_else(|| handler_err(format!("{what} returned nothing")))
+}
+
+fn register_find_in_page(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        FIND_IN_PAGE_ID,
+        RegisterFunction::new_async(move |req: find_in_page::FindInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                ensure_writable(&session, "browser::find-in-page")?;
+                session.touch();
+                let action = req.action.as_deref().unwrap_or("search");
+                if !matches!(action, "search" | "next" | "previous" | "close") {
+                    return Err(handler_err(format!(
+                        "unknown action '{action}' (search, next, previous, close)"
+                    )));
+                }
+                let script = find_in_page::find_script(
+                    &req.query,
+                    action,
+                    req.case_sensitive.unwrap_or(false),
+                );
+                let value = evaluate_json(&session, script, "find").await?;
+                let count = value.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+                let index = value.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
+                let query = value
+                    .get("query")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .unwrap_or(req.query);
+                Ok::<_, Error>(find_in_page::FindOutput {
+                    ok: true,
+                    count,
+                    index,
+                    query: if action == "close" {
+                        String::new()
+                    } else {
+                        query
+                    },
+                })
+            }
+        })
+        .description(FIND_IN_PAGE_DESC),
+    );
+}
+
+fn register_zoom(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        ZOOM_ID,
+        RegisterFunction::new_async(move |req: zoom::ZoomInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                let action = req.action.as_deref().unwrap_or(if req.level.is_some() {
+                    "set"
+                } else {
+                    "reset"
+                });
+                if action != "read" {
+                    ensure_writable(&session, "browser::zoom")?;
+                }
+                session.touch();
+                let current = evaluate_json(&session, zoom::read_script().to_string(), "zoom")
+                    .await?
+                    .as_u64()
+                    .map(|n| n as u32)
+                    .unwrap_or(100);
+                if action == "read" {
+                    return Ok::<_, Error>(zoom::ZoomOutput {
+                        ok: true,
+                        level: zoom::snap(current),
+                    });
+                }
+                let level = match action {
+                    "in" => zoom::step(current, true),
+                    "out" => zoom::step(current, false),
+                    "reset" => 100,
+                    "set" => match req.level {
+                        Some(level) => zoom::snap(level.clamp(50, 200)),
+                        None => return Err(handler_err("set needs a level (50-200)")),
+                    },
+                    other => {
+                        return Err(handler_err(format!(
+                            "unknown action '{other}' (in, out, reset, set, read)"
+                        )))
+                    }
+                };
+                evaluate_json(&session, zoom::apply_script(level), "zoom").await?;
+                Ok::<_, Error>(zoom::ZoomOutput { ok: true, level })
+            }
+        })
+        .description(ZOOM_DESC),
+    );
+}
+
+fn register_pdf(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        PDF_ID,
+        RegisterFunction::new_async(move |req: pdf::PdfInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                session.touch();
+                let mut params = cdp_page::PrintToPdfParams::builder()
+                    .landscape(req.landscape.unwrap_or(false))
+                    .print_background(req.print_background.unwrap_or(true));
+                if let Some(scale) = req.scale {
+                    params = params.scale(scale.clamp(0.1, 2.0));
+                }
+                let bytes = session
+                    .page
+                    .pdf(params.build())
+                    .await
+                    .map_err(|e| handler_err(format!("print to pdf failed: {e}")))?;
+                if bytes.len() > pdf::MAX_PDF_BYTES {
+                    return Err(handler_err(format!(
+                        "pdf is {} bytes, over the {} byte cap; print a narrower page",
+                        bytes.len(),
+                        pdf::MAX_PDF_BYTES
+                    )));
+                }
+                let url = session.page.url().await.ok().flatten().unwrap_or_default();
+                let title = session
+                    .page
+                    .get_title()
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default();
+                Ok::<_, Error>(pdf::PdfOutput {
+                    ok: true,
+                    size_bytes: bytes.len() as u64,
+                    data: STANDARD.encode(&bytes),
+                    file_name: pdf::file_name(&title, &url),
+                    url,
+                })
+            }
+        })
+        .description(PDF_DESC),
+    );
+}
+
+fn same_site_from(value: &str) -> Option<cdp_network::CookieSameSite> {
+    match value.to_ascii_lowercase().as_str() {
+        "strict" => Some(cdp_network::CookieSameSite::Strict),
+        "lax" => Some(cdp_network::CookieSameSite::Lax),
+        "none" => Some(cdp_network::CookieSameSite::None),
+        _ => None,
+    }
+}
+
+fn same_site_str(value: &cdp_network::CookieSameSite) -> String {
+    match value {
+        cdp_network::CookieSameSite::Strict => "Strict",
+        cdp_network::CookieSameSite::Lax => "Lax",
+        cdp_network::CookieSameSite::None => "None",
+    }
+    .to_string()
+}
+
+fn register_cookies_list(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        COOKIES_LIST_ID,
+        RegisterFunction::new_async(move |req: cookies::CookiesListInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                let result = session
+                    .page
+                    .execute(cdp_network::GetCookiesParams::default())
+                    .await
+                    .map_err(|e| handler_err(format!("get cookies failed: {e}")))?;
+                let cookies = result
+                    .result
+                    .cookies
+                    .iter()
+                    .map(|c| cookies::CookieSpec {
+                        name: c.name.clone(),
+                        value: c.value.clone(),
+                        domain: Some(c.domain.clone()),
+                        path: Some(c.path.clone()),
+                        expires: if c.expires < 0.0 {
+                            None
+                        } else {
+                            Some(c.expires)
+                        },
+                        secure: Some(c.secure),
+                        http_only: Some(c.http_only),
+                        same_site: c.same_site.as_ref().map(same_site_str),
+                    })
+                    .collect();
+                Ok::<_, Error>(cookies::CookiesListOutput { cookies })
+            }
+        })
+        .description(COOKIES_LIST_DESC),
+    );
+}
+
+fn register_cookies_set(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        COOKIES_SET_ID,
+        RegisterFunction::new_async(move |req: cookies::CookiesSetInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                ensure_writable(&session, "browser::cookies::set")?;
+                if !sx.config.load().allow_cookie_import {
+                    return Err(handler_err(
+                        "browser::cookies::set is denied by allow_cookie_import=false",
+                    ));
+                }
+                session.touch();
+                let page_url = session.page.url().await.ok().flatten().unwrap_or_default();
+                let count = req.cookies.len();
+                let params: Vec<cdp_network::CookieParam> = req
+                    .cookies
+                    .into_iter()
+                    .map(|c| {
+                        let mut param = cdp_network::CookieParam::new(c.name, c.value);
+                        if c.domain.is_some() {
+                            param.domain = c.domain;
+                        } else if !page_url.is_empty() {
+                            param.url = Some(page_url.clone());
+                        }
+                        param.path = c.path;
+                        param.secure = c.secure;
+                        param.http_only = c.http_only;
+                        param.expires = c.expires.map(cdp_network::TimeSinceEpoch::new);
+                        param.same_site = c.same_site.as_deref().and_then(same_site_from);
+                        param
+                    })
+                    .collect();
+                session
+                    .page
+                    .execute(cdp_network::SetCookiesParams::new(params))
+                    .await
+                    .map_err(|e| handler_err(format!("set cookies failed: {e}")))?;
+                Ok::<_, Error>(cookies::CookiesSetOutput { ok: true, count })
+            }
+        })
+        .description(COOKIES_SET_DESC),
+    );
+}
+
+fn register_cookies_clear(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        COOKIES_CLEAR_ID,
+        RegisterFunction::new_async(move |req: cookies::CookiesClearInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                ensure_writable(&session, "browser::cookies::clear")?;
+                session.touch();
+                session
+                    .page
+                    .execute(cdp_network::ClearBrowserCookiesParams::default())
+                    .await
+                    .map_err(|e| handler_err(format!("clear cookies failed: {e}")))?;
+                Ok::<_, Error>(cookies::CookiesClearOutput { ok: true })
+            }
+        })
+        .description(COOKIES_CLEAR_DESC),
+    );
+}
+
+fn register_resize(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        RESIZE_ID,
+        RegisterFunction::new_async(move |req: resize::ResizeInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                ensure_writable(&session, "browser::resize")?;
+                session.touch();
+                let mut width = resize::clamp(req.width);
+                let mut height = resize::clamp(req.height);
+                // A pane auto-fit with several viewers grows the shared
+                // viewport but never shrinks it: the largest pane wins and the
+                // smaller ones letterbox-scale, so one small viewer can't
+                // shrink a session another viewer needs bigger. A lone viewer
+                // (or an explicit device resize) sizes it freely.
+                if req.fit.unwrap_or(false)
+                    && session
+                        .screencast_consumers
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                        > 1
+                {
+                    let (cur_w, cur_h) = session.viewport();
+                    width = width.max(cur_w);
+                    height = height.max(cur_h);
+                    if width == cur_w && height == cur_h {
+                        return Ok::<_, Error>(resize::ResizeOutput {
+                            ok: true,
+                            width,
+                            height,
+                        });
+                    }
+                }
+                let dpr = req.device_scale_factor.unwrap_or(1.0).clamp(0.5, 3.0);
+                let params = cdp_emulation::SetDeviceMetricsOverrideParams::builder()
+                    .width(i64::from(width))
+                    .height(i64::from(height))
+                    .device_scale_factor(dpr)
+                    .mobile(req.mobile.unwrap_or(false))
+                    .build()
+                    .map_err(handler_err)?;
+                session
+                    .page
+                    .execute(params)
+                    .await
+                    .map_err(|e| handler_err(format!("resize failed: {e}")))?;
+                session.set_viewport(width, height);
+                // The page content did not change, so the compositor may not
+                // push a screencast frame at the new size on its own; nudge
+                // one out through the counted screencast paths.
+                sx.nudge_screencast(&session).await;
+                Ok::<_, Error>(resize::ResizeOutput {
+                    ok: true,
+                    width,
+                    height,
+                })
+            }
+        })
+        .description(RESIZE_DESC),
+    );
+}
+
+fn register_history_list(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        HISTORY_LIST_ID,
+        RegisterFunction::new_async(move |req: history_list::HistoryListInput| {
+            let sx = sx.clone();
+            async move {
+                if !sx.config.load().allow_history_access {
+                    return Err(handler_err(
+                        "browser::history::list is denied by allow_history_access=false",
+                    ));
+                }
+                let session = get_session(&sx, &req.session_id)?;
+                let visits = session.history.lock().unwrap_or_else(|p| p.into_inner());
+                let out =
+                    history_list::select(&visits, req.query.as_deref(), req.limit.unwrap_or(100));
+                Ok::<_, Error>(history_list::HistoryListOutput { visits: out })
+            }
+        })
+        .description(HISTORY_LIST_DESC),
+    );
+}
+
+fn register_clear_data(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        CLEAR_DATA_ID,
+        RegisterFunction::new_async(move |req: clear_data::ClearDataInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                ensure_writable(&session, "browser::clear-data")?;
+                session.touch();
+                let mut cleared = Vec::new();
+                if req.cookies.unwrap_or(true) {
+                    session
+                        .page
+                        .execute(cdp_network::ClearBrowserCookiesParams::default())
+                        .await
+                        .map_err(|e| handler_err(format!("clear cookies failed: {e}")))?;
+                    cleared.push("cookies".to_string());
+                }
+                if req.cache.unwrap_or(true) {
+                    session
+                        .page
+                        .execute(cdp_network::ClearBrowserCacheParams::default())
+                        .await
+                        .map_err(|e| handler_err(format!("clear cache failed: {e}")))?;
+                    cleared.push("cache".to_string());
+                }
+                if req.storage.unwrap_or(true) {
+                    let url = session.page.url().await.ok().flatten().unwrap_or_default();
+                    if let Some(origin) = origin_of(&url) {
+                        if let Ok(params) = cdp_storage::ClearDataForOriginParams::builder()
+                            .origin(origin)
+                            .storage_types("all".to_string())
+                            .build()
+                        {
+                            if session.page.execute(params).await.is_ok() {
+                                cleared.push("storage".to_string());
+                            }
+                        }
+                    }
+                }
+                Ok::<_, Error>(clear_data::ClearDataOutput { ok: true, cleared })
+            }
+        })
+        .description(CLEAR_DATA_DESC),
+    );
+}
+
+fn register_downloads_list(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        DOWNLOADS_LIST_ID,
+        RegisterFunction::new_async(move |req: downloads::DownloadsListInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                let mut list = session
+                    .downloads
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone();
+                list.reverse();
+                Ok::<_, Error>(downloads::DownloadsListOutput { downloads: list })
+            }
+        })
+        .description(DOWNLOADS_LIST_DESC),
+    );
+}
+
+fn register_download(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        DOWNLOAD_ID,
+        RegisterFunction::new_async(move |req: downloads::DownloadInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                let (file_name, url, dir) = {
+                    let downloads = session.downloads.lock().unwrap_or_else(|p| p.into_inner());
+                    let record = downloads
+                        .iter()
+                        .find(|d| d.guid == req.guid)
+                        .ok_or_else(|| handler_err(format!("no download '{}'", req.guid)))?;
+                    (
+                        record.file_name.clone(),
+                        record.url.clone(),
+                        session.downloads_dir.clone(),
+                    )
+                };
+                ensure_origin_permission(&sx.config.load(), &url, OriginPermission::Downloads)?;
+                let dir = dir.ok_or_else(|| {
+                    handler_err("this session does not own downloads (attached session)")
+                })?;
+                ensure_safe_guid(&req.guid)?;
+                let path = dir.join(&req.guid);
+                let size = std::fs::metadata(&path)
+                    .map_err(|e| handler_err(format!("read download failed: {e}")))?
+                    .len();
+                if size > downloads::MAX_DOWNLOAD_BYTES {
+                    return Err(handler_err(format!(
+                        "download is {size} bytes, over the {} byte cap; it stays on disk at {}",
+                        downloads::MAX_DOWNLOAD_BYTES,
+                        path.display()
+                    )));
+                }
+                let bytes = tokio::task::spawn_blocking(move || std::fs::read(path))
+                    .await
+                    .map_err(|e| handler_err(format!("read download failed: {e}")))?
+                    .map_err(|e| handler_err(format!("read download failed: {e}")))?;
+                Ok::<_, Error>(downloads::DownloadOutput {
+                    ok: true,
+                    size_bytes: bytes.len() as u64,
+                    data: STANDARD.encode(&bytes),
+                    file_name,
+                })
+            }
+        })
+        .description(DOWNLOAD_DESC),
+    );
+}
+
+fn register_download_remove(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        DOWNLOAD_REMOVE_ID,
+        RegisterFunction::new_async(move |req: downloads::DownloadRemoveInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                // Only a guid the session actually recorded names a file the
+                // worker wrote; anything else must not reach the filesystem.
+                let known = {
+                    let downloads = session.downloads.lock().unwrap_or_else(|p| p.into_inner());
+                    downloads.iter().any(|d| d.guid == req.guid)
+                };
+                if !known {
+                    return Err(handler_err(format!("no download '{}'", req.guid)));
+                }
+                ensure_safe_guid(&req.guid)?;
+                if let Some(dir) = &session.downloads_dir {
+                    let _ = std::fs::remove_file(dir.join(&req.guid));
+                }
+                session
+                    .downloads
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .retain(|d| d.guid != req.guid);
+                Ok::<_, Error>(downloads::DownloadRemoveOutput { ok: true })
+            }
+        })
+        .description(DOWNLOAD_REMOVE_DESC),
+    );
+}
+
+fn register_upload(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        UPLOAD_ID,
+        RegisterFunction::new_async(move |req: upload::UploadInput| {
+            let sx = sx.clone();
+            async move {
+                let session = get_session(&sx, &req.session_id)?;
+                ensure_writable(&session, "browser::upload")?;
+                upload::validate_files(&req.files).map_err(handler_err)?;
+                session.touch();
+                let _navigation = session.navigation_lock.lock().await;
+                let config = sx.config.load_full();
+                let url = session.page.url().await.ok().flatten().unwrap_or_default();
+                ensure_origin_permission(&config, &url, OriginPermission::Uploads)?;
+
+                session
+                    .page
+                    .execute(cdp_dom::EnableParams::default())
+                    .await
+                    .map_err(|error| handler_err(format!("enable DOM failed: {error}")))?;
+                let document = session
+                    .page
+                    .execute(cdp_dom::GetDocumentParams::default())
+                    .await
+                    .map_err(|error| handler_err(format!("document read failed: {error}")))?;
+                let selected = session
+                    .page
+                    .execute(cdp_dom::QuerySelectorParams::new(
+                        document.root.node_id,
+                        req.selector.clone(),
+                    ))
+                    .await
+                    .map_err(|error| handler_err(format!("selector failed: {error}")))?;
+                let matches = session
+                    .page
+                    .execute(cdp_dom::QuerySelectorAllParams::new(
+                        document.root.node_id,
+                        req.selector.clone(),
+                    ))
+                    .await
+                    .map_err(|error| handler_err(format!("selector failed: {error}")))?;
+                if matches.node_ids.len() != 1 {
+                    return Err(handler_err(format!(
+                        "selector '{}' matched {} elements; expected exactly one input[type=file]",
+                        req.selector,
+                        matches.node_ids.len()
+                    )));
+                }
+
+                let described = session
+                    .page
+                    .execute(
+                        cdp_dom::DescribeNodeParams::builder()
+                            .node_id(selected.node_id)
+                            .build(),
+                    )
+                    .await
+                    .map_err(|error| handler_err(format!("describe file input failed: {error}")))?;
+                let is_file_input = described.node.node_name.eq_ignore_ascii_case("input")
+                    && described
+                        .node
+                        .attributes
+                        .as_deref()
+                        .unwrap_or_default()
+                        .chunks(2)
+                        .any(|pair| {
+                            pair.len() == 2
+                                && pair[0].eq_ignore_ascii_case("type")
+                                && pair[1].eq_ignore_ascii_case("file")
+                        });
+                if !is_file_input {
+                    return Err(handler_err(format!(
+                        "selector '{}' must match an input[type=file]",
+                        req.selector
+                    )));
+                }
+
+                let file_names: Vec<String> =
+                    req.files.iter().map(|file| file.name.clone()).collect();
+                let staging_dir = session.create_upload_dir().map_err(handler_err)?;
+                let paths = tokio::task::spawn_blocking(move || {
+                    upload::stage_files(&staging_dir, req.files)
+                })
+                .await
+                .map_err(|error| handler_err(format!("stage upload files failed: {error}")))?
+                .map_err(handler_err)?;
+                let path_strings: Vec<String> = paths
+                    .iter()
+                    .map(|path| path.to_string_lossy().to_string())
+                    .collect();
+                session
+                    .page
+                    .execute(
+                        cdp_dom::SetFileInputFilesParams::builder()
+                            .files(path_strings)
+                            .node_id(selected.node_id)
+                            .build()
+                            .map_err(handler_err)?,
+                    )
+                    .await
+                    .map_err(|error| handler_err(format!("attach upload files failed: {error}")))?;
+                session.touch();
+                Ok::<_, Error>(upload::UploadOutput {
+                    ok: true,
+                    attached: file_names.len(),
+                    file_names,
+                })
+            }
+        })
+        .description(UPLOAD_DESC),
     );
 }
 
@@ -1966,4 +2913,30 @@ fn register_frame(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         .description(FRAME_DESC)
         .metadata(json!({ "internal": true })),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{OriginPolicy, OriginPolicyDecision};
+
+    #[test]
+    fn origin_denial_names_the_origin_source_and_permission() {
+        let config = WorkerConfig {
+            origin_policies: Some(std::collections::BTreeMap::from([(
+                "https://x.y".to_string(),
+                OriginPolicy {
+                    access: Some(OriginPolicyDecision::Deny),
+                    ..OriginPolicy::default()
+                },
+            )])),
+            ..WorkerConfig::default()
+        };
+
+        assert_eq!(
+            check_origin_permission(&config, "https://x.y/path", OriginPermission::Access)
+                .unwrap_err(),
+            "origin 'https://x.y' is denied by origin_policies (access)"
+        );
+    }
 }

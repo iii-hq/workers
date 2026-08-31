@@ -260,9 +260,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-epoch"
-version = "0.9.18"
+version = "0.9.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
+checksum = "2d6914041f254d6e9176c01941b21115dcfb7089e55135a35411081bd106ef3f"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -914,9 +914,9 @@ dependencies = [
 
 [[package]]
 name = "iii-helpers"
-version = "0.21.6"
+version = "0.22.1-alpha.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0d84d5c149ae4404365a79feca28aa66f6a7dbed56423b4b8c4e2421e0b5add"
+checksum = "2d24f39bff5a54a18ad0dbe92fff0311fe7d12445ec26da12b8d6b09056166bc"
 dependencies = [
  "futures-util",
  "opentelemetry",
@@ -935,9 +935,9 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.21.6"
+version = "0.22.1-alpha.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07dd060fddcc9153b0dd07c038a14cf172ce15ce1d4edb98155563ed55b2caba"
+checksum = "5bb1167081b82a1aa9f12b05ad9e093fdf1cd2a3ed282bb66451a26e37f4a459"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -953,6 +953,10 @@ dependencies = [
  "tracing",
  "uuid",
 ]
+
+[[package]]
+name = "iii-worker-paths"
+version = "0.1.0"
 
 [[package]]
 name = "indexmap"
@@ -1345,9 +1349,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-proto"
-version = "0.11.14"
+version = "0.11.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "434b42fec591c96ef50e21e886936e66d3cc3f737104fdb9b737c40ffb94c098"
+checksum = "4fcb935c5bec503c2f0e306bdd3e58bb9029dcb14fa8d9ac76e3a5256ac0763e"
 dependencies = [
  "bytes",
  "getrandom 0.3.4",
@@ -1790,7 +1794,7 @@ dependencies = [
 
 [[package]]
 name = "session-manager"
-version = "1.0.11"
+version = "1.0.14-rc.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1801,6 +1805,7 @@ dependencies = [
  "futures",
  "iii-helpers",
  "iii-sdk",
+ "iii-worker-paths",
  "schemars",
  "serde",
  "serde_json",

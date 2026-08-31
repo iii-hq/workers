@@ -3,8 +3,6 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import {
   coerceJsonObject,
-  configFilters,
-  describeCron,
   ENGINE_FUNCTION_IDS,
   functionDetailSchema,
   functionInfoRequestSchema,
@@ -22,6 +20,8 @@ import {
   triggerInfoRequestSchema,
   triggersListRequestSchema,
   triggersListResponseSchema,
+  unregisterTriggerRequestSchema,
+  unregisterTriggerResponseSchema,
   unwrapEnvelope,
   workerInfoRequestSchema,
   workerInfoResponseSchema,
@@ -31,6 +31,7 @@ import {
   workersRegisterResponseSchema,
 } from '../parsers'
 import { RegisterTriggerView } from '../RegisterTriggerView'
+import { UnregisterTriggerView } from '../UnregisterTriggerView'
 
 function wrap<T>(details: T) {
   return {
@@ -476,6 +477,7 @@ describe('engine::register_trigger', () => {
 
     const html = renderToStaticMarkup(
       createElement(RegisterTriggerView, {
+        messageId: 'register-1',
         input,
         output: { subscription_id: 'sub-1', once: false },
       }),
@@ -507,9 +509,13 @@ describe('engine::register_trigger', () => {
     expect(req?.conditions).toEqual(input.conditions)
 
     const html = renderToStaticMarkup(
-      createElement(RegisterTriggerView, { input, output: undefined }),
+      createElement(RegisterTriggerView, {
+        messageId: 'register-2',
+        input,
+        output: undefined,
+      }),
     )
-    expect(html).toContain('only if')
+    expect(html).toContain('Only if')
     expect(html).toContain('state::barrier')
     expect(html).toContain('acme, globex, initech')
     expect(html).toContain('all_couriers_done')
@@ -526,6 +532,31 @@ describe('engine::register_trigger', () => {
     expect(req?.function_id).toBeUndefined()
     expect(req?.label).toBe('research-progress-watch')
     expect(req?.once).toBe(false)
+  })
+
+  it('preserves lifecycle limits for the generic renderer', () => {
+    const input = {
+      trigger_type: 'cron',
+      config: { expression: '0 0 9 * * *' },
+      lifecycle: { once: false, max_fires: 3, expires_at: 2_000 },
+    }
+    const req = safeParseRequest(registerTriggerRequestSchema, input)
+    expect(req?.lifecycle).toEqual({
+      once: false,
+      max_fires: 3,
+      expires_at: 2_000,
+    })
+    const html = renderToStaticMarkup(
+      createElement(RegisterTriggerView, {
+        messageId: 'register-3',
+        input,
+        output: undefined,
+      }),
+    )
+    expect(html).toContain('Recurring')
+    expect(html).toContain('fire limit')
+    expect(html).toContain('3')
+    expect(html).toContain('expires')
   })
 
   it('rejects a request missing the required trigger_type', () => {
@@ -549,6 +580,32 @@ describe('engine::register_trigger', () => {
     ).toEqual({ subscription_id: 'sub-1', once: false })
   })
 
+  it('preserves a registration advisory note', () => {
+    expect(
+      safeParseResponse(registerTriggerResponseSchema, {
+        subscription_id: 'sub-1',
+        once: true,
+        note: 'registration succeeded; verify the watched key',
+      }),
+    ).toEqual({
+      subscription_id: 'sub-1',
+      once: true,
+      note: 'registration succeeded; verify the watched key',
+    })
+  })
+
+  it('does not claim registration succeeded for an invalid result', () => {
+    const html = renderToStaticMarkup(
+      createElement(RegisterTriggerView, {
+        messageId: 'register-failed',
+        input: { trigger_type: 'state', config: { key: 'ready' } },
+        output: { error: { message: 'forbidden' } },
+      }),
+    )
+    expect(html).toContain('trigger registration failed')
+    expect(html).not.toContain('trigger registered</span>')
+  })
+
   it('recovers a double-encoded request through the full render chain', () => {
     // The whole payload arrives as one JSON string; index.tsx does
     // coerceJsonObject(unwrapEnvelope(input)).
@@ -562,35 +619,54 @@ describe('engine::register_trigger', () => {
     const req = safeParseRequest(registerTriggerRequestSchema, input)
     expect(req?.trigger_type).toBe('state')
     expect(req?.function_id).toBe('database::execute')
-    expect(configFilters(req?.config)).toEqual([
-      { label: 'session', value: 'analyst-2-deep' },
-    ])
+    expect(req?.config).toEqual({ session_id: 'analyst-2-deep' })
+  })
+})
+
+describe('engine::unregister_trigger', () => {
+  it('parses the core request and idempotent response', () => {
+    expect(
+      safeParseRequest(unregisterTriggerRequestSchema, {
+        id: 'trg-1',
+        trigger_type: 'state',
+      }),
+    ).toEqual({ id: 'trg-1', trigger_type: 'state' })
+    expect(
+      safeParseResponse(
+        unregisterTriggerResponseSchema,
+        wrap({ removed: true }),
+      ),
+    ).toEqual({ removed: true })
   })
 
-  it('extracts filter chips across state and turn-event configs', () => {
-    // state config
-    expect(
-      configFilters({
-        scope: 'ops',
-        key: 'build',
-        condition_function_id: 'gate::ok',
+  it('renders manual removal distinctly from an idempotent miss', () => {
+    const removed = renderToStaticMarkup(
+      createElement(UnregisterTriggerView, {
+        input: { id: 'trg-1', trigger_type: 'cron' },
+        output: { removed: true },
       }),
-    ).toEqual([
-      { label: 'scope', value: 'ops' },
-      { label: 'key', value: 'build' },
-      { label: 'if', value: 'gate::ok' },
-    ])
-    // turn-event config (previously fell through to raw JSON)
-    expect(configFilters({ session_id: 'reviewer-cr7k2' })).toEqual([
-      { label: 'session', value: 'reviewer-cr7k2' },
-    ])
-    expect(configFilters({ parent_session_id: 'root-1' })).toEqual([
-      { label: 'parent', value: 'root-1' },
-    ])
-    // no known filters → null (caller shows "no filter" / raw JSON)
-    expect(configFilters({})).toBeNull()
-    expect(configFilters({ unknown_field: 'x' })).toBeNull()
-    expect(configFilters(undefined)).toBeNull()
+    )
+    expect(removed).toContain('binding manually removed')
+    expect(removed).toContain('explicitly removed')
+    expect(removed).toContain('cron')
+
+    const missing = renderToStaticMarkup(
+      createElement(UnregisterTriggerView, {
+        input: { id: 'trg-404' },
+        output: { removed: false },
+      }),
+    )
+    expect(missing).toContain('binding not found')
+    expect(missing).not.toContain('explicitly removed')
+
+    const failed = renderToStaticMarkup(
+      createElement(UnregisterTriggerView, {
+        input: { id: 'trg-1' },
+        output: { error: { message: 'store unavailable' } },
+      }),
+    )
+    expect(failed).toContain('binding removal failed')
+    expect(failed).toContain('valid removal result')
   })
 })
 
@@ -598,42 +674,5 @@ describe('unwrapEnvelope re-export', () => {
   it('peels the harness envelope', () => {
     const inner = { functions: [] }
     expect(unwrapEnvelope(wrap(inner))).toEqual(inner)
-  })
-})
-
-describe('describeCron', () => {
-  it('humanizes the common shapes', () => {
-    // the live screenshot shape: seconds-first, one-shot date+time
-    expect(describeCron('0 0 17 21 7 *')).toBe('at 17:00 on Jul 21')
-    expect(describeCron('0 30 9 * * *')).toBe('every day at 09:30')
-    expect(describeCron('30 9 * * *')).toBe('every day at 09:30') // 5-field classic
-    expect(describeCron('0 */5 * * * *')).toBe('every 5 min')
-    expect(describeCron('0 * * * * *')).toBe('every minute')
-    expect(describeCron('* * * * * *')).toBe('every second')
-    expect(describeCron('0 15 * * * *')).toBe('at :15 every hour')
-    expect(describeCron('0 0 */6 * * *')).toBe('every 6h at :00')
-    // seconds-first form = Rust cron crate dialect: weekdays 1=Sun..7=Sat
-    expect(describeCron('0 0 9 * * 1')).toBe('every Sun at 09:00')
-    expect(describeCron('0 0 9 * * 2,6')).toBe('every Mon, Fri at 09:00')
-    // classic five-field cron: weekdays 0=Sun..6=Sat, 7 also Sunday
-    expect(describeCron('0 9 * * 1')).toBe('every Mon at 09:00')
-    expect(describeCron('0 9 * * 0')).toBe('every Sun at 09:00')
-    expect(describeCron('0 9 * * 7')).toBe('every Sun at 09:00')
-    expect(describeCron('0 0 0 1 * *')).toBe('at 00:00 on day 1 of every month')
-    expect(describeCron('0 0 12 * 7 *')).toBe('at 12:00 in Jul')
-  })
-
-  it('falls back to null on shapes a translation would get wrong', () => {
-    expect(describeCron('0 0 17 21 7 1')).toBeNull() // dom+dow = OR semantics
-    expect(describeCron('0 0-30 9 * * *')).toBeNull() // ranges
-    expect(describeCron('0 0 9 L * *')).toBeNull() // L extension
-    expect(describeCron('0 0 25 * * *')).toBeNull() // hour out of range
-    expect(describeCron('0 0 17 21 7 * 2027')).toBeNull() // pinned year
-    // wild seconds fire 60×/min — "at 17:00" would hide that
-    expect(describeCron('* 0 17 * * *')).toBeNull()
-    expect(describeCron('30 0 17 * * *')).toBeNull() // nonzero seconds pin
-    expect(describeCron('0 0 9 * * 0')).toBeNull() // 0 invalid in Rust dialect
-    expect(describeCron('nonsense')).toBeNull()
-    expect(describeCron('')).toBeNull()
   })
 })

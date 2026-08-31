@@ -1,15 +1,23 @@
 import { Clock } from 'lucide-react'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { formatPossibleJson } from '../lib/formatPossibleJson'
+import { redactAttributeEntries } from '../lib/redactAttributes'
 import type { VisualizationSpan } from '../lib/traceTransform'
 import { toMs } from '../lib/traceTransform'
 import { formatRelative, formatTimestamp } from '../lib/traceUtils'
 
 interface SpanLogsTabProps {
   span: VisualizationSpan
+  /**
+   * The span's function-trigger redactor (`spanRawRedactor` in
+   * functionTriggerFromSpan.ts). Event attributes — `iii.payload.json`
+   * chief among them — pretty-print into a `<pre>` below; that is the same
+   * payload the info tab's card redacts, one tab-click away otherwise.
+   */
+  redact?: (value: unknown) => unknown
 }
 
-export function SpanLogsTab({ span }: SpanLogsTabProps) {
+export function SpanLogsTab({ span, redact }: SpanLogsTabProps) {
   const sortedEvents = [...(span.events || [])].sort(
     (a, b) => a.timestamp_unix_nano - b.timestamp_unix_nano,
   )
@@ -35,9 +43,7 @@ export function SpanLogsTab({ span }: SpanLogsTabProps) {
         const offsetMs = eventMs - firstEventMs
         const isException =
           event.name === 'exception' || event.name?.startsWith('exception')
-        const attrEntries = event.attributes
-          ? Object.entries(event.attributes)
-          : []
+        const attrEntries = redactAttributeEntries(event.attributes, redact)
 
         return (
           <div
@@ -71,7 +77,7 @@ export function SpanLogsTab({ span }: SpanLogsTabProps) {
                     )}
                   </div>
                 </div>
-                <span className="font-mono text-[10px] text-ink-faint flex-shrink-0 px-1.5 py-0.5 border border-rule bg-panel tabular-nums">
+                <span className="font-mono text-[10px] text-ink-faint flex-shrink-0 px-1.5 py-0.5 rounded-xs bg-surface tabular-nums">
                   #{index + 1}
                 </span>
               </div>
@@ -123,7 +129,7 @@ function EventAttributeRow({
         <span className="font-mono text-ink-faint uppercase tracking-[0.06em] text-[10px]">
           {attrKey}
         </span>
-        <pre className="border border-rule bg-bg px-3 py-2 font-mono text-[12.5px] leading-[1.55] text-ink overflow-x-auto whitespace-pre">
+        <pre className="rounded-sm bg-bg px-3 py-2 font-mono text-[12.5px] leading-[1.55] text-ink overflow-x-auto whitespace-pre">
           {formatted}
         </pre>
       </div>

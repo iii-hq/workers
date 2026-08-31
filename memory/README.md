@@ -5,7 +5,7 @@ Durable cross-session agent memory. Named **banks** hold two kinds of content: *
 ## Install
 
 ```
-iii worker add memory
+iii trigger compose::add worker=memory
 ```
 
 The default bank `main` materializes on first use. No configuration required; without `llm-router` extraction degrades to explicit `memory::save` calls, and without the harness the worker still serves its full RPC surface.
@@ -80,8 +80,11 @@ Bind live views here instead of polling; both are filterable by `bank` in the bi
 
 ## Storage layout
 
+Compose stores this tree under `III_COMPOSE_DIR`. A standalone worker uses its
+process current directory for the same relative default.
+
 ```text
-~/.iii/data/memory/
+<III_COMPOSE_DIR>/data/memory/
   main/
     bank.yaml          # description
     rules/style.md     # always-injected markdown

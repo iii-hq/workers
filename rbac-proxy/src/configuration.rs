@@ -33,7 +33,25 @@ use crate::server::ServerHandle;
 /// reload whole-snapshot replaces the inner `Arc` under the write lock.
 pub type ConfigCell = Arc<RwLock<Arc<WorkerConfig>>>;
 
-pub const CONFIG_ID: &str = "rbac-proxy";
+pub const DEFAULT_CONFIG_ID: &str = "rbac-proxy";
+
+/// The configuration entry this worker owns.
+///
+/// `III_CONFIG_NAME` when a supervisor set it, else the built-in name. A worker
+/// that hardcodes its id turns that id into a global scarce name: two instances
+/// share one entry and take turns overwriting it, and each write wakes both.
+/// Being told which entry is its own is what lets them differ.
+pub fn config_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::var("III_CONFIG_NAME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| DEFAULT_CONFIG_ID.to_string())
+    })
+    .as_str()
+}
 const CONFIG_FN_ID: &str = "rbac-proxy::on-config-change";
 const FUNCTIONS_AVAILABLE_FN_ID: &str = "rbac-proxy::on-functions-available";
 const CONFIG_RETRIES: u32 = 3;
@@ -50,7 +68,7 @@ pub async fn register_config(
     seed: Option<&WorkerConfig>,
 ) -> Result<(), String> {
     let mut payload = json!({
-        "id": CONFIG_ID,
+        "id": config_id(),
         "name": "RBAC Proxy",
         "description": "Boundary-proxy settings: the public RBAC port, the trusted upstream engine URL, \
                         the RBAC contract (auth function, expose filters, registration hooks), middleware, \
@@ -62,7 +80,7 @@ pub async fn register_config(
     } else if should_seed_default_value(iii).await? {
         payload["initial_value"] = default_config(default_engine_url).to_json();
     }
-    trigger_with_retry(iii, "configuration::register", payload).await?;
+    trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
     Ok(())
 }
 
@@ -99,15 +117,20 @@ async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
 }
 
 async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
-    try_get_config_value(iii)
-        .await?
-        .ok_or_else(|| format!("configuration `{CONFIG_ID}` not found"))
+    try_get_config_value(iii).await?.ok_or_else(|| {
+        format!(
+            "configuration `{config_entry}` not found",
+            config_entry = config_id()
+        )
+    })
 }
 
 /// `Ok(None)` when the entry does not exist. Engine missing-entry codes vary in
 /// case, so match case-insensitively.
 async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_with_retry(iii, "configuration::get", json!({ "id": CONFIG_ID })).await {
+    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
+        .await
+    {
         Ok(resp) => Ok(resp.get("value").cloned()),
         Err(e) if e.to_ascii_uppercase().contains("NOT_FOUND") => Ok(None),
         Err(e) => Err(e),
@@ -163,15 +186,14 @@ pub fn register_config_trigger(
         ),
     );
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "configuration".to_string(),
-        function_id: CONFIG_FN_ID.to_string(),
-        config: json!({
-            "configuration_id": CONFIG_ID,
+    iii.register_trigger(RegisterTriggerInput::new(
+        "configuration".to_string(),
+        CONFIG_FN_ID.to_string(),
+        json!({
+            "configuration_id": config_id(),
             "event_types": ["configuration:updated"],
         }),
-        metadata: None,
-    })?;
+    ))?;
     Ok(())
 }
 
@@ -243,12 +265,11 @@ pub fn bind_catalog_refresh(iii: &Arc<IIIClient>, catalog: Arc<CatalogCache>) {
         ),
     );
 
-    match iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "engine::functions-available".to_string(),
-        function_id: FUNCTIONS_AVAILABLE_FN_ID.to_string(),
-        config: json!({}),
-        metadata: None,
-    }) {
+    match iii.register_trigger(RegisterTriggerInput::new(
+        "engine::functions-available".to_string(),
+        FUNCTIONS_AVAILABLE_FN_ID.to_string(),
+        json!({}),
+    )) {
         Ok(_) => tracing::info!("bound catalog-refresh trigger (engine::functions-available)"),
         Err(e) => {
             tracing::warn!(error = %e, "catalog-refresh trigger binding failed; relying on the TTL refresh")
@@ -256,7 +277,7 @@ pub fn bind_catalog_refresh(iii: &Arc<IIIClient>, catalog: Arc<CatalogCache>) {
     }
 }
 
-async fn trigger_with_retry(
+async fn trigger_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -264,12 +285,15 @@ async fn trigger_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload: payload.clone(),
-                action: None,
-                timeout_ms: None,
-            })
+            .trigger(
+                TriggerRequest {
+                    function_id: function_id.to_string(),
+                    payload: payload.clone(),
+                    action: None,
+                    timeout_ms: None,
+                }
+                .namespace("default"),
+            )
             .await
         {
             Ok(v) => return Ok(v),

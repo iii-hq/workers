@@ -1,0 +1,81 @@
+{
+  "function_id": "browser::describe",
+  "description": "Describe the first css/xpath match: attrs, generated selectors, class list, DOM context.",
+  "request_schema": {
+    "type": "object",
+    "properties": {
+      "html": {
+        "type": "string"
+      },
+      "query": {
+        "type": "string"
+      },
+      "kind": {
+        "type": "string",
+        "enum": [
+          "css",
+          "xpath"
+        ]
+      }
+    },
+    "required": [
+      "html",
+      "query"
+    ]
+  },
+  "response_schema": {
+    "type": "object",
+    "properties": {
+      "found": {
+        "type": "boolean"
+      },
+      "element": {
+        "type": "object",
+        "properties": {
+          "tag": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "html": {
+            "type": "string"
+          },
+          "attrs": {
+            "type": "object"
+          },
+          "css": {
+            "type": "string"
+          },
+          "xpath": {
+            "type": "string"
+          },
+          "full_css": {
+            "type": "string"
+          },
+          "full_xpath": {
+            "type": "string"
+          },
+          "classes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "parent_tag": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "children": {
+            "type": "integer"
+          },
+          "siblings": {
+            "type": "integer"
+          }
+        }
+      }
+    }
+  }
+}

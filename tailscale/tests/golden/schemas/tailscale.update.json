@@ -1,0 +1,30 @@
+{
+  "description": "Update the Tailscale client to the latest release, or with dry_run=true only report what would change.",
+  "function_id": "tailscale::update",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "dry_run": {
+        "default": false,
+        "description": "Report what an update would do without applying it.",
+        "type": "boolean"
+      }
+    },
+    "title": "UpdateInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "output": {
+        "description": "The CLI's own output.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "output"
+    ],
+    "title": "TextOutput",
+    "type": "object"
+  }
+}

@@ -2,7 +2,8 @@ name: CI
 
 on:
   pull_request:
-  workflow_dispatch:
+  push:
+    branches: [main]
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -16,21 +17,70 @@ jobs:
     name: .github/scripts tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.11'
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 24
           package-manager-cache: false
       - run: pip install --quiet pytest pyyaml
       - run: pytest .github/scripts/tests/ -v
-      - run: node --test .github/benchmark-site/*.test.cjs
+      - name: Validate GitHub Actions workflows
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            -o /tmp/actionlint.tar.gz
+          echo '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  /tmp/actionlint.tar.gz' \
+            | sha256sum --check
+          tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
+          /tmp/actionlint -color
+
+  release-contract-drift:
+    name: Release Control contract drift
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Validate immutable Release Control contract pin
+        id: release-contract
+        run: python3 .github/scripts/deployment_contract_pin.py --github-output "$GITHUB_OUTPUT"
+      - name: Mint read-only cross-repository token
+        id: release-contract-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.III_CI_APP_ID }}
+          private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+          owner: iii-hq
+          repositories: release-control
+      - name: Checkout pinned Release Control contract
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          repository: ${{ steps.release-contract.outputs.repository }}
+          ref: ${{ steps.release-contract.outputs.commit }}
+          token: ${{ steps.release-contract-token.outputs.token }}
+          path: release-control-contract
+          sparse-checkout: ${{ steps.release-contract.outputs.path }}
+      - name: Compare canonical Release Control schema bytes
+        env:
+          CONTRACT_PATH: ${{ steps.release-contract.outputs.path }}
+          EXPECTED_SHA256: ${{ steps.release-contract.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          cmp .github/contracts/deployment-execution.schema.json "release-control-contract/$CONTRACT_PATH"
+          echo "$EXPECTED_SHA256  .github/contracts/deployment-execution.schema.json" | sha256sum --check
 
   # ──────────────────────────────────────────────────────────────
-  # Discover: enumerate changed workers, read their iii.worker.yaml,
-  # bucket them per language for the matrix jobs below.
+  # Discover: enumerate changed catalog workers and bucket their artifact
+  # kinds for the matrix jobs below.
   # ──────────────────────────────────────────────────────────────
   discover:
     name: Discover changed workers
@@ -40,23 +90,35 @@ jobs:
       node: ${{ steps.bucket.outputs.node }}
       python: ${{ steps.bucket.outputs.python }}
       crates: ${{ steps.bucket.outputs.crates }}
-      all: ${{ steps.bucket.outputs.all }}
+      changed_workers: ${{ steps.bucket.outputs.changed_workers }}
       source_changed: ${{ steps.bucket.outputs.source_changed }}
       integration_changed: ${{ steps.bucket.outputs.integration_changed }}
-      vscode_changed: ${{ steps.bucket.outputs.vscode_changed }}
+      llm_router_integration: ${{ steps.bucket.outputs.llm_router_integration }}
+      provider_contract: ${{ steps.bucket.outputs.provider_contract }}
       any: ${{ steps.bucket.outputs.any }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Compute base ref
         id: base
         env:
-          BASE_REF: ${{ github.event.pull_request.base.ref || github.event.repository.default_branch || 'main' }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+          PUSH_BEFORE: ${{ github.event.before || '' }}
         run: |
-          git fetch --no-tags --depth=1 origin "$BASE_REF" || true
-          echo "ref=origin/$BASE_REF" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base_ref="${PR_BASE_REF:-main}"
+            git fetch --no-tags --depth=1 origin "$base_ref"
+            echo "ref=origin/$base_ref" >> "$GITHUB_OUTPUT"
+          elif [[ "$PUSH_BEFORE" =~ ^[0-9a-f]{40}$ && ! "$PUSH_BEFORE" =~ ^0+$ ]]; then
+            echo "ref=$PUSH_BEFORE" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=HEAD^" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Bucket changed workers
         id: bucket
@@ -67,21 +129,22 @@ jobs:
           python3 .github/scripts/discover_changed_workers.py --base "$BASE"
 
   # ──────────────────────────────────────────────────────────────
-  # PR gates: readme present, manifest version > main, iii.worker.yaml valid.
-  # Runs once per changed worker (excluding lsp-vscode).
+  # PR gates: README present, package version monotonic, catalog entry valid.
+  # Runs once per changed worker.
   # ──────────────────────────────────────────────────────────────
   pr-checks:
     name: "${{ matrix.worker }}: PR checks"
     needs: discover
-    if: needs.discover.outputs.all != '[]'
+    if: github.event_name == 'pull_request' && needs.discover.outputs.changed_workers != '[]'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        worker: ${{ fromJSON(needs.discover.outputs.all) }}
+        worker: ${{ fromJSON(needs.discover.outputs.changed_workers) }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Fetch base
@@ -118,36 +181,69 @@ jobs:
       run:
         working-directory: ${{ matrix.worker }}
     steps:
-      - uses: actions/checkout@v5
-
-      - name: Rewrite SSH to HTTPS for public deps
-        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
-
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          persist-credentials: false
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --local url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: 1.97.1
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           shared-key: worker-${{ matrix.worker }}
-          save-if: false
+          # PRs restore the trusted default-branch cache but never publish a
+          # branch-scoped copy. The push after merge advances the canonical key.
+          save-if: ${{ github.event_name == 'push' }}
           workspaces: ${{ matrix.worker }} -> target
 
-      # Workers that ship a Vite SPA embedded into the binary (e.g.
-      # `console`) have a `build.rs` that calls `pnpm install + pnpm
-      # build` inside `<worker>/web/`. Pre-build the dist here so the
-      # cargo invocations below see a fresh bundle and short-circuit
-      # the pnpm step. Detection is filesystem-based: workers without
-      # a `web/package.json` skip all three steps cleanly.
-      - name: Setup pnpm (workers with bundled web/)
-        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
-        uses: pnpm/action-setup@v5
-        # version comes from the repo-root package.json `packageManager`
-        # field (the UI pnpm workspace root).
+      # Workers and their direct local Rust dependencies can embed a frontend
+      # through build.rs. For example, approval-gate's tests depend on harness,
+      # whose build script requires harness/ui even though approval-gate has no
+      # frontend of its own. Resolve those bundles before deciding whether this
+      # matrix entry needs Node and pnpm.
+      - name: Detect bundled frontends
+        id: frontends
+        shell: bash
+        run: |
+          set -euo pipefail
+          roots=(.)
+          while IFS= read -r dependency; do
+            roots+=("../$dependency")
+          done < <(
+            grep -oE 'path *= *"\.\./[A-Za-z0-9_-]+"' Cargo.toml \
+              | sed 's|.*"\.\./||; s|"||' \
+              | sort -u
+          )
 
-      - name: Setup Node (workers with bundled web/)
-        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
-        uses: actions/setup-node@v5
+          bundles=()
+          for root in "${roots[@]}"; do
+            for directory in web ui; do
+              if [[ -f "$root/$directory/package.json" ]]; then
+                bundles+=("$root/$directory")
+              fi
+            done
+          done
+
+          if (( ${#bundles[@]} == 0 )); then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          else
+            bundle_csv=$(IFS=,; echo "${bundles[*]}")
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "paths=$bundle_csv" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup pnpm (bundled frontends)
+        if: steps.frontends.outputs.found == 'true'
+        # Version comes from the repo-root package.json packageManager field.
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+
+      - name: Setup Node (bundled frontends)
+        if: steps.frontends.outputs.found == 'true'
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
           cache: 'pnpm'
@@ -156,26 +252,40 @@ jobs:
           cache-dependency-path: '**/pnpm-lock.yaml'
 
       - name: Pre-build frontend bundle (web/ and/or ui/)
-        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
-        # Paths are relative to the job's working-directory (the worker dir),
-        # unlike the interface-smoke job below, which runs this from the
-        # repo root and prefixes the worker.
+        if: steps.frontends.outputs.found == 'true'
         run: |
           set -euo pipefail
-          for d in web ui; do
-            if [[ -f "$d/package.json" ]]; then
-              (cd "$d" && pnpm install --frozen-lockfile && pnpm build)
-            fi
+          IFS=',' read -ra bundles <<< "${{ steps.frontends.outputs.paths }}"
+          for directory in "${bundles[@]}"; do
+            (cd "$directory" && pnpm install --frozen-lockfile && pnpm build)
           done
 
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      # browser is the one worker whose --all-features build needs external
+      # pinned artifacts: `scrapling-compat` links a certified
+      # curl-impersonate static library and its tests hard-require the frozen
+      # Chrome 148. That exact gate (fmt + clippy + test, --all-features, on
+      # both Tier-1 targets, artifacts fetched and verified) runs in
+      # browser-scrapling-e2e.yml's compat-certification job on every
+      # browser/** PR, so the generic gate covers browser's default feature
+      # set instead of duplicating the artifact plumbing here.
       - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        if: matrix.worker != 'browser'
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Run clippy (default features)
+        if: matrix.worker == 'browser'
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Run tests
-        run: cargo test --all-features
+        if: matrix.worker != 'browser'
+        run: cargo test --locked --all-features
+
+      - name: Run tests (default features)
+        if: matrix.worker == 'browser'
+        run: cargo test --locked
 
   # ──────────────────────────────────────────────────────────────
   # Shared Rust crates (crates/*): lint + test. Workers link these by
@@ -196,27 +306,264 @@ jobs:
       run:
         working-directory: crates/${{ matrix.crate }}
     steps:
-      - uses: actions/checkout@v5
-
-      - name: Rewrite SSH to HTTPS for public deps
-        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
-
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          persist-credentials: false
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --local url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: 1.97.1
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
+          save-if: ${{ github.event_name == 'push' }}
           workspaces: crates/${{ matrix.crate }} -> target
+
+      # The testkit enables every provider feature, including the Codex
+      # provider's bundled UI, so make that build dependency available before
+      # Cargo reaches provider-openai-codex/build.rs.
+      - name: Setup pnpm (provider testkit UI)
+        if: matrix.crate == 'provider-integration-testkit'
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+      - name: Setup Node (provider testkit UI)
+        if: matrix.crate == 'provider-integration-testkit'
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: '**/pnpm-lock.yaml'
+
+      - name: Pre-build provider testkit UI
+        if: matrix.crate == 'provider-integration-testkit'
+        working-directory: provider-openai-codex/ui
+        run: pnpm install --frozen-lockfile && pnpm build
 
       - name: Check formatting
         run: cargo fmt --all -- --check
 
       - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: Run tests
-        run: cargo test --all-features
+        run: cargo test --locked --all-features
+
+  # ──────────────────────────────────────────────────────────────
+  # llm-router lifecycle contract: unlike the regular Rust job, this always
+  # supplies the pinned engine and therefore cannot silently self-skip the
+  # real-bus registration, streaming, cancellation, and restart scenarios.
+  # ──────────────────────────────────────────────────────────────
+  llm-router-integration:
+    name: "llm-router: live engine integration"
+    needs: discover
+    if: needs.discover.outputs.llm_router_integration == 'true'
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --local url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: llm-router-integration
+          save-if: false
+          workspaces: |
+            llm-router -> target
+            state -> target
+
+      - name: Setup pnpm (state UI)
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+      - name: Setup Node (state UI)
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: '**/pnpm-lock.yaml'
+
+      - name: Pre-build state UI
+        working-directory: state/ui
+        run: pnpm install --frozen-lockfile && pnpm build
+
+      - name: Install pinned iii engine
+        env:
+          III_RELEASE_TAG: 'iii-alpha/v0.22.1-alpha.25'
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
+          sh /tmp/install-iii.sh
+          {
+            echo "$HOME/.local/bin"
+            echo "$HOME/.iii/bin"
+          } >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$HOME/.iii/bin:$PATH"
+          engine_bin=$(command -v iii)
+          [[ -x "$engine_bin" ]] || { echo "::error::iii engine is not executable"; exit 3; }
+          echo "III_ENGINE_BIN=$engine_bin" >> "$GITHUB_ENV"
+          iii --version
+
+      - name: Build standalone state worker
+        run: |
+          set -euo pipefail
+          cargo build --locked --manifest-path state/Cargo.toml --bin state
+          state_bin="$GITHUB_WORKSPACE/state/target/debug/state"
+          [[ -x "$state_bin" ]] || { echo "::error::state worker is unavailable"; exit 3; }
+          echo "III_STATE_BIN=$state_bin" >> "$GITHUB_ENV"
+
+      - name: Run real-engine router lifecycle suite
+        run: |
+          set -euo pipefail
+          [[ -x "$III_ENGINE_BIN" ]] || { echo "::error::III_ENGINE_BIN is unavailable"; exit 3; }
+          cargo test \
+            --locked \
+            --manifest-path llm-router/Cargo.toml \
+            --no-default-features \
+            --test integration \
+            -- --nocapture --test-threads=1
+
+  # ──────────────────────────────────────────────────────────────
+  # Provider contracts: real engine + real router + selected provider,
+  # with the vendor HTTP/SSE boundary replaced by a loopback stub. No live
+  # API keys or provider network access. Direct changes stay narrow; shared
+  # router/testkit changes fan out through discover.provider_contract.
+  # ──────────────────────────────────────────────────────────────
+  provider-contract:
+    name: "${{ matrix.provider }}: provider contract"
+    needs: discover
+    if: needs.discover.outputs.provider_contract != '[]'
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: ${{ fromJSON(needs.discover.outputs.provider_contract) }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --local url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: provider-contract-${{ matrix.provider }}
+          save-if: false
+          workspaces: |
+            crates/provider-integration-testkit -> target
+            state -> target
+
+      # The state worker always embeds its UI. provider-openai-codex also
+      # embeds a UI, so build that bundle when its contract is selected.
+      - name: Setup pnpm (bundled UIs)
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+      - name: Setup Node (bundled UIs)
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: '**/pnpm-lock.yaml'
+
+      - name: Pre-build state UI
+        working-directory: state/ui
+        run: pnpm install --frozen-lockfile && pnpm build
+
+      - name: Pre-build provider UI
+        if: hashFiles(format('{0}/ui/package.json', matrix.provider)) != ''
+        working-directory: ${{ matrix.provider }}/ui
+        run: pnpm install --frozen-lockfile && pnpm build
+
+      - name: Install pinned iii engine
+        env:
+          III_RELEASE_TAG: 'iii-alpha/v0.22.1-alpha.25'
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          curl -fsSL https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
+          sh /tmp/install-iii.sh
+          {
+            echo "$HOME/.local/bin"
+            echo "$HOME/.iii/bin"
+          } >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$HOME/.iii/bin:$PATH"
+          engine_bin=$(command -v iii)
+          [[ -x "$engine_bin" ]] || { echo "::error::iii engine is not executable"; exit 3; }
+          echo "III_ENGINE_BIN=$engine_bin" >> "$GITHUB_ENV"
+          iii --version
+
+      - name: Build standalone state worker
+        run: |
+          set -euo pipefail
+          cargo build --locked --manifest-path state/Cargo.toml --bin state
+          state_bin="$GITHUB_WORKSPACE/state/target/debug/state"
+          [[ -x "$state_bin" ]] || { echo "::error::state worker is unavailable"; exit 3; }
+          echo "III_STATE_BIN=$state_bin" >> "$GITHUB_ENV"
+
+      - name: Run hermetic provider contract
+        env:
+          PROVIDER_CONTRACT_ARTIFACTS_DIR: ${{ github.workspace }}/target/provider-contract/${{ matrix.provider }}
+        run: |
+          set -euo pipefail
+          cargo test \
+            --locked \
+            --manifest-path crates/provider-integration-testkit/Cargo.toml \
+            --features "${{ matrix.provider }}" \
+            tests::provider_contract -- --ignored --exact --nocapture
+
+      - name: Write contract summary
+        if: success()
+        env:
+          PROVIDER: ${{ matrix.provider }}
+        run: |
+          {
+            echo "### $PROVIDER provider contract"
+            echo
+            echo "Passed with the real iii engine, llm-router, and provider against a loopback upstream."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload sanitized contract evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: provider-contract-${{ matrix.provider }}
+          path: target/provider-contract/${{ matrix.provider }}/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  provider-contract-gate:
+    name: Provider contract gate
+    needs: [discover, provider-contract]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify affected contracts
+        env:
+          SELECTED: ${{ needs.discover.outputs.provider_contract }}
+          RESULT: ${{ needs.provider-contract.result }}
+        run: |
+          set -euo pipefail
+          if [[ "${SELECTED:-[]}" == "[]" ]]; then
+            echo "No provider contract inputs changed."
+            exit 0
+          fi
+          [[ "$RESULT" == "success" ]] || {
+            echo "::error::affected provider contracts finished with result=$RESULT"
+            exit 1
+          }
 
   # ──────────────────────────────────────────────────────────────
   # Interface boot smoke: build each changed Rust worker from source,
@@ -234,7 +581,9 @@ jobs:
   interface-smoke:
     name: "${{ matrix.worker }}: interface boot smoke"
     needs: discover
-    if: needs.discover.outputs.rust != '[]'
+    if: github.event_name == 'pull_request' && needs.discover.outputs.rust != '[]'
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -242,9 +591,10 @@ jobs:
       matrix:
         worker: ${{ fromJSON(needs.discover.outputs.rust) }}
     steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.11'
 
@@ -252,29 +602,31 @@ jobs:
 
       # Some workers can't be interface-smoked: stdio servers (e.g. iii-lsp)
       # exit on stdin EOF while backgrounded, and pure discovery consumers
-      # register no interface to collect. They opt out with
-      # `interface_smoke: false` in iii.worker.yaml; every downstream step is
-      # gated on this so the rest of the matrix is unaffected.
+      # register no interface to collect. Their catalog validation is
+      # `interface: skipped`; every downstream step is gated on this so the
+      # rest of the matrix is unaffected.
       - name: Check interface-smoke opt-out
         id: optout
         env:
           WORKER: ${{ matrix.worker }}
         run: |
           set -euo pipefail
-          skip=$(WORKER="$WORKER" python3 -c 'import os, sys, pathlib; sys.path.insert(0, ".github/scripts"); import _lib; m = _lib.read_iii_worker_yaml(pathlib.Path(os.environ["WORKER"])); print("true" if m.raw.get("interface_smoke") is False else "false")')
+          skip=$(WORKER="$WORKER" python3 -c 'import os, sys; sys.path.insert(0, ".github/scripts"); import _lib; m = _lib.read_worker(os.environ["WORKER"]); print("true" if m.validation.get("interface") == "skipped" else "false")')
           echo "skip=$skip" >> "$GITHUB_OUTPUT"
           if [[ "$skip" == "true" ]]; then
-            echo "::notice::$WORKER opts out of interface boot smoke (interface_smoke: false in iii.worker.yaml)"
+            echo "::notice::$WORKER opts out of the PR interface boot smoke (iii.worker.yaml interface_smoke: false)"
           fi
 
       - name: Rewrite SSH to HTTPS for public deps
         if: steps.optout.outputs.skip != 'true'
-        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+        run: git config --local url."https://github.com/".insteadOf "ssh://git@github.com/"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         if: steps.optout.outputs.skip != 'true'
+        with:
+          toolchain: 1.97.1
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         if: steps.optout.outputs.skip != 'true'
         with:
           shared-key: worker-${{ matrix.worker }}
@@ -283,16 +635,16 @@ jobs:
 
       # Workers that embed a Vite SPA into the binary (e.g. console) have a
       # build.rs that shells out to pnpm. Pre-build the dist so `cargo build`
-      # short-circuits it — mirrors the `rust` job above.
+      # short-circuits it — mirrors the `rust` job above. provider-opencode-go
+      # embeds the llm-router UI transitively, so it needs that UI prepared too.
       - name: Setup pnpm (workers with bundled web/)
-        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
-        uses: pnpm/action-setup@v5
-        # version comes from the repo-root package.json `packageManager`
-        # field (the UI pnpm workspace root).
+        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go'
+        # Version comes from the repo-root package.json packageManager field.
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
 
       - name: Setup Node (workers with bundled web/)
-        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
-        uses: actions/setup-node@v5
+        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go'
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
           cache: 'pnpm'
@@ -301,7 +653,7 @@ jobs:
           cache-dependency-path: '**/pnpm-lock.yaml'
 
       - name: Pre-build frontend bundle (web/ and/or ui/)
-        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != ''
+        if: hashFiles(format('{0}/web/package.json', matrix.worker), format('{0}/ui/package.json', matrix.worker)) != '' || matrix.worker == 'provider-opencode-go'
         run: |
           set -euo pipefail
           for d in "${{ matrix.worker }}/web" "${{ matrix.worker }}/ui"; do
@@ -309,21 +661,24 @@ jobs:
               (cd "$d" && pnpm install --frozen-lockfile && pnpm build)
             fi
           done
+          if [[ "${{ matrix.worker }}" == "provider-opencode-go" ]]; then
+            (cd llm-router/ui && pnpm install --frozen-lockfile && pnpm build)
+          fi
 
       # Build with default features so we boot the same artifact that ships
-      # in the GitHub Release (`_rust-binary.yml` builds default features).
+      # in the GitHub Release (the release build uses default features).
       - name: Build worker binary
         if: steps.optout.outputs.skip != 'true'
         working-directory: ${{ matrix.worker }}
-        run: cargo build
+        run: cargo build --locked
 
       - name: Install iii CLI + engine
         if: steps.optout.outputs.skip != 'true'
         env:
           # Must be a tag that still exists on iii-hq/iii (old releases get
           # pruned — 0.17.0 vanished and broke every boot smoke). Keep aligned
-          # with the workers' iii-sdk pin.
-          VERSION: '0.21.6'
+          # with the workers' iii-sdk protocol line.
+          III_RELEASE_TAG: 'iii-alpha/v0.22.1-alpha.25'
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -344,13 +699,14 @@ jobs:
           iii --config config.yaml --no-update-check > iii-engine.log 2>&1 &
           echo "$!" > iii-engine.pid
 
-          for _ in {1..60}; do
+          deadline=$((SECONDS + 60))
+          while (( SECONDS < deadline )); do
             if ! kill -0 "$(cat iii-engine.pid)" 2>/dev/null; then
               echo "::error::iii engine exited before becoming ready"
               cat iii-engine.log
               exit 1
             fi
-            if iii trigger 'engine::workers::list' --json '{}' >/dev/null 2>&1; then
+            if timeout --signal=KILL 5s iii trigger 'engine::workers::list' --json '{}' >/dev/null 2>&1; then
               exit 0
             fi
             sleep 1
@@ -374,9 +730,8 @@ jobs:
           WORKER: ${{ matrix.worker }}
         run: |
           set -euo pipefail
-          # Resolve the cargo bin name the same way the publish flow does
-          # (iii.worker.yaml `bin:`, falling back to the worker name).
-          bin=$(WORKER="$WORKER" python3 -c 'import os, sys, pathlib; sys.path.insert(0, ".github/scripts"); import _lib; m = _lib.read_iii_worker_yaml(pathlib.Path(os.environ["WORKER"])); print(m.bin or m.name)')
+          # Resolve the cargo binary from the canonical catalog.
+          bin=$(WORKER="$WORKER" python3 -c 'import os, sys; sys.path.insert(0, ".github/scripts"); import _lib; m = _lib.read_worker(os.environ["WORKER"]); print(m.binary or m.catalog_id)')
 
           worker_log="worker-$WORKER.log"
           # Interface collection only needs the worker to connect and register
@@ -386,7 +741,7 @@ jobs:
           # sidecar that isn't available here, crashing startup with
           # LOCAL_BACKEND_BIN_NOT_FOUND; config.collect.yaml gives it a
           # sidecar-free config instead. Kept in lockstep with
-          # _publish-registry.yml so this smoke check mirrors the publish boot.
+          # the release registry workflow so this smoke mirrors publication.
           collect_args=()
           if [[ -f "$WORKER/config.collect.yaml" ]]; then
             echo "Using interface-collection config: $WORKER/config.collect.yaml"
@@ -426,7 +781,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 .github/scripts/collect_worker_interface.py \
-            --assert-non-empty --assert-file worker-interface.json
+            --assert-non-empty --assert-typed-schemas --assert-file worker-interface.json
 
       - name: Dump logs on failure
         if: failure()
@@ -449,9 +804,9 @@ jobs:
           fi
 
   # ──────────────────────────────────────────────────────────────
-  # Harness integration tests (non-required). Pull requests only run
-  # the complete live stack when an integration input changed. The
-  # default branch and daily cache warmer run it unconditionally.
+  # Harness integration tests (non-required). Pull requests and the
+  # trusted push after merge run the complete live stack only when an
+  # integration input changed; only the trusted push advances caches.
   # ──────────────────────────────────────────────────────────────
   harness-integration:
     needs: discover
@@ -461,7 +816,7 @@ jobs:
       contents: read
     uses: ./.github/workflows/_harness-integration.yml
     with:
-      save-cache: false
+      save-cache: ${{ github.event_name == 'push' }}
 
   # ──────────────────────────────────────────────────────────────
   # Node per-worker lint (biome) + test
@@ -476,14 +831,15 @@ jobs:
       matrix:
         worker: ${{ fromJSON(needs.discover.outputs.node) }}
     steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           # setup-node v5 auto-caches when package.json declares packageManager.
           # This step never cached; the repository is already over its cache budget.
-          package-manager-cache: false
           node-version: 22
+          package-manager-cache: false
 
       - name: Install dependencies
         working-directory: ${{ matrix.worker }}
@@ -515,9 +871,10 @@ jobs:
       matrix:
         worker: ${{ fromJSON(needs.discover.outputs.python) }}
     steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.11"
 
@@ -538,33 +895,3 @@ jobs:
         if: hashFiles(format('{0}/tests/**', matrix.worker)) != ''
         working-directory: ${{ matrix.worker }}
         run: pytest -q
-
-  # ──────────────────────────────────────────────────────────────
-  # lsp-vscode: special-case (VS Code extension, not a standard worker)
-  # ──────────────────────────────────────────────────────────────
-  lsp-vscode:
-    name: "lsp-vscode: lint + test"
-    needs: discover
-    if: needs.discover.outputs.vscode_changed == 'true'
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: lsp-vscode
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/setup-node@v5
-        with:
-          # setup-node v5 auto-caches when package.json declares packageManager.
-          # This step never cached; the repository is already over its cache budget.
-          package-manager-cache: false
-          node-version: 20
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run tests
-        run: npm test
-
-      - name: Package check (dry run)
-        run: npm run package:check

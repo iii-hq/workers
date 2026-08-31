@@ -1,6 +1,7 @@
 //! Required `context-manager` client: context assembly and final token
 //! preflight both fail closed so the harness never bypasses provider budgets.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use iii_sdk::protocol::TriggerRequest;
@@ -23,6 +24,36 @@ pub struct AssembleOutput {
     pub effective_max_output_tokens: u64,
     #[serde(default)]
     pub applied: Applied,
+    /// Per-category estimates of `token_count`; `None` when the installed
+    /// context-manager predates the breakdown response.
+    #[serde(default)]
+    pub breakdown: Option<AssembleBreakdown>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct AssembleBreakdown {
+    #[serde(default)]
+    pub system_prompt_tokens: u64,
+    #[serde(default)]
+    pub tools_tokens: u64,
+    #[serde(default)]
+    pub by_role: ByRoleTokens,
+    #[serde(default)]
+    pub by_part: Option<BTreeMap<String, u64>>,
+    #[serde(default)]
+    pub estimator: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ByRoleTokens {
+    #[serde(default)]
+    pub user: u64,
+    #[serde(default)]
+    pub assistant: u64,
+    #[serde(default)]
+    pub function_result: u64,
+    #[serde(default)]
+    pub custom: u64,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -46,6 +77,7 @@ pub struct AssembleParams {
     pub model_id: String,
     pub provider: Option<String>,
     pub system_prompt: Option<String>,
+    pub parts: Option<BTreeMap<String, String>>,
     pub previous_summary: Option<String>,
     pub lease_key: String,
     pub thinking_level: Option<ThinkingLevel>,
@@ -102,6 +134,9 @@ impl ContextClient {
         });
         if let Some(sp) = &params.system_prompt {
             payload["system_prompt"] = json!(sp);
+        }
+        if let Some(parts) = &params.parts {
+            payload["parts"] = json!(parts);
         }
 
         let resp = self

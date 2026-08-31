@@ -30,7 +30,7 @@
 //!     `version` accepts either a tag (`latest`) or an exact semver
 //!     (`1.2.3`). The legacy `?tag=` query param is not used.
 //!   * `GET {base}/w/{slug}/skills?version=…` →
-//!     `{ name, version, skills: [{path, content}], prompts: [{name, description?, args_schema?, content}] }`.
+//!     `{ name, version, skills: [{path, content}] }`.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -210,19 +210,10 @@ pub struct SkillsTreeSkill {
     pub path: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, JsonSchema)]
-pub struct SkillsTreePrompt {
-    pub name: String,
-    #[serde(default)]
-    pub description: Option<String>,
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone, Default, JsonSchema)]
 pub struct SkillsTree {
     #[serde(default)]
     pub skills: Vec<SkillsTreeSkill>,
-    #[serde(default)]
-    pub prompts: Vec<SkillsTreePrompt>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -349,7 +340,7 @@ fn register_worker_info(iii: &Arc<IIIClient>, cfg: &SharedConfig, cache: Registr
              shape, plus registry-only `type` / `config` / `supported_targets` / \
              `total_downloads` / `dependencies` / `image`), readme, full \
              API reference (functions + triggers schemas), and the tree \
-             of skill / prompt file paths fetched from the registry's \
+             of skill file paths fetched from the registry's \
              /w/{slug}/skills endpoint. Pass either `version` or `tag` \
              (defaults to tag=\"latest\"). Results are cached for \
              `registry_cache_ttl_ms`.",
@@ -655,10 +646,9 @@ pub fn parse_worker_info_response(
 }
 
 /// Project a `WorkerSkillsDownloadResponse` body into the metadata-only
-/// `SkillsTree` shape. Drops markdown bodies (`content`) and prompt
-/// `args_schema` / `content` since this view is for picker UIs, not
-/// content rendering. Use `directory::skills::download` to materialise
-/// the bodies on disk.
+/// `SkillsTree` shape. Drops markdown bodies (`content`) and ignores the
+/// structured registry `prompts` field. Use `directory::skills::download`
+/// to materialise skill bodies on disk.
 fn parse_skills_tree(value: &Value) -> SkillsTree {
     let skills = value
         .get("skills")
@@ -675,23 +665,7 @@ fn parse_skills_tree(value: &Value) -> SkillsTree {
                 .collect()
         })
         .unwrap_or_default();
-    let prompts = value
-        .get("prompts")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|p| {
-                    let name = p.get("name").and_then(|n| n.as_str())?.to_string();
-                    let description = p
-                        .get("description")
-                        .and_then(|d| d.as_str())
-                        .map(String::from);
-                    Some(SkillsTreePrompt { name, description })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    SkillsTree { skills, prompts }
+    SkillsTree { skills }
 }
 
 #[cfg(test)]
@@ -947,12 +921,6 @@ mod tests {
         assert_eq!(out.api_reference.triggers[0].name, "on-bounce");
         assert_eq!(out.skills_tree.skills.len(), 2);
         assert_eq!(out.skills_tree.skills[0].path, "index.md");
-        assert_eq!(out.skills_tree.prompts.len(), 1);
-        assert_eq!(out.skills_tree.prompts[0].name, "send-email");
-        assert_eq!(
-            out.skills_tree.prompts[0].description.as_deref(),
-            Some("Compose.")
-        );
     }
 
     #[test]
@@ -964,7 +932,6 @@ mod tests {
         assert!(out.worker.version.is_none());
         assert!(out.api_reference.functions.is_empty());
         assert!(out.skills_tree.skills.is_empty());
-        assert!(out.skills_tree.prompts.is_empty());
     }
 
     #[test]
@@ -1005,8 +972,6 @@ mod tests {
         let tree = parse_skills_tree(&v);
         assert_eq!(tree.skills.len(), 1);
         assert_eq!(tree.skills[0].path, "ok.md");
-        assert_eq!(tree.prompts.len(), 1);
-        assert_eq!(tree.prompts[0].name, "ok");
     }
 
     #[tokio::test]

@@ -1,7 +1,7 @@
 //! Durable binding storage, in the state worker under `harness_binding`.
 //!
 //! No in-memory cache, deliberately. Workers registering the same id
-//! load-balance, so two harness instances can serve the same mesh; a cached
+//! load-balance, so two harness instances can serve the same engine; a cached
 //! "still live" binding in instance B after instance A retired it would
 //! double-fire a `once`. The store IS the authority, and every fire pays one
 //! private state read for it — the same round trip the fire already makes to
@@ -49,11 +49,20 @@ pub enum ReserveOutcome {
 pub struct BindingStore {
     iii: std::sync::Arc<IIIClient>,
     timeout_ms: u64,
+    events: crate::events::TurnEvents,
 }
 
 impl BindingStore {
-    pub fn new(iii: std::sync::Arc<IIIClient>, timeout_ms: u64) -> Self {
-        Self { iii, timeout_ms }
+    pub fn new(
+        iii: std::sync::Arc<IIIClient>,
+        timeout_ms: u64,
+        events: crate::events::TurnEvents,
+    ) -> Self {
+        Self {
+            iii,
+            timeout_ms,
+            events,
+        }
     }
 
     pub async fn get(&self, id: &str) -> Result<Option<Binding>, HarnessError> {
@@ -123,7 +132,12 @@ impl BindingStore {
         }
 
         match self.reserve_owner_slot(binding).await {
-            Ok(ReserveOutcome::Reserved) => Ok(ReserveOutcome::Reserved),
+            Ok(ReserveOutcome::Reserved) => {
+                self.events
+                    .emit_triggers_changed(&binding.owner.session_id)
+                    .await;
+                Ok(ReserveOutcome::Reserved)
+            }
             Ok(outcome) => {
                 let _ = self.delete_if_unchanged(binding).await;
                 Ok(outcome)
@@ -156,7 +170,12 @@ impl BindingStore {
             let mut next = expected.clone();
             next.trigger_id = Some(trigger_id.to_string());
             match state::cas_binding(&self.iii, Some(&expected), &next, self.timeout_ms).await? {
-                None => return Ok(AttachOutcome::Attached(Box::new(next))),
+                None => {
+                    self.events
+                        .emit_triggers_changed(&binding.owner.session_id)
+                        .await;
+                    return Ok(AttachOutcome::Attached(Box::new(next)));
+                }
                 Some(current) if current.is_null() => return Ok(AttachOutcome::Gone),
                 Some(current) => {
                     expected = serde_json::from_value(current).map_err(|e| {
@@ -174,11 +193,56 @@ impl BindingStore {
         )))
     }
 
+    /// Replay's attach: swap whatever engine id the record carries for the
+    /// freshly registered one. Distinct from [`Self::attach_trigger_id`],
+    /// which treats an existing id as a double-registration bug — on replay
+    /// the recorded id is a dead row from before the restart, so it is
+    /// replaced, not defended.
+    pub async fn rearm_trigger_id(
+        &self,
+        binding: &Binding,
+        trigger_id: &str,
+    ) -> Result<AttachOutcome, HarnessError> {
+        const ATTEMPTS: usize = 8;
+        let mut expected = binding.clone();
+        for _ in 0..ATTEMPTS {
+            if expected.trigger_id.as_deref() == Some(trigger_id) {
+                return Ok(AttachOutcome::Attached(Box::new(expected)));
+            }
+            let mut next = expected.clone();
+            next.trigger_id = Some(trigger_id.to_string());
+            match state::cas_binding(&self.iii, Some(&expected), &next, self.timeout_ms).await? {
+                None => {
+                    self.events
+                        .emit_triggers_changed(&binding.owner.session_id)
+                        .await;
+                    return Ok(AttachOutcome::Attached(Box::new(next)));
+                }
+                Some(current) if current.is_null() => return Ok(AttachOutcome::Gone),
+                Some(current) => {
+                    expected = serde_json::from_value(current).map_err(|e| {
+                        HarnessError::State(format!(
+                            "binding {} is unreadable while re-arming trigger id: {e}",
+                            binding.id
+                        ))
+                    })?;
+                }
+            }
+        }
+        Err(HarnessError::State(format!(
+            "binding {} moved during {ATTEMPTS} trigger-id re-arm attempts",
+            binding.id
+        )))
+    }
+
     /// Atomic compare-and-delete used by expiry and every ordinary teardown.
     /// `false` means a racing fire changed the record first.
     pub async fn delete_if_unchanged(&self, binding: &Binding) -> Result<bool, HarnessError> {
         let deleted = state::cas_delete_binding(&self.iii, binding, self.timeout_ms).await?;
         if deleted {
+            self.events
+                .emit_triggers_changed(&binding.owner.session_id)
+                .await;
             if let Err(error) = self
                 .release_owner_slot(&binding.owner.session_id, &binding.id)
                 .await
@@ -219,7 +283,12 @@ impl BindingStore {
             next.fires = expected.fires + 1;
 
             match state::cas_binding(&self.iii, Some(&expected), &next, self.timeout_ms).await? {
-                None => return Ok(ClaimOutcome::Claimed(Box::new(next))),
+                None => {
+                    self.events
+                        .emit_triggers_changed(&binding.owner.session_id)
+                        .await;
+                    return Ok(ClaimOutcome::Claimed(Box::new(next)));
+                }
                 Some(current) => {
                     // Someone moved it. A record that is gone means the binding
                     // retired between the read and here — not an error, just

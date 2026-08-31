@@ -195,6 +195,7 @@ pub struct LandBlockedEvent {
 pub struct Binding {
     pub id: String,
     pub function_id: String,
+    pub namespace: Option<String>,
     pub filter: BindingConfig,
 }
 
@@ -225,6 +226,7 @@ impl SubscriberSet {
         let binding = Binding {
             id: config.id.clone(),
             function_id: config.function_id,
+            namespace: config.namespace,
             filter,
         };
         self.lock().insert(config.id, binding);
@@ -342,7 +344,13 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
 /// bus; tests record.
 #[async_trait]
 pub trait EventDeliverer: Send + Sync {
-    async fn deliver(&self, trigger_type: &str, function_id: &str, payload: Value);
+    async fn deliver(
+        &self,
+        trigger_type: &str,
+        function_id: &str,
+        namespace: Option<String>,
+        payload: Value,
+    );
 }
 
 /// Fire-and-forget bus delivery so the mutation that produced the event is
@@ -359,7 +367,13 @@ impl IiiDeliverer {
 
 #[async_trait]
 impl EventDeliverer for IiiDeliverer {
-    async fn deliver(&self, trigger_type: &str, function_id: &str, payload: Value) {
+    async fn deliver(
+        &self,
+        trigger_type: &str,
+        function_id: &str,
+        namespace: Option<String>,
+        payload: Value,
+    ) {
         // Dispatch each matching binding on its own task so the mutation that
         // produced the event (which still holds the per-repo lock) never waits
         // on a bus round-trip, and a slow binding cannot delay its siblings.
@@ -367,14 +381,14 @@ impl EventDeliverer for IiiDeliverer {
         let trigger_type = trigger_type.to_string();
         let function_id = function_id.to_string();
         tokio::spawn(async move {
-            let res = iii
-                .trigger(TriggerRequest {
-                    function_id: function_id.clone(),
-                    payload,
-                    action: Some(TriggerAction::Void),
-                    timeout_ms: None,
-                })
-                .await;
+            let request = TriggerRequest {
+                function_id: function_id.clone(),
+                payload,
+                action: Some(TriggerAction::Void),
+                timeout_ms: None,
+            };
+            let namespace = namespace.as_deref().unwrap_or("default");
+            let res = iii.trigger(request.namespace(namespace)).await;
             if let Err(e) = res {
                 tracing::warn!(trigger_type, function_id, error = %e, "event fan-out failed");
             }
@@ -413,7 +427,12 @@ impl Emitter {
         for binding in bindings {
             if binding_matches(&binding.filter, &ctx) {
                 self.deliverer
-                    .deliver(kind.trigger_type(), &binding.function_id, payload.clone())
+                    .deliver(
+                        kind.trigger_type(),
+                        &binding.function_id,
+                        binding.namespace.clone(),
+                        payload.clone(),
+                    )
                     .await;
             }
         }
@@ -470,6 +489,7 @@ mod tests {
                 function_id: "ui::recv".into(),
                 config: json!({ "sesion_id": "typo" }),
                 metadata: None,
+                namespace: None,
             })
             .unwrap_err();
         assert!(err.contains("invalid worktree::created config"));
@@ -484,6 +504,7 @@ mod tests {
             function_id: "ui::recv".into(),
             config: Value::Null,
             metadata: None,
+            namespace: Some("project-a".into()),
         })
         .unwrap();
         set.add(TriggerConfig {
@@ -491,9 +512,18 @@ mod tests {
             function_id: "ui::recv".into(),
             config: json!({}),
             metadata: None,
+            namespace: None,
         })
         .unwrap();
-        assert_eq!(set.snapshot().len(), 2);
+        let snapshot = set.snapshot();
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(
+            snapshot
+                .iter()
+                .find(|binding| binding.id == "t1")
+                .and_then(|binding| binding.namespace.as_deref()),
+            Some("project-a")
+        );
         set.remove("t1");
         assert_eq!(set.snapshot().len(), 1);
     }
@@ -504,7 +534,13 @@ mod tests {
 
     #[async_trait]
     impl EventDeliverer for RecordingDeliverer {
-        async fn deliver(&self, trigger_type: &str, function_id: &str, payload: Value) {
+        async fn deliver(
+            &self,
+            trigger_type: &str,
+            function_id: &str,
+            _namespace: Option<String>,
+            payload: Value,
+        ) {
             self.seen.lock().unwrap().push((
                 trigger_type.to_string(),
                 function_id.to_string(),
@@ -522,6 +558,7 @@ mod tests {
                 function_id: "recv::all".into(),
                 config: json!({}),
                 metadata: None,
+                namespace: None,
             })
             .unwrap();
         sets.for_kind(EventKind::Landed)
@@ -530,6 +567,7 @@ mod tests {
                 function_id: "recv::other".into(),
                 config: json!({ "repo_path": "/other" }),
                 metadata: None,
+                namespace: None,
             })
             .unwrap();
         let deliverer = Arc::new(RecordingDeliverer {

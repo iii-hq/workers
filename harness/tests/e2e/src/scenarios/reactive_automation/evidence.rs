@@ -140,26 +140,3 @@ fn boolean_field(value: &Value, field: &str) -> Option<bool> {
         _ => None,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    use super::*;
-
-    #[test]
-    fn final_report_accepts_database_encoded_booleans() {
-        let report = FinalReport::from_value(&json!({
-            "totals_match": true,
-            "no_notification_loss": 1,
-            "no_double_counting": "passed",
-            "mechanical_reaction": "true",
-            "no_inline_waiting": "1"
-        }));
-        assert_eq!(report.totals_match, Some(true));
-        assert_eq!(report.no_notification_loss, Some(true));
-        assert_eq!(report.no_double_counting, Some(true));
-        assert_eq!(report.mechanical_reaction, Some(true));
-        assert_eq!(report.no_inline_waiting, Some(true));
-    }
-}

@@ -105,11 +105,13 @@ const MAX_PARENT_WALK = 1000
  * Apply the filter selection (hidden span groups + hidden workers +
  * default-hidden internal families) to the waterfall.
  *
- * Only the matched spans disappear. Each surviving span whose parent was
- * hidden re-parents to its nearest surviving ancestor, and `depth` is
- * recomputed from the rewritten chains so indentation stays consistent. A
- * parent id that was never in the trace is kept as-is (external/distributed
- * parents already render as local roots). The time window
+ * Only matched non-error spans disappear. Failed spans always remain visible,
+ * even when their group or worker is hidden, so a de-noising preference can
+ * never remove the evidence needed to diagnose a failed trace. Each surviving
+ * span whose parent was hidden re-parents to its nearest surviving ancestor,
+ * and `depth` is recomputed from the rewritten chains so indentation stays
+ * consistent. A parent id that was never in the trace is kept as-is
+ * (external/distributed parents already render as local roots). The time window
  * (`total_duration_ms`) is deliberately preserved — filtering noise out
  * must not rescale the remaining bars. Returns `data` unchanged when
  * nothing matches.
@@ -132,7 +134,7 @@ export function applyHiddenSpanFilters(
 
   const hidden = new Set<string>()
   for (const span of data.spans) {
-    if (matches(span)) hidden.add(span.span_id)
+    if (span.status !== 'error' && matches(span)) hidden.add(span.span_id)
   }
   if (hidden.size === 0) return data
 

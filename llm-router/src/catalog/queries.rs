@@ -24,7 +24,18 @@ pub async fn models_list(
     capability: Option<&str>,
 ) -> Vec<Model> {
     let mut models = match provider {
-        Some(p) => store.slice(p).await,
+        Some(p) => {
+            let slice = store.slice(p).await;
+            // A composite `provider::model` id handed in where a provider id
+            // belongs (the same console display form `models_get` retries):
+            // an empty slice retries as the prefix's slice, so filtering by
+            // the id the console shows lists that provider instead of
+            // nothing. Exact first — this only fills an empty listing.
+            match composite_retry(None, p) {
+                Some((prefix, _)) if slice.is_empty() => store.slice(prefix).await,
+                _ => slice,
+            }
+        }
         None => store.all().await,
     };
     if let Some(cap) = capability {
@@ -34,6 +45,55 @@ pub async fn models_list(
 }
 
 pub async fn models_get(store: &CatalogStore, provider: Option<&str>, id: &str) -> Option<Model> {
+    if let Some(model) = lookup(store, provider, id).await {
+        return Some(model);
+    }
+    // Composite `provider::model` ids — the console's display form, and so
+    // what callers copy out of it and hand to `harness::send` — match nothing
+    // above, because the catalog keys provider and id separately. Retry once
+    // with the prefix stripped so a composite resolves like the split form.
+    // Without this the miss is silent: budget returns null, context-manager
+    // takes its conservative 8k fallback, and a healthy session dies with a
+    // bewildering `context/overflow` instead of an unknown-model error.
+    // Exact lookups run first, so this can only turn a None into a Some.
+    let (prefix, rest) = composite_retry(provider, id)?;
+    lookup(store, Some(prefix), rest).await
+}
+
+/// The `(provider, id)` pair a composite `provider::model` id should retry as.
+/// `None` when the id carries no `::` prefix, when either half is empty, or
+/// when the caller named a provider that contradicts the prefix — a
+/// contradiction is a caller bug, not something to resolve by guessing.
+/// Splits at the FIRST `::` so a model id may itself contain one.
+fn composite_retry<'a>(provider: Option<&str>, id: &'a str) -> Option<(&'a str, &'a str)> {
+    let (prefix, rest) = id.split_once("::")?;
+    if prefix.is_empty() || rest.is_empty() || provider.is_some_and(|p| p != prefix) {
+        return None;
+    }
+    Some((prefix, rest))
+}
+
+/// The effective `(provider, model)` pair for a caller-supplied reference:
+/// a composite `provider::model` id splits — same rule as [`composite_retry`]
+/// — when its prefix names a provider `known` recognizes; anything else
+/// passes through untouched, so an id that merely contains `::` keeps meaning
+/// itself. Dispatch consumers (routing, chat, count_tokens) resolve through
+/// this BEFORE lookup; the catalog queries instead retry AFTER an exact miss,
+/// so a literal catalog id containing `::` still wins there.
+pub fn effective_model_ref<'a>(
+    provider: Option<&'a str>,
+    model: &'a str,
+    known: impl Fn(&str) -> bool,
+) -> (Option<&'a str>, &'a str) {
+    match composite_retry(provider, model) {
+        Some((prefix, rest)) if known(prefix) => (Some(prefix), rest),
+        _ => (provider, model),
+    }
+}
+
+/// One catalog lookup: exact `(provider, id)` when the provider is known,
+/// otherwise the unique-owner match.
+async fn lookup(store: &CatalogStore, provider: Option<&str>, id: &str) -> Option<Model> {
     match provider {
         Some(p) => store.get(p, id).await,
         // Provider-less lookup: `router::chat` resolves these via routing, but
@@ -58,13 +118,18 @@ fn find_by_id(models: Vec<Model>, id: &str) -> Option<Model> {
 
 /// Unknown model → false; request-shaping callers use models::get → null for
 /// the fail-open cold-window rule (spec § Capability defaults).
+/// Resolution delegates to [`models_get`] — composite ids and provider-less
+/// lookups included — so `supports` can never disagree with `get` about
+/// whether an id exists. (A get/supports split silently downgraded every
+/// harness JSON output contract to the `submit_result` fallback: budget
+/// resolved the composite, supports reported it unsupported.)
 pub async fn models_supports(
     store: &CatalogStore,
-    provider: &str,
+    provider: Option<&str>,
     id: &str,
     capability: &str,
 ) -> bool {
-    match store.get(provider, id).await {
+    match models_get(store, provider, id).await {
         Some(m) => model_supports(&m, capability),
         None => false,
     }
@@ -117,6 +182,73 @@ mod tests {
         // Unknown id → None.
         assert_eq!(find_by_id(vec![a], "nope"), None);
         assert_eq!(find_by_id(vec![], "claude-sonnet-4"), None);
+    }
+
+    // Composite `provider::model` ids are the console's display form, so they
+    // are what callers copy into `harness::send`. Before this retry the lookup
+    // missed silently: budget returned null, context-manager fell to its
+    // conservative 8k fallback, and a healthy session died with a bewildering
+    // `context/overflow`. Store-backed resolution is covered in
+    // tests/integration.rs; the split decision is pure and pinned here.
+    #[test]
+    fn composite_ids_retry_as_provider_and_model() {
+        // No prefix → no retry (the exact lookup already had its chance).
+        assert_eq!(composite_retry(None, "claude-sonnet-4"), None);
+        // Composite, provider unknown to the caller → split it.
+        assert_eq!(
+            composite_retry(None, "openai-codex::codex/gpt-5.6-luna"),
+            Some(("openai-codex", "codex/gpt-5.6-luna"))
+        );
+        // Caller's provider agrees with the prefix → still splits.
+        assert_eq!(
+            composite_retry(Some("openai-codex"), "openai-codex::codex/gpt-5.6-luna"),
+            Some(("openai-codex", "codex/gpt-5.6-luna"))
+        );
+        // Caller's provider contradicts the prefix → refuse rather than guess.
+        assert_eq!(
+            composite_retry(Some("anthropic"), "openai-codex::codex/gpt-5.6-luna"),
+            None
+        );
+        // Splits at the FIRST separator, so a model id may contain one.
+        assert_eq!(
+            composite_retry(None, "prov::weird::model"),
+            Some(("prov", "weird::model"))
+        );
+        // Degenerate halves resolve to nothing rather than a bogus lookup.
+        assert_eq!(composite_retry(None, "::model"), None);
+        assert_eq!(composite_retry(None, "prov::"), None);
+        assert_eq!(composite_retry(None, "::"), None);
+    }
+
+    // Dispatch (routing, chat, count_tokens) resolves composites BEFORE
+    // lookup, gated on the prefix naming a known provider — the same split
+    // rule as the catalog queries' retry-after-miss, so metadata and dispatch
+    // can never disagree about which pair an id means.
+    #[test]
+    fn effective_model_ref_splits_only_known_provider_prefixes() {
+        let known = |p: &str| p == "openai-codex";
+        // Known prefix → exactly as if the caller had passed the pair.
+        assert_eq!(
+            effective_model_ref(None, "openai-codex::codex/gpt-5.6-luna", known),
+            (Some("openai-codex"), "codex/gpt-5.6-luna")
+        );
+        // Unknown prefix → untouched: an id may contain `::` without naming a
+        // provider, and such ids must keep meaning themselves.
+        assert_eq!(
+            effective_model_ref(None, "weird::thing", known),
+            (None, "weird::thing")
+        );
+        // Caller's provider contradicts the prefix → untouched; the caller
+        // bug stays visible downstream instead of being resolved by guessing.
+        assert_eq!(
+            effective_model_ref(Some("anthropic"), "openai-codex::codex/gpt-5.6-luna", known),
+            (Some("anthropic"), "openai-codex::codex/gpt-5.6-luna")
+        );
+        // Plain ids pass through with the caller's provider intact.
+        assert_eq!(
+            effective_model_ref(Some("openai-codex"), "codex/gpt-5.6-luna", known),
+            (Some("openai-codex"), "codex/gpt-5.6-luna")
+        );
     }
 
     // Store-backed list/get/supports flows are exercised against a real engine

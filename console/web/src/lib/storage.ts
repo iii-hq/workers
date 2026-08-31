@@ -6,6 +6,7 @@
 
 const ACTIVE_KEY = 'iii-chat-active'
 const LAST_MODEL_KEY = 'iii-chat-last-model'
+const LAST_THINKING_LEVEL_KEY = 'iii-chat-last-thinking-level'
 const DEFAULT_PERMISSION_MODE_KEY = 'iii-default-permission-mode'
 
 export type PermissionMode = 'manual' | 'auto' | 'full'
@@ -94,6 +95,49 @@ export function saveLastModel(id: string | null): void {
   try {
     if (id) localStorage.setItem(LAST_MODEL_KEY, id)
     else localStorage.removeItem(LAST_MODEL_KEY)
+  } catch {
+    /* best-effort */
+  }
+}
+
+export function loadLastThinkingLevel(): string | null {
+  try {
+    const level = localStorage.getItem(LAST_THINKING_LEVEL_KEY)
+    return level && level.length > 0 ? level : null
+  } catch {
+    return null
+  }
+}
+
+export function saveLastThinkingLevel(level: string): void {
+  try {
+    localStorage.setItem(LAST_THINKING_LEVEL_KEY, level)
+  } catch {
+    /* best-effort */
+  }
+}
+
+const EDGE_ADD_DISCOVERED_KEY = 'iii-edge-add-discovered'
+
+/**
+ * Whether the user has ever added a panel through an edge add zone (either
+ * side) — gates the discoverability motion and hover hint. The edge `+`
+ * remains visible after discovery; only its periodic shake stops. Existing
+ * splits don't count: the default workspace ships with a 2-column tab.
+ */
+export function loadEdgeAddDiscovered(): boolean {
+  try {
+    return localStorage.getItem(EDGE_ADD_DISCOVERED_KEY) === '1'
+  } catch {
+    // Storage unavailable means the flag could never persist — stay quiet
+    // rather than nudge on every visit.
+    return true
+  }
+}
+
+export function saveEdgeAddDiscovered(): void {
+  try {
+    localStorage.setItem(EDGE_ADD_DISCOVERED_KEY, '1')
   } catch {
     /* best-effort */
   }

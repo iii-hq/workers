@@ -50,7 +50,14 @@ pub struct CompiledSendV1 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CompiledSendOptionsV1 {
-    pub functions: CompiledFunctionPolicyV1,
+    /// `None` omits the field from the wire request — the harness's own
+    /// defaulting applies (deny-all, or the configured baseline on an
+    /// agent send) instead of an explicit empty policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub functions: Option<CompiledFunctionPolicyV1>,
+    /// Directory agent profile id, resolved server-side (`options.agent`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

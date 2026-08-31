@@ -1,0 +1,43 @@
+[workspace]
+
+[package]
+name = "provider-integration-testkit"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+description = "Hermetic iii/llm-router/provider contract tests."
+
+[features]
+default = []
+provider-anthropic = ["dep:provider-anthropic"]
+provider-claude-code = ["dep:provider-claude-code"]
+provider-command-code = ["dep:provider-command-code"]
+provider-deepseek = ["dep:provider-deepseek"]
+provider-kimi = ["dep:provider-kimi"]
+provider-openai = ["dep:provider-openai"]
+provider-openai-codex = ["dep:provider-openai-codex"]
+provider-openrouter = ["dep:provider-openrouter"]
+provider-xai = ["dep:provider-xai"]
+provider-zai = ["dep:provider-zai"]
+
+[dependencies]
+anyhow = "1"
+axum = "0.8"
+iii-sdk = "=0.22.1-alpha.25"
+llm-router = { path = "../../llm-router", default-features = false }
+provider-anthropic = { path = "../../provider-anthropic", optional = true }
+provider-claude-code = { path = "../../provider-claude-code", optional = true }
+provider-command-code = { path = "../../provider-command-code", optional = true }
+provider-deepseek = { path = "../../provider-deepseek", optional = true }
+provider-kimi = { path = "../../provider-kimi", optional = true }
+provider-openai = { path = "../../provider-openai", optional = true }
+provider-openai-codex = { path = "../../provider-openai-codex", optional = true }
+provider-openrouter = { path = "../../provider-openrouter", optional = true }
+provider-xai = { path = "../../provider-xai", optional = true }
+provider-zai = { path = "../../provider-zai", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "net"] }
+tokio-stream = "0.1"

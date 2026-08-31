@@ -2,7 +2,7 @@
 
 [package]
 name = "storage"
-version = "0.1.10"
+version = "0.1.14-rc.3"
 edition = "2021"
 publish = false
 
@@ -14,8 +14,10 @@ path = "src/main.rs"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.21.6"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "process", "io-util", "net"] }
+iii-sdk = "=0.22.1-alpha.25"
+iii-worker-paths = { path = "../crates/worker-paths" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "process", "io-util", "net", "fs"] }
+tokio-util = { version = "0.7", features = ["io"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
@@ -34,9 +36,9 @@ bytes = "1"
 futures-util = "0.3"
 rand = "0.8"
 hex = "0.4"
-aws-config = { version = "1", features = ["behavior-version-latest"] }
-aws-sdk-s3 = "1"
-aws-sdk-sqs = "1"
+aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio", "credentials-process", "sso"] }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["sigv4a", "http-1x", "default-https-client", "rt-tokio"] }
+aws-sdk-sqs = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-credential-types = "1"
 aws-sigv4 = "1"
 aws-smithy-runtime-api = "1"
@@ -46,13 +48,16 @@ aws-smithy-types = "1"
 gcloud-storage = "1"
 gcloud-auth = "1"
 gcloud-pubsub = "1"
-which = "6"
-libc = "0.2"
-reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
-axum = "0.7"
+reqwest = { version = "0.12", features = ["rustls-tls", "multipart"], default-features = false }
+axum = { version = "0.7", features = ["multipart"] }
 tower = "0.5"
+tower-http = { version = "0.6", features = ["cors"] }
+hmac = "0.12"
+sha2 = "0.10"
+iii-console-ui = { path = "../crates/console-ui" }
 
 [dev-dependencies]
 tempfile = "3"
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }
+which = "6"

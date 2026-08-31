@@ -2,21 +2,38 @@ use serde_json::{json, Value};
 
 use crate::context::E2eContext;
 
+use super::assessment::{self, AssessmentSpec};
 use super::common;
 use super::{
-    CleanupFuture, CriterionSpec, EvaluationFuture, ExecutionPolicy, ObjectiveEvaluation,
-    ScenarioObservation, ScenarioSpec,
+    CleanupFuture, EvaluationFuture, ExecutionPolicy, ObjectiveEvaluation, ScenarioObservation,
+    ScenarioSpec,
 };
 
 pub const ID: &str = "persistent_state";
 const KEY: &str = "persistent_state";
+const DURABLE_RESULT: AssessmentSpec = AssessmentSpec::hard_gated(
+    "durable_result",
+    60,
+    "The exact requested JSON is present at the requested state key.",
+);
+const FUNCTION_DISCIPLINE: AssessmentSpec = AssessmentSpec::hard_gated(
+    "function_discipline",
+    30,
+    "Exactly one successful write targets the requested scope and key.",
+);
+const CONFIRMATION: AssessmentSpec = AssessmentSpec::score_only(
+    "confirmation",
+    10,
+    "The final response briefly confirms completion.",
+);
+const ASSESSMENTS: &[AssessmentSpec] = &[DURABLE_RESULT, FUNCTION_DISCIPLINE, CONFIRMATION];
 
 pub fn scenario(run_id: &str) -> ScenarioSpec {
     let scope = scope(run_id);
     let expected = expected(run_id);
     ScenarioSpec {
         id: ID,
-        version: 1,
+        version: 3,
         prompt: format!(
             "Store this JSON value for later use in scope `{scope}` under key `{KEY}`: {}. Confirm briefly after it has been stored.",
             serde_json::to_string(&expected).expect("serialize static scenario value")
@@ -29,24 +46,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             stuck_timeout_seconds: 240,
         },
         denied_functions: &[],
-        threshold: 90,
-        criteria: vec![
-            CriterionSpec {
-                id: "durable_result",
-                weight: 60,
-                description: "The exact requested JSON is present at the requested state key.",
-            },
-            CriterionSpec {
-                id: "function_discipline",
-                weight: 30,
-                description: "Exactly one successful write targets the requested scope and key.",
-            },
-            CriterionSpec {
-                id: "confirmation",
-                weight: 10,
-                description: "The final response briefly confirms completion.",
-            },
-        ],
+        criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: None,
         evaluate,
@@ -74,51 +74,54 @@ fn evaluate<'a>(
             .collect();
         let exact_write = writes.len() == 1
             && writes[0].arguments == json!({ "scope": scope, "key": KEY, "value": expected });
-        let state_matches = observed == expected;
-        let no_errors = observation.metrics.totals.function_call_errors == 0;
-        let response = observation.response.as_str();
-        let concise_confirmation = !response.trim().is_empty() && response.chars().count() <= 240;
-
-        Ok(ObjectiveEvaluation {
-            hard_gates: vec![
-                common::gate(
-                    "state_persisted",
-                    state_matches,
-                    format!("expected {expected}, observed {observed}"),
-                ),
-                common::gate(
-                    "single_exact_write",
-                    exact_write,
-                    format!("observed {} state::set call(s)", writes.len()),
-                ),
-                common::gate(
-                    "no_function_errors",
-                    no_errors,
-                    format!(
-                        "observed {} function-call error(s)",
-                        observation.metrics.totals.function_call_errors
-                    ),
-                ),
-            ],
-            awards: vec![
-                common::award(
-                    "durable_result",
-                    if state_matches { 60 } else { 0 },
-                    "awarded when the durable value exactly matches",
-                ),
-                common::award(
-                    "function_discipline",
-                    if exact_write && no_errors { 30 } else { 0 },
-                    "awarded for one exact, successful state write",
-                ),
-                common::award(
-                    "confirmation",
-                    if concise_confirmation { 10 } else { 0 },
-                    "awarded for a non-empty confirmation under 240 characters",
-                ),
-            ],
-        })
+        assess(
+            &expected,
+            &observed,
+            exact_write,
+            writes.len(),
+            observation.metrics.totals.function_call_errors,
+            observation.response.as_str(),
+        )
     })
+}
+
+fn assess(
+    expected: &Value,
+    observed: &Value,
+    exact_write: bool,
+    state_set_calls: usize,
+    function_call_errors: u64,
+    response: &str,
+) -> anyhow::Result<ObjectiveEvaluation> {
+    let state_matches = observed == expected;
+    let function_discipline = exact_write && function_call_errors == 0;
+    let response_present = !response.trim().is_empty();
+    let response_chars = response.chars().count();
+    let concise_confirmation = response_present && response_chars <= 240;
+    let confirmation_points = if concise_confirmation {
+        CONFIRMATION.weight()
+    } else {
+        0
+    };
+
+    Ok(assessment::build_evaluation([
+        DURABLE_RESULT.full_or_zero(
+            state_matches,
+            format!("expected {expected}, observed {observed}"),
+        ),
+        FUNCTION_DISCIPLINE.full_or_zero(
+            function_discipline,
+            format!(
+                "exact_write={exact_write}; observed {state_set_calls} state::set call(s); observed {function_call_errors} function-call error(s)"
+            ),
+        ),
+        CONFIRMATION.award(
+            confirmation_points,
+            format!(
+                "response_present={response_present}; observed {response_chars} character(s); limit 240"
+            ),
+        )?,
+    ]))
 }
 
 fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {

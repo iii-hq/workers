@@ -13,6 +13,7 @@ use iii_sdk::IIIClient;
 use llm_router::channels::open_sink;
 use llm_router::chat::relay::FrameSink;
 use llm_router::provider_scaffold::aborts::{AbortGuard, StreamAborts};
+use llm_router::provider_scaffold::cache::derive_affinity_id;
 use llm_router::provider_scaffold::pump::pump_abortable;
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
 use llm_router::types::router::{ProviderStreamInput, ProviderStreamOutput};
@@ -21,6 +22,18 @@ use tokio::sync::mpsc;
 
 /// Heartbeat cadence while the upstream is silent (spec: at least every 30s).
 pub const PING_INTERVAL: Duration = Duration::from_secs(30);
+
+fn resolve_prompt_cache_key(
+    provider_options: Option<&serde_json::Value>,
+    session_id: Option<&str>,
+) -> Option<String> {
+    provider_options
+        .and_then(|options| options.get("prompt_cache_key"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|key| !key.trim().is_empty())
+        .map(str::to_string)
+        .or_else(|| session_id.and_then(derive_affinity_id))
+}
 
 pub fn make_stream(
     iii: IIIClient,
@@ -121,6 +134,10 @@ async fn run_stream_call(
         messages: input.messages,
         tools: input.tools.unwrap_or_default(),
         response_format: input.response_format,
+        prompt_cache_key: resolve_prompt_cache_key(
+            input.provider_options.as_ref(),
+            input.session_id.as_deref(),
+        ),
     });
     let headers = build_headers(&cfg);
 
@@ -193,6 +210,28 @@ mod tests {
         AssistantMessageEvent::Done {
             message: empty_assistant("gpt-test"),
         }
+    }
+
+    #[test]
+    fn prompt_cache_key_prefers_an_explicit_option_then_session_affinity() {
+        let options = serde_json::json!({ "prompt_cache_key": "caller-key" });
+        assert_eq!(
+            resolve_prompt_cache_key(Some(&options), Some("s_conversation")).as_deref(),
+            Some("caller-key")
+        );
+        assert_eq!(
+            resolve_prompt_cache_key(None, Some("s_conversation")),
+            llm_router::provider_scaffold::cache::derive_affinity_id("s_conversation")
+        );
+        for blank in ["", "   "] {
+            let options = serde_json::json!({ "prompt_cache_key": blank });
+            assert_eq!(
+                resolve_prompt_cache_key(Some(&options), Some("s_conversation")),
+                llm_router::provider_scaffold::cache::derive_affinity_id("s_conversation")
+            );
+        }
+        assert_eq!(resolve_prompt_cache_key(None, Some("   ")), None);
+        assert_eq!(resolve_prompt_cache_key(None, None), None);
     }
 
     #[tokio::test(flavor = "multi_thread")]

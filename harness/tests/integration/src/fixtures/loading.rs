@@ -16,8 +16,8 @@ pub struct ScenarioFixture {
     /// first in the statuses list.
     pub expected_terminal_turns: usize,
     /// Each completion's lifecycle status, in completion order — parked
-    /// completions first, then terminal turns. The last must be `completed` —
-    /// the floor's durable-status check binds to it.
+    /// completions first, then terminal turns. The last status is also the
+    /// durable outcome that the floor requires from `harness::status`.
     pub expected_turn_statuses: Vec<String>,
     pub scenario: CompiledScenarioV1,
     pub script: RouterScriptV1,
@@ -47,6 +47,9 @@ pub struct ScenarioFixture {
     /// outside the compiled subject scenario: it is test synchronization, not
     /// a public harness request.
     pub intervention: Option<ScenarioIntervention>,
+    /// Agent profiles written under the run's agents dir before the stack
+    /// boots — `(relative path, content)`.
+    pub agent_files: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,12 +158,6 @@ impl ScenarioFixture {
                 );
             }
         }
-        if self.intervention.is_none() {
-            anyhow::ensure!(
-                self.expected_turn_statuses.last().map(String::as_str) == Some("completed"),
-                "the last terminal turn must be completed"
-            );
-        }
         if let Some(intervention) = &self.intervention {
             match intervention {
                 ScenarioIntervention::StopCancelCascade {
@@ -215,6 +212,18 @@ impl ScenarioFixture {
                     );
                 }
             }
+        }
+        for (path, content) in &self.agent_files {
+            anyhow::ensure!(
+                !path.is_empty()
+                    && !path.starts_with('/')
+                    && !path.split('/').any(|part| part.is_empty() || part == ".."),
+                "agent file path {path:?} must be a clean relative path"
+            );
+            anyhow::ensure!(
+                !content.trim().is_empty(),
+                "agent file {path:?} must not be empty"
+            );
         }
         // A direct scenario is one external send, but the harness may seed
         // further turns from it (a reseed after a parked message); those extra

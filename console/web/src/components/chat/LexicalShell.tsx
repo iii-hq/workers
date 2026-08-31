@@ -1,3 +1,4 @@
+import { AutoFocusPlugin } from '@lexical/react/LexicalAutoFocusPlugin'
 import { ClearEditorPlugin } from '@lexical/react/LexicalClearEditorPlugin'
 import { LexicalComposer } from '@lexical/react/LexicalComposer'
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext'
@@ -17,9 +18,13 @@ import {
   KEY_ENTER_COMMAND,
   type LexicalEditor,
 } from 'lexical'
-import { useEffect, useMemo, useRef } from 'react'
-import { onComposerInsert } from '@/lib/composer-insert'
+import { useEffect, useLayoutEffect, useMemo, useRef } from 'react'
+import { onComposerFocusRequest, onComposerInsert } from '@/lib/composer-insert'
 import type { FunctionEntry } from '@/lib/functions'
+import {
+  type ComposerEditorSize,
+  classifyComposerResize,
+} from './composer-resize'
 import { FileMentionNode } from './lexical/FileMentionNode'
 import { FileMentionsPlugin } from './lexical/FileMentionsPlugin'
 import { FileMentionTransformPlugin } from './lexical/FileMentionTransformPlugin'
@@ -33,11 +38,13 @@ interface LexicalShellProps {
   onSubmit: () => void
   placeholder?: string
   disabled?: boolean
+  /** Put the caret in the editor on mount. Off by default. */
+  autoFocus?: boolean
 }
 
 const baseConfig = {
   namespace: 'iii-chat',
-  /* no theme classes — surface inherits Geist from <body> */
+  /* no theme classes — surface inherits Inter from <body> */
   theme: {},
   /* Decorator nodes must be registered up-front so importJSON/restore work. */
   nodes: [FunctionMentionNode, FileMentionNode],
@@ -197,6 +204,19 @@ function ExternalInsertPlugin() {
 }
 
 /**
+ * Take the caret when a surface asks for it, e.g. a "new chat" that reused
+ * the untouched one already open, where nothing remounts to focus itself.
+ */
+function FocusOnRequestPlugin({ enabled }: { enabled: boolean }) {
+  const [editor] = useLexicalComposerContext()
+  useEffect(() => {
+    if (!enabled) return
+    return onComposerFocusRequest(() => editor.focus())
+  }, [editor, enabled])
+  return null
+}
+
+/**
  * Toggle the editor's editable state when `disabled` flips.
  */
 function EditablePlugin({ disabled }: { disabled?: boolean }) {
@@ -205,6 +225,159 @@ function EditablePlugin({ disabled }: { disabled?: boolean }) {
     editor.setEditable(!disabled)
   }, [editor, disabled])
   return null
+}
+
+/**
+ * Transition Lexical's editor between measured pixel heights without routing
+ * keystrokes through React state. Measuring briefly restores intrinsic height;
+ * the visible transition stays on the same contenteditable node, preserving
+ * selection, IME composition and its capped internal scroll.
+ */
+function useAnimatedComposerHeight() {
+  const frameRef = useRef<HTMLDivElement>(null)
+  const editorRef = useRef<HTMLDivElement>(null)
+
+  useLayoutEffect(() => {
+    const frame = frameRef.current
+    const editor = editorRef.current
+    if (
+      !frame ||
+      !editor ||
+      typeof MutationObserver === 'undefined' ||
+      typeof ResizeObserver === 'undefined'
+    ) {
+      return
+    }
+
+    let previousFrameSize: ComposerEditorSize | null = null
+    let resizeFrame: number | null = null
+    let instantResetFrame: number | null = null
+    let pendingResize: 'content' | 'container' | null = null
+
+    const clearInstantMode = () => {
+      editor.removeAttribute('data-composer-height-mode')
+      instantResetFrame = null
+    }
+
+    const resetInstantModeAfterFrame = () => {
+      if (instantResetFrame !== null) {
+        window.cancelAnimationFrame(instantResetFrame)
+      }
+      instantResetFrame = window.requestAnimationFrame(clearInstantMode)
+    }
+
+    const retargetHeight = (animate: boolean) => {
+      const currentHeight = editor.getBoundingClientRect().height
+      if (currentHeight <= 0) return
+      const scrollTop = editor.scrollTop
+
+      editor.dataset.composerHeightMode = 'instant'
+      editor.dataset.composerHeightMeasuring = ''
+      const targetHeight = editor.getBoundingClientRect().height
+      if (targetHeight <= 0) {
+        editor.removeAttribute('data-composer-height-measuring')
+        clearInstantMode()
+        return
+      }
+
+      if (!editor.hasAttribute('data-composer-height-ready')) {
+        editor.style.setProperty(
+          '--composer-editor-height',
+          `${targetHeight}px`,
+        )
+        editor.dataset.composerHeightReady = ''
+        editor.removeAttribute('data-composer-height-measuring')
+        editor.scrollTop = scrollTop
+        resetInstantModeAfterFrame()
+        return
+      }
+
+      editor.style.setProperty('--composer-editor-height', `${currentHeight}px`)
+      editor.removeAttribute('data-composer-height-measuring')
+      // Commit the current visual height as the transition's new baseline.
+      void editor.offsetHeight
+      editor.scrollTop = scrollTop
+
+      if (animate && Math.abs(targetHeight - currentHeight) > 0.5) {
+        if (instantResetFrame !== null) {
+          window.cancelAnimationFrame(instantResetFrame)
+          instantResetFrame = null
+        }
+        clearInstantMode()
+        editor.style.setProperty(
+          '--composer-editor-height',
+          `${targetHeight}px`,
+        )
+        return
+      }
+
+      editor.style.setProperty('--composer-editor-height', `${targetHeight}px`)
+      resetInstantModeAfterFrame()
+    }
+
+    const scheduleResize = (kind: 'content' | 'container') => {
+      // Direct/container manipulation wins when both happen in one frame.
+      if (pendingResize !== 'container') pendingResize = kind
+      if (resizeFrame !== null) return
+      resizeFrame = window.requestAnimationFrame(() => {
+        const nextResize = pendingResize
+        pendingResize = null
+        resizeFrame = null
+        retargetHeight(nextResize === 'content')
+      })
+    }
+
+    const initialRect = editor.getBoundingClientRect()
+    if (initialRect.width > 0 && initialRect.height > 0) {
+      editor.dataset.composerHeightMode = 'instant'
+      editor.style.setProperty(
+        '--composer-editor-height',
+        `${initialRect.height}px`,
+      )
+      editor.dataset.composerHeightReady = ''
+      resetInstantModeAfterFrame()
+    }
+
+    const mutationObserver = new MutationObserver(() => {
+      scheduleResize('content')
+    })
+    mutationObserver.observe(editor, {
+      characterData: true,
+      childList: true,
+      subtree: true,
+    })
+
+    const frameObserver = new ResizeObserver(() => {
+      const rect = frame.getBoundingClientRect()
+      if (rect.width <= 0 || rect.height <= 0) return
+      const nextSize = { width: rect.width, height: rect.height }
+      const resizeKind = classifyComposerResize(previousFrameSize, nextSize)
+      previousFrameSize = nextSize
+      if (
+        resizeKind === 'container' ||
+        (resizeKind === 'initial' &&
+          !editor.hasAttribute('data-composer-height-ready'))
+      ) {
+        scheduleResize('container')
+      }
+    })
+    frameObserver.observe(frame)
+
+    return () => {
+      mutationObserver.disconnect()
+      frameObserver.disconnect()
+      if (resizeFrame !== null) window.cancelAnimationFrame(resizeFrame)
+      if (instantResetFrame !== null) {
+        window.cancelAnimationFrame(instantResetFrame)
+      }
+      editor.removeAttribute('data-composer-height-measuring')
+      editor.removeAttribute('data-composer-height-mode')
+      editor.removeAttribute('data-composer-height-ready')
+      editor.style.removeProperty('--composer-editor-height')
+    }
+  }, [])
+
+  return { editorRef, frameRef }
 }
 
 export interface LexicalShellHandle {
@@ -227,6 +400,7 @@ export function LexicalShell({
   onSubmit,
   placeholder = 'send a message…',
   disabled,
+  autoFocus,
   clearToken,
   initialContent,
   functionEntries,
@@ -246,12 +420,14 @@ export function LexicalShell({
   /* Shared between the mentions plugin (the producer) and SubmitOnEnter
      (the consumer) so we can suppress submit when the typeahead is up. */
   const menuOpenRef = useRef(false)
+  const { editorRef, frameRef } = useAnimatedComposerHeight()
   return (
     <LexicalComposer initialConfig={initialConfig}>
-      <div className="relative">
+      <div ref={frameRef} className="relative">
         <PlainTextPlugin
           contentEditable={
             <ContentEditable
+              ref={editorRef}
               aria-label="message composer"
               aria-placeholder={placeholder}
               placeholder={
@@ -272,6 +448,12 @@ export function LexicalShell({
       <SubmitOnEnterPlugin onSubmit={onSubmit} menuOpenRef={menuOpenRef} />
       <HistoryNavPlugin onNav={onHistoryNav} menuOpenRef={menuOpenRef} />
       <ExternalInsertPlugin />
+      {/* Opening a session is a request to write in it, so the first
+          keystroke should land in the message rather than be spent aiming.
+          Lexical's own plugin waits for the editable node, which a bare
+          focus() call on mount does not. */}
+      {autoFocus === true && disabled !== true ? <AutoFocusPlugin /> : null}
+      <FocusOnRequestPlugin enabled={disabled !== true} />
       <EditablePlugin disabled={disabled} />
       <MentionsPlugin
         menuOpenRef={menuOpenRef}

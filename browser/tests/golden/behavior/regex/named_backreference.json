@@ -1,0 +1,13 @@
+{
+  "function": "browser::regex",
+  "case": "named_backreference",
+  "request": {
+    "html": "<p>ab-ab ab-ac</p>",
+    "pattern": "(?P<word>ab)-(?P=word)"
+  },
+  "ok": {
+    "result": [
+      "ab"
+    ]
+  }
+}

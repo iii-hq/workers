@@ -26,7 +26,15 @@ export type PreviewKind = 'list' | 'object' | 'text' | 'diff' | 'outcome'
 
 /** Render one event's `result_preview` by its `kind`. `ok` tints an error
  *  text block (errors arrive as `kind: "text"`). */
-export function ResultView({ kind, preview, ok }: { kind: string; preview: unknown; ok: boolean }): ReactNode {
+export function ResultView({
+  kind,
+  preview,
+  ok,
+}: {
+  kind: string
+  preview: unknown
+  ok: boolean
+}): ReactNode {
   switch (kind) {
     case 'list':
       return <ListView preview={preview} />
@@ -46,23 +54,26 @@ export function ResultView({ kind, preview, ok }: { kind: string; preview: unkno
 function ListView({ preview }: { preview: unknown }) {
   const rec = asRecord(preview)
   const items = Array.isArray(rec?.items) ? (rec.items as unknown[]) : []
-  const total = typeof rec?.total === 'number' ? (rec.total as number) : items.length
-  if (items.length === 0) return <Empty>no items</Empty>
+  const total =
+    typeof rec?.total === 'number' ? (rec.total as number) : items.length
+  if (items.length === 0) return <Empty>No items</Empty>
 
   const shape = listShape(items[0])
   return (
-    <div className="gh-rv">
-      <table className="gh-rv-list">
+    <div className="gh-ui-rv">
+      <table className="gh-ui-rv-list">
         <tbody>
           {shape === 'generic' ? (
             <GenericRows items={items} />
           ) : (
-            items.map((item, i) => <ListRow key={i} item={item} shape={shape} />)
+            items.map((item, i) => (
+              <ListRow key={i} item={item} shape={shape} />
+            ))
           )}
         </tbody>
       </table>
       {items.length < total ? (
-        <div className="gh-rv-more">
+        <div className="gh-ui-rv-more">
           showing {items.length} of {total}
         </div>
       ) : null}
@@ -99,9 +110,9 @@ function IssueRow({ r }: { r: Record<string, unknown> }) {
   const url = typeof r.url === 'string' ? r.url : undefined
   const draft = r.isDraft === true
   return (
-    <tr className="gh-rv-row">
-      <td className="gh-rv-num">#{num as ReactNode}</td>
-      <td className="gh-rv-title">
+    <tr className="gh-ui-rv-row">
+      <td className="gh-ui-rv-num">#{num as ReactNode}</td>
+      <td className="gh-ui-rv-title">
         {url ? (
           <a href={url} target="_blank" rel="noreferrer">
             {title}
@@ -109,14 +120,16 @@ function IssueRow({ r }: { r: Record<string, unknown> }) {
         ) : (
           title
         )}
-        {draft ? <span className="gh-rv-flag">draft</span> : null}
+        {draft ? <span className="gh-ui-rv-flag">Draft</span> : null}
       </td>
-      <td className="gh-rv-state">
-        {state ? <Badge variant={stateVariant(state)}>{state.toLowerCase()}</Badge> : null}
+      <td className="gh-ui-rv-state">
+        {state ? (
+          <Badge variant={stateVariant(state)}>{state.toLowerCase()}</Badge>
+        ) : null}
       </td>
-      <td className="gh-rv-author">
+      <td className="gh-ui-rv-author">
         {author ? <span>@{author}</span> : null}
-        {repo ? <span className="gh-rv-repo">{repo}</span> : null}
+        {repo ? <span className="gh-ui-rv-repo">{repo}</span> : null}
       </td>
     </tr>
   )
@@ -127,10 +140,10 @@ function ContentsRow({ r }: { r: Record<string, unknown> }) {
   const name = str(r.name) || str(r.path)
   const size = typeof r.size === 'number' ? (r.size as number) : undefined
   return (
-    <tr className="gh-rv-row">
-      <td className="gh-rv-ctype">{type ? <Badge>{type}</Badge> : null}</td>
-      <td className="gh-rv-cname">{name}</td>
-      <td className="gh-rv-csize">{size != null ? humanBytes(size) : ''}</td>
+    <tr className="gh-ui-rv-row">
+      <td className="gh-ui-rv-ctype">{type ? <Badge>{type}</Badge> : null}</td>
+      <td className="gh-ui-rv-cname">{name}</td>
+      <td className="gh-ui-rv-csize">{size != null ? humanBytes(size) : ''}</td>
     </tr>
   )
 }
@@ -151,7 +164,7 @@ function GenericRows({ items }: { items: unknown[] }) {
   }
   return (
     <>
-      <tr className="gh-rv-ghead">
+      <tr className="gh-ui-rv-ghead">
         {cols.map((c) => (
           <th key={c}>{c}</th>
         ))}
@@ -159,9 +172,9 @@ function GenericRows({ items }: { items: unknown[] }) {
       {items.map((item, i) => {
         const r = asRecord(item)
         return (
-          <tr key={i} className="gh-rv-row">
+          <tr key={i} className="gh-ui-rv-row">
             {cols.map((c) => (
-              <td key={c} className="gh-rv-gcell">
+              <td key={c} className="gh-ui-rv-gcell">
                 {cellText(r ? r[c] : undefined)}
               </td>
             ))}
@@ -175,17 +188,22 @@ function GenericRows({ items }: { items: unknown[] }) {
 /* ── object / text / diff / outcome ────────────────────────────────────── */
 
 function ObjectView({ preview }: { preview: unknown }) {
-  if (preview == null) return <Empty>no result</Empty>
+  if (preview == null) return <Empty>No result</Empty>
   return <JsonHighlight code={JSON.stringify(preview, null, 2)} wrap />
 }
 
 function TextView({ preview, error }: { preview: unknown; error: boolean }) {
   const r = asRecord(preview)
-  const text = typeof r?.text === 'string' ? (r.text as string) : typeof preview === 'string' ? preview : ''
+  const text =
+    typeof r?.text === 'string'
+      ? (r.text as string)
+      : typeof preview === 'string'
+        ? preview
+        : ''
   const truncated = r?.truncated === true
   if (!text) return <Empty>{error ? 'error' : 'no output'}</Empty>
   return (
-    <div className={`gh-rv-text${error ? ' gh-rv-errtext' : ''}`}>
+    <div className={`gh-ui-rv-text${error ? ' gh-ui-rv-errtext' : ''}`}>
       {text}
       {truncated ? <TruncMark /> : null}
     </div>
@@ -202,19 +220,21 @@ function DiffView({ preview }: { preview: unknown }) {
   const r = asRecord(preview)
   const diff = typeof r?.diff === 'string' ? (r.diff as string) : ''
   const truncated = r?.truncated === true
-  if (!diff) return <Empty>no diff</Empty>
+  if (!diff) return <Empty>No diff</Empty>
   const lines = diff.split('\n')
   const shown = lines.slice(0, MAX_DIFF_LINES)
   const overflow = lines.length - shown.length
   return (
-    <div className="gh-rv-diff">
+    <div className="gh-ui-rv-diff">
       {shown.map((line, i) => (
-        <div key={i} className={`gh-rv-dline${diffClass(line)}`}>
+        <div key={i} className={`gh-ui-rv-dline${diffClass(line)}`}>
           {line || ' '}
         </div>
       ))}
       {overflow > 0 ? (
-        <div className="gh-rv-trunc">… {overflow} more lines (truncated)</div>
+        <div className="gh-ui-rv-trunc">
+          … {overflow} more lines (truncated)
+        </div>
       ) : truncated ? (
         <TruncMark />
       ) : null}
@@ -223,35 +243,42 @@ function DiffView({ preview }: { preview: unknown }) {
 }
 
 function diffClass(line: string): string {
-  if (line.startsWith('+') && !line.startsWith('+++')) return ' gh-rv-add'
-  if (line.startsWith('-') && !line.startsWith('---')) return ' gh-rv-del'
-  if (line.startsWith('@@')) return ' gh-rv-hunk'
+  if (line.startsWith('+') && !line.startsWith('+++')) return ' gh-ui-rv-add'
+  if (line.startsWith('-') && !line.startsWith('---')) return ' gh-ui-rv-del'
+  if (line.startsWith('@@')) return ' gh-ui-rv-hunk'
   return ''
 }
 
 function OutcomeView({ preview }: { preview: unknown }) {
   const r = asRecord(preview)
-  if (!r) return <Empty>no outcome</Empty>
+  if (!r) return <Empty>No outcome</Empty>
   const exit = r.exit_code
   const timedOut = r.timed_out === true
   const stdout = typeof r.stdout === 'string' ? (r.stdout as string) : ''
   const stderr = typeof r.stderr === 'string' ? (r.stderr as string) : ''
   const truncated = r.truncated === true
-  const label = timedOut ? 'timed out' : exit == null ? 'killed' : `exit ${exit as ReactNode}`
-  const failed = timedOut || exit == null || (typeof exit === 'number' && exit !== 0)
+  const label = timedOut
+    ? 'timed out'
+    : exit == null
+      ? 'killed'
+      : `exit ${exit as ReactNode}`
+  const failed =
+    timedOut || exit == null || (typeof exit === 'number' && exit !== 0)
   return (
-    <div className="gh-rv-outcome">
-      <div className={`gh-rv-exit${failed ? ' gh-rv-errtext' : ''}`}>{label}</div>
+    <div className="gh-ui-rv-outcome">
+      <div className={`gh-ui-rv-exit${failed ? ' gh-ui-rv-errtext' : ''}`}>
+        {label}
+      </div>
       {stdout ? (
-        <div className="gh-rv-stream">
-          <div className="gh-rv-slabel">stdout</div>
-          <div className="gh-rv-text">{stdout}</div>
+        <div className="gh-ui-rv-stream">
+          <div className="gh-ui-rv-slabel">stdout</div>
+          <div className="gh-ui-rv-text">{stdout}</div>
         </div>
       ) : null}
       {stderr ? (
-        <div className="gh-rv-stream">
-          <div className="gh-rv-slabel">stderr</div>
-          <div className="gh-rv-text gh-rv-errtext">{stderr}</div>
+        <div className="gh-ui-rv-stream">
+          <div className="gh-ui-rv-slabel">stderr</div>
+          <div className="gh-ui-rv-text gh-ui-rv-errtext">{stderr}</div>
         </div>
       ) : null}
       {truncated ? <TruncMark /> : null}
@@ -262,15 +289,17 @@ function OutcomeView({ preview }: { preview: unknown }) {
 /* ── small helpers ─────────────────────────────────────────────────────── */
 
 function Empty({ children }: { children: ReactNode }) {
-  return <div className="gh-rv-empty">{children}</div>
+  return <div className="gh-ui-rv-empty">{children}</div>
 }
 
 function TruncMark() {
-  return <div className="gh-rv-trunc">… truncated</div>
+  return <div className="gh-ui-rv-trunc">… truncated</div>
 }
 
 function asRecord(v: unknown): Record<string, unknown> | null {
-  return v != null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null
+  return v != null && typeof v === 'object' && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : null
 }
 
 function str(v: unknown): string {
@@ -312,7 +341,10 @@ function cellText(v: unknown): string {
   if (typeof v === 'number' || typeof v === 'boolean') return String(v)
   if (Array.isArray(v)) return v.map(cellText).join(', ')
   const r = asRecord(v)
-  if (r) return str(r.login) || str(r.nameWithOwner) || str(r.name) || JSON.stringify(v)
+  if (r)
+    return (
+      str(r.login) || str(r.nameWithOwner) || str(r.name) || JSON.stringify(v)
+    )
   return JSON.stringify(v)
 }
 

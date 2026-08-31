@@ -2,7 +2,9 @@
 //!
 //! Surface:
 //!
-//!   * [`config`] — YAML-backed worker config (accounts, providers, limits).
+//!   * [`config`] — worker config (accounts, providers, limits).
+//!   * [`configuration`] — the `configuration` worker integration: register,
+//!     fetch, hot-reload, `email::config-status`.
 //!   * [`handlers`] — `email::send`, `email::accounts::list`, `email::list`,
 //!     `email::get`, `email::search`, `email::flag`, `email::move`,
 //!     `email::attachment::get`.
@@ -15,6 +17,7 @@
 //!   * [`manifest`] — `--manifest` payload exposed to the iii registry.
 
 pub mod config;
+pub mod configuration;
 pub mod handlers;
 pub mod manifest;
 pub mod provider;

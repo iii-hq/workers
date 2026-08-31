@@ -5,6 +5,7 @@
 //! Unknown event types are ignored (forward-compat: the backend adds events).
 use crate::wire::names::decode_tool_name;
 use crate::{now_ms, PROVIDER_ID};
+use llm_router::provider_scaffold::sse_transport::{arguments_incomplete, StreamEndView};
 use llm_router::types::content::ContentBlock;
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind, StopReason, Usage};
 use llm_router::types::messages::{AssistantMessage, AssistantRoleTag};
@@ -34,6 +35,7 @@ pub struct PartialState {
     stop_reason: StopReason,
     error_message: Option<String>,
     warnings: Vec<String>,
+    terminated: bool,
 }
 
 impl PartialState {
@@ -48,6 +50,7 @@ impl PartialState {
             stop_reason: StopReason::End,
             error_message: None,
             warnings,
+            terminated: false,
         }
     }
 
@@ -59,6 +62,24 @@ impl PartialState {
     /// distinguishes legitimate close-framing from a truncated/empty stream.
     pub fn has_content(&self) -> bool {
         !self.text.is_empty() || !self.thinking.is_empty() || !self.tool_calls.is_empty()
+    }
+}
+
+impl StreamEndView for PartialState {
+    fn saw_terminator(&self) -> bool {
+        self.terminated
+    }
+
+    fn has_content(&self) -> bool {
+        PartialState::has_content(self)
+    }
+
+    fn has_unfinished_call(&self) -> bool {
+        self.open_block == Some(OpenBlock::Call)
+            || self
+                .tool_calls
+                .iter()
+                .any(|tc| arguments_incomplete(&tc.args_json))
     }
 }
 
@@ -152,18 +173,33 @@ pub fn merge_usage(data: &Value, into: &mut Usage) {
         return;
     };
     let num = |k: &str| u.get(k).and_then(Value::as_u64);
+    // `Usage.input` is the cache-MISS slice, disjoint from `cache_read`
+    // (pricing bills the splits additively). The Responses API's
+    // `input_tokens` is a TOTAL that includes the cached slice, so the miss
+    // slice is derived — mapping the total verbatim would bill the cached
+    // prefix twice.
+    let cache_read = u
+        .pointer("/input_tokens_details/cached_tokens")
+        .or_else(|| u.get("cached_tokens"))
+        .and_then(Value::as_u64);
+    let cache_write = u
+        .pointer("/input_tokens_details/cache_write_tokens")
+        .or_else(|| u.pointer("/prompt_tokens_details/cache_write_tokens"))
+        .and_then(Value::as_u64);
+    if let Some(v) = cache_read {
+        into.cache_read = Some(v);
+    }
+    if let Some(v) = cache_write {
+        into.cache_write = Some(v);
+    }
     if let Some(v) = num("input_tokens").or_else(|| num("prompt_tokens")) {
-        into.input = Some(v);
+        into.input = Some(
+            v.saturating_sub(cache_read.unwrap_or(0))
+                .saturating_sub(cache_write.unwrap_or(0)),
+        );
     }
     if let Some(v) = num("output_tokens").or_else(|| num("completion_tokens")) {
         into.output = Some(v);
-    }
-    if let Some(v) = u
-        .pointer("/input_tokens_details/cached_tokens")
-        .or_else(|| u.get("cached_tokens"))
-        .and_then(Value::as_u64)
-    {
-        into.cache_read = Some(v);
     }
     if let Some(v) = u
         .pointer("/output_tokens_details/reasoning_tokens")
@@ -333,9 +369,11 @@ pub fn handle_chunk(
                     .last()
                     .map(|c| c.id.clone())
                     .unwrap_or_default(),
+                arguments_preview: None,
             });
         }
         n if n.contains("completed") => {
+            state.terminated = true;
             merge_usage(chunk, &mut state.usage);
             state.usage_seen = state.usage != Usage::default();
             state.stop_reason = if state.tool_calls.is_empty() {
@@ -394,6 +432,18 @@ mod tests {
         (state, out)
     }
 
+    #[test]
+    fn usage_keeps_cache_reads_and_writes_disjoint_from_input() {
+        let (state, _) = run(&[json!({"type":"response.completed","response":{"usage":{
+            "input_tokens":12,
+            "input_tokens_details":{"cached_tokens":6,"cache_write_tokens":2}
+        }}})]);
+        let usage = build_final(&state, "codex/gpt-test").usage.unwrap();
+        assert_eq!(usage.input, Some(4));
+        assert_eq!(usage.cache_read, Some(6));
+        assert_eq!(usage.cache_write, Some(2));
+    }
+
     /// Contract pin (llm-router types::events): delta frames are slim —
     /// no cumulative partial per chunk — while block-boundary frames carry
     /// the authoritative snapshot (cumulative text here). Readers
@@ -446,6 +496,30 @@ mod tests {
         }
         assert_eq!(state.stop_reason, StopReason::End);
         assert_eq!(events.iter().filter(|e| e.is_terminal()).count(), 1);
+    }
+
+    #[test]
+    fn usage_input_excludes_the_cached_slice() {
+        // `input_tokens` on the wire is a TOTAL including the cached prefix;
+        // `Usage.input` is the disjoint miss slice pricing bills at the full
+        // input rate. 10 total with 4 cached reads as 6 in, 4 cache_read.
+        let (_state, events) = run(&[
+            json!({ "type": "response.created" }),
+            json!({ "type": "response.output_text.delta", "delta": "Hello" }),
+            json!({ "type": "response.completed", "response": { "usage": {
+                "input_tokens": 10,
+                "output_tokens": 2,
+                "input_tokens_details": { "cached_tokens": 4 }
+            } } }),
+        ]);
+        match events.last() {
+            Some(AssistantMessageEvent::Done { message }) => {
+                let usage = message.usage.as_ref().unwrap();
+                assert_eq!(usage.input, Some(6));
+                assert_eq!(usage.cache_read, Some(4));
+            }
+            other => panic!("want done, got {other:?}"),
+        }
     }
 
     #[test]

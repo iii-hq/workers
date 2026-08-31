@@ -19,9 +19,10 @@
 //!
 //! Shape: the arm turn is a PARKED completion (`terminal: false` — the first
 //! in the suite), declared via `parked_completions(1)`; the expiry wake is an
-//! externally initiated turn with its own trace. The binding's `expires_at`
-//! is a `{{now_plus_…ms}}` token resolved at run expansion, and the sweep
-//! interval is shrunk via the harness env so expiry lands in seconds.
+//! externally initiated turn with its own trace. The binding's deadline is a
+//! relative `expires_in_ms` (the contract's only form — resolved server-side
+//! at registration), and the sweep interval is shrunk via the harness env so
+//! expiry lands in seconds.
 
 use serde_json::{json, Value};
 
@@ -39,12 +40,11 @@ const KEY: &str = "never";
 /// harness's own `sweep_interval_parses_only_positive_ms` unit test).
 const SWEEP_INTERVAL_ENV: &str = "III_HARNESS_EXPIRY_SWEEP_MS";
 
-/// Comfortably after the arm turn completes (~2-4s from expansion including
-/// stack boot), comfortably inside the 60s scenario deadline with the 500ms
-/// sweep. The margin is deliberate: a slow machine must still finish arming
-/// before the deadline passes, or the notification lands mid-turn and the
-/// park never happens.
-const EXPIRES_IN: &str = "{{now_plus_12000ms}}";
+/// Relative to REGISTRATION (server-side resolution), so a slow machine can
+/// never lose the window to boot: the deadline starts counting only once the
+/// arm call lands. Comfortably inside the 60s scenario deadline with the
+/// 500ms sweep.
+const EXPIRES_IN_MS: u64 = 12_000;
 
 pub(super) fn scenario() -> ScenarioFixture {
     const ID: &str = "INT-017";
@@ -69,7 +69,7 @@ pub(super) fn scenario() -> ScenarioFixture {
         "config": { "scope": SCOPE, "key": KEY },
         "once": true,
         "label": "doomed",
-        "lifecycle": { "expires_at": EXPIRES_IN }
+        "lifecycle": { "expires_in_ms": EXPIRES_IN_MS }
     });
 
     Scenario::new(
@@ -130,16 +130,20 @@ pub(super) fn scenario() -> ScenarioFixture {
             .respond(Response::text("armed and parked", 10, 2)),
     )
     // The expiry-woken turn: a fresh externally initiated turn carrying the
-    // wake-lost notification as its user message. Its prompt is NOT the arm
-    // turn's — the sweep's engine-side unregister is a registry change, so
-    // the staleness notice deterministically joins the prompt; pin the notice
-    // instead of the sha (same drift INT-008 handles).
+    // wake-lost notification as its user message. The sweep's engine-side
+    // unregister is a registry change; the staleness notice now rides as an
+    // ephemeral TAIL user message (never a system-prompt mutation — that
+    // invalidated the provider's prompt-cache prefix), so the prompt keeps
+    // the stable sha. Advisory tail messages are invisible to matchers (the
+    // scripted router strips them — their timing is stack noise elsewhere),
+    // so the notice delivery is asserted over the raw router evidence in
+    // verify instead of a message gate here.
     .generation(
         Generation::new(3)
             .expect(
                 Request::new()
                     .turn_request_step(0)
-                    .system_prompt_regex("registry changed during this conversation")
+                    .system_prompt_sha256("{{system_prompt_sha256}}")
                     .messages_subset([
                         json!({ "role": "user" }),
                         json!({ "role": "assistant" }),
@@ -153,6 +157,31 @@ pub(super) fn scenario() -> ScenarioFixture {
     )
     .verify(|run| {
         run.expect_assistant_texts(["armed and parked", "expiry noted"])?;
+
+        // The registry-changed notice reached the provider on the woken turn
+        // as a raw tail user message (matchers never see advisories; the raw
+        // router evidence keeps them).
+        let notice_delivered = run
+            .router_evidence
+            .get("calls")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|call| call.get("request")?.get("messages")?.as_array())
+            .flatten()
+            .any(|message| {
+                message
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .and_then(|blocks| blocks.first())
+                    .and_then(|block| block.get("text"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| text.starts_with("NOTE: the function registry changed"))
+            });
+        anyhow::ensure!(
+            notice_delivered,
+            "the registry-changed notice must reach the provider as a tail message"
+        );
 
         // Exactly one notification, and it must carry everything the woken
         // session needs to act without a lookup: the watch, the zero-fire

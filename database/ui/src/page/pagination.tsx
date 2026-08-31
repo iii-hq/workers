@@ -31,7 +31,7 @@ export function Pagination({
   return (
     <div className="db-pager">
       <div className="db-pager-group">
-        <span className="db-pager-cap">show</span>
+        <span className="db-pager-cap">Show</span>
         <select
           value={pageSize}
           onChange={(e) => onPageSizeChange(Number(e.target.value))}
@@ -55,10 +55,10 @@ export function Pagination({
           disabled={currentPage <= 1}
           onClick={() => onPageChange(currentPage - 1)}
         >
-          <ChevronLeft size={14} />
+          <ChevronLeft size={16} />
         </Button>
-        <span className="db-pager-cap">
-          page {currentPage} of {totalPages}
+        <span>
+          Page {currentPage} of {totalPages}
         </span>
         <Button
           variant="icon"
@@ -67,7 +67,7 @@ export function Pagination({
           disabled={currentPage >= totalPages}
           onClick={() => onPageChange(currentPage + 1)}
         >
-          <ChevronRight size={14} />
+          <ChevronRight size={16} />
         </Button>
       </div>
     </div>

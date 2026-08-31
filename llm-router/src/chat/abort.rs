@@ -36,7 +36,7 @@ mod tests {
     #[tokio::test]
     async fn aborts_known_requests_once_and_ignores_unknown() {
         let inflight = Arc::new(InflightMap::default());
-        inflight.insert("r1");
+        let _reservation = inflight.reserve("r1").unwrap();
         let abort = make_abort(inflight);
         // First abort of a known request succeeds, the second is a no-op
         // (idempotent), and an unknown id reports `aborted: false`.

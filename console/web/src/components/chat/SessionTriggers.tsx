@@ -1,11 +1,4 @@
-import {
-  Check,
-  ChevronDown,
-  ChevronRight,
-  Copy,
-  Trash2,
-  Zap,
-} from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, Copy, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/Button'
 import {
@@ -14,7 +7,9 @@ import {
   DialogDescription,
   DialogTitle,
 } from '@/components/ui/Dialog'
+import { TriggerIcon } from '@/components/ui/TriggerIcon'
 import type { SessionTriggerInfo } from '@/lib/backend/triggers'
+import { copyTextToClipboard } from '@/lib/clipboard'
 import { JsonHighlight } from '@/lib/syntax'
 
 interface SessionTriggersProps {
@@ -72,9 +67,42 @@ export function summarizeTriggerConfig(config: unknown): string | null {
   return parts.length > 0 ? parts.join(' · ') : null
 }
 
-/** The row's lifecycle ghost text, from lifecycle data alone. */
+/**
+ * The row's lifecycle text, from structured lifecycle data alone. Historical
+ * `retired` records do not say how the binding ended, so keep their copy
+ * deliberately neutral instead of presenting every retirement as an unbind.
+ */
 export function lifecycleNote(trigger: SessionTriggerInfo): string | null {
-  if (trigger.fired) return 'fired · unregistered'
+  if (trigger.fired) {
+    switch (trigger.retirementReason) {
+      case 'once_consumed':
+        return 'once · consumed automatically'
+      case 'max_fires':
+        return 'fire limit reached'
+      case 'expired':
+        return 'expired'
+      case 'unregistered':
+        return 'unregistered'
+      case 'invalidated':
+        return 'invalidated'
+      case 'exhausted':
+        return 'exhausted'
+    }
+
+    // Newer records normally repeat these lifecycle events as both outcome
+    // and retirement reason. Tolerate a partially enriched record while
+    // preserving the same distinct labels.
+    switch (trigger.outcome) {
+      case 'expired':
+        return 'expired'
+      case 'unregistered':
+        return 'unregistered'
+      case 'invalidated':
+        return 'invalidated'
+      default:
+        return 'retired'
+    }
+  }
   const parts: string[] = []
   if (trigger.once) parts.push('once')
   if ((trigger.fires ?? 0) > 0)
@@ -121,8 +149,10 @@ function CopyableId({ value }: { value: string }) {
       <button
         type="button"
         onClick={() => {
-          if (typeof navigator === 'undefined' || !navigator.clipboard) return
-          void navigator.clipboard.writeText(value).then(() => {
+          // Helper, not navigator.clipboard: the API is undefined over
+          // `http://<LAN-IP>` (insecure context) and the raw call no-ops.
+          void copyTextToClipboard(value).then((ok) => {
+            if (!ok) return
             setCopied(true)
             window.setTimeout(() => setCopied(false), 1200)
           })
@@ -132,9 +162,9 @@ function CopyableId({ value }: { value: string }) {
         title={copied ? 'copied' : 'copy'}
       >
         {copied ? (
-          <Check size={11} aria-hidden />
+          <Check size={16} aria-hidden />
         ) : (
-          <Copy size={11} aria-hidden />
+          <Copy size={16} aria-hidden />
         )}
       </button>
     </span>
@@ -158,22 +188,23 @@ function TriggerRow({
   stateNote,
 }: TriggerRowProps) {
   const name = trigger.label ?? null
+  const title = name ?? trigger.triggerType
   const summary = stateNote ?? summarizeTriggerConfig(trigger.config)
   const lifecycle = lifecycleNote(trigger)
   return (
     <div
       className={`flex items-center gap-2 border-b border-rule-2 px-3 py-1.5 text-[12px] last:border-b-0${trigger.fired ? ' opacity-55' : ''}`}
     >
-      <Zap size={12} className="shrink-0 text-ink-ghost" aria-hidden />
+      <TriggerIcon size={16} className="shrink-0 fill-ink-ghost" aria-hidden />
       <button
         type="button"
         onClick={onOpen}
         className="min-w-0 flex-1 truncate text-left hover:text-ink transition-colors"
         title="show subscription detail"
       >
-        {name || trigger.triggerType}
+        {title}
         <span className="text-ink-ghost">
-          {name ? ` · ${trigger.triggerType}` : ''}
+          {title !== trigger.triggerType ? ` · ${trigger.triggerType}` : ''}
           {` · ${deliveryLabel(trigger)}`}
           {summary ? ` · ${summary}` : ''}
           {lifecycle ? ` · ${lifecycle}` : ''}
@@ -184,7 +215,7 @@ function TriggerRow({
         disabled={busy}
         onClick={onUnregister}
         className="shrink-0 lowercase text-ink-ghost hover:text-ink transition-colors disabled:opacity-50"
-        aria-label={`${trigger.fired ? 'dismiss' : 'unregister'} ${name ?? trigger.triggerType}`}
+        aria-label={`${trigger.fired ? 'dismiss' : 'unregister'} ${title}`}
         title={trigger.fired ? 'dismiss' : 'unregister'}
       >
         {busy ? '…' : '✕'}
@@ -213,7 +244,7 @@ export function SessionTriggers({
   const [busyId, setBusyId] = useState<string | null>(null)
   const [clearArming, setClearArming] = useState(false)
   const [clearing, setClearing] = useState(false)
-  // Fired ghost rows the user dismissed — local per-tab view state; they
+  // Inactive ghost rows the user dismissed — local per-tab view state; they
   // resurrect from the transcript on reload, so no persistence needed.
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set())
 
@@ -226,7 +257,7 @@ export function SessionTriggers({
     [visibleTriggers],
   )
   const registeredCount = liveTriggers.length
-  const firedCount = visibleTriggers.length - registeredCount
+  const inactiveCount = visibleTriggers.length - registeredCount
 
   // Whether each keyed state binding's watched key exists yet — the
   // row-level diagnosis for a wake armed on a key nothing ever writes.
@@ -275,7 +306,7 @@ export function SessionTriggers({
     setSelectedId((current) => (current === id ? null : current))
   }
 
-  // A fired ghost row has no live binding — its ✕ dismisses locally; a live
+  // An inactive ghost row has no live binding — its ✕ dismisses locally; a live
   // row's ✕ tears the subscription down.
   const rowAction = (t: SessionTriggerInfo) =>
     t.fired ? dismiss(t.id) : void unregister(t.id)
@@ -284,7 +315,7 @@ export function SessionTriggers({
     setClearing(true)
     try {
       await onClearAll?.()
-      // Live bindings are unregistered by onClearAll; fired ghosts have no
+      // Live bindings are unregistered by onClearAll; inactive ghosts have no
       // live binding, so sweep them from view here too.
       setDismissed((prev) => {
         const next = new Set(prev)
@@ -306,7 +337,7 @@ export function SessionTriggers({
       >
         {clearArming ? (
           <div className="flex items-center gap-2 px-3 py-1.5 text-[12px]">
-            <Trash2 size={12} className="shrink-0 text-alert" aria-hidden />
+            <Trash2 size={16} className="shrink-0 text-alert" aria-hidden />
             <span className="min-w-0 flex-1 truncate">
               unregister all {registeredCount} triggers?
               <span className="text-ink-ghost">
@@ -339,12 +370,16 @@ export function SessionTriggers({
               aria-expanded={expanded}
               className="flex min-w-0 flex-1 items-center gap-2 py-1.5 pl-3 text-[12px] hover:text-ink transition-colors"
             >
-              <Zap size={12} className="shrink-0 text-ink-ghost" aria-hidden />
+              <TriggerIcon
+                size={16}
+                className="shrink-0 fill-ink-ghost"
+                aria-hidden
+              />
               <span className="min-w-0 flex-1 truncate text-left">
                 {registeredCount} trigger{registeredCount === 1 ? '' : 's'}{' '}
                 registered
                 <span className="text-ink-ghost">
-                  {firedCount > 0 ? ` · ${firedCount} fired` : ''}
+                  {inactiveCount > 0 ? ` · ${inactiveCount} inactive` : ''}
                 </span>
               </span>
             </button>
@@ -356,7 +391,7 @@ export function SessionTriggers({
                   className="flex items-center gap-1 px-2 py-1.5 text-ink-faint hover:text-alert transition-colors"
                   title="unregister every trigger"
                 >
-                  <Trash2 size={12} aria-hidden />
+                  <Trash2 size={16} aria-hidden />
                   clear all
                 </button>
               </div>
@@ -368,9 +403,9 @@ export function SessionTriggers({
               className="shrink-0 px-2 py-1.5 text-ink-ghost hover:text-ink transition-colors"
             >
               {expanded ? (
-                <ChevronDown size={12} aria-hidden />
+                <ChevronDown size={16} aria-hidden />
               ) : (
-                <ChevronRight size={12} aria-hidden />
+                <ChevronRight size={16} aria-hidden />
               )}
             </button>
           </div>
@@ -403,7 +438,7 @@ export function SessionTriggers({
               className="mr-2 inline-flex align-baseline text-ink-ghost"
               aria-hidden
             >
-              <Zap size={13} />
+              <TriggerIcon size={16} className="fill-ink-ghost" />
             </span>
             {selected ? selected.label || selected.triggerType : ''}
           </DialogTitle>
@@ -413,33 +448,33 @@ export function SessionTriggers({
           {selected ? (
             <div className="mt-4 space-y-4 font-mono text-[12px]">
               <dl className="grid grid-cols-[max-content_1fr] items-baseline gap-x-4 gap-y-1.5">
-                <dt className="lowercase text-ink-ghost">fires on</dt>
+                <dt className="text-ink-ghost">Fires on</dt>
                 <dd className="text-ink">{selected.triggerType}</dd>
-                <dt className="lowercase text-ink-ghost">delivers</dt>
+                <dt className="text-ink-ghost">Delivers</dt>
                 <dd className="text-ink">{deliveryLabel(selected)}</dd>
-                <dt className="lowercase text-ink-ghost">lifetime</dt>
+                <dt className="text-ink-ghost">Lifetime</dt>
                 <dd className="text-ink">
                   {selected.fired
-                    ? 'fired — already unregistered'
+                    ? (lifecycleNote(selected) ?? 'retired')
                     : selected.once
                       ? 'once — retires after first fire'
                       : (lifecycleNote(selected) ?? 'until unregistered')}
                 </dd>
                 {selected.createdAt !== undefined ? (
                   <>
-                    <dt className="lowercase text-ink-ghost">registered</dt>
+                    <dt className="text-ink-ghost">Registered</dt>
                     <dd className="text-ink-faint">
                       {new Date(selected.createdAt).toLocaleString()}
                     </dd>
                   </>
                 ) : null}
-                <dt className="lowercase text-ink-ghost">subscription</dt>
+                <dt className="text-ink-ghost">Subscription</dt>
                 <dd className="text-ink-faint">
                   <CopyableId value={selected.id} />
                 </dd>
                 {selected.triggerId ? (
                   <>
-                    <dt className="lowercase text-ink-ghost">trigger id</dt>
+                    <dt className="text-ink-ghost">Trigger ID</dt>
                     <dd className="text-ink-faint">
                       <CopyableId value={selected.triggerId} />
                     </dd>
@@ -453,7 +488,7 @@ export function SessionTriggers({
                 <JsonSection label="conditions" value={selected.conditions} />
               ) : null}
               <div className="flex justify-end">
-                {/* A fired row has no live binding left to unregister —
+                {/* An inactive row has no live binding left to unregister —
                     offering it would only produce a guaranteed error. */}
                 {selected.fired ? (
                   <Button

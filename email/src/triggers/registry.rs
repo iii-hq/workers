@@ -9,6 +9,7 @@ use std::sync::Arc;
 pub struct Subscriber {
     pub instance_id: String,
     pub function_id: String,
+    pub namespace: Option<String>,
     pub handler_timeout_ms: u64,
 }
 
@@ -29,6 +30,7 @@ impl TriggerRegistry {
         folder: String,
         instance_id: String,
         function_id: String,
+        namespace: Option<String>,
         handler_timeout_ms: u64,
     ) {
         // Drop any prior row with this instance_id so a re-register replaces
@@ -39,6 +41,7 @@ impl TriggerRegistry {
         self.subs.entry(key.clone()).or_default().push(Subscriber {
             instance_id: instance_id.clone(),
             function_id,
+            namespace,
             handler_timeout_ms,
         });
         self.by_id.insert(instance_id, key);

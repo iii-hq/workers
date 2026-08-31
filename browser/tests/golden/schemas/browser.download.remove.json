@@ -1,0 +1,35 @@
+{
+  "function_id": "browser::download::remove",
+  "description": "Forget a download and delete its file from the session's download dir.",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "DownloadRemoveInput",
+    "type": "object",
+    "required": [
+      "guid",
+      "session_id"
+    ],
+    "properties": {
+      "guid": {
+        "description": "The download to forget, and delete from disk.",
+        "type": "string"
+      },
+      "session_id": {
+        "type": "string"
+      }
+    }
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "DownloadRemoveOutput",
+    "type": "object",
+    "required": [
+      "ok"
+    ],
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      }
+    }
+  }
+}

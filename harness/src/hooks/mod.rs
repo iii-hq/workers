@@ -92,7 +92,7 @@ pub struct HookTriggerConfig {
     /// pre/post_trigger only: target function_id globs to consult on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub functions: Option<Vec<String>>,
-    /// post_turn only: session_id globs this validator gates (omit = all).
+    /// pre_turn/post_turn: session_id globs this hook applies to (omit = all).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sessions: Option<Vec<String>>,
     /// post_turn only: template mode — send THIS argument object to the
@@ -130,6 +130,11 @@ pub struct HookTriggerConfig {
 #[derive(Debug, Clone)]
 pub struct HookBinding {
     pub function_id: String,
+    pub namespace: Option<String>,
+    /// Static system-prompt contribution declared in trigger metadata. New
+    /// harnesses apply it directly; the bound function remains the fallback
+    /// for older harnesses that ignore the metadata.
+    pub inject_prompt: Option<String>,
     pub functions: Option<Vec<String>>,
     pub sessions: Option<Vec<String>>,
     pub payload: Option<Value>,
@@ -155,8 +160,17 @@ impl HookBinding {
             Some(other) => return Err(format!("invalid on_error `{other}`")),
             None => point.default_fail_closed(),
         };
+        let inject_prompt = config
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("inject_prompt"))
+            .and_then(Value::as_str)
+            .filter(|prompt| !prompt.is_empty())
+            .map(str::to_string);
         Ok(HookBinding {
             function_id: config.function_id,
+            namespace: config.namespace,
+            inject_prompt,
             functions: cfg.functions,
             sessions: cfg.sessions,
             payload: cfg.payload,
@@ -281,7 +295,7 @@ impl HookRegistry {
     fn register_type(&self, iii: &Arc<IIIClient>, point: HookPoint, set: HookSet) {
         let description = match point {
             HookPoint::PreTurn => "Synchronous hook: first step of a turn, before any model spend. May veto.",
-            HookPoint::PreGenerate => "Synchronous hook: after context assembly, before generation. May extend the system prompt, append messages, or veto.",
+            HookPoint::PreGenerate => "Synchronous hook: after context assembly, before generation. May extend the system prompt, append messages, or veto. Static-only bindings may declare their exact contribution as metadata.inject_prompt.",
             HookPoint::PostGenerate => "Synchronous hook: after the final assistant message update. Observe only.",
             HookPoint::PreTrigger => "Synchronous hook: after the allow/deny policy passes, before the target is invoked. May deny, hold, or rewrite arguments.",
             HookPoint::PostTrigger => "Synchronous hook: after the target returns, before the result is appended. May rewrite content/details/is_error.",
@@ -372,6 +386,7 @@ mod tests {
             function_id: function_id.into(),
             config: body,
             metadata: None,
+            namespace: None,
         }
     }
 
@@ -395,6 +410,38 @@ mod tests {
         .unwrap();
         let order: Vec<String> = set.ordered().into_iter().map(|b| b.function_id).collect();
         assert_eq!(order, vec!["m::hook", "a::hook", "z::hook"]);
+    }
+
+    #[test]
+    fn binding_preserves_target_namespace() {
+        let set = HookSet::default();
+        let mut config = cfg("a", "audit::hook", json!({}));
+        config.namespace = Some("project-a".into());
+        set.add(HookPoint::PostTrigger, config).unwrap();
+        assert_eq!(set.ordered()[0].namespace.as_deref(), Some("project-a"));
+    }
+
+    #[test]
+    fn static_prompt_injection_comes_from_binding_metadata() {
+        let set = HookSet::default();
+        let mut binding = cfg("fp", "fp::inject-guidance", json!({}));
+        binding.metadata = Some(json!({ "inject_prompt": "fp guidance" }));
+        set.add(HookPoint::PreGenerate, binding).unwrap();
+        assert_eq!(
+            set.ordered()[0].inject_prompt.as_deref(),
+            Some("fp guidance")
+        );
+
+        let mut empty = cfg("empty", "empty::hook", json!({}));
+        empty.metadata = Some(json!({ "inject_prompt": "" }));
+        set.add(HookPoint::PreGenerate, empty).unwrap();
+        assert!(set
+            .ordered()
+            .into_iter()
+            .find(|binding| binding.function_id == "empty::hook")
+            .unwrap()
+            .inject_prompt
+            .is_none());
     }
 
     #[test]

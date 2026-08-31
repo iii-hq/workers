@@ -155,7 +155,7 @@ pub async fn relay_frames(
                 };
             }
             ReadEvent::Msg(msg) => {
-                let Ok(ev) = serde_json::from_str::<AssistantMessageEvent>(&msg) else {
+                let Ok(mut ev) = serde_json::from_str::<AssistantMessageEvent>(&msg) else {
                     continue; // malformed frame: skip, never fatal
                 };
                 if !matches!(ev, AssistantMessageEvent::Ping) {
@@ -167,11 +167,25 @@ pub async fn relay_frames(
                     }
                 }
                 acc.apply(&ev);
+                if let AssistantMessageEvent::FunctioncallDelta {
+                    arguments_preview, ..
+                } = &mut ev
+                {
+                    *arguments_preview = acc.call_arguments_preview();
+                }
                 let is_ping = matches!(ev, AssistantMessageEvent::Ping);
+                let has_arguments_preview = matches!(
+                    &ev,
+                    AssistantMessageEvent::FunctioncallDelta {
+                        arguments_preview: Some(_),
+                        ..
+                    }
+                );
 
-                // Only Usage/Done/Error are enriched (cost_usd) and need
-                // re-serialization; every other frame is forwarded as the
-                // original string — no per-frame re-serialize on the hot path.
+                // Usage/Done/Error carry router-owned cost. Function deltas
+                // carrying an identity preview are also re-serialized; the
+                // preview is bounded and excludes payload, so frame size stays
+                // O(chunk). Every other frame remains byte-identical.
                 let enriched = match ev {
                     AssistantMessageEvent::Usage { usage: u } => {
                         let filled = fill_cost_usd(&u, opts.pricing.as_ref());
@@ -191,6 +205,7 @@ pub async fn relay_frames(
                             .or_else(|| usage.clone());
                         Some(AssistantMessageEvent::Error { error })
                     }
+                    delta if has_arguments_preview => Some(delta),
                     _ => None,
                 };
 
@@ -598,6 +613,56 @@ mod loop_tests {
                 text: "Hello".into()
             }]
         );
+    }
+
+    #[tokio::test]
+    async fn function_deltas_carry_the_router_extracted_identity_preview() {
+        use crate::types::content::ContentBlock;
+
+        let provider = FakeChannel::new();
+        let mut caller = FakeChannel::new();
+        let mut with_call = partial("");
+        with_call.content.push(ContentBlock::FunctionCall {
+            id: "c1".into(),
+            function_id: "agent_trigger".into(),
+            arguments: serde_json::json!({}),
+        });
+        send(
+            &provider,
+            &AssistantMessageEvent::FunctioncallStart { partial: with_call },
+        );
+        send(
+            &provider,
+            &AssistantMessageEvent::FunctioncallDelta {
+                partial: None,
+                delta: r#"{"function":"state::se"#.into(),
+                id: "c1".into(),
+                arguments_preview: None,
+            },
+        );
+        send(
+            &provider,
+            &AssistantMessageEvent::Done {
+                message: partial(""),
+            },
+        );
+        provider.writer.close();
+
+        let (_, opts) = opts(1000);
+        let mut reader: Box<dyn RelayRead> = Box::new(provider.reader);
+        assert!(matches!(
+            relay_frames(&mut reader, &caller.writer.clone(), &opts).await,
+            RelayResult::Done { .. }
+        ));
+        let frames = drain(&mut caller).await;
+        let AssistantMessageEvent::FunctioncallDelta {
+            arguments_preview: Some(preview),
+            ..
+        } = &frames[1]
+        else {
+            panic!("missing function-call arguments preview")
+        };
+        assert_eq!(preview.function.as_deref(), Some("state::se"));
     }
 
     #[tokio::test]

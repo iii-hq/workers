@@ -1,0 +1,75 @@
+{
+  "function_id": "browser::upload",
+  "description": "Attach up to eight base64 files to exactly one input[type=file] selected by CSS. Files are staged privately for the session and removed when it stops.",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "UploadInput",
+    "type": "object",
+    "required": [
+      "files",
+      "selector",
+      "session_id"
+    ],
+    "properties": {
+      "files": {
+        "description": "Up to eight files, each at most 25 MB decoded.",
+        "type": "array",
+        "items": {
+          "$ref": "#/definitions/UploadFile"
+        }
+      },
+      "selector": {
+        "description": "CSS selector that must match exactly one input[type=file].",
+        "type": "string"
+      },
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "definitions": {
+      "UploadFile": {
+        "type": "object",
+        "required": [
+          "data",
+          "name"
+        ],
+        "properties": {
+          "data": {
+            "description": "File bytes, base64.",
+            "type": "string"
+          },
+          "name": {
+            "description": "File name exposed to the page. Path components are rejected.",
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "UploadOutput",
+    "type": "object",
+    "required": [
+      "attached",
+      "file_names",
+      "ok"
+    ],
+    "properties": {
+      "attached": {
+        "type": "integer",
+        "format": "uint",
+        "minimum": 0.0
+      },
+      "file_names": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "ok": {
+        "type": "boolean"
+      }
+    }
+  }
+}

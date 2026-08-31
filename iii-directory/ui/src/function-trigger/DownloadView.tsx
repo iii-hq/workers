@@ -26,7 +26,9 @@ interface ViewProps {
 /** Classifies the request shape into the two valid source modes (repo or
  * registry). Only the active source's chips render — `null` means the
  * request was malformed and the dispatcher will fall back to JSON. */
-function classifySource(req: SkillsDownloadRequest):
+function classifySource(
+  req: SkillsDownloadRequest,
+):
   | { kind: 'repo'; repo: string; skill: string; branch: string }
   | { kind: 'registry'; worker: string; spec: string }
   | null {
@@ -74,7 +76,6 @@ export function SkillsDownloadView({ input, output, running }: ViewProps) {
   if (!resp) return null
 
   const skillsCount = resp.skills_written.length
-  const promptsCount = resp.prompts_written.length
 
   return (
     <Card>
@@ -82,13 +83,16 @@ export function SkillsDownloadView({ input, output, running }: ViewProps) {
         <StatusPill label="downloaded" variant="accent" />
         <KvChip label="namespace">{resp.namespace}</KvChip>
         <KvChip label="skills">{skillsCount}</KvChip>
-        <KvChip label="prompts">{promptsCount}</KvChip>
       </MetaRow>
       <ActionLine symbol="↓" tone="ink">
         <span>{describeSource(source)}</span>
       </ActionLine>
       <WrittenList label="skills written" names={resp.skills_written} />
-      <WrittenList label="prompts written" names={resp.prompts_written} />
+      <WrittenList
+        label="system prompts written"
+        names={resp.system_prompts_written}
+      />
+      <WrittenList label="agent profiles written" names={resp.agents_written} />
     </Card>
   )
 }
@@ -120,14 +124,14 @@ function sourceChips(
   if (source.kind === 'repo') {
     return (
       <>
-        <KvChip label="source">repo</KvChip>
+        <KvChip label="Source">Repo</KvChip>
         <KvChip label="branch">{source.branch}</KvChip>
       </>
     )
   }
   return (
     <>
-      <KvChip label="source">registry</KvChip>
+      <KvChip label="Source">Registry</KvChip>
       <KvChip label="spec">{source.spec}</KvChip>
     </>
   )

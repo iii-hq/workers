@@ -1,11 +1,16 @@
+import uiClasses from '@iii-dev/console-ui/ui-classes'
 import type * as React from 'react'
 import { useRef } from 'react'
 import { cn } from '@/lib/utils'
+import { TabIconSlot } from './TabIcon'
+import { Tooltip, TooltipContent, TooltipTrigger } from './Tooltip'
 
-interface ModeToggleOption<T extends string> {
+export interface SegmentedControlOption<T extends string> {
   value: T
   label: React.ReactNode
   title?: string
+  /** Defaults to a semantic 16px icon inferred from `value`; `false` hides it. */
+  icon?: React.ReactNode | false
 }
 
 /**
@@ -14,43 +19,55 @@ interface ModeToggleOption<T extends string> {
  * matches the "one persistent choice" meaning better than tab, which
  * implies switching between panels.
  */
-type ModeToggleVariant = 'tabs' | 'radio'
+export type SegmentedControlVariant = 'tabs' | 'radio'
 
-interface ModeToggleProps<T extends string> {
+export interface SegmentedControlProps<T extends string> {
   value: T
   onChange: (next: T) => void
-  options: ModeToggleOption<T>[]
+  options: SegmentedControlOption<T>[]
   className?: string
-  variant?: ModeToggleVariant
+  /** Migration seam for domain layout; shared state styling remains primary. */
+  itemClassName?: string
+  activeItemClassName?: string
+  variant?: SegmentedControlVariant
+  /** Show only the semantic icon and expose each label through Tooltip. */
+  iconOnly?: boolean
   /** Accessible name for the group. Required for `variant="radio"`. */
   'aria-label'?: string
 }
 
-export function ModeToggle<T extends string>({
+export function SegmentedControl<T extends string>({
   value,
   onChange,
   options,
   className,
+  itemClassName,
+  activeItemClassName,
   variant = 'tabs',
+  iconOnly = false,
   'aria-label': ariaLabel,
-}: ModeToggleProps<T>) {
+}: SegmentedControlProps<T>) {
   const groupRole = variant === 'radio' ? 'radiogroup' : 'tablist'
   const itemRole = variant === 'radio' ? 'radio' : 'tab'
+  const renderIconOnly = iconOnly && variant === 'tabs'
   const buttonRefs = useRef<(HTMLButtonElement | null)[]>([])
 
-  // WAI-ARIA radiogroup pattern: arrow keys move between options AND
-  // update the selected value (radios commit on focus). Home/End jump
-  // to first/last. Tab focus is roving — only the selected radio is
-  // tabbable; others get tabIndex={-1} so Tab moves past the whole
-  // group as one stop. Tabs variant keeps Tab-between-options.
-  function handleRadioKeyDown(
+  // Both tabs and radios are one keyboard stop. Arrow keys move and commit;
+  // Home/End jump to the edges. Radios additionally accept vertical arrows.
+  function handleKeyDown(
     e: React.KeyboardEvent<HTMLButtonElement>,
     idx: number,
   ) {
     let nextIdx: number | null = null
-    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+    if (
+      e.key === 'ArrowRight' ||
+      (variant === 'radio' && e.key === 'ArrowDown')
+    ) {
       nextIdx = (idx + 1) % options.length
-    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+    } else if (
+      e.key === 'ArrowLeft' ||
+      (variant === 'radio' && e.key === 'ArrowUp')
+    ) {
       nextIdx = (idx - 1 + options.length) % options.length
     } else if (e.key === 'Home') {
       nextIdx = 0
@@ -69,7 +86,12 @@ export function ModeToggle<T extends string>({
     <div
       role={groupRole}
       aria-label={ariaLabel}
-      className={cn('inline-flex border border-rule p-[2px]', className)}
+      data-variant={variant}
+      data-icon-only={renderIconOnly || undefined}
+      className={cn(
+        variant === 'tabs' ? uiClasses.tabsList : uiClasses.segmentedControl,
+        className,
+      )}
     >
       {options.map((opt, idx) => {
         const active = opt.value === value
@@ -77,31 +99,46 @@ export function ModeToggle<T extends string>({
           variant === 'radio'
             ? { 'aria-checked': active }
             : { 'aria-selected': active }
-        const isRadio = variant === 'radio'
-        return (
+        const accessibleLabel =
+          opt.title ?? (typeof opt.label === 'string' ? opt.label : opt.value)
+        const button = (
           <button
             key={opt.value}
             type="button"
             role={itemRole}
             {...ariaState}
+            aria-label={renderIconOnly ? accessibleLabel : undefined}
             ref={(el) => {
               buttonRefs.current[idx] = el
             }}
-            tabIndex={isRadio ? (active ? 0 : -1) : undefined}
+            tabIndex={active ? 0 : -1}
             onClick={() => onChange(opt.value)}
-            onKeyDown={isRadio ? (e) => handleRadioKeyDown(e, idx) : undefined}
-            title={opt.title}
+            onKeyDown={(e) => handleKeyDown(e, idx)}
+            title={renderIconOnly ? undefined : opt.title}
+            data-selected={active || undefined}
             className={cn(
-              'font-mono text-[13px] px-3 py-1 transition-colors lowercase',
-              active
-                ? 'bg-ink text-bg'
-                : 'bg-transparent text-ink-faint hover:text-ink',
+              variant === 'tabs' ? uiClasses.tab : uiClasses.segmentedItem,
+              itemClassName,
+              active && activeItemClassName,
             )}
           >
-            {opt.label}
+            {variant === 'tabs' ? (
+              <TabIconSlot icon={opt.icon} value={opt.value} />
+            ) : null}
+            {renderIconOnly ? null : <span>{opt.label}</span>}
           </button>
+        )
+        if (!renderIconOnly) return button
+        return (
+          <Tooltip key={opt.value}>
+            <TooltipTrigger asChild>{button}</TooltipTrigger>
+            <TooltipContent>{opt.label}</TooltipContent>
+          </Tooltip>
         )
       })}
     </div>
   )
 }
+
+/** Backwards-compatible local name; new shared consumers use SegmentedControl. */
+export const ModeToggle = SegmentedControl

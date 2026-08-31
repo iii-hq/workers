@@ -20,6 +20,7 @@
 
 import {
   type IIIConnectionState,
+  type InitOptions,
   type ISdk,
   type RegisterFunctionOptions,
   type RegisterTriggerInput,
@@ -43,7 +44,7 @@ export interface IiiClient {
   trigger<T = unknown>(
     functionId: string,
     payload?: Record<string, unknown>,
-    options?: { timeoutMs?: number },
+    options?: { timeoutMs?: number; namespace?: string },
   ): Promise<T>
   on<P = unknown>(
     functionId: string,
@@ -71,8 +72,9 @@ export interface IiiClient {
 
 interface Deps {
   resolveWsUrl: () => string
+  resolveNamespace: () => Promise<string | undefined>
   makeBrowserId: () => string
-  registerWorker: (url: string) => ISdk
+  registerWorker: (url: string, options?: InitOptions) => ISdk
 }
 
 let _clientPromise: Promise<IiiClient> | null = null
@@ -81,8 +83,9 @@ let _deps: Deps = defaultDeps()
 function defaultDeps(): Deps {
   return {
     resolveWsUrl,
+    resolveNamespace,
     makeBrowserId,
-    registerWorker: (url) => registerWorker(url),
+    registerWorker: (url, options) => registerWorker(url, options),
   }
 }
 
@@ -122,8 +125,12 @@ export function __resetIiiClientForTests(): void {
 
 async function bootstrap(deps: Deps): Promise<IiiClient> {
   const wsUrl = deps.resolveWsUrl()
+  const namespace = await deps.resolveNamespace()
   const browserId = deps.makeBrowserId()
-  const sdk = deps.registerWorker(wsUrl)
+  const sdk = deps.registerWorker(
+    wsUrl,
+    namespace === undefined ? undefined : { namespace },
+  )
   return wrapSdk(sdk, browserId)
 }
 
@@ -140,12 +147,14 @@ export function wrapSdk(sdk: ISdk, browserId: string): IiiClient {
   function trigger<T>(
     functionId: string,
     payload: Record<string, unknown> = {},
-    options?: { timeoutMs?: number },
+    options?: { timeoutMs?: number; namespace?: string },
   ): Promise<T> {
+    const namespace = options?.namespace ?? controlPlaneNamespace(functionId)
     return sdk.trigger<unknown, T>({
       function_id: functionId,
       payload,
       timeoutMs: options?.timeoutMs ?? DEFAULT_TRIGGER_TIMEOUT_MS,
+      ...(namespace === undefined ? {} : { namespace }),
     })
   }
 
@@ -280,6 +289,42 @@ function resolveWsUrl(): string {
     return url.href
   }
   return 'ws://127.0.0.1:49134'
+}
+
+/**
+ * Read the namespace from the console worker that serves this SPA. Browser
+ * clients have no `III_NAMESPACE` environment variable, so the namespace must
+ * be passed explicitly to iii-browser-sdk 0.23.
+ */
+async function resolveNamespace(): Promise<string | undefined> {
+  if (typeof window === 'undefined' || !window.location) return undefined
+  try {
+    const url = new URL('./runtime', window.location.href)
+    const response = await fetch(url, { cache: 'no-store' })
+    if (!response.ok) {
+      console.warn(
+        `Runtime namespace request failed with HTTP ${response.status}; connecting to default`,
+      )
+      return undefined
+    }
+    const value = (await response.json()) as { namespace?: unknown }
+    return typeof value.namespace === 'string' && value.namespace.length > 0
+      ? value.namespace
+      : undefined
+  } catch (error) {
+    console.warn(
+      'Runtime namespace request failed; connecting to default',
+      error,
+    )
+    return undefined
+  }
+}
+
+/** Engine control-plane functions are registered only in `default`. */
+function controlPlaneNamespace(functionId: string): string | undefined {
+  return /^(configuration|engine|worker)::/.test(functionId)
+    ? 'default'
+    : undefined
 }
 
 function makeBrowserId(): string {

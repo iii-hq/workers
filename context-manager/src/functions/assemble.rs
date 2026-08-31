@@ -1,8 +1,8 @@
 //! `context::assemble` — build the model-ready context from a history
 //! (context-manager.md § context::assemble). The pipeline, in order:
-//! count -> (if over) prune function outputs -> (if still over) compact
-//! the head -> (if still over) emergency-reduce function results ->
-//! assemble the final list or return a structured overflow.
+//! media-normalize -> cap results (always) -> age-prune (always) ->
+//! (if over) compact -> (if still over) emergency-reduce function
+//! results -> assemble the final list or return a structured overflow.
 //!
 //! Structural guarantees: `role: "custom"` messages never reach the
 //! model-facing list (nor the count); `applied.tail_start_index`
@@ -10,13 +10,17 @@
 //! their own storage; a busy lease or failed summariser falls through
 //! to emergency reduction and the hard budget check.
 
+use std::collections::BTreeMap;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::core::budget::{default_reserved, preserve_recent_budget, usable};
-use crate::core::estimate::{estimator_for_model, Estimator};
+use crate::core::estimate::{by_role_from_sizes, estimator_for_model, Estimator};
 use crate::core::lease;
-use crate::core::prune::{emergency_reduce_with_sizes, prune_with_sizes, PruneParams};
+use crate::core::prune::{
+    cap_results_with_sizes, emergency_reduce_with_sizes, prune_with_sizes, PruneParams,
+};
 use crate::core::selection::select;
 use crate::core::summary::{
     build_system_prompt, render_system_prompt, render_user_prompt, strip_media,
@@ -24,7 +28,75 @@ use crate::core::summary::{
 use crate::error::ContextError;
 use crate::functions::resolve_model;
 use crate::ports::{Deps, SummarizeRequest};
-use crate::types::{AgentFunction, AgentMessage, ModelInput, Role, ThinkingLevel};
+use crate::types::{
+    AgentFunction, AgentMessage, ByRoleTokens, ContentBlock, EstimatorName, ModelInput, Role,
+    ThinkingLevel,
+};
+
+const TEXT_ONLY_IMAGE_OMITTED: &str = "[image omitted: model does not support vision]";
+const TOOL_IMAGE_OMITTED: &str =
+    "[tool image omitted after use; re-call the function if visual details are needed]";
+const USER_IMAGE_OMITTED: &str =
+    "[user image omitted after use; ask the user to resend it if visual details are needed]";
+
+fn replace_images(
+    blocks: &mut [ContentBlock],
+    direct_marker: Option<&str>,
+    nested_tool_marker: Option<&str>,
+) {
+    for block in blocks {
+        match block {
+            ContentBlock::Image { .. } => {
+                if let Some(marker) = direct_marker {
+                    *block = ContentBlock::Text {
+                        text: marker.into(),
+                    };
+                }
+            }
+            ContentBlock::FunctionResult { content, .. } => {
+                replace_images(content, nested_tool_marker, nested_tool_marker);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn normalize_media(messages: &mut [AgentMessage], supports_vision: Option<bool>) {
+    let Some(supports_vision) = supports_vision else {
+        return;
+    };
+    let mut later_user = false;
+    let mut later_assistant = false;
+    let mut later_user_after_assistant = false;
+
+    for message in messages.iter_mut().rev() {
+        let direct_marker = if supports_vision {
+            match message.role() {
+                Role::User if later_user_after_assistant => Some(USER_IMAGE_OMITTED),
+                Role::FunctionResult if later_assistant => Some(TOOL_IMAGE_OMITTED),
+                _ => None,
+            }
+        } else {
+            Some(TEXT_ONLY_IMAGE_OMITTED)
+        };
+        let nested_tool_marker = if supports_vision {
+            later_assistant.then_some(TOOL_IMAGE_OMITTED)
+        } else {
+            Some(TEXT_ONLY_IMAGE_OMITTED)
+        };
+
+        replace_images(message.content_mut(), direct_marker, nested_tool_marker);
+
+        match message.role() {
+            Role::User if !message.has_function_result_block() => later_user = true,
+            Role::Assistant => {
+                later_assistant = true;
+                later_user_after_assistant |= later_user;
+            }
+            _ => {}
+        }
+    }
+}
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct AssembleOptions {
@@ -44,6 +116,10 @@ pub struct AssembleOptions {
     /// safety reduction may still replace their oversized results.
     #[serde(default)]
     pub protected_functions: Option<Vec<String>>,
+    /// Per-result cap override for this call; `null` uses the worker
+    /// config (default 20000), `0` disables the cap pass.
+    #[serde(default)]
+    pub max_result_tokens: Option<u64>,
     /// Estimated tokens for final provider request fields and framing
     /// not otherwise represented by the prompt, messages, or tools.
     #[serde(default)]
@@ -73,6 +149,11 @@ pub struct AssembleRequest {
     /// Model-facing invocation schemas included in every budget count.
     #[serde(default)]
     pub tools: Option<Vec<AgentFunction>>,
+    /// Named auxiliary texts to count individually with the same
+    /// estimator. Counted in `breakdown.by_part` only; never added to
+    /// the assembled context.
+    #[serde(default)]
+    pub parts: Option<BTreeMap<String, String>>,
     #[serde(default)]
     pub options: Option<AssembleOptions>,
 }
@@ -89,11 +170,15 @@ pub enum ModelResolvedWire {
 /// What the pipeline actually did this call.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct Applied {
-    /// Full estimated request size before pruning or compaction, including the
-    /// system prompt, tool schemas, and provider framing overhead.
+    /// Full estimated request size before capping, pruning, or compaction,
+    /// including the system prompt, tool schemas, and provider framing overhead.
     pub initial_token_count: u64,
     pub pruned: bool,
     pub pruned_tokens: u64,
+    /// Results rewritten by the unconditional per-result cap pass.
+    pub capped_parts: u64,
+    /// Estimated tokens freed by the cap pass.
+    pub capped_tokens: u64,
     pub compacted: bool,
     /// Present when compacted; the caller should persist it and pass
     /// it back as `options.previous_summary` (compaction round trip).
@@ -112,6 +197,26 @@ pub struct Applied {
     pub summarized_head_tokens: Option<u64>,
 }
 
+/// Where the returned `token_count` sits, by category — the same sums the
+/// pipeline already maintains, exposed so callers can render a context
+/// breakdown without re-counting: `token_count` equals the by_role sum plus
+/// `system_prompt_tokens`, `tools_tokens`, and the request overhead.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct AssembleBreakdown {
+    /// Estimated tokens of the returned system prompt (any compaction
+    /// summary section included).
+    pub system_prompt_tokens: u64,
+    /// Estimated tokens of the invocation schemas.
+    pub tools_tokens: u64,
+    /// The returned messages' tokens by role.
+    pub by_role: ByRoleTokens,
+    /// Per-part estimates for the request's `parts`, keyed by the
+    /// caller's names; present when the request carried `parts`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub by_part: Option<BTreeMap<String, u64>>,
+    pub estimator: EstimatorName,
+}
+
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct AssembleResponse {
     pub system_prompt: String,
@@ -127,6 +232,7 @@ pub struct AssembleResponse {
     pub effective_max_output_tokens: u64,
     pub model_resolved: ModelResolvedWire,
     pub applied: Applied,
+    pub breakdown: AssembleBreakdown,
 }
 
 /// Test-only re-export of [`count_context`] so sibling function tests
@@ -188,6 +294,7 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
             view_to_orig.push(idx);
         }
     }
+    normalize_media(&mut working, resolved.supports_vision);
 
     let base_prompt = req.system_prompt.as_deref();
     let mut system_prompt = render_system_prompt(base_prompt, options.previous_summary.as_deref());
@@ -218,6 +325,8 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
         initial_token_count,
         pruned: false,
         pruned_tokens: 0,
+        capped_parts: 0,
+        capped_tokens: 0,
         compacted: false,
         summary: None,
         tail_start_index: None,
@@ -227,8 +336,33 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
 
     let mut token_count = initial_token_count;
 
-    // Step 1: prune function outputs.
-    if token_count > usable_budget && options.allow_prune.unwrap_or(true) {
+    // Step 0: cap oversized single results — always, any age (the spec's
+    // unconditional ceiling; 0 disables). Runs before prune so (a) the
+    // ceiling holds even when prune's own min_free_tokens hysteresis skips
+    // its pass entirely, and (b) prune's window accounting then measures
+    // what the model actually sees, not the pre-cap size.
+    let max_result_tokens = options
+        .max_result_tokens
+        .unwrap_or(config.max_result_tokens);
+    if max_result_tokens > 0 {
+        let cap = cap_results_with_sizes(&mut working, &mut sizes, max_result_tokens, estimator);
+        applied.capped_parts = cap.capped_parts;
+        applied.capped_tokens = cap.capped_tokens;
+        if cap.capped_parts > 0 {
+            tracing::info!(
+                capped_parts = cap.capped_parts,
+                capped_tokens = cap.capped_tokens,
+                "assemble: capped oversized function result(s)"
+            );
+        }
+        token_count = total(&sizes, prompt_tokens);
+    }
+
+    // Step 1: prune aged function outputs — always, not only over budget
+    // (context-manager.md § context::assemble). min_free_tokens batches
+    // the history rewrites so provider prefix caches are not invalidated
+    // for peanuts.
+    if options.allow_prune.unwrap_or(true) {
         let params = PruneParams {
             protect_recent_tokens: config.protect_recent_tokens,
             min_free_tokens: config.min_free_tokens,
@@ -312,6 +446,14 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
         });
     }
 
+    let by_role = by_role_from_sizes(&working, &sizes);
+    let by_part = req.parts.as_ref().map(|parts| {
+        parts
+            .iter()
+            .map(|(name, text)| (name.clone(), estimator.text(text)))
+            .collect()
+    });
+
     Ok(AssembleResponse {
         system_prompt,
         messages: working,
@@ -324,6 +466,13 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
             crate::core::budget::ModelResolved::Fallback => ModelResolvedWire::Fallback,
         },
         applied,
+        breakdown: AssembleBreakdown {
+            system_prompt_tokens: prompt_tokens,
+            tools_tokens: tool_tokens,
+            by_role: by_role.into(),
+            by_part,
+            estimator: estimator.kind().into(),
+        },
     })
 }
 
@@ -408,6 +557,207 @@ mod tests {
     use super::*;
     use crate::core::estimate::HeuristicEstimator;
     use serde_json::json;
+
+    fn message(value: serde_json::Value) -> AgentMessage {
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn tool_images_age_after_a_later_assistant_without_losing_neighbors() {
+        let mut messages = vec![
+            message(json!({
+                "role": "function_result", "function_call_id": "c1",
+                "function_id": "browser::screenshot",
+                "content": [
+                    { "type": "text", "text": "caption" },
+                    { "type": "image", "mime": "image/png", "data": "AAAA" }
+                ],
+                "details": {}, "is_error": false, "timestamp": 1
+            })),
+            message(json!({
+                "role": "user", "content": [{
+                    "type": "function_result", "function_call_id": "c2", "content": [{
+                        "type": "image", "mime": "image/png", "data": "BBBB"
+                    }]
+                }], "timestamp": 2
+            })),
+            message(json!({
+                "role": "assistant", "content": [{ "type": "text", "text": "seen" }],
+                "stop_reason": "end", "model": "m", "provider": "p", "timestamp": 3
+            })),
+        ];
+        let original = messages.clone();
+
+        let mut fresh = vec![messages[0].clone()];
+        normalize_media(&mut fresh, Some(true));
+        assert!(matches!(fresh[0].content()[1], ContentBlock::Image { .. }));
+
+        normalize_media(&mut messages, Some(true));
+        let value = serde_json::to_value(&messages).unwrap();
+        assert_eq!(value[0]["content"][0]["text"], "caption");
+        assert_eq!(value[0]["content"][1]["text"], TOOL_IMAGE_OMITTED);
+        assert_eq!(
+            value[1]["content"][0]["content"][0]["text"],
+            TOOL_IMAGE_OMITTED
+        );
+        assert!(matches!(
+            original[0].content()[1],
+            ContentBlock::Image { .. }
+        ));
+    }
+
+    #[test]
+    fn user_images_survive_steering_and_age_on_the_next_turn() {
+        let image = || {
+            message(json!({
+                "role": "user",
+                "content": [{ "type": "image", "mime": "image/png", "data": "AAAA" }],
+                "timestamp": 1
+            }))
+        };
+        let user = || {
+            message(json!({
+                "role": "user", "content": [{ "type": "text", "text": "more" }], "timestamp": 4
+            }))
+        };
+        let assistant = || {
+            message(json!({
+                "role": "assistant", "content": [{ "type": "text", "text": "answer" }],
+                "stop_reason": "end", "model": "m", "provider": "p", "timestamp": 3
+            }))
+        };
+
+        let mut steering = vec![image(), user()];
+        normalize_media(&mut steering, Some(true));
+        assert!(matches!(
+            steering[0].content()[0],
+            ContentBlock::Image { .. }
+        ));
+
+        let mut answered = vec![image(), assistant()];
+        normalize_media(&mut answered, Some(true));
+        assert!(matches!(
+            answered[0].content()[0],
+            ContentBlock::Image { .. }
+        ));
+
+        let mut advanced = vec![image(), assistant(), user()];
+        normalize_media(&mut advanced, Some(true));
+        assert_eq!(
+            advanced[0].content(),
+            &[ContentBlock::Text {
+                text: USER_IMAGE_OMITTED.into()
+            }]
+        );
+    }
+
+    #[test]
+    fn user_images_survive_steering_before_a_tool_continuation() {
+        let mut messages = vec![
+            message(json!({
+                "role": "user",
+                "content": [{ "type": "image", "mime": "image/png", "data": "AAAA" }],
+                "timestamp": 1
+            })),
+            message(json!({
+                "role": "user", "content": [{ "type": "text", "text": "steer" }],
+                "timestamp": 2
+            })),
+            message(json!({
+                "role": "assistant", "content": [{
+                    "type": "function_call", "id": "c1",
+                    "function_id": "browser::screenshot", "arguments": {}
+                }],
+                "stop_reason": "function_call", "model": "m", "provider": "p", "timestamp": 3
+            })),
+            message(json!({
+                "role": "function_result", "function_call_id": "c1",
+                "function_id": "browser::screenshot",
+                "content": [{ "type": "text", "text": "result" }],
+                "timestamp": 4
+            })),
+        ];
+
+        normalize_media(&mut messages, Some(true));
+
+        assert!(matches!(
+            messages[0].content()[0],
+            ContentBlock::Image { .. }
+        ));
+    }
+
+    #[test]
+    fn user_images_survive_inline_tool_results_before_the_continuation() {
+        let mut messages: Vec<AgentMessage> = serde_json::from_value(json!([
+            {
+                "role": "user",
+                "content": [{ "type": "image", "mime": "image/png", "data": "AAAA" }],
+                "timestamp": 1
+            },
+            {
+                "role": "assistant",
+                "content": [{
+                    "type": "function_call", "id": "c1",
+                    "function_id": "browser::screenshot", "arguments": {}
+                }],
+                "stop_reason": "function_call", "model": "m", "provider": "p",
+                "timestamp": 2
+            },
+            {
+                "role": "user",
+                "content": [{
+                    "type": "function_result", "function_call_id": "c1",
+                    "content": [{ "type": "text", "text": "result" }]
+                }],
+                "timestamp": 3
+            },
+            {
+                "role": "assistant", "content": [{ "type": "text", "text": "answer" }],
+                "stop_reason": "end", "model": "m", "provider": "p", "timestamp": 4
+            }
+        ]))
+        .unwrap();
+
+        normalize_media(&mut messages, Some(true));
+
+        assert!(matches!(
+            messages[0].content()[0],
+            ContentBlock::Image { .. }
+        ));
+    }
+
+    #[test]
+    fn missing_capability_keeps_images_and_text_only_replaces_them() {
+        let original = vec![message(json!({
+            "role": "assistant",
+            "content": [
+                { "type": "image", "mime": "image/png", "data": "AAAA" },
+                { "type": "function_result", "function_call_id": "c1", "content": [{
+                    "type": "image", "mime": "image/png", "data": "BBBB"
+                }] }
+            ],
+            "stop_reason": "end", "model": "m", "provider": "p", "timestamp": 1
+        }))];
+
+        let mut unknown = original.clone();
+        normalize_media(&mut unknown, None);
+        assert_eq!(unknown, original);
+
+        let mut vision = original.clone();
+        normalize_media(&mut vision, Some(true));
+        assert_eq!(vision, original);
+
+        let mut text_only = original;
+        normalize_media(&mut text_only, Some(false));
+        assert_eq!(
+            serde_json::to_value(&text_only).unwrap()[0]["content"][0]["text"],
+            TEXT_ONLY_IMAGE_OMITTED
+        );
+        assert_eq!(
+            serde_json::to_value(&text_only).unwrap()[0]["content"][1]["content"][0]["text"],
+            TEXT_ONLY_IMAGE_OMITTED
+        );
+    }
 
     #[test]
     fn count_includes_tools_and_request_overhead() {

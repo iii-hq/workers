@@ -73,35 +73,25 @@ Always exactly one command:
 
 ````markdown
 ```bash
-iii worker add <name>
+iii trigger compose::add worker=<name>
 ```
 ````
 
-Where `<name>` is the value of `iii.worker.yaml.name` (which equals the
+Where `<name>` is the value of `worker-compose.yaml.name` (which equals the
 folder name; see [`docs/sops/new-worker.md`](docs/sops/new-worker.md) §1).
 That is the whole user-facing install — no source build, no
-`sudo install`, no `--manifest | jq` verification step. `iii worker add`
-fetches the binary, writes a config block into `~/.iii/config.yaml`,
-and the engine starts the worker the next time it boots.
+`sudo install`, no `--manifest | jq` verification step. The
+`iii trigger compose::add` call declares the worker in `worker-compose.yaml`
+and starts it as part of the Compose project.
 
 ### Companion workers
 
-If your worker is most useful next to a sibling — e.g. `mcp` surfaces
-`skills`-registered content to MCP clients — include the companion as
-a second `iii worker add` block with one sentence explaining what it
-unlocks:
+If your worker is most useful next to a sibling, add the companion in the same
+call and include one sentence that explains what it unlocks:
 
 ````markdown
 ```bash
-iii worker add skills
-```
-
-To surface every registered skill (and slash-command prompt) to MCP
-clients (Cursor, Claude Code, Codex, Claude Desktop, …), add the
-[mcp](../mcp) worker as well:
-
-```bash
-iii worker add mcp
+iii trigger compose::add worker=<name> worker=<companion>
 ```
 ````
 
@@ -159,11 +149,10 @@ Keep it to **1–3 functions**, picked for their introductory value, not
 their breadth. If your worker has 20 functions, show the 2 most users
 will hit first; the rest live in code with rustdoc.
 
-If your worker participates in a larger flow (skills + mcp, fts +
+If your worker participates in a larger flow (iii-directory + mcp, fts +
 agentmemory, …), the Quickstart can be a walkthrough of the
-cross-worker handshake. [`skills/README.md`](skills/README.md)
-is the canonical example: skill registration, sub-skill markdown
-links, and prompt registration told as a single end-to-end story.
+cross-worker handshake. [`iii-directory/README.md`](iii-directory/README.md)
+is the canonical example for directory downloads and change notifications.
 
 ## Section: Configuration
 
@@ -208,14 +197,6 @@ to write `iii.register_trigger(...)` calls.
 If you renamed function ids, removed config keys, or changed payload
 shapes between versions, document the upgrade path. Keep it terse.
 
-```markdown
-## Migration: pre-split function ids
-
-Function ids you used to call as `mcp::register-skill` /
-`mcp::register-prompt` are now `skills::register` /
-`prompts::register`. Payloads are unchanged.
-```
-
 ## Skeleton
 
 Drop this in as `<worker>/README.md` and fill in the placeholders. Use
@@ -231,12 +212,11 @@ most important thing it gives you.
 ## Install
 
 ```bash
-iii worker add <worker>
+iii trigger compose::add worker=<worker>
 ```
 
-`iii worker add` fetches the binary, writes a config block into
-`~/.iii/config.yaml`, and the engine starts the worker the next time it
-boots.
+`iii trigger compose::add` declares the worker in `worker-compose.yaml` and
+starts it as part of the Compose project.
 
 ## Quickstart
 
@@ -269,7 +249,6 @@ key: value   # one line of intent per field
 
 ## Worked examples
 
-- [`skills/README.md`](skills/README.md) — install (with
-  companion `mcp`), end-to-end how-to, minimal configuration.
+- [`iii-directory/README.md`](iii-directory/README.md) — install,
+  end-to-end how-to, minimal configuration.
   Canonical reference for this guide.
-

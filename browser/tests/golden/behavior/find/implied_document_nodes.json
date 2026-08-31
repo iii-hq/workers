@@ -1,0 +1,41 @@
+{
+  "function": "browser::find",
+  "case": "implied_document_nodes",
+  "request": {
+    "html": "<title>T</title><p>P",
+    "tag": [
+      "html",
+      "head",
+      "body"
+    ]
+  },
+  "ok": {
+    "count": 3,
+    "items": [
+      {
+        "tag": "html",
+        "text": "T\nP",
+        "html": "<html><head><title>T</title></head><body><p>P</p></body></html>",
+        "attrs": {},
+        "css": "",
+        "xpath": "//"
+      },
+      {
+        "tag": "head",
+        "text": "T",
+        "html": "<head><title>T</title></head>",
+        "attrs": {},
+        "css": "head",
+        "xpath": "//head"
+      },
+      {
+        "tag": "body",
+        "text": "P",
+        "html": "<body><p>P</p></body>",
+        "attrs": {},
+        "css": "body",
+        "xpath": "//body"
+      }
+    ]
+  }
+}

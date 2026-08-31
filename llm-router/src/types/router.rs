@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 use crate::types::credential::Credential;
-use crate::types::events::{StopReason, Usage};
+use crate::types::events::{ErrorKind, StopReason, Usage};
 use crate::types::messages::{AgentMessage, AssistantMessage};
 use crate::types::model::{AgentFunction, Model, ThinkingLevel};
 use iii_sdk::channel::StreamChannelRef;
@@ -25,6 +25,8 @@ pub struct ChatRequest {
     pub writer_ref: StreamChannelRef, // direction "write"; the caller's channel
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>, // router::abort correlation; generated when omitted
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>, // stable conversation identity for provider affinity
     pub model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
@@ -49,6 +51,14 @@ pub struct ChatRequest {
 pub struct ErrorShape {
     pub code: String,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ErrorKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retryable: Option<bool>,
+    /// Provider/transport diagnostics for logs and expandable UI details.
+    /// `message` remains the stable, user-facing explanation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -88,6 +98,9 @@ pub struct AbortResponse {
 pub struct ProviderInfo {
     pub id: String,
     pub display_name: String,
+    /// Environment variable declared by API-key providers. `None` means the
+    /// provider owns authentication (OAuth, local app login, device flow).
+    pub credential_env_var: Option<String>,
     pub configured: bool,
     pub available: bool,
     pub supports_model_listing: bool,
@@ -133,34 +146,12 @@ pub struct ProviderDeclaration {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub models: Option<Vec<Model>>, // static catalog slice; reconciled at registration
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub system_prompt: Option<String>, // provider-authored identity prompt, served via router::system_prompt::get
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub worker_id: Option<String>, // self-reported; availability mapping only, never authorization
 }
 
-/// Input of the `router::system_prompt::get` iii function. Unknown fields
-/// (e.g. the engine-injected `_caller_worker_id`) are ignored.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct SystemPromptGetRequest {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>, // absent → the configured default_provider
-}
-
-/// Output of `router::system_prompt::get`: the effective identity prompt for
-/// the resolved provider — operator override (config slice `system_prompt`,
-/// when set) → provider-declared → null. Null also when the provider is
-/// unknown or no provider resolves; callers treat null as "use your own
-/// default prompt".
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct SystemPromptGetResponse {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub system_prompt: Option<String>,
-}
-
-/// registration_token: spec adaptation — the engine exposes no caller identity,
-/// so identity binding is a bearer token; only its sha256 hash is persisted.
+/// `registration_token` is the provider ownership credential; only its sha256
+/// hash is persisted. Engine caller metadata is not an authorization identity
+/// because worker names are self-reported.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ProviderRegisterResponse {
     pub ok: bool,
@@ -201,6 +192,9 @@ pub struct ModelsReconcileResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ProviderStreamInput {
     pub writer_ref: StreamChannelRef, // direction "write" (router-owned in relay mode)
+    /// Stable conversation identity for provider cache affinity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
     pub model: String,
@@ -450,6 +444,19 @@ pub struct ConfigChangedEvent {
     /// Configuration id that changed (advisory).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+}
+
+/// Advisory function-registry change event delivered to
+/// `router::on_functions_changed`. The handler ignores event values and
+/// re-fetches the authoritative registry before nudging live providers.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FunctionsChangedEvent {
+    /// Engine event tag (advisory).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event: Option<String>,
+    /// Worker whose registered functions changed (advisory).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_id: Option<String>,
 }
 
 /// Generic acknowledgement returned by trigger-bound handlers whose result is

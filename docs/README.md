@@ -10,11 +10,13 @@ workers in this monorepo. Per-worker deep docs stay inside each worker folder
 |---|---|
 | Add a new worker to the repo | [`sops/new-worker.md`](sops/new-worker.md) |
 | Scaffold a Rust `deploy: binary` worker | [`sops/binary-worker.md`](sops/binary-worker.md) |
+| Ship worker-owned Console UI or trigger renderers | [`sops/injectable-console-ui.md`](sops/injectable-console-ui.md) |
 | Ship a version to the registry | [`sops/release.md`](sops/release.md) |
 | Fix a failed release | [`sops/release.md`](sops/release.md) § Troubleshooting |
 | Write a consumer `README.md` | [`worker-readme.md`](https://github.com/iii-hq/workers/blob/main/worker-readme.md) |
 | Author `skills/SKILL.md` | [`DOCUMENTATION_GUIDELINES.md`](https://github.com/iii-hq/workers/blob/main/DOCUMENTATION_GUIDELINES.md) |
-| Understand `iii.worker.yaml` fields | [`architecture/iii-worker-yaml.md`](architecture/iii-worker-yaml.md) |
+| Understand public `iii.worker.yaml` fields | [`architecture/iii-worker-yaml.md`](architecture/iii-worker-yaml.md) |
+| Understand public Compose and private release metadata | [`architecture/worker-compose.md`](architecture/worker-compose.md) |
 | Understand CI gates on a PR | [`architecture/testing-and-ci.md`](architecture/testing-and-ci.md) |
 | Integrate with session-manager | [`session-manager/architecture/integration.md`](https://github.com/iii-hq/workers/blob/main/session-manager/architecture/integration.md) |
 | Drive a desktop (computer use) | [`computer/architecture/integration.md`](https://github.com/iii-hq/workers/blob/main/computer/architecture/integration.md) |
@@ -31,6 +33,7 @@ docs/
 └── architecture/             # shared reference (not step-by-step)
     ├── worker-model.md
     ├── iii-worker-yaml.md
+    ├── worker-compose.md
     ├── deploy-modes.md
     ├── testing-and-ci.md
     ├── skills-and-permissions.md

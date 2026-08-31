@@ -24,8 +24,7 @@ import {
   summarizeGroup,
 } from '../lib/groupTraces'
 import {
-  dedupeToTraceRoots,
-  mapSpanToListItem,
+  mapTraceSummaryToListItem,
   type RowLabelConfig,
 } from '../lib/traceListItem'
 import { TraceListRow } from './TraceListRow'
@@ -111,7 +110,7 @@ export function GroupedTraceList({
     return (
       <div className="flex flex-col items-center justify-center py-12 px-6 text-center font-mono text-[12px] text-ink-faint lowercase">
         <Layers className="w-6 h-6 mb-2 opacity-50" />
-        <div className="font-medium text-ink mb-1">group-by not available</div>
+        <div className="font-medium text-ink mb-1">Group-by not available</div>
         <div className="max-w-md leading-[1.7]">
           the engine doesn't expose{' '}
           <code className="text-warn">engine::traces::group_by</code>. either
@@ -137,7 +136,7 @@ export function GroupedTraceList({
     return (
       <div className="flex flex-col items-center justify-center py-12 px-6 text-center font-mono text-[12px] text-ink-faint lowercase">
         <Layers className="w-6 h-6 mb-2 opacity-50" />
-        <div>no traces carry this attribute yet.</div>
+        <div>No traces carry this attribute yet.</div>
       </div>
     )
   }
@@ -215,20 +214,20 @@ function GroupHeaderRow({
       onClick={onToggle}
       aria-expanded={isExpanded}
       className={cn(
-        'w-full flex items-center gap-2 px-3 py-2 text-left border-b border-rule-2 transition-colors hover:bg-panel',
+        'w-full flex items-center gap-2 px-3 py-2 text-left border-b border-rule-2 transition-colors hover:bg-surface-hover',
         containsSelection && 'border-l-2 border-l-accent',
       )}
       title={`${heading} (${group.trace_ids.length} trace${group.trace_ids.length === 1 ? '' : 's'})`}
     >
       <ChevronRight
         className={cn(
-          'w-3 h-3 flex-shrink-0 text-ink-faint transition-transform',
+          'size-4 flex-shrink-0 text-ink-faint transition-transform',
           isExpanded && 'rotate-90',
         )}
       />
       <Layers
         className={cn(
-          'w-3.5 h-3.5 flex-shrink-0',
+          'size-4 flex-shrink-0',
           group.error_count > 0 ? 'text-alert' : 'text-ink-faint',
         )}
       />
@@ -279,14 +278,20 @@ function GroupMembers({
       group.value,
       group.trace_ids.length,
       showSystem,
+      label?.mode,
+      label?.attribute,
     ],
     queryFn: async () => {
-      const { spans } = await fetchTraces({
+      const { traces } = await fetchTraces({
         trace_ids: group.trace_ids.slice(0, MEMBER_FETCH_LIMIT),
         include_internal: showSystem,
         limit: MEMBER_FETCH_LIMIT,
+        attribute_projection:
+          label?.mode === 'attribute' && label.attribute
+            ? [label.attribute]
+            : undefined,
       })
-      const rows = dedupeToTraceRoots(spans).map(mapSpanToListItem)
+      const rows = traces.map(mapTraceSummaryToListItem)
       rows.sort((a, b) => b.startTime - a.startTime)
       return rows
     },
@@ -295,8 +300,8 @@ function GroupMembers({
 
   if (isLoading && !data) {
     return (
-      <div className="flex items-center gap-2 pl-10 py-2 border-b border-rule-2 font-mono text-[11px] text-ink-faint lowercase">
-        <Loader2 className="w-3 h-3 animate-spin" />
+      <div className="flex items-center gap-2 pl-8 py-2 font-mono text-[11px] text-ink-faint lowercase">
+        <Loader2 className="size-4 animate-spin" />
         loading traces…
       </div>
     )
@@ -309,14 +314,14 @@ function GroupMembers({
 
   if (rows.length === 0) {
     return (
-      <div className="pl-10 py-2 border-b border-rule-2 font-mono text-[11px] text-ink-faint lowercase">
+      <div className="pl-8 py-2 font-mono text-[11px] text-ink-faint lowercase">
         no visible traces in this group.
       </div>
     )
   }
 
   return (
-    <div className="pl-6 border-l border-rule-2 ml-4">
+    <div className="pl-5 ml-3">
       {rows.map((trace) => (
         <div key={trace.traceId} data-trace-row-id={trace.traceId}>
           <TraceListRow

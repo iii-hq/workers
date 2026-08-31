@@ -13,11 +13,13 @@
  * are new.
  */
 
-import { ArrowUp, Paperclip } from 'lucide-react'
+import { ArrowUp, Paperclip, Plus } from 'lucide-react'
 import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 import { ContextUsage } from '@/components/chat/ContextUsage'
 import { MessageList } from '@/components/chat/MessageList'
 import { ConversationSidebar } from '@/components/sidebar/ConversationSidebar'
+import { Button } from '@/components/ui/Button'
+import { PageSidebar } from '@/components/ui/PageChrome'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { cn } from '@/lib/utils'
 import { TraceFilters } from '@/pages/TracesV2/components/TraceFilters'
@@ -186,15 +188,30 @@ export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
       */}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
         <div className="hidden lg:flex">
-          <ConversationSidebar
-            conversations={player.conversations}
-            activeId={player.activeId}
+          <PageSidebar
+            label="Conversations"
             width={260}
-            onSelect={player.select}
-            onCreate={noop}
-            onRename={noop}
-            onRemove={noop}
-          />
+            header={
+              <Button
+                type="button"
+                variant="primary"
+                size="md"
+                className="flex-1 justify-start px-3"
+                onClick={noop}
+              >
+                <Plus aria-hidden />
+                New chat
+              </Button>
+            }
+          >
+            <ConversationSidebar
+              conversations={player.conversations}
+              activeId={player.activeId}
+              onSelect={player.select}
+              onRename={noop}
+              onRemove={noop}
+            />
+          </PageSidebar>
         </div>
 
         {/* ── transcript ─────────────────────────────────────────────── */}
@@ -251,6 +268,15 @@ export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
           <div ref={listWrapRef} className="flex min-h-0 flex-1 flex-col">
             <MessageList
               messages={player.messages}
+              spawnContext={
+                player.activeChild
+                  ? {
+                      title: player.activeChild.title,
+                      model: player.activeChild.model,
+                      appearance: player.activeChild.subagentAppearance,
+                    }
+                  : undefined
+              }
               header={<DemoEmptyState />}
               isThinking={player.isThinking}
               thinkingDetail={
@@ -307,6 +333,7 @@ export function LandingDemo({ active = true, loop = false }: LandingDemoProps) {
               onClearWarnings={traceFilters.clearValidationWarnings}
               stats={{
                 totalTraces: 1,
+                pageTraceCount: 1,
                 errorCount: player.waterfall
                   ? player.waterfall.spans.filter((s) => s.status === 'error')
                       .length
@@ -408,16 +435,18 @@ function DemoChrome({
         replay
       </button>
       {/* Embedded only: the host page listens for iii-demo-close and scrolls
-          the console away. Inverted so the way out is unmissable. */}
+          the console away. Red, the loudest thing in the frame, because a
+          reader who wants out should not have to look for it. The exact red
+          and its text color are in demo.css. */}
       {window.self !== window.top && (
         <button
           type="button"
           onClick={() =>
             window.parent?.postMessage({ type: 'iii-demo-close' }, '*')
           }
-          className="flex items-center gap-1.5 bg-ink px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-bg transition-opacity hover:opacity-80"
+          className="demo-close flex items-center gap-1.5 px-2.5 py-1 font-mono text-[10px] font-semibold uppercase tracking-[0.14em] transition-opacity hover:opacity-80"
         >
-          close <span className="opacity-60">esc</span>
+          close <span className="opacity-70">esc</span>
         </button>
       )}
     </div>

@@ -1,30 +1,27 @@
-import { Bell, Check, Copy, Zap } from 'lucide-react'
-import { useState } from 'react'
-import { RegisterTriggerView } from '@/components/chat/engine/RegisterTriggerView'
-import { FilterChip } from '@/components/chat/engine/shared'
-import { MetaRow, StatusPill } from '@/components/chat/sandbox/shared'
+import { Blocks, Bot, Sparkles } from 'lucide-react'
 import { FunctionTriggerCard } from '@/components/function-trigger/FunctionTriggerCard'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
+import type { TriggerRegistration } from '@/components/trigger-activity/model'
+import { TriggerActivityCard } from '@/components/trigger-activity/TriggerActivityCard'
 import { Caret } from '@/components/ui/Caret'
+import { Chip } from '@/components/ui/Chip'
 import { Prompt } from '@/components/ui/Prompt'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
-import { deliveryOf } from '@/lib/backend/triggers'
-import { copyTextToClipboard } from '@/lib/clipboard'
+import { Card, CardBody, CardHeader } from '@/components/ui/Surface'
 import { Markdown } from '@/lib/markdown'
-import { triggerFiredName } from '@/lib/sessions/entry-mapper'
 import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
 import type {
   AssistantMessage as AssistantMessageType,
+  Attachment,
   Message as MessageType,
+  SubagentAppearance,
   SystemMessage as SystemMessageType,
-  TriggerFiredData,
   UserMessage as UserMessageType,
 } from '@/types/chat'
-import { AttachmentChip } from './AttachmentChip'
+import { SUBAGENT_ICON_COMPONENTS } from './ActiveSubagentChips'
+import { AttachmentChip, formatSize } from './AttachmentChip'
 import { CopyMessageButton } from './CopyMessageButton'
 import { MemoryChip } from './MemoryChip'
-import type { TriggerRegistration } from './MessageList'
 import { ThoughtMessage } from './ThoughtMessage'
 
 interface MessageProps {
@@ -54,6 +51,18 @@ interface MessageProps {
   /** Registration detail for a trigger-fired or notification message
       (resolved in MessageList). */
   registration?: TriggerRegistration
+  /** The machine-authored wake entry paired with a durable trigger record. */
+  triggerNotification?: UserMessageType
+  /** Current child-session identity for a direct spawn seed message. */
+  spawnContext?: SpawnTaskContext
+  /** Session agent profile name shown on assistant message headers. */
+  agentName?: string
+}
+
+export interface SpawnTaskContext {
+  title?: string | null
+  model?: string | null
+  appearance?: SubagentAppearance
 }
 
 export function Message({
@@ -66,22 +75,35 @@ export function Message({
   copyText,
   defaultOpenCalls,
   registration,
+  triggerNotification,
+  spawnContext,
+  agentName,
 }: MessageProps) {
   switch (message.role) {
     case 'user':
       return message.notification ? (
-        <NotificationMessage message={message} registration={registration} />
+        <TriggerActivityCard
+          notification={message}
+          registration={registration}
+          defaultOpen={defaultOpenCalls}
+        />
       ) : message.reaction ? (
         <ReactionTaskMessage message={message} />
       ) : message.spawn ? (
-        <SpawnTaskMessage message={message} />
+        <SpawnTaskMessage message={message} context={spawnContext} />
       ) : message.validation ? (
         <ValidationNudgeMessage message={message} />
       ) : (
         <UserMessage message={message} />
       )
     case 'assistant':
-      return <AssistantMessage message={message} copyText={copyText} />
+      return (
+        <AssistantMessage
+          message={message}
+          copyText={copyText}
+          agentName={agentName}
+        />
+      )
     case 'thought':
       return <ThoughtMessage message={message} />
     case 'function-trigger': {
@@ -123,7 +145,12 @@ export function Message({
       return message.kind === 'compaction' ? (
         <CompactionMarker message={message} />
       ) : message.kind === 'trigger-fired' ? (
-        <TriggerFiredNotice message={message} registration={registration} />
+        <TriggerActivityCard
+          record={message}
+          registration={registration}
+          notification={triggerNotification}
+          defaultOpen={defaultOpenCalls}
+        />
       ) : (
         <SystemNotice message={message} />
       )
@@ -132,6 +159,12 @@ export function Message({
 
 function SystemNotice({ message }: { message: SystemMessageType }) {
   const tone = message.tone ?? 'info'
+  const detailRows: Array<[string, string]> = message.technicalDetails
+    ? Object.entries(message.technicalDetails).flatMap(([key, value]) =>
+        typeof value === 'string' && value.length > 0 ? [[key, value]] : [],
+      )
+    : []
+  const structured = Boolean(message.nextActions?.length || detailRows.length)
   const toneCls =
     tone === 'error'
       ? 'border-l-danger text-danger'
@@ -140,12 +173,53 @@ function SystemNotice({ message }: { message: SystemMessageType }) {
         : 'border-l-rule text-ink-faint'
   return (
     <article
+      data-message-role="system-notice"
+      data-message-tone={tone}
       className={cn(
-        'border-l-2 pl-3 py-1 font-mono text-[12px] uppercase tracking-[0.04em]',
+        'border-l-2 pl-3 py-1 font-mono text-[12px]',
+        structured ? 'tracking-normal' : 'uppercase tracking-[0.04em]',
         toneCls,
       )}
     >
-      {message.content}
+      <div data-message-summary>{message.content}</div>
+      {message.nextActions?.length ? (
+        <div
+          data-message-next-actions
+          className="mt-2 text-ink-faint normal-case"
+        >
+          <div className="text-[10px] uppercase tracking-[0.08em]">
+            What you can do
+          </div>
+          <ul className="mt-1 list-disc space-y-1 pl-4">
+            {message.nextActions.map((action) => (
+              <li key={action}>{action}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {detailRows.length > 0 ? (
+        <details
+          data-message-technical-details
+          className="mt-2 text-ink-faint normal-case"
+        >
+          <summary className="cursor-pointer select-none text-[10px] uppercase tracking-[0.08em] hover:text-ink">
+            Technical details
+          </summary>
+          <dl className="mt-2 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-1 border-l border-rule-2 pl-3 text-[11px]">
+            {detailRows.map(([key, value]) => (
+              <div key={key} className="contents">
+                <dt className="uppercase text-ink-ghost">{key}</dt>
+                <dd
+                  data-technical-detail={key}
+                  className="break-words text-ink-faint"
+                >
+                  {value}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </details>
+      ) : null}
     </article>
   )
 }
@@ -157,9 +231,9 @@ function CompactionMarker({ message }: { message: SystemMessageType }) {
     <article className="my-2">
       <details className="group">
         <summary className="flex items-center gap-3 cursor-pointer list-none select-none">
-          <span className="flex-1 h-px bg-rule" aria-hidden="true" />
+          <span className="flex-1 h-px bg-edge" aria-hidden="true" />
           <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-ink-faint flex items-center gap-2 group-hover:text-ink transition-colors">
-            <span>compacted</span>
+            <span>Compacted</span>
             {tokens > 0 ? (
               <>
                 <span className="text-ink-ghost">·</span>
@@ -172,7 +246,7 @@ function CompactionMarker({ message }: { message: SystemMessageType }) {
               show summary
             </span>
           </span>
-          <span className="flex-1 h-px bg-rule" aria-hidden="true" />
+          <span className="flex-1 h-px bg-edge" aria-hidden="true" />
         </summary>
         {summary ? (
           <pre className="mt-3 mx-9 p-3 bg-panel border border-rule-2 font-mono text-[11px] leading-relaxed text-ink-faint whitespace-pre-wrap">
@@ -184,466 +258,7 @@ function CompactionMarker({ message }: { message: SystemMessageType }) {
   )
 }
 
-/** Split `[notification] <name>: {json}` into its name and payload. */
-export function parseNotification(
-  content: string,
-): { name: string; payload: Record<string, unknown> } | null {
-  const m = /^\[notification\]\s*([^:]+):\s*(\{[\s\S]*\})\s*$/.exec(content)
-  if (!m) return null
-  try {
-    const payload = JSON.parse(m[2]) as unknown
-    if (!payload || typeof payload !== 'object' || Array.isArray(payload))
-      return null
-    return { name: m[1].trim(), payload: payload as Record<string, unknown> }
-  } catch {
-    return null
-  }
-}
-
-/** The shared pane header strip (label + optional dim hint + copy). */
-function PaneHeader({
-  label,
-  hint,
-  copyText,
-}: {
-  label: string
-  hint?: string
-  /** When set, a copy affordance rides the strip (mirrors PaneShell's). */
-  copyText?: string
-}) {
-  const [copied, setCopied] = useState(false)
-  return (
-    <div className="flex items-center gap-2 bg-paper-2 px-3 py-1.5 border-b border-rule-2 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-      <span className="min-w-0 flex-1 truncate">
-        {label}
-        {hint ? (
-          <span className="text-ink-ghost normal-case tracking-normal">
-            {' '}
-            · {hint}
-          </span>
-        ) : null}
-      </span>
-      {copyText !== undefined ? (
-        <button
-          type="button"
-          onClick={() => {
-            void copyTextToClipboard(copyText).then((ok) => {
-              if (!ok) return
-              setCopied(true)
-              window.setTimeout(() => setCopied(false), 1200)
-            })
-          }}
-          className="shrink-0 cursor-pointer text-ink-ghost hover:text-ink transition-colors"
-          aria-label={copied ? 'copied' : `copy ${label}`}
-          title={copied ? 'copied' : 'copy'}
-        >
-          {copied ? (
-            <Check size={12} aria-hidden />
-          ) : (
-            <Copy size={12} aria-hidden />
-          )}
-        </button>
-      ) : null}
-    </div>
-  )
-}
-
-const isScalar = (v: unknown) =>
-  v === null ||
-  typeof v === 'string' ||
-  typeof v === 'number' ||
-  typeof v === 'boolean'
-
-/**
- * The friendly tab of a notification: the delivering binding as chips, the
- * event's scalar fields as chips, nested values as a compact JSON block, and
- * the recovered registration through the same WHEN/THEN view the register
- * call renders (RegisterTriggerView falls back to raw JSON when the shape is
- * not a register request).
- */
-/**
- * Whether the recovered registration declares gating conditions. On a fire
- * or delivery card this implies they PASSED: the harness evaluates
- * conditions before writing the fired record — a failing gate takes the
- * skip path and never produces one (trigger_deliver.rs: resolve → stale →
- * conditions → claim → dispatch → record).
- */
-function hasConditions(registration?: TriggerRegistration): boolean {
-  const d = registration?.detail
-  if (!d || typeof d !== 'object') return false
-  const c = (d as { conditions?: unknown }).conditions
-  return Array.isArray(c) && c.length > 0
-}
-
-/**
- * Friendly registration block shared by the fired/notification terminals:
- * the same WHEN/THEN view the register call renders. Row-sourced
- * registrations carry the trigger type as the summary; the register-call
- * fallback is already a full request. Either way RegisterTriggerView parses
- * what it can and JSON-dumps what it cannot.
- */
-function RegistrationTerminal({
-  registration,
-}: {
-  registration: TriggerRegistration
-}) {
-  const regInput =
-    registration.summary &&
-    registration.summary !== 'from register call' &&
-    registration.detail &&
-    typeof registration.detail === 'object'
-      ? { trigger_type: registration.summary, ...registration.detail }
-      : registration.detail
-  return (
-    <div data-function-pane="registration">
-      <PaneHeader
-        label="registration"
-        hint={registration.summary}
-        copyText={JSON.stringify(registration.detail, null, 2)}
-      />
-      <RegisterTriggerView input={regInput} output={undefined} />
-    </div>
-  )
-}
-
-function NotificationTerminal({
-  name,
-  payload,
-  registration,
-}: {
-  name: string
-  payload: Record<string, unknown>
-  registration?: TriggerRegistration
-}) {
-  const entries = Object.entries(payload).filter(([k]) => !k.startsWith('_'))
-  const scalars = entries.filter(([, v]) => isScalar(v))
-  const rest = entries.filter(([, v]) => !isScalar(v))
-  return (
-    <div className="bg-bg">
-      <MetaRow>
-        <StatusPill label="notification" variant="accent" />
-        <FilterChip label="from" value={name} />
-        {hasConditions(registration) ? (
-          <FilterChip label="conditions" value="met" />
-        ) : null}
-      </MetaRow>
-      <PaneHeader label="event" />
-      <div className="px-3 py-2 border-b border-rule-2 flex flex-wrap items-center gap-1.5">
-        {scalars.length > 0 ? (
-          scalars.map(([k, v]) => (
-            <FilterChip key={k} label={k} value={String(v)} />
-          ))
-        ) : (
-          <span className="font-mono text-[11px] text-ink-ghost">
-            · no scalar fields
-          </span>
-        )}
-      </div>
-      {rest.length > 0 ? (
-        <div data-function-pane="event-data">
-          <PaneHeader
-            label="data"
-            copyText={JSON.stringify(Object.fromEntries(rest), null, 2)}
-          />
-          <div className="max-h-64 overflow-auto">
-            <JsonHighlight
-              code={JSON.stringify(Object.fromEntries(rest), null, 2)}
-              wrap
-            />
-          </div>
-        </div>
-      ) : null}
-      {registration ? (
-        <RegistrationTerminal registration={registration} />
-      ) : null}
-    </div>
-  )
-}
-
-/**
- * The friendly tab of a trigger-fired notice: lifecycle chips, the delivery
- * (call target or session wake) as a THEN block, and the recovered
- * registration through the shared WHEN/THEN view.
- */
-function TriggerFiredTerminal({
-  t,
-  registration,
-}: {
-  t: TriggerFiredData
-  registration?: TriggerRegistration
-}) {
-  const delivery = deliveryOf(t.target)
-  return (
-    <div className="bg-bg">
-      <MetaRow>
-        <StatusPill label="trigger fired" variant="accent" />
-        <FilterChip label="label" value={triggerFiredName(t)} />
-        <FilterChip label="mode" value={t.once ? 'one-shot' : 'persistent'} />
-        {typeof t.fired_at === 'number' ? (
-          <FilterChip
-            label="at"
-            value={new Date(t.fired_at).toLocaleString()}
-          />
-        ) : null}
-        {t.retired ? (
-          <FilterChip label="lifecycle" value="unregistered" />
-        ) : null}
-        {hasConditions(registration) ? (
-          <FilterChip label="conditions" value="met" />
-        ) : null}
-      </MetaRow>
-      <PaneHeader label="then" />
-      <div className="px-3 py-2 border-b border-rule-2 flex items-baseline gap-2 flex-wrap">
-        <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-          {delivery.kind === 'call' ? 'call' : 'notify'}
-        </span>
-        {delivery.kind === 'call' ? (
-          <span className="font-mono text-[12.5px] text-accent break-all">
-            {delivery.functionId}
-          </span>
-        ) : (
-          <span className="font-mono text-[12.5px] text-ink-faint italic">
-            this session
-          </span>
-        )}
-      </div>
-      {registration ? (
-        <RegistrationTerminal registration={registration} />
-      ) : null}
-    </div>
-  )
-}
-
-/** The shared "registration" detail pane (trigger-fired + notification). */
-function RegistrationPane({
-  registration,
-}: {
-  registration: TriggerRegistration
-}) {
-  const json = JSON.stringify(registration.detail, null, 2)
-  return (
-    <div className="border-t border-rule-2" data-function-pane="registration">
-      <PaneHeader
-        label="registration"
-        hint={registration.summary}
-        copyText={json}
-      />
-      <div className="max-h-64 overflow-auto">
-        <JsonHighlight code={json} wrap />
-      </div>
-    </div>
-  )
-}
-
-/**
- * A notify-wake delivery, in the same card language as the function-call
- * and trigger-fired rows: one line naming the binding that woke this chat,
- * payload behind the expand — plus the binding's registration when the
- * resolver recovered it (see MessageList). Content that isn't the
- * `[notification] name: {json}` shape renders as-is in the same chrome.
- */
-function NotificationMessage({
-  message,
-  registration,
-}: {
-  message: UserMessageType
-  registration?: TriggerRegistration
-}) {
-  const parsed = parseNotification(message.content)
-  const [tab, setTab] = useState<'terminal' | 'json'>('terminal')
-  const icon = (
-    <Bell
-      aria-hidden
-      strokeWidth={2.5}
-      className="size-3.5 shrink-0 text-warn"
-    />
-  )
-  if (!parsed) {
-    // Unlabeled / non-object / truncated notices carry their meaning in the
-    // text itself — wrap it in full rather than clipping to one line.
-    return (
-      <article
-        className="function-trigger-surface border border-rule bg-bg flex items-start gap-2 px-3 py-2"
-        data-message-role="notification"
-      >
-        {icon}
-        <span className="min-w-0 font-mono text-[13px] text-ink break-words">
-          {message.content}
-        </span>
-      </article>
-    )
-  }
-  return (
-    <article
-      className="function-trigger-surface border border-rule bg-bg"
-      data-message-role="notification"
-    >
-      <details className="group">
-        <summary className="flex items-center gap-2 px-3 py-2 cursor-pointer list-none select-none hover:bg-paper-2 transition-colors">
-          {icon}
-          <span className="min-w-0 flex-1 font-mono text-[13px] text-ink truncate">
-            triggered <span className="text-ink">notification</span>{' '}
-            <span className="text-ink-faint">by {parsed.name}</span>
-          </span>
-          <span
-            aria-hidden
-            className="text-ink-ghost shrink-0 transition-transform duration-150 inline-block group-open:rotate-90"
-          >
-            ▸
-          </span>
-        </summary>
-        <Tabs
-          value={tab}
-          onValueChange={(v) => setTab(v as 'terminal' | 'json')}
-          className="border-t border-rule-2"
-        >
-          <TabsList className="px-3">
-            <TabsTrigger value="terminal">terminal</TabsTrigger>
-            <TabsTrigger value="json">raw json</TabsTrigger>
-          </TabsList>
-          <TabsContent value="terminal">
-            <NotificationTerminal
-              name={parsed.name}
-              payload={parsed.payload}
-              registration={registration}
-            />
-          </TabsContent>
-          <TabsContent value="json">
-            <div data-function-pane="payload">
-              <PaneHeader
-                label="payload"
-                copyText={JSON.stringify(parsed.payload, null, 2)}
-              />
-              <div className="max-h-64 overflow-auto">
-                <JsonHighlight
-                  code={JSON.stringify(parsed.payload, null, 2)}
-                  wrap
-                />
-              </div>
-            </div>
-            {registration ? (
-              <RegistrationPane registration={registration} />
-            ) : null}
-          </TabsContent>
-        </Tabs>
-      </details>
-    </article>
-  )
-}
-
-/**
- * A subscription fire, rendered in the same visual language as a
- * `FunctionTriggerCard` header — it IS a function call, just one the
- * trigger made instead of the agent. The ⚡ (in place of ✓/✗) marks the
- * autonomous origin, and "by <name>" says which binding fired it.
- * Wake/spawn fires have no called function; they keep the summary text.
- *
- * `registration` is the binding's configuration — from the harness store
- * when the row is still known, else recovered from the transcript's
- * register call (the fire record itself carries none of it). Absent only
- * when neither source has it.
- */
-function TriggerFiredNotice({
-  message,
-  registration,
-}: {
-  message: SystemMessageType
-  registration?: TriggerRegistration
-}) {
-  const t = message.trigger
-  const [tab, setTab] = useState<'terminal' | 'json'>('terminal')
-  const called =
-    t?.target &&
-    t.target !== 'spawn' &&
-    t.target !== 'notify' &&
-    t.target !== 'harness::send'
-      ? t.target
-      : null
-  const notified =
-    t && (!t.target || t.target === 'notify' || t.target === 'harness::send')
-  const header = (
-    <>
-      <Zap
-        aria-hidden
-        strokeWidth={2.5}
-        className="size-3.5 shrink-0 text-warn"
-      />
-      <span className="min-w-0 flex-1 font-mono text-[13px] text-ink truncate">
-        {t && (called || notified) ? (
-          <>
-            triggered{' '}
-            {called ? (
-              <>
-                <span className="text-accent italic font-semibold">ƒ</span>{' '}
-                <span className="text-ink">{called}</span>
-              </>
-            ) : (
-              <span className="text-ink">notification</span>
-            )}
-            <span className="text-ink-faint"> by {triggerFiredName(t)}</span>
-            {t.retired ? (
-              <span className="text-ink-ghost"> · unregistered</span>
-            ) : null}
-          </>
-        ) : (
-          message.content
-        )}
-      </span>
-    </>
-  )
-  if (!t) {
-    return (
-      <article
-        className="function-trigger-surface border border-rule bg-bg flex items-center gap-2 px-3 py-2"
-        data-message-role="trigger-fired"
-      >
-        {header}
-      </article>
-    )
-  }
-  return (
-    <article
-      className="function-trigger-surface border border-rule bg-bg"
-      data-message-role="trigger-fired"
-    >
-      <details className="group">
-        <summary className="flex items-center gap-2 px-3 py-2 cursor-pointer list-none select-none hover:bg-paper-2 transition-colors">
-          {header}
-          <span
-            aria-hidden
-            className="text-ink-ghost shrink-0 transition-transform duration-150 inline-block group-open:rotate-90"
-          >
-            ▸
-          </span>
-        </summary>
-        <Tabs
-          value={tab}
-          onValueChange={(v) => setTab(v as 'terminal' | 'json')}
-          className="border-t border-rule-2"
-        >
-          <TabsList className="px-3">
-            <TabsTrigger value="terminal">terminal</TabsTrigger>
-            <TabsTrigger value="json">raw json</TabsTrigger>
-          </TabsList>
-          <TabsContent value="terminal">
-            <TriggerFiredTerminal t={t} registration={registration} />
-          </TabsContent>
-          <TabsContent value="json">
-            {registration ? (
-              <RegistrationPane registration={registration} />
-            ) : null}
-            <div data-function-pane="trigger">
-              <PaneHeader label="fire" copyText={JSON.stringify(t, null, 2)} />
-              <div className="max-h-64 overflow-auto">
-                <JsonHighlight code={JSON.stringify(t, null, 2)} wrap />
-              </div>
-            </div>
-          </TabsContent>
-        </Tabs>
-      </details>
-    </article>
-  )
-}
+export { parseNotification } from '@/components/trigger-activity/model'
 
 /**
  * The one-line hint for a reaction's collapsed payload: the firing session
@@ -681,10 +296,12 @@ function ReactionTaskMessage({ message }: { message: UserMessageType }) {
   return (
     <article className="flex flex-col items-start gap-2">
       <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost">
-        <Prompt symbol="⚡">trigger · reaction task</Prompt>
+        <Prompt symbol="⚡">Trigger · reaction task</Prompt>
       </header>
       <div className="max-w-[80%] border-l border-rule pl-4 pr-1 py-1 break-words text-ink-faint">
-        <Markdown>{message.content}</Markdown>
+        <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
+          {message.content}
+        </Markdown>
         {event ? (
           <details className="mt-2 group">
             <summary className="cursor-pointer list-none select-none font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost group-hover:text-ink transition-colors">
@@ -716,10 +333,12 @@ function ValidationNudgeMessage({ message }: { message: UserMessageType }) {
   return (
     <article className="flex flex-col items-start gap-2">
       <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost">
-        <Prompt symbol="⟳">validator · corrective prompt</Prompt>
+        <Prompt symbol="⟳">Validator · corrective prompt</Prompt>
       </header>
       <div className="max-w-[80%] border-l border-rule pl-4 pr-1 py-1 break-words text-ink-faint">
-        <Markdown>{message.content}</Markdown>
+        <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
+          {message.content}
+        </Markdown>
       </div>
     </article>
   )
@@ -730,45 +349,158 @@ function ValidationNudgeMessage({ message }: { message: UserMessageType }) {
  * input, but sent by the PARENT agent — labeled and left-aligned like a
  * reaction task so it never reads as something the human typed.
  */
-function SpawnTaskMessage({ message }: { message: UserMessageType }) {
+function SpawnTaskMessage({
+  message,
+  context,
+}: {
+  message: UserMessageType
+  context?: SpawnTaskContext
+}) {
+  const appearance = context?.appearance
+  const title = appearance?.name.trim() || context?.title?.trim() || 'Sub-agent'
+  const AgentIcon = appearance?.icon
+    ? SUBAGENT_ICON_COMPONENTS[appearance.icon]
+    : Bot
+
   return (
-    <article className="flex flex-col items-start gap-2">
-      <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost">
-        <Prompt symbol="⚙">spawn · sub-agent task</Prompt>
-      </header>
-      <div className="max-w-[80%] border-l border-rule pl-4 pr-1 py-1 break-words text-ink-faint">
-        <Markdown>{message.content}</Markdown>
-      </div>
+    <article
+      className="w-full"
+      data-message-role="spawn-task"
+      aria-label={`${title} spawn task`}
+    >
+      <Card>
+        <CardHeader className="border-b border-edge">
+          <Sparkles aria-hidden className="size-4 shrink-0 stroke-accent" />
+          <div className="flex min-w-0 items-center gap-2 font-mono text-[0.8125rem] font-medium tracking-[0.06em]">
+            <span className="shrink-0">Spawn</span>
+            {context?.model ? (
+              <>
+                <span aria-hidden className="shrink-0 text-ink-ghost">
+                  ·
+                </span>
+                <span
+                  className="min-w-0 truncate font-normal normal-case tracking-normal text-ink-faint"
+                  title={context.model}
+                >
+                  {context.model}
+                </span>
+              </>
+            ) : null}
+          </div>
+        </CardHeader>
+
+        <div className="flex min-w-0 items-center gap-3 p-3 bg-ink-faint/3">
+          <AgentIcon
+            aria-hidden
+            className="size-5 shrink-0 stroke-accent sm:size-4"
+          />
+          <div className="flex min-w-0 flex-1 flex-wrap align-center items-center gap-2 font-sans text-base sm:text-sm">
+            <div
+              className="min-w-0 truncate font-semibold text-ink"
+              title={title}
+            >
+              {title}
+            </div>
+            <Chip tone="accent">Sub-agent</Chip>
+          </div>
+        </div>
+
+        <div
+          className="h-px bg-edge/40"
+          style={{ width: 'calc(100% + 24px)', marginLeft: '-12px' }}
+        ></div>
+
+        <CardBody className="p-0">
+          <div className="break-words p-4 text-ink-faint sm:p-3">
+            <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
+              {message.content}
+            </Markdown>
+          </div>
+        </CardBody>
+      </Card>
     </article>
   )
 }
 
+/**
+ * The `/command` token inside the user bubble: the typed command fused with
+ * its expansion metadata (body size), so the slash chip never repeats the
+ * same name one row below the bubble. Same anatomy as FunctionMentionPill —
+ * accent glyph, ink text, one alpha-surface step above the bubble.
+ */
+function SlashCommandToken({ chip }: { chip: Attachment }) {
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 px-1.5 h-[22px] rounded-xs bg-surface font-mono text-[13px] text-ink select-none"
+      title={`skill body attached · ${formatSize(chip.size)}`}
+    >
+      <Blocks size={16} aria-hidden className="text-accent shrink-0" />
+      <span className="leading-none truncate">{chip.name}</span>
+      <span className="leading-none text-[11px] text-ink-ghost tabular-nums shrink-0">
+        {formatSize(chip.size)}
+      </span>
+    </span>
+  )
+}
+
 function UserMessage({ message }: { message: UserMessageType }) {
+  const attachments = message.attachments ?? []
+  /* A slash expansion's chip duplicates the command that already leads the
+     typed text — fuse it into the bubble as one token instead of orphaning
+     it in the strip below. A chip that doesn't match the leading token
+     (shouldn't happen) keeps the strip as a fallback. */
+  const slashChip = attachments.find(
+    (a) =>
+      a.type === 'text/x-skill' &&
+      message.content.startsWith(a.name) &&
+      (message.content.length === a.name.length ||
+        message.content.charAt(a.name.length) === ' '),
+  )
+  const chips = slashChip
+    ? attachments.filter((a) => a.id !== slashChip.id)
+    : attachments
+  const args = slashChip
+    ? message.content.slice(slashChip.name.length).trim()
+    : ''
   return (
     <article
       className="group flex flex-col items-end gap-2"
       data-message-role="user"
     >
-      <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost flex items-center gap-2">
+      <header className="flex items-center gap-2 font-sans text-base font-medium text-ink-faint sm:text-sm">
         {message.content ? (
           <CopyMessageButton
             text={message.content}
-            className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-[opacity,color]"
+            className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
           />
         ) : null}
-        <Prompt symbol="$">you</Prompt>
+        <span>You</span>
       </header>
       <div
         className={cn(
-          'max-w-[80%] border-l border-rule pl-4 pr-1 py-1',
+          'max-w-[92%] rounded-sm bg-surface px-3.5 py-2.5 sm:max-w-[80%]',
           'break-words',
+          slashChip && 'flex flex-col items-start gap-1.5',
         )}
       >
-        <Markdown>{message.content}</Markdown>
+        {slashChip ? (
+          <>
+            <SlashCommandToken chip={slashChip} />
+            {args ? (
+              <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
+                {args}
+              </Markdown>
+            ) : null}
+          </>
+        ) : (
+          <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
+            {message.content}
+          </Markdown>
+        )}
       </div>
-      {message.attachments && message.attachments.length > 0 ? (
-        <div className="flex flex-wrap gap-2 justify-end max-w-[80%]">
-          {message.attachments.map((a) => (
+      {chips.length > 0 ? (
+        <div className="flex max-w-[92%] flex-wrap justify-end gap-2 sm:max-w-[80%]">
+          {chips.map((a) => (
             <AttachmentChip key={a.id} attachment={a} />
           ))}
         </div>
@@ -780,9 +512,11 @@ function UserMessage({ message }: { message: UserMessageType }) {
 function AssistantMessage({
   message,
   copyText,
+  agentName,
 }: {
   message: AssistantMessageType
   copyText?: string | (() => string)
+  agentName?: string
 }) {
   const showCaret = !!message.streaming
   // A tool-only turn has no prose but still carries a copy payload (its
@@ -794,8 +528,16 @@ function AssistantMessage({
       className="group flex flex-col gap-2"
       data-message-role="assistant"
     >
-      <header className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-ghost flex items-center gap-2 flex-wrap">
-        <Prompt symbol=">">agent</Prompt>
+      <header className="flex flex-wrap items-center gap-2 font-sans text-base text-ink-ghost sm:text-sm">
+        <span className="font-medium text-ink-faint">
+          {agentName ?? 'Agent'}
+        </span>
+        {copySource !== undefined && !message.streaming ? (
+          <CopyMessageButton
+            text={copySource}
+            className="opacity-100 sm:order-last sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
+          />
+        ) : null}
         {message.model ? (
           <span className="text-ink-ghost">· {message.model}</span>
         ) : null}
@@ -803,16 +545,12 @@ function AssistantMessage({
           <span className="text-ink-ghost">· {message.mode}</span>
         ) : null}
         {message.memory ? <MemoryChip memory={message.memory} /> : null}
-        {copySource !== undefined && !message.streaming ? (
-          <CopyMessageButton
-            text={copySource}
-            className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-[opacity,color]"
-          />
-        ) : null}
       </header>
       <div className="pr-1">
         {message.content ? (
-          <Markdown>{message.content}</Markdown>
+          <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
+            {message.content}
+          </Markdown>
         ) : (
           <div className="font-mono text-[13px] italic thinking-shimmer">
             thinking…

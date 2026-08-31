@@ -24,7 +24,45 @@ pub mod update_file;
 use iii_sdk::errors::Error;
 use iii_sdk::{IIIClient, RegisterFunction};
 
+use crate::code::change_journal::{self, ChangeDiffInput};
 use crate::code::state::CodeCells;
+
+/// Tolerant batch input: the canonical shape is `{ "files": [...] }`, but a
+/// model that just wrote one file frequently sends the spec flat
+/// (`{ "path", "content", ... }`) — verify-wake-fix-3 postmortem: that shape
+/// bounced with a raw serde "missing field `files`". Accept it as a
+/// one-entry batch; anything else gets the contract named back. The
+/// published schema stays the canonical batch shape (goldens pin it).
+pub(crate) fn files_batch_or_single<T: serde::de::DeserializeOwned>(
+    value: serde_json::Value,
+    function_id: &str,
+) -> Result<(Vec<T>, Option<crate::fs::FsScope>), String> {
+    #[derive(serde::Deserialize)]
+    struct Batch<T> {
+        files: Vec<T>,
+        #[serde(default)]
+        fs_scope: Option<crate::fs::FsScope>,
+    }
+    if value.get("files").is_some() {
+        let batch: Batch<T> = serde_json::from_value(value)
+            .map_err(|e| format!("{function_id}: invalid `files` entry: {e}"))?;
+        return Ok((batch.files, batch.fs_scope));
+    }
+    if value.get("path").is_some() {
+        let fs_scope = match value.get("fs_scope") {
+            Some(v) => serde_json::from_value(v.clone())
+                .map_err(|e| format!("{function_id}: invalid `fs_scope`: {e}"))?,
+            None => None,
+        };
+        let spec: T = serde_json::from_value(value)
+            .map_err(|e| format!("{function_id}: invalid file entry: {e}"))?;
+        return Ok((vec![spec], fs_scope));
+    }
+    Err(format!(
+        "{function_id} takes {{ \"files\": [{{ \"path\", \"content\", ... }}] }}; a \
+         single file may also be passed flat as {{ \"path\", \"content\" }}."
+    ))
+}
 
 // ---------------------------------------------------------------------------
 // Function ids + registration descriptions (ONE place).
@@ -41,7 +79,10 @@ const INFO_ID: &str = "coder::info";
 const INFO_DESC: &str = "Report the coder access contract: the effective mode (jailed = \
      paths confined to the allowed roots; unjailed = deny-only, absolute \
      paths anywhere on the host, roots anchor relative paths only), \
-     canonical allowed roots (primary first), per-file size caps, \
+     canonical allowed roots (primary first), the session_root that \
+     relative paths actually anchor against when the session is scoped \
+     (it overrides primary_root and may sit outside every allowed root), \
+     per-file size caps, \
      response budgets (max_output_bytes, batch_read_budget_bytes, \
      search_response_budget_bytes), listing/search limits, the \
      non-accessible glob patterns, and the default_exclude_globs noise \
@@ -61,7 +102,10 @@ const READ_FILE_DESC: &str = "Read a file window-first: probe with stat: true (s
      budgeted by max_output_bytes (default 128 KiB; per-call override \
      clamped to max_read_bytes) — an over-budget full read fails with \
      a C218 carrying the file's size, line count, and the window/stat \
-     recovery calls. Batch mode: pass paths[] (XOR path) \
+     recovery calls. encoding: base64 (single-path full reads only) \
+     returns the file's exact bytes base64-encoded — the binary-aware \
+     read for images and other non-text payloads. Batch mode: pass \
+     paths[] (XOR path) \
      to read multiple files in one call — entries are processed in \
      request order against batch_read_budget_bytes, measured in \
      bytes of returned content (after UTF-8 sanitization); per-entry \
@@ -71,7 +115,9 @@ const READ_FILE_DESC: &str = "Read a file window-first: probe with stat: true (s
      shell::fs::*. Non-accessible paths return C211.";
 
 const SEARCH_ID: &str = "coder::search";
-const SEARCH_DESC: &str = "Search file contents and/or paths. Supports literal or regex \
+const SEARCH_DESC: &str = "Search file contents and/or paths. Path search matches files AND \
+     directories (each path_match carries kind: file|dir); content \
+     search reads files only. Supports literal or regex \
      queries with include/exclude globs; non-accessible files are \
      excluded from both content and path results. Only the FIRST match \
      on each line is reported (one content match per matching line). \
@@ -117,7 +163,10 @@ const UPDATE_FILE_DESC: &str = "Apply batched line-oriented and regex edits acro
 const CREATE_FILE_ID: &str = "coder::create-file";
 const CREATE_FILE_DESC: &str = "Create one or more files. Request shape: {\"files\": [{\"path\": \
      \"...\", \"content\": \"...\"}]}. Per-file `overwrite` and `parents` \
-     flags; non-accessible paths return C211. Paths are relative to \
+     flags; writes publish atomically. For a conflict-safe overwrite, pass \
+     the `revision` returned by coder::read-file as `expected_revision`; \
+     stale revisions return C221 without writing. Non-accessible paths \
+     return C211. Paths are relative to \
      the primary allowed root or absolute inside any allowed root \
      (coder::info lists them); for host paths outside the jail use \
      shell::fs::*.";
@@ -148,7 +197,11 @@ const TREE_DESC: &str = "Recursive directory snapshot bounded by `max_depth` and
      coder::list-folder for pagination. Noise directories matching \
      default_exclude_globs (.git, node_modules, target, … — \
      coder::info lists them) appear as childless `truncated` stubs; \
-     pass use_default_excludes: false to descend into them. Paths are \
+     pass use_default_excludes: false to descend into them. Pass \
+     include_hidden: false to omit dot-prefixed entries (they then \
+     don't count toward per_folder_limit). A total node budget bounds \
+     every snapshot; folders past it are stubs with reason max_nodes \
+     — re-root there or paginate with coder::list-folder. Paths are \
      relative to the primary allowed root or absolute inside any \
      allowed root (coder::info lists them); for host paths outside \
      the jail use shell::fs::*.";
@@ -253,6 +306,7 @@ pub fn register_all(iii: &IIIClient, cells: CodeCells) {
     registered += 1;
     register_delete_file(iii, cells.clone());
     registered += 1;
+    register_change_diff(iii, cells.clone());
     register_list_folder(iii, cells.clone());
     registered += 1;
     register_tree(iii, cells.clone());
@@ -269,15 +323,27 @@ pub fn register_all(iii: &IIIClient, cells: CodeCells) {
     tracing::info!(count = registered, "coder registered functions");
 }
 
+fn register_change_diff(iii: &IIIClient, cells: CodeCells) {
+    iii.register_function(
+        "coder::change-diff",
+        RegisterFunction::new_async(move |req: ChangeDiffInput| {
+            let journal = cells.changes.clone();
+            async move { change_journal::diff(&journal, req).map_err(Error::from) }
+        })
+        .description("Internal console UI: retrieve an exact before/after snapshot by change id.")
+        .metadata(serde_json::json!({ "internal": true })),
+    );
+}
+
 fn register_info(iii: &IIIClient, cells: CodeCells) {
     iii.register_function(
         INFO_ID,
-        RegisterFunction::new_async(move |_req: info::InfoInput| {
+        RegisterFunction::new_async(move |req: info::InfoInput| {
             let cells = cells.clone();
             async move {
                 let resolver = cells.resolver.read().await.clone();
                 let cfg = cells.config.read().await.clone();
-                info::handle(resolver, cfg).await.map_err(Error::from)
+                info::handle(resolver, cfg, req).await.map_err(Error::from)
             }
         })
         .description(INFO_DESC),
@@ -338,12 +404,13 @@ fn register_update_file(iii: &IIIClient, cells: CodeCells) {
                     crate::fs::scope_grants(req.fs_scope.as_ref()),
                 );
                 let cfg = cells.config.read().await.clone();
-                update_file::handle(resolver, cfg, req)
+                update_file::handle_with_journal(resolver, cfg, cells.changes.clone(), req)
                     .await
                     .map_err(Error::from)
             }
         })
-        .description(UPDATE_FILE_DESC),
+        .description(UPDATE_FILE_DESC)
+        .metadata(serde_json::json!({ "display": true })),
     );
 }
 
@@ -359,12 +426,13 @@ fn register_create_file(iii: &IIIClient, cells: CodeCells) {
                     crate::fs::scope_grants(req.fs_scope.as_ref()),
                 );
                 let cfg = cells.config.read().await.clone();
-                create_file::handle(resolver, cfg, req)
+                create_file::handle_with_journal(resolver, cfg, cells.changes.clone(), req)
                     .await
                     .map_err(Error::from)
             }
         })
-        .description(CREATE_FILE_DESC),
+        .description(CREATE_FILE_DESC)
+        .metadata(serde_json::json!({ "display": true })),
     );
 }
 
@@ -379,12 +447,13 @@ fn register_delete_file(iii: &IIIClient, cells: CodeCells) {
                     crate::fs::scope_root(req.fs_scope.as_ref()),
                     crate::fs::scope_grants(req.fs_scope.as_ref()),
                 );
-                delete_file::handle(resolver, req)
+                delete_file::handle_with_journal(resolver, cells.changes.clone(), req)
                     .await
                     .map_err(Error::from)
             }
         })
-        .description(DELETE_FILE_DESC),
+        .description(DELETE_FILE_DESC)
+        .metadata(serde_json::json!({ "display": true })),
     );
 }
 
@@ -467,6 +536,7 @@ mod tests {
         let cells = CodeCells {
             config: Arc::new(RwLock::new(Arc::new(cfg))),
             resolver: Arc::new(RwLock::new(resolver)),
+            changes: Default::default(),
         };
         register_all(&iii, cells);
     }

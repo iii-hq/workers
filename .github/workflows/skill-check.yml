@@ -18,8 +18,10 @@ jobs:
       # pull_request, which works for both same-repo and fork PRs.
       # Setting `ref: github.head_ref` previously broke fork PRs (the
       # head branch only exists in the fork, not in this repo).
-      - uses: actions/checkout@v5
-      - uses: iii-hq/skills-and-validation@v0.4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: iii-hq/skills-and-validation@e568f7490b9ca6cffc86c8a8f36d2ea26af68e8a # v0.4
         with:
           write: false
           scope: pr-diff

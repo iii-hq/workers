@@ -147,7 +147,9 @@ function denialToInvocation(
             ? 'Denied'
             : 'Trigger failed'
   const message =
-    denial.reason ?? fallbackMessage ?? 'The browser trigger could not complete.'
+    denial.reason ??
+    fallbackMessage ??
+    'The browser trigger could not complete.'
   return {
     title,
     message,
@@ -344,7 +346,7 @@ function DispatchDeniedView({ denial }: { denial: InfraDispatchDenial }) {
         <Badge variant="warn" className="br-ui-err-code">
           denied
         </Badge>
-        <span className="br-ui-err-type">dispatch policy</span>
+        <span className="br-ui-err-type">Dispatch policy</span>
       </div>
       {fn ? (
         <div className="br-ui-err-note">

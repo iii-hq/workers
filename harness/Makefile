@@ -28,7 +28,7 @@ STACK := $(BASE_STACK) eval
 PYTHON_WORKERS := scrapling
 RUST_WORKERS   := $(filter-out $(PYTHON_WORKERS),$(STACK))
 
-GOAL_ARGS        := $(filter-out help install-iii-next build install-local clean cargo-clean dev-run dev-up dev-down dev-restart \
+GOAL_ARGS        := $(filter-out help install-iii-rc build install-local clean cargo-clean dev-run dev-up dev-down dev-restart \
                     engine wait-engine wait-base wait-stack restart restart-worker stop stop-worker stop-work stop-engine status smoke logs attach \
                     ensure-session prepare-scrapling require-engine where integration-test integration-coverage integration-playground integration-validate quickstart-validate,$(MAKECMDGOALS))
 SELECTED_WORKERS := $(strip $(GOAL_ARGS))
@@ -40,7 +40,7 @@ RUN_FLAG   := $(if $(filter release,$(RUN_PROFILE)),--release,)
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install-iii-next build install-local clean cargo-clean dev-run dev-up dev-down dev-restart engine wait-engine wait-base wait-stack \
+.PHONY: help install-iii-rc build install-local clean cargo-clean dev-run dev-up dev-down dev-restart engine wait-engine wait-base wait-stack \
         restart restart-worker stop stop-worker stop-work stop-engine status smoke logs attach ensure-session prepare-scrapling \
         require-engine where integration-test integration-coverage integration-playground integration-validate quickstart-validate $(STACK)
 
@@ -56,7 +56,7 @@ help:
 	  '  make stop harness shell             stop selected worker windows' \
 	  '  make stop-work                      stop all worker windows, keep engine' \
 	  '  make stop-engine                    stop the engine window only' \
-	  '  make install-iii-next               install the iii CLI @next channel' \
+	  '  make install-iii-rc               install the iii CLI @rc channel' \
 	  '  make status                         list registered workers' \
 	  '  make smoke                          run basic engine/harness/router probes' \
 	  '  make where                          print source roots, refs, and tmux panes' \
@@ -73,8 +73,8 @@ help:
 quickstart-validate:
 	@$(MAKEFILE_DIR)tests/quickstart/run-ci.sh
 
-install-iii-next:
-	@curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --next
+install-iii-rc:
+	@curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --rc
 
 $(SCRAPLING_STAMP): $(SCRAPLING_ROOT)/pyproject.toml
 	@test -x "$(SCRAPLING_VENV)/bin/python" || "$(PYTHON)" -m venv --without-pip "$(SCRAPLING_VENV)"
@@ -375,6 +375,9 @@ where:
 INTEGRATION_WORKERS := queue iii-directory session-manager context-manager state database
 INTEGRATION_PROFILE ?= release
 INTEGRATION_FLAG    := $(if $(filter release,$(INTEGRATION_PROFILE)),--release,)
+# CI adds --timings here; local runs still use the committed lockfiles by
+# default without producing diagnostic artifacts on every build.
+CARGO_BUILD_FLAGS ?= --locked
 INTEGRATION_SCENARIO ?= all
 INTEGRATION_ARTIFACTS ?= $(REPO_ROOT)/target/integration
 INTEGRATION_PLAYGROUND_SCENARIO ?= console-streamed-text
@@ -388,10 +391,10 @@ integration-test:
 	fi
 	@for w in $(INTEGRATION_WORKERS) harness; do \
 	  echo "building $$w ($(INTEGRATION_PROFILE))"; \
-	  cargo build $(INTEGRATION_FLAG) --manifest-path "$(REPO_ROOT)/$$w/Cargo.toml" || exit 1; \
+	  cargo build $(CARGO_BUILD_FLAGS) $(INTEGRATION_FLAG) --manifest-path "$(REPO_ROOT)/$$w/Cargo.toml" || exit 1; \
 	done
 	@echo "building harness-integration ($(INTEGRATION_PROFILE))"
-	@cargo build $(INTEGRATION_FLAG) --manifest-path "$(MAKEFILE_DIR)Cargo.toml" -p harness-integration
+	@cargo build $(CARGO_BUILD_FLAGS) $(INTEGRATION_FLAG) --manifest-path "$(MAKEFILE_DIR)Cargo.toml" -p harness-integration
 	@"$(MAKEFILE_DIR)target/$(INTEGRATION_PROFILE)/harness-integration" \
 	  run \
 	  --engine-bin "$(III_BIN)" \
@@ -434,10 +437,10 @@ integration-playground:
 	fi
 	@for w in $(INTEGRATION_WORKERS) harness console; do \
 	  echo "building $$w ($(INTEGRATION_PROFILE))"; \
-	  cargo build $(INTEGRATION_FLAG) --manifest-path "$(REPO_ROOT)/$$w/Cargo.toml" || exit 1; \
+	  cargo build $(CARGO_BUILD_FLAGS) $(INTEGRATION_FLAG) --manifest-path "$(REPO_ROOT)/$$w/Cargo.toml" || exit 1; \
 	done
 	@echo "building harness-integration ($(INTEGRATION_PROFILE))"
-	@cargo build $(INTEGRATION_FLAG) --manifest-path "$(MAKEFILE_DIR)Cargo.toml" -p harness-integration
+	@cargo build $(CARGO_BUILD_FLAGS) $(INTEGRATION_FLAG) --manifest-path "$(MAKEFILE_DIR)Cargo.toml" -p harness-integration
 	@"$(MAKEFILE_DIR)target/$(INTEGRATION_PROFILE)/harness-integration" \
 	  playground \
 	  --engine-bin "$(III_BIN)" \
@@ -453,7 +456,7 @@ integration-playground:
 	  --artifacts-dir "$(INTEGRATION_PLAYGROUND_ARTIFACTS)"
 
 integration-validate:
-	@cargo run --quiet --manifest-path "$(MAKEFILE_DIR)Cargo.toml" -p harness-integration -- \
+	@cargo run --quiet --locked --manifest-path "$(MAKEFILE_DIR)Cargo.toml" -p harness-integration -- \
 	  validate --scenario all
 
 $(STACK):

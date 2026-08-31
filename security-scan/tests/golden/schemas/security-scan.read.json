@@ -1,0 +1,322 @@
+{
+  "description": "Read a security-scan run and its validated report without exposing internal checkout paths or Harness session identifiers.",
+  "function_id": "security-scan::read",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "run_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "run_id"
+    ],
+    "title": "SecurityScanReadRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "AssessmentStatusV1": {
+        "enum": [
+          "assessed",
+          "not_assessed",
+          "unknown"
+        ],
+        "type": "string"
+      },
+      "FindingLocationV1": {
+        "additionalProperties": false,
+        "properties": {
+          "line_end": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "line_start": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "PublicRunV1": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "completed_at": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/RunErrorV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mode": {
+            "$ref": "#/definitions/ScanModeV1"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "report": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/SecurityReportV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "repository": {
+            "type": "string"
+          },
+          "resolved_from_head": {
+            "type": "boolean"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/definitions/RunStatusV1"
+          },
+          "target_sha": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "attempt",
+          "created_at",
+          "mode",
+          "repository",
+          "run_id",
+          "schema_version",
+          "status",
+          "target_sha",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "RunErrorV1": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "retryable"
+        ],
+        "type": "object"
+      },
+      "RunStatusV1": {
+        "enum": [
+          "queued",
+          "materializing",
+          "materialized",
+          "dispatching",
+          "analyzing",
+          "completed",
+          "failed",
+          "cancelling",
+          "cancelled"
+        ],
+        "type": "string"
+      },
+      "ScanModeV1": {
+        "enum": [
+          "scan",
+          "suggest"
+        ],
+        "type": "string"
+      },
+      "SecurityAreaAssessmentV1": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/definitions/AssessmentStatusV1"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      },
+      "SecurityAssessmentsV1": {
+        "additionalProperties": false,
+        "properties": {
+          "dependencies": {
+            "$ref": "#/definitions/SecurityAreaAssessmentV1"
+          },
+          "secrets": {
+            "$ref": "#/definitions/SecurityAreaAssessmentV1"
+          },
+          "supply_chain": {
+            "$ref": "#/definitions/SecurityAreaAssessmentV1"
+          },
+          "vulnerabilities": {
+            "$ref": "#/definitions/SecurityAreaAssessmentV1"
+          }
+        },
+        "required": [
+          "dependencies",
+          "secrets",
+          "supply_chain",
+          "vulnerabilities"
+        ],
+        "type": "object"
+      },
+      "SecurityFindingV1": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/FindingLocationV1"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "remediation": {
+            "type": "string"
+          },
+          "rule_id": {
+            "type": "string"
+          },
+          "severity": {
+            "$ref": "#/definitions/SeverityV1"
+          },
+          "suggested_patch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "description",
+          "evidence",
+          "remediation",
+          "rule_id",
+          "severity",
+          "title"
+        ],
+        "type": "object"
+      },
+      "SecurityReportV1": {
+        "additionalProperties": false,
+        "properties": {
+          "assessments": {
+            "$ref": "#/definitions/SecurityAssessmentsV1"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/definitions/SecurityFindingV1"
+            },
+            "type": "array"
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "assessments",
+          "findings",
+          "summary"
+        ],
+        "type": "object"
+      },
+      "SeverityV1": {
+        "enum": [
+          "critical",
+          "high",
+          "medium",
+          "low",
+          "info"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "run": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/PublicRunV1"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "title": "SecurityScanReadResponseV1",
+    "type": "object"
+  }
+}

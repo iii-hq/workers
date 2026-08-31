@@ -29,23 +29,43 @@ function formatJson(v: unknown): string {
  * One function call as copyable plain text: `ƒ <id>` and its arguments. The
  * call is what the model emitted; the tool result (output) is copyable from
  * the call card itself and is deliberately left out of the message-level copy.
+ *
+ * `redact`, when given, is applied to `m.input` before it is serialized —
+ * the same per-function redactor the call's own card applies to its raw
+ * pane (see `rawRedactor` in renderer-registry.tsx). This module has no
+ * business knowing about the renderer registry, so it takes an
+ * already-resolved redact function as a plain parameter rather than
+ * importing a module-level singleton — keeps it pure and testable with a
+ * bare mock.
  */
-export function functionTriggerToText(m: FunctionTriggerMessage): string {
-  if (isEmptyInput(m.input)) return `ƒ ${m.functionId}`
-  return `ƒ ${m.functionId}\n${formatJson(m.input)}`
+export function functionTriggerToText(
+  m: FunctionTriggerMessage,
+  redact?: (value: unknown) => unknown,
+): string {
+  const input = redact ? redact(m.input) : m.input
+  if (isEmptyInput(input)) return `ƒ ${m.functionId}`
+  return `ƒ ${m.functionId}\n${formatJson(input)}`
 }
 
 /**
  * Copy payload for an assistant turn: its prose followed by every function
  * call it made, blank-line separated. With no calls the prose is returned
  * unchanged, so callers can build this unconditionally.
+ *
+ * `redactFor`, when given, maps a call's function id to its redactor (the
+ * call site threads in `(functionId) => rawRedactor(renderers, functionId)`
+ * — see MessageList.tsx). Only the calls' arguments run through it; the
+ * assistant's own prose never carries a worker's capability.
  */
 export function assistantCopyText(
   content: string,
   calls: readonly FunctionTriggerMessage[],
+  redactFor?: (functionId: string) => ((value: unknown) => unknown) | undefined,
 ): string {
   if (calls.length === 0) return content
-  const callText = calls.map(functionTriggerToText).join('\n\n')
+  const callText = calls
+    .map((m) => functionTriggerToText(m, redactFor?.(m.functionId)))
+    .join('\n\n')
   return content ? `${content}\n\n${callText}` : callText
 }
 

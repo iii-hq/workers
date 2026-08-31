@@ -65,6 +65,12 @@ pub fn compaction_entry_id(turn_id: &str, step: u64) -> String {
     format!("e_{turn_id}_{step}_compaction")
 }
 
+/// A names-only skill correction for one model generation. Redelivery of the
+/// same generation appends to the same transcript entry.
+pub fn skill_update_entry_id(turn_id: &str, generation: u32) -> String {
+    format!("e_{turn_id}_skills_{generation}")
+}
+
 /// A synthetic validation-nudge user entry for an output-contract retry.
 pub fn validation_nudge_entry_id(turn_id: &str, attempt: u32) -> String {
     format!("e_{turn_id}_nudge_{attempt}")
@@ -89,17 +95,23 @@ fn short_uuid() -> String {
     Uuid::new_v4().simple().to_string()
 }
 
-/// Keep ids filesystem/key safe: replace anything outside `[A-Za-z0-9_-]`.
+/// Keep ids filesystem/key safe without collapsing distinct external values.
+/// Safe ASCII bytes remain readable and every other UTF-8 byte is escaped as
+/// `~HH`. `~` is always escaped too, making the representation reversible.
 fn sanitize(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+
+    let mut encoded = String::with_capacity(s.len());
+    for byte in s.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-') {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push('~');
+            encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+            encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+    }
+    encoded
 }
 
 #[cfg(test)]
@@ -112,6 +124,7 @@ mod tests {
         assert_eq!(function_result_entry_id("t_1", "fc_9"), "e_t_1_fc_9");
         assert_eq!(compaction_entry_id("t_1", 4), "e_t_1_4_compaction");
         assert_eq!(queued_entry_id("q_abc"), "e_q_abc");
+        assert_eq!(skill_update_entry_id("t_1", 4), "e_t_1_skills_4");
         assert_eq!(
             transient_resume_nudge_entry_id("t_1", 2),
             "e_t_1_transient_resume_2"
@@ -123,8 +136,19 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_replaces_unsafe_chars() {
-        assert_eq!(function_result_entry_id("t_1", "a/b c"), "e_t_1_a_b_c");
+    fn sanitize_escapes_unsafe_chars_without_ambiguity() {
+        assert_eq!(function_result_entry_id("t_1", "a/b c"), "e_t_1_a~2Fb~20c");
+        assert_ne!(sanitize("a/"), sanitize("a~2F"));
+        assert_ne!(sanitize("é"), sanitize("__"));
+    }
+
+    #[test]
+    fn distinct_external_ids_never_collapse_to_one_entry() {
+        assert_ne!(idem_user_entry_id("idem/a"), idem_user_entry_id("idem a"));
+        assert_ne!(
+            function_result_entry_id("t_1", "call/a"),
+            function_result_entry_id("t_1", "call a")
+        );
     }
 
     #[test]

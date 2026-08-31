@@ -1,5 +1,11 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import type { AssistantMessage, Attachment, UserMessage } from '@/types/chat'
+import { registrationFromCall } from '@/components/trigger-activity/model'
+import type {
+  AssistantMessage,
+  Attachment,
+  SystemMessage,
+  UserMessage,
+} from '@/types/chat'
 import { Message } from './Message'
 
 const sampleAttachments: Attachment[] = [
@@ -19,6 +25,15 @@ const userWithAttachments: UserMessage = {
   role: 'user',
   content: 'please review the attached spec and screenshot.',
   attachments: sampleAttachments,
+  createdAt: Date.now(),
+}
+
+const spawnTask: UserMessage = {
+  id: 'spawn-1',
+  role: 'user',
+  content:
+    'Research the best approach for rendering Mermaid diagrams entirely inside one self-contained HTML file. Compare CDN integration with vendoring and recommend a practical implementation with caveats.',
+  spawn: true,
   createdAt: Date.now(),
 }
 
@@ -64,6 +79,89 @@ const assistantThinking: AssistantMessage = {
   createdAt: Date.now(),
 }
 
+const triggerFiredCall: SystemMessage = {
+  id: 's_trig1',
+  role: 'system',
+  kind: 'trigger-fired',
+  tone: 'info',
+  content: 'orders watch · called example::check_completion',
+  trigger: {
+    subscription_id: 'sub_00000000000000000000000000000001',
+    trigger_id: '00000000-0000-4000-8000-000000000001',
+    target: 'example::check_completion',
+    label: 'orders watch',
+    action: 'order record changed',
+    once: false,
+    retired: false,
+    fired_at: 1785948999879,
+    payload: {
+      event: {
+        db: 'primary',
+        table: 'orders',
+        op: 'update',
+        affected_rows: 1,
+        at: 1785948999879,
+      },
+    },
+  },
+  createdAt: 1785948999879,
+}
+
+const triggerFiredOnce: SystemMessage = {
+  id: 'e_trigfired_sub_story_1',
+  role: 'system',
+  kind: 'trigger-fired',
+  tone: 'info',
+  content: 'daily report · notified this chat · once consumed',
+  trigger: {
+    subscription_id: 'sub_story',
+    trigger_id: 'trigger-story',
+    trigger_type: 'cron',
+    config: { expression: '0 30 9 * * *' },
+    target: 'harness::send',
+    label: 'daily report',
+    action: 'daily report became ready',
+    once: true,
+    retired: true,
+    fires: 1,
+    fired_at: 1_785_948_999_879,
+    outcome: 'delivered',
+    retirement_reason: 'once_consumed',
+  },
+  createdAt: 1_785_948_999_879,
+}
+
+const triggerNotification: UserMessage = {
+  id: 'e_fire_sub_story_1',
+  role: 'user',
+  content: '[notification] daily report: {"report_id":"rpt-42","rows":128}',
+  notification: true,
+  triggerBindingId: 'sub_story',
+  createdAt: 1_785_948_999_879,
+}
+
+const triggerManuallyRemoved: SystemMessage = {
+  id: 'e_trigexpired_sub_manual',
+  role: 'system',
+  kind: 'trigger-fired',
+  tone: 'info',
+  content: 'orders watch · binding manually removed',
+  trigger: {
+    subscription_id: 'sub_manual',
+    trigger_type: 'database::row-changed',
+    config: { database: 'primary', table: 'orders' },
+    target: 'orders::reindex',
+    label: 'orders watch',
+    once: false,
+    retired: true,
+    fires: 4,
+    fired_at: 1_785_949_099_879,
+    outcome: 'unregistered',
+    retirement_reason: 'unregistered',
+  },
+  createdAt: 1_785_949_099_879,
+}
+
 const meta = {
   title: 'Chat/Message',
   component: Message,
@@ -83,6 +181,18 @@ export const UserWithAttachments: Story = {
   args: { message: userWithAttachments },
 }
 
+export const SpawnTask: Story = {
+  name: 'spawn, sub-agent task',
+  args: {
+    message: spawnTask,
+    spawnContext: {
+      title: 'Researcher',
+      model: 'codex/gpt-5.6-luna',
+      appearance: { name: 'Researcher', icon: 'search', color: 'purple' },
+    },
+  },
+}
+
 export const AssistantComplete: Story = {
   name: 'assistant, complete',
   args: { message: assistantComplete },
@@ -96,4 +206,33 @@ export const AssistantStreaming: Story = {
 export const AssistantThinking: Story = {
   name: 'assistant, thinking (no content yet)',
   args: { message: assistantThinking },
+}
+
+export const TriggerFiredWithPayload: Story = {
+  name: 'system, trigger fired · ƒ-call with payload',
+  args: { message: triggerFiredCall },
+}
+
+export const TriggerFiredOnceConsumed: Story = {
+  name: 'system, trigger fired · once consumed',
+  args: {
+    message: triggerFiredOnce,
+    triggerNotification,
+    registration: registrationFromCall({
+      id: 'register-story',
+      subscriptionId: 'sub_story',
+      effectiveOnce: true,
+      input: {
+        trigger_type: 'cron',
+        config: { expression: '0 30 9 * * *' },
+        label: 'daily report',
+        metadata: { action: 'daily report became ready' },
+      },
+    }),
+  },
+}
+
+export const TriggerBindingManuallyRemoved: Story = {
+  name: 'system, trigger binding · manually removed',
+  args: { message: triggerManuallyRemoved },
 }

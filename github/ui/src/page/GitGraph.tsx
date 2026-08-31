@@ -8,8 +8,15 @@
  * Live: it binds a tab-scoped subscription to the worker's `github::called`
  * trigger (the same idiom the activity feed uses) and re-fetches the DAG,
  * debounced, whenever a github call lands — plus a manual refresh and a
- * live/paused toggle. Selecting a row opens a detail panel that runs
- * `git show <hash>` and renders it with the shared diff renderer.
+ * live/paused toggle in the view's toolbar. Selecting a row opens a detail
+ * panel that runs `git show <hash>` and renders it with the shared diff
+ * renderer.
+ *
+ * Layout adapts to the width the view HAS (useContainerNarrow — a
+ * ResizeObserver on its own root, never a viewport media query). Wide: the
+ * graph fills the workspace and the commit detail docks under it. Narrow:
+ * rows grow to touch size, the author column drops, and selecting a commit
+ * drills into a full-pane detail with a ← back button.
  *
  * v1 is local-only (the shell worker's default working dir). `enrichWithGithub`
  * is the typed seam for a v2 github PR/CI overlay — a no-op today.
@@ -18,18 +25,31 @@
 import {
   Badge,
   Button,
-  EmptyState,
   ErrorBoundary,
   type Host,
-  Skeleton,
   StatusDot,
   StatusPanel,
 } from '@iii-dev/console-ui'
-import { type KeyboardEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  type KeyboardEvent,
+  type MutableRefObject,
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { useGithubCalled } from './events'
 import { formatRelative } from './format'
-import { type Commit, type GraphEdge, type GraphLayout, layout } from './graph-layout'
-import { AlertCircle, FolderGit2, RefreshCw } from './icons'
+import {
+  type Commit,
+  type GraphEdge,
+  type GraphLayout,
+  layout,
+} from './graph-layout'
+import { AlertCircle, ChevronLeft, FolderGit2, RefreshCw } from './icons'
+import { NARROW_BELOW, useContainerNarrow } from './narrow'
 import { ResultView } from './result-views'
 
 /** Per-tab handler id for the graph's live refresh — distinct from the activity
@@ -43,8 +63,10 @@ const US = '\u001f'
 /** Coalesce a burst of github calls into one refetch. */
 const REFRESH_DEBOUNCE_MS = 500
 
-/* geometry (px) */
+/* geometry (px) — row height doubles as the touch target, so narrow rows
+ * grow; the SVG gutter shares the same numbers to stay row-aligned */
 const ROW_H = 26
+const ROW_H_NARROW = 40
 const COL_W = 16
 const NODE_R = 4.5
 const PAD_X = 12
@@ -81,7 +103,9 @@ function parseLog(stdout: string): Commit[] {
     const subject = parts.slice(5).join(US)
     out.push({
       hash,
-      parents: parentField.trim() ? parentField.trim().split(' ').filter(Boolean) : [],
+      parents: parentField.trim()
+        ? parentField.trim().split(' ').filter(Boolean)
+        : [],
       refs: parseRefs(refField),
       author,
       time: Number(timeField) || 0,
@@ -176,7 +200,12 @@ function useGitGraph(host: Host) {
     try {
       const res = await host.iii.trigger<ExecResponse>('shell::exec', {
         command: 'git',
-        args: ['log', '--all', '--format=%H%x1f%P%x1f%D%x1f%an%x1f%ct%x1f%s', `--max-count=${MAX_COMMITS}`],
+        args: [
+          'log',
+          '--all',
+          '--format=%H%x1f%P%x1f%D%x1f%an%x1f%ct%x1f%s',
+          `--max-count=${MAX_COMMITS}`,
+        ],
       })
       if (res.exit_code !== 0) {
         setStatus('error')
@@ -208,41 +237,99 @@ function useGitGraph(host: Host) {
     timer.current = setTimeout(() => void fetchDag(), REFRESH_DEBOUNCE_MS)
   })
 
-  return { commits, status, error, live, setLive, refreshing, refresh: fetchDag }
+  return {
+    commits,
+    status,
+    error,
+    live,
+    setLive,
+    refreshing,
+    refresh: fetchDag,
+  }
 }
 
-export function GitGraph({ host }: { host: Host }) {
-  const { commits, status, error, live, setLive, refreshing, refresh } = useGitGraph(host)
+export function GitGraph({
+  host,
+  liveRef,
+  refreshRef,
+  closeDetailRef,
+}: {
+  host: Host
+  liveRef?: MutableRefObject<(() => void) | null>
+  refreshRef?: MutableRefObject<(() => void) | null>
+  closeDetailRef?: MutableRefObject<(() => void) | null>
+}) {
+  const { commits, status, error, live, setLive, refreshing, refresh } =
+    useGitGraph(host)
   const [selected, setSelected] = useState<string | null>(null)
+  const [rootRef, narrow] = useContainerNarrow(NARROW_BELOW)
   const graph = useMemo(() => layout(commits), [commits])
+  const rowH = narrow ? ROW_H_NARROW : ROW_H
+
+  // Narrow: one pane at a time — the graph, or the drilled-in commit detail.
+  const showGraph = !narrow || selected === null
+
+  useEffect(() => {
+    if (!liveRef) return
+    liveRef.current = () => setLive((v) => !v)
+    return () => {
+      liveRef.current = null
+    }
+  }, [liveRef, setLive])
+
+  useEffect(() => {
+    if (!refreshRef) return
+    refreshRef.current = () => void refresh()
+    return () => {
+      refreshRef.current = null
+    }
+  }, [refreshRef, refresh])
+
+  useEffect(() => {
+    if (!closeDetailRef) return
+    closeDetailRef.current = selected !== null ? () => setSelected(null) : null
+    return () => {
+      closeDetailRef.current = null
+    }
+  }, [closeDetailRef, selected])
 
   return (
-    <div className="gh-graph-page">
-      <div className="gh-head">
-        <div>
-          <div className="gh-title">git graph</div>
-          <div className="gh-sub">
-            {status === 'ready'
-              ? `${commits.length} commit${commits.length === 1 ? '' : 's'} across all refs`
-              : status === 'error'
-                ? 'could not read the repository'
-                : 'reading the working repository'}
-          </div>
-        </div>
-        <div className="gh-head-actions">
-          <Button variant="ghost" size="sm" aria-pressed={live} onClick={() => setLive((v) => !v)}>
-            <StatusDot tone={live ? 'accent' : 'warn'} pulse={live} aria-hidden />
-            {live ? 'live' : 'paused'}
-          </Button>
-          <Button variant="ghost" size="sm" disabled={refreshing} onClick={() => void refresh()}>
-            <RefreshCw size={13} aria-hidden />
-            refresh
-          </Button>
-        </div>
+    <div
+      className={`gh-ui-view gh-ui-graph${narrow ? ' narrow' : ''}`}
+      ref={rootRef}
+    >
+      <div className="gh-ui-toolbar">
+        <span className="gh-ui-toolbar-note">
+          {status === 'ready'
+            ? `${commits.length} commit${commits.length === 1 ? '' : 's'} across all refs`
+            : status === 'error'
+              ? 'could not read the repository'
+              : 'reading the working repository'}
+        </span>
+        <span className="spacer" />
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-pressed={live}
+          onClick={() => setLive((v) => !v)}
+          data-autofocus=""
+        >
+          <StatusDot tone={live ? 'accent' : 'warn'} pulse={live} aria-hidden />
+          {live ? 'live' : 'paused'}
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={refreshing}
+          onClick={() => void refresh()}
+        >
+          <RefreshCw size={16} aria-hidden />
+          refresh
+        </Button>
       </div>
 
       {status === 'error' ? (
-        <div className="gh-graph-body">
+        <div className="gh-ui-fill">
           <StatusPanel
             variant="alert"
             icon={<AlertCircle size={16} aria-hidden />}
@@ -251,68 +338,94 @@ export function GitGraph({ host }: { host: Host }) {
           />
         </div>
       ) : status === 'loading' && commits.length === 0 ? (
-        <div className="gh-graph-body gh-graph-skeleton">
-          {Array.from({ length: 8 }, (_, i) => (
-            <Skeleton key={i} style={{ height: `${ROW_H - 8}px`, width: '100%' }} />
-          ))}
+        <div className="gh-ui-skel" aria-hidden>
+          <span className="bar w40" />
+          <span className="bar w90" />
+          <span className="bar w75" />
+          <span className="bar w85" />
+          <span className="bar w60" />
+          <span className="bar w30" />
         </div>
       ) : commits.length === 0 ? (
-        <EmptyState
-          icon={GitGraphIcon}
-          title="no commits yet"
-          description="this repository has no history to graph — the graph refreshes automatically as commits land."
-        />
+        <div className="gh-ui-hero">
+          <FolderGit2 className="gh-ui-hero-icon" />
+          <h2 className="gh-ui-hero-title">No commits yet</h2>
+          <p className="gh-ui-hero-body">
+            This repository has no history to graph — the graph refreshes
+            automatically as commits land.
+          </p>
+        </div>
       ) : (
-        <div className="gh-graph-split">
-          <GraphCanvas graph={graph} selected={selected} onSelect={setSelected} />
-          {selected ? <CommitDetail host={host} hash={selected} onClose={() => setSelected(null)} /> : null}
+        <div className="gh-ui-graph-split">
+          {showGraph ? (
+            <GraphCanvas
+              graph={graph}
+              rowH={rowH}
+              selected={selected}
+              onSelect={setSelected}
+            />
+          ) : null}
+          {selected ? (
+            <CommitDetail
+              host={host}
+              hash={selected}
+              narrow={narrow}
+              onClose={() => setSelected(null)}
+            />
+          ) : null}
         </div>
       )}
     </div>
   )
 }
 
-const GitGraphIcon = (p: { className?: string }) => <FolderGit2 size={28} {...p} />
-
 /* ── the SVG gutter + aligned commit rows ────────────────────────────────── */
 
 function GraphCanvas({
   graph,
+  rowH,
   selected,
   onSelect,
 }: {
   graph: GraphLayout
+  rowH: number
   selected: string | null
   onSelect: (hash: string) => void
 }) {
   const gutter = PAD_X + Math.max(1, graph.columns) * COL_W
-  const height = graph.rows.length * ROW_H
+  const height = graph.rows.length * rowH
   const x = (col: number) => PAD_X + col * COL_W
-  const y = (row: number) => row * ROW_H + ROW_H / 2
+  const y = (row: number) => row * rowH + rowH / 2
 
-  // The lane edges depend only on the layout, never on selection — memoize them
-  // so selecting a row doesn't rebuild every `<path>`.
+  // The lane edges depend only on the layout and row height, never on
+  // selection — memoize them so selecting a row doesn't rebuild every <path>.
   const edges = useMemo(
     () =>
       graph.edges.map((e, i) => (
         <path
           key={i}
-          className={`gh-lane-c${e.color}`}
-          d={edgePath(e, x, y)}
+          className={`gh-ui-lane-c${e.color}`}
+          d={edgePath(e, x, y, rowH)}
           fill="none"
           stroke="currentColor"
           strokeWidth={1.5}
         />
       )),
-    [graph],
+    [graph, rowH],
   )
 
   return (
-    <div className="gh-graph-scroll">
-      <svg className="gh-graph-svg" width={gutter} height={height} viewBox={`0 0 ${gutter} ${height}`} aria-hidden>
+    <div className="gh-ui-graph-scroll">
+      <svg
+        className="gh-ui-graph-svg"
+        width={gutter}
+        height={height}
+        viewBox={`0 0 ${gutter} ${height}`}
+        aria-hidden
+      >
         {edges}
         {graph.rows.map((r) => (
-          <g key={r.commit.hash} className={`gh-lane-c${r.color}`}>
+          <g key={r.commit.hash} className={`gh-ui-lane-c${r.color}`}>
             {r.isRefTip ? (
               <circle
                 cx={x(r.column)}
@@ -328,18 +441,21 @@ function GraphCanvas({
               cy={y(r.row)}
               r={NODE_R}
               fill="currentColor"
-              className={selected === r.commit.hash ? 'gh-node-selected' : undefined}
+              className={
+                selected === r.commit.hash ? 'gh-ui-node-selected' : undefined
+              }
             />
           </g>
         ))}
       </svg>
 
-      <div className="gh-graph-rows">
+      <div className="gh-ui-graph-rows">
         {graph.rows.map((r) => (
           <CommitRow
             key={r.commit.hash}
             commit={r.commit}
             gutter={gutter}
+            rowH={rowH}
             selected={selected === r.commit.hash}
             onSelect={onSelect}
           />
@@ -349,13 +465,18 @@ function GraphCanvas({
   )
 }
 
-function edgePath(e: GraphEdge, x: (c: number) => number, y: (r: number) => number): string {
+function edgePath(
+  e: GraphEdge,
+  x: (c: number) => number,
+  y: (r: number) => number,
+  rowH: number,
+): string {
   const x0 = x(e.fromColumn)
   const y0 = y(e.fromRow)
   const x1 = x(e.toColumn)
   const y1 = y(e.toRow)
   if (e.fromColumn === e.toColumn) return `M ${x0} ${y0} L ${x1} ${y1}`
-  const t = Math.min(ROW_H, y1 - y0)
+  const t = Math.min(rowH, y1 - y0)
   if (e.reused) {
     // rejoin: straight down the child's lane, curve into the parent at the bottom
     const yb = y1 - t
@@ -369,25 +490,38 @@ function edgePath(e: GraphEdge, x: (c: number) => number, y: (r: number) => numb
 const CommitRow = memo(function CommitRow({
   commit,
   gutter,
+  rowH,
   selected,
   onSelect,
 }: {
   commit: Commit
   gutter: number
+  rowH: number
   selected: boolean
   onSelect: (hash: string) => void
 }) {
   const labels = refLabels(commit.refs)
-  const onKeyDown = (e: KeyboardEvent) => {
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault()
       onSelect(commit.hash)
+      return
+    }
+    // Rows are flat siblings in `.gh-ui-graph-rows`, so up/down just walks
+    // the DOM — cheaper than tracking an index for up to MAX_COMMITS rows.
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault()
+      const sibling =
+        e.key === 'ArrowDown'
+          ? e.currentTarget.nextElementSibling
+          : e.currentTarget.previousElementSibling
+      if (sibling instanceof HTMLElement) sibling.focus()
     }
   }
   return (
     <div
-      className={`gh-graph-row${selected ? ' selected' : ''}`}
-      style={{ height: `${ROW_H}px`, paddingLeft: `${gutter}px` }}
+      className={`gh-ui-graph-row${selected ? ' selected' : ''}`}
+      style={{ height: `${rowH}px`, paddingLeft: `${gutter}px` }}
       role="button"
       tabIndex={0}
       aria-pressed={selected}
@@ -395,19 +529,32 @@ const CommitRow = memo(function CommitRow({
       onKeyDown={onKeyDown}
     >
       {labels.length > 0 ? (
-        <span className="gh-graph-refs">
+        <span className="gh-ui-graph-refs">
           {labels.map((l, i) => (
-            <Badge key={i} variant={l.kind === 'head' ? 'accent' : l.kind === 'tag' ? 'warn' : 'default'}>
+            <Badge
+              key={i}
+              variant={
+                l.kind === 'head'
+                  ? 'accent'
+                  : l.kind === 'tag'
+                    ? 'warn'
+                    : 'default'
+              }
+            >
               {l.name}
             </Badge>
           ))}
         </span>
       ) : null}
-      <span className="gh-graph-subject">{commit.subject || '(no message)'}</span>
-      <span className="gh-graph-meta">
-        <span className="gh-graph-hash">{commit.hash.slice(0, 7)}</span>
-        <span className="gh-graph-author">{commit.author}</span>
-        <span className="gh-graph-time">{commit.time ? formatRelative(Date.now() / 1000 - commit.time) : ''}</span>
+      <span className="gh-ui-graph-subject">
+        {commit.subject || '(no message)'}
+      </span>
+      <span className="gh-ui-graph-meta">
+        <span className="gh-ui-graph-hash">{commit.hash.slice(0, 7)}</span>
+        <span className="gh-ui-graph-author">{commit.author}</span>
+        <span className="gh-ui-graph-time">
+          {commit.time ? formatRelative(Date.now() / 1000 - commit.time) : ''}
+        </span>
       </span>
     </div>
   )
@@ -415,7 +562,38 @@ const CommitRow = memo(function CommitRow({
 
 /* ── commit detail (git show → shared diff renderer) ─────────────────────── */
 
-function CommitDetail({ host, hash, onClose }: { host: Host; hash: string; onClose: () => void }) {
+/** Narrow-mode drill-out affordance in the detail's header. */
+function BackButton({
+  onClick,
+  label,
+}: {
+  onClick: () => void
+  label: string
+}) {
+  return (
+    <button
+      type="button"
+      className="gh-ui-back"
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+    >
+      <ChevronLeft className="gh-ui-back-icon" />
+    </button>
+  )
+}
+
+function CommitDetail({
+  host,
+  hash,
+  narrow,
+  onClose,
+}: {
+  host: Host
+  hash: string
+  narrow: boolean
+  onClose: () => void
+}) {
   const [text, setText] = useState<string>('')
   const [truncated, setTruncated] = useState(false)
   const [status, setStatus] = useState<Status>('loading')
@@ -451,20 +629,41 @@ function CommitDetail({ host, hash, onClose }: { host: Host; hash: string; onClo
   }, [host, hash])
 
   return (
-    <div className="gh-graph-detail">
-      <div className="gh-graph-detail-head">
-        <span className="gh-graph-hash">{hash.slice(0, 12)}</span>
-        <Button variant="ghost" size="sm" onClick={onClose} aria-label="close commit detail">
-          close
-        </Button>
+    <div className="gh-ui-detail">
+      <div className="gh-ui-detail-head">
+        {narrow ? (
+          <BackButton onClick={onClose} label="back to the graph" />
+        ) : null}
+        <span className="gh-ui-graph-hash">{hash.slice(0, 12)}</span>
+        <span className="spacer" />
+        {!narrow ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onClose}
+            aria-label="close commit detail"
+          >
+            close
+          </Button>
+        ) : null}
       </div>
-      <div className="gh-graph-detail-body">
+      <div className="gh-ui-detail-body">
         {status === 'loading' ? (
-          <Skeleton style={{ height: '120px', width: '100%' }} />
+          <div className="gh-ui-skel" aria-hidden>
+            <span className="bar w40" />
+            <span className="bar w90" />
+            <span className="bar w75" />
+          </div>
         ) : status === 'error' ? (
-          <div className="gh-rv-empty gh-rv-errtext">{error || 'could not load this commit'}</div>
+          <div className="gh-ui-rv-empty gh-ui-rv-errtext">
+            {error || 'could not load this commit'}
+          </div>
         ) : (
-          <ErrorBoundary fallback={() => <div className="gh-rv-empty">could not render this commit</div>}>
+          <ErrorBoundary
+            fallback={() => (
+              <div className="gh-ui-rv-empty">Could not render this commit</div>
+            )}
+          >
             <ResultView kind="diff" preview={{ diff: text, truncated }} ok />
           </ErrorBoundary>
         )}

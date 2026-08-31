@@ -5,6 +5,8 @@ import pathlib
 import sys
 from typing import Any
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import _lib  # noqa: E402
 
 def normalize_dependencies(raw_deps: Any) -> list[dict[str, Any]]:
     if raw_deps in (None, ""):
@@ -125,7 +127,7 @@ def _baseline_worker_identities(baseline_workers_json: dict[str, Any] | None) ->
 
 
 # Workers the engine itself hosts (enabled via the engine config, not
-# installed from the registry). A candidate install can flip one on mid-boot
+# installed from the registry). A target install can flip one on mid-boot
 # (e.g. harness enables `iii-stream` for console streaming), which lands it in
 # the workers-baseline diff even though its interface is not part of the
 # released worker's surface — and its schemas are not this repo's to fix.
@@ -145,7 +147,6 @@ def _resolve_target_worker_names(
     *,
     workers: list[dict[str, Any]],
     worker_name: str,
-    functions: list[dict[str, Any]],
     baseline_workers_json: dict[str, Any] | None,
 ) -> set[str]:
     """Return engine worker names whose bus functions belong in the publish payload."""
@@ -163,25 +164,9 @@ def _resolve_target_worker_names(
 
     worker = _match_worker(workers, worker_name)
     matched = _worker_identity(worker)
-
-    legacy_ids = worker.get("functions") or []
-    if isinstance(legacy_ids, list) and legacy_ids:
-        if matched:
-            return {matched}
+    if not matched:
         raise ValueError(f"matched worker for {worker_name!r} has no identity")
-
-    names_with_functions = {
-        name.strip()
-        for fn in functions
-        if isinstance((name := fn.get("worker_name")), str) and name.strip()
-    }
-    if matched and matched in names_with_functions:
-        return {matched}
-
-    raise ValueError(
-        f"no functions found for worker {worker_name!r} "
-        f"(matched identity={matched!r}, workers_with_functions={sorted(names_with_functions)!r})"
-    )
+    return {matched}
 
 
 def _function_ids_for_workers(
@@ -208,30 +193,13 @@ def _match_worker(workers: list[dict[str, Any]], worker_name: str) -> dict[str, 
     if len(by_name) == 1:
         return by_name[0]
 
-    namespaces = {worker_name, worker_name.replace("-", "_"), worker_name.replace("_", "-")}
-    by_namespace = [
-        w
-        for w in workers
-        if any(
-            isinstance(fid, str) and any(fid.startswith(f"{ns}::") for ns in namespaces)
-            for fid in (w.get("functions") or [])
-        )
-    ]
-    if len(by_namespace) == 1:
-        return by_namespace[0]
-
-    external = [w for w in workers if w.get("internal") is not True]
-    if len(external) == 1:
-        return external[0]
-
     summary = [
         {"id": w.get("id"), "name": w.get("name"), "internal": w.get("internal")}
         for w in workers
     ]
     raise ValueError(
-        f"could not match worker {worker_name!r}: "
-        f"{len(by_name)} by name/id, {len(by_namespace)} by namespaces {sorted(namespaces)!r}, "
-        f"{len(external)} non-internal workers, workers={summary}"
+        f"could not match worker {worker_name!r} exactly: "
+        f"{len(by_name)} by name/id, workers={summary}"
     )
 
 
@@ -243,16 +211,11 @@ def _normalize_registry_trigger_type(trigger_type: dict[str, Any]) -> dict[str, 
     # rows carry neither — they must be enriched from `::info` first (see
     # collect_worker_interface.enrich_trigger_types_with_schemas) or these
     # collapse to the empty `{}` that renders as 'unknown' in the registry.
-    # Fall back to the pre-rename engine keys for any older caller shape.
     return {
         "name": _string_or_empty(trigger_type.get("id")),
         "description": _string_or_empty(trigger_type.get("description")),
-        "invocation_schema": _schema_or_empty(
-            trigger_type.get("configuration_schema", trigger_type.get("trigger_request_format"))
-        ),
-        "return_schema": _schema_or_empty(
-            trigger_type.get("request_schema", trigger_type.get("call_request_format"))
-        ),
+        "invocation_schema": _schema_or_empty(trigger_type.get("configuration_schema")),
+        "return_schema": _schema_or_empty(trigger_type.get("request_schema")),
         "metadata": {},
     }
 
@@ -268,20 +231,13 @@ def normalize_worker_interface(
 ) -> dict[str, list[dict[str, Any]]]:
     workers = _extract_array(workers_json, "workers")
     all_functions = _extract_array(functions_json, "functions")
-
     target_worker_names = _resolve_target_worker_names(
         workers=workers,
         worker_name=worker_name,
-        functions=all_functions,
         baseline_workers_json=baseline_workers_json,
     )
 
     worker_function_ids = _function_ids_for_workers(all_functions, target_worker_names)
-    if not worker_function_ids:
-        legacy_worker = _match_worker(workers, worker_name)
-        legacy_ids = legacy_worker.get("functions") or []
-        if isinstance(legacy_ids, list) and legacy_ids:
-            worker_function_ids = [str(fid) for fid in legacy_ids if fid]
 
     functions_by_id = {
         f.get("function_id"): f for f in all_functions if f.get("function_id")
@@ -302,17 +258,8 @@ def normalize_worker_interface(
             {
                 "name": derive_registry_function_name(function_id, metadata),
                 "description": _string_or_empty(details.get("description")),
-                # `engine::functions::info` surfaces the typed schemas under
-                # `request_schema`/`response_schema`; `engine::functions::list`
-                # rows carry neither (and the legacy `request_format` key never
-                # existed on the engine output). Prefer the info-API names and
-                # fall back to `request_format` for any older caller shape.
-                "request_schema": _schema_or_empty(
-                    details.get("request_schema", details.get("request_format"))
-                ),
-                "response_schema": _schema_or_empty(
-                    details.get("response_schema", details.get("response_format"))
-                ),
+                "request_schema": _schema_or_empty(details.get("request_schema")),
+                "response_schema": _schema_or_empty(details.get("response_schema")),
                 "metadata": _metadata_or_empty(metadata),
             }
         )
@@ -338,44 +285,34 @@ def normalize_worker_interface(
 
 def build_payload(
     *,
-    repo_root: pathlib.Path,
-    worker: str,
-    version: str,
-    registry_tag: str,
-    deploy: str,
+    registry_projection: dict[str, Any],
+    published_version: str,
     repo_url: str,
     interface: dict[str, Any],
-    binaries: dict[str, Any],
-    image_tag: str,
-    bundle: dict[str, Any] | None = None,
-    experimental: bool = False,
+    artifacts: dict[str, Any],
+    readme: str | None = None,
 ) -> dict[str, Any]:
-    root = repo_root / worker
-    meta = _read_yaml(root / "iii.worker.yaml") or {}
-
-    readme_path = root / "README.md"
-    readme = readme_path.read_text(encoding="utf-8") if readme_path.exists() else ""
-
-    if "config" in meta and meta["config"] is not None:
-        config = meta["config"]
-    else:
-        config_path = root / "config.yaml"
-        config = _read_yaml(config_path) if config_path.exists() else {}
-    if config is None:
-        config = {}
-    if not isinstance(config, dict):
-        raise ValueError("worker config must be an object")
-
+    """Merge the immutable compiler projection with current Registry fields."""
+    required = {
+        "worker_name", "type", "description", "license", "tags",
+        "dependencies", "config", "experimental", "readme",
+    }
+    if not isinstance(registry_projection, dict) or set(registry_projection) != required:
+        raise ValueError("registry_projection differs from the current Registry metadata contract")
+    _lib.validate_deployment_target_version(published_version)
+    deploy = registry_projection["type"]
+    kind = artifacts.get("kind")
+    expected_kind = {
+        "binary": "rust-binary",
+        "bundle": {"javascript-bundle", "python-bundle"},
+        "image": "oci-image",
+    }.get(deploy)
+    if (kind not in expected_kind) if isinstance(expected_kind, set) else (kind != expected_kind):
+        raise ValueError("prepared artifacts differ from the public deploy type")
     payload: dict[str, Any] = {
-        "worker_name": worker,
-        "version": version,
-        "tag": registry_tag or "latest",
-        "type": deploy,
-        "readme": readme,
+        **registry_projection,
+        "version": published_version,
         "repo": repo_url,
-        "description": meta.get("description", ""),
-        "dependencies": normalize_dependencies(meta.get("dependencies")),
-        "config": config,
         "functions": [
             _normalize_registry_function(function)
             for function in interface.get("functions") or []
@@ -384,87 +321,51 @@ def build_payload(
             _normalize_registry_trigger(trigger)
             for trigger in interface.get("triggers") or []
         ],
-        # Always sent, never omitted: the registry treats a missing flag as
-        # "not experimental" and clears the badge, so leaving it out on a
-        # still-experimental release would silently promote the worker. The
-        # registry rejects a string here, hence the explicit bool.
-        "experimental": bool(experimental),
     }
-
-    tags = normalize_tags(meta.get("tags"))
-    if tags:
-        payload["tags"] = tags
-
     if deploy == "binary":
-        if not binaries:
-            raise ValueError("deploy=binary requires non-empty binaries")
+        binaries = artifacts.get("binaries")
+        if not isinstance(binaries, dict) or not binaries:
+            raise ValueError("binary publication requires prepared binaries")
         payload["binaries"] = binaries
-    elif deploy == "image":
-        if not image_tag:
-            raise ValueError("deploy=image requires image_tag")
-        payload["image_tag"] = image_tag
     elif deploy == "bundle":
-        # `PublishRequestBundle` requires both `archive_url` and `sha256`.
-        # See tmp/openapi.yaml#PublishRequestBundle (lines 286-347).
-        if not bundle:
-            raise ValueError("deploy=bundle requires non-empty bundle artefact")
-        archive_url = bundle.get("archive_url")
-        sha256 = bundle.get("sha256")
-        if not isinstance(archive_url, str) or not archive_url:
-            raise ValueError("deploy=bundle requires bundle.archive_url")
-        if not isinstance(sha256, str) or not sha256:
-            raise ValueError("deploy=bundle requires bundle.sha256")
-        payload["archive_url"] = archive_url
-        payload["sha256"] = sha256
-    else:
-        raise ValueError(f"unsupported deploy={deploy}")
-
+        archive_url = artifacts.get("archive_url")
+        digest = artifacts.get("sha256")
+        if not isinstance(archive_url, str) or not archive_url or not isinstance(digest, str) or not digest:
+            raise ValueError("bundle publication requires archive_url and sha256")
+        payload.update(archive_url=archive_url, sha256=digest)
+    elif deploy == "image":
+        image_tag = artifacts.get("image_tag")
+        if not isinstance(image_tag, str) or "@sha256:" not in image_tag:
+            raise ValueError("image publication requires a digest-pinned image_tag")
+        payload["image_tag"] = image_tag
+    if readme is not None and readme != payload["readme"]:
+        raise ValueError("external readme differs from the compiled Registry projection")
     return payload
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--worker", required=True)
-    parser.add_argument("--version", required=True)
-    parser.add_argument("--registry-tag", default="latest")
-    parser.add_argument("--deploy", required=True, choices=["binary", "image", "bundle"])
+    parser.add_argument("--descriptor", required=True)
+    parser.add_argument("--published-version", required=True)
     parser.add_argument("--repo-url", required=True)
     parser.add_argument("--interface-json", required=True)
-    parser.add_argument("--binaries-json", default="")
-    parser.add_argument("--bundle-json", default="")
-    parser.add_argument("--image-tag", default="")
-    parser.add_argument("--repo-root", default=".")
+    parser.add_argument("--artifacts-json", required=True)
+    parser.add_argument("--readme")
     parser.add_argument("--out", default="payload.json")
-    # Workflow inputs arrive as strings; anything but a literal `true` is
-    # false, so a missing or malformed value publishes as stable rather than
-    # marking a worker experimental by accident.
-    parser.add_argument(
-        "--experimental",
-        default="false",
-        help="'true' marks the published worker experimental in the registry",
-    )
     args = parser.parse_args()
 
+    descriptor = json.loads(pathlib.Path(args.descriptor).read_text(encoding="utf-8"))
     interface = json.loads(pathlib.Path(args.interface_json).read_text(encoding="utf-8"))
-    binaries = {}
-    if args.binaries_json:
-        binaries = json.loads(pathlib.Path(args.binaries_json).read_text(encoding="utf-8"))
-    bundle: dict[str, Any] | None = None
-    if args.bundle_json:
-        bundle = json.loads(pathlib.Path(args.bundle_json).read_text(encoding="utf-8"))
+    artifacts = json.loads(pathlib.Path(args.artifacts_json).read_text(encoding="utf-8"))
+    readme = pathlib.Path(args.readme).read_text(encoding="utf-8") if args.readme else None
 
     payload = build_payload(
-        repo_root=pathlib.Path(args.repo_root),
-        worker=args.worker,
-        version=args.version,
-        registry_tag=args.registry_tag,
-        deploy=args.deploy,
+        registry_projection=descriptor["registry_projection"],
+        published_version=args.published_version,
         repo_url=args.repo_url,
         interface=interface,
-        binaries=binaries,
-        image_tag=args.image_tag,
-        bundle=bundle,
-        experimental=args.experimental.strip().lower() == "true",
+        artifacts=artifacts,
+        readme=readme,
     )
     pathlib.Path(args.out).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({k: v for k, v in payload.items() if k != "readme"}, indent=2))

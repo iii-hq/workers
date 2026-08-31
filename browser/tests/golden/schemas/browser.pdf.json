@@ -1,0 +1,75 @@
+{
+  "function_id": "browser::pdf",
+  "description": "Print the page to a PDF (the browser's Print -> Save as PDF) and return it base64 with a file name from the title.",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "PdfInput",
+    "type": "object",
+    "required": [
+      "session_id"
+    ],
+    "properties": {
+      "landscape": {
+        "description": "Landscape orientation. Default portrait.",
+        "default": null,
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "print_background": {
+        "description": "Print background colours and images. Default true (what the page looks like, not what a printer would save ink on).",
+        "default": null,
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "scale": {
+        "description": "Page scale, 0.1–2. Default 1.",
+        "default": null,
+        "type": [
+          "number",
+          "null"
+        ],
+        "format": "double"
+      },
+      "session_id": {
+        "type": "string"
+      }
+    }
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "PdfOutput",
+    "type": "object",
+    "required": [
+      "data",
+      "file_name",
+      "ok",
+      "size_bytes",
+      "url"
+    ],
+    "properties": {
+      "data": {
+        "description": "The PDF, base64.",
+        "type": "string"
+      },
+      "file_name": {
+        "description": "Suggested file name, from the page title.",
+        "type": "string"
+      },
+      "ok": {
+        "type": "boolean"
+      },
+      "size_bytes": {
+        "type": "integer",
+        "format": "uint64",
+        "minimum": 0.0
+      },
+      "url": {
+        "type": "string"
+      }
+    }
+  }
+}

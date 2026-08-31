@@ -28,7 +28,7 @@
               "$ref": "#/definitions/CaptureMode"
             }
           ],
-          "description": "How `database::row-changed` events are captured for this database. `statements` (default) classifies the SQL this worker executes; `native` makes writes from ANY client — psql, other processes — fire too. Postgres: triggers + LISTEN/NOTIFY. File-backed sqlite: triggers + changelog drained on filesystem wake-up. MySQL: the binlog replication stream (needs REPLICATION SLAVE + REPLICATION CLIENT)."
+          "description": "How `database::row-changed` events are captured for this database. `statements` (default) classifies the SQL this worker executes; `native` makes writes from ANY client — psql, other processes — fire too. Postgres: triggers + LISTEN/NOTIFY. File-backed sqlite: a trigger-fed changelog drained on filesystem wake-up. MySQL: the binlog replication stream (needs REPLICATION SLAVE + CLIENT)."
         },
         "pool": {
           "allOf": [
@@ -155,7 +155,9 @@
         },
         "url": "sqlite:./data/iii.db"
       }
-    }
+    },
+    "history_max_bytes": 262144,
+    "history_max_entries": 200
   },
   "examples": [
     {
@@ -173,7 +175,9 @@
           },
           "url": "sqlite:./data/iii.db"
         }
-      }
+      },
+      "history_max_bytes": 262144,
+      "history_max_entries": 200
     }
   ],
   "properties": {
@@ -197,6 +201,20 @@
       ],
       "minProperties": 1,
       "type": "object"
+    },
+    "history_max_bytes": {
+      "default": 262144,
+      "description": "Maximum JSON-serialized size in bytes of one database's stored query history; oldest entries are dropped until the list fits. The hard guard that keeps history from growing into a value large enough to break the `state` worker's connection. `0` disables history recording. Applied live.",
+      "format": "uint",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "history_max_entries": {
+      "default": 200,
+      "description": "Maximum entries kept per database in the console query history (`database::history`, stored on the `state` worker). Oldest entries are dropped first. `0` disables history recording. Applied live.",
+      "format": "uint",
+      "minimum": 0.0,
+      "type": "integer"
     }
   },
   "title": "WorkerConfig",

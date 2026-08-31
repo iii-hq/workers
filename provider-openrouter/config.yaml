@@ -1,0 +1,8 @@
+# provider-openrouter has no file-based configuration.
+#
+# Credentials, `api_url`, and `max_tokens` arrive per request from
+# llm-router's resolve step; the provider block lives in the engine's
+# `llm-router` configuration entry (README § Configuration).
+#
+# This file exists to satisfy the standard worker layout
+# (docs/sops/new-worker.md §2). Keys placed here are ignored with a warning.

@@ -7,12 +7,14 @@
 //! function calls, and repeat until the turn stops — as durable enqueued steps
 //! so a crash resumes mid-turn.
 
+pub mod agents;
 pub mod bindings;
 pub mod budget;
 pub mod clients;
 pub mod conditions;
 pub mod config;
 pub mod configuration;
+pub mod context_snapshot;
 pub mod contract;
 pub mod deferred;
 pub mod deps;
@@ -29,6 +31,7 @@ pub mod manifest;
 pub mod policy;
 pub mod prompt;
 pub mod queue;
+pub mod skills;
 pub mod state;
 pub mod subagent;
 pub mod subscriptions;

@@ -82,9 +82,9 @@ export function FlipMenu<T extends MenuOption>({
   return (
     <div
       ref={menuRef}
-      className="border border-rule bg-bg w-[300px] max-h-[280px] overflow-y-auto shadow-none"
+      className="rounded-md bg-panel-raised w-[300px] max-h-[280px] overflow-y-auto shadow-floating"
     >
-      <div className="px-3 py-1.5 border-b border-rule-2 bg-panel font-mono text-[11px] uppercase tracking-[0.18em] text-ink-faint">
+      <div className="px-3 py-1.5 bg-paper-2 font-mono text-[11px] uppercase tracking-[0.18em] text-ink-faint">
         {header}
       </div>
       {/* div+role over ul/li because keyboard navigation is driven by Lexical's
@@ -109,9 +109,7 @@ export function FlipMenu<T extends MenuOption>({
               }}
               className={cn(
                 'flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors',
-                active
-                  ? 'bg-panel border-l-2 border-l-accent pl-[10px]'
-                  : 'border-l-2 border-l-transparent hover:bg-paper-2',
+                active ? 'bg-surface-selected' : 'hover:bg-surface-hover',
               )}
             >
               {renderOption(opt)}

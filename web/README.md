@@ -11,8 +11,12 @@ The worker is a faithful Rust port of the original TypeScript `web::fetch`
 implementation — same request fields and success/error/image envelopes, so
 existing callers and the harness consumer are unaffected.
 
-While connected it also injects a usage section into the agent system prompt
-via the harness `pre-generate` hook (`web::inject-guidance`), so the guidance
+While connected (and unless turned off) it also injects a usage section into
+the agent system prompt via the harness `pre-generate` hook
+(`web::inject-guidance`). `inject_guidance` in the `web` configuration entry
+is ON by default; turning it off (the console's config dialog, or
+`configuration::set`) hot-applies with no restart, and the harness's
+`# Granted functions` catalog still advertises `web::fetch`. The guidance
 is presence-gated: no web worker, no prompt text. The binding is one-shot at
 startup and relies on the engine's recoverable triggers (iii #1962, engine ≥
 0.21.8): bound before the harness is up, it parks as a pending intent and
@@ -34,12 +38,11 @@ bind is silently dropped.
 ## Install
 
 ```bash
-iii worker add web
+iii trigger compose::add worker=web
 ```
 
-`iii worker add` fetches the binary (`web`), writes a config block into
-`~/.iii/config.yaml`, and the engine starts the worker the next time it
-boots.
+`iii trigger compose::add` resolves the worker and its dependencies, writes
+exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 
 ---
 
@@ -212,7 +215,7 @@ cargo fmt --check            # formatting
 ```
 
 The agent-facing authoring guide lives in
-[`skills/index.md`](./skills/index.md) (served at runtime via
+[`skills/SKILL.md`](./skills/SKILL.md) (served at runtime via
 `directory::skills::get`). For the exact, authoritative field types, call
 `engine::functions::info { function_id: "web::fetch" }` — the live schema
 wins if it ever disagrees with this document.

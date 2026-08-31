@@ -1,13 +1,11 @@
 //! Every shipped identity prompt must describe the surface the harness
 //! actually serves.
 //!
-//! An agent sees `harness/prompts/default.txt` unless the operator enables
-//! provider prompts (`provider_identity_prompt: true`, served via
-//! `router::system_prompt::get`). When `harness::react`
-//! was removed, the fallback was rewritten and all eight provider prompts were
-//! not — so every agent kept being told to bind a function that no longer
-//! existed. A test that reads only the harness's own copy cannot catch that,
-//! so this one walks the whole repo.
+//! Every agent — top-level and spawned children alike — sees
+//! `harness/prompts/default.txt` unless it runs as a directory agent profile,
+//! whose resolved prompt replaces it; the separate sub-agent identity is
+//! retired (children differ by policy, enrich layers or profile, never by
+//! embedded prompt).
 
 use std::path::{Path, PathBuf};
 
@@ -32,31 +30,9 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// Every `*/prompts/*.txt` in the repo — the harness's own two plus each
-/// provider's identity prompt.
+/// The single prompt file that the harness owns and sends to agents.
 fn shipped_prompts() -> Vec<PathBuf> {
-    let mut found = Vec::new();
-    let root = repo_root();
-    let Ok(workers) = std::fs::read_dir(&root) else {
-        return found;
-    };
-    for worker in workers.flatten() {
-        let prompts = worker.path().join("prompts");
-        if !prompts.is_dir() {
-            continue;
-        }
-        let Ok(entries) = std::fs::read_dir(&prompts) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().is_some_and(|e| e == "txt") {
-                found.push(path);
-            }
-        }
-    }
-    found.sort();
-    found
+    vec![repo_root().join("harness/prompts/default.txt")]
 }
 
 fn label(path: &Path) -> String {
@@ -67,21 +43,33 @@ fn label(path: &Path) -> String {
 }
 
 #[test]
-fn the_sweep_actually_finds_the_shipped_prompts() {
-    // A silent zero-file walk would make every assertion below vacuous.
+fn harness_owns_the_only_shipped_prompts() {
     let prompts = shipped_prompts();
+    assert!(prompts.iter().all(|path| path.is_file()));
+
+    // The separate sub-agent identity is retired: one prompt for every agent.
+    let retired = repo_root().join("harness/prompts/subagent.txt");
     assert!(
-        prompts.len() >= 8,
-        "expected the harness prompts plus one identity prompt per provider, found {}: {:?}",
-        prompts.len(),
-        prompts.iter().map(|p| label(p)).collect::<Vec<_>>()
+        !retired.exists(),
+        "the sub-agent prompt must stay removed: {}",
+        label(&retired)
     );
-    assert!(prompts
-        .iter()
-        .any(|p| label(p).ends_with("harness/prompts/default.txt")));
-    assert!(prompts
-        .iter()
-        .any(|p| label(p).contains("provider-anthropic")));
+
+    let provider_prompts: Vec<PathBuf> = std::fs::read_dir(repo_root())
+        .expect("repo root is readable")
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("provider-"))
+        .map(|entry| entry.path().join("prompts/identity.txt"))
+        .filter(|path| path.is_file())
+        .collect();
+    assert!(
+        provider_prompts.is_empty(),
+        "provider identity prompts must stay removed: {:?}",
+        provider_prompts
+            .iter()
+            .map(|path| label(path))
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -120,9 +108,8 @@ fn no_shipped_prompt_preempts_worker_discovery() {
     );
 }
 
-/// Identity prompts only: the file a top-level agent is booted with. Other
-/// workers ship prompts for their own purposes (a Slack channel preamble, a
-/// summarizer) and owe the binding contract nothing.
+/// The top-level identity prompt teaches the orchestration surface. The
+/// sub-agent prompt intentionally omits it because children are leaves.
 fn is_identity_prompt(path: &Path) -> bool {
     matches!(
         path.file_name().and_then(|n| n.to_str()),
@@ -142,6 +129,7 @@ fn every_identity_prompt_teaches_the_live_surface() {
     {
         let name = label(&path);
         let body = std::fs::read_to_string(&path).expect("prompt is readable");
+        let normalized = body.replace('\n', " ");
         assert!(
             body.contains("engine::register_trigger"),
             "{name} never mentions the callback primitive"
@@ -151,8 +139,40 @@ fn every_identity_prompt_teaches_the_live_surface() {
             "{name} never mentions how to start a sub-agent"
         );
         assert!(
+            body.contains("display: { name, icon?, color? }"),
+            "{name} never teaches the sub-agent display identity"
+        );
+        assert!(
+            normalized.contains("user-visible identity, not its technical id"),
+            "{name} conflates a child's display identity with its session id"
+        );
+        assert!(
             body.contains("orchestrator: true"),
             "{name} never mentions the leaf default's escape hatch"
+        );
+        assert!(
+            normalized.contains("materially new investigative or action phase"),
+            "{name} never asks for a user-visible update when a new phase starts"
+        );
+        assert!(
+            normalized.contains("One update may cover any number of related function calls"),
+            "{name} asks for progress without allowing one update to cover a call batch"
+        );
+        assert!(
+            normalized.contains("lead with its concrete result"),
+            "{name} never asks an update to report the preceding phase's result"
+        );
+        assert!(
+            normalized.contains("summary of that whole batch"),
+            "{name} does not connect the progress result to the completed call batch"
+        );
+        assert!(
+            normalized.contains("still needs its concise `description`"),
+            "{name} does not preserve the per-call activity description"
+        );
+        assert!(
+            normalized.contains("For the ordinary text contract, use normal assistant text"),
+            "{name} does not preserve the final answer after progress updates"
         );
         assert!(
             !body.contains(r#"function_id: "harness::spawn""#),

@@ -12,7 +12,7 @@ use iii_sdk::{IIIClient, TriggerAction};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::clients::router::{ChatParams, StreamSink};
+use crate::clients::router::{ChatError, ChatParams, StreamSink};
 use crate::clients::{LoadedEntry, SessionClient};
 use crate::deps::Deps;
 use crate::error::HarnessError;
@@ -29,34 +29,54 @@ use crate::types::turn::{
 };
 
 #[derive(Clone, Copy)]
-struct FailureInfo {
-    code: &'static str,
+struct FailureInfo<'a> {
+    code: &'a str,
     phase: &'static str,
     retryable: bool,
+    kind: Option<ErrorKind>,
+    detail: Option<&'a str>,
+    provider: Option<&'a str>,
+    model: Option<&'a str>,
 }
 
-const INTERNAL_FAILURE: FailureInfo = FailureInfo {
+const INTERNAL_FAILURE: FailureInfo<'static> = FailureInfo {
     code: "harness.turn_internal",
     phase: "execution",
     retryable: false,
+    kind: None,
+    detail: None,
+    provider: None,
+    model: None,
 };
 
-const CONTEXT_OVERFLOW_FAILURE: FailureInfo = FailureInfo {
+const CONTEXT_OVERFLOW_FAILURE: FailureInfo<'static> = FailureInfo {
     code: "harness.context_overflow",
     phase: "context_assembly",
     retryable: false,
+    kind: None,
+    detail: None,
+    provider: None,
+    model: None,
 };
 
-const BUDGET_EXCEEDED_FAILURE: FailureInfo = FailureInfo {
+const BUDGET_EXCEEDED_FAILURE: FailureInfo<'static> = FailureInfo {
     code: "harness.budget_exceeded",
     phase: "budget_preflight",
     retryable: false,
+    kind: None,
+    detail: None,
+    provider: None,
+    model: None,
 };
 
-const BUDGET_UNAVAILABLE_FAILURE: FailureInfo = FailureInfo {
+const BUDGET_UNAVAILABLE_FAILURE: FailureInfo<'static> = FailureInfo {
     code: "harness.budget_unavailable",
     phase: "budget_preflight",
     retryable: false,
+    kind: None,
+    detail: None,
+    provider: None,
+    model: None,
 };
 
 /// Provider adapters add framing outside the fields visible to the harness.
@@ -208,11 +228,168 @@ fn cancel_requested(
     local_abort || durable_abort || stop_reason == crate::types::event::StopReason::Aborted
 }
 
+#[async_trait]
+trait SkillCorrectionStore {
+    async fn append_correction(
+        &self,
+        session_id: &str,
+        entry_id: &str,
+        message: &str,
+    ) -> Result<(), HarnessError>;
+
+    async fn replace_correction(
+        &self,
+        session_id: &str,
+        entry_id: &str,
+        message: &str,
+    ) -> Result<(), HarnessError>;
+}
+
+#[async_trait]
+impl SkillCorrectionStore for SessionClient {
+    async fn append_correction(
+        &self,
+        session_id: &str,
+        entry_id: &str,
+        message: &str,
+    ) -> Result<(), HarnessError> {
+        self.append(
+            session_id,
+            &AgentMessage::user_text(message),
+            Some(entry_id),
+            None,
+            Some(&json!({ "skill_update": true })),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn replace_correction(
+        &self,
+        session_id: &str,
+        entry_id: &str,
+        message: &str,
+    ) -> Result<(), HarnessError> {
+        let AgentMessage::User(update) = AgentMessage::user_text(message) else {
+            unreachable!("user_text always creates a user message")
+        };
+        self.update_message(
+            session_id,
+            entry_id,
+            &update.content,
+            None,
+            None,
+            Some(&json!({ "skill_update": true })),
+        )
+        .await
+        .map(|_| ())
+    }
+}
+
+async fn persist_skill_correction(
+    store: &impl SkillCorrectionStore,
+    session_id: &str,
+    entry_id: &str,
+    message: &str,
+    ack_slot: &mut Option<crate::types::turn::SkillAck>,
+    ack: crate::types::turn::SkillAck,
+) -> Result<(), HarnessError> {
+    store
+        .append_correction(session_id, entry_id, message)
+        .await?;
+    store
+        .replace_correction(session_id, entry_id, message)
+        .await?;
+    *ack_slot = Some(ack);
+    Ok(())
+}
+
+async fn sync_skills(
+    deps: &Deps,
+    session: &SessionClient,
+    record: &mut TurnRecord,
+    policy: &CompiledPolicy,
+    functions: &[crate::clients::FunctionDescriptor],
+) -> Result<(), HarnessError> {
+    let Some(context) = record.options.skill_context.as_ref() else {
+        return Ok(());
+    };
+    let catalog = deps.skills().await;
+    let view =
+        crate::skills::effective_view(&catalog, context.filter.as_deref(), policy, functions);
+    if record.skill_ack.is_none() {
+        if let Some(baseline) = context.baseline.as_deref() {
+            let generation = match &view {
+                crate::skills::EffectiveView::Available(view) => view.generation,
+                crate::skills::EffectiveView::Removed { generation } => *generation,
+                crate::skills::EffectiveView::Unavailable => catalog.generation,
+            };
+            record.skill_ack = Some(crate::types::turn::SkillAck {
+                generation,
+                fingerprint: Some(crate::skills::fingerprint(baseline)),
+            });
+        }
+    }
+
+    match crate::skills::plan_sync(record.skill_ack.as_ref(), record.skills_started, &view) {
+        crate::skills::SyncPlan::None => {}
+        crate::skills::SyncPlan::Acknowledge(ack) => record.skill_ack = Some(ack),
+        crate::skills::SyncPlan::FreezeBaseline { body, ack } => {
+            if let Some(context) = record.options.skill_context.as_mut() {
+                context.baseline = Some(body);
+            }
+            record.skill_ack = Some(ack);
+        }
+        crate::skills::SyncPlan::Append { message, ack } => {
+            persist_skill_correction(
+                session,
+                &record.session_id,
+                &ids::skill_update_entry_id(&record.turn_id, record.turn_count),
+                &message,
+                &mut record.skill_ack,
+                ack,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
 /// Run one durable loop step.
+enum PreparedStep {
+    Finished(TurnStepResult),
+    Generated(Box<GeneratedStep>),
+}
+
+struct GeneratedStep {
+    payload: TurnStepPayload,
+    cfg: std::sync::Arc<crate::config::WorkerConfig>,
+    session: SessionClient,
+    record: TurnRecord,
+    strategy: crate::contract::OutputStrategy,
+    outcome: crate::clients::router::ChatOutcome,
+    durable_abort: bool,
+    guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
 pub async fn run_step(
     deps: &Deps,
     payload: TurnStepPayload,
 ) -> Result<TurnStepResult, HarnessError> {
+    // Keep each phase future behind a pointer. Inlining either future into
+    // this dispatcher would merge their async states back into one large
+    // executor stack frame.
+    let generated = match Box::pin(generate_step(deps, payload)).await? {
+        PreparedStep::Finished(result) => return Ok(result),
+        PreparedStep::Generated(generated) => generated,
+    };
+    Box::pin(finish_step(deps, generated)).await
+}
+
+async fn generate_step(
+    deps: &Deps,
+    payload: TurnStepPayload,
+) -> Result<PreparedStep, HarnessError> {
     // Serialize against off-queue resolves/sweeps on the same session.
     let _guard = deps.locks.guard(&payload.session_id).await;
     let cfg = deps.cfg().await;
@@ -226,20 +403,22 @@ pub async fn run_step(
             // transcript alone cannot recover budgets, parent linkage, output
             // contracts, or dispatch policy safely, so an absent record stays
             // a stale delivery and is acknowledged without fabricating state.
-            None => return Ok(skipped(&payload.session_id)),
+            None => return Ok(PreparedStep::Finished(skipped(&payload.session_id))),
         };
 
-    // Stale guards: wrong turn or an old step is acked and dropped.
-    if record.turn_id != payload.turn_id || payload.step < record.step {
-        return Ok(skipped(&payload.session_id));
+    // Stale guards: wrong turn or any non-current step is acked and dropped.
+    if !turn_step_matches(&record.turn_id, record.step, &payload.turn_id, payload.step) {
+        return Ok(PreparedStep::Finished(skipped(&payload.session_id)));
     }
     if record.status.is_terminal() {
-        return Ok(skipped(&payload.session_id));
+        return Ok(PreparedStep::Finished(skipped(&payload.session_id)));
     }
 
     // Cooperative cancellation observed between steps.
     if record.abort {
-        return finalize_cancelled(deps, &session, &mut record, "cancelled").await;
+        return finalize_cancelled(deps, &session, &mut record, "cancelled")
+            .await
+            .map(PreparedStep::Finished);
     }
 
     // Deliver messages queued while the previous step streamed: append them in
@@ -272,9 +451,14 @@ pub async fn run_step(
                     code: "harness.pre_turn_denied",
                     phase: "pre_turn",
                     retryable: false,
+                    kind: None,
+                    detail: None,
+                    provider: None,
+                    model: None,
                 },
             )
-            .await;
+            .await
+            .map(PreparedStep::Finished);
         }
     }
 
@@ -300,7 +484,7 @@ pub async fn run_step(
         // validated (live-caught by the validation_chain e2e: a turn that
         // burned its steps mid-loop finalized "completed" with the goal
         // unmet).
-        return match deps.hooks.run_post_turn(&record, record.step, &text).await {
+        return (match deps.hooks.run_post_turn(&record, record.step, &text).await {
             Ok(()) => finalize_completed(deps, &session, &mut record, Some(text)).await,
             Err(deny) => {
                 record.result = Some(text);
@@ -316,12 +500,21 @@ pub async fn run_step(
                         code: "harness.output_contract_invalid",
                         phase: "output_validation",
                         retryable: false,
+                        kind: None,
+                        detail: None,
+                        provider: None,
+                        model: None,
                     },
                 )
                 .await
             }
-        };
+        })
+        .map(PreparedStep::Finished);
     }
+
+    let functions = deps.functions().await;
+    let policy = CompiledPolicy::from(record.options.functions.as_ref());
+    sync_skills(deps, &session, &mut record, &policy, &functions.functions).await?;
 
     // Load the active path (custom entries carry the compaction record).
     let entries = session.messages(&record.session_id, true).await?;
@@ -338,23 +531,35 @@ pub async fn run_step(
     // Build every deterministic model-facing input before context assembly.
     // Registry-change notice: if the function registry changed since this
     // session last acknowledged its generation, tell the model its cached
-    // contracts may be stale. First sighting stamps silently.
-    let current_generation = deps.functions().await.generation;
-    let mut assembly_system_prompt =
-        with_filesystem_root_aid(record.options.system_prompt.clone(), &record);
-    if let Some(notice) = registry_notice(record.functions_generation, current_generation) {
-        assembly_system_prompt = Some(match assembly_system_prompt.take() {
-            Some(prompt) if !prompt.is_empty() => format!("{prompt}\n\n{notice}"),
-            _ => notice,
-        });
-    }
+    // contracts may be stale. First sighting stamps silently. The notice rides
+    // as a tail message, never a system-prompt mutation: the system prompt is
+    // the provider's first input item, and a one-shot append-then-remove there
+    // invalidates the whole prompt-cache prefix twice per event.
+    let current_generation = functions.generation;
+    let assembly_system_prompt =
+        with_runtime_context(record.options.system_prompt.clone(), &record);
+    let registry_notice_message =
+        registry_notice(record.functions_generation, current_generation).map(notice_message);
     record.functions_generation = Some(current_generation);
 
     // Resolve the output-contract strategy and build the invocation surface:
     // the exposure-mode tools plus the synthetic submit_result schema when the
     // contract uses the fallback.
     let strategy = crate::contract::OutputStrategy::resolve(deps, &record).await;
-    let mut tools = build_tools(deps, &record).await;
+    let decision_tools = concrete_allowed_tools(&policy, &functions.functions);
+    let expose = record
+        .options
+        .functions
+        .as_ref()
+        .map(|f| f.expose)
+        .unwrap_or(ExposeMode::AgentTrigger);
+    if expose == ExposeMode::Native && decision_tools.is_empty() {
+        tracing::warn!(
+            session_id = %record.session_id,
+            "native exposure matched no registry functions; the model has no tools this turn"
+        );
+    }
+    let mut tools = provider_tools(expose, &decision_tools);
     if let Some(submit) = strategy.submit_result_tool() {
         tools.push(submit);
     }
@@ -417,7 +622,8 @@ pub async fn run_step(
                     &reason,
                     CONTEXT_OVERFLOW_FAILURE,
                 )
-                .await;
+                .await
+                .map(PreparedStep::Finished);
             }
             Err(error) => return Err(error),
         };
@@ -431,6 +637,8 @@ pub async fn run_step(
                 payload.step,
                 assembled.system_prompt.clone(),
                 &assembled.messages,
+                current_generation,
+                &decision_tools,
             )
             .await
         {
@@ -449,13 +657,22 @@ pub async fn run_step(
                         code: "harness.pre_generate_denied",
                         phase: "pre_generate",
                         retryable: false,
+                        kind: None,
+                        detail: None,
+                        provider: None,
+                        model: None,
                     },
                 )
-                .await;
+                .await
+                .map(PreparedStep::Finished);
             }
         };
-        let hook_appended = !appended.is_empty();
+        // The notice lands after the hooks ran (they must not read it as the
+        // newest user message) and before their appends (hook messages stay
+        // last, closest to the decision point).
+        let hook_appended = !appended.is_empty() || registry_notice_message.is_some();
         let mut gen_messages = assembled.messages.clone();
+        gen_messages.extend(registry_notice_message.iter().cloned());
         gen_messages.extend(appended);
 
         // Post-assembly invariant guard: providers reject a context where an
@@ -487,9 +704,14 @@ pub async fn run_step(
                     code: "harness.empty_context",
                     phase: "context_assembly",
                     retryable: false,
+                    kind: None,
+                    detail: None,
+                    provider: None,
+                    model: None,
                 },
             )
-            .await;
+            .await
+            .map(PreparedStep::Finished);
         }
 
         // Hooks and orphan repair can change the assembled request. When nothing
@@ -507,7 +729,10 @@ pub async fn run_step(
             &assembled.system_prompt,
         );
         let final_request_tokens = if request_unchanged {
-            assembled.token_count
+            // `assembled.token_count` was fit against the inflated overhead
+            // (base + reservation); the reservation went unused on an
+            // unchanged request, so it is not part of the real total.
+            assembled.token_count.saturating_sub(extra_overhead_tokens)
         } else {
             let final_count = deps
                 .context()
@@ -529,6 +754,14 @@ pub async fn run_step(
                 .max_output_tokens
                 .unwrap_or(assembled.effective_max_output_tokens)
                 .min(assembled.effective_max_output_tokens);
+            let snapshot = build_context_snapshot(
+                &record,
+                payload.step,
+                &assembled,
+                final_request_tokens,
+                request_overhead_tokens,
+            );
+            record.context_snapshot = Some(snapshot);
             break (
                 gen_system_prompt,
                 gen_annotations,
@@ -549,7 +782,8 @@ pub async fn run_step(
                 &reason,
                 CONTEXT_OVERFLOW_FAILURE,
             )
-            .await;
+            .await
+            .map(PreparedStep::Finished);
         }
         // One-shot recovery: fold the measured post-assembly additions (plus
         // margin for hook variance on the retry — hooks re-run against the
@@ -575,7 +809,9 @@ pub async fn run_step(
     // session lock. Do not reserve budget for a call that will never start.
     if deps.cancels.is_fired(&record.turn_id) {
         record.abort = true;
-        return finalize_cancelled(deps, &session, &mut record, "cancelled").await;
+        return finalize_cancelled(deps, &session, &mut record, "cancelled")
+            .await
+            .map(PreparedStep::Finished);
     }
 
     let budget_reservation = match crate::budget::reserve(
@@ -593,9 +829,16 @@ pub async fn run_step(
                 crate::budget::BudgetRejection::Exceeded(_) => BUDGET_EXCEEDED_FAILURE,
                 crate::budget::BudgetRejection::Unavailable(_) => BUDGET_UNAVAILABLE_FAILURE,
             };
-            return finalize_failed(deps, &session, &mut record, rejection.reason(), failure).await;
+            return finalize_failed(deps, &session, &mut record, rejection.reason(), failure)
+                .await
+                .map(PreparedStep::Finished);
         }
     };
+
+    // A contract may be compacted only while its exact earlier full result is
+    // still present in the final request after assembly, hooks, and orphan
+    // repair. Persisted pruning happens with the normal pre-generation write.
+    trigger::retain_visible_contract_sources(&mut record.function_contract_ledger, &gen_messages);
 
     let assistant_origin = origin_with(&record.turn_id, &gen_annotations);
 
@@ -628,11 +871,14 @@ pub async fn run_step(
     };
     let params = ChatParams {
         request_id: format!("{}:{}", record.turn_id, payload.step),
+        session_id: record.session_id.clone(),
         model: record.options.model.clone(),
         provider: record.options.provider.clone(),
-        system_prompt: gen_system_prompt,
+        // Cloned into the request so the originals stay available for the
+        // post-generation exact recount below.
+        system_prompt: gen_system_prompt.clone(),
         messages: gen_messages,
-        tools,
+        tools: tools.clone(),
         response_format,
         // Forward a cap only when the caller set one. `generation_max_output_tokens`
         // is the internal reservation context assembly budgets against; sending it
@@ -649,6 +895,9 @@ pub async fn run_step(
         provider_options,
     };
     record.stream_request_id = Some(params.request_id.clone());
+    if record.options.skill_context.is_some() {
+        record.skills_started = true;
+    }
     if let Err(error) = crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await {
         if let Some(reservation) = budget_reservation.as_ref() {
             crate::budget::release(deps, reservation).await?;
@@ -663,7 +912,9 @@ pub async fn run_step(
             crate::budget::release(deps, reservation).await?;
         }
         record.abort = true;
-        return finalize_cancelled(deps, &session, &mut record, "cancelled").await;
+        return finalize_cancelled(deps, &session, &mut record, "cancelled")
+            .await
+            .map(PreparedStep::Finished);
     }
 
     // Release the per-session lock across the generation RPC. The loop writes no
@@ -720,6 +971,68 @@ pub async fn run_step(
     // advance()/finalize call that ends this step).
     record.watermark_entry_id = watermark;
 
+    // Stamp the generation's actual usage into the snapshot, replace the
+    // estimated categories with provider-exact counts where a counter
+    // exists, and store the session's latest copy. Best-effort: accounting
+    // must never fail a turn that generated successfully.
+    if let Some(snapshot) = record.context_snapshot.as_mut() {
+        snapshot.usage = outcome.message.usage.clone();
+        // Accumulate the session's running cost on top of the stored
+        // snapshot's total: turns are serialized per session (the harness-turn
+        // queue is fifo grouped by session_id) and steps run sequentially
+        // within a turn, so the loop is the only writer and the read-back is
+        // race-free. Seeding from the store keeps the total honest across
+        // turns and harness restarts. A failed read leaves the total unknown
+        // rather than fabricating one that resets to the current step's cost.
+        let step_cost = outcome
+            .message
+            .usage
+            .as_ref()
+            .and_then(|u| u.cost_usd)
+            .unwrap_or(0.0);
+        snapshot.session_cost_usd = match crate::context_snapshot::get(
+            &deps.iii,
+            &record.session_id,
+            cfg.session_timeout_ms,
+        )
+        .await
+        {
+            Ok(prev) => {
+                let prior_cost = prev.and_then(|p| p.session_cost_usd).unwrap_or(0.0);
+                Some(prior_cost + step_cost)
+            }
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %record.session_id,
+                    %error,
+                    "prior context snapshot read failed; session cost total unknown this step"
+                );
+                None
+            }
+        };
+        crate::context_snapshot::exactify(
+            snapshot,
+            &router,
+            gen_system_prompt.as_deref(),
+            crate::skills::attribution(
+                record.options.skill_context.as_ref(),
+                record.options.skills_prompt.as_deref(),
+            ),
+            &tools,
+        )
+        .await;
+        if let Err(error) =
+            crate::context_snapshot::put(&deps.iii, snapshot, cfg.session_timeout_ms).await
+        {
+            tracing::warn!(
+                session_id = %record.session_id,
+                turn_id = %record.turn_id,
+                %error,
+                "context snapshot store failed"
+            );
+        }
+    }
+
     // Persist the final assistant message into the streamed entry.
     let _ = session
         .update_message(
@@ -741,19 +1054,52 @@ pub async fn run_step(
         )
         .await;
 
-    // Re-acquire the lock before any further turn-record write, then re-read the
-    // durable abort flag under it (authoritative — no concurrent writer once
-    // held). A harness::stop that landed during generation set the flag on
-    // durable state while this in-memory `record` stayed stale; if the stream
-    // had already completed normally it carries stop_reason != Aborted, so
-    // without this re-read the stop would be missed until the next step.
+    // Re-acquire the lock before any further turn-record write, then refresh
+    // the durable fields allowed to change while generation held no lock:
+    // abort and an explicit skill filter from a raced send. The frozen skill
+    // baseline remains the one used for this generation.
     let _guard = deps.locks.guard(&payload.session_id).await;
-    let durable_abort =
-        crate::state::get_turn(&deps.iii, &payload.session_id, cfg.session_timeout_ms)
-            .await?
-            .map(|r| r.abort)
-            .unwrap_or(false);
+    let durable_record =
+        crate::state::get_turn(&deps.iii, &payload.session_id, cfg.session_timeout_ms).await?;
+    let durable_abort = durable_record.as_ref().is_some_and(|record| record.abort);
+    crate::skills::refresh_filter(
+        &mut record.options.skill_context,
+        durable_record
+            .as_ref()
+            .and_then(|record| record.options.skill_context.as_ref()),
+    );
 
+    Ok(PreparedStep::Generated(Box::new(GeneratedStep {
+        payload,
+        cfg,
+        session,
+        record,
+        strategy,
+        outcome,
+        durable_abort,
+        guard: _guard,
+    })))
+}
+
+/// Finish a generated step while the caller holds the session lock.
+///
+/// This phase is separate from context assembly and provider generation so
+/// the executor does not poll one monolithic future with every turn-loop
+/// state in the same stack frame.
+async fn finish_step(
+    deps: &Deps,
+    generated: Box<GeneratedStep>,
+) -> Result<TurnStepResult, HarnessError> {
+    let GeneratedStep {
+        payload,
+        cfg,
+        session,
+        mut record,
+        strategy,
+        outcome,
+        durable_abort,
+        guard: _guard,
+    } = *generated;
     record.turn_count += 1;
 
     // Cancellation during generation finalises the partial as cancelled.
@@ -762,20 +1108,35 @@ pub async fn run_step(
         return finalize_cancelled(deps, &session, &mut record, "cancelled").await;
     }
     if !outcome.ok {
-        let reason = outcome
-            .error
-            .clone()
-            .unwrap_or_else(|| "generation failed".to_string());
+        let generation_error = outcome.error.clone().unwrap_or_else(|| ChatError {
+            code: None,
+            message: "The provider rejected this request.".into(),
+            detail: Some("generation failed".into()),
+            kind: outcome.message.error_kind,
+            retryable: outcome.message.error_kind.map(ErrorKind::is_retryable),
+        });
+        let failure = llm_failure_info(
+            Some(&generation_error),
+            outcome.message.error_kind,
+            Some(outcome.message.provider.as_str()).filter(|provider| !provider.is_empty()),
+            Some(outcome.message.model.as_str()).filter(|model| !model.is_empty()),
+        );
+        let reason = generation_error.message.clone();
+        let detail = generation_error
+            .detail
+            .as_deref()
+            .unwrap_or(&generation_error.message)
+            .to_string();
         preserve_assistant_partial(&mut record.result, &outcome.message);
         if transient_resume_allowed(
-            outcome.message.error_kind,
+            failure.retryable.then_some(ErrorKind::Transient),
             record.transient_resumes,
             record.options.max_transient_resumes,
             record.turn_count,
             record.options.max_turns,
         ) {
             let attempt = record.transient_resumes + 1;
-            record_recovery_telemetry(&record, &reason, attempt);
+            record_recovery_telemetry(&record, &detail, attempt);
             let _ = session
                 .append_custom(
                     &record.session_id,
@@ -787,6 +1148,11 @@ pub async fn run_step(
                             record.options.max_transient_resumes
                         ),
                         "reason": reason,
+                        "detail": detail,
+                        "code": failure.code,
+                        "class": failure_class(failure),
+                        "provider": failure.provider.or(record.options.provider.as_deref()),
+                        "model": failure.model.unwrap_or(&record.options.model),
                         "phase": "generation",
                         "attempt": attempt,
                         "max_attempts": record.options.max_transient_resumes,
@@ -822,14 +1188,7 @@ pub async fn run_step(
             record.transient_resumes = attempt;
             return advance(deps, &mut record).await;
         }
-        return finalize_failed(
-            deps,
-            &session,
-            &mut record,
-            &reason,
-            llm_failure_info(outcome.message.error_kind),
-        )
-        .await;
+        return finalize_failed(deps, &session, &mut record, &reason, failure).await;
     }
 
     if record.transient_resumes > 0 {
@@ -893,7 +1252,7 @@ pub async fn run_step(
             match record.calls.get(&call.id).map(|c| c.state) {
                 Some(CallState::Done) | Some(CallState::Pending) => continue,
                 Some(CallState::Triggered) => {
-                    append_interrupted(&session, &record, call).await?;
+                    append_interrupted(&session, &mut record, call).await?;
                     let eid = record_entry_id(&record, &call.id);
                     mark_done(&mut record, &call.id, &eid);
                     crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
@@ -919,6 +1278,11 @@ pub async fn run_step(
                     &origin(&record.turn_id),
                 )
                 .await?;
+                trigger::apply_contract_updates_after_append(
+                    &mut record.function_contract_ledger,
+                    &call.id,
+                    Vec::new(),
+                );
                 mark_done(&mut record, &call.id, &entry_id);
                 crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
                 continue;
@@ -926,11 +1290,12 @@ pub async fn run_step(
 
             // Provider-degraded arguments: a stream that died or was cut by
             // max_tokens mid-args arrives as a salvaged `"_partial": true`
-            // prefix or a raw `{"_raw": …}` evidence object (the router's
-            // degraded_arguments). Executing partial intent is worse than
-            // failing — the complete-looking leading fields may be missing
-            // the constraints the model was still writing.
-            if call.arguments.get("_partial").is_some() || call.arguments.get("_raw").is_some() {
+            // prefix, a raw `{"_raw": …}` evidence object (the router's
+            // degraded_arguments), or no object at all. Executing partial
+            // intent is worse than failing — the complete-looking leading
+            // fields may be missing the constraints the model was still
+            // writing.
+            if trigger::arguments_degraded(&call.arguments) {
                 let data = trigger::truncated_arguments_result(&call.function_id, &call.arguments);
                 let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
                 append_function_result(
@@ -942,6 +1307,11 @@ pub async fn run_step(
                     &origin(&record.turn_id),
                 )
                 .await?;
+                trigger::apply_contract_updates_after_append(
+                    &mut record.function_contract_ledger,
+                    &call.id,
+                    Vec::new(),
+                );
                 mark_done(&mut record, &call.id, &entry_id);
                 crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
                 continue;
@@ -961,6 +1331,11 @@ pub async fn run_step(
                     &origin(&record.turn_id),
                 )
                 .await?;
+                trigger::apply_contract_updates_after_append(
+                    &mut record.function_contract_ledger,
+                    &call.id,
+                    Vec::new(),
+                );
                 mark_done(&mut record, &call.id, &entry_id);
                 crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
                 continue;
@@ -1018,6 +1393,11 @@ pub async fn run_step(
                         &origin(&record.turn_id),
                     )
                     .await?;
+                    trigger::apply_contract_updates_after_append(
+                        &mut record.function_contract_ledger,
+                        &call.id,
+                        Vec::new(),
+                    );
                     mark_done(&mut record, &call.id, &entry_id);
                     crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
                     continue;
@@ -1061,9 +1441,15 @@ pub async fn run_step(
                     &origin(&record.turn_id),
                 )
                 .await?;
+                trigger::apply_contract_updates_after_append(
+                    &mut record.function_contract_ledger,
+                    &call.id,
+                    Vec::new(),
+                );
                 // Done immediately, but the child ids stay on the checkpoint:
-                // they feed the fan-out guard, `harness::status` children, and
-                // the stop cascade.
+                // they feed `harness::status` children and the stop cascade.
+                // The reuse marker keeps re-tasks out of the separate
+                // session-creation count used by the fan-out guard.
                 record.calls.insert(
                     call.id.clone(),
                     CallCheckpoint {
@@ -1072,6 +1458,7 @@ pub async fn run_step(
                         entry_id: Some(entry_id),
                         child_session_id: child.as_ref().map(|c| c.session_id.clone()),
                         child_turn_id: child.as_ref().map(|c| c.turn_id.clone()),
+                        child_session_reused: child.as_ref().is_some_and(|c| c.reused),
                         held_by: None,
                         held_arguments: None,
                         pending_timeout_ms: None,
@@ -1091,6 +1478,7 @@ pub async fn run_step(
                     entry_id: None,
                     child_session_id: None,
                     child_turn_id: None,
+                    child_session_reused: false,
                     held_by: None,
                     held_arguments: None,
                     pending_timeout_ms: None,
@@ -1109,11 +1497,13 @@ pub async fn run_step(
                 &call.function_id,
                 &eff_args,
                 &record.session_id,
+                true, // run_step holds this session's lock
                 Some(crate::functions::subscribe::CallerModel::from_options(
                     &record.options,
                 )),
             )
             .await;
+            let info_raw = (call.function_id == "engine::functions::info").then(|| raw.clone());
             let post_outcome = deps
                 .hooks
                 .run_post_trigger(
@@ -1152,10 +1542,25 @@ pub async fn run_step(
             for (k, v) in post_ann {
                 annotations.insert(k, v);
             }
+            let (data, contract_updates) = match info_raw {
+                Some(raw) => trigger::prepare_info_result(
+                    &call.id,
+                    &eff_args,
+                    &data,
+                    &record.function_contract_ledger,
+                    raw == data,
+                ),
+                None => (data, Vec::new()),
+            };
             let entry_origin = origin_with(&record.turn_id, &annotations);
             let entry_id = ids::function_result_entry_id(&record.turn_id, &call.id);
             append_function_result(&session, &record, call, &data, &entry_id, &entry_origin)
                 .await?;
+            trigger::apply_contract_updates_after_append(
+                &mut record.function_contract_ledger,
+                &call.id,
+                contract_updates,
+            );
             mark_done(&mut record, &call.id, &entry_id);
             crate::state::put_turn(&deps.iii, &record, cfg.session_timeout_ms).await?;
         }
@@ -1194,6 +1599,15 @@ pub async fn run_step(
     }
 
     finalize_with_contract(deps, &session, &mut record, &strategy, &outcome.message).await
+}
+
+fn turn_step_matches(
+    record_turn_id: &str,
+    record_step: u64,
+    payload_turn_id: &str,
+    payload_step: u64,
+) -> bool {
+    record_turn_id == payload_turn_id && payload_step == record_step
 }
 
 /// Whether model-visible messages are parked in the session's queue
@@ -1294,7 +1708,7 @@ async fn reseed_after_finalize_drain(deps: &Deps, record: &TurnRecord) {
         &cfg,
         &record.session_id,
         record.options.clone(),
-        record.functions_generation,
+        Some(record),
         None,
         &lineage,
     )
@@ -1344,6 +1758,11 @@ async fn handle_submit(
         &origin(&record.turn_id),
     )
     .await?;
+    trigger::apply_contract_updates_after_append(
+        &mut record.function_contract_ledger,
+        &submit.id,
+        Vec::new(),
+    );
     match validation {
         Ok(()) => complete_validated(deps, session, record, value).await,
         Err(msg) => retry_or_giveup(deps, session, record, &msg, value).await,
@@ -1457,6 +1876,10 @@ async fn retry_or_giveup_with(
                 code: "harness.output_contract_invalid",
                 phase: "output_validation",
                 retryable: false,
+                kind: None,
+                detail: None,
+                provider: None,
+                model: None,
             },
         )
         .await
@@ -1523,6 +1946,7 @@ async fn finalize_completed(
             record.parent.as_ref(),
             record.display_parent_session_id.as_deref(),
             turn_is_terminal(deps, &record.session_id).await,
+            record.context_snapshot.as_ref(),
         )
         .await;
     // Sub-agent turns resolve the parent's pending call with their result.
@@ -1550,19 +1974,170 @@ async fn finalize_completed(
     })
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct FailurePresentation {
+    summary: String,
+    next_actions: Vec<&'static str>,
+}
+
+fn failure_class(failure: FailureInfo<'_>) -> &'static str {
+    match failure.kind {
+        Some(ErrorKind::AuthExpired) => "llm.auth_expired",
+        Some(ErrorKind::RateLimited) => "llm.rate_limited",
+        Some(ErrorKind::ContextOverflow) => "llm.context_overflow",
+        Some(ErrorKind::Transient) => "llm.transient",
+        Some(ErrorKind::Permanent) => "llm.permanent",
+        None if failure.retryable => "llm.transient",
+        None => "llm.permanent",
+    }
+}
+
+fn failure_presentation(public_message: &str, failure: FailureInfo<'_>) -> FailurePresentation {
+    let (summary, next_actions): (&str, &[&str]) = match failure.code {
+        "router/not_configured" => (
+            "The selected provider is not configured.",
+            &[
+                "Open LLM Router settings and complete the provider setup.",
+                "Retry the turn after the provider is configured.",
+            ],
+        ),
+        "router/provider_unavailable" => (
+            "The selected provider is temporarily unavailable.",
+            &[
+                "Retry the turn in a moment.",
+                "Choose another available provider or model.",
+            ],
+        ),
+        "router/unknown_provider" => (
+            "The selected provider is no longer registered.",
+            &["Refresh the model list and choose another provider."],
+        ),
+        "router/no_provider_for_model" => (
+            "No configured provider can serve the selected model.",
+            &[
+                "Choose another model.",
+                "Configure a provider that supports this model.",
+            ],
+        ),
+        "router/ambiguous_model" => (
+            "The selected model is available from multiple providers.",
+            &["Choose a provider explicitly, then try again."],
+        ),
+        "router/invalid_request" => (
+            "The model request is invalid.",
+            &["Review the request fields, then try again."],
+        ),
+        "router/structured_output_unsupported" => (
+            "The selected model does not support structured output.",
+            &[
+                "Choose another model.",
+                "Disable structured output, then try again.",
+            ],
+        ),
+        "router/request_in_progress" => (
+            "A request with the same ID is already in progress.",
+            &["Wait for the active request to finish, then try again."],
+        ),
+        "router/capacity_exceeded" => (
+            "The provider is busy right now.",
+            &[
+                "Wait a moment, then retry the turn.",
+                "Choose another available provider or model.",
+            ],
+        ),
+        "router/stream_setup_failed" => (
+            "The response stream could not be started.",
+            &["Retry the turn in a moment."],
+        ),
+        "router/stream_idle_timeout" => (
+            "The provider stopped responding before the answer completed.",
+            &["Retry the turn to continue."],
+        ),
+        "router/stream_incomplete" => (
+            "The provider disconnected before completing the response.",
+            &["Retry the turn to continue."],
+        ),
+        "router/provider_auth_expired" => (
+            "The provider authentication needs attention.",
+            &[
+                "Update the provider credentials in LLM Router settings.",
+                "Retry the turn after the credentials are updated.",
+            ],
+        ),
+        "router/provider_rate_limited" => (
+            "The provider is busy right now.",
+            &["Wait a moment, then retry the turn."],
+        ),
+        "router/context_overflow" => (
+            "The conversation is too large for the selected model.",
+            &[
+                "Compact or shorten the conversation.",
+                "Choose a model with a larger context window.",
+            ],
+        ),
+        "router/provider_transient" => (
+            "The provider temporarily failed while generating a response.",
+            &["Retry the turn in a moment."],
+        ),
+        "router/provider_rejected" => (
+            "The provider rejected this request.",
+            &["Review the selected model and provider settings, then try again."],
+        ),
+        _ => match failure.kind {
+            Some(ErrorKind::AuthExpired) => (
+                "The provider authentication needs attention.",
+                &["Update the provider credentials, then try again."],
+            ),
+            Some(ErrorKind::RateLimited) => (
+                "The provider is busy right now.",
+                &["Wait a moment, then retry the turn."],
+            ),
+            Some(ErrorKind::ContextOverflow) => (
+                "The conversation is too large for the selected model.",
+                &[
+                    "Compact or shorten the conversation.",
+                    "Choose a model with a larger context window.",
+                ],
+            ),
+            Some(ErrorKind::Transient) => (
+                "The provider temporarily failed while generating a response.",
+                &["Retry the turn in a moment."],
+            ),
+            Some(ErrorKind::Permanent) => (
+                "The provider rejected this request.",
+                &["Review the selected model and provider settings, then try again."],
+            ),
+            None => (
+                public_message,
+                &[
+                    "Inspect the failure details.",
+                    "Retry only after correcting the dependency or request.",
+                ],
+            ),
+        },
+    };
+    FailurePresentation {
+        summary: summary.to_string(),
+        next_actions: next_actions.to_vec(),
+    }
+}
+
 async fn finalize_failed(
     deps: &Deps,
     session: &SessionClient,
     record: &mut TurnRecord,
-    reason: &str,
-    failure: FailureInfo,
+    public_message: &str,
+    failure: FailureInfo<'_>,
 ) -> Result<TurnStepResult, HarnessError> {
     let woke = drain_queued_best_effort(deps, session, &record.session_id).await;
     let cfg = deps.cfg().await;
+    let presentation = failure_presentation(public_message, failure);
+    let summary = presentation.summary;
+    let detail = failure.detail.unwrap_or(public_message);
     record.status = TurnStatus::Failed;
-    record.result_error = Some(reason.to_string());
+    record.result_error = Some(summary.clone());
     record.updated_at = AgentMessage::now_ms();
-    record_failure_telemetry(record, reason, failure);
+    record_failure_telemetry(record, detail, failure);
     crate::state::put_turn(&deps.iii, record, cfg.session_timeout_ms).await?;
     deps.cancels.clear(&record.turn_id);
     let _ = session
@@ -1571,10 +2146,14 @@ async fn finalize_failed(
             "error",
             json!({
                 "status": "error",
-                "summary": reason,
-                "reason": reason,
+                "summary": summary,
+                "reason": detail,
                 "code": failure.code,
-                "message": reason,
+                "class": failure_class(failure),
+                "message": public_message,
+                "detail": detail,
+                "provider": failure.provider.or(record.options.provider.as_deref()),
+                "model": failure.model.unwrap_or(&record.options.model),
                 "retryable": failure.retryable,
                 "phase": failure.phase,
                 "partial_result_available": record.result.is_some(),
@@ -1583,10 +2162,7 @@ async fn finalize_failed(
                     "max_attempts": record.options.max_transient_resumes,
                     "outcome": if record.transient_resumes > 0 { "exhausted" } else { "not_attempted" },
                 },
-                "next_actions": [
-                    "inspect the failure reason",
-                    "retry only after correcting the dependency or request"
-                ],
+                "next_actions": presentation.next_actions,
                 "artifacts": {
                     "session_id": record.session_id,
                     "turn_id": record.turn_id,
@@ -1598,7 +2174,7 @@ async fn finalize_failed(
         )
         .await;
     let _ = session
-        .set_status(&record.session_id, "error", Some(reason))
+        .set_status(&record.session_id, "error", Some(&summary))
         .await;
     deps.events
         .emit_completed(
@@ -1606,11 +2182,12 @@ async fn finalize_failed(
             &record.turn_id,
             "failed",
             record.result.as_ref(),
-            Some(reason),
-            Some(reason),
+            Some(&summary),
+            Some(&summary),
             record.parent.as_ref(),
             record.display_parent_session_id.as_deref(),
             turn_is_terminal(deps, &record.session_id).await,
+            record.context_snapshot.as_ref(),
         )
         .await;
     if let Some(parent) = record.parent.clone() {
@@ -1626,7 +2203,7 @@ async fn finalize_failed(
             &parent,
             "failed",
             record.result.as_ref(),
-            Some(reason),
+            Some(&summary),
         )
         .await;
     }
@@ -1648,38 +2225,34 @@ async fn finalize_failed(
     })
 }
 
-fn llm_failure_info(error_kind: Option<ErrorKind>) -> FailureInfo {
-    match error_kind {
-        Some(ErrorKind::AuthExpired) => FailureInfo {
-            code: "llm.auth_expired",
-            phase: "generation",
-            retryable: false,
-        },
-        Some(ErrorKind::RateLimited) => FailureInfo {
-            code: "llm.rate_limited",
-            phase: "generation",
-            retryable: true,
-        },
-        Some(ErrorKind::ContextOverflow) => FailureInfo {
-            code: "llm.context_overflow",
-            phase: "generation",
-            retryable: false,
-        },
-        Some(ErrorKind::Transient) => FailureInfo {
-            code: "llm.transient",
-            phase: "generation",
-            retryable: true,
-        },
-        Some(ErrorKind::Permanent) => FailureInfo {
-            code: "llm.permanent",
-            phase: "generation",
-            retryable: false,
-        },
-        None => FailureInfo {
-            code: "llm.generation_failed",
-            phase: "generation",
-            retryable: false,
-        },
+fn llm_failure_info<'a>(
+    error: Option<&'a ChatError>,
+    terminal_kind: Option<ErrorKind>,
+    provider: Option<&'a str>,
+    model: Option<&'a str>,
+) -> FailureInfo<'a> {
+    let kind = error.and_then(|error| error.kind).or(terminal_kind);
+    let fallback_code = match kind {
+        Some(ErrorKind::AuthExpired) => "llm.auth_expired",
+        Some(ErrorKind::RateLimited) => "llm.rate_limited",
+        Some(ErrorKind::ContextOverflow) => "llm.context_overflow",
+        Some(ErrorKind::Transient) => "llm.transient",
+        Some(ErrorKind::Permanent) => "llm.permanent",
+        None => "llm.generation_failed",
+    };
+    FailureInfo {
+        code: error
+            .and_then(|error| error.code.as_deref())
+            .filter(|code| !code.is_empty())
+            .unwrap_or(fallback_code),
+        phase: "generation",
+        retryable: error
+            .and_then(|error| error.retryable)
+            .unwrap_or_else(|| kind.is_some_and(ErrorKind::is_retryable)),
+        kind,
+        detail: error.and_then(|error| error.detail.as_deref()),
+        provider,
+        model,
     }
 }
 
@@ -1708,13 +2281,13 @@ fn record_recovery_telemetry(record: &TurnRecord, reason: &str, attempt: u32) {
     );
 }
 
-fn record_failure_telemetry(record: &TurnRecord, reason: &str, failure: FailureInfo) {
+fn record_failure_telemetry(record: &TurnRecord, reason: &str, failure: FailureInfo<'_>) {
     let cx = Context::current();
     let span = cx.span();
     if !span.span_context().is_valid() {
         return;
     }
-    span.set_attribute(KeyValue::new("error.type", failure.code));
+    span.set_attribute(KeyValue::new("error.type", failure.code.to_string()));
     span.set_attribute(KeyValue::new("error.message", reason.to_string()));
     span.set_attribute(KeyValue::new("iii.turn.failure_phase", failure.phase));
     span.set_attribute(KeyValue::new("iii.turn.retryable", failure.retryable));
@@ -1794,7 +2367,9 @@ async fn finalize_cancelled(
             Some(&origin(&record.turn_id)),
         )
         .await;
-    let _ = session.set_status(&record.session_id, "done", None).await;
+    let _ = session
+        .set_status(&record.session_id, "done", Some("stopped"))
+        .await;
     deps.events
         .emit_completed(
             &record.session_id,
@@ -1806,6 +2381,7 @@ async fn finalize_cancelled(
             record.parent.as_ref(),
             record.display_parent_session_id.as_deref(),
             turn_is_terminal(deps, &record.session_id).await,
+            record.context_snapshot.as_ref(),
         )
         .await;
     if let Some(parent) = record.parent.clone() {
@@ -1876,6 +2452,7 @@ fn checkpoint_pending(
             entry_id: None,
             child_session_id: info.child_session_id.clone(),
             child_turn_id: info.child_turn_id.clone(),
+            child_session_reused: false,
             held_by: info.held_by.clone(),
             held_arguments: info.held_arguments.clone(),
             pending_timeout_ms: info.pending_timeout_ms,
@@ -1896,6 +2473,7 @@ fn mark_done(record: &mut TurnRecord, call_id: &str, entry_id: &str) {
             entry_id: Some(entry_id.to_string()),
             child_session_id: None,
             child_turn_id: None,
+            child_session_reused: false,
             held_by: None,
             held_arguments: None,
             pending_timeout_ms: None,
@@ -1925,21 +2503,54 @@ async fn append_function_result(
         is_error: data.is_error,
         timestamp: AgentMessage::now_ms(),
     });
-    session
-        .append(
-            &record.session_id,
-            &message,
-            Some(entry_id),
-            None,
-            Some(origin),
-        )
-        .await
-        .map(|_| ())
+    // The engine can reconnect this worker before session-manager has replayed
+    // `session::append`. Keep the per-session step lock while the dependency
+    // catches up: this append is idempotent on `entry_id`, and retaining the
+    // lock prevents a restart-redelivered copy of the same step from
+    // regenerating against the still-triggered call checkpoint.
+    const ATTEMPTS: u32 = 10;
+    const BACKOFF_MS: u64 = 250;
+    for attempt in 1..=ATTEMPTS {
+        match session
+            .append(
+                &record.session_id,
+                &message,
+                Some(entry_id),
+                None,
+                Some(origin),
+            )
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(error) if attempt < ATTEMPTS && retryable_function_result_append_error(&error) => {
+                tracing::warn!(
+                    session_id = %record.session_id,
+                    turn_id = %record.turn_id,
+                    call_id = %call.id,
+                    attempt,
+                    error = %error,
+                    "function result append raced dependency registration; retrying"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(BACKOFF_MS)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("bounded function result append loop always returns")
+}
+
+fn retryable_function_result_append_error(error: &HarnessError) -> bool {
+    let HarnessError::Dependency(message) = error else {
+        return false;
+    };
+    let message = message.to_ascii_lowercase();
+    message.starts_with("session::append:")
+        && (message.contains("function_not_found") || message.contains("not connected"))
 }
 
 async fn append_interrupted(
     session: &SessionClient,
-    record: &TurnRecord,
+    record: &mut TurnRecord,
     call: &policy::PlannedCall,
 ) -> Result<(), HarnessError> {
     let data = trigger::ResultData {
@@ -1959,7 +2570,13 @@ async fn append_interrupted(
         &entry_id,
         &origin(&record.turn_id),
     )
-    .await
+    .await?;
+    trigger::apply_contract_updates_after_append(
+        &mut record.function_contract_ledger,
+        &call.id,
+        Vec::new(),
+    );
+    Ok(())
 }
 
 /// Steering: are there user-role entries after the assemble-time watermark?
@@ -2077,6 +2694,13 @@ async fn assemble_context(
         model_id: record.options.model.clone(),
         provider: record.options.provider.clone(),
         system_prompt: inputs.system_prompt,
+        parts: crate::skills::attribution(
+            record.options.skill_context.as_ref(),
+            record.options.skills_prompt.as_deref(),
+        )
+        .map(|prompt| {
+            std::collections::BTreeMap::from([("skills".to_string(), prompt.to_string())])
+        }),
         previous_summary,
         lease_key: record.session_id.clone(),
         thinking_level: record.options.thinking_level,
@@ -2150,11 +2774,69 @@ async fn assemble_context(
         usable: out.usable,
         token_count: out.token_count,
         effective_max_output_tokens: out.effective_max_output_tokens,
+        applied: out.applied,
+        breakdown: out.breakdown,
     })
 }
 
 fn is_context_overflow_error(error: &str) -> bool {
     error.contains("context/overflow:")
+}
+
+/// Fold the assembly the loop already performed into the session's context
+/// snapshot. `final_request_tokens >= assembled.token_count` when hooks or
+/// orphan repair grew the request; the difference is the hook_guidance
+/// category. No counting round trips happen here.
+fn build_context_snapshot(
+    record: &TurnRecord,
+    step: u64,
+    assembled: &Assembled,
+    final_request_tokens: u64,
+    request_overhead_tokens: u64,
+) -> crate::context_snapshot::ContextSnapshotV1 {
+    use crate::context_snapshot::{ContextSnapshotV1, SnapshotCategoriesV1};
+    // A context-manager that predates the breakdown response reports nothing,
+    // which is what the all-zero default says.
+    let b = assembled.breakdown.clone().unwrap_or_default();
+    let (system_prompt, skills) = estimated_prompt_categories(&b);
+    ContextSnapshotV1 {
+        session_id: record.session_id.clone(),
+        turn_id: record.turn_id.clone(),
+        step,
+        model: record.options.model.clone(),
+        provider: record.options.provider.clone(),
+        estimator: b.estimator,
+        session_cost_usd: None,
+        usable: assembled.usable,
+        effective_max_output_tokens: assembled.effective_max_output_tokens,
+        total: final_request_tokens,
+        free: assembled.usable.saturating_sub(final_request_tokens),
+        categories: SnapshotCategoriesV1 {
+            system_prompt,
+            skills,
+            tools: b.tools_tokens,
+            messages: b.by_role.into(),
+            overhead: request_overhead_tokens,
+            hook_guidance: final_request_tokens.saturating_sub(assembled.token_count),
+        },
+        compacted: assembled.applied.compacted,
+        summarized_head_tokens: assembled.applied.summarized_head_tokens,
+        usage: None,
+        timestamp: AgentMessage::now_ms(),
+    }
+}
+
+fn estimated_prompt_categories(
+    breakdown: &crate::clients::context::AssembleBreakdown,
+) -> (u64, u64) {
+    let skills = breakdown
+        .by_part
+        .as_ref()
+        .and_then(|parts| parts.get("skills"))
+        .copied()
+        .unwrap_or(0)
+        .min(breakdown.system_prompt_tokens);
+    (breakdown.system_prompt_tokens - skills, skills)
 }
 
 /// Append model-facing context aid lines to the system prompt: the session id
@@ -2165,19 +2847,52 @@ fn is_context_overflow_error(error: &str) -> bool {
 /// are AIDs only — the real scoping control plane stamps `fs_scope` onto each
 /// call (`filesystem_scope::inject`) and the policy stays fail-closed at
 /// dispatch.
-fn with_filesystem_root_aid(system_prompt: Option<String>, record: &TurnRecord) -> Option<String> {
-    let mut lines = vec![format!("Your session id is {}.", record.session_id)];
-    if let Some(dir) = record.options.filesystem_root() {
+fn compose_system_prompt(base: Option<&str>, skills: Option<&str>, runtime: &str) -> String {
+    [
+        base.filter(|value| !value.is_empty()),
+        skills,
+        Some(runtime),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|section| section.trim_end_matches('\n'))
+    .collect::<Vec<_>>()
+    .join("\n\n")
+}
+
+fn with_runtime_context(system_prompt: Option<String>, record: &TurnRecord) -> Option<String> {
+    let aid = runtime_context_aid(
+        &record.session_id,
+        record.options.filesystem_root(),
+        record.options.functions.as_ref(),
+    );
+    let baseline = record
+        .options
+        .skill_context
+        .as_ref()
+        .and_then(|context| context.baseline.as_deref());
+    Some(compose_system_prompt(
+        system_prompt.as_deref(),
+        baseline,
+        &aid,
+    ))
+}
+
+/// The deterministic session context appended to every model-facing prompt.
+/// Kept separate so read-only previews use the same construction as a turn.
+pub(crate) fn runtime_context_aid(
+    session_id: &str,
+    filesystem_root: Option<&str>,
+    functions: Option<&FunctionPolicy>,
+) -> String {
+    let mut lines = vec![format!("Your session id is {session_id}.")];
+    if let Some(dir) = filesystem_root {
         lines.push(format!("Your working directory is {dir}."));
     }
-    if let Some(aid) = policy_aid(record.options.functions.as_ref()) {
+    if let Some(aid) = policy_aid(functions) {
         lines.push(aid);
     }
-    let aid = lines.join("\n");
-    Some(match system_prompt {
-        Some(prompt) if !prompt.is_empty() => format!("{prompt}\n{aid}"),
-        _ => aid,
-    })
+    lines.join("\n")
 }
 
 /// The dispatch-policy aid line for a narrowed turn, `None` when the surface
@@ -2228,6 +2943,10 @@ struct Assembled {
     token_count: u64,
     /// Model/output ceiling resolved by context-manager for this request.
     effective_max_output_tokens: u64,
+    /// What context-manager did to fit the window (compaction and its
+    /// bookkeeping), carried whole for the snapshot.
+    applied: crate::clients::context::Applied,
+    breakdown: Option<crate::clients::context::AssembleBreakdown>,
 }
 
 struct ContextAssemblyInputs<'a> {
@@ -2375,68 +3094,73 @@ fn patch_orphaned_calls(messages: &mut Vec<Value>) -> usize {
     patched
 }
 
-/// The single-line notice appended to the system prompt when the registry
+/// The single-line notice delivered as a tail message when the registry
 /// changed under a session that had already acknowledged an earlier generation.
 const REGISTRY_CHANGED_NOTICE: &str = "NOTE: the function registry changed during this conversation. Function contracts fetched earlier may be stale — re-fetch the contracts you rely on (engine::functions::info) before calling those functions again.";
+
+/// Wrap the notice as an ephemeral tail user message for the generate request.
+/// `timestamp` is mandatory — the router's message types have no serde default
+/// for it — and never reaches the provider wire.
+fn notice_message(text: String) -> Value {
+    json!({
+        "role": "user",
+        "content": [{ "type": "text", "text": text }],
+        "timestamp": AgentMessage::now_ms(),
+    })
+}
 
 /// Decide the registry-change notice for a step. `None` when the record already
 /// matches the live generation, or is being stamped for the first time; `Some`
 /// only when the registry changed under a session that acknowledged an earlier
 /// generation. The caller stamps `functions_generation = current` regardless.
-fn registry_notice(record_gen: Option<u64>, current: u64) -> Option<String> {
+pub(crate) fn registry_notice(record_gen: Option<u64>, current: u64) -> Option<String> {
     match record_gen {
         Some(g) if g != current => Some(REGISTRY_CHANGED_NOTICE.to_string()),
         _ => None,
     }
 }
 
-/// Build the invocation-schema surface attached to the generate request
-/// (harness.md § Exposure modes). Default: the single `agent_trigger` schema.
-/// Native: expand the allow globs against the registry and attach one schema
-/// per allowed function.
-async fn build_tools(deps: &Deps, record: &TurnRecord) -> Vec<crate::types::model::AgentFunction> {
-    let expose = record
-        .options
-        .functions
-        .as_ref()
-        .map(|f| f.expose)
-        .unwrap_or(ExposeMode::AgentTrigger);
+/// The concrete tool schemas this turn's dispatch policy allows: one per
+/// allowed registry function, plus the harness-intercepted subscription
+/// controls (virtual functions the engine's public registry intentionally
+/// does not list). This is the decision surface hooks reason over,
+/// independent of how tools reach the provider.
+fn concrete_allowed_tools(
+    policy: &CompiledPolicy,
+    descriptors: &[crate::clients::FunctionDescriptor],
+) -> Vec<crate::types::model::AgentFunction> {
+    let mut tools = crate::functions::subscribe::native_control_tools(policy);
+    for descriptor in descriptors {
+        if !policy.allows(&descriptor.function_id)
+            || tools.iter().any(|tool| tool.name == descriptor.function_id)
+        {
+            continue;
+        }
+        tools.push(crate::types::model::AgentFunction {
+            name: descriptor.function_id.clone(),
+            description: descriptor.description.clone().unwrap_or_default(),
+            parameters: descriptor
+                .parameters
+                .clone()
+                .unwrap_or_else(|| json!({ "type": "object" })),
+            label: None,
+            execution_mode: Some("sequential".to_string()),
+        });
+    }
+    tools.sort_by(|a, b| a.name.cmp(&b.name));
+    tools
+}
+
+/// The invocation-schema surface attached to the generate request
+/// (harness.md § Exposure modes). Default: the single `agent_trigger`
+/// schema. Native: the concrete allowed tools verbatim.
+fn provider_tools(
+    expose: ExposeMode,
+    concrete: &[crate::types::model::AgentFunction],
+) -> Vec<crate::types::model::AgentFunction> {
     match expose {
         ExposeMode::AgentTrigger => vec![policy::agent_trigger_schema()],
-        ExposeMode::Native => {
-            let policy = CompiledPolicy::from(record.options.functions.as_ref());
-            let snapshot = deps.functions().await;
-            // Subscription controls are harness-intercepted virtual functions,
-            // so the engine's public registry intentionally does not list
-            // them. Publish their real schemas alongside registry functions
-            // whenever this turn's dispatch policy allows them.
-            let mut tools = crate::functions::subscribe::native_control_tools(&policy);
-            for descriptor in snapshot.functions.iter() {
-                if !policy.allows(&descriptor.function_id) {
-                    continue;
-                }
-                if tools.iter().any(|tool| tool.name == descriptor.function_id) {
-                    continue;
-                }
-                tools.push(crate::types::model::AgentFunction {
-                    name: descriptor.function_id.clone(),
-                    description: descriptor.description.clone().unwrap_or_default(),
-                    parameters: descriptor
-                        .parameters
-                        .clone()
-                        .unwrap_or_else(|| json!({ "type": "object" })),
-                    label: None,
-                    execution_mode: Some("sequential".to_string()),
-                });
-            }
-            if tools.is_empty() {
-                tracing::warn!(
-                    session_id = %record.session_id,
-                    "native exposure matched no registry functions; the model has no tools this turn"
-                );
-            }
-            tools
-        }
+        ExposeMode::Native => concrete.to_vec(),
     }
 }
 
@@ -2483,10 +3207,411 @@ impl Clone for SessionStreamSink {
 
 #[cfg(test)]
 mod tests {
-    use super::{cancel_requested, count_model_visible, transient_resume_allowed};
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use tokio::sync::Mutex;
+
+    use super::{
+        cancel_requested, concrete_allowed_tools, count_model_visible,
+        retryable_function_result_append_error, transient_resume_allowed, turn_step_matches,
+    };
+    use crate::clients::router::ChatError;
+    use crate::error::HarnessError;
     use crate::types::content::ContentBlock;
     use crate::types::event::{ErrorKind, StopReason};
     use crate::types::message::{AgentMessage, CustomMessage, CustomRoleTag};
+    use crate::types::turn::SkillAck;
+
+    #[derive(Default)]
+    struct FakeSkillCorrectionStore {
+        entry: Arc<Mutex<Option<(String, String)>>>,
+        fail_replace: bool,
+    }
+
+    #[async_trait]
+    impl super::SkillCorrectionStore for FakeSkillCorrectionStore {
+        async fn append_correction(
+            &self,
+            _session_id: &str,
+            entry_id: &str,
+            message: &str,
+        ) -> Result<(), HarnessError> {
+            let mut entry = self.entry.lock().await;
+            if entry.is_none() {
+                *entry = Some((entry_id.to_string(), message.to_string()));
+            }
+            Ok(())
+        }
+
+        async fn replace_correction(
+            &self,
+            _session_id: &str,
+            entry_id: &str,
+            message: &str,
+        ) -> Result<(), HarnessError> {
+            if self.fail_replace {
+                return Err(HarnessError::Dependency("replace failed".into()));
+            }
+            let mut entry = self.entry.lock().await;
+            let Some((stored_id, stored_message)) = entry.as_mut() else {
+                return Err(HarnessError::Dependency("missing correction".into()));
+            };
+            assert_eq!(stored_id, entry_id);
+            *stored_message = message.to_string();
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn correction_redelivery_replaces_a_same_id_entry_before_acknowledging_newer_content() {
+        let store = FakeSkillCorrectionStore::default();
+        let mut ack = None;
+        super::persist_skill_correction(
+            &store,
+            "s_1",
+            "e_t_1_skills_0",
+            "catalog B",
+            &mut ack,
+            SkillAck {
+                generation: 2,
+                fingerprint: Some("sha256:b".into()),
+            },
+        )
+        .await
+        .unwrap();
+
+        // The transcript write survived, but the process lost the record write.
+        ack = None;
+        super::persist_skill_correction(
+            &store,
+            "s_1",
+            "e_t_1_skills_0",
+            "catalog C",
+            &mut ack,
+            SkillAck {
+                generation: 3,
+                fingerprint: Some("sha256:c".into()),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            *store.entry.lock().await,
+            Some(("e_t_1_skills_0".into(), "catalog C".into()))
+        );
+        assert_eq!(
+            ack,
+            Some(SkillAck {
+                generation: 3,
+                fingerprint: Some("sha256:c".into())
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn correction_ack_does_not_advance_when_transcript_replacement_fails() {
+        let store = FakeSkillCorrectionStore {
+            entry: Arc::new(Mutex::new(Some((
+                "e_t_1_skills_0".into(),
+                "catalog B".into(),
+            )))),
+            fail_replace: true,
+        };
+        let mut ack = Some(SkillAck {
+            generation: 2,
+            fingerprint: Some("sha256:b".into()),
+        });
+
+        let result = super::persist_skill_correction(
+            &store,
+            "s_1",
+            "e_t_1_skills_0",
+            "catalog C",
+            &mut ack,
+            SkillAck {
+                generation: 3,
+                fingerprint: Some("sha256:c".into()),
+            },
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(
+            *store.entry.lock().await,
+            Some(("e_t_1_skills_0".into(), "catalog B".into()))
+        );
+        assert_eq!(ack.unwrap().generation, 2);
+    }
+
+    #[test]
+    fn normal_sibling_info_results_wait_for_context_validation_before_reuse() {
+        let details = serde_json::json!({
+            "function_id": "worker::function",
+            "request_schema": { "type": "object" },
+            "response_schema": { "type": "object" }
+        });
+        let data = crate::trigger::ResultData {
+            content: vec![ContentBlock::text(details.to_string())],
+            is_error: false,
+            details,
+        };
+        let arguments = serde_json::json!({ "function_id": "worker::function" });
+        let mut ledger = std::collections::BTreeMap::new();
+
+        let (first, updates) =
+            crate::trigger::prepare_info_result("call-1", &arguments, &data, &ledger, true);
+        crate::trigger::apply_contract_updates_after_append(&mut ledger, "call-1", updates);
+
+        let (second, updates) =
+            crate::trigger::prepare_info_result("call-2", &arguments, &data, &ledger, true);
+        assert_eq!(second.content, first.content, "a sibling result stays full");
+        crate::trigger::apply_contract_updates_after_append(&mut ledger, "call-2", updates);
+
+        crate::trigger::retain_visible_contract_sources(
+            &mut ledger,
+            &[serde_json::json!({
+                "role": "function_result",
+                "function_call_id": "call-2",
+                "function_id": "engine::functions::info",
+                "content": serde_json::to_value(&second.content).unwrap()
+            })],
+        );
+        let (third, updates) =
+            crate::trigger::prepare_info_result("call-3", &arguments, &data, &ledger, true);
+
+        assert_eq!(
+            third.content,
+            vec![ContentBlock::text(
+                serde_json::json!({
+                    "function_id": "worker::function",
+                    "contract_status": "unchanged_in_context",
+                    "source_function_call_id": "call-2"
+                })
+                .to_string()
+            )]
+        );
+        assert!(updates.is_empty());
+        assert_eq!(
+            first.content,
+            crate::trigger::prepare_info_result(
+                "probe",
+                &arguments,
+                &data,
+                &Default::default(),
+                true
+            )
+            .0
+            .content,
+            "the first result is the full (response-schema-stripped) rendering"
+        );
+    }
+
+    #[test]
+    fn normal_result_append_invalidates_a_reused_source_id_without_replacing_it() {
+        use crate::types::turn::FunctionContractLedgerEntry;
+
+        let old_source = FunctionContractLedgerEntry {
+            contract_digest: "old".into(),
+            source_function_call_id: "reused-call".into(),
+            source_content_digest: "old-content".into(),
+            eligible: true,
+        };
+        let unrelated_source = FunctionContractLedgerEntry {
+            contract_digest: "other".into(),
+            source_function_call_id: "other-call".into(),
+            source_content_digest: "other-content".into(),
+            eligible: true,
+        };
+        let replacement = FunctionContractLedgerEntry {
+            contract_digest: "new".into(),
+            source_function_call_id: "reused-call".into(),
+            source_content_digest: "new-content".into(),
+            eligible: false,
+        };
+        let mut ledger = std::collections::BTreeMap::from([
+            ("worker::function".into(), old_source),
+            ("worker::other".into(), unrelated_source.clone()),
+        ]);
+
+        crate::trigger::apply_contract_updates_after_append(
+            &mut ledger,
+            "reused-call",
+            vec![("worker::function".into(), replacement)],
+        );
+
+        assert_eq!(
+            ledger,
+            std::collections::BTreeMap::from([("worker::other".into(), unrelated_source)])
+        );
+    }
+
+    #[test]
+    fn concrete_native_tools_are_sorted_by_function_id() {
+        let policy =
+            crate::policy::CompiledPolicy::from(Some(&crate::types::turn::FunctionPolicy {
+                allow: vec!["*".into()],
+                deny: vec![],
+                expose: crate::types::turn::ExposeMode::Native,
+            }));
+        let descriptors = vec![
+            crate::clients::FunctionDescriptor {
+                function_id: "z::last".into(),
+                description: None,
+                parameters: None,
+            },
+            crate::clients::FunctionDescriptor {
+                function_id: "a::first".into(),
+                description: None,
+                parameters: None,
+            },
+        ];
+
+        let names: Vec<_> = concrete_allowed_tools(&policy, &descriptors)
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted);
+    }
+
+    #[test]
+    fn estimated_prompt_categories_split_and_clamp_named_skills() {
+        let breakdown = crate::clients::context::AssembleBreakdown {
+            system_prompt_tokens: 10,
+            by_part: Some(std::collections::BTreeMap::from([("skills".into(), 4)])),
+            ..Default::default()
+        };
+        assert_eq!(super::estimated_prompt_categories(&breakdown), (6, 4));
+
+        let oversized = crate::clients::context::AssembleBreakdown {
+            by_part: Some(std::collections::BTreeMap::from([("skills".into(), 14)])),
+            ..breakdown
+        };
+        assert_eq!(super::estimated_prompt_categories(&oversized), (0, 10));
+    }
+
+    #[test]
+    fn skill_baseline_sits_between_identity_and_runtime_guidance() {
+        assert_eq!(
+            super::compose_system_prompt(Some("identity"), Some("skill index"), "runtime"),
+            "identity\n\nskill index\n\nruntime"
+        );
+        assert_eq!(
+            super::compose_system_prompt(Some("identity\n"), None, "runtime"),
+            "identity\n\nruntime"
+        );
+        assert_eq!(
+            super::compose_system_prompt(None, None, "runtime"),
+            "runtime"
+        );
+    }
+
+    #[test]
+    fn llm_failure_preserves_router_contract_and_runtime_attribution() {
+        let error = ChatError {
+            code: Some("router/provider_unavailable".into()),
+            message: "Provider unavailable.".into(),
+            detail: Some("provider openai stream function was not found".into()),
+            kind: Some(ErrorKind::Transient),
+            retryable: Some(true),
+        };
+        let failure = super::llm_failure_info(
+            Some(&error),
+            Some(ErrorKind::Permanent),
+            Some("openai"),
+            Some("gpt-test"),
+        );
+
+        assert_eq!(failure.code, "router/provider_unavailable");
+        assert_eq!(failure.kind, Some(ErrorKind::Transient));
+        assert!(failure.retryable);
+        assert_eq!(
+            failure.detail,
+            Some("provider openai stream function was not found")
+        );
+        assert_eq!(failure.provider, Some("openai"));
+        assert_eq!(failure.model, Some("gpt-test"));
+        assert_eq!(super::failure_class(failure), "llm.transient");
+    }
+
+    #[test]
+    fn router_code_selects_a_friendly_summary_and_actions() {
+        let error = ChatError {
+            code: Some("router/provider_unavailable".into()),
+            message: "legacy raw provider text".into(),
+            detail: Some("legacy raw provider text".into()),
+            kind: Some(ErrorKind::Transient),
+            retryable: Some(true),
+        };
+        let failure = super::llm_failure_info(Some(&error), None, Some("openai"), Some("gpt-test"));
+        let presentation = super::failure_presentation(&error.message, failure);
+
+        assert_eq!(
+            presentation.summary,
+            "The selected provider is temporarily unavailable."
+        );
+        assert_eq!(
+            presentation.next_actions,
+            vec![
+                "Retry the turn in a moment.",
+                "Choose another available provider or model."
+            ]
+        );
+    }
+
+    #[test]
+    fn generic_permanent_presentation_has_stable_copy() {
+        let error = ChatError {
+            code: Some("provider/custom_rejection".into()),
+            message: "raw rejection".into(),
+            detail: Some("raw rejection with upstream diagnostics".into()),
+            kind: Some(ErrorKind::Permanent),
+            retryable: Some(false),
+        };
+        let failure = super::llm_failure_info(Some(&error), None, None, Some("m"));
+        let presentation = super::failure_presentation(&error.message, failure);
+
+        assert_eq!(presentation.summary, "The provider rejected this request.");
+        assert_eq!(
+            presentation.next_actions,
+            vec!["Review the selected model and provider settings, then try again."]
+        );
+        assert_eq!(super::failure_class(failure), "llm.permanent");
+    }
+
+    #[test]
+    fn only_the_exact_current_turn_step_is_executable() {
+        assert!(!turn_step_matches("t_current", 4, "t_stale", 4));
+        assert!(!turn_step_matches("t_current", 4, "t_current", 3));
+        assert!(turn_step_matches("t_current", 4, "t_current", 4));
+        assert!(!turn_step_matches("t_current", 4, "t_current", 5));
+    }
+
+    #[test]
+    fn function_result_append_retries_only_dependency_registration_races() {
+        assert!(retryable_function_result_append_error(
+            &HarnessError::Dependency(
+                "session::append: remote error (function_not_found): Function not found".into(),
+            )
+        ));
+        assert!(retryable_function_result_append_error(
+            &HarnessError::Dependency("session::append: iii is not connected".into())
+        ));
+        assert!(!retryable_function_result_append_error(
+            &HarnessError::Dependency("session::append: invalid message".into())
+        ));
+        assert!(!retryable_function_result_append_error(
+            &HarnessError::Dependency(
+                "context::assemble: remote error (function_not_found): Function not found".into(),
+            )
+        ));
+        assert!(!retryable_function_result_append_error(
+            &HarnessError::Internal("session::append: function_not_found".into())
+        ));
+    }
 
     fn queued(message: AgentMessage) -> crate::state::QueuedMessage {
         crate::state::QueuedMessage {
@@ -2622,6 +3747,17 @@ mod tests {
         assert!(super::registry_notice(Some(7), 7).is_none());
         // Registry moved on: notice fires.
         assert!(super::registry_notice(Some(6), 7).is_some());
+    }
+
+    #[test]
+    fn notice_message_is_a_timestamped_tail_user_message() {
+        let msg = super::notice_message(super::REGISTRY_CHANGED_NOTICE.to_string());
+        assert_eq!(msg["role"], "user");
+        assert_eq!(msg["content"][0]["type"], "text");
+        assert_eq!(msg["content"][0]["text"], super::REGISTRY_CHANGED_NOTICE);
+        // The router's message types have no serde default for `timestamp`;
+        // omitting it fails deserialization at the router boundary.
+        assert!(msg["timestamp"].is_i64());
     }
 
     #[test]

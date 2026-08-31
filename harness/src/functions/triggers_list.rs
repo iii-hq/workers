@@ -6,8 +6,8 @@
 //! agent binding registers as the internal delivery hop with metadata that is
 //! only a `__binding` pointer, so the engine knows neither the owner nor the
 //! shape. The store is the authority — these functions expose it as data:
-//! trigger type, config, delivery target (absent = notify), conditions,
-//! lifecycle, fire count. Nothing here interprets a source type, which is
+//! trigger type, config, delivery target (absent = notify), label/event action,
+//! conditions, lifecycle, fire count. Nothing here interprets a source type, which is
 //! what keeps the console compatible with trigger sources that do not exist
 //! yet.
 //!
@@ -23,13 +23,14 @@ use serde_json::Value;
 use crate::bindings::{Binding, ConditionSpec};
 use crate::deps::Deps;
 use crate::error::HarnessError;
+use crate::subscriptions::fired;
 
 pub const TRIGGERS_LIST_ID: &str = "harness::triggers::list";
 pub const TRIGGERS_LIST_DESC: &str =
     "Read-only: the trigger bindings a session owns (durable records) — subscription id, \
-     trigger type/config, delivery target (absent = notifies the owner), conditions, \
-     lifecycle, and fire count. In-turn agent calls may omit `session_id` (defaults to \
-     the calling session).";
+     trigger type/config, delivery target (absent = notifies the owner), label/event \
+     action, conditions, lifecycle, and fire count. In-turn agent calls may omit \
+     `session_id` (defaults to the calling session).";
 
 pub const TRIGGERS_UNREGISTER_ID: &str = "harness::triggers::unregister";
 pub const TRIGGERS_UNREGISTER_DESC: &str =
@@ -69,6 +70,9 @@ pub struct TriggerRow {
     pub conditions: Vec<ConditionSpec>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// Human-readable event text declared as `metadata.action`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
     pub once: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_fires: Option<u64>,
@@ -116,20 +120,7 @@ fn row_from(binding: &Binding) -> TriggerRow {
         .unwrap_or((None, None));
     let target = (binding.target.function_id != crate::functions::SEND_ID)
         .then(|| binding.target.function_id.clone());
-    let label = binding
-        .dedup_key
-        .as_ref()
-        .and_then(|k| k.get("label"))
-        .and_then(Value::as_str)
-        .or_else(|| {
-            binding
-                .target
-                .payload
-                .as_ref()
-                .and_then(|p| p.get("label"))
-                .and_then(Value::as_str)
-        })
-        .map(str::to_string);
+    let label = binding_label(binding).map(str::to_string);
     TriggerRow {
         subscription_id: binding.id.clone(),
         trigger_id: binding.trigger_id.clone(),
@@ -138,6 +129,7 @@ fn row_from(binding: &Binding) -> TriggerRow {
         target,
         conditions: binding.conditions.clone(),
         label,
+        action: binding.event_action().map(str::to_string),
         once: binding.lifecycle.once,
         max_fires: binding.lifecycle.max_fires,
         expires_at: binding.lifecycle.expires_at,
@@ -148,6 +140,11 @@ fn row_from(binding: &Binding) -> TriggerRow {
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct TriggersUnregisterRequest {
+    /// `id` accepted as an alias: the sibling teardown contract
+    /// (`engine::unregister_trigger`) calls this field `id`, and models carry
+    /// that name over — verify-wake-fix-1 postmortem: the first unregister of
+    /// the run failed on a raw serde "missing field" for exactly this.
+    #[serde(alias = "id")]
     pub subscription_id: String,
     /// The binding's owner session — a correctness handshake, checked against
     /// the record. In-turn agent calls may omit it (the harness injects the
@@ -194,8 +191,52 @@ pub async fn unregister(
             },
         )
         .await;
+    } else {
+        record_unregistered(deps, &binding).await;
     }
     Ok(TriggersUnregisterResponse { removed: true })
+}
+
+/// Persist the explicit retirement for bindings that do not warrant waking a
+/// parked session. The armed, unfired wake branch above keeps its existing
+/// notification + custom-record pair; every other shape gets only this
+/// model-invisible lifecycle record.
+async fn record_unregistered(deps: &Deps, binding: &Binding) {
+    fired::emit(
+        &deps.session().await,
+        &binding.owner.session_id,
+        &format!("e_trigunregistered_{}", binding.id),
+        unregistered_record(binding, fired::now_ms()),
+    )
+    .await;
+}
+
+/// Pure wire-record builder kept separate so its source/config/count contract
+/// can be pinned without a session-manager test double.
+fn unregistered_record(binding: &Binding, fired_at: i64) -> fired::TriggerFired<'_> {
+    fired::retirement_record(
+        binding,
+        fired::TriggerOutcome::Unregistered,
+        fired::RetirementReason::Unregistered,
+        Some("unregistered by harness::triggers::unregister"),
+        fired_at,
+    )
+}
+
+fn binding_label(binding: &Binding) -> Option<&str> {
+    binding
+        .dedup_key
+        .as_ref()
+        .and_then(|key| key.get("label"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            binding
+                .target
+                .payload
+                .as_ref()
+                .and_then(|payload| payload.get("label"))
+                .and_then(Value::as_str)
+        })
 }
 
 #[cfg(test)]
@@ -236,6 +277,7 @@ mod tests {
                 "trigger_type": "state",
                 "config": { "scope": "run", "key": "done" },
                 "label": "dedup-label",
+                "metadata": { "action": "run completion received" },
             })),
             fires: 3,
             created_at,
@@ -254,6 +296,7 @@ mod tests {
             "a wake delivers to nobody but the owner"
         );
         assert_eq!(row.label.as_deref(), Some("dedup-label"));
+        assert_eq!(row.action.as_deref(), Some("run completion received"));
         assert!(row.once);
         assert_eq!(row.expires_at, Some(1_800_000_000_000));
         assert_eq!(row.fires, 3);
@@ -269,6 +312,7 @@ mod tests {
         assert!(row.trigger_type.is_none());
         assert!(row.config.is_none());
         assert!(row.label.is_none());
+        assert!(row.action.is_none());
     }
 
     #[test]
@@ -278,5 +322,43 @@ mod tests {
         let row = row_from(&b);
         assert_eq!(row.label.as_deref(), Some("wake-label"));
         assert_eq!(row.trigger_type.as_deref(), Some("timer"));
+    }
+
+    #[test]
+    fn recurring_call_unregistration_builds_one_complete_custom_record() {
+        let mut b = binding("sub_call", "state::set", 30);
+        b.lifecycle.once = false;
+        b.lifecycle.max_fires = Some(10);
+        b.fires = 4;
+
+        assert!(
+            !crate::bindings::expiry::is_unfired_wake(&b),
+            "a call must take the custom-only branch"
+        );
+        let record = serde_json::to_value(unregistered_record(&b, 42)).unwrap();
+        assert_eq!(record["subscription_id"], "sub_call");
+        assert_eq!(record["trigger_id"], "trg_sub_call");
+        assert_eq!(record["target"], "state::set");
+        assert_eq!(record["trigger_type"], "state");
+        assert_eq!(record["config"], json!({ "scope": "run", "key": "done" }));
+        assert_eq!(record["action"], "run completion received");
+        assert_eq!(record["fires"], 4);
+        assert_eq!(record["outcome"], "unregistered");
+        assert_eq!(record["retirement_reason"], "unregistered");
+        assert_eq!(record["retired"], true);
+        assert_eq!(record["fired_at"], 42);
+        assert!(record.get("payload").is_none());
+    }
+
+    /// `id` is the field name the sibling engine contract uses; both spellings
+    /// must deserialize to the same request.
+    #[test]
+    fn unregister_accepts_id_alias_for_subscription_id() {
+        let canonical: TriggersUnregisterRequest =
+            serde_json::from_value(json!({ "subscription_id": "sub_a" })).unwrap();
+        assert_eq!(canonical.subscription_id, "sub_a");
+        let aliased: TriggersUnregisterRequest =
+            serde_json::from_value(json!({ "id": "sub_a" })).unwrap();
+        assert_eq!(aliased.subscription_id, "sub_a");
     }
 }

@@ -15,6 +15,7 @@
 import type { IiiClient } from '@/lib/iii-client'
 import type {
   MessageQueuedEvent,
+  TriggersChangedEvent,
   TurnCompletedEvent,
   TurnStartedEvent,
 } from '@/types/iii-agent-event'
@@ -22,9 +23,11 @@ import type {
 const TURN_COMPLETED_FN = 'iii::console::turn_completed'
 const TURN_STARTED_FN = 'iii::console::turn_started'
 const MESSAGE_QUEUED_FN = 'iii::console::message_queued'
+const TRIGGERS_CHANGED_FN = 'iii::console::triggers_changed'
 const TURN_COMPLETED_TRIGGER = 'harness::turn-completed'
 const TURN_STARTED_TRIGGER = 'harness::turn-started'
 const MESSAGE_QUEUED_TRIGGER = 'harness::message-queued'
+const TRIGGERS_CHANGED_TRIGGER = 'harness::triggers-changed'
 
 type ClientSubset = Pick<IiiClient, 'browserId' | 'on' | 'registerTrigger'>
 
@@ -119,5 +122,26 @@ export function startQueuedEventsSubscription(
     MESSAGE_QUEUED_TRIGGER,
     sessionId,
     onQueued,
+  )
+}
+
+/**
+ * Bind `harness::triggers-changed` for one session: fires when the session's
+ * trigger-binding set or a fire count changes (registration, unregistration
+ * from any tab, a fire, expiry, GC). A doorbell — consumers refetch
+ * `harness::triggers::list`, which stays idempotent under the trigger's
+ * at-least-once delivery. Returns a cleanup.
+ */
+export function startTriggersChangedSubscription(
+  client: ClientSubset,
+  sessionId: string,
+  onChanged: (event: TriggersChangedEvent) => void,
+): () => void {
+  return bind<TriggersChangedEvent>(
+    client,
+    TRIGGERS_CHANGED_FN,
+    TRIGGERS_CHANGED_TRIGGER,
+    sessionId,
+    onChanged,
   )
 }

@@ -17,11 +17,14 @@
 
 import type { Host } from '@iii-dev/console-ui'
 import { WorktreesPage } from './src/page'
+import { registerWorktreePalette } from './src/page/palette'
 
 export default function setup(host: Host) {
   host.pages.register({
     id: 'worktree',
     title: 'worktrees',
-    render: () => <WorktreesPage host={host} />,
+    render: (props) => <WorktreesPage host={host} {...props} />,
   })
+
+  registerWorktreePalette(host)
 }

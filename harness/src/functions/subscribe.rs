@@ -7,6 +7,20 @@
 //! notifies the owner session (a wake) or calls a plain, policy-checked
 //! function. A binding never starts an agent: `harness::spawn` is not a
 //! target, and spawning is a direct call the owner makes on its own turn.
+//!
+//! The engine-side trigger is registered over the WORKER CHANNEL
+//! ([`register_delivery_trigger`]), not by dispatching the
+//! `engine::register_trigger` function. The function path pins all three of
+//! the trigger's namespaces to `default`, so in a namespaced deployment the
+//! provider lookup misses the real provider (the binding parks as PENDING
+//! forever — MOT: console-04e02cb7 postmortem, `fires: 0` while the watched
+//! state key was written) and a fire would resolve `harness::trigger::deliver`
+//! in `default`, where this harness never registers. The channel path stamps
+//! the connection's namespace on both ends and the SDK replays it on
+//! reconnect. Durability across HARNESS restarts moved with it: the engine's
+//! trigger registry is in-memory, so the durable thing was always the binding
+//! record — startup now re-arms engine triggers from the store
+//! ([`crate::bindings::gc::run`]).
 
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::TriggerAction;
@@ -72,11 +86,16 @@ pub struct SubscribeRequest {
     /// directly from a turn and register a wake on what they write.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub function_id: Option<String>,
-    /// Call-binding template: `{ payload?, event_into? }`. `payload` is the
-    /// fixed argument object sent to the target; `event_into` is a JSON
-    /// pointer naming where the fired event is injected into that payload.
-    /// Meaningless for a wake; sub-agent fields (task/model/session_id/
-    /// options) are rejected — spawning is not something a binding does.
+    /// Presentation metadata plus the optional call-binding template:
+    /// `{ action?, payload?, event_into? }`. `action` is a short user-facing
+    /// description of the event shown when this trigger fires (for example,
+    /// "new Explorer message received"); unlike `label`, it describes what
+    /// happened rather than naming the binding. `payload` is the fixed
+    /// argument object sent to a call target; `event_into` is a JSON pointer
+    /// naming where the fired event is injected into that payload. For a
+    /// wake, only `action` has meaning. Sub-agent fields
+    /// (task/model/session_id/options) are rejected — spawning is not
+    /// something a binding does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
     /// Explicit target, the long form of `function_id` + `metadata`:
@@ -95,8 +114,11 @@ pub struct SubscribeRequest {
     pub lifecycle: Option<LifecycleRequest>,
 }
 
-/// The caller-settable half of a binding's lifecycle.
+/// The caller-settable half of a binding's lifecycle. Strict on purpose: an
+/// unknown key here (the retired `expires_at` above all) is a dropped
+/// deadline, so it must error naming the accepted fields, never pass.
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct LifecycleRequest {
     /// Auto-unsubscribe after the first delivered fire. The top-level `once`
     /// field remains accepted as shorthand.
@@ -105,9 +127,14 @@ pub struct LifecycleRequest {
     /// Lifetime delivery budget; the binding retires on its Nth delivery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_fires: Option<u64>,
-    /// Wall-clock deadline (epoch ms) after which the binding stops.
+    /// RELATIVE deadline: the binding stops this many milliseconds from
+    /// registration (resolved to an absolute instant server-side). The ONLY
+    /// deadline form — absolute `expires_at` was retired from this contract
+    /// after repeated stale-epoch guesses (verify-wake-fix-1/-4: models sent
+    /// months-old round numbers); `deny_unknown_fields` turns it into a
+    /// field-naming error instead of a silently dropped deadline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expires_at: Option<i64>,
+    pub expires_in_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -207,12 +234,13 @@ impl<'a> CallerModel<'a> {
     }
 }
 
-/// The single per-call invocation chokepoint. Subscription control calls
-/// (`engine::register_trigger` / `engine::unregister_trigger`) are handled inline
-/// with the trusted owning session injected — the model can never widen the
-/// target; everything else invokes the target normally. Every call site (the
-/// turn loop, `harness::function::trigger`, and the hook-held release path) routes
-/// through here so the trusted injection can't be bypassed.
+/// The single per-call invocation chokepoint. Subscription controls and a
+/// locked caller's exact self-targeted `harness::send` are handled inline with
+/// trusted caller context; the model cannot forge session-lock ownership.
+/// Everything else invokes the target normally. Every call site (the turn loop,
+/// `harness::function::trigger`, and the hook-held release path) routes through
+/// here so trusted context cannot be bypassed.
+#[allow(clippy::too_many_arguments)]
 pub async fn invoke(
     deps: &Deps,
     engine: &EngineClient,
@@ -220,8 +248,17 @@ pub async fn invoke(
     function_id: &str,
     arguments: &Value,
     session_id: &str,
+    caller_holds_session_lock: bool,
     caller: Option<CallerModel<'_>>,
 ) -> ResultData {
+    if let Some(request) = send_invocation_context(
+        function_id,
+        arguments,
+        session_id,
+        caller_holds_session_lock,
+    ) {
+        return intercept_send(deps, request, session_id).await;
+    }
     match function_id {
         REGISTER_TRIGGER_ID => {
             intercept_register(deps, arguments, session_id, caller, policy).await
@@ -244,6 +281,40 @@ pub async fn invoke(
         // is denial of service, not exfiltration; deny it anyway.
         crate::state::CLAIM_NAMESPACE_ID => trigger::denied_result(function_id),
         _ => trigger::invoke_target(engine, policy, function_id, arguments).await,
+    }
+}
+
+fn send_invocation_context(
+    function_id: &str,
+    arguments: &Value,
+    session_id: &str,
+    caller_holds_session_lock: bool,
+) -> Option<crate::functions::send::SendRequest> {
+    if function_id != crate::functions::SEND_ID || !caller_holds_session_lock {
+        return None;
+    }
+    let request: crate::functions::send::SendRequest =
+        serde_json::from_value(arguments.clone()).ok()?;
+    (request.session_id.as_deref() == Some(session_id)).then_some(request)
+}
+
+async fn intercept_send(
+    deps: &Deps,
+    request: crate::functions::send::SendRequest,
+    caller_session_id: &str,
+) -> ResultData {
+    match crate::functions::send::handle_from_invoke(deps, request, caller_session_id, true).await {
+        Ok(response) => match serde_json::to_value(response) {
+            Ok(value) => trigger::normalized_result(value),
+            Err(error) => trigger::invocation_error_result(
+                None,
+                format!("{}: {error}", crate::functions::SEND_ID),
+            ),
+        },
+        Err(error) => trigger::invocation_error_result(
+            Some(error.code().to_string()),
+            format!("{}: {error}", crate::functions::SEND_ID),
+        ),
     }
 }
 
@@ -345,7 +416,7 @@ fn standing_binding_advisory(req: &SubscribeRequest, once: bool) -> Option<Strin
         let bounded = req
             .lifecycle
             .as_ref()
-            .is_some_and(|l| l.max_fires.is_some() || l.expires_at.is_some());
+            .is_some_and(|l| l.max_fires.is_some() || l.expires_in_ms.is_some());
         if bounded {
             return None;
         }
@@ -360,7 +431,7 @@ fn standing_binding_advisory(req: &SubscribeRequest, once: bool) -> Option<Strin
              dispatched call). This registration still SUCCEEDED. A deadline wants trigger_type \
              \"timer\" with {{ \"in_ms\": <ms> }} (fires once, exactly on time) — or keep this \
              cron and pass `once: true`; a bounded run sets lifecycle \
-             {{ max_fires | expires_at }}; a deliberate forever-cron must be unregistered by \
+             {{ max_fires | expires_in_ms }}; a deliberate forever-cron must be unregistered by \
              your teardown."
         ));
     }
@@ -368,7 +439,7 @@ fn standing_binding_advisory(req: &SubscribeRequest, once: bool) -> Option<Strin
         "note: this call binding is STANDING — it re-runs its call on EVERY future matching \
          event until unregistered. That is the default for a call target (per-event work is \
          what a call binding means); pass `once: true` for a one-shot, and give a standing \
-         binding a lifecycle bound ({ max_fires | expires_at }) or unregister it in your \
+         binding a lifecycle bound ({ max_fires | expires_in_ms }) or unregister it in your \
          teardown so it cannot fire forever."
             .to_string(),
     )
@@ -537,15 +608,18 @@ async fn handle(
         ));
     }
 
-    validate_lifecycle(
-        req.lifecycle.as_ref(),
-        crate::types::message::AgentMessage::now_ms(),
-    )?;
+    validate_lifecycle(req.lifecycle.as_ref())?;
+    validate_event_action(req.metadata.as_ref())?;
     let once = effective_once(&req);
-    // Timer idempotency is based on the caller's relative request. Resolving
-    // `in_ms` first would mint a different absolute deadline on every retry.
+    // Idempotency is based on the caller's RELATIVE request (timer `in_ms`,
+    // lifecycle `expires_in_ms`). Resolving first would mint a different
+    // absolute deadline on every retry and defeat the dedup.
     let dedup = registration_dedup_key(&req, once);
     resolve_timer_request(&mut req)?;
+    let expires_at = resolved_expires_at(
+        req.lifecycle.as_ref(),
+        crate::types::message::AgentMessage::now_ms(),
+    );
 
     let target = resolve_target(deps, &req, session_id, policy).await?;
     authorize_conditions(deps, &req.conditions, session_id, policy).await?;
@@ -573,7 +647,7 @@ async fn handle(
         lifecycle: Lifecycle {
             once,
             max_fires: req.lifecycle.as_ref().and_then(|l| l.max_fires),
-            expires_at: req.lifecycle.as_ref().and_then(|l| l.expires_at),
+            expires_at,
         },
         // The registrant's policy, frozen: a fired call is checked against
         // what the session could call WHEN IT REGISTERED, never against a
@@ -586,64 +660,41 @@ async fn handle(
     };
     // Durable BEFORE the engine knows about it: a fire that arrives before the
     // engine's answer must still resolve its record. The reservation and
-    // per-owner capacity check are one CAS-backed operation.
-    validate_lifecycle(
-        req.lifecycle.as_ref(),
-        crate::types::message::AgentMessage::now_ms(),
-    )?;
+    // per-owner capacity check are one CAS-backed operation; a deadline that
+    // lapsed since resolution surfaces as `ReserveOutcome::Exhausted`.
     require_reserved(store.reserve(&binding).await?)?;
 
-    let resp = deps
-        .iii
-        .trigger(TriggerRequest {
-            function_id: REGISTER_TRIGGER_ID.to_string(),
-            payload: json!({
-                "trigger_type": req.trigger_type,
-                "function_id": crate::functions::trigger_deliver::DELIVER_ID,
-                "config": req.config,
-                "metadata": { "__binding": binding.id },
-            }),
-            action: None,
-            timeout_ms: Some(deps.cfg().await.dispatch_timeout_ms),
-        })
-        .await;
-
-    match resp.map(|v| v.get("id").and_then(Value::as_str).map(str::to_string)) {
-        Ok(Some(trigger_id)) => {
-            match store.attach_trigger_id(&binding, &trigger_id).await {
-                Ok(crate::bindings::AttachOutcome::Attached(current)) => {
-                    binding = *current;
-                }
-                Ok(crate::bindings::AttachOutcome::Gone) => {
-                    // A fast one-shot fired and retired before registration
-                    // returned. Its provider id still needs explicit teardown.
-                    unregister_engine_trigger(deps, &trigger_id).await;
-                }
-                Err(error) => {
-                    // The caller must never observe a failed registration
-                    // while its provider trigger remains live.
-                    unregister_engine_trigger(deps, &trigger_id).await;
-                    let _ = store.delete(&binding.id).await;
-                    return Err(error);
-                }
+    let trigger_id =
+        match register_delivery_trigger(deps, &req.trigger_type, &req.config, &binding.id) {
+            Ok(id) => id,
+            Err(reason) => {
+                let _ = store.delete(&binding.id).await;
+                return Err(HarnessError::Dependency(format!(
+                    "delivery trigger registration `{}` failed: {reason}",
+                    req.trigger_type
+                )));
             }
+        };
+    match store.attach_trigger_id(&binding, &trigger_id).await {
+        Ok(crate::bindings::AttachOutcome::Attached(current)) => {
+            binding = *current;
         }
-        // Carry the engine's rejection reason (e.g. an unknown config key for
-        // this trigger type) — an opaque "failed" sends the agent guess-looping.
-        outcome => {
+        Ok(crate::bindings::AttachOutcome::Gone) => {
+            // A fast one-shot fired and retired before registration
+            // returned. Its provider id still needs explicit teardown.
+            unregister_engine_trigger(deps, &trigger_id).await;
+        }
+        Err(error) => {
+            // The caller must never observe a failed registration
+            // while its provider trigger remains live.
+            unregister_engine_trigger(deps, &trigger_id).await;
             let _ = store.delete(&binding.id).await;
-            let reason = match outcome {
-                Err(e) => e.to_string(),
-                _ => "no binding id in response".to_string(),
-            };
-            return Err(HarnessError::Dependency(format!(
-                "{REGISTER_TRIGGER_ID} `{}` failed: {reason}",
-                req.trigger_type
-            )));
+            return Err(error);
         }
     }
 
     let notes: Vec<String> = [
+        provider_presence_note(deps, &req.trigger_type).await,
         prewritten_key_advisory(deps, &req).await,
         standing_binding_advisory(&req, once),
         state_catchall_advisory(&req),
@@ -668,10 +719,7 @@ async fn handle(
     })
 }
 
-fn validate_lifecycle(
-    lifecycle: Option<&LifecycleRequest>,
-    now_ms: i64,
-) -> Result<(), HarnessError> {
+fn validate_lifecycle(lifecycle: Option<&LifecycleRequest>) -> Result<(), HarnessError> {
     let Some(lifecycle) = lifecycle else {
         return Ok(());
     };
@@ -680,13 +728,10 @@ fn validate_lifecycle(
             "`lifecycle.max_fires` must be at least 1".into(),
         ));
     }
-    if lifecycle
-        .expires_at
-        .is_some_and(|expires_at| expires_at <= now_ms)
-    {
-        return Err(HarnessError::InvalidRequest(
-            "`lifecycle.expires_at` must be in the future".into(),
-        ));
+    if let Some(in_ms) = lifecycle.expires_in_ms.filter(|&ms| ms <= 0) {
+        return Err(HarnessError::InvalidRequest(format!(
+            "`lifecycle.expires_in_ms` must be positive, got {in_ms}"
+        )));
     }
     Ok(())
 }
@@ -822,7 +867,8 @@ async fn authorize_conditions(
     Ok(())
 }
 
-/// A call binding's shorthand `metadata` takes only `{ payload?, event_into? }`.
+/// A call binding's shorthand `metadata` takes only
+/// `{ action?, payload?, event_into? }`.
 /// Reject the rest LOUDLY: sub-agent keys here mean the caller wanted a spawn
 /// binding, and a pointer that cannot be created is a silent per-event no-op at
 /// fire time.
@@ -830,16 +876,37 @@ fn validate_call_template(metadata: &Value) -> Result<(), HarnessError> {
     let Some(map) = metadata.as_object() else {
         return Ok(());
     };
-    const ALLOWED: [&str; 2] = ["payload", "event_into"];
+    const ALLOWED: [&str; 3] = ["action", "payload", "event_into"];
     if let Some(unknown) = map.keys().find(|k| !ALLOWED.contains(&k.as_str())) {
         return Err(HarnessError::InvalidRequest(format!(
             "unknown key `{unknown}` for a call binding: `metadata` takes only \
-             {{ payload?, event_into? }} — the target is the registration's `function_id`. \
+             {{ action?, payload?, event_into? }} — the target is the registration's `function_id`. \
              Sub-agent fields (task/model/session_id/options) are not valid anywhere in a \
              binding: spawn children directly from a turn."
         )));
     }
     validate_event_into(map.get("event_into").and_then(Value::as_str))
+}
+
+/// Validate the one host-interpreted presentation field without constraining
+/// metadata that belongs to an explicit target. The action is plain display
+/// text; it never participates in routing or authorization.
+fn validate_event_action(metadata: Option<&Value>) -> Result<(), HarnessError> {
+    let Some(action) = metadata
+        .and_then(Value::as_object)
+        .and_then(|metadata| metadata.get("action"))
+    else {
+        return Ok(());
+    };
+    if action
+        .as_str()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        return Ok(());
+    }
+    Err(HarnessError::InvalidRequest(
+        "`metadata.action` must be a non-empty string describing the event".into(),
+    ))
 }
 
 fn validate_event_into(pointer: Option<&str>) -> Result<(), HarnessError> {
@@ -879,9 +946,23 @@ fn armed_wake_advisory(req: &SubscribeRequest, once: bool) -> Option<String> {
          state::delete) on that exact scope/key fires it — a database table or row with the \
          same name does NOT. Double-check that a task you spawned (worker/finalizer) \
          EXPLICITLY sets that exact scope/key when its condition is met, or this session \
-         sleeps forever and its cleanup never runs. Set lifecycle {{ expires_at: <epoch ms> }} \
-         to be woken with an expiry notice instead if the write never comes."
+         sleeps forever and its cleanup never runs. Set lifecycle \
+         {{ expires_in_ms: <relative ms> }} to be woken with an expiry notice instead if the \
+         write never comes."
     ))
+}
+
+/// Resolve the RELATIVE lifecycle deadline (`expires_in_ms`) into the
+/// absolute instant the binding stores. Computed AFTER the idempotency key is
+/// built — like the timer's `in_ms`, resolving first would mint a different
+/// absolute deadline on every model retry. `validate_lifecycle` already
+/// rejected non-positive values, so the result is a future instant by
+/// construction; a deadline that lapses between here and the reservation is
+/// the store's `ReserveOutcome::Exhausted`.
+fn resolved_expires_at(lifecycle: Option<&LifecycleRequest>, now_ms: i64) -> Option<i64> {
+    lifecycle
+        .and_then(|l| l.expires_in_ms)
+        .map(|in_ms| now_ms.saturating_add(in_ms))
 }
 
 /// The canonicalized registration request used for same-session idempotency.
@@ -896,7 +977,7 @@ fn registration_dedup_key(req: &SubscribeRequest, once: bool) -> Value {
         "lifecycle": {
             "once": once,
             "max_fires": req.lifecycle.as_ref().and_then(|l| l.max_fires),
-            "expires_at": req.lifecycle.as_ref().and_then(|l| l.expires_at),
+            "expires_in_ms": req.lifecycle.as_ref().and_then(|l| l.expires_in_ms),
         },
         "function_id": req.function_id,
         "metadata": req.metadata,
@@ -946,12 +1027,11 @@ async fn register_post_turn_hook(
         .map_err(|e| HarnessError::InvalidRequest(format!("hook config serialize: {e}")))?;
     let handle = deps
         .iii
-        .register_trigger(iii_sdk::protocol::RegisterTriggerInput {
-            trigger_type: crate::hooks::POST_TURN.to_string(),
-            function_id: function_id.clone(),
+        .register_trigger(iii_sdk::protocol::RegisterTriggerInput::new(
+            crate::hooks::POST_TURN.to_string(),
+            function_id.clone(),
             config,
-            metadata: None,
-        })
+        ))
         .map_err(|e| {
             HarnessError::InvalidRequest(format!("post-turn hook registration failed: {e}"))
         })?;
@@ -1113,9 +1193,107 @@ fn is_function_absent(error: &str) -> bool {
         || e.contains("unregistered")
 }
 
+/// Prefix of the synthetic trigger id stored on a binding whose engine
+/// trigger was registered over the worker channel. The SDK never returns the
+/// engine-side row id, so the binding records `sdk:<binding-id>` and the live
+/// unregister closure is held in [`crate::bindings::TriggerHandles`].
+pub const SDK_TRIGGER_ID_PREFIX: &str = "sdk:";
+
+/// The channel registration for a binding's delivery trigger. `namespace` and
+/// `trigger_namespace` are deliberately left unset: the SDK stamps this
+/// worker's namespace on the target (so the fire resolves
+/// `harness::trigger::deliver` where THIS harness registered it, `default`
+/// included when un-namespaced), and an unset provider namespace resolves
+/// home-first with the engine's `default` as fallback. Hardcoding either here
+/// would break one of the two deployment shapes.
+fn delivery_registration_input(
+    trigger_type: &str,
+    config: &Value,
+    binding_id: &str,
+) -> iii_sdk::protocol::RegisterTriggerInput {
+    iii_sdk::protocol::RegisterTriggerInput::new(
+        trigger_type,
+        crate::functions::trigger_deliver::DELIVER_ID,
+        config.clone(),
+    )
+    .with_metadata(json!({ "__binding": binding_id }))
+}
+
+/// Register a binding's engine trigger over the worker channel and record its
+/// unregister handle. Returns the synthetic trigger id to store on the
+/// binding. Registration errors from the engine arrive asynchronously (the
+/// SDK logs them); what CAN fail synchronously is serialization/channel state.
+pub fn register_delivery_trigger(
+    deps: &Deps,
+    trigger_type: &str,
+    config: &Value,
+    binding_id: &str,
+) -> Result<String, String> {
+    let input = delivery_registration_input(trigger_type, config, binding_id);
+    let handle = deps
+        .iii
+        .register_trigger(input)
+        .map_err(|e| e.to_string())?;
+    let trigger_id = format!("{SDK_TRIGGER_ID_PREFIX}{binding_id}");
+    deps.trigger_handles.insert(trigger_id.clone(), handle);
+    Ok(trigger_id)
+}
+
+/// Loud advisory when NOTHING currently provides the requested trigger type:
+/// the registration is accepted engine-side but parks as pending — invisible
+/// to `engine::registered-triggers::list` — and cannot fire until a provider
+/// registers. Without this the response reads "SUCCEEDED" and the owner sleeps
+/// forever on a binding that was never live (console-04e02cb7 postmortem).
+/// Fail-open: probe errors produce no note; only definitive NOT_FOUND in every
+/// checked namespace warns.
+async fn provider_presence_note(deps: &Deps, trigger_type: &str) -> Option<String> {
+    let mut namespaces: Vec<String> = Vec::new();
+    if let Some(own) = deps.iii.namespace() {
+        namespaces.push(own);
+    }
+    if !namespaces.iter().any(|ns| ns == "default") {
+        namespaces.push("default".to_string());
+    }
+    let timeout_ms = deps.cfg().await.dispatch_timeout_ms;
+    for ns in &namespaces {
+        let probe = deps
+            .iii
+            .trigger(TriggerRequest {
+                function_id: "engine::triggers::info".to_string(),
+                payload: json!({ "id": trigger_type, "namespace": ns }),
+                action: None,
+                timeout_ms: Some(timeout_ms),
+            })
+            .await;
+        match probe {
+            Ok(_) => return None,
+            Err(e) if e.to_string().contains("NOT_FOUND") => {}
+            Err(_) => return None,
+        }
+    }
+    Some(format!(
+        "warning: ARMED but currently PARKED — no connected worker provides trigger type \
+         `{trigger_type}` (checked namespace(s): {}). Nothing can fire this binding until a \
+         provider registers the type; it then activates automatically. If a `{trigger_type}` \
+         provider should be running (e.g. the state worker for `state`), start it.",
+        namespaces.join(", ")
+    ))
+}
+
 /// Best-effort engine-side teardown; `true` when the engine accepted it, so
 /// callers recording a fired-trigger `retired` flag report the real outcome.
+///
+/// Channel-registered triggers (`sdk:` ids) are torn down through their SDK
+/// handle so the reconnect replay list forgets them too. A `sdk:` id with no
+/// live handle is from before the last restart: its engine row died with the
+/// old connection, so there is nothing left to tear down.
 pub async fn unregister_engine_trigger(deps: &Deps, trigger_id: &str) -> bool {
+    if deps.trigger_handles.unregister(trigger_id) {
+        return true;
+    }
+    if trigger_id.starts_with(SDK_TRIGGER_ID_PREFIX) {
+        return true;
+    }
     match deps
         .iii
         .trigger(TriggerRequest {
@@ -1156,6 +1334,55 @@ fn error_result(msg: String) -> ResultData {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The delivery trigger must ride the worker channel with BOTH namespace
+    /// fields unset: the SDK then stamps this worker's namespace on the target
+    /// and resolves the provider home-first. The retired function-dispatch
+    /// path pinned target, home, and provider to `default`, which parked every
+    /// binding registered from a namespaced deployment as PENDING forever
+    /// (console-04e02cb7 postmortem: `fires: 0` while the watched key was
+    /// written) and would have fired into a `default`-namespace hop this
+    /// harness never registers.
+    #[test]
+    fn delivery_registration_rides_the_channel_namespace() {
+        let input = delivery_registration_input(
+            "state",
+            &json!({ "scope": "calc-delivery", "key": "plan" }),
+            "sub_x",
+        );
+        assert_eq!(
+            input.function_id,
+            crate::functions::trigger_deliver::DELIVER_ID
+        );
+        assert_eq!(input.trigger_type, "state");
+        assert_eq!(input.metadata, Some(json!({ "__binding": "sub_x" })));
+        assert_eq!(
+            input.config,
+            json!({ "scope": "calc-delivery", "key": "plan" })
+        );
+        assert!(input.namespace.is_none());
+        assert!(input.trigger_namespace.is_none());
+    }
+
+    /// `sdk:` ids belong to the handle map; with the handle gone (a record
+    /// from before the last restart) there is nothing engine-side left to
+    /// tear down, so teardown reports done instead of dispatching a bogus id.
+    #[tokio::test]
+    async fn sdk_trigger_ids_never_reach_the_engine_unregistrar() {
+        let handles = crate::bindings::TriggerHandles::default();
+        let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = called.clone();
+        handles.insert(
+            "sdk:sub_1".into(),
+            iii_sdk::trigger::Trigger::new(std::sync::Arc::new(move || {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            })),
+        );
+        assert!(handles.unregister("sdk:sub_1"));
+        assert!(called.load(std::sync::atomic::Ordering::SeqCst));
+        // Second teardown: no handle left, nothing to call.
+        assert!(!handles.unregister("sdk:sub_1"));
+    }
 
     /// An agent may gate itself and its own `<session>-` children; anything
     /// else is out of scope. No patterns → just itself.
@@ -1291,7 +1518,7 @@ mod tests {
             note.contains("database table or row with the same name does NOT"),
             "the medium sentence is the advisory's whole point: {note}"
         );
-        assert!(note.contains("expires_at"), "got: {note}");
+        assert!(note.contains("expires_in_ms"), "got: {note}");
         assert!(note.contains("expiry notice"), "got: {note}");
         // Standing notifies and non-state types are not wakes.
         assert!(armed_wake_advisory(&mk("state", json!({ "key": "k" })), false).is_none());
@@ -1347,8 +1574,7 @@ mod tests {
         // Any lifecycle bound silences it — bounded recurrence is deliberate.
         assert!(standing_binding_advisory(&mk(json!({ "max_fires": 6 })), false).is_none());
         assert!(
-            standing_binding_advisory(&mk(json!({ "expires_at": 1785181426583_i64 })), false)
-                .is_none()
+            standing_binding_advisory(&mk(json!({ "expires_in_ms": 3_600_000 })), false).is_none()
         );
     }
 
@@ -1506,42 +1732,55 @@ mod tests {
     }
 
     #[test]
-    fn lifecycle_must_have_a_future_delivery_slot() {
-        assert!(validate_lifecycle(None, 100).is_ok());
-        assert!(validate_lifecycle(
-            Some(&LifecycleRequest {
-                max_fires: Some(0),
-                ..Default::default()
-            }),
-            100,
-        )
+    fn lifecycle_deadlines_are_relative_only() {
+        assert!(validate_lifecycle(None).is_ok());
+        assert!(validate_lifecycle(Some(&LifecycleRequest {
+            max_fires: Some(0),
+            ..Default::default()
+        }))
         .is_err());
-        assert!(validate_lifecycle(
-            Some(&LifecycleRequest {
-                expires_at: Some(100),
+        for bad in [0_i64, -5] {
+            let err = validate_lifecycle(Some(&LifecycleRequest {
+                expires_in_ms: Some(bad),
                 ..Default::default()
-            }),
-            100,
-        )
-        .is_err());
-        assert!(validate_lifecycle(
-            Some(&LifecycleRequest {
-                max_fires: Some(1),
-                expires_at: Some(101),
-                ..Default::default()
-            }),
-            100,
-        )
+            }))
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains("must be positive"), "got: {err}");
+        }
+        assert!(validate_lifecycle(Some(&LifecycleRequest {
+            max_fires: Some(1),
+            expires_in_ms: Some(60_000),
+            ..Default::default()
+        }))
         .is_ok());
 
-        // A deadline that passed during target/approval resolution must fail
-        // the reservation-boundary recheck, not masquerade as a full owner.
-        let expiring = LifecycleRequest {
-            expires_at: Some(101),
+        // Relative resolves against the registration clock.
+        let lifecycle = LifecycleRequest {
+            expires_in_ms: Some(60_000),
             ..Default::default()
         };
-        assert!(validate_lifecycle(Some(&expiring), 100).is_ok());
-        assert!(validate_lifecycle(Some(&expiring), 101).is_err());
+        assert_eq!(resolved_expires_at(Some(&lifecycle), 1_000), Some(61_000));
+        assert_eq!(resolved_expires_at(None, 1_000), None);
+        assert_eq!(
+            resolved_expires_at(Some(&LifecycleRequest::default()), 1_000),
+            None
+        );
+    }
+
+    /// The retired absolute form must be a NAMED error, not a silently
+    /// dropped deadline: models carried `expires_at` over from old contracts
+    /// and every observed value was a stale epoch guess.
+    #[test]
+    fn absolute_expires_at_is_rejected_by_name() {
+        let err = serde_json::from_value::<LifecycleRequest>(json!({
+            "once": true,
+            "expires_at": 1_770_000_000_000_i64
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("expires_at"), "got: {err}");
+        assert!(err.contains("expires_in_ms"), "got: {err}");
     }
 
     #[test]
@@ -1576,6 +1815,36 @@ mod tests {
             with_caller_session_id(&json!("nope"), "s_me"),
             json!("nope")
         );
+    }
+
+    #[test]
+    fn trusted_self_send_is_intercepted_locally() {
+        let arguments = json!({ "session_id": "s", "message": "hello" });
+        let request = send_invocation_context(crate::functions::SEND_ID, &arguments, "s", true)
+            .expect("trusted self-send should be intercepted");
+        assert_eq!(request.session_id.as_deref(), Some("s"));
+    }
+
+    #[test]
+    fn sends_without_trusted_exact_self_target_use_engine_dispatch() {
+        let cases = [
+            json!({ "session_id": "other", "message": "hello" }),
+            json!({ "message": "hello" }),
+            json!({ "session_id": 42, "message": "hello" }),
+            json!({ "session_id": "s", "message": 42 }),
+        ];
+        for arguments in cases {
+            assert!(
+                send_invocation_context(crate::functions::SEND_ID, &arguments, "s", true,)
+                    .is_none()
+            );
+        }
+
+        let self_send = json!({ "session_id": "s", "message": "hello" });
+        assert!(
+            send_invocation_context(crate::functions::SEND_ID, &self_send, "s", false,).is_none()
+        );
+        assert!(send_invocation_context("state::get", &self_send, "s", true).is_none());
     }
 
     #[test]
@@ -1693,7 +1962,8 @@ mod tests {
 
     #[test]
     fn a_call_binding_rejects_sub_agent_keys_and_bad_pointers() {
-        // The shorthand `metadata` for a call target is {payload?, event_into?}.
+        // The shorthand `metadata` for a call target is
+        // {action?, payload?, event_into?}.
         // A `task` here means the caller wanted a spawn binding; saying so beats
         // silently ignoring it and wiring a call that fires with an empty
         // template forever.
@@ -1704,6 +1974,11 @@ mod tests {
         assert!(err.to_string().contains("JSON pointer"));
         // The valid shapes pass, including the empty-pointer whole-payload form.
         assert!(validate_call_template(&json!({ "payload": { "db": "primary" } })).is_ok());
+        assert!(validate_call_template(&json!({
+            "action": "new Explorer message received",
+            "payload": { "db": "primary" }
+        }))
+        .is_ok());
         assert!(validate_call_template(&json!({ "event_into": "/args/event" })).is_ok());
         assert!(validate_call_template(&json!({ "event_into": "" })).is_ok());
         assert!(validate_call_template(&Value::Null).is_ok());
@@ -1714,6 +1989,17 @@ mod tests {
         }))
         .unwrap();
         assert!(validate_event_into(explicit.event_into.as_deref()).is_err());
+    }
+
+    #[test]
+    fn event_action_must_be_non_empty_text() {
+        assert!(validate_event_action(None).is_ok());
+        assert!(validate_event_action(Some(&json!({
+            "action": "new Explorer message received"
+        })))
+        .is_ok());
+        assert!(validate_event_action(Some(&json!({ "action": "  " }))).is_err());
+        assert!(validate_event_action(Some(&json!({ "action": 7 }))).is_err());
     }
 
     #[test]
@@ -1742,18 +2028,21 @@ mod tests {
         let req: SubscribeRequest = serde_json::from_value(json!({
             "trigger_type": "timer",
             "config": { "in_ms": 250 },
-            "lifecycle": { "once": true, "max_fires": 1, "expires_at": 1234 },
+            "lifecycle": { "once": true, "max_fires": 1, "expires_in_ms": 1234 },
         }))
         .unwrap();
         let key = registration_dedup_key(&req, effective_once(&req));
         assert_eq!(key["config"], json!({ "in_ms": 250 }));
+        // Relative on purpose: a model retry re-sends the same relative
+        // request, so the key matches even though each attempt would resolve
+        // a different absolute instant.
         assert_eq!(
             key["lifecycle"],
-            json!({ "once": true, "max_fires": 1, "expires_at": 1234 })
+            json!({ "once": true, "max_fires": 1, "expires_in_ms": 1234 })
         );
 
         let mut different = req.clone();
-        different.lifecycle.as_mut().unwrap().expires_at = Some(5678);
+        different.lifecycle.as_mut().unwrap().expires_in_ms = Some(5678);
         assert_ne!(
             registration_dedup_key(&req, true),
             registration_dedup_key(&different, true)

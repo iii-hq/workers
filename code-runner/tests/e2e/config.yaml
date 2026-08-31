@@ -1,0 +1,18 @@
+# iii engine configuration for the code-runner e2e harness — `iii -c config.yaml`.
+#
+# Infrastructure only. Neither code-runner nor the harness is engine-managed:
+# run-tests.sh starts the engine, then spawns the code-runner binary as a host
+# process, then runs the harness. No docker and no database are needed — this
+# worker's only dependency is the engine itself.
+workers:
+  - name: iii-worker-manager
+    config:
+      host: 127.0.0.1
+      port: ${III_E2E_PORT}
+  - name: iii-observability
+    config:
+      enabled: true
+      service_name: code-runner-e2e
+      exporter: memory
+      logs_console_output: true
+      sampling_ratio: 1.0

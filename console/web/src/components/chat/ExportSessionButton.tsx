@@ -25,11 +25,9 @@ interface ExportSessionButtonProps {
  * self-contained text, attachments are referenced by name only
  * (no base64 payload).
  *
- * Visual style mirrors the existing session-id copy button in
- * `ChatView` (`ChatView.tsx:517-537`): font-mono, 11px, uppercase,
- * `text-ink-faint hover:text-ink`, with a 1200ms "exported" label flip
- * after a successful download. While the export is in flight the label
- * shows "exporting…" and the trigger is disabled.
+ * Visual style mirrors the existing session-id copy button in `ChatView`,
+ * with a 1200ms "exported" label flip after a successful download. While the
+ * export is in flight the label shows "exporting…" and the trigger is disabled.
  */
 export function ExportSessionButton({
   conversation,
@@ -65,26 +63,24 @@ export function ExportSessionButton({
         <button
           type="button"
           disabled={disabled || busy}
-          title={
-            disabled
-              ? 'no messages yet — nothing to export'
-              : busy
-                ? 'exporting…'
-                : exported
-                  ? 'session downloaded'
-                  : 'download session as markdown — paste into another AI for analysis'
-          }
+          aria-label={busy ? 'exporting session' : 'export session'}
           className={cn(
-            'flex items-center gap-1 text-ink-faint hover:text-ink transition-colors group',
+            // `self-stretch`: the hit box is the full height of the header
+            // group, not the 11px glyph box (WCAG 2.2 SC 2.5.8).
+            'group relative flex self-stretch items-center gap-1 text-ink-faint hover:text-ink',
             'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
             disabled && 'opacity-50 cursor-not-allowed hover:text-ink-faint',
             className,
           )}
         >
-          <Download className="size-3 flex-shrink-0" aria-hidden />
+          <span
+            className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+            aria-hidden="true"
+          />
+          <Download className="size-4 shrink-0" aria-hidden />
           <span
             className={cn(
-              'text-[11px] uppercase tracking-[0.06em]',
+              'font-sans text-sm max-lg:hidden',
               exported && 'text-accent',
             )}
           >

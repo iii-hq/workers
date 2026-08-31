@@ -7,11 +7,17 @@
  * save/reset, and error mapping stay host-owned (the console's SaveBar
  * below the form drives `configuration::set`). Mirrors SkillsConfig
  * (workers/iii-directory/src/config.rs): skills_folder,
- * local_skills_folder, registry_url, download_timeout_ms,
- * registry_cache_ttl_ms, filter_unregistered, auto_download.
+ * local_skills_folder, agents_folder, agents_skills_folder, registry_url,
+ * download_timeout_ms, registry_cache_ttl_ms, filter_unregistered,
+ * auto_download, inject_hint, hint_min_workers, registry_search.
  */
 
-import type { ConfigFormProps, JsonValue } from '@iii-dev/console-ui'
+import {
+  Chip,
+  type ConfigFormProps,
+  Input,
+  type JsonValue,
+} from '@iii-dev/console-ui'
 import { useEffect, useRef } from 'react'
 
 type JsonObject = { [key: string]: JsonValue }
@@ -29,6 +35,8 @@ function asString(v: JsonValue | undefined): string {
 const TOPOLOGY_FIELDS = new Set([
   'skills_folder',
   'local_skills_folder',
+  'agents_folder',
+  'agents_skills_folder',
   'auto_download',
 ])
 
@@ -71,14 +79,14 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
   return (
     <div className="dir-ui-form" ref={rootRef}>
       <span className="dir-ui-form-caption">
-        custom form · shipped by the iii-directory worker
+        Custom form · Shipped by the iii-directory worker
       </span>
 
       <TextField
         field="skills_folder"
-        label="skills folder"
-        placeholder="~/.iii/skills"
-        hint="global root every read scans and downloads write into — absolute, ~-prefixed, or CWD-relative"
+        label="Skills folder"
+        placeholder="skills"
+        hint="Global root every read scans and downloads write into — absolute, ~-prefixed, or relative to III_COMPOSE_DIR (process cwd when standalone)"
         value={asString(value.skills_folder)}
         onChange={setString}
         errors={props.errors}
@@ -86,19 +94,39 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
 
       <TextField
         field="local_skills_folder"
-        label="local skills folder"
-        placeholder="./.iii/skills"
-        hint="project-scoped overrides — a namespace directory here shadows the same namespace in the global folder entirely"
+        label="Local skills folder"
+        placeholder="skills/iii"
+        hint="Project-scoped overrides relative to III_COMPOSE_DIR (process cwd when standalone) — a namespace here shadows the global folder"
         value={asString(value.local_skills_folder)}
         onChange={setString}
         errors={props.errors}
       />
 
       <TextField
+        field="agents_folder"
+        label="Agent profiles folder"
+        placeholder="agents"
+        hint="Read-write root for reusable agent profile Markdown files — absolute, ~-prefixed, or relative to III_COMPOSE_DIR"
+        value={asString(value.agents_folder)}
+        onChange={setString}
+        errors={props.errors}
+      />
+
+      <TextField
+        field="agents_skills_folder"
+        label="External agent skills folder"
+        placeholder=".agents/skills"
+        hint="Read-only root relative to III_COMPOSE_DIR (process cwd when standalone), scanned shallowly as <skill>/SKILL.md"
+        value={asString(value.agents_skills_folder)}
+        onChange={setString}
+        errors={props.errors}
+      />
+
+      <TextField
         field="registry_url"
-        label="registry url"
+        label="Registry URL"
         placeholder="https://api.workers.iii.dev"
-        hint="workers registry the download + registry proxy functions call"
+        hint="Workers registry the download + registry proxy functions call"
         value={asString(value.registry_url)}
         onChange={setString}
         errors={props.errors}
@@ -106,9 +134,9 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
 
       <NumberField
         field="download_timeout_ms"
-        label="download timeout (ms)"
+        label="Download timeout (ms)"
         placeholder="60000"
-        hint="per download operation (HTTP request or git clone); also the registry proxy request timeout"
+        hint="Per download operation (HTTP request or git clone); also the registry proxy request timeout"
         value={value.download_timeout_ms}
         onChange={setNumber}
         errors={props.errors}
@@ -116,9 +144,9 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
 
       <NumberField
         field="registry_cache_ttl_ms"
-        label="registry cache TTL (ms)"
+        label="Registry cache TTL (ms)"
         placeholder="60000"
-        hint="how long registry list/info responses are cached in-process; 0 disables caching"
+        hint="How long registry list/info responses are cached in-process; 0 disables caching"
         value={value.registry_cache_ttl_ms}
         onChange={setNumber}
         errors={props.errors}
@@ -126,8 +154,8 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
 
       <CheckField
         field="filter_unregistered"
-        label="hide skills of uninstalled workers"
-        hint="reads only show namespaces matching a registered worker; off = everything on disk"
+        label="Hide skills of uninstalled workers"
+        hint="Reads only show namespaces matching a registered worker; off = everything on disk"
         checked={value.filter_unregistered !== false}
         onChange={setBool}
         errors={props.errors}
@@ -135,9 +163,37 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
 
       <CheckField
         field="auto_download"
-        label="auto-download skills on worker add"
-        hint="subscribes to worker add events and reconciles missing bundles at boot"
+        label="Auto-download skills on worker add"
+        hint="Subscribes to worker add events and reconciles missing bundles at boot"
         checked={value.auto_download !== false}
+        onChange={setBool}
+        errors={props.errors}
+      />
+
+      <CheckField
+        field="inject_hint"
+        label="Inject the search hint"
+        hint="Binds the directory::pre-generate hook; off unbinds it entirely and the model only finds search_functions through normal discovery"
+        checked={value.inject_hint !== false}
+        onChange={setBool}
+        errors={props.errors}
+      />
+
+      <NumberField
+        field="hint_min_workers"
+        label="Hint minimum surface (workers)"
+        placeholder="2"
+        hint="The hint only fires when the session exposes at least this many distinct non-engine workers; 0 hints on every surface"
+        value={value.hint_min_workers}
+        onChange={setNumber}
+        errors={props.errors}
+      />
+
+      <CheckField
+        field="registry_search"
+        label="Include installable registry workers"
+        hint="Every search also consults the public registry (verified authors only) and lists NOT-installed matches under `installable`"
+        checked={value.registry_search !== false}
         onChange={setBool}
         errors={props.errors}
       />
@@ -175,7 +231,7 @@ function FieldShell({
       <label htmlFor={`dir-cfg-${field}`}>
         {label}
         {TOPOLOGY_FIELDS.has(field) ? (
-          <span className="dir-ui-restart-chip">restart required</span>
+          <Chip tone="warning">Restart required</Chip>
         ) : null}
       </label>
       {children}
@@ -204,15 +260,16 @@ function TextField({
 }) {
   return (
     <FieldShell field={field} label={label} hint={hint} errors={errors}>
-      <input
+      <Input
         id={`dir-cfg-${field}`}
+        name={field}
         data-field={field}
         className="dir-ui-input"
-        type="text"
         value={value}
         placeholder={placeholder}
         spellCheck={false}
-        onChange={(e) => onChange(field, e.target.value)}
+        autoComplete="off"
+        onChange={(next) => onChange(field, next)}
       />
     </FieldShell>
   )
@@ -237,15 +294,17 @@ function NumberField({
 }) {
   return (
     <FieldShell field={field} label={label} hint={hint} errors={errors}>
-      <input
+      <Input
         id={`dir-cfg-${field}`}
+        name={field}
         data-field={field}
         className="dir-ui-input"
         type="number"
         min={0}
-        value={typeof value === 'number' ? value : ''}
+        inputMode="numeric"
+        value={typeof value === 'number' ? String(value) : ''}
         placeholder={placeholder}
-        onChange={(e) => onChange(field, e.target.value)}
+        onChange={(next) => onChange(field, next)}
       />
     </FieldShell>
   )
@@ -280,7 +339,7 @@ function CheckField({
         <label htmlFor={`dir-cfg-${field}`}>
           {label}
           {TOPOLOGY_FIELDS.has(field) ? (
-            <span className="dir-ui-restart-chip">restart required</span>
+            <Chip tone="warning">Restart required</Chip>
           ) : null}
         </label>
       </span>

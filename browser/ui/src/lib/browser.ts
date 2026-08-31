@@ -16,6 +16,8 @@ export const BROWSER_SESSIONS_START_FUNCTION_ID = 'browser::sessions::start'
 export const BROWSER_SESSIONS_LIST_FUNCTION_ID = 'browser::sessions::list'
 export const BROWSER_SESSIONS_STOP_FUNCTION_ID = 'browser::sessions::stop'
 export const BROWSER_NAVIGATE_FUNCTION_ID = 'browser::navigate'
+export const BROWSER_HISTORY_FUNCTION_ID = 'browser::history'
+export const BROWSER_DOCTOR_FUNCTION_ID = 'browser::doctor'
 export const BROWSER_SCREENSHOT_FUNCTION_ID = 'browser::screenshot'
 export const BROWSER_ACT_FUNCTION_ID = 'browser::act'
 export const BROWSER_CONSOLE_READ_FUNCTION_ID = 'browser::console::read'
@@ -59,8 +61,35 @@ export const sessionInfoSchema = z.object({
   created_ms: z.number(),
   last_used_ms: z.number(),
   console_entries: z.number(),
+  read_only: z.boolean().optional(),
 })
 export type BrowserSessionInfo = z.infer<typeof sessionInfoSchema>
+
+const doctorIssueSchema = z.object({
+  what: z.string(),
+  enable_how: z.string(),
+})
+const doctorSchema = z.object({
+  ok: z.boolean().optional(),
+  chromium_path: z.string().nullable().optional(),
+  chromium_version: z.string().nullable().optional(),
+  headless_default: z.boolean().optional(),
+  max_sessions: z.number().optional(),
+  active_sessions: z.number().optional(),
+  allowed_schemes: z.array(z.string()).optional(),
+  attach_enabled: z.boolean().optional(),
+  recording_available: z.boolean().optional(),
+  issues: z.array(doctorIssueSchema).optional(),
+})
+export type BrowserDoctorInfo = z.infer<typeof doctorSchema>
+export type BrowserDoctorIssue = z.infer<typeof doctorIssueSchema>
+
+const historySchema = z.object({
+  ok: z.boolean(),
+  url: z.string(),
+  moved: z.boolean(),
+})
+export type BrowserHistoryResult = z.infer<typeof historySchema>
 
 const sessionListSchema = z.object({
   sessions: z.array(z.unknown()).optional(),
@@ -371,8 +400,6 @@ export function consoleLevelTone(level: string): 'ink' | 'warn' | 'alert' {
 }
 
 const PICKED_TEXT_LIMIT = 80
-const PICKED_ERROR_LIMIT = 3
-const PICKED_ERROR_LINE_LIMIT = 200
 
 /**
  * Selector-ish summary from the picked element's attributes, restricted to
@@ -392,29 +419,22 @@ export function pickedSelector(element: BrowserPickedElement): string {
 }
 
 /**
- * Compact text block copied to the clipboard for a picked element: one
- * summary line, the url, recent console errors when present, and the ref the
- * agent can use directly. Never includes outer_html.
+ * What a dropped pin points at: `selector "text" (ref e12)`. The ref is the
+ * handle `browser::act` / `browser::styles::read` take, so an agent reading
+ * the note can reach the element directly. Never includes outer_html.
  */
-export function formatPickedElement(evt: BrowserPickedEvent): string {
+export function pinLabel(evt: BrowserPickedEvent): string {
   const el = evt.element
-  const text = el.text.replace(/\s+/g, ' ').trim().slice(0, PICKED_TEXT_LIMIT)
+  // The document roots carry the whole page's text (and its styles); the
+  // selector alone says enough about them.
+  const text = ROOT_TAGS.has(el.tag)
+    ? ''
+    : el.text.replace(/\s+/g, ' ').trim().slice(0, PICKED_TEXT_LIMIT)
   const summary = text.length > 0 ? ` "${text}"` : ''
-  const lines = [
-    `picked element ${pickedSelector(el)}${summary} (session ${evt.session_id}, ref ${el.ref})`,
-    `url: ${el.url}`,
-  ]
-  if (el.console_recent.length > 0) {
-    lines.push('recent console errors:')
-    for (const err of el.console_recent.slice(-PICKED_ERROR_LIMIT)) {
-      lines.push(
-        `- ${err.replace(/\s+/g, ' ').trim().slice(0, PICKED_ERROR_LINE_LIMIT)}`,
-      )
-    }
-  }
-  lines.push(`ref ${el.ref} works with browser::act / browser::styles::read`)
-  return lines.join('\n')
+  return `${pickedSelector(el)}${summary} (ref ${el.ref})`
 }
+
+const ROOT_TAGS = new Set(['html', 'body', 'head'])
 
 export async function listBrowserSessions(
   iii: ExtensionIii,
@@ -460,6 +480,27 @@ export async function navigateBrowser(
     session_id: sessionId,
     url,
   })
+}
+
+export async function controlBrowserHistory(
+  iii: ExtensionIii,
+  sessionId: string,
+  action: 'back' | 'forward' | 'reload',
+): Promise<BrowserHistoryResult | null> {
+  const res = await iii.trigger<unknown>(BROWSER_HISTORY_FUNCTION_ID, {
+    session_id: sessionId,
+    action,
+  })
+  const parsed = historySchema.safeParse(res)
+  return parsed.success ? parsed.data : null
+}
+
+export async function readBrowserDoctor(
+  iii: ExtensionIii,
+): Promise<BrowserDoctorInfo | null> {
+  const res = await iii.trigger<unknown>(BROWSER_DOCTOR_FUNCTION_ID, {})
+  const parsed = doctorSchema.safeParse(res)
+  return parsed.success ? parsed.data : null
 }
 
 export async function takeBrowserScreenshot(
@@ -671,5 +712,445 @@ export async function stopBrowserPick(
 ): Promise<void> {
   await iii.trigger(BROWSER_PICK_STOP_FUNCTION_ID, {
     session_id: sessionId,
+  })
+}
+
+export const BROWSER_FIND_IN_PAGE_FUNCTION_ID = 'browser::find-in-page'
+export const BROWSER_ZOOM_FUNCTION_ID = 'browser::zoom'
+export const BROWSER_PDF_FUNCTION_ID = 'browser::pdf'
+
+const findSchema = z.object({
+  ok: z.boolean(),
+  count: z.number(),
+  index: z.number(),
+  query: z.string(),
+})
+export type BrowserFindResult = z.infer<typeof findSchema>
+export type BrowserFindAction = 'search' | 'next' | 'previous' | 'close'
+
+export async function findInBrowserPage(
+  iii: ExtensionIii,
+  sessionId: string,
+  query: string,
+  action: BrowserFindAction = 'search',
+  caseSensitive = false,
+): Promise<BrowserFindResult> {
+  const res = await iii.trigger<unknown>(BROWSER_FIND_IN_PAGE_FUNCTION_ID, {
+    session_id: sessionId,
+    query,
+    action,
+    case_sensitive: caseSensitive,
+  })
+  const parsed = findSchema.safeParse(res)
+  if (!parsed.success) throw new Error('find returned an unexpected shape')
+  return parsed.data
+}
+
+export const ZOOM_LEVELS = [
+  50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200,
+] as const
+export type BrowserZoomAction = 'in' | 'out' | 'reset' | 'set' | 'read'
+
+const zoomSchema = z.object({ ok: z.boolean(), level: z.number() })
+
+export async function zoomBrowserPage(
+  iii: ExtensionIii,
+  sessionId: string,
+  action: BrowserZoomAction,
+  level?: number,
+): Promise<number> {
+  const res = await iii.trigger<unknown>(BROWSER_ZOOM_FUNCTION_ID, {
+    session_id: sessionId,
+    action,
+    ...(level !== undefined ? { level } : {}),
+  })
+  const parsed = zoomSchema.safeParse(res)
+  if (!parsed.success) throw new Error('zoom returned an unexpected shape')
+  return parsed.data.level
+}
+
+const pdfSchema = z.object({
+  ok: z.boolean(),
+  data: z.string(),
+  size_bytes: z.number(),
+  file_name: z.string(),
+  url: z.string(),
+})
+export type BrowserPdf = z.infer<typeof pdfSchema>
+
+export async function printBrowserPageToPdf(
+  iii: ExtensionIii,
+  sessionId: string,
+): Promise<BrowserPdf> {
+  const res = await iii.trigger<unknown>(BROWSER_PDF_FUNCTION_ID, {
+    session_id: sessionId,
+  })
+  const parsed = pdfSchema.safeParse(res)
+  if (!parsed.success) throw new Error('pdf returned an unexpected shape')
+  return parsed.data
+}
+
+/** A `File` from base64 bytes, for attachments and downloads. */
+export function fileFromBase64(
+  base64: string,
+  name: string,
+  type: string,
+): File {
+  const binary = atob(base64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i)
+  return new File([bytes], name, { type })
+}
+
+/** Hands a file to the browser's own download flow. */
+export function downloadFile(file: File): void {
+  const url = URL.createObjectURL(file)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = file.name
+  link.click()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+/** `screenshot-<host>-<stamp>.jpg`, safe for a file system. */
+export function screenshotFileName(url: string, at = new Date()): string {
+  const host = url
+    .replace(/^https?:\/\//, '')
+    .split(/[/?#]/)[0]
+    .replace(/[^a-z0-9.-]+/gi, '-')
+    .slice(0, 48)
+  const stamp = at.toISOString().replace(/[:.]/g, '-')
+  return `screenshot-${host || 'page'}-${stamp}.jpg`
+}
+
+export const BROWSER_HISTORY_LIST_FUNCTION_ID = 'browser::history::list'
+export const BROWSER_CLEAR_DATA_FUNCTION_ID = 'browser::clear-data'
+export const BROWSER_DOWNLOADS_LIST_FUNCTION_ID = 'browser::downloads::list'
+export const BROWSER_DOWNLOAD_FUNCTION_ID = 'browser::download'
+export const BROWSER_DOWNLOAD_REMOVE_FUNCTION_ID = 'browser::download::remove'
+export const BROWSER_DOWNLOAD_CHANGED_TRIGGER = 'browser::download-changed'
+
+const historyVisitSchema = z.object({
+  url: z.string(),
+  title: z.string(),
+  timestamp: z.number(),
+})
+export type BrowserHistoryVisit = z.infer<typeof historyVisitSchema>
+const historyListSchema = z.object({ visits: z.array(historyVisitSchema) })
+
+export async function listBrowserHistory(
+  iii: ExtensionIii,
+  sessionId: string,
+  query?: string,
+): Promise<BrowserHistoryVisit[]> {
+  const res = await iii.trigger<unknown>(BROWSER_HISTORY_LIST_FUNCTION_ID, {
+    session_id: sessionId,
+    ...(query ? { query } : {}),
+  })
+  return historyListSchema.safeParse(res).success
+    ? historyListSchema.parse(res).visits
+    : []
+}
+
+const clearDataSchema = z.object({
+  ok: z.boolean(),
+  cleared: z.array(z.string()),
+})
+
+export async function clearBrowserData(
+  iii: ExtensionIii,
+  sessionId: string,
+): Promise<string[]> {
+  const res = await iii.trigger<unknown>(BROWSER_CLEAR_DATA_FUNCTION_ID, {
+    session_id: sessionId,
+  })
+  return clearDataSchema.safeParse(res).success
+    ? clearDataSchema.parse(res).cleared
+    : []
+}
+
+const downloadRecordSchema = z.object({
+  guid: z.string(),
+  file_name: z.string(),
+  url: z.string(),
+  state: z.enum(['in_progress', 'completed', 'canceled']),
+  received_bytes: z.number(),
+  total_bytes: z.number(),
+  started_ms: z.number(),
+})
+export type BrowserDownload = z.infer<typeof downloadRecordSchema>
+const downloadsListSchema = z.object({
+  downloads: z.array(downloadRecordSchema),
+})
+
+export async function listBrowserDownloads(
+  iii: ExtensionIii,
+  sessionId: string,
+): Promise<BrowserDownload[]> {
+  const res = await iii.trigger<unknown>(BROWSER_DOWNLOADS_LIST_FUNCTION_ID, {
+    session_id: sessionId,
+  })
+  return downloadsListSchema.safeParse(res).success
+    ? downloadsListSchema.parse(res).downloads
+    : []
+}
+
+const downloadSchema = z.object({
+  ok: z.boolean(),
+  data: z.string(),
+  file_name: z.string(),
+  size_bytes: z.number(),
+})
+
+export async function readBrowserDownload(
+  iii: ExtensionIii,
+  sessionId: string,
+  guid: string,
+): Promise<{ file: File } | null> {
+  const res = await iii.trigger<unknown>(BROWSER_DOWNLOAD_FUNCTION_ID, {
+    session_id: sessionId,
+    guid,
+  })
+  const parsed = downloadSchema.safeParse(res)
+  if (!parsed.success) return null
+  try {
+    return {
+      file: fileFromBase64(
+        parsed.data.data,
+        parsed.data.file_name,
+        'application/octet-stream',
+      ),
+    }
+  } catch {
+    return null
+  }
+}
+
+export async function removeBrowserDownload(
+  iii: ExtensionIii,
+  sessionId: string,
+  guid: string,
+): Promise<void> {
+  await iii.trigger(BROWSER_DOWNLOAD_REMOVE_FUNCTION_ID, {
+    session_id: sessionId,
+    guid,
+  })
+}
+
+export const BROWSER_RESIZE_FUNCTION_ID = 'browser::resize'
+
+const resizeSchema = z.object({
+  ok: z.boolean(),
+  width: z.number(),
+  height: z.number(),
+})
+
+/** Set the session's live viewport to `width` x `height` CSS pixels. */
+export async function resizeBrowser(
+  iii: ExtensionIii,
+  sessionId: string,
+  width: number,
+  height: number,
+  options: { deviceScaleFactor?: number; mobile?: boolean; fit?: boolean } = {},
+): Promise<{ width: number; height: number } | null> {
+  const res = await iii.trigger<unknown>(BROWSER_RESIZE_FUNCTION_ID, {
+    session_id: sessionId,
+    width: Math.round(width),
+    height: Math.round(height),
+    ...(options.deviceScaleFactor
+      ? { device_scale_factor: options.deviceScaleFactor }
+      : {}),
+    ...(options.mobile ? { mobile: options.mobile } : {}),
+    ...(options.fit ? { fit: true } : {}),
+  })
+  const parsed = resizeSchema.safeParse(res)
+  return parsed.success
+    ? { width: parsed.data.width, height: parsed.data.height }
+    : null
+}
+
+export const BROWSER_COOKIES_LIST_FUNCTION_ID = 'browser::cookies::list'
+export const BROWSER_COOKIES_SET_FUNCTION_ID = 'browser::cookies::set'
+export const BROWSER_COOKIES_CLEAR_FUNCTION_ID = 'browser::cookies::clear'
+
+const cookieSpecSchema = z.object({
+  name: z.string(),
+  value: z.string(),
+  domain: z.string().optional(),
+  path: z.string().optional(),
+  expires: z.number().optional(),
+  secure: z.boolean().optional(),
+  http_only: z.boolean().optional(),
+  same_site: z.string().optional(),
+})
+export type BrowserCookie = z.infer<typeof cookieSpecSchema>
+const cookiesListSchema = z.object({ cookies: z.array(cookieSpecSchema) })
+
+export async function listBrowserCookies(
+  iii: ExtensionIii,
+  sessionId: string,
+): Promise<BrowserCookie[]> {
+  const res = await iii.trigger<unknown>(BROWSER_COOKIES_LIST_FUNCTION_ID, {
+    session_id: sessionId,
+  })
+  return cookiesListSchema.safeParse(res).success
+    ? cookiesListSchema.parse(res).cookies
+    : []
+}
+
+export async function setBrowserCookies(
+  iii: ExtensionIii,
+  sessionId: string,
+  cookies: BrowserCookie[],
+): Promise<number> {
+  const res = await iii.trigger<unknown>(BROWSER_COOKIES_SET_FUNCTION_ID, {
+    session_id: sessionId,
+    cookies,
+  })
+  const parsed = z.object({ ok: z.boolean(), count: z.number() }).safeParse(res)
+  return parsed.success ? parsed.data.count : 0
+}
+
+export async function clearBrowserCookies(
+  iii: ExtensionIii,
+  sessionId: string,
+): Promise<void> {
+  await iii.trigger(BROWSER_COOKIES_CLEAR_FUNCTION_ID, {
+    session_id: sessionId,
+  })
+}
+
+/**
+ * Parse a cookie file into cookie specs. Accepts a JSON array (the shape
+ * browser export extensions produce, camelCase or snake_case) or the
+ * Netscape `cookies.txt` tab-separated format. Unknown lines are skipped.
+ */
+function isCookie(c: BrowserCookie | null): c is BrowserCookie {
+  return c !== null
+}
+
+export function parseCookieFile(text: string): BrowserCookie[] {
+  const trimmed = text.trim()
+  if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed)
+      const list = Array.isArray(parsed) ? parsed : (parsed.cookies ?? [])
+      return (list as unknown[])
+        .map((raw) =>
+          raw && typeof raw === 'object' && !Array.isArray(raw)
+            ? cookieFromJson(raw as Record<string, unknown>)
+            : null,
+        )
+        .filter(isCookie)
+    } catch {
+      return []
+    }
+  }
+  return trimmed
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(
+      (line) =>
+        line !== '' &&
+        // #HttpOnly_ marks an HttpOnly cookie, not a comment.
+        (!line.startsWith('#') || line.startsWith('#HttpOnly_')),
+    )
+    .map(cookieFromNetscape)
+    .filter(isCookie)
+}
+
+function cookieFromJson(raw: Record<string, unknown>): BrowserCookie | null {
+  const name = str(raw.name)
+  if (name === undefined) return null
+  const expiryRaw = raw.expires ?? raw.expirationDate ?? raw.expiry
+  const sameSite = str(raw.sameSite ?? raw.same_site)
+  const cookie: BrowserCookie = { name, value: str(raw.value) ?? '' }
+  const domain = str(raw.domain)
+  if (domain) cookie.domain = domain
+  const path = str(raw.path)
+  if (path) cookie.path = path
+  // CDP dumps use expires: -1 for a session cookie; only a real future
+  // stamp travels.
+  if (typeof expiryRaw === 'number' && expiryRaw > 0) cookie.expires = expiryRaw
+  const secure = bool(raw.secure)
+  if (secure !== undefined) cookie.secure = secure
+  const httpOnly = bool(raw.httpOnly ?? raw.http_only)
+  if (httpOnly !== undefined) cookie.http_only = httpOnly
+  if (sameSite) cookie.same_site = normalizeSameSite(sameSite)
+  return cookie
+}
+
+function cookieFromNetscape(line: string): BrowserCookie | null {
+  const parts = line.split('\t')
+  if (parts.length < 7) return null
+  const [domain, , path, secure, expires, name, value] = parts
+  if (!name) return null
+  const cookie: BrowserCookie = { name, value: value ?? '' }
+  if (domain) cookie.domain = domain.replace(/^#HttpOnly_/, '')
+  if (path) cookie.path = path
+  cookie.secure = secure?.toUpperCase() === 'TRUE'
+  cookie.http_only = domain.startsWith('#HttpOnly_')
+  const expiresNum = Number(expires)
+  if (Number.isFinite(expiresNum) && expiresNum > 0) cookie.expires = expiresNum
+  return cookie
+}
+
+function normalizeSameSite(value: string): string | undefined {
+  const v = value.toLowerCase()
+  if (v === 'strict') return 'Strict'
+  if (v === 'lax') return 'Lax'
+  if (v === 'none' || v === 'no_restriction') return 'None'
+  return undefined
+}
+
+function str(v: unknown): string | undefined {
+  return typeof v === 'string' ? v : undefined
+}
+function bool(v: unknown): boolean | undefined {
+  return typeof v === 'boolean' ? v : undefined
+}
+
+export const BROWSER_HANDOFF_REQUESTED_TRIGGER = 'browser::handoff-requested'
+export const BROWSER_HANDOFF_RESOLVED_TRIGGER = 'browser::handoff-resolved'
+export const BROWSER_HANDOFF_CONFIRM_FUNCTION_ID = 'browser::handoff::confirm'
+
+const handoffEventSchema = z.object({
+  session_id: z.string(),
+  handoff_id: z.string(),
+  instructions: z.string(),
+  timestamp: z.number(),
+})
+export type BrowserHandoffEvent = z.infer<typeof handoffEventSchema>
+
+export function parseHandoffEvent(
+  payload: unknown,
+): BrowserHandoffEvent | null {
+  const parsed = handoffEventSchema.safeParse(payload)
+  return parsed.success ? parsed.data : null
+}
+
+const handoffResolvedSchema = z.object({
+  session_id: z.string(),
+  handoff_id: z.string(),
+  via: z.string(),
+  timestamp: z.number(),
+})
+export type BrowserHandoffResolved = z.infer<typeof handoffResolvedSchema>
+
+export function parseHandoffResolved(
+  payload: unknown,
+): BrowserHandoffResolved | null {
+  const parsed = handoffResolvedSchema.safeParse(payload)
+  return parsed.success ? parsed.data : null
+}
+
+export async function confirmBrowserHandoff(
+  iii: ExtensionIii,
+  sessionId: string,
+  handoffId: string,
+): Promise<void> {
+  await iii.trigger(BROWSER_HANDOFF_CONFIRM_FUNCTION_ID, {
+    session_id: sessionId,
+    handoff_id: handoffId,
   })
 }

@@ -1,4 +1,5 @@
 name: storage E2E
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('Deployment · test · {0} · {1}', inputs.operation_id, inputs.step_id) || format('Test · storage_e2e · {0}', github.event_name) }}
 
 on:
   pull_request:
@@ -6,9 +7,19 @@ on:
       - 'storage/**'
       - '.github/workflows/storage-e2e.yml'
   workflow_dispatch:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      operation_id:
+        required: true
+        type: string
+      step_id:
+        required: true
+        type: string
 
 concurrency:
-  group: storage-e2e-${{ github.ref }}
+  group: storage-e2e-${{ inputs.operation_id || inputs.source_sha || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -20,19 +31,39 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.source_sha || github.sha }}
+
+      - name: Validate Release Control dispatch
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          RELEASE_CONTROL_BOT_LOGIN: ${{ vars.RELEASE_CONTROL_BOT_LOGIN }}
+        run: >-
+          python3 .github/scripts/deployment_control_contract.py validate-dispatch
+          --operation-id '${{ inputs.operation_id }}'
+          --step-id '${{ inputs.step_id }}'
 
       - name: Rewrite SSH to HTTPS for public deps
-        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+        run: git config --local url."https://github.com/".insteadOf "ssh://git@github.com/"
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: storage
 
+      - name: Setup pnpm (for storage UI build.rs)
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+      - name: Setup Node (for storage UI build.rs)
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+
       - name: Build worker
-        run: cargo build --release --bin storage
+        run: cargo build --locked --release --bin storage
         working-directory: storage
 
       - name: Install iii engine
@@ -40,6 +71,8 @@ jobs:
         # including the engine-binary check. Without iii on PATH the --filter
         # and SIGINT tests bail early with "iii engine binary missing" instead
         # of exercising what they're meant to assert.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 \
             https://install.iii.dev/iii/main/install.sh | sh
@@ -54,29 +87,45 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.source_sha || github.sha }}
+
+      - name: Validate Release Control dispatch
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          RELEASE_CONTROL_BOT_LOGIN: ${{ vars.RELEASE_CONTROL_BOT_LOGIN }}
+        run: >-
+          python3 .github/scripts/deployment_control_contract.py validate-dispatch
+          --operation-id '${{ inputs.operation_id }}'
+          --step-id '${{ inputs.step_id }}'
 
       - name: Rewrite SSH to HTTPS for public deps
-        run: git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+        run: git config --local url."https://github.com/".insteadOf "ssh://git@github.com/"
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: storage
 
-      - uses: actions/setup-node@v5
+      - name: Setup pnpm (for storage UI build.rs)
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           # setup-node v5 auto-caches when package.json declares packageManager.
           # This step never cached; the repository is already over its cache budget.
-          package-manager-cache: false
-          node-version: '20'
           # No cache: harness has no committed package-lock.json (run-tests.sh
           # generates one via `npm install` at first run). setup-node@v4 with
           # `cache: 'npm'` against a missing lockfile is a hard failure, not a
           # warning. ~10s slower per run; revisit if we ever commit a lockfile.
+          node-version: '22'
 
       - name: Install iii engine
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 \
             https://install.iii.dev/iii/main/install.sh | sh
@@ -98,9 +147,32 @@ jobs:
 
       - name: Upload reports on failure
         if: failure()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: storage-e2e-reports
           path: |
             storage/tests/e2e/reports/
           retention-days: 7
+
+  evidence:
+    needs: [script-tests, e2e]
+    if: github.event_name == 'workflow_dispatch' && always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: "${{ github.sha }}"
+      - run: |
+          subject=$(jq -cn --arg source_sha '${{ inputs.source_sha }}' '{source_sha:$source_sha}')
+          checks=$(jq -cn --arg scripts '${{ needs.script-tests.result }}' --arg e2e '${{ needs.e2e.result }}' \
+            '[{name:"storage_script_tests",status:$scripts},{name:"storage_e2e",status:$e2e}]')
+          python3 .github/scripts/deployment_control_contract.py write-test-result --kind test --repository '${{ github.repository }}' \
+            --operation-id '${{ inputs.operation_id }}' --step-id '${{ inputs.step_id }}' --run-id '${{ github.run_id }}' \
+            --run-attempt '${{ github.run_attempt }}' --workflow storage-e2e.yml --event '${{ github.event_name }}' --sha '${{ github.sha }}' \
+            --subject "$subject" --checks "$checks" --effects '[]' --outputs '{}' --output e2e-result.json
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: e2e-result-${{ inputs.operation_id }}-${{ inputs.step_id }}
+          path: e2e-result.json
+          retention-days: 30

@@ -156,6 +156,8 @@ struct FunctionQueueEnvelope {
     backoff_ms: u64,
     traceparent: Option<String>,
     baggage: Option<String>,
+    #[serde(default)]
+    namespace: Option<String>,
     priority: Option<u8>,
 }
 
@@ -541,6 +543,7 @@ impl QueueAdapter for BuiltinAdapter {
         backoff_ms: u64,
         traceparent: Option<String>,
         baggage: Option<String>,
+        namespace: Option<String>,
         priority: Option<u8>,
     ) -> anyhow::Result<()> {
         if !self
@@ -566,6 +569,7 @@ impl QueueAdapter for BuiltinAdapter {
             backoff_ms,
             traceparent,
             baggage,
+            namespace,
             priority,
         };
         self.store
@@ -785,6 +789,7 @@ async fn run_function_queue_consumer(
             message_id: Some(envelope.message_id),
             traceparent: envelope.traceparent,
             baggage: envelope.baggage,
+            namespace: envelope.namespace,
         };
         deliveries.lock().await.insert(
             delivery_id,
@@ -1037,6 +1042,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn legacy_function_queue_envelope_has_no_namespace() {
+        let envelope: FunctionQueueEnvelope = serde_json::from_value(serde_json::json!({
+            "function_id": "harness::turn",
+            "data": {"session_id": "s1"},
+            "message_id": "receipt-1",
+            "max_retries": 3,
+            "backoff_ms": 1000,
+            "traceparent": null,
+            "baggage": null,
+            "priority": null
+        }))
+        .unwrap();
+
+        assert_eq!(envelope.namespace, None);
+    }
+
     #[tokio::test]
     async fn function_queue_publish_consume_and_ack() {
         let store: Arc<dyn QueueStore> = Arc::new(InMemoryStore::new());
@@ -1059,6 +1081,7 @@ mod tests {
                 config.backoff_ms,
                 Some("trace".to_string()),
                 Some("bag".to_string()),
+                Some("my-harness-ns".to_string()),
                 None,
             )
             .await
@@ -1072,6 +1095,7 @@ mod tests {
         assert_eq!(message.message_id.as_deref(), Some("receipt-1"));
         assert_eq!(message.traceparent.as_deref(), Some("trace"));
         assert_eq!(message.baggage.as_deref(), Some("bag"));
+        assert_eq!(message.namespace.as_deref(), Some("my-harness-ns"));
         adapter
             .ack_function_queue("turns", message.delivery_id)
             .await
@@ -1101,6 +1125,7 @@ mod tests {
                 "receipt-1",
                 config.max_retries,
                 config.backoff_ms,
+                None,
                 None,
                 None,
                 None,
@@ -1152,6 +1177,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -1199,6 +1225,7 @@ mod tests {
                 "receipt-1",
                 config.max_retries,
                 config.backoff_ms,
+                None,
                 None,
                 None,
                 None,

@@ -1,9 +1,14 @@
 import type * as monacoNs from 'monaco-editor'
 import * as React from 'react'
+import { centeredScrollTop, clampLine, scrollParentOf } from '@/lib/reveal-line'
 import { cn } from '@/lib/utils'
 
 export interface CodeEditorHandle {
   focus(): void
+  /** Put the cursor on `line` (1-based, clamped), scroll the pane that
+      holds the editor so the line sits centered, and focus. Before Monaco
+      mounts the request is kept and replayed once it does. */
+  revealLine(line: number, column?: number): void
 }
 
 export interface CodeEditorProps {
@@ -36,7 +41,7 @@ export interface CodeEditorProps {
    ever fails to load) renders the same typography the editor is configured
    with, so the swap-in doesn't reflow the text. */
 const EDITOR_TYPOGRAPHY =
-  'm-0 whitespace-pre-wrap break-words px-3 py-2 text-left font-mono text-[12.5px] leading-[19px]'
+  'm-0 whitespace-pre-wrap break-words px-3 py-2 text-left font-code text-[12.5px] leading-[19px]'
 
 const MONACO_OPTIONS: monacoNs.editor.IStandaloneEditorConstructionOptions = {
   automaticLayout: true,
@@ -108,7 +113,48 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
     const fallbackRef = React.useRef<HTMLTextAreaElement>(null)
     const editorRef = React.useRef<monacoNs.editor.IStandaloneCodeEditor>(null)
     const applyingRef = React.useRef(false)
+    const pendingRevealRef = React.useRef<{
+      line: number
+      column: number
+    } | null>(null)
     const [ready, setReady] = React.useState(false)
+
+    const revealLine = React.useCallback((line: number, column = 1) => {
+      const editor = editorRef.current
+      if (!editor) {
+        pendingRevealRef.current = { line, column }
+        return
+      }
+      const lineNumber = clampLine(line, editor.getModel()?.getLineCount() ?? 1)
+      editor.setPosition({ lineNumber, column: Math.max(1, column) })
+      editor.revealLineInCenter(lineNumber)
+      const host = hostRef.current
+      const scroller = scrollParentOf(host)
+      if (host && scroller) {
+        const hostTop =
+          host.getBoundingClientRect().top -
+          scroller.getBoundingClientRect().top +
+          scroller.scrollTop
+        const lineTop = editor.getTopForLineNumber(lineNumber)
+        const lineHeight = Math.max(
+          0,
+          editor.getTopForLineNumber(lineNumber + 1) - lineTop,
+        )
+        scroller.scrollTo({
+          top: centeredScrollTop(
+            hostTop,
+            lineTop,
+            scroller.clientHeight,
+            lineHeight,
+          ),
+          behavior: window.matchMedia('(prefers-reduced-motion: reduce)')
+            .matches
+            ? 'auto'
+            : 'smooth',
+        })
+      }
+      editor.focus()
+    }, [])
 
     // The mount effect runs once; it reads mount-time props through here.
     const latest = React.useRef({ value, language, autoFocus })
@@ -121,19 +167,20 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
         if (editorRef.current) editorRef.current.focus()
         else fallbackRef.current?.focus()
       },
+      revealLine,
     }))
 
     React.useEffect(() => {
       let disposed = false
       void import('@/lib/monaco')
-        .then(({ monaco, CONSOLE_THEME, monoFontFamily }) => {
+        .then(({ monaco, CONSOLE_THEME, codeFontFamily }) => {
           if (disposed || !hostRef.current) return
           const editor = monaco.editor.create(hostRef.current, {
             ...MONACO_OPTIONS,
             value: latest.current.value,
             language: latest.current.language,
             theme: CONSOLE_THEME,
-            fontFamily: monoFontFamily(),
+            fontFamily: codeFontFamily(),
           })
           editorRef.current = editor
           editor.getModel()?.updateOptions({ tabSize: 2, insertSpaces: true })
@@ -152,6 +199,11 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
           fitHeight()
           if (latest.current.autoFocus) editor.focus()
           setReady(true)
+          const pending = pendingRevealRef.current
+          if (pending) {
+            pendingRevealRef.current = null
+            revealLine(pending.line, pending.column)
+          }
         })
         .catch((err) => {
           console.warn(
@@ -164,7 +216,7 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
         editorRef.current?.dispose()
         editorRef.current = null
       }
-    }, [])
+    }, [revealLine])
 
     // Prop → editor sync (external value swaps, language, options).
     React.useEffect(() => {
@@ -210,12 +262,15 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
     // popup (the default stays prose-quiet) and registers a provider for the
     // current language offering those words. The joined key keeps the effect
     // from churning when the parent passes a fresh array of the same words.
-    const completionsKey = (completions ?? []).join('')
+    // '\n' as separator: identifiers can't contain it, and unlike the
+    // invisible control character it replaced, it can't masquerade as an
+    // empty string in an editor or a grep.
+    const completionsKey = (completions ?? []).join('\n')
     React.useEffect(() => {
       const editor = editorRef.current
       if (!ready || !editor) return
       const words = completionsKey
-        ? completionsKey.split('').filter(Boolean)
+        ? completionsKey.split('\n').filter(Boolean)
         : []
       if (words.length === 0) return
       editor.updateOptions({
@@ -277,6 +332,9 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
           disabled && 'pointer-events-none opacity-40',
           className,
         )}
+        // Monaco's gutters, widgets and dead space are focus targets that are
+        // not inputs; every keystroke inside the editor is content.
+        data-keybindings-standdown=""
         onKeyDown={onKeyDown}
         onMouseDown={(e) => {
           // A caller-set min-height can leave dead space under the last

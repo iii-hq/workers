@@ -129,7 +129,7 @@ Armin Ronacher's "The Coming Loop" names something a lot of us have felt and
 mostly tried not to think about. You start an agent loop, it runs, code appears,
 tests pass — and somewhere in the middle of that you stop being the author.
 
-I work on iii, a worker mesh, and I want to make a specific, scoped claim: iii
+I work on iii, a language agnostic runtime, and I want to make a specific, scoped claim: iii
 is a partial answer to Ronacher's problem. A real one, but narrow.
 
 ## Enumerable is not comprehensible

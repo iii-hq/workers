@@ -81,10 +81,56 @@ describe('summarizeTriggerConfig', () => {
 })
 
 describe('lifecycleNote', () => {
-  it('prefers the fired ghost marker', () => {
-    expect(lifecycleNote(trigger({ fired: true, once: true }))).toBe(
-      'fired · unregistered',
+  it('labels a consumed once binding as automatic', () => {
+    expect(
+      lifecycleNote(
+        trigger({
+          fired: true,
+          outcome: 'delivered',
+          retirementReason: 'once_consumed',
+        }),
+      ),
+    ).toBe('once · consumed automatically')
+  })
+
+  it('keeps expiry, unregistration, and invalidation distinct', () => {
+    expect(
+      lifecycleNote(trigger({ fired: true, retirementReason: 'expired' })),
+    ).toBe('expired')
+    expect(
+      lifecycleNote(trigger({ fired: true, retirementReason: 'unregistered' })),
+    ).toBe('unregistered')
+    expect(
+      lifecycleNote(trigger({ fired: true, retirementReason: 'invalidated' })),
+    ).toBe('invalidated')
+  })
+
+  it('labels fire-budget and exhausted retirement separately', () => {
+    expect(
+      lifecycleNote(trigger({ fired: true, retirementReason: 'max_fires' })),
+    ).toBe('fire limit reached')
+    expect(
+      lifecycleNote(trigger({ fired: true, retirementReason: 'exhausted' })),
+    ).toBe('exhausted')
+  })
+
+  it('uses lifecycle outcomes when the matching reason is absent', () => {
+    expect(lifecycleNote(trigger({ fired: true, outcome: 'expired' }))).toBe(
+      'expired',
     )
+    expect(
+      lifecycleNote(trigger({ fired: true, outcome: 'unregistered' })),
+    ).toBe('unregistered')
+    expect(
+      lifecycleNote(trigger({ fired: true, outcome: 'invalidated' })),
+    ).toBe('invalidated')
+  })
+
+  it('does not claim a manual unbind for a legacy retired record', () => {
+    const note = lifecycleNote(trigger({ fired: true, once: true }))
+    expect(note).toBe('retired')
+    expect(note).not.toContain('unregistered')
+    expect(note).not.toContain('consumed')
   })
 
   it('joins once, fires, budget, and deadline from the row data', () => {

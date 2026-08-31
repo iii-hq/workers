@@ -683,9 +683,9 @@ dependencies = [
 
 [[package]]
 name = "iii-helpers"
-version = "0.21.6"
+version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0d84d5c149ae4404365a79feca28aa66f6a7dbed56423b4b8c4e2421e0b5add"
+checksum = "0342a8980e12e9bb994d9221637914a719a156cee73705b595d6588e45c9cfca"
 dependencies = [
  "futures-util",
  "opentelemetry",
@@ -704,9 +704,9 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.21.6"
+version = "0.22.1-alpha.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07dd060fddcc9153b0dd07c038a14cf172ce15ce1d4edb98155563ed55b2caba"
+checksum = "5bb1167081b82a1aa9f12b05ad9e093fdf1cd2a3ed282bb66451a26e37f4a459"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -722,6 +722,10 @@ dependencies = [
  "tracing",
  "uuid",
 ]
+
+[[package]]
+name = "iii-worker-paths"
+version = "0.1.0"
 
 [[package]]
 name = "indexmap"
@@ -776,9 +780,9 @@ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
 name = "libredox"
-version = "0.1.18"
+version = "0.1.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c943259e342f1e06ff2da7a83eabdfe7f92ce10262688dbf1895ff0b3e6e4652"
+checksum = "f02ab6bace2054fb888a3c16f990117b579d14a3088e472d63c6011fa185c9d3"
 dependencies = [
  "libc",
 ]
@@ -2335,7 +2339,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "worktree"
-version = "0.2.5"
+version = "0.3.4-rc.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2344,6 +2348,7 @@ dependencies = [
  "globset",
  "iii-console-ui",
  "iii-sdk",
+ "iii-worker-paths",
  "schemars",
  "serde",
  "serde_json",

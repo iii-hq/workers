@@ -1,0 +1,59 @@
+{
+  "function_id": "browser::css",
+  "description": "One CSS query over HTML; first-or-all; `attr` pulls an attribute else text.",
+  "request_schema": {
+    "type": "object",
+    "properties": {
+      "html": {
+        "type": "string"
+      },
+      "query": {
+        "type": "string"
+      },
+      "first": {
+        "type": "boolean"
+      },
+      "attr": {
+        "type": "string"
+      },
+      "identifier": {
+        "type": "string",
+        "description": "stable key for the saved element"
+      },
+      "adaptive": {
+        "type": "boolean",
+        "description": "relocate elements after a site change via saved identities"
+      },
+      "auto_save": {
+        "type": "boolean",
+        "description": "save matched identities (defaults on when adaptive)"
+      },
+      "adaptive_domain": {
+        "type": "string",
+        "description": "page URL/domain that keys saved identities"
+      }
+    },
+    "required": [
+      "html",
+      "query"
+    ]
+  },
+  "response_schema": {
+    "type": "object",
+    "properties": {
+      "result": {
+        "type": [
+          "array",
+          "string",
+          "null"
+        ],
+        "items": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

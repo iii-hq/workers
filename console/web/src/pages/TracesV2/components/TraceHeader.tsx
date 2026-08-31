@@ -1,7 +1,17 @@
-import { AlertCircle, ChevronRight, Clock, Copy, Layers, X } from 'lucide-react'
+import {
+  AlertCircle,
+  ChevronRight,
+  Clock,
+  Copy,
+  Layers,
+  Loader2,
+  LocateFixed,
+  X,
+} from 'lucide-react'
 import { Fragment, useMemo } from 'react'
 import { Button } from '@/components/ui/Button'
 import { cn } from '@/lib/utils'
+import type { TraceChatLink } from '../lib/traceChatLink'
 import { getWorkerColor } from '../lib/traceColors'
 import type { VisualizationSpan, WaterfallData } from '../lib/traceTransform'
 import {
@@ -15,6 +25,13 @@ interface TraceHeaderProps {
   traceId: string
   onClose: () => void
   onSpanClick?: (span: VisualizationSpan) => void
+  /** The chat session/turn behind this trace, when its spans carry it. */
+  chatLink?: TraceChatLink | null
+  /** Open the linked conversation AND land on this trace's turn. */
+  onOpenMessage?: (link: TraceChatLink) => void
+  /** Non-null while the paged seed still sweeps — the painted detail is
+   *  incomplete and the span chip counts up instead of stating a total. */
+  loadingSpans?: { loaded: number; total: number } | null
 }
 
 export function TraceHeader({
@@ -22,6 +39,9 @@ export function TraceHeader({
   traceId,
   onClose,
   onSpanClick,
+  chatLink,
+  onOpenMessage,
+  loadingSpans,
 }: TraceHeaderProps) {
   const { copiedKey, copy } = useCopyToClipboard()
   const copied = copiedKey === 'traceId'
@@ -78,9 +98,9 @@ export function TraceHeader({
   const rootWorker = rootSpan ? getWorkerName(rootSpan) : 'trace'
 
   return (
-    <div className="bg-panel border-b border-rule-2 flex-shrink-0">
-      <div className="flex items-center gap-2 px-4 pt-3 pb-1.5">
-        <span className="px-1.5 py-0.5 font-mono text-[11px] font-medium uppercase tracking-[0.06em] flex-shrink-0 border border-rule bg-bg text-ink-faint lowercase">
+    <div className="border-b border-rule-2 flex-shrink-0">
+      <div className="flex items-center gap-2 px-3 pt-3 pb-1.5">
+        <span className="px-1.5 py-0.5 font-mono text-[11px] font-medium uppercase tracking-[0.06em] flex-shrink-0 rounded-xs bg-surface text-ink-faint lowercase">
           {rootWorker}
         </span>
         <h2
@@ -96,11 +116,11 @@ export function TraceHeader({
           aria-label="close trace detail"
           title="close (esc)"
         >
-          <X className="w-3.5 h-3.5" />
+          <X className="size-4" />
         </Button>
       </div>
 
-      <div className="flex items-center gap-2 px-4 pb-2.5 flex-wrap">
+      <div className="flex items-center gap-2 px-3 pb-2.5 flex-wrap">
         <button
           type="button"
           onClick={() => copy('traceId', traceId)}
@@ -112,45 +132,77 @@ export function TraceHeader({
               copied
             </span>
           ) : (
-            <Copy className="w-2.5 h-2.5 opacity-0 group-hover:opacity-100 transition-opacity" />
+            <Copy className="size-4 opacity-0 group-hover:opacity-100 transition-opacity" />
           )}
         </button>
 
-        <span aria-hidden className="w-px h-3 bg-rule-2" />
+        <span aria-hidden className="w-px h-3 bg-edge" />
 
-        <span className="flex items-center gap-1 px-2 py-0.5 bg-bg border border-rule">
-          <Clock className="w-2.5 h-2.5 text-accent" />
+        <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
+          <Clock className="size-4 text-accent" />
           <span className="text-[11px] font-mono font-semibold text-accent tabular-nums">
             {formatDuration(data.total_duration_ms)}
           </span>
         </span>
 
-        <span className="flex items-center gap-1 px-2 py-0.5 bg-bg border border-rule">
-          <Layers className="w-2.5 h-2.5 text-ink-faint" />
-          <span className="text-[11px] font-mono text-ink-faint tabular-nums">
-            {data.span_count} spans
+        {loadingSpans ? (
+          <span
+            role="status"
+            title="spans still loading — the waterfall is filling in"
+            className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface"
+          >
+            <Loader2
+              aria-hidden
+              className="size-4 animate-spin text-ink-faint motion-reduce:animate-none"
+            />
+            <span className="text-[11px] font-mono text-ink-faint tabular-nums">
+              {Math.min(loadingSpans.loaded, loadingSpans.total)}/
+              {loadingSpans.total} spans
+            </span>
           </span>
-        </span>
+        ) : (
+          <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
+            <Layers className="size-4 text-ink-faint" />
+            <span className="text-[11px] font-mono text-ink-faint tabular-nums">
+              {data.span_count} spans
+            </span>
+          </span>
+        )}
 
-        <span className="flex items-center gap-1 px-2 py-0.5 bg-bg border border-rule">
+        <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-surface">
           <span className="text-[11px] font-mono text-ink-faint tabular-nums">
             {workerCount} worker{workerCount === 1 ? '' : 's'}
           </span>
         </span>
 
         {hasErrors && (
-          <span className="flex items-center gap-1 px-2 py-0.5 bg-bg border border-alert">
-            <AlertCircle className="w-2.5 h-2.5 text-alert" />
+          <span className="flex items-center gap-1 px-2 py-0.5 rounded-xs bg-alert-muted">
+            <AlertCircle className="size-4 text-alert" />
             <span className="text-[11px] font-mono font-semibold text-alert tabular-nums">
               {errorCount} err
             </span>
           </span>
         )}
+
+        {chatLink?.turnId && onOpenMessage ? (
+          <>
+            <span aria-hidden className="w-px h-3 bg-edge" />
+            <button
+              type="button"
+              onClick={() => onOpenMessage(chatLink)}
+              aria-label="go to message"
+              title="open the chat at this trace's message"
+              className="flex items-center px-1.5 py-0.5 rounded-xs bg-surface text-ink-faint hover:text-ink hover:bg-surface-hover transition-colors"
+            >
+              <LocateFixed className="size-4" />
+            </button>
+          </>
+        ) : null}
       </div>
 
       {workerList.length > 1 && (
-        <div className="px-4 pb-2.5">
-          <div className="flex h-1.5 bg-bg border border-rule overflow-hidden">
+        <div className="px-3 pb-2.5">
+          <div className="flex h-1.5 rounded-full bg-surface overflow-hidden">
             {workerList.map((worker, i) => {
               const workerDuration = workerDurations.get(worker) || 0
               const pct = (workerDuration / data.total_duration_ms) * 100
@@ -189,16 +241,16 @@ export function TraceHeader({
       )}
 
       {criticalPath.length > 1 && (
-        <div className="flex items-center gap-1 px-4 pb-2.5 overflow-x-auto">
+        <div className="flex items-center gap-1 px-3 pb-2.5 overflow-x-auto">
           {criticalPath.map((span, i) => (
             <Fragment key={span.span_id}>
               {i > 0 && (
-                <ChevronRight className="w-3 h-3 text-ink-ghost flex-shrink-0" />
+                <ChevronRight className="size-4 text-ink-ghost flex-shrink-0" />
               )}
               <button
                 type="button"
                 onClick={() => onSpanClick?.(span)}
-                className="font-mono text-[11px] text-ink-faint hover:text-ink hover:bg-bg truncate max-w-[140px] flex-shrink-0 px-1 py-0.5 transition-colors lowercase"
+                className="font-mono text-[11px] text-ink-faint hover:text-ink hover:bg-surface-hover rounded-xs truncate max-w-[140px] flex-shrink-0 px-1 py-0.5 transition-colors lowercase"
                 title={span.name}
               >
                 {span.name}

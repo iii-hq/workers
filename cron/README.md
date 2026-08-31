@@ -8,11 +8,11 @@ and payload shape stable.
 ## Install
 
 ```bash
-iii worker add cron
+iii trigger compose::add worker=cron
 ```
 
-`iii worker add` fetches the binary, writes a config block into
-`~/.iii/config.yaml`, and the engine starts the worker the next time it boots.
+`iii trigger compose::add` resolves the worker and its dependencies, writes
+exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 
 ## Quickstart
 
@@ -72,6 +72,15 @@ console (**Configuration -> Workers -> cron**) or seed it once via
 scheduler under a serialized apply lock: existing jobs are stopped, re-created
 with the new backend, and never run in two scheduler instances at once.
 
+## Console page
+
+While the worker is connected it injects a **cron** page into the console
+(`#/ext/cron`): every agent-owned schedule with its cadence, next UTC run and
+fire count, the cron bindings other workers registered for themselves, and a
+composer that turns "every weekday at 09:00, summarise open PRs" into a
+registered schedule. Schedules created there live in a session of their own,
+so each routine keeps its own transcript.
+
 ## Trigger type
 
 This worker always registers the `cron` trigger type. Bind a function to it
@@ -84,6 +93,37 @@ with:
 
 All schedules use UTC. Missed fires while the worker is stopped are skipped;
 there is no catch-up replay.
+
+Write the day of week as a name (`Mon` ... `Sun`). Numerically the crate counts
+Sunday as 1, so `0 0 9 * * 1` fires on Sunday, not Monday.
+
+## Console trigger activity
+
+The worker injects a cron-specific source section into Consoles that support
+`host.triggerRenderers`. Trigger registration, firing, and retirement show a
+plain-language schedule, the exact expression, explicit UTC, and the optional
+`condition_function_id`. Expressions that cannot be summarized without
+hiding cron semantics keep an honest “custom schedule” label and the raw
+expression.
+
+The Console retains the surrounding activity, delivery target/result,
+lifecycle state and controls, and raw JSON. Disabling or disconnecting this
+worker's injected UI therefore falls back to the generic trigger view rather
+than removing trigger activity.
+
+For local UI development:
+
+```bash
+pnpm --dir cron/ui test
+pnpm --dir cron/ui build
+# terminal 1
+pnpm --dir cron/ui watch
+# terminal 2
+cd cron && III_CRON_UI_WATCH=1 cargo run
+```
+
+The Rust build embeds `cron/page.js` and `cron/styles.css`; production does
+not require a separate asset server.
 
 ### Requires removing the legacy built-in cron worker
 

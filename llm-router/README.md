@@ -6,14 +6,14 @@ and a single failure contract — consumers call one chat surface and never talk
 to a provider directly.
 
 llm-router is a standalone iii worker. Providers plug in as separate workers
-at runtime through a self-registration protocol (`iii worker add
-provider-<x>`); the router never compiles against a provider, and removing a
+at runtime through a self-registration protocol
+(`iii trigger compose::add worker=provider-<x>`); the router never compiles against a provider, and removing a
 provider worker removes the provider.
 
 ## Install
 
 ```bash
-iii worker add llm-router
+iii trigger compose::add worker=llm-router
 ```
 
 ## Quickstart
@@ -60,11 +60,24 @@ partial content, so consumers never hang on a half-open stream.
 | `router::embed` | Batch text embeddings through the first embed-capable provider in the registry (`{model?, provider?, input[]}` → `{provider, model, embeddings[][]}`); providers without an embed surface are skipped. |
 | `router::count_tokens` | Count prompt tokens: `{model, provider?, system_prompt?, tools?, messages}` → `{provider, model, tokens, estimator}`, resolved with the same routing rules as `router::chat` and forwarded to `provider::<id>::count_tokens`. Never runs the model and costs nothing; `estimator` is `provider` (metering API) or `tiktoken` (local tokenizer). A provider without the surface is a typed `router/no_token_counter` error, so callers can fall back to their own estimate. |
 | `router::provider::list` | Registered providers with `configured` / `available` status. |
-| `router::system_prompt::get` | Effective identity prompt for `{provider?}` (the configured `default_provider` when omitted): operator override when set → provider-declared → `null`. `null` also when the provider is unknown — callers fall back to their own default prompt. |
 
 Only the read surface is agent-callable (`router::models::list` / `get` /
 `supports`, `router::provider::list`); everything else is denied to in-run
 agents — see [Security model](#security-model).
+
+### Error conventions
+
+Errors use stable `router/<code>` identifiers. Streaming failures return an
+`error` object with a user-facing `message`, the shared `kind`, `retryable`,
+and an optional diagnostic `detail`. User interfaces should show `message`
+and keep `code` / `detail` behind technical details; automation should branch
+on `code` and `retryable`, never parse the prose.
+
+The main recovery codes are `router/provider_unavailable`,
+`router/capacity_exceeded`, `router/stream_idle_timeout`,
+`router/stream_incomplete`, `router/provider_auth_expired`,
+`router/provider_rate_limited`, `router/context_overflow`, and
+`router/provider_rejected`.
 
 ### Provider protocol
 
@@ -98,8 +111,7 @@ entry at boot and keeps an in-memory snapshot synchronized by the
     "anthropic": {
       "api_key": "sk-…",
       "api_url": "https://api.anthropic.com/v1/messages",
-      "max_tokens": 8192,
-      "system_prompt": "optional override of the provider-declared identity prompt (unset = provider default)"
+      "max_tokens": 8192
     }
   },
   "routing_heuristics": [{ "pattern": "^gpt-", "provider": "openai" }],
@@ -116,13 +128,8 @@ entry at boot and keeps an in-memory snapshot synchronized by the
 |---|---|---|
 | `stream_timeout_ms` | `300000` | Hard budget for one streamed turn. |
 | `idle_timeout_ms` | `120000` | Max silence between provider frames before the attempt is cut. |
-| `retry_max` | `2` | Retries per turn for retryable failures before the first forwarded frame. |
+| `retry_max` | `2` | Retries per turn for retryable failures before the first forwarded frame (`0`–`10`). |
 | `output_token_max` | `32000` | Ceiling on `max_output_tokens` forwarded to providers. |
-
-Per-provider slices additionally accept a nullable `system_prompt`: when set
-(non-empty), it overrides the provider-declared identity prompt served by
-`router::system_prompt::get`; unset/null serves the provider's default. The
-reactive snapshot makes changes available without a router restart.
 
 Pasting a key into a provider's slice is the whole onboarding flow: the
 router diffs the changed slice, debounces ~2 s, and kicks that provider's
@@ -205,10 +212,12 @@ A provider worker must:
    frames. Transport retries (429 / 5xx / connect) are the router's job, not
    the provider's.
 
-Optionally, the declaration may carry a `system_prompt` — the identity prompt
-tailored to the provider's model family. The router stores it in the registry
-and serves it (unless the config slice sets an override) via
-`router::system_prompt::get`; the harness fetches it at turn creation.
+A provider may also register `provider::<id>::count_tokens` (`{model,
+system_prompt?, tools?, messages}` → `{model, tokens, estimator}`) to serve
+`router::count_tokens`: an exact count from a provider metering API
+(`estimator: "provider"`) or a local tokenizer estimate (`estimator:
+"tiktoken"`). Providers without it simply make `router::count_tokens` return
+a typed `router/no_token_counter` error for that provider.
 
 A provider may also register `provider::<id>::count_tokens` (`{model,
 system_prompt?, tools?, messages}` → `{model, tokens, estimator}`) to serve
@@ -222,6 +231,8 @@ The first real provider implementing this protocol is
 implementation alongside the scripted provider in the integration tests.
 [`provider-openai/`](https://github.com/iii-hq/workers/tree/main/provider-openai) follows the same structure for the
 OpenAI Chat Completions API (native structured output, reasoning_effort).
+[`provider-opencode-go/`](https://github.com/iii-hq/workers/tree/main/provider-opencode-go) follows the same structure for the
+OpenCode Go Chat Completions API (curated model metadata, reasoning_effort).
 
 ## Local development & testing
 

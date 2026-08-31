@@ -293,20 +293,18 @@ describe('worker::add', () => {
     ).toBeNull()
   })
 
-  it.each([
-    'installed',
-    'already_current',
-    'repaired',
-    'replaced',
-  ] as const)('parses the %s status', (status) => {
-    const parsed = safeParseResponse(workerAddResponseSchema, {
-      name: 'pdfkit',
-      status,
-      awaited_ready: true,
-      config_path: '/x/iii.config.yaml',
-    })
-    expect(parsed?.status).toBe(status)
-  })
+  it.each(['installed', 'already_current', 'repaired', 'replaced'] as const)(
+    'parses the %s status',
+    (status) => {
+      const parsed = safeParseResponse(workerAddResponseSchema, {
+        name: 'pdfkit',
+        status,
+        awaited_ready: true,
+        config_path: '/x/iii.config.yaml',
+      })
+      expect(parsed?.status).toBe(status)
+    },
+  )
 })
 
 describe('worker::remove / clear / update', () => {

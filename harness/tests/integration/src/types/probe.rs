@@ -39,6 +39,11 @@ pub struct LifecycleEventV1 {
     pub parent_session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reactive_depth: Option<u32>,
+    /// The generation's context snapshot (categories, budget, usage) — the
+    /// consumer-facing shape is pinned by the `harness::metrics` schema
+    /// golden, so the lifecycle sink carries it opaquely.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

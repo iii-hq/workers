@@ -58,21 +58,27 @@ pub fn with_host_root(value: &Value, requested_root: &str) -> Value {
 pub async fn add_host_root(iii: &IIIClient, requested_root: &str) -> Result<(), Error> {
     let _guard = host_root_lock().lock().await;
     let reply = iii
-        .trigger(TriggerRequest {
-            function_id: "configuration::get".into(),
-            payload: json!({ "id": SHELL_CONFIG_ID }),
-            action: None,
-            timeout_ms: None,
-        })
+        .trigger(
+            TriggerRequest {
+                function_id: "configuration::get".into(),
+                payload: json!({ "id": SHELL_CONFIG_ID }),
+                action: None,
+                timeout_ms: None,
+            }
+            .namespace("default"),
+        )
         .await?;
     let current = reply.get("value").cloned().unwrap_or(Value::Null);
     let next = with_host_root(&current, requested_root);
-    iii.trigger(TriggerRequest {
-        function_id: "configuration::set".into(),
-        payload: json!({ "id": SHELL_CONFIG_ID, "value": next }),
-        action: None,
-        timeout_ms: None,
-    })
+    iii.trigger(
+        TriggerRequest {
+            function_id: "configuration::set".into(),
+            payload: json!({ "id": SHELL_CONFIG_ID, "value": next }),
+            action: None,
+            timeout_ms: None,
+        }
+        .namespace("default"),
+    )
     .await?;
     Ok(())
 }

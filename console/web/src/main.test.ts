@@ -25,3 +25,20 @@ describe('main.tsx polyfill wiring', () => {
     expect(src).toContain('installRandomUUIDPolyfill()')
   })
 })
+
+describe('main.tsx injectable UI readiness wiring', () => {
+  const src = readFileSync(new URL('./main.tsx', import.meta.url), 'utf8')
+
+  it('marks assets as loading before asynchronous client bootstrap', () => {
+    const loadingAt = src.indexOf("setUiAssetsStatus('loading')")
+    const clientBootstrapAt = src.indexOf('getIiiClient()', loadingAt)
+
+    expect(loadingAt).toBeGreaterThan(-1)
+    expect(clientBootstrapAt).toBeGreaterThan(-1)
+    expect(loadingAt).toBeLessThan(clientBootstrapAt)
+  })
+
+  it('allows built-in forms to recover when client bootstrap fails', () => {
+    expect(src).toContain("setUiAssetsStatus('unavailable')")
+  })
+})

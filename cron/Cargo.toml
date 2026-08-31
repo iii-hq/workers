@@ -2,7 +2,7 @@
 
 [package]
 name = "iii-cron"
-version = "0.21.4"
+version = "0.21.11-rc.1"
 edition = "2021"
 description = "Cron scheduler worker for iii - schedules functions with cron expressions (cron trigger type)"
 license = "Apache-2.0"
@@ -18,7 +18,8 @@ name = "cron"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = "=0.21.6"
+iii-sdk = "=0.22.1-alpha.25"
+iii-console-ui = { path = "../crates/console-ui" }
 async-trait = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
 serde = { version = "1", features = ["derive"] }

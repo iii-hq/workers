@@ -1,12 +1,15 @@
 //! `console` worker entry point.
 //!
 //! Boot sequence:
-//!   1. Parse CLI / load YAML config (with fallback to defaults).
+//!   1. Parse CLI / load the optional YAML seed (with fallback to defaults).
 //!   2. Connect to the iii engine over WebSocket via the SDK.
-//!   3. Register `console::status` against the engine.
-//!   4. Bind the HTTP server on `http_port` and serve `/`, `/assets/*`,
+//!   3. Register the Console configuration schema and fetch its authoritative
+//!      `http_port` (falling back to the local seed if unavailable).
+//!   4. Register `console::status` against the engine.
+//!   5. Bind the HTTP server on `http_port` and serve `/`, `/assets/*`,
 //!      and `/ws` (WebSocket proxy back to the engine).
-//!   5. Wait for SIGINT or SIGTERM, then signal a graceful HTTP
+//!   6. Subscribe to configuration changes so port edits rebind live.
+//!   7. Wait for SIGINT or SIGTERM, then signal a graceful HTTP
 //!      shutdown and `iii.shutdown_async()`.
 
 use std::sync::Arc;
@@ -15,7 +18,6 @@ use anyhow::Result;
 use clap::Parser;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, InitOptions};
-use tokio::sync::oneshot;
 
 use console::{config, configuration, functions, manifest, server, ui, ui_assets};
 
@@ -25,7 +27,7 @@ use console::{config, configuration, functions, manifest, server, ui, ui_assets}
     about = "Web console for iii — bundles the React UI and proxies the engine WebSocket on a single port."
 )]
 struct Cli {
-    /// Path to `config.yaml`.
+    /// Path to the YAML seed used on first configuration registration.
     #[arg(long, default_value = "./config.yaml")]
     config: String,
 
@@ -33,8 +35,8 @@ struct Cli {
     #[arg(long, env = "III_URL", default_value = config::DEFAULT_ENGINE_URL)]
     url: String,
 
-    /// TCP port for `/`, `/assets/*`, and `/ws`. Overrides `http_port`
-    /// from the config file when present.
+    /// TCP port seed for `/`, `/assets/*`, and `/ws`. Overrides `http_port`
+    /// from the seed file; an existing configuration-worker value still wins.
     #[arg(long)]
     http_port: Option<u16>,
 
@@ -78,14 +80,6 @@ async fn main() -> Result<()> {
 
     let engine_url = cli.url;
 
-    tracing::info!(
-        http_port = cfg.http_port,
-        engine_url = %redact_url(&engine_url),
-        "starting console worker"
-    );
-
-    let cfg = Arc::new(cfg);
-
     let iii = register_worker(
         &engine_url,
         InitOptions {
@@ -103,6 +97,36 @@ async fn main() -> Result<()> {
     );
     let iii = Arc::new(iii);
 
+    // Match the HTTP worker's configuration lifecycle: local config is only a
+    // first-registration seed/fallback; a stored value is authoritative and is
+    // fetched before binding the listener.
+    if let Err(error) = configuration::register_console_config(&iii, cfg.http_port).await {
+        tracing::warn!(
+            %error,
+            "console configuration registration failed; continuing with the local port seed"
+        );
+    }
+    let runtime_config = match configuration::fetch_runtime_config(&iii, cfg.http_port).await {
+        Ok(config) => config,
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "console configuration fetch failed; continuing with the local port seed"
+            );
+            configuration::RuntimeConfig::fallback(cfg.http_port)
+        }
+    };
+    cfg.http_port = runtime_config.http_port;
+
+    tracing::info!(
+        http_port = cfg.http_port,
+        engine_url = %redact_url(&engine_url),
+        "starting console worker"
+    );
+
+    let cfg = Arc::new(cfg);
+    let port = configuration::new_port_cell(cfg.http_port);
+
     // Trigger types register before functions (approval-gate/memory
     // ordering convention). `None` = injectable UI disabled via config.
     let (ui, ui_control) = if cfg.injectable_ui {
@@ -113,27 +137,15 @@ async fn main() -> Result<()> {
         (None, None)
     };
 
-    functions::register_all(&iii, &cfg, &engine_url, ui.clone());
+    functions::register_all(&iii, port.clone(), &engine_url, ui.clone());
 
-    // The console's own injected UI — the injectable-UI toggle form for the
-    // `console` configuration entry. Same mechanism as any worker's.
+    // The console's own injected UI — live port + injectable-UI controls for
+    // the `console` configuration entry. Same mechanism as any worker's.
     if cfg.injectable_ui {
         ui::register(&iii);
     }
 
-    // Best-effort: guarantee the `console` configuration entry exists for the
-    // UI's saved preferences, without delaying HTTP serve. With injectable UI
-    // on, also apply the persisted per-worker toggles and subscribe to
-    // configuration changes so toggles apply live.
-    {
-        let iii = iii.clone();
-        tokio::spawn(async move {
-            configuration::register_console_config(&iii).await;
-            if let Some(control) = ui_control {
-                configuration::start_injectable_ui_sync(&iii, control).await;
-            }
-        });
-    }
+    configuration::apply_runtime_ui(&runtime_config, ui_control.as_ref()).await;
 
     if !console::assets::has_bundle() {
         tracing::warn!(
@@ -142,30 +154,55 @@ async fn main() -> Result<()> {
         );
     }
 
-    let (http_shutdown_tx, http_shutdown_rx) = oneshot::channel::<()>();
     let engine_url_redacted = redact_url(&engine_url);
-    let state = server::AppState::new(Arc::new(engine_url), ui);
-    let http_port = cfg.http_port;
-    let server_handle = tokio::spawn(async move {
-        if let Err(e) = server::serve(http_port, state, http_shutdown_rx, None).await {
-            tracing::error!(error = %e, "http server crashed");
-        }
-    });
+    let state = server::AppState::new(Arc::new(engine_url), iii.namespace(), ui);
+    let server_handle = server::start(cfg.http_port, state.clone()).await?;
+    let apply_lock: configuration::ApplyLock = Arc::new(tokio::sync::Mutex::new(()));
+
+    if let Err(error) = configuration::register_config_trigger(
+        &iii,
+        port.clone(),
+        state.clone(),
+        server_handle.control.clone(),
+        ui_control.clone(),
+        apply_lock.clone(),
+    ) {
+        tracing::warn!(
+            %error,
+            "console configuration trigger registration failed; live updates are disabled"
+        );
+    } else {
+        // Close the fetch→subscribe race: an edit that landed while the server
+        // was binding is reconciled through the same serialized apply path.
+        configuration::apply_current_config(
+            &iii,
+            &port,
+            &state,
+            &server_handle.control,
+            ui_control.as_ref(),
+            &apply_lock,
+        )
+        .await;
+    }
+
+    let ready_addr = server_handle
+        .current_addr()
+        .await
+        .unwrap_or(server_handle.local_addr);
 
     tracing::info!(
         "console ready — UI on http://127.0.0.1:{}/, /ws proxies to {}",
-        cfg.http_port,
+        ready_addr.port(),
         engine_url_redacted,
     );
 
     wait_for_shutdown_signal().await?;
     tracing::info!("console shutting down");
 
-    let _ = http_shutdown_tx.send(());
-    if let Err(e) = server_handle.await {
-        tracing::warn!(error = %e, "http server task join failed");
-    }
-
+    // Serialize shutdown with any in-flight rebind. `rebind` also refuses to
+    // install a replacement after the control slot becomes `None`.
+    let _apply_guard = apply_lock.lock().await;
+    server_handle.shutdown().await;
     iii.shutdown_async().await;
     Ok(())
 }

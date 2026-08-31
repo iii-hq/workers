@@ -46,6 +46,12 @@ pub struct WorkerConfig {
     #[serde(default = "default_max_output_chars")]
     pub max_output_chars: usize,
 
+    /// Per-result ceiling for `context::assemble`'s unconditional cap
+    /// pass: any single function result estimating over this many tokens
+    /// is reduced to head + marker + tail. `0` disables the pass.
+    #[serde(default = "default_max_result_tokens")]
+    pub max_result_tokens: u64,
+
     /// Compaction lease TTL in seconds.
     #[serde(default = "default_lease_ttl_secs")]
     pub lease_ttl_secs: u64,
@@ -61,16 +67,15 @@ pub struct WorkerConfig {
     pub summarizer_timeout_ms: u64,
 
     /// Directory holding compaction-lease files (`<scope>/<key>.json`).
-    /// A leading `~/` expands to the home directory. Mirrors
-    /// session-manager's `data_dir`.
+    /// Relative paths resolve against `III_COMPOSE_DIR` when available.
     #[serde(default = "default_lease_dir")]
     pub lease_dir: String,
 }
 
 impl WorkerConfig {
-    /// The lease directory with a leading `~/` expanded to `$HOME`.
+    /// The lease directory resolved against the Compose project directory.
     pub fn resolved_lease_dir(&self) -> PathBuf {
-        expand_tilde(&self.lease_dir)
+        iii_worker_paths::resolve_path(&self.lease_dir)
     }
 
     /// Parse a seed config from YAML, expanding `${NAME}` against the
@@ -164,6 +169,10 @@ fn default_max_output_chars() -> usize {
     2_000
 }
 
+fn default_max_result_tokens() -> u64 {
+    20_000
+}
+
 fn default_lease_ttl_secs() -> u64 {
     300
 }
@@ -177,20 +186,7 @@ fn default_summarizer_timeout_ms() -> u64 {
 }
 
 fn default_lease_dir() -> String {
-    "~/.iii/data/context-manager".to_string()
-}
-
-fn expand_tilde(path: &str) -> PathBuf {
-    if path == "~" {
-        if let Some(home) = dirs::home_dir() {
-            return home;
-        }
-    } else if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest);
-        }
-    }
-    PathBuf::from(path)
+    iii_worker_paths::default_path("data/context-manager")
 }
 
 /// Expand `${NAME}` occurrences against the process environment. Unknown
@@ -231,6 +227,7 @@ impl Default for WorkerConfig {
             protect_recent_tokens: default_protect_recent_tokens(),
             min_free_tokens: default_min_free_tokens(),
             max_output_chars: default_max_output_chars(),
+            max_result_tokens: default_max_result_tokens(),
             lease_ttl_secs: default_lease_ttl_secs(),
             allow_fallback_limits: default_allow_fallback_limits(),
             summarizer_timeout_ms: default_summarizer_timeout_ms(),
@@ -252,16 +249,18 @@ mod tests {
         assert_eq!(cfg.protect_recent_tokens, 40_000);
         assert_eq!(cfg.min_free_tokens, 20_000);
         assert_eq!(cfg.max_output_chars, 2_000);
+        assert_eq!(cfg.max_result_tokens, 20_000);
         assert_eq!(cfg.lease_ttl_secs, 300);
         assert!(cfg.allow_fallback_limits);
         assert_eq!(cfg.summarizer_timeout_ms, 320_000);
-        assert_eq!(cfg.lease_dir, "~/.iii/data/context-manager");
+        assert_eq!(cfg.lease_dir, default_lease_dir());
     }
 
     #[test]
     fn custom_yaml_overrides_every_field() {
         let yaml = "reserved_tokens_cap: 1\nreserved_pct: 2\ntail_turns: 3\n\
                     protect_recent_tokens: 4\nmin_free_tokens: 5\nmax_output_chars: 6\n\
+                    max_result_tokens: 9\n\
                     lease_ttl_secs: 7\nallow_fallback_limits: false\nsummarizer_timeout_ms: 8\n\
                     lease_dir: /tmp/leases";
         let cfg: WorkerConfig = serde_yaml::from_str(yaml).unwrap();
@@ -271,6 +270,7 @@ mod tests {
         assert_eq!(cfg.protect_recent_tokens, 4);
         assert_eq!(cfg.min_free_tokens, 5);
         assert_eq!(cfg.max_output_chars, 6);
+        assert_eq!(cfg.max_result_tokens, 9);
         assert_eq!(cfg.lease_ttl_secs, 7);
         assert!(!cfg.allow_fallback_limits);
         assert_eq!(cfg.summarizer_timeout_ms, 8);
@@ -280,7 +280,10 @@ mod tests {
 
     #[test]
     fn lease_dir_tilde_expands_to_home() {
-        let cfg = WorkerConfig::default();
+        let cfg = WorkerConfig {
+            lease_dir: "~/.iii/data/context-manager".to_string(),
+            ..WorkerConfig::default()
+        };
         let resolved = cfg.resolved_lease_dir();
         if let Some(home) = dirs::home_dir() {
             assert!(resolved.starts_with(home));
@@ -314,6 +317,7 @@ mod tests {
             "protect_recent_tokens",
             "min_free_tokens",
             "max_output_chars",
+            "max_result_tokens",
             "lease_ttl_secs",
             "allow_fallback_limits",
             "summarizer_timeout_ms",

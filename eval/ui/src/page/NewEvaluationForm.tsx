@@ -1,8 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Button, Input, Select, StatusPanel, Tabs, TabsList, TabsTrigger } from '@iii-dev/console-ui'
+import {
+  Button,
+  Input,
+  Select,
+  StatusPanel,
+  Tabs,
+  TabsList,
+  TabsTrigger,
+} from '@iii-dev/console-ui'
 import { errorMessage } from '../api'
 import { Field, TextArea } from '../components'
-import { buildRequest, DEFAULT_FORM, type EvalFormState, type SystemPromptSource } from '../form'
+import {
+  buildRequest,
+  DEFAULT_FORM,
+  type EvalFormState,
+  type SystemPromptSource,
+} from '../form'
 import type { CatalogModel, EvalRequest } from '../types'
 
 const MODEL_SEPARATOR = '\u0000'
@@ -15,12 +28,10 @@ const SYSTEM_PROMPT_SOURCE_OPTIONS = [
 export function NewEvaluationForm({
   models,
   modelCatalogError,
-  onLoadDefaultSystemPrompt,
   onCreate,
 }: {
   models: CatalogModel[]
   modelCatalogError: string | null
-  onLoadDefaultSystemPrompt: (provider?: string) => Promise<string | null>
   onCreate: (request: EvalRequest) => Promise<void>
 }) {
   const formRef = useRef<HTMLFormElement>(null)
@@ -29,17 +40,15 @@ export function NewEvaluationForm({
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [manualModel, setManualModel] = useState(models.length === 0)
-  const [loadingDefaultFor, setLoadingDefaultFor] = useState<
-    'sharedSystemPrompt' | 'controlSystemPrompt' | 'treatmentSystemPrompt' | null
-  >(null)
-  const [defaultPromptError, setDefaultPromptError] = useState<string | null>(null)
-
   useEffect(() => {
     if (models.length > 0 && !form.model) setManualModel(false)
   }, [form.model, models.length])
 
   const groups = useMemo(() => {
-    const providers = new Map<string, Array<{ value: string; label: string; title?: string }>>()
+    const providers = new Map<
+      string,
+      Array<{ value: string; label: string; title?: string }>
+    >()
     for (const model of models) {
       const options = providers.get(model.provider) ?? []
       options.push({
@@ -53,14 +62,20 @@ export function NewEvaluationForm({
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([label, options]) => ({
         label,
-        options: options.sort((left, right) => left.label.localeCompare(right.label)),
+        options: options.sort((left, right) =>
+          left.label.localeCompare(right.label),
+        ),
       }))
   }, [models])
 
-  const selectedModel = form.model ? `${form.provider}${MODEL_SEPARATOR}${form.model}` : undefined
-  const update = <K extends keyof EvalFormState>(key: K, value: EvalFormState[K]) => {
+  const selectedModel = form.model
+    ? `${form.provider}${MODEL_SEPARATOR}${form.model}`
+    : undefined
+  const update = <K extends keyof EvalFormState>(
+    key: K,
+    value: EvalFormState[K],
+  ) => {
     setForm((current) => ({ ...current, [key]: value }))
-    if (key === 'model' || key === 'provider') setDefaultPromptError(null)
     setErrors((current) => {
       const relatedKey =
         key === 'sharedSystemPromptSource'
@@ -84,7 +99,9 @@ export function NewEvaluationForm({
     if (!built.request) {
       setErrors(built.errors)
       window.requestAnimationFrame(() => {
-        const firstError = formRef.current?.querySelector<HTMLElement>('.eval-ui-field-error')
+        const firstError = formRef.current?.querySelector<HTMLElement>(
+          '.eval-ui-field-error',
+        )
         if (!firstError) return
         const details = firstError.closest('details')
         if (details) details.open = true
@@ -92,7 +109,9 @@ export function NewEvaluationForm({
           firstError.scrollIntoView({ behavior: 'smooth', block: 'center' })
           firstError
             .closest('label')
-            ?.querySelector<HTMLElement>('input, textarea, button, [tabindex]:not([tabindex="-1"])')
+            ?.querySelector<HTMLElement>(
+              'input, textarea, button, [tabindex]:not([tabindex="-1"])',
+            )
             ?.focus()
         })
       })
@@ -109,40 +128,14 @@ export function NewEvaluationForm({
     }
   }
 
-  const loadDefaultSystemPrompt = async (
-    target: 'sharedSystemPrompt' | 'controlSystemPrompt' | 'treatmentSystemPrompt',
-  ) => {
-    if (form.systemPromptStrategy !== 'override') return
-    const provider = form.provider.trim()
-    if (!provider) {
-      setDefaultPromptError('Select a catalog model or enter its provider before loading the current default.')
-      return
-    }
-    setLoadingDefaultFor(target)
-    setDefaultPromptError(null)
-    try {
-      const prompt = await onLoadDefaultSystemPrompt(provider)
-      if (!prompt) {
-        setDefaultPromptError(
-          'No provider prompt is exposed by the router. Choose “current default” to use the prompt resolved by the harness.',
-        )
-        return
-      }
-      update(target, prompt)
-    } catch (error) {
-      setDefaultPromptError(errorMessage(error))
-    } finally {
-      setLoadingDefaultFor(null)
-    }
-  }
-
   const comparison =
     form.dimension === 'prompt'
       ? {
           title: 'prompt comparison',
           changedLabel: 'prompt',
           sharedLabel: 'system prompt',
-          sharedHint: 'The same system prompt is used for every A and B run. Leave empty to use the harness default.',
+          sharedHint:
+            'The same system prompt is used for every A and B run. Leave empty to use the harness default.',
           sharedPlaceholder: 'You are a precise assistant…',
           baselineHint: 'The current prompt you want to measure.',
           candidateHint: 'The proposed prompt you want to compare.',
@@ -159,7 +152,8 @@ export function NewEvaluationForm({
   const usesCustomSystemPrompt =
     form.dimension === 'prompt'
       ? form.sharedSystemPromptSource === 'custom'
-      : form.controlSystemPromptSource === 'custom' || form.treatmentSystemPromptSource === 'custom'
+      : form.controlSystemPromptSource === 'custom' ||
+        form.treatmentSystemPromptSource === 'custom'
   const sharedSystemPromptSummary =
     form.sharedSystemPromptSource === 'default'
       ? 'using current default'
@@ -172,15 +166,25 @@ export function NewEvaluationForm({
       <div className="eval-ui-section-head">
         <div>
           <h1>new {comparison.title}</h1>
-          <p>Change one thing. The model, success criteria, and run settings stay identical.</p>
+          <p>
+            Change one thing. The model, success criteria, and run settings stay
+            identical.
+          </p>
         </div>
       </div>
 
-      {submitError ? <StatusPanel variant="alert" headline="evaluation could not start" detail={submitError} /> : null}
+      {submitError ? (
+        <StatusPanel
+          variant="alert"
+          headline="evaluation could not start"
+          detail={submitError}
+        />
+      ) : null}
       {Object.keys(errors).length > 0 ? (
         <div className="eval-ui-error-summary" role="alert">
           <strong>
-            Fix {Object.keys(errors).length} {Object.keys(errors).length === 1 ? 'field' : 'fields'} to run this
+            Fix {Object.keys(errors).length}{' '}
+            {Object.keys(errors).length === 1 ? 'field' : 'fields'} to run this
             comparison.
           </strong>
           <span>{[...new Set(Object.values(errors))].join(' · ')}</span>
@@ -203,12 +207,13 @@ export function NewEvaluationForm({
           }}
         >
           <TabsList>
-            <TabsTrigger value="system_prompt">system prompt</TabsTrigger>
-            <TabsTrigger value="prompt">prompt text</TabsTrigger>
+            <TabsTrigger value="system_prompt">System Prompt</TabsTrigger>
+            <TabsTrigger value="prompt">Prompt Text</TabsTrigger>
           </TabsList>
         </Tabs>
         <div className="eval-ui-comparison-rule">
-          <strong>{comparison.changedLabel}</strong> changes between A and B<span aria-hidden="true">·</span>
+          <strong>{comparison.changedLabel}</strong> changes between A and B
+          <span aria-hidden="true">·</span>
           <strong>{comparison.sharedLabel}</strong> stays the same
         </div>
 
@@ -217,49 +222,59 @@ export function NewEvaluationForm({
             marker="A"
             role="baseline"
             label={form.controlLabel}
-            value={form.dimension === 'prompt' ? form.controlPrompt : form.controlSystemPrompt}
+            value={
+              form.dimension === 'prompt'
+                ? form.controlPrompt
+                : form.controlSystemPrompt
+            }
             valueLabel={comparison.changedLabel}
             hint={comparison.baselineHint}
-            source={form.dimension === 'system_prompt' ? form.controlSystemPromptSource : undefined}
-            valueError={form.dimension === 'prompt' ? errors.controlPrompt : errors.controlSystemPrompt}
-            onLabel={(value) => update('controlLabel', value)}
-            onValue={(value) =>
-              form.dimension === 'prompt' ? update('controlPrompt', value) : update('controlSystemPrompt', value)
-            }
-            onSource={(source) => update('controlSystemPromptSource', source)}
-            onLoadDefault={
-              form.dimension === 'system_prompt' &&
-              form.controlSystemPromptSource === 'custom' &&
-              form.systemPromptStrategy === 'override'
-                ? () => void loadDefaultSystemPrompt('controlSystemPrompt')
+            source={
+              form.dimension === 'system_prompt'
+                ? form.controlSystemPromptSource
                 : undefined
             }
-            loadingDefault={loadingDefaultFor === 'controlSystemPrompt'}
-            defaultAvailable={Boolean(form.provider.trim())}
+            valueError={
+              form.dimension === 'prompt'
+                ? errors.controlPrompt
+                : errors.controlSystemPrompt
+            }
+            onLabel={(value) => update('controlLabel', value)}
+            onValue={(value) =>
+              form.dimension === 'prompt'
+                ? update('controlPrompt', value)
+                : update('controlSystemPrompt', value)
+            }
+            onSource={(source) => update('controlSystemPromptSource', source)}
           />
           <VariantEditor
             marker="B"
             role="candidate"
             label={form.treatmentLabel}
-            value={form.dimension === 'prompt' ? form.treatmentPrompt : form.treatmentSystemPrompt}
+            value={
+              form.dimension === 'prompt'
+                ? form.treatmentPrompt
+                : form.treatmentSystemPrompt
+            }
             valueLabel={comparison.changedLabel}
             hint={comparison.candidateHint}
-            source={form.dimension === 'system_prompt' ? form.treatmentSystemPromptSource : undefined}
-            valueError={form.dimension === 'prompt' ? errors.treatmentPrompt : errors.treatmentSystemPrompt}
-            onLabel={(value) => update('treatmentLabel', value)}
-            onValue={(value) =>
-              form.dimension === 'prompt' ? update('treatmentPrompt', value) : update('treatmentSystemPrompt', value)
-            }
-            onSource={(source) => update('treatmentSystemPromptSource', source)}
-            onLoadDefault={
-              form.dimension === 'system_prompt' &&
-              form.treatmentSystemPromptSource === 'custom' &&
-              form.systemPromptStrategy === 'override'
-                ? () => void loadDefaultSystemPrompt('treatmentSystemPrompt')
+            source={
+              form.dimension === 'system_prompt'
+                ? form.treatmentSystemPromptSource
                 : undefined
             }
-            loadingDefault={loadingDefaultFor === 'treatmentSystemPrompt'}
-            defaultAvailable={Boolean(form.provider.trim())}
+            valueError={
+              form.dimension === 'prompt'
+                ? errors.treatmentPrompt
+                : errors.treatmentSystemPrompt
+            }
+            onLabel={(value) => update('treatmentLabel', value)}
+            onValue={(value) =>
+              form.dimension === 'prompt'
+                ? update('treatmentPrompt', value)
+                : update('treatmentSystemPrompt', value)
+            }
+            onSource={(source) => update('treatmentSystemPromptSource', source)}
           />
         </div>
 
@@ -274,7 +289,12 @@ export function NewEvaluationForm({
                 <Select
                   value={form.sharedSystemPromptSource}
                   options={SYSTEM_PROMPT_SOURCE_OPTIONS}
-                  onChange={(value) => update('sharedSystemPromptSource', value as SystemPromptSource)}
+                  onChange={(value) =>
+                    update(
+                      'sharedSystemPromptSource',
+                      value as SystemPromptSource,
+                    )
+                  }
                 />
               </Field>
               {form.sharedSystemPromptSource === 'custom' ? (
@@ -294,40 +314,32 @@ export function NewEvaluationForm({
                         { value: 'enrich', label: 'enrich' },
                       ]}
                       onChange={(value) =>
-                        update('systemPromptStrategy', value as EvalFormState['systemPromptStrategy'])
+                        update(
+                          'systemPromptStrategy',
+                          value as EvalFormState['systemPromptStrategy'],
+                        )
                       }
                     />
                   </Field>
-                  {form.systemPromptStrategy === 'override' ? (
-                    <div className="eval-ui-load-default">
-                      <span className="eval-ui-label">starting point</span>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        type="button"
-                        disabled={loadingDefaultFor !== null || !form.provider.trim()}
-                        onClick={() => void loadDefaultSystemPrompt('sharedSystemPrompt')}
-                      >
-                        {loadingDefaultFor === 'sharedSystemPrompt'
-                          ? 'loading…'
-                          : form.provider.trim()
-                            ? 'load current default'
-                            : 'select model to load default'}
-                      </Button>
-                      <span className="eval-ui-hint">Uses the selected provider, or the router default.</span>
-                    </div>
-                  ) : null}
-                  <Field label="custom system prompt" error={errors.sharedSystemPrompt} hint={comparison.sharedHint}>
+                  <Field
+                    label="custom system prompt"
+                    error={errors.sharedSystemPrompt}
+                    hint={comparison.sharedHint}
+                  >
                     <TextArea
                       value={form.sharedSystemPrompt}
-                      onChange={(event) => update('sharedSystemPrompt', event.target.value)}
+                      onChange={(event) =>
+                        update('sharedSystemPrompt', event.target.value)
+                      }
                       rows={6}
                       placeholder={comparison.sharedPlaceholder}
                     />
                   </Field>
                 </>
               ) : (
-                <SystemPromptSourceState source={form.sharedSystemPromptSource} />
+                <SystemPromptSourceState
+                  source={form.sharedSystemPromptSource}
+                />
               )}
             </div>
           </details>
@@ -349,7 +361,12 @@ export function NewEvaluationForm({
                       { value: 'override', label: 'override' },
                       { value: 'enrich', label: 'enrich' },
                     ]}
-                    onChange={(value) => update('systemPromptStrategy', value as EvalFormState['systemPromptStrategy'])}
+                    onChange={(value) =>
+                      update(
+                        'systemPromptStrategy',
+                        value as EvalFormState['systemPromptStrategy'],
+                      )
+                    }
                   />
                 </Field>
               </div>
@@ -359,10 +376,15 @@ export function NewEvaluationForm({
                 <span>shared by A + B</span>
                 <strong>{comparison.sharedLabel}</strong>
               </div>
-              <Field error={errors.sharedUserPrompt} hint={comparison.sharedHint}>
+              <Field
+                error={errors.sharedUserPrompt}
+                hint={comparison.sharedHint}
+              >
                 <TextArea
                   value={form.sharedUserPrompt}
-                  onChange={(event) => update('sharedUserPrompt', event.target.value)}
+                  onChange={(event) =>
+                    update('sharedUserPrompt', event.target.value)
+                  }
                   rows={4}
                   placeholder={comparison.sharedPlaceholder}
                 />
@@ -371,9 +393,6 @@ export function NewEvaluationForm({
           </>
         )}
 
-        {defaultPromptError ? (
-          <StatusPanel variant="warn" headline="default system prompt unavailable" detail={defaultPromptError} />
-        ) : null}
       </section>
 
       <section className="eval-ui-panel">
@@ -393,7 +412,6 @@ export function NewEvaluationForm({
               onChange={(value) => {
                 const [provider, model] = value.split(MODEL_SEPARATOR)
                 setForm((current) => ({ ...current, provider, model }))
-                setDefaultPromptError(null)
                 setErrors((current) => {
                   const next = { ...current }
                   delete next.model
@@ -412,7 +430,10 @@ export function NewEvaluationForm({
                 placeholder="codex/gpt-5.6-luna"
               />
             </Field>
-            <Field label="provider" hint="optional when model routing is unambiguous">
+            <Field
+              label="provider"
+              hint="optional when model routing is unambiguous"
+            >
               <Input
                 value={form.provider}
                 onChange={(value) => update('provider', value)}
@@ -424,13 +445,21 @@ export function NewEvaluationForm({
         )}
         <div className="eval-ui-inline-action">
           {models.length > 0 ? (
-            <button type="button" className="eval-ui-link" onClick={() => setManualModel((current) => !current)}>
+            <button
+              type="button"
+              className="eval-ui-link"
+              onClick={() => setManualModel((current) => !current)}
+            >
               {manualModel ? 'use model catalog' : 'enter model manually'}
             </button>
           ) : modelCatalogError ? (
-            <span className="eval-ui-hint">model catalog unavailable — {modelCatalogError}</span>
+            <span className="eval-ui-hint">
+              model catalog unavailable — {modelCatalogError}
+            </span>
           ) : (
-            <span className="eval-ui-hint">model catalog is empty; enter a model manually.</span>
+            <span className="eval-ui-hint">
+              model catalog is empty; enter a model manually.
+            </span>
           )}
         </div>
         <div className="eval-ui-grid-3">
@@ -446,7 +475,9 @@ export function NewEvaluationForm({
             <button
               type="button"
               className="eval-ui-link"
-              onClick={() => update('runs', String(Math.max(2, Number(form.runs) || 1)))}
+              onClick={() =>
+                update('runs', String(Math.max(2, Number(form.runs) || 1)))
+              }
             >
               balanced A→B + B→A
             </button>
@@ -465,7 +496,11 @@ export function NewEvaluationForm({
               placeholder="no limit"
             />
           </Field>
-          <Field label="max cost (USD)" error={errors.maxCostUsd} hint="optional; requires catalog pricing">
+          <Field
+            label="max cost (USD)"
+            error={errors.maxCostUsd}
+            hint="optional; requires catalog pricing"
+          >
             <Input
               type="number"
               min={0}
@@ -483,8 +518,8 @@ export function NewEvaluationForm({
         <summary>success criteria (optional)</summary>
         <div className="eval-ui-advanced-body">
           <span className="eval-ui-hint">
-            Leave the expected value or custom function empty to collect outputs and metrics without scoring either
-            variant.
+            Leave the expected value or custom function empty to collect outputs
+            and metrics without scoring either variant.
           </span>
           <Field label="judge each output with">
             <Select
@@ -497,7 +532,9 @@ export function NewEvaluationForm({
                 { value: 'exact', label: 'exact value (strict)' },
                 { value: 'custom', label: 'custom iii function' },
               ]}
-              onChange={(value) => update('evaluatorMode', value as EvalFormState['evaluatorMode'])}
+              onChange={(value) =>
+                update('evaluatorMode', value as EvalFormState['evaluatorMode'])
+              }
             />
           </Field>
           {form.evaluatorMode !== 'custom' ? (
@@ -510,20 +547,33 @@ export function NewEvaluationForm({
                       { value: 'text', label: 'text' },
                       { value: 'json', label: 'JSON' },
                     ]}
-                    onChange={(value) => update('expectedFormat', value as EvalFormState['expectedFormat'])}
+                    onChange={(value) =>
+                      update(
+                        'expectedFormat',
+                        value as EvalFormState['expectedFormat'],
+                      )
+                    }
                   />
                 </Field>
               ) : null}
               <Field label="expected value" error={errors.expectedValue}>
                 <TextArea
                   value={form.expectedValue}
-                  onChange={(event) => update('expectedValue', event.target.value)}
+                  onChange={(event) =>
+                    update('expectedValue', event.target.value)
+                  }
                   rows={4}
-                  placeholder={form.evaluatorMode === 'exact' && form.expectedFormat === 'json' ? '{"ok":true}' : 'OK'}
+                  placeholder={
+                    form.evaluatorMode === 'exact' &&
+                    form.expectedFormat === 'json'
+                      ? '{"ok":true}'
+                      : 'OK'
+                  }
                 />
                 {form.evaluatorMode === 'normalized_text' ? (
                   <span className="eval-ui-hint">
-                    Ignores letter case, repeated whitespace, and surrounding punctuation.
+                    Ignores letter case, repeated whitespace, and surrounding
+                    punctuation.
                   </span>
                 ) : null}
               </Field>
@@ -546,7 +596,9 @@ export function NewEvaluationForm({
                 <TextArea
                   className="code"
                   value={form.evaluatorArguments}
-                  onChange={(event) => update('evaluatorArguments', event.target.value)}
+                  onChange={(event) =>
+                    update('evaluatorArguments', event.target.value)
+                  }
                   rows={5}
                 />
               </Field>
@@ -559,7 +611,11 @@ export function NewEvaluationForm({
         <summary>advanced harness options</summary>
         <div className="eval-ui-advanced-body">
           <div className="eval-ui-grid-3">
-            <Field label="invocation timeout (s)" error={errors.invocationTimeoutSeconds} hint="optional">
+            <Field
+              label="invocation timeout (s)"
+              error={errors.invocationTimeoutSeconds}
+              hint="optional"
+            >
               <Input
                 type="number"
                 min={1}
@@ -569,7 +625,11 @@ export function NewEvaluationForm({
                 placeholder="default: 120"
               />
             </Field>
-            <Field label="scenario timeout (s)" error={errors.scenarioTimeoutSeconds} hint="optional">
+            <Field
+              label="scenario timeout (s)"
+              error={errors.scenarioTimeoutSeconds}
+              hint="optional"
+            >
               <Input
                 type="number"
                 min={1}
@@ -589,7 +649,11 @@ export function NewEvaluationForm({
                 placeholder="default: 1000"
               />
             </Field>
-            <Field label="max output tokens / call" error={errors.maxOutputTokensPerCall} hint="optional">
+            <Field
+              label="max output tokens / call"
+              error={errors.maxOutputTokensPerCall}
+              hint="optional"
+            >
               <Input
                 type="number"
                 min={1}
@@ -613,7 +677,11 @@ export function NewEvaluationForm({
                 placeholder="no limit"
               />
             </Field>
-            <Field label="max error spans" error={errors.maxErrorSpans} hint="optional">
+            <Field
+              label="max error spans"
+              error={errors.maxErrorSpans}
+              hint="optional"
+            >
               <Input
                 type="number"
                 min={0}
@@ -635,17 +703,26 @@ export function NewEvaluationForm({
                 allowEmpty
                 emptyLabel="default"
                 onClear={() => update('mode', '')}
-                onChange={(value) => update('mode', value as EvalFormState['mode'])}
+                onChange={(value) =>
+                  update('mode', value as EvalFormState['mode'])
+                }
               />
             </Field>
             <Field label="thinking level">
               <Select
                 value={form.thinkingLevel || undefined}
-                options={['minimal', 'low', 'medium', 'high', 'xhigh'].map((value) => ({ value, label: value }))}
+                options={['minimal', 'low', 'medium', 'high', 'xhigh'].map(
+                  (value) => ({ value, label: value }),
+                )}
                 allowEmpty
                 emptyLabel="provider default"
                 onClear={() => update('thinkingLevel', '')}
-                onChange={(value) => update('thinkingLevel', value as EvalFormState['thinkingLevel'])}
+                onChange={(value) =>
+                  update(
+                    'thinkingLevel',
+                    value as EvalFormState['thinkingLevel'],
+                  )
+                }
               />
             </Field>
           </div>
@@ -682,7 +759,8 @@ export function NewEvaluationForm({
 
       <div className="eval-ui-submit">
         <span>
-          Runs A {form.runs || '0'}× and B {form.runs || '0'}× in alternating order.
+          Runs A {form.runs || '0'}× and B {form.runs || '0'}× in alternating
+          order.
         </span>
         <Button variant="primary" size="md" type="submit" disabled={submitting}>
           {submitting ? 'starting…' : 'run comparison'}
@@ -704,9 +782,6 @@ function VariantEditor({
   onLabel,
   onValue,
   onSource,
-  onLoadDefault,
-  loadingDefault = false,
-  defaultAvailable = true,
 }: {
   marker: string
   role: string
@@ -719,9 +794,6 @@ function VariantEditor({
   onLabel: (value: string) => void
   onValue: (value: string) => void
   onSource?: (source: SystemPromptSource) => void
-  onLoadDefault?: () => void
-  loadingDefault?: boolean
-  defaultAvailable?: boolean
 }) {
   return (
     <div className="eval-ui-variant">
@@ -736,33 +808,31 @@ function VariantEditor({
         <Input value={label} onChange={onLabel} preserveCase />
       </Field>
       {source && onSource ? (
-        <Field label={`${valueLabel} source`} error={source === 'custom' ? undefined : valueError}>
+        <Field
+          label={`${valueLabel} source`}
+          error={source === 'custom' ? undefined : valueError}
+        >
           <Select
             value={source}
             options={SYSTEM_PROMPT_SOURCE_OPTIONS}
-            onChange={(nextSource) => onSource(nextSource as SystemPromptSource)}
+            onChange={(nextSource) =>
+              onSource(nextSource as SystemPromptSource)
+            }
           />
         </Field>
       ) : null}
       {source === undefined || source === 'custom' ? (
         <>
-          <Field label={source ? `custom ${valueLabel}` : valueLabel} error={valueError}>
-            <TextArea value={value} onChange={(event) => onValue(event.target.value)} rows={10} />
+          <Field
+            label={source ? `custom ${valueLabel}` : valueLabel}
+            error={valueError}
+          >
+            <TextArea
+              value={value}
+              onChange={(event) => onValue(event.target.value)}
+              rows={10}
+            />
           </Field>
-          {onLoadDefault ? (
-            <button
-              type="button"
-              className="eval-ui-link eval-ui-load-variant-default"
-              disabled={loadingDefault || !defaultAvailable}
-              onClick={onLoadDefault}
-            >
-              {loadingDefault
-                ? 'loading current default…'
-                : defaultAvailable
-                  ? 'load current default'
-                  : 'select model to load default'}
-            </button>
-          ) : null}
         </>
       ) : (
         <SystemPromptSourceState source={source} />
@@ -771,14 +841,20 @@ function VariantEditor({
   )
 }
 
-function SystemPromptSourceState({ source }: { source: Exclude<SystemPromptSource, 'custom'> }) {
+function SystemPromptSourceState({
+  source,
+}: {
+  source: Exclude<SystemPromptSource, 'custom'>
+}) {
   return (
     <div className="eval-ui-system-prompt-state">
-      <strong>{source === 'default' ? 'Current default' : 'No system prompt'}</strong>
+      <strong>
+        {source === 'default' ? 'Current default' : 'No system prompt'}
+      </strong>
       <span>
         {source === 'default'
-          ? 'Uses the system prompt resolved by the selected provider and harness.'
-          : 'Disables the provider and harness system prompt for this variant.'}
+          ? 'Uses the system prompt resolved by the harness.'
+          : 'Disables the harness system prompt for this variant.'}
       </span>
     </div>
   )

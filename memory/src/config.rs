@@ -19,9 +19,9 @@ use serde_json::Value;
 #[serde(deny_unknown_fields)]
 pub struct WorkerConfig {
     /// Directory holding one folder per memory bank (`rules/*.md` +
-    /// `memories.jsonl`). A leading `~/` expands to the home directory. An
-    /// unwritable directory is boot-fatal — memory must never silently run
-    /// in RAM.
+    /// `memories.jsonl`). Relative paths resolve against `III_COMPOSE_DIR`
+    /// when available. An unwritable directory is boot-fatal — memory must
+    /// never silently run in RAM.
     #[serde(default = "default_data_dir")]
     pub data_dir: String,
 
@@ -106,7 +106,7 @@ pub struct WorkerConfig {
 }
 
 fn default_data_dir() -> String {
-    "~/.iii/data/memory".to_string()
+    iii_worker_paths::default_path("data/memory")
 }
 fn default_bank() -> String {
     "main".to_string()
@@ -143,9 +143,9 @@ impl Default for WorkerConfig {
 }
 
 impl WorkerConfig {
-    /// The data directory with a leading `~/` expanded to `$HOME`.
+    /// The data directory resolved against the Compose project directory.
     pub fn resolved_data_dir(&self) -> PathBuf {
-        expand_tilde(&self.data_dir)
+        iii_worker_paths::resolve_path(&self.data_dir)
     }
 
     /// Structural fields whose change requires a store rebuild (mirrors
@@ -199,15 +199,6 @@ impl WorkerConfig {
         }
         schema
     }
-}
-
-fn expand_tilde(path: &str) -> PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join(rest);
-        }
-    }
-    PathBuf::from(path)
 }
 
 fn expand_env(input: &str) -> String {

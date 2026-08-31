@@ -83,6 +83,7 @@ pub async fn handle(state: &AppState, req: QueryReq) -> Result<QueryResp, String
         if let Some(iii) = state.client() {
             crate::handlers::saved::record(
                 iii.clone(),
+                state.config.clone(),
                 db,
                 &req.sql,
                 started.elapsed().as_millis() as u64,

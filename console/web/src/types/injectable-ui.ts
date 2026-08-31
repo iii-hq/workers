@@ -10,6 +10,7 @@
  * UI projects link against; the conformance test holds the two together.
  */
 
+import type { UiClasses } from '@iii-dev/console-ui/ui-classes'
 import type { IIIConnectionState, RegisterTriggerInput } from '@/lib/iii-client'
 import type { FunctionTriggerMessage } from '@/types/chat'
 
@@ -55,6 +56,160 @@ export interface ConsoleApi {
   useTheme(): 'light' | 'dark'
   /** Design-token names, for documentation/tooling; styling just uses `var(--color-*)`. */
   tokens: readonly string[]
+  /** Stable namespaced CSS recipes for shared visual patterns. */
+  uiClasses: UiClasses
+}
+
+/**
+ * Where the workspace pane hosting the page sits. `'right'` only for the
+ * rightmost column of a multi-column tab — a single-column tab is `'left'`,
+ * so pages can treat `'left'` as the default orientation.
+ */
+export type PanelSide = 'left' | 'right'
+
+/** JSON context sent by an injected renderer to an injected page. */
+export interface PanelContextEvent<T extends JsonValue = JsonValue> {
+  /** Monotonic per-console-tab id; repeated context still produces an event. */
+  id: number
+  /** Registered page id that owns this context. */
+  pageId: string
+  context: T
+}
+
+export interface PanelOpenRequest<T extends JsonValue = JsonValue> {
+  /** Registered extension page to place or reuse in the workspace. */
+  pageId: string
+  /** Worker-defined, JSON-serializable context delivered to that page. */
+  context?: T
+}
+
+/** Props the host passes to every registered page render component. */
+export interface PageRenderProps {
+  panelSide: PanelSide
+  /**
+   * Stable id of the workspace tab whose pane hosts this render — the key
+   * for per-tab UI state (workspace tabs persist across reloads). Empty
+   * string when the page renders outside a workspace tab.
+   */
+  tabId: string
+  /**
+   * Close the pane hosting this page (a split drops the column; a
+   * single-column tab detaches back to the attach affordance). Pass it to
+   * `PageHeader`'s `onClose` — every page header carries the standard ✕.
+   * Absent when the page renders outside a closable pane.
+   */
+  onRequestClose?: () => void
+  /**
+   * The active chat conversation's working directory, live: the page
+   * re-renders with the new value when the user picks another folder in
+   * chat, so filesystem-shaped pages can follow along. `null`/absent when
+   * no conversation is active or none is set.
+   */
+  workingDir?: string | null
+  /**
+   * Latest context sent through `host.panels.open()` for this page. The event
+   * id changes even when the context value is identical, so pages can respond
+   * to every user action. Ephemeral: workspace persistence stores the page,
+   * not this payload.
+   */
+  panelContext?: PanelContextEvent
+  /** Active chat session id. Reactive pages use it to subscribe to exact
+      Harness turn boundaries without receiving another chat's events. */
+  conversationId?: string | null
+  /**
+   * Report unsaved work: `true` or a short label (e.g. the file name) while
+   * the page holds something the user would lose, `false` once it is saved
+   * or discarded. Closing the pane, its workspace, or the browser tab then
+   * asks first. Absent on older consoles; feature-detect before calling.
+   */
+  setDirty?: (dirty: boolean | string) => void
+  /**
+   * Contribute commands while mounted: rows in the command palette, and keys
+   * that fire only while focus is inside this pane. Register in an effect and
+   * return its remover. Absent on older consoles; feature-detect.
+   */
+  commands?: PageCommandsApi
+}
+
+/** A binding in the console's shortcut syntax: `Mod+S`, `Shift+Enter`, or a
+    sequence of chords separated by a space, `G L`. */
+export type PageShortcut =
+  | string
+  | { mac: readonly string[]; other: readonly string[] }
+
+/**
+ * One thing a page can do for the keyboard. The palette lists it as
+ * `Page: Title` with its key on the right, so the key is learned in passing.
+ */
+export interface PageCommand {
+  /** Unique within the page; the console namespaces it with the page id. */
+  id: string
+  title: string
+  detail?: string
+  keywords?: readonly string[]
+  /** Keys are honoured for commands registered by a mounted page only, and
+      only while focus is inside its pane. A key the console already uses is
+      refused with a warning; the row stays. */
+  shortcut?: PageShortcut
+  /** Fire while the caret is in a field. Default false. */
+  firesWhileTyping?: boolean
+  /** Checked when the palette opens and again before the command runs; false
+      hides the row and ignores the key. */
+  enabled?: () => boolean
+  run: () => void
+}
+
+export interface PageCommandsApi {
+  register(commands: readonly PageCommand[]): () => void
+}
+
+/** One answer a palette source gives for a query. */
+export interface PaletteSourceRow {
+  /** Unique within the source for this query; the console namespaces it. */
+  id: string
+  title: string
+  detail?: string
+  /** Right-hand tag; defaults to the source's title. */
+  meta?: string
+  keywords?: readonly string[]
+  run: () => void
+}
+
+export interface PaletteSearchContext {
+  /** The active chat session, for data that lives per conversation. */
+  conversationId: string | null
+  /** The active chat's working directory, when one is set. */
+  workingDir: string | null
+  /** Set when the palette has moved past this query; drop the answer. */
+  signal: AbortSignal
+}
+
+/**
+ * A live palette source: rows computed per query by a worker, the way an
+ * editor's quick open lists files as you type. Registered from a script's
+ * setup, so it exists only while the worker is connected.
+ */
+export interface PaletteSource {
+  /** Unique within the script. */
+  id: string
+  /** Group label in the palette: "Files". */
+  title: string
+  /** Which kind its rows are; `file` rows get the file icon and answer the
+      `#` prefix, `item` is anything else. */
+  kind: 'file' | 'item'
+  /** A one-character prefix that selects this source alone: `#`. */
+  prefix?: string
+  /** Fewest characters before the source is asked without its prefix. Default 1. */
+  minQuery?: number
+  search(
+    query: string,
+    context: PaletteSearchContext,
+  ): Promise<readonly PaletteSourceRow[]>
+}
+
+export interface PaletteOpenOptions {
+  /** Text to open with; a prefix (`#`) lands the palette in that mode. */
+  query?: string
 }
 
 export interface PageRegistration {
@@ -62,8 +217,9 @@ export interface PageRegistration {
   id: string
   /** Nav label. */
   title: string
-  /** The page body (right pane). */
-  render: React.ComponentType
+  /** The page body (right pane). Receives `PageRenderProps` — a plain
+      `() => <Page />` render stays valid and simply ignores them. */
+  render: React.ComponentType<PageRenderProps>
 }
 
 /**
@@ -77,12 +233,108 @@ export interface PageRegistration {
 export interface FunctionTriggerRenderer {
   /** e.g. `state/page.js#renderer` */
   id: string
+  /** The host calls `tryRender*` only for function ids claimed here. */
   isMatch(functionId: string): boolean
   tryRender(message: FunctionTriggerMessage): React.ReactNode | null
   tryRenderRunning?(message: FunctionTriggerMessage): React.ReactNode | null
   tryRenderPreview?(message: FunctionTriggerMessage): React.ReactNode | null
+  /** Compact settled-state surface shown directly in the chat feed. */
+  tryRenderDisplay?(message: FunctionTriggerMessage): React.ReactNode | null
   FunctionIdLabel?: React.ComponentType<{ functionId: string }>
   primaryTabLabel?: string
+  /**
+   * Presentation hints owned by the worker. `display` makes a successful
+   * non-null render visible in the chat flow while the function's raw
+   * request/response details remain collapsed.
+   */
+  metadata?: {
+    display?: boolean
+    /** Keep the display as the card header and expand details underneath it. */
+    displayAction?: 'expand'
+  }
+  /**
+   * Redact the raw request/response before the card DISPLAYS OR COPIES it —
+   * the `raw json` tab renders `message.input` / `message.output` verbatim
+   * and its copy button copies the same value, which a renderer's own card
+   * cannot contain. The console applies this to both exits (see
+   * `rawRedactor` in components/function-trigger/renderer-registry.tsx);
+   * what counts as secret stays the worker's to declare, never the host's.
+   *
+   * Consulted only for messages this renderer's `isMatch` claims (first
+   * claiming renderer that declares it wins), once for the request and once
+   * for the response.
+   *
+   * Receives an arbitrary JSON-ish value and returns the redacted copy. Must
+   * be pure and total: no mutation, no I/O, no throw for any shape (cycles
+   * included). Called during the card's render and fenced — a throw fails
+   * CLOSED to a placeholder, never back to the raw value.
+   */
+  redactRaw?(value: unknown): unknown
+}
+
+/**
+ * A host-normalized trigger activity. The host owns the surrounding message
+ * chrome, raw details, and lifecycle controls; trigger renderers receive this
+ * common shape only to render the source-specific section.
+ */
+export interface TriggerActivityMessage {
+  /** Stable activity/message id. */
+  id: string
+  kind: 'registration' | 'fired' | 'retirement'
+  /** e.g. `cron`, `state`, or a worker-defined trigger source. */
+  triggerType: string
+  config?: unknown
+  label?: string
+  /** What this event means in user-facing prose (`metadata.action`). */
+  action?: string
+  conditions?: readonly unknown[]
+  delivery: { kind: 'notify' } | { kind: 'call'; functionId: string }
+  lifecycle: {
+    /** Whether the binding remains usable after this activity. */
+    state: 'active' | 'retired'
+    once: boolean
+    maxFires?: number
+    expiresAt?: number
+    fires: number
+  }
+  subscriptionId?: string
+  triggerId?: string
+  payload?: unknown
+  firedAt?: number
+  note?: string
+  outcome?:
+    | 'delivered'
+    | 'delivery_failed'
+    | 'skipped'
+    | 'expired'
+    | 'unregistered'
+    | 'invalidated'
+  retirementReason?:
+    | 'once_consumed'
+    | 'max_fires'
+    | 'expired'
+    | 'unregistered'
+    | 'invalidated'
+    | 'exhausted'
+}
+
+/** Worker-owned presentation hooks for one trigger type. The base `tryRender`
+ * remains the source-section hook for compatibility. The optional detail and
+ * display hooks can replace the expanded Terminal surface and compact
+ * timeline row, matching the freedom function-trigger renderers have while
+ * the host retains disclosure behavior and a raw-data escape hatch. */
+export interface TriggerActivityRenderer {
+  /** e.g. `cron/page.js#trigger-activity` */
+  id: string
+  isMatch(triggerType: string): boolean
+  /** Source-specific content used by the host's generic detail view. */
+  tryRender(activity: TriggerActivityMessage): React.ReactNode | null
+  /** Complete expanded Terminal tab. `null` keeps the generic detail view. */
+  tryRenderDetails?(activity: TriggerActivityMessage): React.ReactNode | null
+  /** Compact clickable timeline content. Do not return interactive children. */
+  tryRenderDisplay?(activity: TriggerActivityMessage): React.ReactNode | null
+  /** Redact registration/fire raw values before display or copy. */
+  redactRaw?(value: unknown): unknown
 }
 
 export type JsonValue =
@@ -121,6 +373,78 @@ export interface ConfigFormProps {
   focusField?: readonly string[]
 }
 
+/** Layout the Console should reserve for a configuration-form override. */
+export type ConfigFormLayout = 'contained' | 'full'
+
+export interface ConfigFormRegistrationOptions {
+  /**
+   * `contained` keeps the standard centered form column and host scroll.
+   * `full` gives the override all available width and height; the override
+   * must then manage any scrolling inside its own layout.
+   */
+  layout?: ConfigFormLayout
+}
+
+/**
+ * Props for a provider-specific editor inside the chat model picker. Provider
+ * workers own authentication nuances while the console keeps the router
+ * slice, validation, dirty tracking, and save/reset lifecycle authoritative.
+ */
+export interface ProviderConfigFormProps {
+  providerId: string
+  schema: Record<string, unknown> | null
+  value: JsonValue
+  onChange(next: JsonValue): void
+  errors?: ReadonlyMap<string, string>
+  configured?: boolean
+  available?: boolean
+  modelCount: number
+}
+
+/**
+ * Props a session chip receives from the chat host. Chips fetch their own
+ * data through `host.iii`; the host only identifies the session and what
+ * it already knows about the resolved model.
+ */
+export interface SessionChipProps {
+  sessionId: string
+  /** Resolved model id for the session, when known. */
+  modelId?: string
+  /** Context window (tokens) of the resolved model, from the catalog. */
+  contextWindow?: number
+}
+
+/**
+ * A per-session status chip rendered in the chat header's right cluster
+ * (the `chat` slot). Duplicate `id`: last registration wins — and some
+ * ids also supersede a built-in affordance (`context` replaces the
+ * host's estimate-based context meter).
+ */
+export interface SessionChipRegistration {
+  /** kebab-case, e.g. `context`; convention `<worker>-<name>` otherwise. */
+  id: string
+  render: React.ComponentType<SessionChipProps>
+}
+
+/**
+ * Props a chat footer turn-summary receives. The extension owns the summary
+ * data; the host supplies only the active session and its live turn state.
+ */
+export interface SessionTurnSummaryProps {
+  sessionId: string
+  isStreaming: boolean
+}
+
+/**
+ * A compact per-session summary rendered immediately above the composer.
+ * Duplicate `id`: last registration wins.
+ */
+export interface SessionTurnSummaryRegistration {
+  /** kebab-case; convention `<worker>-<name>`. */
+  id: string
+  render: React.ComponentType<SessionTurnSummaryProps>
+}
+
 /**
  * What `setup(host)` receives. Every registrar returns an unregister fn AND
  * is auto-tracked: the loader runs all of them on dispose.
@@ -129,19 +453,72 @@ export interface Host {
   iii: ExtensionIii
   components: ConsoleApi['components']
   useTheme: ConsoleApi['useTheme']
+  uiClasses: ConsoleApi['uiClasses']
   /** The script's asset path, e.g. `state/page.js`. */
   path: string
+  workspace?: { recentDirectories(): string[] }
   pages: {
     register(page: PageRegistration): () => void
   }
+  commands: {
+    /**
+     * Palette rows for a page this script owns, alive exactly as long as the
+     * script: removed with its other registrations when the worker leaves.
+     * For a page that may not be open yet; `run` usually calls
+     * `panels.open`. Keys are not honoured here, only on a mounted page.
+     */
+    register(pageId: string, commands: readonly PageCommand[]): () => void
+  }
+  palette: {
+    /** A live source of rows, alive as long as the script. */
+    registerSource(source: PaletteSource): () => void
+    /** Open the palette, optionally on a query or a prefix such as `#`. */
+    open(options?: PaletteOpenOptions): void
+  }
   functionTriggers: {
     register(renderer: FunctionTriggerRenderer): () => void
+  }
+  triggerRenderers: {
+    register(renderer: TriggerActivityRenderer): () => void
+  }
+  panels: {
+    /** Place/reuse a registered page and deliver its worker-defined context. */
+    open(request: PanelOpenRequest): void
   }
   configForms: {
     register(
       configurationId: string,
       component: React.ComponentType<ConfigFormProps>,
+      options?: ConfigFormRegistrationOptions,
     ): () => void
+  }
+  providerConfigForms: {
+    register(
+      providerId: string,
+      component: React.ComponentType<ProviderConfigFormProps>,
+    ): () => void
+  }
+  chat: {
+    /**
+     * Hand text and files to the active conversation's composer, the way a
+     * drop or a paste would, and put the caret there. Files become
+     * attachments.
+     */
+    compose(draft: { text?: string; files?: File[] }): void
+    registerSessionChip(chip: SessionChipRegistration): () => void
+    registerTurnSummary(summary: SessionTurnSummaryRegistration): () => void
+    /** Jump the sidebar to this session. Feature-detect on older consoles. */
+    selectConversation?(sessionId: string): void
+    /**
+     * Ask the mounted conversation to adopt a validated working directory.
+     * Call this only from an explicit user action such as "Use for chat".
+     */
+    requestWorkingDirectoryChange?(request: {
+      sessionId: string
+      path: string
+    }): boolean
+    /** Live composer model for a conversation, including unsaved drafts. */
+    composerModel?(conversationId?: string | null): string | null
   }
 }
 

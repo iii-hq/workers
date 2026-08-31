@@ -89,6 +89,41 @@ fn diff_hint(rel: &str, expected: &str, actual: &str) -> String {
     out
 }
 
+/// Compare against a golden that this repo does NOT write: everything under
+/// `tests/golden/schemas/browser.scrapling.*` and `tests/golden/behavior/` is
+/// produced only by `scripts/gen_goldens.py` running the reference Python
+/// implementation. There is deliberately no `UPDATE_GOLDENS` branch here — a
+/// pass has to mean "Rust agrees with Python", and a writable escape hatch
+/// would let a real divergence be papered over instead of root-caused.
+/// Regenerate with:
+///   ~/.iii/managed/scrapling/usr/local/bin/python3.12 scripts/gen_goldens.py
+pub fn check_golden_readonly(rel: &str, actual: &str) -> Result<(), String> {
+    let path = golden_root().join(rel);
+    let expected = fs::read_to_string(&path).map_err(|e| {
+        format!(
+            "golden {} unreadable ({e}); regenerate with \
+             ~/.iii/managed/scrapling/usr/local/bin/python3.12 scripts/gen_goldens.py",
+            path.display()
+        )
+    })?;
+    if expected == actual {
+        return Ok(());
+    }
+    Err(diff_hint(rel, &expected, actual))
+}
+
+/// `assert_typed_schema` for the scrapling catalog, whose schemas are raw
+/// Python-mirrored `Value` literals rather than schemars output.
+pub fn assert_typed_schema_value(label: &str, schema: &serde_json::Value) {
+    let obj = schema
+        .as_object()
+        .unwrap_or_else(|| panic!("{label}: not an object"));
+    assert!(
+        obj.contains_key("type") || obj.contains_key("properties") || obj.contains_key("$ref"),
+        "{label}: untyped (AnyValue) schema"
+    );
+}
+
 /// Assert a schemars-derived request/response schema is a *real* schema and
 /// not the permissive `AnyValue` schema a `Value` handler emits (the "unknown"
 /// schema this whole convention exists to prevent). A real schema carries at

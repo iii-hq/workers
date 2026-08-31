@@ -4,6 +4,19 @@ import { EmptyState } from '@/components/ui/EmptyState'
 import type { VisualizationSpan } from '../lib/traceTransform'
 import { useCopyToClipboard } from '../lib/traceUtils'
 
+/**
+ * No `redact` prop, deliberately: sandbox-code-runner never touches the OTel
+ * baggage API (`grep -ri baggage sandbox-code-runner/src` — zero hits in the
+ * crate). Baggage is CALLER-set routing/identity context copied onto every
+ * span in its scope (iii-helpers'
+ * `BaggageSpanProcessor` — turn identity, trace tags, `iii.function.id`),
+ * propagated top-down from the engine/harness; a worker's own internal
+ * capability (sandbox-code-runner's `runtime_id`) never flows the
+ * other way into it. If a future worker ever starts stamping baggage,
+ * revisit this — see `SpanPanel.redaction-coverage.test.ts`, which enforces
+ * that every tab has either a `redact` wiring or a written reason like
+ * this one.
+ */
 interface SpanBaggageTabProps {
   span: VisualizationSpan
 }
@@ -37,13 +50,13 @@ export function SpanBaggageTab({ span }: SpanBaggageTabProps) {
   return (
     <div className="p-5 space-y-3">
       <div className="flex items-center gap-2 px-1">
-        <Package className="w-3.5 h-3.5 text-accent" />
+        <Package className="size-4 text-accent" />
         <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
           w3c baggage context
         </span>
       </div>
 
-      <div className="border border-rule bg-bg divide-y divide-rule">
+      <div className="rounded-md bg-surface divide-y divide-rule-2">
         {baggageEntries.map(([key, value]) => {
           const formatted =
             typeof value === 'object'
@@ -56,7 +69,7 @@ export function SpanBaggageTab({ span }: SpanBaggageTabProps) {
               type="button"
               onClick={() => copy(key, `${key}: ${formatted}`)}
               aria-label={`copy ${key} to clipboard`}
-              className="w-full px-4 py-2.5 hover:bg-panel transition-colors text-left group"
+              className="w-full px-4 py-2.5 hover:bg-surface-hover transition-colors text-left group"
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="flex-1 min-w-0">
@@ -72,7 +85,7 @@ export function SpanBaggageTab({ span }: SpanBaggageTabProps) {
                     copied
                   </span>
                 ) : (
-                  <Copy className="w-3 h-3 text-ink-ghost opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 mt-0.5" />
+                  <Copy className="size-4 text-ink-ghost opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 mt-0.5" />
                 )}
               </div>
             </button>

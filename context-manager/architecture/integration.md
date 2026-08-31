@@ -28,7 +28,7 @@ produces, and storing the transcript itself.
 Integration is always some subset of four moves:
 
 1. **Fit a context** with `context::assemble` before a model call — the main
-   entry point. It prunes and/or compacts as needed.
+   entry point. It caps, prunes, and/or compacts as needed.
 2. **Persist the round trip** when `applied.compacted` is true (store the
    summary + boundary, pass them back next time) so summarisation stays cheap
    and convergent.
@@ -49,15 +49,20 @@ Integration is always some subset of four moves:
   only `id`/`provider` to have the worker resolve limits via
   `router::models::budget`. Resolution order: inline → router → conservative
   fallback (`8192`/`1024`); the response's `model_resolved` tells you which ran.
-- **Tokens are estimates.** v1 uses a `chars/4` heuristic for every model
-  (`estimator: "heuristic"`). Treat `token_count`/`tokens` as approximate and
-  rely on the built-in `reserved` cushion rather than counting to the byte.
+- **Tokens are estimates.** v1 uses serialized non-image `chars/4` plus 4,096
+  tokens per image for every model (`estimator: "heuristic"`). Treat
+  `token_count`/`tokens` as approximate and rely on the built-in `reserved`
+  cushion rather than counting to the byte.
 - **Timestamps** inside `AgentMessage` are caller-supplied integer ms since
   epoch. The worker reads them only incidentally — order is array order
   (oldest first), never timestamp.
 - **Errors** are strings beginning with a stable code: `context/<snake>:
-  message`. Match on the code substring. Only `assemble`/`compact` validation
-  and unresolved-model throw; pipeline degradations do **not** error (§7).
+  message`. Match on the code substring. Missing `messages` throws
+  `context/invalid_request` from every function; `context/model_unresolved`
+  is `assemble`/`compact`-only and `context/overflow` is `assemble`-only.
+  Busy leases and disabled steps are not themselves errors, but `assemble`
+  still throws `context/overflow` if nothing fits even after emergency
+  reduction (§7).
 - **Indices, not ids.** `tail_start_index` is an index into the `messages`
   array *you sent*. The worker never sees your storage ids; you map the index
   onto your own (§5).
@@ -115,8 +120,10 @@ All four are registered with JSON Schemas (`iii worker info context-manager` /
 
 ### `context::assemble` — build the model-ready context
 
-The main entry point. Pipeline: count → (if over budget) prune function
-outputs → (if still over) compact the head → return the budgeted list.
+The main entry point. Pipeline: cap oversized single results (always) → prune
+aged function outputs (always) → (if over budget) compact the head → (if
+still over) emergency-reduce → return the budgeted list, or a structured
+overflow if nothing fits.
 
 ```typescript
 {
@@ -128,6 +135,7 @@ outputs → (if still over) compact the head → return the budgeted list.
     tail_turns?: number;           // user+assistant pairs kept verbatim (default 2)
     allow_compaction?: boolean;    // default true
     allow_prune?: boolean;         // default true
+    max_result_tokens?: number;    // per-call cap override (default 20000); 0 disables the cap pass
     protected_functions?: string[];   // function_ids whose outputs are never pruned
     thinking_level?: ThinkingLevel;   // reserve the model's thinking budget for this tier
     lease_key?: string;            // compaction mutual-exclusion key (e.g. a session id)
@@ -142,6 +150,7 @@ outputs → (if still over) compact the head → return the budgeted list.
   model_resolved: "inline" | "router" | "fallback";
   applied: {
     pruned: boolean; pruned_tokens: number;
+    capped_parts: number; capped_tokens: number;
     compacted: boolean;
     summary?: string;              // present iff compacted — PERSIST THIS (§5)
     tail_start_index?: number | null;  // index into REQUEST messages where the tail begins
@@ -152,9 +161,13 @@ outputs → (if still over) compact the head → return the budgeted list.
 
 Throws only: `context/invalid_request` (`messages is required`),
 `context/model_unresolved` (`could not resolve model limits` — only when no
-inline limits, no router, and `allow_fallback_limits` is off). Everything else
-— busy lease, failed/absent summariser, disabled steps — is **best effort**:
-the context still returns, possibly with `token_count > usable`.
+inline limits, no router, and `allow_fallback_limits` is off), and
+`context/overflow` (the request still exceeds the budget after capping,
+pruning, compaction, and emergency reduction). A busy lease, a failed/absent
+summariser, or `allow_prune`/`allow_compaction: false` are **best effort** short
+of that — whichever step they skip, emergency reduction still runs
+unconditionally, and the call only throws `context/overflow` if the context
+still doesn't fit afterward.
 
 ### `context::count-tokens` — estimate usage
 
@@ -180,7 +193,8 @@ Pure and router-free; safe for cost-sensitive callers with no `llm-router`.
 ### `context::prune` — placeholder verbose function outputs
 
 The cheap pass alone: rewrite verbose `function_result` outputs to
-`[output pruned: was ~N tokens]`. No LLM, no state, no removal.
+`[output of {function_id} pruned: was ~N tokens; re-call it if still
+needed]`. No LLM, no state, no removal.
 
 ```typescript
 {
@@ -268,7 +282,7 @@ over-budget request.
 
 ## 6. Structural invariants — what you can rely on
 
-Whatever pruning or compaction does, the returned context is always
+Whatever capping, pruning, or compaction does, the returned context is always
 provider-legal. Build on these:
 
 - **Call/result pairing is never split.** A `function_call` and its
@@ -278,9 +292,12 @@ provider-legal. Build on these:
   result block whose call sits earlier). Orphaned results — which providers
   reject — cannot appear.
 - **Prune replaces, never removes.** A pruned output's content becomes a single
-  `[output pruned: was ~N tokens]` text block; the message, its
-  `function_call_id`, and the message ordering all survive. Message counts are
-  stable across a prune.
+  `[output of {function_id} pruned: was ~N tokens; re-call it if still
+  needed]` text block; the message, its `function_call_id`, and the message
+  ordering all survive. Message counts are stable across a prune. The
+  unconditional cap pass replaces the same way, with its own marker:
+  `[…result capped: was ~N tokens; middle omitted; re-call {function_id} with
+  narrower arguments if the omitted middle is needed]`.
 - **`custom` messages never reach the model.** `assemble` excludes
   `role: "custom"` from the returned `messages` and from `token_count`. A huge
   custom entry can't trigger a phantom overflow, and customs never leak to a
@@ -294,14 +311,18 @@ provider-legal. Build on these:
 | Code | Meaning / trigger | Functions |
 |---|---|---|
 | `context/invalid_request` | `messages` missing or `null` (`messages is required`); a `model` missing where required; malformed shapes serde can't coerce. | all |
-| `context/model_unresolved` | No inline limits, router can't resolve, and `allow_fallback_limits` is off (`could not resolve model limits`). | assemble, compact, count-tokens |
+| `context/model_unresolved` | No inline limits, router can't resolve, and `allow_fallback_limits` is off (`could not resolve model limits`). | assemble, compact |
 | `context/state` | A backing lease filesystem write hard-failed (rare; lease problems usually degrade to `busy`). | compact, assemble |
+| `context/overflow` | The request still exceeds the budget after capping, pruning, compaction, and emergency reduction. | assemble |
 
 **Not errors — degradations you must read, not catch:**
 
-- `assemble` over budget with prune/compaction disabled, a busy lease, or an
-  unavailable summariser → returns normally with `applied.compacted: false` and
-  `token_count > usable`. Inspect `token_count` vs `usable` to know it didn't fit.
+- `assemble` with prune or compaction disabled, a busy lease, or an
+  unavailable summariser only skips that pass — emergency reduction still
+  runs unconditionally afterward and enforces the hard budget. The call
+  returns normally with `token_count <= usable`, or throws
+  `context/overflow` if the context still doesn't fit; it never returns a
+  normal response with `token_count > usable`.
 - `compact` → `{ status: "busy" | "empty" | "overflow" }` are normal outcomes,
   not thrown errors. `overflow` specifically means "compaction unavailable"
   (no `llm-router`, or the summariser failed) — treat it as such.
@@ -401,8 +422,9 @@ bespoke in-harness compaction side-car with a reusable worker.
 - **Optional reactive pre-warm.** To pre-warm or surface a token-usage metric
   off the hot path, bind a handler to `session::message-added` and call
   `context::count-tokens` (cheap, no LLM) there. This is opt-in and lives in
-  the harness — context-manager binds no triggers and never reaches into a
-  session itself, which is exactly what keeps it store-agnostic.
+  the harness — context-manager binds no *session* triggers and never
+  reaches into a session itself, which is exactly what keeps it
+  store-agnostic.
 - **Agent exposure.** All functions are pure transforms (nothing to leak), but
   deny `context::assemble` and `context::compact` to in-run agents in
   cost-sensitive deployments — they can trigger a summariser call.

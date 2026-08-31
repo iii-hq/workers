@@ -1,0 +1,23 @@
+{
+  "function_id": "browser::session-close",
+  "description": "Close a session and free its browser/connection.",
+  "request_schema": {
+    "type": "object",
+    "properties": {
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "session_id"
+    ]
+  },
+  "response_schema": {
+    "type": "object",
+    "properties": {
+      "closed": {
+        "type": "boolean"
+      }
+    }
+  }
+}

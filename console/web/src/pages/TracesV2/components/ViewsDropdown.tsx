@@ -81,14 +81,14 @@ export function ViewsDropdown({
           <button
             type="button"
             className={cn(
-              'inline-flex items-center gap-2 h-8 px-2.5 border font-mono text-[12px] lowercase transition-colors',
+              'inline-flex items-center gap-2 h-8 px-2.5 rounded-sm font-mono text-[12px] lowercase transition-colors',
               activeView
-                ? 'border-accent text-ink'
-                : 'border-rule text-ink-faint hover:text-ink',
+                ? 'bg-surface-selected text-ink'
+                : 'bg-surface text-ink-faint hover:text-ink hover:bg-surface-hover',
             )}
             aria-label="switch traces view"
           >
-            <SlidersVertical className="w-3 h-3" />
+            <SlidersVertical className="size-4" />
             <span className="max-w-[160px] truncate">{triggerLabel}</span>
             {activeModified && (
               <Circle
@@ -96,21 +96,21 @@ export function ViewsDropdown({
                 aria-label="view modified"
               />
             )}
-            <ChevronDown className="w-3 h-3" />
+            <ChevronDown className="size-4" />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start">
-          <DropdownMenuLabel>views</DropdownMenuLabel>
+          <DropdownMenuLabel>Views</DropdownMenuLabel>
           <DropdownMenuItem onSelect={() => onSelectView(null)}>
             <span className="w-3">
-              {!activeView && <Check className="w-3 h-3" />}
+              {!activeView && <Check className="size-4" />}
             </span>
             all traces
           </DropdownMenuItem>
           {views.map((view) => (
             <DropdownMenuItem key={view.id} onSelect={() => onSelectView(view)}>
               <span className="w-3">
-                {view.id === activeViewId && <Check className="w-3 h-3" />}
+                {view.id === activeViewId && <Check className="size-4" />}
               </span>
               <span className="truncate">{view.name}</span>
             </DropdownMenuItem>
@@ -159,7 +159,7 @@ export function ViewsDropdown({
               value={nameInput}
               onChange={(e) => setNameInput(e.target.value)}
               placeholder="view name"
-              className="h-8 px-2 font-mono text-[12px] bg-bg border border-rule text-ink placeholder:text-ink-ghost focus:outline-none focus:border-accent transition-colors"
+              className="h-8 px-2 font-mono text-[12px] rounded-sm bg-surface border border-transparent text-ink placeholder:text-ink-ghost hover:bg-surface-hover focus:outline-none focus:border-rule-focus transition-colors"
             />
             <div className="flex items-center justify-end gap-2">
               <DialogClose asChild>

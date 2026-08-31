@@ -32,19 +32,24 @@ export function CopyMessageButton({
   }
   return (
     <button
+      data-message-action="copy"
       type="button"
       onClick={copy}
       className={cn(
-        'shrink-0 cursor-pointer text-ink-ghost hover:text-ink transition-colors',
+        'relative flex size-12 shrink-0 cursor-pointer items-center justify-center text-ink-ghost hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:size-5',
         className,
       )}
       aria-label={copied ? 'copied' : label}
       title={copied ? 'copied' : label}
     >
+      <span
+        className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+        aria-hidden="true"
+      />
       {copied ? (
-        <Check size={12} aria-hidden />
+        <Check className="size-4 shrink-0" aria-hidden />
       ) : (
-        <Copy size={12} aria-hidden />
+        <Copy className="size-4 shrink-0" aria-hidden />
       )}
     </button>
   )

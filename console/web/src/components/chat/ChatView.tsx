@@ -1,10 +1,16 @@
-import { Copy, Folder } from 'lucide-react'
+import { ArrowLeft } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FilesystemAccessDialog } from '@/components/permissions/FilesystemAccessDialog'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import { FullPermissionsBanner } from '@/components/permissions/FullPermissionsBanner'
 import { LiveRegion } from '@/components/ui/LiveRegion'
+import { PageHeader } from '@/components/ui/PageChrome'
 import { StatusDot } from '@/components/ui/StatusDot'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/Tooltip'
 import { useApprovalSettings } from '@/hooks/use-approval-settings'
 import { uid } from '@/hooks/use-conversations'
 import { useFilesystemGrants } from '@/hooks/use-filesystem-grants'
@@ -15,11 +21,20 @@ import {
   isHarnessAvailable,
 } from '@/hooks/use-harness-status'
 import { useLiveAnnouncer } from '@/hooks/use-live-announcer'
+import { DESKTOP_POINTER_QUERY, useMediaQuery } from '@/hooks/use-media-query'
 import { useWorktreeBinding } from '@/hooks/use-worktree-binding'
 import { useWorktreeEvents } from '@/hooks/use-worktree-events'
+import { expandAttachments, hasExpandableAttachments } from '@/lib/attachments'
 import type { ChatBackend } from '@/lib/backend'
 import { approvalBelongsToConversationTree } from '@/lib/backend/approval-events-live'
-import { predictedUserEntryId } from '@/lib/backend/harness-send'
+import {
+  type HarnessImageBlock,
+  predictedUserEntryId,
+} from '@/lib/backend/harness-send'
+import {
+  type SessionTriggerLoader,
+  startSessionTriggerLoader,
+} from '@/lib/backend/session-trigger-loader'
 import {
   mergeFiredTriggers,
   type SessionTriggerInfo,
@@ -29,18 +44,31 @@ import type {
   CompactResult,
   QueuedMessagePreview,
 } from '@/lib/backend/types'
+import { requestComposerFocus } from '@/lib/composer-insert'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { syncEditorWorkspace } from '@/lib/editor-sync'
 import { expandFileMentions, parseFileMentions } from '@/lib/file-mentions'
 import { formatStopReason } from '@/lib/format-stop-reason'
-import {
-  expandPdfAttachments,
-  isPdfAttachment,
-  summaryLabel,
-} from '@/lib/pdf-attachments'
 import { newMessageId } from '@/lib/session-id'
-import { cn } from '@/lib/utils'
-import { fetchDefaultWorkingDir, validateWorkspaceDir } from '@/lib/working-dir'
+import {
+  expandSlashInvocation,
+  loadedSkillIds,
+  slashChip,
+} from '@/lib/slash-commands'
+import {
+  CHAT_FOCUS_DROP_GRACE_MS,
+  clearChatMessageFocus,
+  shouldDropChatFocus,
+  useChatMessageFocus,
+} from '@/lib/trace-links'
+import { turnAnchorMessageId } from '@/lib/turn-anchor'
+import { useExtSessionChips, useExtSessionTurnSummaries } from '@/lib/ui-slots'
+import {
+  activateWorkingDir,
+  fetchDefaultWorkingDir,
+  workingDirRecoveryNotice,
+} from '@/lib/working-dir'
+import { onWorkingDirectoryChangeRequest } from '@/lib/working-directory-request'
 import {
   consoleClaimFor,
   recordConsoleClaim,
@@ -71,18 +99,33 @@ import {
   type TriggerFiredData,
   type UserMessage,
 } from '@/types/chat'
+import type { PageCommandsApi } from '@/types/injectable-ui'
+import { ActiveSubagentChips } from './ActiveSubagentChips'
 import { Composer, type ComposerSubmitPayload } from './Composer'
 import { ContextUsage } from './ContextUsage'
-import { ExportSessionButton } from './ExportSessionButton'
+import { isSessionSubmitBlockedByHydration } from './chat-submit-blocking'
 import { MessageList } from './MessageList'
+import { RegisteredTriggerStatusProvider } from './RegisteredTriggerStatus'
 import { SessionTriggers } from './SessionTriggers'
-import { WorktreeBadge } from './WorktreeBadge'
+import {
+  agentIdForSend,
+  DEFAULT_SYSTEM_PROMPT_STATE,
+  selectionForSend,
+  skillSelectionForSend,
+} from './system-prompt-selection'
 
 /**
- * Saved dirs already re-validated this page load, keyed sessionId + dir —
- * one live check per activation, not one per render or per send.
+ * Order the header's injected chips deterministically. The registry appends
+ * in registration order, which is worker-CONNECT order — so without this the
+ * bar reshuffles itself between restarts. `context` leads (it is the widest
+ * and the most-read), the rest sort by id.
  */
-const validatedWorkingDirs = new Set<string>()
+function compareChips(a: { id: string }, b: { id: string }): number {
+  if (a.id === b.id) return 0
+  if (a.id === 'context') return -1
+  if (b.id === 'context') return 1
+  return a.id < b.id ? -1 : 1
+}
 
 function isAbortError(err: unknown): boolean {
   return (
@@ -127,9 +170,22 @@ interface ChatViewProps {
   modelOptions: ModelOption[]
   catalogLoading?: boolean
   density?: 'route' | 'dock'
+  /** Header label for a session-pinned workspace panel. */
+  panelTitle?: string
+  /** Close the hosting pane — the header's standard ✕ when present. */
+  onRequestClose?: () => void
+  /** The pane's command registrar: chat's keys and palette rows. */
+  commands?: PageCommandsApi
+  /**
+   * Drill-out affordance for narrow (one-pane-at-a-time) hosts: when
+   * set, the header renders a ← back button returning to the session
+   * list and the chrome tightens to the compact (dock) padding.
+   */
+  onBack?: () => void
   onUpdateModel: (id: string, model: ModelId) => void
+  onUpdateThinkingLevel: (id: string, level: ThinkingLevel) => void
   onUpdateMode: (id: string, mode: Mode) => void
-  onUpdateWorkingDir: (id: string, dir: string) => void
+  onUpdateWorkingDir: (id: string, dir: string | null) => void
   onAppendMessage: (id: string, message: Message) => void
   onPatchMessage: (id: string, messageId: string, patch: MessagePatch) => void
   onCompactConversation: (id: string, marker: Message) => void
@@ -141,7 +197,12 @@ export function ChatView({
   modelOptions,
   catalogLoading,
   density = 'route',
+  panelTitle,
+  onRequestClose,
+  commands,
+  onBack,
   onUpdateModel,
+  onUpdateThinkingLevel,
   onUpdateMode,
   onUpdateWorkingDir,
   onAppendMessage,
@@ -150,23 +211,68 @@ export function ChatView({
 }: ChatViewProps) {
   const [isStreaming, setIsStreaming] = useState(false)
   // Pre-content phase of this tab's in-flight send, for the thinking
-  // shimmer's detail line: submit → harness::send ack → turn-started.
+  // waiting indicator detail: submit → harness::send ack → turn-started.
   // Null once content streams (or for turns this tab didn't start).
   const [turnPhase, setTurnPhase] = useState<
     'sending' | 'accepted' | 'merged' | 'started' | null
   >(null)
-  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>(
-    DEFAULT_THINKING_LEVEL,
+  const thinkingLevel = conversation.thinkingLevel ?? DEFAULT_THINKING_LEVEL
+  const [modelPickerOpenRequest, setModelPickerOpenRequest] = useState<
+    number | undefined
+  >(undefined)
+  const handleOpenModelPicker = useCallback(() => {
+    setModelPickerOpenRequest((current) => (current ?? 0) + 1)
+  }, [])
+  const handleThinkingLevelChange = useCallback(
+    (next: ThinkingLevel) => onUpdateThinkingLevel(conversation.id, next),
+    [conversation.id, onUpdateThinkingLevel],
   )
+  /* Lives on the conversation record, not in local state: the interactive
+     picker is on the new-session screen, so a reset on a tab switch (ChatPanel
+     keys this view by conversation id) would be invisible. */
+  const effectiveSystemPrompt =
+    conversation.systemPrompt ?? DEFAULT_SYSTEM_PROMPT_STATE
   const abortRef = useRef<AbortController | null>(null)
-  const [copied, setCopied] = useState(false)
   const { functionEntries } = useFunctionsCatalog(backend.id)
   const conversationsCtx = useConversationsCtxOptional()
+  const workingDirEnabled =
+    backend.id === 'real' &&
+    (conversationsCtx ? conversationsCtx.shellAvailable : false)
+  const workingDirRef = useRef(conversation.workingDir ?? null)
+  workingDirRef.current = conversation.workingDir ?? null
+  const workingDirActivationRef = useRef<{
+    path: string
+    token: symbol
+    promise: Promise<string | null>
+  } | null>(null)
+  const [workingDirResolving, setWorkingDirResolving] = useState(false)
   const harnessBlocked = conversationsCtx
     ? isChatBlockedByHarness(conversationsCtx.harnessStatus)
     : false
-  const harnessBlockedRef = useRef(harnessBlocked)
-  harnessBlockedRef.current = harnessBlocked
+  // The session list can render a server session before its transcript read
+  // finishes. Until then, an empty local message list says nothing about
+  // whether this is the first turn, so defer the whole request.
+  const sessionHydrating = isSessionSubmitBlockedByHydration({
+    realBackend: backend.id === 'real',
+    draft: conversation.draft,
+    hydrated: conversation.hydrated,
+  })
+  const submitBlocked =
+    harnessBlocked || sessionHydrating || workingDirResolving
+  const submitBlockedRef = useRef(submitBlocked)
+  submitBlockedRef.current = submitBlocked
+  // This view is keyed by conversation, so mounting IS opening a session:
+  // the caret belongs in the composer, on the devices where that is free.
+  const focusComposerOnOpen = useMediaQuery(DESKTOP_POINTER_QUERY)
+
+  /* What the model on the other end can do with a picture, read at send time
+     rather than closed over: the send and edit-queued callbacks are built
+     before the catalog lookup below, and a model switched between typing and
+     sending has to be the one the guard judges. Filled in further down. */
+  const visionRef = useRef<{ supports?: boolean; model: string | null }>({
+    supports: undefined,
+    model: null,
+  })
 
   // Live view of the transcript for the long-running stream loop: the
   // session-events reconciler (use-conversations) may add/replace rows while
@@ -274,32 +380,57 @@ export function ChatView({
 
   // Registered trigger subscriptions (the harness's durable binding rows,
   // owned by this session): shown above the composer, unregisterable, detail
-  // on click. Polled — bindings come and go as the agent registers them.
+  // on click. Pushed — `harness::triggers-changed` rings on every binding
+  // mutation (any tab, fires, expiry, GC) and the handler refetches the list.
   const [sessionTriggers, setSessionTriggers] = useState<SessionTriggerInfo[]>(
     [],
   )
-  // Every full row this tab has EVER polled, by subscription id. When a once
-  // binding fires and retires, the poll drops it — this cache lets the fired
-  // ghost keep its full config/conditions after retirement.
+  const [triggersSnapshotSessionId, setTriggersSnapshotSessionId] = useState<
+    string | null
+  >(null)
+  // Every full row this tab has EVER fetched, by subscription id. When a once
+  // binding fires and retires, the refetch drops it — this cache lets the
+  // fired ghost keep its full config/conditions after retirement.
   const seenTriggersRef = useRef<Map<string, SessionTriggerInfo>>(new Map())
+  // The current conversation's serialized list loader. Doorbells arrive
+  // at-least-once and burst on rapid fires; serialRefresh coalesces them
+  // behind one in-flight read so snapshots never apply out of order.
+  const triggersLoaderRef = useRef<SessionTriggerLoader | null>(null)
   const refreshTriggers = useCallback(() => {
-    const listTriggers = backend.listTriggers
-    if (!listTriggers) return
-    listTriggers(conversation.id)
-      .then((rows) => {
-        for (const row of rows) seenTriggersRef.current.set(row.id, row)
-        setSessionTriggers(rows)
-      })
-      .catch(() => {})
-  }, [backend.listTriggers, conversation.id])
+    triggersLoaderRef.current?.refresh()
+  }, [])
   useEffect(() => {
-    if (!backend.listTriggers) return
     seenTriggersRef.current = new Map()
     setSessionTriggers([])
-    refreshTriggers()
-    const timer = window.setInterval(refreshTriggers, 5000)
-    return () => window.clearInterval(timer)
-  }, [refreshTriggers, backend.listTriggers])
+    setTriggersSnapshotSessionId(null)
+    const listTriggers = backend.listTriggers
+    if (!listTriggers) return
+    const loader = startSessionTriggerLoader({
+      sessionId: conversation.id,
+      listTriggers,
+      onTriggersChanged: backend.onTriggersChanged,
+      onSnapshot: (rows) => {
+        for (const row of rows) seenTriggersRef.current.set(row.id, row)
+        setSessionTriggers(rows)
+        setTriggersSnapshotSessionId(conversation.id)
+      },
+    })
+    triggersLoaderRef.current = loader
+    // Catch-up for doorbells missed while hidden (throttled tab). Missed
+    // doorbells across a socket outage are reseeded by the backend's
+    // reconnect listener.
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') loader.refresh()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible)
+      // Discard any in-flight snapshot so the old conversation's rows can't
+      // land in the next conversation's state.
+      loader.dispose()
+      if (triggersLoaderRef.current === loader) triggersLoaderRef.current = null
+    }
+  }, [backend.listTriggers, backend.onTriggersChanged, conversation.id])
 
   const handleUnregisterTrigger = useCallback(
     async (subscriptionId: string) => {
@@ -355,7 +486,7 @@ export function ChatView({
 
   // Fired-trigger history: durable `trigger_fired` transcript entries (mapped to
   // system messages). Drives the panel's fired/unregistered ghost rows so a
-  // once-trigger stays visible after the engine drops it from the poll.
+  // once-trigger stays visible after the engine drops it from the list.
   const firedTriggers = useMemo<TriggerFiredData[]>(() => {
     const out: TriggerFiredData[] = []
     for (const m of conversation.messages) {
@@ -514,17 +645,44 @@ export function ChatView({
             ).blocks
           }
         }
-        // Same expansion as the live send path: a queued message's PDFs have
-        // to reach the agent as markdown too, or editing a queued message
-        // would silently drop the document it carried.
+        // Same expansion as the live send path: an edited queued message
+        // keeps its `/skill:<id>` block instead of silently
+        // dropping it. Staying silent on a failed re-resolution would strip
+        // the body the queued message already carried with no explanation.
+        const slashExpansion =
+          backend.id === 'real'
+            ? await expandSlashInvocation(
+                payload.text.trim(),
+                loadedSkillIds(messagesRef.current),
+              )
+            : null
+        if (slashExpansion?.status === 'attached') {
+          attachedBlocks = [...(attachedBlocks ?? []), slashExpansion.block]
+        } else if (slashExpansion) {
+          onAppendMessage(
+            conversationId,
+            makeSystemNotice(
+              `could not attach ${slashExpansion.command} — the edited message will be sent as typed`,
+              'warn',
+            ),
+          )
+        }
+        // Same expansion as the live send path: a queued message's documents
+        // and pictures have to reach the agent too, or editing a queued
+        // message would silently drop what it carried.
+        let attachedImages: HarnessImageBlock[] | undefined
         if (
           backend.id === 'real' &&
-          payload.attachments.some(isPdfAttachment)
+          hasExpandableAttachments(payload.attachments)
         ) {
-          const expanded = await expandPdfAttachments(payload.attachments)
+          const expanded = await expandAttachments(payload.attachments, {
+            vision: visionRef.current.supports,
+            model: visionRef.current.model,
+          })
           if (expanded.blocks.length > 0) {
             attachedBlocks = [...(attachedBlocks ?? []), ...expanded.blocks]
           }
+          if (expanded.images.length > 0) attachedImages = expanded.images
           // Same reporting as the live send path. Staying silent here would let
           // an edited queued message lose its document with no explanation.
           for (const failure of expanded.failures) {
@@ -542,7 +700,9 @@ export function ChatView({
             conversationId,
             id,
             payload.text,
-            attachedBlocks ? { attachedBlocks } : undefined,
+            attachedBlocks || attachedImages
+              ? { attachedBlocks, attachedImages }
+              : undefined,
           )
         } catch (err) {
           onAppendMessage(
@@ -582,12 +742,64 @@ export function ChatView({
     return match?.contextWindow
   }, [modelOptions, effectiveModel])
 
+  /* What the send path may do with an attached picture. `undefined` when the
+     catalog has no row or the router said nothing — the attachment router
+     treats that as "send it", so a missing capability flag never silently
+     eats an image. */
+  const modelVision = useMemo(() => {
+    const match = modelOptions.find((o) => o.id === effectiveModel)
+    return match?.supportsVision
+  }, [modelOptions, effectiveModel])
+  visionRef.current = { supports: modelVision, model: effectiveModel }
+
+  /* Injected session chips (the `chat` extension slot), rendered in the
+   * header's right cluster where the built-in context meter sits. A chip
+   * with id `context` supersedes the estimate-based ContextUsage meter —
+   * workers with real per-turn numbers own the surface. */
+  const extSessionChips = useExtSessionChips()
+  const sessionChips = useMemo(() => {
+    if (extSessionChips.length === 0) return null
+    return [...extSessionChips].sort(compareChips).map((chip) => {
+      const Chip = chip.render
+      return (
+        <Chip
+          key={chip.id}
+          sessionId={conversation.id}
+          modelId={effectiveModel ?? undefined}
+          contextWindow={contextWindow}
+        />
+      )
+    })
+  }, [extSessionChips, conversation.id, effectiveModel, contextWindow])
+  const hasInjectedContextChip = extSessionChips.some(
+    (chip) => chip.id === 'context',
+  )
+
+  /* Injected turn summaries live beside the composer rather than in the
+   * transcript. Workers own their data and subscribe by session id; the host
+   * only gives them the active turn state. */
+  const extSessionTurnSummaries = useExtSessionTurnSummaries()
+  const sessionTurnSummaries = useMemo(() => {
+    if (extSessionTurnSummaries.length === 0) return null
+    return [...extSessionTurnSummaries].sort(compareChips).map((summary) => {
+      const Summary = summary.render
+      return (
+        <Summary
+          key={summary.id}
+          sessionId={conversation.id}
+          isStreaming={streamingIndicator}
+        />
+      )
+    })
+  }, [extSessionTurnSummaries, conversation.id, streamingIndicator])
+
   /* Shared live region: SR announcements for auto-accept, stop-reason
    * notices, and compaction markers route through this hook. Sighted
    * users see the same messages in the transcript; visually-impaired
    * users hear them via the polite/assertive ARIA live regions
    * rendered at the bottom of the component. */
   const announcer = useLiveAnnouncer()
+  const announcedApprovalIdsRef = useRef(new Set<string>())
 
   /* Wrap the backend's resolver in a stable callback so MessageList
    * row-level memoization isn't broken by a fresh lambda identity on
@@ -625,6 +837,20 @@ export function ChatView({
                 message.functionTriggerId === event.functionTriggerId,
             )
           : undefined
+        const announcementId = event.functionTriggerId ?? existing?.id
+        if (
+          !announcementId ||
+          !announcedApprovalIdsRef.current.has(announcementId)
+        ) {
+          if (announcementId) {
+            announcedApprovalIdsRef.current.add(announcementId)
+          }
+          announcer.announceAssertive(
+            event.filesystemAccess
+              ? `Action required: ${event.functionId} needs approval to access ${event.filesystemAccess.requestedRoot}.`
+              : `Action required: approve or deny ${event.functionId}.`,
+          )
+        }
         if (existing) {
           onPatchMessage(conversation.id, existing.id, {
             pendingApproval: true,
@@ -656,6 +882,7 @@ export function ChatView({
           message.role === 'function-trigger' &&
           message.functionTriggerId === event.functionTriggerId,
       )
+      announcedApprovalIdsRef.current.delete(event.functionTriggerId)
       if (existing) {
         onPatchMessage(conversation.id, existing.id, {
           pendingApproval: false,
@@ -663,7 +890,12 @@ export function ChatView({
         })
       }
     },
-    [conversation.id, onAppendMessage, onPatchMessage],
+    [
+      announcer.announceAssertive,
+      conversation.id,
+      onAppendMessage,
+      onPatchMessage,
+    ],
   )
 
   // Subagent approvals may arrive after the parent `harness::spawn` turn has
@@ -690,17 +922,9 @@ export function ChatView({
     sessionId,
   ])
 
-  // The working-directory picker + banner only make sense with the `shell`
-  // worker connected: the picker browses via shell-served `coder::*` functions
-  // and the chosen dir scopes shell exec/file calls. Hide both when shell is
-  // absent so we never render controls that call functions that don't exist.
-  const workingDirEnabled =
-    backend.id === 'real' &&
-    (conversationsCtx ? conversationsCtx.shellAvailable : false)
-
   // The stack's default folder, resolved once (cached page-wide): pre-fills
-  // fresh drafts below and feeds the picker's pinned "default" row so the
-  // launch folder stays selectable after a chat re-scopes elsewhere.
+  // fresh drafts below and keeps the launch folder selectable after a chat
+  // re-scopes elsewhere.
   const [defaultWorkingDir, setDefaultWorkingDir] = useState<string | null>(
     null,
   )
@@ -739,47 +963,67 @@ export function ChatView({
     conversation.id,
   ])
 
-  // A saved working dir can be gone by the next visit (deleted, unmounted,
-  // denylisted). Re-validate once per activation against the live shell; on
-  // failure surface the error through the picker (auto-opens) instead of
-  // letting the chat silently operate against a dead folder.
-  const [workingDirError, setWorkingDirError] = useState<string | null>(null)
+  const reconcileWorkingDir = useCallback(
+    (dir: string): Promise<string | null> => {
+      const active = workingDirActivationRef.current
+      if (active?.path === dir) return active.promise
+
+      const token = Symbol(dir)
+      setWorkingDirResolving(true)
+      const promise = activateWorkingDir(dir)
+        .then((result) => {
+          if (workingDirRef.current !== dir) return workingDirRef.current
+
+          const next = result.path
+          if (result.status === 'unavailable') return next
+          if (result.status === 'recovered') setDefaultWorkingDir(next)
+          if (next !== null) void syncEditorWorkspace(next)
+          if (result.status === 'recovered' || next !== dir) {
+            workingDirRef.current = next
+            onUpdateWorkingDir(conversation.id, next)
+            if (
+              result.status === 'recovered' &&
+              !conversation.draft &&
+              next !== dir
+            ) {
+              onAppendMessage(
+                conversation.id,
+                makeSystemNotice(workingDirRecoveryNotice(dir, next)),
+              )
+            }
+          }
+          return next
+        })
+        .finally(() => {
+          if (workingDirActivationRef.current?.token !== token) return
+          workingDirActivationRef.current = null
+          setWorkingDirResolving(false)
+        })
+      workingDirActivationRef.current = { path: dir, token, promise }
+      return promise
+    },
+    [conversation.draft, conversation.id, onAppendMessage, onUpdateWorkingDir],
+  )
+
+  // Temporary Harness projects can disappear between turns. Reconcile only
+  // the conversation's current scope; per-turn filesystem metadata remains
+  // bound to the original path for historical review.
   useEffect(() => {
-    if (!workingDirEnabled || conversation.draft) return
+    if (!workingDirEnabled || conversation.draft || streamingIndicator) return
     const dir = conversation.workingDir
     if (!dir) return
-    // Switching to a conversation brings its working directory with it: the
-    // editor page follows the active chat, not the last folder ever opened.
-    // Best-effort with its own consecutive-root dedupe, so re-activations
-    // and already-validated dirs stay cheap.
-    void syncEditorWorkspace(dir)
-    const key = `${conversation.id}:${dir}`
-    if (validatedWorkingDirs.has(key)) return
-    let cancelled = false
-    void validateWorkspaceDir(dir).then((res) => {
-      if (cancelled) return
-      if (res.ok) {
-        validatedWorkingDirs.add(key)
-        setWorkingDirError(null)
-      } else {
-        setWorkingDirError(
-          `working directory ${dir} is not usable — ${res.error}. choose another folder.`,
-        )
-      }
-    })
-    return () => {
-      cancelled = true
-    }
+    void reconcileWorkingDir(dir)
   }, [
     workingDirEnabled,
     conversation.draft,
     conversation.workingDir,
-    conversation.id,
+    streamingIndicator,
+    reconcileWorkingDir,
   ])
 
-  // The worktrees tab, the working-directory badge, claim/release, and the
-  // landed / land-blocked live events all require the optional `worktree`
-  // worker; gate the whole surface on its presence like shell above.
+  // The worktrees tab, claim/release, and the landed / land-blocked live
+  // events all require the optional `worktree` worker; gate the whole surface
+  // on its presence like shell above.
   const worktreeEnabled =
     backend.id === 'real' &&
     (conversationsCtx ? conversationsCtx.worktreeAvailable : false)
@@ -846,14 +1090,6 @@ export function ChatView({
     }
   }, [backend, announcer, filesystemGrants])
 
-  const handleCopySessionId = useCallback(() => {
-    if (typeof navigator === 'undefined' || !navigator.clipboard) return
-    void navigator.clipboard.writeText(sessionId).then(() => {
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 1200)
-    })
-  }, [sessionId])
-
   const ensureSession = conversationsCtx?.ensureSession
 
   // Composer draft persistence: the live text is recorded per conversation
@@ -875,7 +1111,7 @@ export function ChatView({
 
   const handleSubmit = useCallback(
     async (payload: ComposerSubmitPayload) => {
-      if (harnessBlockedRef.current) return
+      if (submitBlockedRef.current) return
       const conversationId = conversation.id
       // Steering a discovered/sub-agent session: inherit the model the
       // transcript shows when the conversation carries none of its own.
@@ -905,6 +1141,11 @@ export function ChatView({
         }
       }
 
+      let workingDirForSend = conversation.workingDir
+      if (workingDirEnabled && workingDirForSend) {
+        workingDirForSend = await reconcileWorkingDir(workingDirForSend)
+      }
+
       // `harness::send` carries `idempotency_key: messageId`, so the harness
       // appends the user message with the deterministic entry id
       // `e_idem_<messageId>`; using the same id here lets the
@@ -930,6 +1171,36 @@ export function ChatView({
         !isCompact &&
         (isStreaming || serverWorking) &&
         Boolean(backend.queueMessage)
+
+      // Only the session's first send carries the prompt selection; the
+      // harness inherits it afterwards (see selectionForSend). Gate on an
+      // assistant row rather than a user row: if an earlier send failed
+      // before a turn ran, there is nothing to inherit yet and the retry
+      // must carry the prompt again.
+      const turnEstablished = messagesRef.current.some(
+        (m) => m.role === 'assistant',
+      )
+      // An agent selection resolves server-side (options.agent) and supplies
+      // prompt + skills itself; suppressing the client-side selection also
+      // covers pre-upgrade drafts whose persisted namedBody would otherwise
+      // collide with the agent field.
+      const agentId = conversation.agentProfile
+        ? turnEstablished || willQueue
+          ? undefined
+          : conversation.agentProfile.id
+        : agentIdForSend(effectiveSystemPrompt, {
+            turnEstablished,
+            willQueue,
+          })
+      const systemPrompt = agentId
+        ? null
+        : selectionForSend(effectiveSystemPrompt, turnEstablished)
+      const skills = agentId
+        ? undefined
+        : skillSelectionForSend(conversation.skills, {
+            turnEstablished,
+            willQueue,
+          })
 
       if (!willQueue) onAppendMessage(conversationId, userMsg)
 
@@ -1000,7 +1271,7 @@ export function ChatView({
       // with a working dir only). Failures never block the send — a failed
       // mention becomes a placeholder block plus a warn notice.
       let attachedBlocks: string[] | undefined
-      const workingDir = conversation.workingDir
+      const workingDir = workingDirForSend
       const mentionPaths =
         backend.id === 'real' && workingDir
           ? parseFileMentions(payload.text)
@@ -1032,30 +1303,43 @@ export function ChatView({
         }
       }
 
-      // A PDF is not text: read as bytes it reaches the model as noise, so the
-      // `pdf` worker converts it on this machine and the markdown is appended
-      // as another attachment block. Failures never block the send — an
-      // unreadable document becomes a placeholder block plus a warn notice, so
-      // the model knows it was handed something it could not read.
-      if (backend.id === 'real' && payload.attachments.some(isPdfAttachment)) {
-        const expanded = await expandPdfAttachments(payload.attachments)
+      // Attachments are not text. A PDF or an office document read as bytes
+      // reaches the model as noise, and an image reaches it as nothing at all,
+      // so each kind is expanded on this machine first: documents into
+      // `<attached-file …>` markdown blocks, pictures into image content
+      // blocks. Failures never block the send — an unreadable attachment
+      // becomes a placeholder block plus a warn notice, so the model knows it
+      // was handed something that could not be read.
+      let attachedImages: HarnessImageBlock[] | undefined
+      if (
+        backend.id === 'real' &&
+        hasExpandableAttachments(payload.attachments)
+      ) {
+        const expanded = await expandAttachments(payload.attachments, {
+          vision: visionRef.current.supports,
+          model: visionRef.current.model,
+        })
         if (expanded.blocks.length > 0) {
           attachedBlocks = [...(attachedBlocks ?? []), ...expanded.blocks]
         }
-        // Relabel the chip with what the worker made of the document. The
-        // expansion runs before the model is called, so it never shows up as a
-        // function call — without this a person has no way to tell the PDF was
-        // read at all.
-        if (expanded.read.length > 0 && !willQueue) {
-          const byId = new Map(expanded.read.map((r) => [r.id, r]))
+        if (expanded.images.length > 0) attachedImages = expanded.images
+        // Drop the source bytes and relabel the chip with what the expansion
+        // made of each attachment. The relabel runs before the model is called,
+        // so it never shows up as a function call — without it a person has no
+        // way to tell the document was read at all.
+        //
+        // The `file` removal is NOT conditional on anything having been read:
+        // an attachment that failed, or an image refused for a model that
+        // cannot see, has finished its job too, and keeping its bytes would
+        // hold the whole file in memory for as long as the conversation stays
+        // open. Only the label depends on a matching entry.
+        if (!willQueue) {
+          const byId = new Map(expanded.read.map((r) => [r.id, r.label]))
           onPatchMessage(conversationId, userMsg.id, {
-            // `file` is dropped here as well as relabelled. It has done its job
-            // by now, and keeping it would hold the whole document in memory
-            // for as long as the conversation stays open.
             attachments: (userMsg.attachments ?? []).map(({ file, ...a }) => {
               void file
-              const summary = byId.get(a.id)
-              return summary ? { ...a, name: summaryLabel(a.name, summary) } : a
+              const label = byId.get(a.id)
+              return label ? { ...a, name: label } : a
             }),
           })
         }
@@ -1068,6 +1352,39 @@ export function ChatView({
             ),
           )
         }
+      }
+
+      // A leading `/skill:<id>` the palette offered expands here: the resolved body rides as another attachment
+      // block while the typed text (command + args) stays the user message.
+      // Prose that merely starts with a slash never resolves (the expander
+      // is gated on the palette's fetched entries).
+      const slashExpansion =
+        backend.id === 'real'
+          ? await expandSlashInvocation(
+              trimmed,
+              loadedSkillIds(messagesRef.current),
+            )
+          : null
+      if (slashExpansion?.status === 'attached') {
+        attachedBlocks = [...(attachedBlocks ?? []), slashExpansion.block]
+        // The body travels as a block, never as visible text — show the same
+        // chip the hydrated transcript will collapse the block into.
+        if (!willQueue) {
+          onPatchMessage(conversationId, userMsg.id, {
+            attachments: [
+              ...(userMsg.attachments ?? []),
+              slashChip(slashExpansion.inv, slashExpansion.block.length),
+            ],
+          })
+        }
+      } else if (slashExpansion) {
+        onAppendMessage(
+          conversationId,
+          makeSystemNotice(
+            `could not attach ${slashExpansion.command} — sending the message as typed`,
+            'warn',
+          ),
+        )
       }
 
       // Mid-stream send (MOT-3837): a turn is already streaming, so the
@@ -1086,10 +1403,16 @@ export function ChatView({
               sessionId,
               messageId,
               thinkingLevel,
-              workingDir: conversation.workingDir,
+              systemPrompt,
+              skills,
+              ...(agentId ? { agent: agentId } : {}),
+              workingDir: workingDirForSend,
               approvalGateAvailable: approvalEnabled,
               ...(attachedBlocks && attachedBlocks.length > 0
                 ? { attachedBlocks }
+                : {}),
+              ...(attachedImages && attachedImages.length > 0
+                ? { attachedImages }
                 : {}),
             },
           )
@@ -1131,12 +1454,18 @@ export function ChatView({
             sessionId,
             messageId,
             thinkingLevel,
-            workingDir: conversation.workingDir,
+            systemPrompt,
+            skills,
+            ...(agentId ? { agent: agentId } : {}),
+            workingDir: workingDirForSend,
             approvalGateAvailable: approvalEnabled,
             approvalSessionMatcher,
             approvalEventsExternallyManaged: true,
             ...(attachedBlocks && attachedBlocks.length > 0
               ? { attachedBlocks }
+              : {}),
+            ...(attachedImages && attachedImages.length > 0
+              ? { attachedImages }
               : {}),
           },
         )) {
@@ -1320,7 +1649,7 @@ export function ChatView({
               break
             }
             case 'turn-status': {
-              // `queued` renders in the queued-messages strip, not the shimmer.
+              // `queued` renders in the queued-messages strip, not the waiting indicator.
               setTurnPhase(event.phase === 'queued' ? null : event.phase)
               break
             }
@@ -1336,6 +1665,10 @@ export function ChatView({
                 kind: 'notice',
                 content: noticeContent,
                 tone: event.reason === 'error' ? 'error' : 'warn',
+                // The transcript owns the authoritative lifecycle notice under
+                // this id. Trigger delivery is unordered, so a late live
+                // fallback may fill a gap but must not overwrite that record.
+                provisional: true,
                 createdAt: Date.now(),
               }
               onAppendMessage(conversationId, notice)
@@ -1365,7 +1698,7 @@ export function ChatView({
         if (!isAbortError(err)) {
           console.warn('[chat] stream errored', err)
           // A dead send must never be silent: without this notice the user
-          // sees only their message and an eternal shimmer.
+          // sees only their message and an eternal waiting indicator.
           const detail = err instanceof Error ? err.message : String(err)
           const noticeContent = `send failed — ${detail}`
           const notice: SystemMessage = {
@@ -1405,11 +1738,14 @@ export function ChatView({
     },
     [
       conversation.id,
+      conversation.agentProfile,
       conversation.mode,
       conversation.model,
+      conversation.skills,
       conversation.workingDir,
       effectiveModel,
       thinkingLevel,
+      effectiveSystemPrompt,
       sessionId,
       contextWindow,
       backend,
@@ -1422,6 +1758,8 @@ export function ChatView({
       onAppendMessage,
       onPatchMessage,
       onCompactConversation,
+      reconcileWorkingDir,
+      workingDirEnabled,
     ],
   )
 
@@ -1452,7 +1790,7 @@ export function ChatView({
   }, [isStreaming, conversation.status])
 
   // Covers the gap between submit / fcall-end and the next streamed content,
-  // where the assistant/thought shimmer hasn't yet rendered.
+  // where the assistant/thought output hasn't yet rendered.
   const isThinking =
     streamingIndicator &&
     (() => {
@@ -1470,7 +1808,7 @@ export function ChatView({
       return false
     })()
 
-  // Pre-content phase text for the shimmer. Only trusted while the transcript
+  // Pre-content phase text for the waiting indicator. Only trusted while the transcript
   // still ends at the user's message — on the real backend content arrives via
   // session events (not stream events), so once anything streamed the phase is
   // stale and mid-turn gaps fall back to the model line instead.
@@ -1490,12 +1828,64 @@ export function ChatView({
     }
   })()
 
-  const isDock = density === 'dock'
-  const headerPad = isDock ? 'px-4' : 'px-9'
-  const footerPad = isDock ? 'px-4 pb-4 pt-2' : 'px-9 pb-6 pt-2'
+  /* Trace → message landing: a pending turn-focus for THIS session resolves
+     to the transcript row to center (see lib/turn-anchor), recomputed as the
+     transcript hydrates. Consumed when MessageList lands on it. A missing
+     anchor drops the request only when nothing can still produce it — the
+     transcript is hydrated AND no turn is running (a live turn writes its
+     durable rows as it goes, so the click means "land there once it
+     exists") — and only after a grace, because completion flips the status
+     idle before the turn's last rows reach the transcript. So a stale
+     request still can't fire on a later visit. */
+  const chatFocusEvent = useChatMessageFocus()
+  const chatFocus =
+    chatFocusEvent && chatFocusEvent.sessionId === conversation.id
+      ? chatFocusEvent
+      : undefined
+  const focusMessageId = useMemo(
+    () =>
+      chatFocus
+        ? turnAnchorMessageId(conversation.messages, chatFocus.turnId)
+        : null,
+    [chatFocus, conversation.messages],
+  )
+  useEffect(() => {
+    if (!chatFocus) return
+    if (
+      !shouldDropChatFocus({
+        hydrated: conversation.hydrated,
+        working: conversation.status === 'working',
+        anchored: focusMessageId !== null,
+      })
+    ) {
+      return
+    }
+    // Any dep change — anchor resolved, a turn (re)started, a new request —
+    // cancels the pending drop; the id guard in clearChatMessageFocus keeps
+    // a stale timer from ever dropping a newer request.
+    const timer = window.setTimeout(
+      () => clearChatMessageFocus(chatFocus.id),
+      CHAT_FOCUS_DROP_GRACE_MS,
+    )
+    return () => window.clearTimeout(timer)
+  }, [chatFocus, conversation.hydrated, conversation.status, focusMessageId])
+  const chatFocusIdRef = useRef<number | null>(null)
+  chatFocusIdRef.current = chatFocus?.id ?? null
+  const handleFocusMessageHandled = useCallback(() => {
+    if (chatFocusIdRef.current !== null) {
+      clearChatMessageFocus(chatFocusIdRef.current)
+    }
+  }, [])
 
-  // Resolve the working directory to its managed worktree (badge), and keep
-  // it fresh across landed / land-blocked events.
+  const isDock = density === 'dock'
+  const compact = isDock || onBack !== undefined
+  const headerPad = compact ? 'px-3 sm:px-4' : 'px-3 sm:px-6 lg:px-9'
+  const footerPad = compact
+    ? 'px-3 pb-3 pt-2 sm:px-4 sm:pb-4'
+    : 'px-3 pb-3 pt-2 sm:px-6 sm:pb-5 lg:px-9 lg:pb-6'
+
+  // Resolve the working directory to its managed worktree so landed /
+  // land-blocked events can be scoped to this conversation.
   const [worktreeRefresh, setWorktreeRefresh] = useState(0)
   const worktreeInfo = useWorktreeBinding(
     conversation.workingDir ?? null,
@@ -1505,8 +1895,8 @@ export function ChatView({
   const worktreeInfoRef = useRef<WorktreeInfo | null>(worktreeInfo)
   worktreeInfoRef.current = worktreeInfo
 
-  // Only surface events for the worktree this conversation points at (badge)
-  // or claimed through this console flow — never every land on the bus.
+  // Only surface events for the worktree this conversation points at or
+  // claimed through this console flow — never every land on the bus.
   const eventConcernsConversation = useCallback(
     (worktreeId: string) =>
       worktreeInfoRef.current?.worktree_id === worktreeId ||
@@ -1549,10 +1939,7 @@ export function ChatView({
     (next: string) => {
       const id = conversation.id
       const prev = conversation.workingDir ?? null
-      // Every picker selection is freshly shell-validated; replacing a stale
-      // dir resolves the invalid-folder state.
-      setWorkingDirError(null)
-      validatedWorkingDirs.add(`${id}:${next}`)
+      workingDirRef.current = next
       onUpdateWorkingDir(id, next)
       // The editor follows the chat: picking a folder here repoints the
       // shared editor workspace so the editor page shows this project.
@@ -1573,6 +1960,16 @@ export function ChatView({
       onUpdateWorkingDir,
       onAppendMessage,
     ],
+  )
+
+  useEffect(
+    () =>
+      onWorkingDirectoryChangeRequest(({ sessionId, path }) => {
+        if (!workingDirEnabled || sessionId !== conversation.id) return false
+        handleWorkingDirChange(path)
+        return true
+      }),
+    [conversation.id, handleWorkingDirChange, workingDirEnabled],
   )
 
   // Picking a worktree claims it for this session; the working dir itself
@@ -1608,93 +2005,255 @@ export function ChatView({
     [conversation.id, onAppendMessage],
   )
 
+  // Chat's keyboard, through the same contract a worker page uses, so the
+  // palette lists these rows under "Chat" with their keys.
+  const viewRef = useRef<HTMLElement>(null)
+  const working = conversation.status === 'working'
+  useEffect(() => {
+    if (!commands) return
+    const messageNodes = () =>
+      Array.from(
+        viewRef.current?.querySelectorAll<HTMLElement>('[data-message-row]') ??
+          [],
+      )
+    const focusedRow = () =>
+      messageNodes().find((node) => node.contains(document.activeElement))
+    const actOnFocused = (action: string) => {
+      const row = focusedRow()
+      const button = row?.querySelector<HTMLButtonElement>(
+        `[data-message-action="${action}"]`,
+      )
+      if (button && !button.disabled) button.click()
+    }
+    const pendingApproval = () => {
+      const view = viewRef.current
+      return (
+        view !== null && view.querySelector('[data-approval-actions]') !== null
+      )
+    }
+    const answerApproval = (action: 'approve' | 'deny' | 'always-allow') => {
+      const row = focusedRow()
+      const waiting = Array.from(
+        viewRef.current?.querySelectorAll('[data-approval-actions]') ?? [],
+      )
+      // The focused row if it is waiting; else the only waiting call. Two
+      // waiting calls and no focus is a choice the keyboard must not make.
+      const scope = row?.querySelector('[data-approval-actions]')
+        ? row
+        : waiting.length === 1
+          ? waiting[0]
+          : null
+      scope
+        ?.querySelector<HTMLButtonElement>(`[data-message-action="${action}"]`)
+        ?.click()
+    }
+    const focusMessage = (delta: 1 | -1) => {
+      const nodes = messageNodes()
+      if (nodes.length === 0) return
+      const current = nodes.findIndex((node) =>
+        node.contains(document.activeElement),
+      )
+      const start = delta === 1 ? 0 : nodes.length - 1
+      const index =
+        current === -1
+          ? start
+          : Math.min(nodes.length - 1, Math.max(0, current + delta))
+      const node = nodes[index]
+      node.tabIndex = -1
+      node.focus({ preventScroll: true })
+      node.scrollIntoView({ block: 'nearest' })
+    }
+    return commands.register([
+      {
+        id: 'focus-composer',
+        title: 'Focus the composer',
+        detail: 'Put the caret in the message box',
+        keywords: ['type', 'write', 'input', 'message'],
+        shortcut: 'I',
+        run: () => requestComposerFocus(),
+      },
+      {
+        id: 'next-message',
+        title: 'Next message',
+        detail: 'Move the focus down the conversation',
+        keywords: ['down', 'read', 'inspect'],
+        shortcut: 'J',
+        run: () => focusMessage(1),
+      },
+      {
+        id: 'previous-message',
+        title: 'Previous message',
+        detail: 'Move the focus up the conversation',
+        keywords: ['up', 'read', 'inspect'],
+        shortcut: 'K',
+        run: () => focusMessage(-1),
+      },
+      {
+        id: 'latest',
+        title: 'Jump to the latest message',
+        detail: 'Scroll to the end of the conversation',
+        keywords: ['bottom', 'end', 'scroll', 'tail'],
+        shortcut: 'End',
+        run: () => {
+          const list = viewRef.current?.querySelector<HTMLElement>(
+            '[data-message-list]',
+          )
+          list?.scrollTo({ top: list.scrollHeight })
+        },
+      },
+      {
+        id: 'approve',
+        title: 'Approve the pending call',
+        detail: 'Let the focused (or the only waiting) function call run',
+        keywords: ['allow', 'yes', 'permission'],
+        shortcut: 'A',
+        enabled: pendingApproval,
+        run: () => answerApproval('approve'),
+      },
+      {
+        id: 'deny',
+        title: 'Deny the pending call',
+        detail: 'Refuse the focused (or the only waiting) function call',
+        keywords: ['reject', 'no', 'permission'],
+        shortcut: 'D',
+        enabled: pendingApproval,
+        run: () => answerApproval('deny'),
+      },
+      {
+        id: 'always-allow',
+        title: 'Always allow the pending call',
+        detail: 'Approve it and stop asking for this function',
+        keywords: ['allow', 'permission', 'session', 'trust'],
+        shortcut: 'S',
+        enabled: pendingApproval,
+        run: () => answerApproval('always-allow'),
+      },
+      {
+        id: 'expand',
+        title: 'Expand or collapse the focused message',
+        detail: 'Open a function call card, or fold it',
+        keywords: ['open', 'fold', 'details'],
+        shortcut: 'O',
+        run: () => actOnFocused('toggle'),
+      },
+      {
+        id: 'copy',
+        title: 'Copy the focused message',
+        detail: 'Copy its text to the clipboard',
+        keywords: ['clipboard'],
+        shortcut: 'Y',
+        run: () => actOnFocused('copy'),
+      },
+      {
+        id: 'model',
+        title: 'Switch model',
+        detail: 'Open the model picker',
+        keywords: ['provider', 'picker', 'llm'],
+        shortcut: 'M',
+        run: handleOpenModelPicker,
+      },
+      {
+        id: 'stop',
+        title: 'Stop the turn',
+        detail: 'Interrupt the running generation',
+        keywords: ['cancel', 'interrupt', 'abort'],
+        shortcut: 'Escape',
+        firesWhileTyping: true,
+        enabled: () => working || streamingIndicator,
+        run: handleStop,
+      },
+    ])
+  }, [commands, handleOpenModelPicker, handleStop, working, streamingIndicator])
+
   return (
     <section
+      ref={viewRef}
       data-chat-session-id={conversation.id}
       data-chat-session-hydrated={conversation.hydrated}
       className="flex-1 flex flex-col min-w-0 min-h-0"
     >
-      <header
-        className={cn(
-          'flex items-center justify-between py-3 border-b border-rule gap-3 whitespace-nowrap',
-          headerPad,
-        )}
-      >
-        <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint flex items-center gap-2 min-w-0 flex-1">
-          <span className="text-accent flex-shrink-0" aria-hidden>
-            $
-          </span>
-          <span className="text-ink truncate min-w-0">{effectiveModel}</span>
-          <span className="text-ink-ghost flex-shrink-0">·</span>
-          <span className="text-ink-faint flex-shrink-0">
-            {conversation.mode}
-          </span>
-          {isDock ? null : (
-            <>
-              <span className="text-ink-ghost flex-shrink-0">·</span>
-              <button
-                type="button"
-                onClick={handleCopySessionId}
-                title={
-                  copied
-                    ? `copied ${sessionId}`
-                    : `${sessionId} — click to copy. matches iii.session.id in the traces tab.`
-                }
-                className="flex items-center gap-1 text-ink-faint hover:text-ink transition-colors group normal-case tracking-normal min-w-0"
-              >
-                <span className="truncate font-mono text-[11px] tabular-nums">
-                  {sessionId}
-                </span>
-                {copied ? (
-                  <span className="text-accent text-[10px] uppercase tracking-[0.06em] flex-shrink-0">
-                    copied
+      <PageHeader
+        className={headerPad}
+        onClose={onRequestClose}
+        actions={
+          <div className="flex items-center gap-1.5 font-sans text-sm">
+            {/* Header read-outs share ONE surface. This system draws no
+                lines (index.css:44-52 — rule/rule-2 are transparent in both
+                themes), so a group is a fill, not a run of dividers. It also
+                keeps the related session metadata visually together. */}
+            <div className="flex h-7 items-center gap-3 rounded-md bg-surface px-2.5 max-lg:hidden">
+              {sessionChips}
+              {hasInjectedContextChip ? null : (
+                <ContextUsage
+                  messages={conversation.messages}
+                  contextWindow={contextWindow}
+                />
+              )}
+            </div>
+            {/* Status sits OUTSIDE the group — it is state, not a control.
+                The dot alone carries it (green ready, pulsing accent
+                working, red error); the word lives in the tooltip and in an
+                sr-only role="status" span so transitions still announce.
+                `self-stretch px-1` turns a 6px dot into a full-height hover
+                target without letting an error widen the header. */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div className="flex size-12 items-center justify-center max-sm:hidden sm:size-10 lg:self-stretch lg:size-auto lg:px-1">
+                  <StatusDot
+                    tone={
+                      conversation.status === 'error'
+                        ? 'alert'
+                        : streamingIndicator
+                          ? 'accent'
+                          : 'ok'
+                    }
+                    pulse={streamingIndicator}
+                  />
+                  <span role="status" className="sr-only">
+                    {streamingIndicator
+                      ? 'working'
+                      : conversation.status === 'error'
+                        ? 'error'
+                        : 'ready'}
                   </span>
-                ) : (
-                  <Copy className="size-3 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
-                )}
-              </button>
-            </>
-          )}
-        </div>
-        <div className="flex items-center gap-3 font-mono text-[11px] uppercase tracking-[0.06em] flex-shrink-0">
-          <ContextUsage
-            messages={conversation.messages}
-            contextWindow={contextWindow}
-          />
-          <ExportSessionButton
-            conversation={conversation}
-            onExported={(filename) =>
-              announcer.announce(`session exported as ${filename}`)
-            }
-          />
-          <div className="flex items-center gap-2">
-            <StatusDot
-              tone={
-                conversation.status === 'error'
-                  ? 'alert'
+                </div>
+              </TooltipTrigger>
+              <TooltipContent>
+                {conversation.status === 'error'
+                  ? `error${conversation.statusReason ? ` — ${conversation.statusReason}` : ''}`
                   : streamingIndicator
-                    ? 'accent'
-                    : 'ink'
-              }
-              pulse={streamingIndicator}
-            />
-            <span
-              className="text-ink-faint"
-              title={
-                conversation.status === 'error'
-                  ? conversation.statusReason
-                  : undefined
-              }
-            >
-              {streamingIndicator
-                ? 'working'
-                : conversation.status === 'error'
-                  ? 'error'
-                  : 'ready'}
-            </span>
+                    ? 'working'
+                    : 'ready'}
+              </TooltipContent>
+            </Tooltip>
           </div>
+        }
+      >
+        <div className="flex min-w-0 flex-1 items-center gap-2 font-sans text-sm text-ink-faint">
+          {onBack ? (
+            <button
+              type="button"
+              onClick={onBack}
+              aria-label="back to conversations"
+              title="back to conversations"
+              className="relative -ml-1 flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:size-7"
+            >
+              <span
+                className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+                aria-hidden="true"
+              />
+              <ArrowLeft aria-hidden className="size-4 shrink-0" />
+            </button>
+          ) : null}
+          <span className="min-w-0 truncate font-medium text-ink">
+            {panelTitle ?? 'Chat'}
+          </span>
+          <span className="shrink-0 text-ink-ghost">·</span>
+          <span className="min-w-0 truncate">
+            {conversation.agentProfile?.name ?? effectiveModel}
+          </span>
         </div>
-      </header>
+      </PageHeader>
 
       {approvalSettings.settings.mode === 'full' ? (
         <FullPermissionsBanner
@@ -1702,72 +2261,59 @@ export function ChatView({
         />
       ) : null}
 
-      <MessageList
-        messages={conversation.messages}
-        isThinking={isThinking}
-        thinkingDetail={
-          conversation.status === 'working' && conversation.statusReason
-            ? conversation.statusReason
-            : (phaseDetail ??
-              (effectiveModel ? `dispatching ${effectiveModel}` : undefined))
-        }
-        density={density}
-        onResolveApproval={resolveApproval}
-        onAlwaysAllow={handleAlwaysAllow}
-        onResolveFilesystemAccess={handleFilesystemResolve}
-        onManageFilesystemAccess={handleManageFilesystemAccess}
-        workingDir={conversation.workingDir ?? null}
+      <RegisteredTriggerStatusProvider
+        loaded={triggersSnapshotSessionId === conversation.id}
         triggersById={triggersById}
-      />
+      >
+        <MessageList
+          messages={conversation.messages}
+          agentName={conversation.agentProfile?.name}
+          spawnContext={{
+            title: conversation.title,
+            model: effectiveModel,
+            appearance: conversation.subagentAppearance,
+          }}
+          transcriptHydrated={conversation.hydrated !== false}
+          isThinking={isThinking}
+          thinkingDetail={
+            conversation.status === 'working' && conversation.statusReason
+              ? conversation.statusReason
+              : (phaseDetail ??
+                (effectiveModel ? `dispatching ${effectiveModel}` : undefined))
+          }
+          density={density}
+          onResolveApproval={resolveApproval}
+          onAlwaysAllow={handleAlwaysAllow}
+          onResolveFilesystemAccess={handleFilesystemResolve}
+          onManageFilesystemAccess={handleManageFilesystemAccess}
+          onConfigureProvider={handleOpenModelPicker}
+          workingDir={conversation.workingDir ?? null}
+          onWorkingDirChange={
+            workingDirEnabled ? handleWorkingDirChange : undefined
+          }
+          defaultWorkingDir={defaultWorkingDir}
+          worktreePicker={
+            worktreeEnabled
+              ? { enabled: true, onPick: handlePickWorktree }
+              : undefined
+          }
+          triggersById={triggersById}
+          focusMessageId={focusMessageId}
+          onFocusMessageHandled={handleFocusMessageHandled}
+        />
+      </RegisteredTriggerStatusProvider>
       <LiveRegion announcement={announcer.announcement} />
 
       <footer className={footerPad}>
         <div className="mx-auto max-w-[760px]">
-          {workingDirEnabled ? (
-            <div className="mb-1 flex items-center gap-1.5 px-1 text-[11px] text-ink-faint">
-              {worktreeInfo ? (
-                // Managed worktree: branch + id + dirty/ahead + lifecycle
-                // replace the raw path chip (path stays as the tooltip).
-                <WorktreeBadge worktree={worktreeInfo} className="min-w-0" />
-              ) : (
-                <>
-                  <Folder size={12} className="shrink-0" aria-hidden />
-                  {conversation.workingDir ? (
-                    <span
-                      // dir=rtl keeps the trailing (most-distinguishing) path
-                      // segment visible when truncated in the narrow dock.
-                      dir="rtl"
-                      className={cn(
-                        'truncate text-left font-mono',
-                        workingDirError && 'text-warn',
-                      )}
-                      title={workingDirError ?? conversation.workingDir}
-                    >
-                      {conversation.workingDir}
-                    </span>
-                  ) : (
-                    <span className="lowercase text-ink-ghost">
-                      no working directory — using default workspace
-                    </span>
-                  )}
-                </>
-              )}
-              <button
-                type="button"
-                onClick={handleManageFilesystemAccess}
-                title={
-                  approvalEnabled
-                    ? 'Access is limited to this workspace until you approve another folder.'
-                    : 'The working directory sets where commands start; shell configuration controls access.'
-                }
-                className="ml-auto shrink-0 lowercase text-ink-ghost hover:text-ink transition-colors"
-              >
-                access: {approvalEnabled ? 'workspace' : 'shell defaults'}
-                {approvalEnabled && filesystemGrants.grants.length > 0
-                  ? ` · ${filesystemGrants.grants.length}`
-                  : ''}
-              </button>
-            </div>
+          {conversationsCtx ? (
+            <ActiveSubagentChips
+              className="mb-1 px-1"
+              conversations={conversationsCtx.conversations}
+              rootSessionId={conversation.id}
+              connectionState={conversationsCtx.connectionState}
+              onOpen={conversationsCtx.openConversationInPanel}
+            />
           ) : null}
           <SessionTriggers
             triggers={mergedTriggers}
@@ -1779,7 +2325,7 @@ export function ChatView({
           />
           {queuedStrip.length > 0 ? (
             <section
-              className="mb-1 border border-rule bg-bg"
+              className="mb-1 rounded-md bg-surface"
               aria-label="queued messages"
             >
               {/* The message being edited is pulled out of the queue and lives
@@ -1790,11 +2336,11 @@ export function ChatView({
                 .map((row) => (
                   <div
                     key={row.id}
-                    className="flex items-center gap-2 border-b border-rule-2 px-3 py-1.5 text-[12px] last:border-b-0"
+                    className="flex items-center gap-2 border-b border-rule-2 px-3 py-2.5 text-base last:border-b-0 sm:py-1.5 sm:text-[12px]"
                   >
                     <span className="min-w-0 flex-1 truncate">{row.text}</span>
-                    <span className="shrink-0 lowercase text-ink-ghost">
-                      {drainingQueue ? 'triggering…' : 'queued'}
+                    <span className="shrink-0 text-ink-ghost">
+                      {drainingQueue ? 'Triggering…' : 'Queued'}
                     </span>
                   </div>
                 ))}
@@ -1803,25 +2349,35 @@ export function ChatView({
               {backend.editQueued &&
               queuedDrafts.length > 0 &&
               !drainingQueue ? (
-                <div className="px-3 py-0.5 text-right text-[10px] lowercase text-ink-ghost">
+                <div className="px-3 py-0.5 text-right text-[11px] text-ink-ghost max-sm:hidden">
                   {browsedQueuedId
-                    ? '↑ / ↓ cycle · enter saves in place · empty + enter removes'
-                    : 'press ↑ in the composer to edit queued messages'}
+                    ? '↑ / ↓ cycle · Enter saves in place · Empty + Enter removes'
+                    : 'Press ↑ in the composer to edit queued messages'}
                 </div>
               ) : null}
             </section>
+          ) : null}
+          {sessionTurnSummaries ? (
+            <div
+              className="flex flex-wrap items-center justify-end gap-1.5 px-1"
+              data-chat-turn-summary-slot
+            >
+              {sessionTurnSummaries}
+            </div>
           ) : null}
           <Composer
             mode={conversation.mode}
             model={effectiveModel}
             modelOptions={modelOptions}
             catalogLoading={catalogLoading}
+            modelPickerOpenRequest={modelPickerOpenRequest}
+            modelLocked={Boolean(conversation.agentProfile?.model)}
             functionEntries={functionEntries}
             permissionMode={approvalSettings.settings.mode}
             permissionModeLoading={!approvalSettings.loaded}
             showPermissionMode={approvalEnabled}
             thinkingLevel={thinkingLevel}
-            onThinkingLevelChange={setThinkingLevel}
+            onThinkingLevelChange={handleThinkingLevelChange}
             onModeChange={(next) => onUpdateMode(conversation.id, next)}
             onModelChange={(next) => onUpdateModel(conversation.id, next)}
             showWorkingDir={workingDirEnabled}
@@ -1835,7 +2391,6 @@ export function ChatView({
               conversationsCtx?.setMemoryBank(conversation.id, next)
             }
             workingDirLocked={false}
-            workingDirError={workingDirError}
             defaultWorkingDir={defaultWorkingDir}
             onWorkingDirChange={handleWorkingDirChange}
             worktreePicker={
@@ -1857,6 +2412,8 @@ export function ChatView({
             isStreaming={streamingIndicator}
             queueWhileStreaming={!!backend.queueMessage}
             blocked={harnessBlocked}
+            submitBlocked={submitBlocked}
+            autoFocus={focusComposerOnOpen && !harnessBlocked}
             blockedPlaceholder={
               conversationsCtx
                 ? harnessComposerPlaceholder(conversationsCtx.harnessStatus)

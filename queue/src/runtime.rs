@@ -18,6 +18,7 @@ use crate::config::QueueConfig;
 use crate::trigger::{Invoker, QueueTriggerHandler};
 
 const MAX_RESTART_REDELIVERIES: u32 = 3;
+const DEFAULT_NAMESPACE: &str = "default";
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -47,6 +48,10 @@ pub struct EnqueueInput {
     pub data: Value,
     #[serde(rename = "messageReceiptId")]
     pub message_receipt_id: String,
+    /// Namespace in which the queued target must resolve. The engine sends
+    /// this for non-default enqueues and omits it for legacy/default traffic.
+    #[serde(default)]
+    pub namespace: Option<String>,
     /// Trace context captured by the engine at the enqueue boundary and
     /// restored when the queued function is invoked.
     #[serde(default)]
@@ -361,6 +366,7 @@ impl FunctionQueueRuntime {
                 config.backoff_ms,
                 input.traceparent,
                 input.baggage,
+                input.namespace,
                 priority,
             )
             .await
@@ -962,7 +968,14 @@ async fn process_standard_message(
     invoker: Arc<dyn Invoker>,
     message: QueueMessage,
 ) {
-    wait_for_function(&invoker, queue, &message.function_id, poll_interval_ms).await;
+    wait_for_function(
+        &invoker,
+        queue,
+        &message.function_id,
+        message.namespace.as_deref().unwrap_or(DEFAULT_NAMESPACE),
+        poll_interval_ms,
+    )
+    .await;
     let Ok(_permit) = active.acquire_owned().await else {
         return;
     };
@@ -1003,7 +1016,14 @@ async fn process_fifo_message(
 ) {
     let mut attempt = message.attempt;
     loop {
-        wait_for_function(&invoker, queue, &message.function_id, poll_interval_ms).await;
+        wait_for_function(
+            &invoker,
+            queue,
+            &message.function_id,
+            message.namespace.as_deref().unwrap_or(DEFAULT_NAMESPACE),
+            poll_interval_ms,
+        )
+        .await;
         let Ok(permit) = active.clone().acquire_owned().await else {
             return;
         };
@@ -1111,7 +1131,17 @@ async fn invoke_checkpointed_message_across_engine_restarts(
                     redeliveries,
                     "engine connection lost with the invocation in flight; holding until the target re-registers, then re-invoking"
                 );
-                wait_for_function(invoker, queue, &message.function_id, poll_interval_ms).await;
+                wait_for_function(
+                    invoker,
+                    queue,
+                    &message.function_id,
+                    message
+                        .namespace
+                        .as_deref()
+                        .unwrap_or(DEFAULT_NAMESPACE),
+                    poll_interval_ms,
+                )
+                .await;
             }
         }
     }
@@ -1147,7 +1177,12 @@ async fn invoke_message(
         }
     }
     invoker
-        .call_with_timeout(&message.function_id, message.data.clone(), timeout_ms)
+        .call_with_timeout(
+            &message.function_id,
+            message.data.clone(),
+            timeout_ms,
+            message.namespace.as_deref().unwrap_or(DEFAULT_NAMESPACE),
+        )
         .instrument(span)
         .await
 }
@@ -1175,11 +1210,12 @@ async fn wait_for_function(
     invoker: &Arc<dyn Invoker>,
     queue: &str,
     function_id: &str,
+    namespace: &str,
     poll_interval_ms: u64,
 ) {
     let mut waiting = false;
     loop {
-        match invoker.function_available(function_id).await {
+        match invoker.function_available(function_id, namespace).await {
             Ok(true) => {
                 if waiting {
                     tracing::info!(queue = %queue, function_id = %function_id, "function queue target became available");
@@ -1282,6 +1318,7 @@ mod tests {
         String,
         Option<String>,
         Option<String>,
+        Option<String>,
     );
 
     #[derive(Default)]
@@ -1355,6 +1392,7 @@ mod tests {
             _backoff_ms: u64,
             traceparent: Option<String>,
             baggage: Option<String>,
+            namespace: Option<String>,
             _priority: Option<u8>,
         ) -> anyhow::Result<()> {
             self.published.lock().unwrap().push((
@@ -1364,6 +1402,7 @@ mod tests {
                 message_id.to_string(),
                 traceparent,
                 baggage,
+                namespace,
             ));
             Ok(())
         }
@@ -1518,6 +1557,8 @@ mod tests {
     #[derive(Default)]
     struct TimeoutRecordingInvoker {
         timeout_ms: AtomicU64,
+        invocation_namespace: StdMutex<Option<String>>,
+        availability_namespace: StdMutex<Option<String>>,
     }
 
     #[async_trait]
@@ -1531,9 +1572,20 @@ mod tests {
             _function_id: &str,
             _payload: Value,
             timeout_ms: u64,
+            namespace: &str,
         ) -> Result<Option<Value>, String> {
             self.timeout_ms.store(timeout_ms, Ordering::SeqCst);
+            *self.invocation_namespace.lock().unwrap() = Some(namespace.to_string());
             Ok(None)
+        }
+
+        async fn function_available(
+            &self,
+            _function_id: &str,
+            namespace: &str,
+        ) -> Result<bool, String> {
+            *self.availability_namespace.lock().unwrap() = Some(namespace.to_string());
+            Ok(true)
         }
     }
 
@@ -1556,6 +1608,7 @@ mod tests {
             message_id: Some(format!("receipt-{delivery_id}")),
             traceparent: None,
             baggage: None,
+            namespace: None,
         }
     }
 
@@ -1622,6 +1675,7 @@ mod tests {
             "function_id": "harness::turn",
             "data": {"session_id": "s1"},
             "messageReceiptId": "receipt-1",
+            "namespace": "my-harness-ns",
             "traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
             "baggage": "iii.session.id=s1",
             "_caller_worker_id": "engine-worker"
@@ -1630,6 +1684,7 @@ mod tests {
         assert_eq!(enqueue._caller_worker_id.as_deref(), Some("engine-worker"));
         assert!(enqueue.traceparent.is_some());
         assert_eq!(enqueue.baggage.as_deref(), Some("iii.session.id=s1"));
+        assert_eq!(enqueue.namespace.as_deref(), Some("my-harness-ns"));
 
         assert!(serde_json::from_value::<DefineQueueInput>(json!({
             "queue": "harness-turn",
@@ -1660,6 +1715,7 @@ mod tests {
                 function_id: "harness::turn".to_string(),
                 data: json!({"session_id": "s1"}),
                 message_receipt_id: "receipt-1".to_string(),
+                namespace: Some("my-harness-ns".to_string()),
                 traceparent: Some(
                     "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01".to_string(),
                 ),
@@ -1680,6 +1736,7 @@ mod tests {
             published[0].5.as_deref(),
             Some("iii.session.id=s1,iii.function.id=harness%3A%3Aturn")
         );
+        assert_eq!(published[0].6.as_deref(), Some("my-harness-ns"));
     }
 
     #[test]
@@ -1754,7 +1811,46 @@ mod tests {
             invoker.timeout_ms.load(Ordering::SeqCst),
             expected_timeout_ms
         );
+        assert_eq!(
+            invoker.availability_namespace.lock().unwrap().as_deref(),
+            Some(DEFAULT_NAMESPACE)
+        );
+        assert_eq!(
+            invoker.invocation_namespace.lock().unwrap().as_deref(),
+            Some(DEFAULT_NAMESPACE)
+        );
         assert_eq!(*adapter.acked.lock().unwrap(), vec![7]);
+    }
+
+    #[tokio::test]
+    async fn function_queue_invocation_uses_message_namespace() {
+        let adapter = Arc::new(RecordingAdapter::default());
+        let invoker = Arc::new(TimeoutRecordingInvoker::default());
+        let config = FunctionQueueConfig::default();
+        let (sender, receiver) = mpsc::channel(1);
+        let consumer = tokio::spawn(run_concurrent(
+            "turns".to_string(),
+            config,
+            adapter.clone(),
+            invoker.clone(),
+            receiver,
+        ));
+
+        let mut message = message(8, "s1", 1, 0);
+        message.namespace = Some("my-harness-ns".to_string());
+        sender.send(message).await.unwrap();
+        drop(sender);
+        consumer.await.unwrap();
+
+        assert_eq!(
+            invoker.availability_namespace.lock().unwrap().as_deref(),
+            Some("my-harness-ns")
+        );
+        assert_eq!(
+            invoker.invocation_namespace.lock().unwrap().as_deref(),
+            Some("my-harness-ns")
+        );
+        assert_eq!(*adapter.acked.lock().unwrap(), vec![8]);
     }
 
     #[tokio::test]

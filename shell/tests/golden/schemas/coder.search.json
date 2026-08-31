@@ -1,5 +1,5 @@
 {
-  "description": "Search file contents and/or paths. Supports literal or regex queries with include/exclude globs; non-accessible files are excluded from both content and path results. Only the FIRST match on each line is reported (one content match per matching line). Optional context_lines_before/context_lines_after (max 10) attach surrounding lines to each content match so many edits can go straight to coder::update-file with no read in between. Noise paths matching default_exclude_globs (.git, node_modules, target, … — coder::info lists them) are skipped by default; pass use_default_excludes: false to search inside them. Files larger than max_read_bytes are silently skipped during content scanning. Results are capped by max_matches AND a response byte budget (search_response_budget_bytes); when truncated is true, refine the query or add include_globs rather than paginate. Paths are relative to the primary allowed root or absolute inside any allowed root (coder::info lists them); for host paths outside the jail use shell::fs::*.",
+  "description": "Search file contents and/or paths. Path search matches files AND directories (each path_match carries kind: file|dir); content search reads files only. Supports literal or regex queries with include/exclude globs; non-accessible files are excluded from both content and path results. Only the FIRST match on each line is reported (one content match per matching line). Optional context_lines_before/context_lines_after (max 10) attach surrounding lines to each content match so many edits can go straight to coder::update-file with no read in between. Noise paths matching default_exclude_globs (.git, node_modules, target, … — coder::info lists them) are skipped by default; pass use_default_excludes: false to search inside them. Files larger than max_read_bytes are silently skipped during content scanning. Results are capped by max_matches AND a response byte budget (search_response_budget_bytes); when truncated is true, refine the query or add include_globs rather than paginate. Paths are relative to the primary allowed root or absolute inside any allowed root (coder::info lists them); for host paths outside the jail use shell::fs::*.",
   "function_id": "coder::search",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -51,7 +51,7 @@
       },
       "include_globs": {
         "default": [],
-        "description": "Glob patterns (matched against the path relative to its containing root) that paths must match to be considered. Empty = include everything.",
+        "description": "Glob patterns (matched against the path relative to its containing root — or, for a walk root outside every configured root, relative to the session directory `coder::info` reports as `session_root`) that paths must match to be considered. Empty = include everything.",
         "items": {
           "type": "string"
         },
@@ -166,15 +166,31 @@
       },
       "PathMatch": {
         "properties": {
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/PathMatchKind"
+              }
+            ],
+            "description": "What matched: `file` or `dir`. Directories match by NAME only — content search never reads them."
+          },
           "path": {
             "description": "Absolute path under the canonical parent; symlinks at the entry itself are not resolved. Operations on it re-validate through the jail.",
             "type": "string"
           }
         },
         "required": [
+          "kind",
           "path"
         ],
         "type": "object"
+      },
+      "PathMatchKind": {
+        "enum": [
+          "file",
+          "dir"
+        ],
+        "type": "string"
       }
     },
     "properties": {

@@ -1,8 +1,24 @@
-//! Token estimation. v1 ships the chars/4 heuristic (the harness prior
-//! art) behind a trait so a real tokenizer can slot in per model later;
-//! responses report which estimator ran.
+//! Token estimation. v1 ships the serialized non-image chars/4 heuristic plus
+//! a fixed image allowance behind a trait so a real tokenizer can slot in per
+//! model later; responses report which estimator ran.
 
-use crate::types::{AgentFunction, AgentMessage, Role};
+use crate::types::{AgentFunction, AgentMessage, ContentBlock, Role};
+
+pub(crate) const IMAGE_TOKEN_BUDGET: u64 = 4_096;
+
+fn clear_image_payloads(blocks: &mut [ContentBlock]) -> u64 {
+    blocks.iter_mut().fold(0u64, |count, block| {
+        let found = match block {
+            ContentBlock::Image { data, .. } => {
+                data.clear();
+                1
+            }
+            ContentBlock::FunctionResult { content, .. } => clear_image_payloads(content),
+            _ => 0,
+        };
+        count.saturating_add(found)
+    })
+}
 
 /// Which estimator produced a count — `count-tokens` echoes this.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -11,20 +27,11 @@ pub enum EstimatorKind {
     Heuristic,
 }
 
-impl EstimatorKind {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            EstimatorKind::Tokenizer => "tokenizer",
-            EstimatorKind::Heuristic => "heuristic",
-        }
-    }
-}
-
 pub trait Estimator: Send + Sync {
     fn kind(&self) -> EstimatorKind;
 
-    /// Tokens of one message (full serialized form, so structure and
-    /// metadata weigh in, matching what actually crosses the wire).
+    /// Tokens of one message (serialized non-image form plus the fixed
+    /// per-image allowance; structure and metadata still weigh in).
     fn message(&self, message: &AgentMessage) -> u64;
 
     /// Tokens of a bare string (system prompts, summaries).
@@ -34,7 +41,8 @@ pub trait Estimator: Send + Sync {
     fn function(&self, function: &AgentFunction) -> u64;
 }
 
-/// `serialized JSON chars / 4` — deterministic and model-independent.
+/// `serialized non-image JSON chars / 4` plus 4,096 tokens per image —
+/// deterministic and model-independent.
 pub struct HeuristicEstimator;
 
 impl Estimator for HeuristicEstimator {
@@ -43,28 +51,23 @@ impl Estimator for HeuristicEstimator {
     }
 
     fn message(&self, message: &AgentMessage) -> u64 {
-        // Provider wire adapters send a function result's rendered `content`
-        // only — `details` never crosses the wire except inside the denied
-        // envelope (see provider-*/src/wire `format_function_result_content`).
-        // A fat details payload (file reads duplicate the whole file there)
-        // must not consume budget, or the effective window halves.
-        let chars = match message {
-            AgentMessage::FunctionResult { details, .. }
-                if !details.is_null()
-                    && details.get("status").and_then(serde_json::Value::as_str)
-                        != Some("denied") =>
+        let mut wire_view = message.clone();
+        if let AgentMessage::FunctionResult { details, .. } = &mut wire_view {
+            if !details.is_null()
+                && details.get("status").and_then(serde_json::Value::as_str) != Some("denied")
             {
-                let mut wire_view = message.clone();
-                if let AgentMessage::FunctionResult { details, .. } = &mut wire_view {
-                    *details = serde_json::Value::Null;
-                }
-                serde_json::to_string(&wire_view)
-                    .map(|s| s.len())
-                    .unwrap_or(0)
+                *details = serde_json::Value::Null;
             }
-            _ => serde_json::to_string(message).map(|s| s.len()).unwrap_or(0),
-        };
-        (chars / 4) as u64
+        }
+
+        let image_count = clear_image_payloads(wire_view.content_mut());
+        let chars = serde_json::to_string(&wire_view)
+            .map(|serialized| serialized.len())
+            .unwrap_or(0);
+
+        // ponytail: fixed media allowance; use model-aware accounting only if measured
+        // provider usage exceeds the existing reserved-token cushion.
+        ((chars / 4) as u64).saturating_add(image_count.saturating_mul(IMAGE_TOKEN_BUDGET))
     }
 
     fn text(&self, text: &str) -> u64 {
@@ -109,6 +112,21 @@ pub fn estimate_by_role(est: &dyn Estimator, messages: &[AgentMessage]) -> ByRol
             Role::Assistant => by_role.assistant += tokens,
             Role::FunctionResult => by_role.function_result += tokens,
             Role::Custom => by_role.custom += tokens,
+        }
+    }
+    by_role
+}
+
+/// Per-role breakdown from already-computed message sizes (`assemble`'s
+/// memoized `sizes`), so callers with a size memo don't re-estimate.
+pub fn by_role_from_sizes(messages: &[AgentMessage], sizes: &[u64]) -> ByRole {
+    let mut by_role = ByRole::default();
+    for (message, size) in messages.iter().zip(sizes) {
+        match message.role() {
+            Role::User => by_role.user += size,
+            Role::Assistant => by_role.assistant += size,
+            Role::FunctionResult => by_role.function_result += size,
+            Role::Custom => by_role.custom += size,
         }
     }
     by_role
@@ -162,6 +180,52 @@ mod tests {
     }
 
     #[test]
+    fn images_use_a_fixed_budget_without_base64() {
+        let small = msg(json!({
+            "role": "user",
+            "content": [{ "type": "image", "mime": "image/png", "data": "AAAA" }],
+            "timestamp": 1
+        }));
+        let incident = msg(json!({
+            "role": "user",
+            "content": [{
+                "type": "image", "mime": "image/png", "data": "A".repeat(729_420)
+            }],
+            "timestamp": 1
+        }));
+        assert_eq!(
+            HeuristicEstimator.message(&small),
+            HeuristicEstimator.message(&incident)
+        );
+
+        let two_images = msg(json!({
+            "role": "user",
+            "content": [
+                { "type": "image", "mime": "image/png", "data": "AAAA" },
+                { "type": "function_result", "function_call_id": "c1", "content": [
+                    { "type": "image", "mime": "image/jpeg", "data": "BBBB" }
+                ] }
+            ],
+            "timestamp": 1
+        }));
+        let cleared = msg(json!({
+            "role": "user",
+            "content": [
+                { "type": "image", "mime": "image/png", "data": "" },
+                { "type": "function_result", "function_call_id": "c1", "content": [
+                    { "type": "image", "mime": "image/jpeg", "data": "" }
+                ] }
+            ],
+            "timestamp": 1
+        }));
+        let structural = (serde_json::to_string(&cleared).unwrap().len() / 4) as u64;
+        assert_eq!(
+            HeuristicEstimator.message(&two_images),
+            structural + 2 * 4_096
+        );
+    }
+
+    #[test]
     fn denied_details_envelope_is_counted() {
         // The denied envelope IS serialized into the wire body
         // ([PERMISSION_DENIED] + JSON), so it keeps weighing in.
@@ -202,6 +266,33 @@ mod tests {
         assert_eq!(
             by_role.user + by_role.assistant + by_role.function_result + by_role.custom,
             estimate_messages(&est, &messages)
+        );
+    }
+
+    #[test]
+    fn by_role_from_sizes_partitions_every_role() {
+        let messages = vec![
+            msg(
+                json!({ "role": "user", "content": [{ "type": "text", "text": "q" }], "timestamp": 1 }),
+            ),
+            msg(
+                json!({ "role": "assistant", "content": [], "stop_reason": "end",
+                        "model": "m", "provider": "p", "timestamp": 2 }),
+            ),
+            msg(
+                json!({ "role": "function_result", "function_call_id": "c", "function_id": "f",
+                        "content": [], "timestamp": 3 }),
+            ),
+            msg(json!({ "role": "custom", "custom_type": "t", "content": [], "timestamp": 4 })),
+        ];
+        let est = HeuristicEstimator;
+        let sizes: Vec<u64> = messages.iter().map(|m| est.message(m)).collect();
+        let by_role = by_role_from_sizes(&messages, &sizes);
+        assert!(by_role.user > 0 && by_role.assistant > 0);
+        assert!(by_role.function_result > 0 && by_role.custom > 0);
+        assert_eq!(
+            by_role.user + by_role.assistant + by_role.function_result + by_role.custom,
+            sizes.iter().sum::<u64>()
         );
     }
 }

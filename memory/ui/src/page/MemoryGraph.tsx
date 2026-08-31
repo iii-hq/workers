@@ -335,23 +335,23 @@ export function MemoryGraph({
   }
 
   return (
-    <div className="mem-graph">
-      <div className="mem-row wrap">
+    <div className="mem-ui-graph">
+      <div className="mem-ui-row wrap">
         <Input
           value={filter}
           onChange={setFilter}
           placeholder="focus entities..."
           aria-label="filter entities"
-          className="mem-graph-filter"
+          className="mem-ui-graph-filter"
         />
-        <span className="mem-hint">
+        <span className="mem-ui-hint">
           {layout.hubs.length} entities
           {layout.hiddenHubs > 0 &&
             ` (top ${MAX_HUBS} shown, ${layout.hiddenHubs} more — search to focus)`}
           {totalFacts > live.length &&
             ` · mapping newest ${live.length} of ${totalFacts} memories`}
         </span>
-        <span className="mem-spacer" />
+        <span className="mem-ui-spacer" />
         <Button variant="ghost" size="sm" onClick={() => setView(null)}>
           fit
         </Button>
@@ -376,11 +376,11 @@ export function MemoryGraph({
         ) : null}
       </div>
 
-      <div className="mem-graph-canvas">
+      <div className="mem-ui-graph-canvas">
         <svg
           ref={svgRef}
           viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`}
-          className="mem-graph-svg"
+          className="mem-ui-graph-svg"
           role="img"
           aria-label="memory graph: entity hubs and memory nodes"
           onWheel={(e) => {
@@ -479,7 +479,7 @@ export function MemoryGraph({
               role="button"
               tabIndex={0}
               aria-label={`entity ${hub.entity}: ${hub.count} memories`}
-              className="mem-node"
+              className="mem-ui-node"
               onPointerDown={(e) => startNodeDrag(e, `h:${hub.entity}`)}
               onClick={() => {
                 if (wasDrag() || autoExpand) return
@@ -573,7 +573,7 @@ export function MemoryGraph({
               role="button"
               tabIndex={0}
               aria-label={`memory: ${memory.text.slice(0, 60)}`}
-              className="mem-node"
+              className="mem-ui-node"
               onPointerDown={(e) => startNodeDrag(e, `f:${memory.id}:${hub}`)}
               onClick={(e) => {
                 e.stopPropagation()
@@ -630,7 +630,7 @@ export function MemoryGraph({
               role="button"
               tabIndex={0}
               aria-label={`${m.hidden} more memories for ${m.hub} — open the memories tab`}
-              className="mem-more"
+              className="mem-ui-more"
               onClick={onShowFacts}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' || e.key === ' ') {
@@ -659,57 +659,57 @@ export function MemoryGraph({
           ))}
         </svg>
 
-        <div className="mem-legend">
-          <span className="mem-legend-item">
-            <span className="mem-swatch entity" /> entity (click to expand)
+        <div className="mem-ui-legend">
+          <span className="mem-ui-legend-item">
+            <span className="mem-ui-swatch entity" /> entity (click to expand)
           </span>
-          <span className="mem-legend-item">
-            <span className="mem-swatch memory" /> memory
+          <span className="mem-ui-legend-item">
+            <span className="mem-ui-swatch memory" /> memory
           </span>
-          <span className="mem-legend-item">
-            <span className="mem-swatch pinned" /> pinned
+          <span className="mem-ui-legend-item">
+            <span className="mem-ui-swatch pinned" /> pinned
           </span>
-          <span>wheel: zoom · drag: pan</span>
+          <span>Wheel: zoom · Drag: pan</span>
         </div>
 
         {selected ? (
-          <div className="mem-card">
-            <div className="mem-card-head">
-              <p className="mem-card-text">{selected.text}</p>
+          <div className="mem-ui-card">
+            <div className="mem-ui-card-head">
+              <p className="mem-ui-card-text">{selected.text}</p>
               <Button
                 variant="icon"
                 size="icon"
                 onClick={() => setSelectedId(null)}
                 aria-label="close memory card"
               >
-                <X size={14} aria-hidden />
+                <X size={16} aria-hidden />
               </Button>
             </div>
-            <div className="mem-row wrap">
+            <div className="mem-ui-row wrap">
               {selected.entities.map((entity) => (
                 <Badge key={entity}>{entity}</Badge>
               ))}
-              <span className="mem-subhint">
+              <span className="mem-ui-subhint">
                 {selected.confidence}
                 {selected.corroboration > 0 &&
                   ` · seen ×${selected.corroboration + 1}`}
               </span>
             </div>
-            <div className="mem-row">
+            <div className="mem-ui-row">
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={() => onPin(selected)}
                 disabled={busy}
-                className="mem-gap1"
+                className="mem-ui-gap1"
               >
                 {selected.pinned ? (
                   <>
-                    <PinOff size={12} aria-hidden /> unpin
+                    <PinOff size={16} aria-hidden /> unpin
                   </>
                 ) : (
                   <>
-                    <Pin size={12} aria-hidden /> pin
+                    <Pin size={16} aria-hidden /> pin
                   </>
                 )}
               </Button>
@@ -721,9 +721,9 @@ export function MemoryGraph({
                   setSelectedId(null)
                 }}
                 disabled={busy}
-                className="mem-gap1"
+                className="mem-ui-gap1"
               >
-                <Trash2 size={12} aria-hidden /> delete
+                <Trash2 size={16} aria-hidden /> delete
               </Button>
             </div>
           </div>

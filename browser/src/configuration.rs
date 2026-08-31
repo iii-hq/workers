@@ -13,14 +13,32 @@ use serde_json::{json, Value};
 
 use crate::config::{SharedConfig, WorkerConfig};
 
-pub const CONFIG_ID: &str = "browser";
+pub const DEFAULT_CONFIG_ID: &str = "browser";
+
+/// The configuration entry this worker owns.
+///
+/// `III_CONFIG_NAME` when a supervisor set it, else the built-in name. A worker
+/// that hardcodes its id turns that id into a global scarce name: two instances
+/// share one entry and take turns overwriting it, and each write wakes both.
+/// Being told which entry is its own is what lets them differ.
+pub fn config_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::var("III_CONFIG_NAME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| DEFAULT_CONFIG_ID.to_string())
+    })
+    .as_str()
+}
 const CONFIG_FN_ID: &str = "browser::on-config-change";
 const CONFIG_TIMEOUT_MS: u64 = 5_000;
 const CONFIG_RETRIES: u32 = 3;
 
 pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Result<(), String> {
     let mut payload = json!({
-        "id": CONFIG_ID,
+        "id": config_id(),
         "name": "browser",
         "description": "Session limits, buffers, timeouts, viewport, and executable for the browser worker.",
         "schema": WorkerConfig::json_schema(),
@@ -30,7 +48,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
     } else if should_seed_default(iii).await? {
         payload["initial_value"] = WorkerConfig::default().to_json();
     }
-    trigger_with_retry(iii, "configuration::register", payload).await?;
+    trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
     Ok(())
 }
 
@@ -53,7 +71,9 @@ async fn should_seed_default(iii: &IIIClient) -> Result<bool, String> {
 }
 
 async fn try_get_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_with_retry(iii, "configuration::get", json!({ "id": CONFIG_ID })).await {
+    match trigger_configuration_with_retry(iii, "configuration::get", json!({ "id": config_id() }))
+        .await
+    {
         Ok(resp) => Ok(resp.get("value").cloned()),
         Err(e) if e.contains("NOT_FOUND") => Ok(None),
         Err(e) => Err(e),
@@ -68,7 +88,11 @@ struct OnConfigChangeResponse {
     ok: bool,
 }
 
-pub fn register_config_trigger(iii: &IIIClient, config: SharedConfig) -> Result<(), Error> {
+pub fn register_config_trigger(
+    iii: &IIIClient,
+    config: SharedConfig,
+    guidance: crate::scrapling::GuidanceState,
+) -> Result<(), Error> {
     let cfg = config.clone();
     let engine = iii.clone();
     iii.register_function(
@@ -76,8 +100,9 @@ pub fn register_config_trigger(iii: &IIIClient, config: SharedConfig) -> Result<
         RegisterFunction::new_async(move |_req: OnConfigChangeRequest| {
             let cfg = cfg.clone();
             let engine = engine.clone();
+            let guidance = guidance.clone();
             async move {
-                on_config_change(&engine, &cfg).await;
+                on_config_change(&engine, &cfg, &guidance).await;
                 Ok::<OnConfigChangeResponse, Error>(OnConfigChangeResponse { ok: true })
             }
         })
@@ -87,26 +112,34 @@ pub fn register_config_trigger(iii: &IIIClient, config: SharedConfig) -> Result<
         .metadata(json!({ "internal": true })),
     );
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "configuration".to_string(),
-        function_id: CONFIG_FN_ID.to_string(),
-        config: json!({ "configuration_id": CONFIG_ID, "event_types": ["configuration:updated"] }),
-        metadata: None,
-    })?;
+    iii.register_trigger(RegisterTriggerInput::new(
+        "configuration".to_string(),
+        CONFIG_FN_ID.to_string(),
+        json!({ "configuration_id": config_id(), "event_types": ["configuration:updated"] }),
+    ))?;
     Ok(())
 }
 
-async fn on_config_change(iii: &IIIClient, config: &SharedConfig) {
+async fn on_config_change(
+    iii: &IIIClient,
+    config: &SharedConfig,
+    guidance: &crate::scrapling::GuidanceState,
+) {
     match fetch_config(iii).await {
         Ok(cfg) => {
+            crate::scrapling::adaptive::configure_quota(cfg.scrapling.adaptive_quota());
+            let inject_guidance = cfg.scrapling.inject_guidance;
             config.store(std::sync::Arc::new(cfg));
+            // Hot-apply: flipping browser.scrapling.inject_guidance in the
+            // console binds/unbinds the pre-generate guidance hook live.
+            crate::scrapling::apply_guidance(iii, guidance, inject_guidance);
             tracing::info!("browser configuration reloaded");
         }
         Err(e) => tracing::error!(error = %e, "config-change: keeping previous config"),
     }
 }
 
-async fn trigger_with_retry(
+async fn trigger_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -114,12 +147,15 @@ async fn trigger_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload: payload.clone(),
-                action: None,
-                timeout_ms: Some(CONFIG_TIMEOUT_MS),
-            })
+            .trigger(
+                TriggerRequest {
+                    function_id: function_id.to_string(),
+                    payload: payload.clone(),
+                    action: None,
+                    timeout_ms: Some(CONFIG_TIMEOUT_MS),
+                }
+                .namespace("default"),
+            )
             .await
         {
             Ok(v) => return Ok(v),

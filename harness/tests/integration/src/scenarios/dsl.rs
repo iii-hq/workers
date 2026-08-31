@@ -7,9 +7,10 @@
 use serde_json::{json, Value};
 
 use super::{ScenarioDriver, VerifyFn};
+use crate::expand::ALLOWED_FUNCTIONS_MARKER;
 use crate::fixtures::{ScenarioFixture, ScenarioIntervention};
 use crate::types::frames::{
-    AssistantMessage, AssistantMessageEvent, AssistantRoleTag, ContentBlock, ErrorShape,
+    AssistantMessage, AssistantMessageEvent, AssistantRoleTag, ContentBlock, ErrorKind, ErrorShape,
     RouterChatResponse, StopReason, Usage,
 };
 use crate::types::probe::ControlledTargetV1;
@@ -64,6 +65,8 @@ pub(super) struct Scenario {
     await_target_calls: Option<usize>,
     traces_override: Option<usize>,
     intervention: Option<ScenarioIntervention>,
+    agent_files: Vec<(String, String)>,
+    match_any: bool,
 }
 
 impl Scenario {
@@ -93,6 +96,8 @@ impl Scenario {
             await_target_calls: None,
             traces_override: None,
             intervention: None,
+            agent_files: Vec::new(),
+            match_any: false,
         }
     }
 
@@ -239,10 +244,8 @@ impl Scenario {
         self
     }
 
-    /// Declare each terminal turn's status, in completion order, when not
-    /// every turn completes (e.g. a failed turn whose finalize drain reseeds a
-    /// completing follow-on turn). The last turn must complete: the floor's
-    /// durable-status check has no meaning for a run that ends failed.
+    /// Declare each terminal turn's status, in completion order, including a
+    /// run whose final durable outcome is failed or cancelled.
     pub(super) fn terminal_turn_statuses<'a>(
         mut self,
         statuses: impl IntoIterator<Item = &'a str>,
@@ -280,6 +283,22 @@ impl Scenario {
         self
     }
 
+    /// Dispatch generations by expectation match instead of strict ordinal.
+    /// For scenarios whose concurrent turns race (a spawned child's opening
+    /// step vs the parent's next step) — every generation must then be
+    /// uniquely matchable (distinct step/prompt/messages).
+    pub(super) fn match_any_dispatch(mut self) -> Self {
+        self.match_any = true;
+        self
+    }
+
+    /// Write an agent profile under the run's agents dir before stack boot.
+    pub(super) fn agent_file(mut self, path: &str, content: &str) -> Self {
+        self.agent_files
+            .push((path.to_string(), content.to_string()));
+        self
+    }
+
     pub(super) fn build(self) -> ScenarioFixture {
         let send = self.send.expect("scenario send is required");
         let allowed_functions = send.allowed_functions.clone();
@@ -312,7 +331,7 @@ impl Scenario {
                 schema_version: SchemaVersion1::V1,
                 scenario_id: self.id,
                 model: self.model,
-                dispatch: if self.intervention.is_some() {
+                dispatch: if self.intervention.is_some() || self.match_any {
                     RouterDispatchV1::MatchAny
                 } else {
                     RouterDispatchV1::Ordinal
@@ -326,6 +345,7 @@ impl Scenario {
             await_target_calls: self.await_target_calls,
             traces_override: self.traces_override,
             intervention: self.intervention,
+            agent_files: self.agent_files,
         }
     }
 }
@@ -334,6 +354,8 @@ pub(super) struct Send {
     message: String,
     idempotency_key: Option<String>,
     allowed_functions: Vec<String>,
+    omit_functions: bool,
+    agent: Option<String>,
     expose: CompiledFunctionExposureV1,
 }
 
@@ -343,6 +365,8 @@ impl Send {
             message: message.to_string(),
             idempotency_key: None,
             allowed_functions: Vec::new(),
+            omit_functions: false,
+            agent: None,
             expose: CompiledFunctionExposureV1::Native,
         }
     }
@@ -352,7 +376,28 @@ impl Send {
         self
     }
 
+    /// Documentation-only: the send still carries an explicit empty policy
+    /// (deny-all), which also keeps the sha-matched system prompt identical
+    /// to every other policy-less scenario. To leave the field off the wire
+    /// entirely, use [`Send::omit_functions`].
     pub(super) fn without_functions(self) -> Self {
+        self
+    }
+
+    /// Omit `options.functions` from the wire request entirely, exercising
+    /// the harness's own defaulting (deny-all; the configured baseline on an
+    /// agent send) instead of an explicit empty policy. The rendered system
+    /// prompt differs from the empty-policy template — match prompts by
+    /// regex in scenarios using this.
+    pub(super) fn omit_functions(mut self) -> Self {
+        self.omit_functions = true;
+        self
+    }
+
+    /// Run the session as a directory agent profile (`options.agent`),
+    /// resolved server-side from the run's `skills/agents/*.md` fixtures.
+    pub(super) fn agent(mut self, id: &str) -> Self {
+        self.agent = Some(id.to_string());
         self
     }
 
@@ -395,11 +440,12 @@ impl Send {
                 .idempotency_key
                 .unwrap_or_else(|| format!("{{{{run_id}}}}:{}", scenario_id.to_ascii_lowercase())),
             options: CompiledSendOptionsV1 {
-                functions: CompiledFunctionPolicyV1 {
+                functions: (!self.omit_functions).then_some(CompiledFunctionPolicyV1 {
                     allow: self.allowed_functions,
                     deny: Vec::new(),
                     expose: self.expose,
-                },
+                }),
+                agent: self.agent,
             },
         }
     }
@@ -460,7 +506,7 @@ impl ControlledFunction {
 
 pub(super) struct Request {
     turn_request: bool,
-    turn_step: Option<u64>,
+    turn_steps: Option<Vec<u64>>,
     system_prompt: Option<JsonMatcherV1>,
     messages: Option<JsonMatcherV1>,
     tools: Option<JsonMatcherV1>,
@@ -470,7 +516,7 @@ impl Request {
     pub(super) fn new() -> Self {
         Self {
             turn_request: false,
-            turn_step: None,
+            turn_steps: None,
             system_prompt: None,
             messages: None,
             tools: None,
@@ -482,9 +528,17 @@ impl Request {
         self
     }
 
-    pub(super) fn turn_request_step(mut self, step: u64) -> Self {
+    pub(super) fn turn_request_step(self, step: u64) -> Self {
+        self.turn_request_steps([step])
+    }
+
+    pub(super) fn turn_request_steps(mut self, steps: impl IntoIterator<Item = u64>) -> Self {
+        let mut steps: Vec<_> = steps.into_iter().collect();
+        steps.sort_unstable();
+        steps.dedup();
+        assert!(!steps.is_empty(), "at least one turn step is required");
         self.turn_request = true;
-        self.turn_step = Some(step);
+        self.turn_steps = Some(steps);
         self
     }
 
@@ -589,7 +643,7 @@ impl Request {
                 normalize: None,
             },
             request_id: JsonMatcherV1::Regex {
-                pattern: self.turn_step.map_or_else(
+                pattern: self.turn_steps.map_or_else(
                     || {
                         if ordinal == 1 {
                             "^t_[0-9a-f]{32}:[0-9]+$".to_string()
@@ -597,7 +651,18 @@ impl Request {
                             format!("^t_[0-9a-f]{{32}}:{}$", ordinal - 1)
                         }
                     },
-                    |step| format!("^t_[0-9a-f]{{32}}:{step}$"),
+                    |steps| {
+                        let suffix = steps
+                            .iter()
+                            .map(u64::to_string)
+                            .collect::<Vec<_>>()
+                            .join("|");
+                        if steps.len() == 1 {
+                            format!("^t_[0-9a-f]{{32}}:{suffix}$")
+                        } else {
+                            format!("^t_[0-9a-f]{{32}}:(?:{suffix})$")
+                        }
+                    },
                 ),
             },
             model: exact(json!(model.id)),
@@ -730,6 +795,17 @@ pub(super) struct Response {
     usage: Usage,
 }
 
+/// The call a cut stream leaves behind: what streamed, and what the provider
+/// salvaged from it.
+pub(super) struct TruncatedCall<'a> {
+    pub(super) call_id: &'a str,
+    pub(super) function: &'a ControlledFunction,
+    /// The argument bytes delivered before the cut, as the delta frame.
+    pub(super) argument_delta: &'a str,
+    /// The provider's degraded arguments (`_partial` or `_raw`).
+    pub(super) degraded_arguments: Value,
+}
+
 enum ResponseKind {
     StreamedText {
         text: String,
@@ -743,6 +819,20 @@ enum ResponseKind {
     },
     FunctionCalls {
         calls: Vec<(String, String, Value)>,
+    },
+    TerminalError {
+        text: String,
+        chunks: Vec<String>,
+        message: String,
+        kind: ErrorKind,
+    },
+    TruncatedFunctionCall {
+        text: String,
+        call_id: String,
+        function_id: String,
+        argument_delta: String,
+        degraded_arguments: Value,
+        message: String,
     },
 }
 
@@ -769,6 +859,54 @@ impl Response {
     pub(super) fn text(text: &str, input_tokens: u64, output_tokens: u64) -> Self {
         Self {
             kind: ResponseKind::Text(text.to_string()),
+            usage: usage(input_tokens, output_tokens),
+        }
+    }
+
+    /// Stream a partial text response through keepalive noise, then terminate
+    /// with the router's authoritative error frame and failed RPC response.
+    pub(super) fn terminal_error_after_text<I, S>(
+        text: &str,
+        chunks: I,
+        message: &str,
+        kind: ErrorKind,
+        input_tokens: u64,
+        output_tokens: u64,
+    ) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            kind: ResponseKind::TerminalError {
+                text: text.to_string(),
+                chunks: chunks.into_iter().map(Into::into).collect(),
+                message: message.to_string(),
+                kind,
+            },
+            usage: usage(input_tokens, output_tokens),
+        }
+    }
+
+    /// A body cut mid-arguments: text, an open call, the argument bytes the
+    /// stream delivered, then one transient error whose partial carries the
+    /// call with the provider's degraded arguments.
+    pub(super) fn truncated_function_call(
+        text: &str,
+        cut: TruncatedCall<'_>,
+        message: &str,
+        input_tokens: u64,
+        output_tokens: u64,
+    ) -> Self {
+        Self {
+            kind: ResponseKind::TruncatedFunctionCall {
+                text: text.to_string(),
+                call_id: cut.call_id.to_string(),
+                function_id: cut.function.id().to_string(),
+                argument_delta: cut.argument_delta.to_string(),
+                degraded_arguments: cut.degraded_arguments,
+                message: message.to_string(),
+            },
             usage: usage(input_tokens, output_tokens),
         }
     }
@@ -837,10 +975,12 @@ impl Response {
     ) -> (Vec<AssistantMessageEvent>, RouterChatResponse) {
         let usage = self.usage;
         let timestamp = i64::try_from(ordinal).expect("generation ordinal fits i64");
-        let (frames, stop_reason) = match self.kind {
+        let (frames, stop_reason, ok, error) = match self.kind {
             ResponseKind::StreamedText { text, chunks } => (
                 streamed_text_frames(&text, &chunks, &usage, model, timestamp),
                 StopReason::End,
+                true,
+                None,
             ),
             ResponseKind::Text(text) => (
                 vec![AssistantMessageEvent::Done {
@@ -853,6 +993,8 @@ impl Response {
                     ),
                 }],
                 StopReason::End,
+                true,
+                None,
             ),
             ResponseKind::FunctionCall {
                 call_id,
@@ -873,6 +1015,8 @@ impl Response {
                     ),
                 }],
                 StopReason::FunctionCall,
+                true,
+                None,
             ),
             ResponseKind::FunctionCalls { calls } => (
                 vec![AssistantMessageEvent::Done {
@@ -892,15 +1036,57 @@ impl Response {
                     ),
                 }],
                 StopReason::FunctionCall,
+                true,
+                None,
+            ),
+            ResponseKind::TerminalError {
+                text,
+                chunks,
+                message,
+                kind,
+            } => (
+                streamed_error_frames(&text, &chunks, &message, kind, &usage, model, timestamp),
+                StopReason::Error,
+                false,
+                Some(ErrorShape {
+                    code: error_kind_code(kind).to_string(),
+                    message,
+                }),
+            ),
+            ResponseKind::TruncatedFunctionCall {
+                text,
+                call_id,
+                function_id,
+                argument_delta,
+                degraded_arguments,
+                message,
+            } => (
+                truncated_function_call_frames(
+                    &text,
+                    &call_id,
+                    &function_id,
+                    &argument_delta,
+                    degraded_arguments,
+                    &message,
+                    &usage,
+                    model,
+                    timestamp,
+                ),
+                StopReason::Error,
+                false,
+                Some(ErrorShape {
+                    code: error_kind_code(ErrorKind::Transient).to_string(),
+                    message,
+                }),
             ),
         };
         let response = RouterChatResponse {
-            ok: true,
+            ok,
             provider: model.provider.clone(),
             model: model.id.clone(),
             stop_reason: Some(stop_reason),
             usage: Some(usage),
-            error: None,
+            error,
         };
         (frames, response)
     }
@@ -932,6 +1118,30 @@ impl Message {
                 "function_id": function.id(),
                 "arguments": arguments
             }],
+            "stop_reason": "end",
+            "model": model.id,
+            "provider": model.provider,
+            "usage": usage(input_tokens, output_tokens)
+        })
+    }
+
+    pub(super) fn function_calls<'a>(
+        calls: impl IntoIterator<Item = (&'a str, &'a ControlledFunction, Value)>,
+        model: &ModelFixtureV1,
+        input_tokens: u64,
+        output_tokens: u64,
+    ) -> Value {
+        json!({
+            "role": "assistant",
+            "content": calls
+                .into_iter()
+                .map(|(id, function, arguments)| json!({
+                    "type": "function_call",
+                    "id": id,
+                    "function_id": function.id(),
+                    "arguments": arguments
+                }))
+                .collect::<Vec<_>>(),
             "stop_reason": "end",
             "model": model.id,
             "provider": model.provider,
@@ -1118,6 +1328,172 @@ fn streamed_text_frames(
     frames
 }
 
+fn streamed_error_frames(
+    text: &str,
+    chunks: &[String],
+    message: &str,
+    kind: ErrorKind,
+    usage: &Usage,
+    model: &ModelFixtureV1,
+    timestamp: i64,
+) -> Vec<AssistantMessageEvent> {
+    let mut error = assistant_message(
+        vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
+        StopReason::Error,
+        Some(usage.clone()),
+        model,
+        timestamp,
+    );
+    error.error_message = Some(message.to_string());
+    error.error_kind = Some(kind);
+
+    let mut frames = vec![
+        AssistantMessageEvent::Start {
+            partial: assistant_message(Vec::new(), StopReason::End, None, model, timestamp),
+        },
+        AssistantMessageEvent::TextStart {
+            partial: assistant_message(
+                vec![ContentBlock::Text {
+                    text: String::new(),
+                }],
+                StopReason::End,
+                None,
+                model,
+                timestamp,
+            ),
+        },
+    ];
+    for (index, delta) in chunks.iter().cloned().enumerate() {
+        frames.push(AssistantMessageEvent::TextDelta {
+            partial: None,
+            delta,
+        });
+        if index + 1 < chunks.len() {
+            frames.push(AssistantMessageEvent::Ping);
+        }
+    }
+    frames.extend([
+        AssistantMessageEvent::TextEnd {
+            partial: assistant_message(
+                vec![ContentBlock::Text {
+                    text: text.to_string(),
+                }],
+                StopReason::End,
+                None,
+                model,
+                timestamp,
+            ),
+        },
+        AssistantMessageEvent::Usage {
+            usage: usage.clone(),
+        },
+        AssistantMessageEvent::Stop {
+            stop_reason: StopReason::Error,
+            error_message: Some(message.to_string()),
+            error_kind: Some(kind),
+        },
+        AssistantMessageEvent::Ping,
+        AssistantMessageEvent::Error { error },
+    ]);
+    frames
+}
+
+#[allow(clippy::too_many_arguments)]
+fn truncated_function_call_frames(
+    text: &str,
+    call_id: &str,
+    function_id: &str,
+    argument_delta: &str,
+    degraded_arguments: Value,
+    message: &str,
+    usage: &Usage,
+    model: &ModelFixtureV1,
+    timestamp: i64,
+) -> Vec<AssistantMessageEvent> {
+    let text_block = ContentBlock::Text {
+        text: text.to_string(),
+    };
+    let open_call = ContentBlock::FunctionCall {
+        id: call_id.to_string(),
+        function_id: function_id.to_string(),
+        arguments: json!({}),
+    };
+    let mut error = assistant_message(
+        vec![
+            text_block.clone(),
+            ContentBlock::FunctionCall {
+                id: call_id.to_string(),
+                function_id: function_id.to_string(),
+                arguments: degraded_arguments,
+            },
+        ],
+        StopReason::Error,
+        Some(usage.clone()),
+        model,
+        timestamp,
+    );
+    error.error_message = Some(message.to_string());
+    error.error_kind = Some(ErrorKind::Transient);
+
+    vec![
+        AssistantMessageEvent::Start {
+            partial: assistant_message(Vec::new(), StopReason::End, None, model, timestamp),
+        },
+        AssistantMessageEvent::TextStart {
+            partial: assistant_message(
+                vec![ContentBlock::Text {
+                    text: String::new(),
+                }],
+                StopReason::End,
+                None,
+                model,
+                timestamp,
+            ),
+        },
+        AssistantMessageEvent::TextDelta {
+            partial: None,
+            delta: text.to_string(),
+        },
+        AssistantMessageEvent::TextEnd {
+            partial: assistant_message(
+                vec![text_block.clone()],
+                StopReason::End,
+                None,
+                model,
+                timestamp,
+            ),
+        },
+        AssistantMessageEvent::FunctioncallStart {
+            partial: assistant_message(
+                vec![text_block, open_call],
+                StopReason::End,
+                None,
+                model,
+                timestamp,
+            ),
+        },
+        AssistantMessageEvent::FunctioncallDelta {
+            partial: None,
+            delta: argument_delta.to_string(),
+            id: call_id.to_string(),
+        },
+        AssistantMessageEvent::Ping,
+        AssistantMessageEvent::Error { error },
+    ]
+}
+
+fn error_kind_code(kind: ErrorKind) -> &'static str {
+    match kind {
+        ErrorKind::AuthExpired => "auth_expired",
+        ErrorKind::RateLimited => "rate_limited",
+        ErrorKind::ContextOverflow => "context_overflow",
+        ErrorKind::Transient => "transient",
+        ErrorKind::Permanent => "permanent",
+    }
+}
+
 fn system_prompt(allowed_functions: &[String]) -> String {
     let base = DEFAULT_SYSTEM_PROMPT
         .strip_suffix('\n')
@@ -1132,7 +1508,7 @@ fn system_prompt(allowed_functions: &[String]) -> String {
              else — including discovery (engine::functions::list / ::info) unless listed above — \
              is denied. Do not probe: if the task genuinely needs an unlisted function or an \
              unknown contract, report that blocker and finish.",
-            allowed_functions.join(", ")
+            ALLOWED_FUNCTIONS_MARKER
         )
     };
     format!("{base}\n\nYour session id is {{{{session_id}}}}.\n{policy}")
@@ -1150,6 +1526,50 @@ mod tests {
         assert_eq!(frames.iter().filter(|frame| frame.is_terminal()).count(), 1);
         assert!(frames.last().unwrap().is_terminal());
         assert_eq!(response.stop_reason, Some(StopReason::End));
+    }
+
+    #[test]
+    fn adversarial_terminal_error_keeps_partial_and_has_one_terminal_frame() {
+        let model = Model::scripted("fixture-model");
+        let (frames, response) = Response::terminal_error_after_text(
+            "partial answer",
+            ["partial ", "answer"],
+            "provider disappeared after content",
+            ErrorKind::Permanent,
+            5,
+            2,
+        )
+        .compile(&model, 1);
+
+        assert_eq!(frames.iter().filter(|frame| frame.is_terminal()).count(), 1);
+        assert!(
+            frames
+                .iter()
+                .filter(|frame| matches!(frame, AssistantMessageEvent::Ping))
+                .count()
+                >= 2
+        );
+        let Some(AssistantMessageEvent::Error { error }) = frames.last() else {
+            panic!("terminal frame must be error")
+        };
+        assert_eq!(error.stop_reason, StopReason::Error);
+        assert_eq!(error.error_kind, Some(ErrorKind::Permanent));
+        assert_eq!(
+            error.error_message.as_deref(),
+            Some("provider disappeared after content")
+        );
+        assert_eq!(
+            error.content,
+            vec![ContentBlock::Text {
+                text: "partial answer".to_string()
+            }]
+        );
+        assert!(!response.ok);
+        assert_eq!(response.stop_reason, Some(StopReason::Error));
+        assert_eq!(
+            response.error.as_ref().map(|error| error.code.as_str()),
+            Some("permanent")
+        );
     }
 
     #[test]

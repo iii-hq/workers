@@ -93,8 +93,8 @@ cd "$ROOT_DIR"
 
 # 1. Build the worker (unless --no-build).
 if [[ "$NO_BUILD" -eq 0 ]]; then
-  echo "[run-tests] cargo build --release (rbac-proxy worker)"
-  (cd "$WORKER_SRC" && cargo build --release --bin rbac-proxy)
+  echo "[run-tests] cargo build --locked --release (rbac-proxy worker)"
+  (cd "$WORKER_SRC" && cargo build --locked --release --bin rbac-proxy)
 fi
 if [[ ! -x "$WORKER_BIN_TARGET" ]]; then
   echo "[run-tests] FATAL: worker binary missing at $WORKER_BIN_TARGET — run without --no-build" >&2

@@ -18,7 +18,7 @@ under `/openwiki`.
 ## Install
 
 ```bash
-iii worker add openwiki
+iii trigger compose::add worker=openwiki
 ```
 
 This pulls `state`, `cron`, and `llm-router` transitively. Add a model provider
@@ -30,7 +30,7 @@ For the best tier, agent-orchestrated pages written by one sub-agent per page
 with line citations, add the harness stack as well:
 
 ```bash
-iii worker add harness
+iii trigger compose::add worker=harness
 ```
 
 `harness` transitively pulls `session-manager`, `context-manager`, `shell`
@@ -80,7 +80,7 @@ openwiki also registers `openwiki::read-wiki-structure`,
 MCP client:
 
 ```bash
-iii worker add mcp
+iii trigger compose::add worker=mcp
 ```
 
 ## How generation works

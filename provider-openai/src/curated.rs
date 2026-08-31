@@ -34,12 +34,28 @@ pub fn is_legacy_generation(model_id: &str) -> bool {
 /// Hand-maintained metadata for the families we know (USD per MTok; verify
 /// against openai.com/pricing before release). A missing row only degrades
 /// display polish and cost enrichment, never routing.
-fn family_meta(base: &str) -> Option<(&'static str, u64, u64, bool, Pricing)> {
+fn family_meta(base: &str) -> Option<(&'static str, u64, u64, bool, Option<Pricing>)> {
     match base {
-        "gpt-5.2" => Some(("GPT-5.2", 400_000, 128_000, true, price(1.75, 14.0))),
-        "gpt-5.1" => Some(("GPT-5.1", 400_000, 128_000, false, price(1.25, 10.0))),
-        "gpt-5-mini" => Some(("GPT-5 Mini", 400_000, 128_000, false, price(0.25, 2.0))),
-        "gpt-5-nano" => Some(("GPT-5 Nano", 400_000, 128_000, false, price(0.05, 0.40))),
+        "gpt-5.2" => Some(("GPT-5.2", 400_000, 128_000, true, Some(price(1.75, 14.0)))),
+        "gpt-5.1" => Some(("GPT-5.1", 400_000, 128_000, false, Some(price(1.25, 10.0)))),
+        "gpt-5-mini" => Some((
+            "GPT-5 Mini",
+            400_000,
+            128_000,
+            false,
+            Some(price(0.25, 2.0)),
+        )),
+        "gpt-5-nano" => Some((
+            "GPT-5 Nano",
+            400_000,
+            128_000,
+            false,
+            Some(price(0.05, 0.40)),
+        )),
+        // GPT-5.6 changes rates above 272K input; flat pricing would misstate cost.
+        "gpt-5.6" | "gpt-5.6-sol" => Some(("GPT-5.6 Sol", 1_050_000, 128_000, true, None)),
+        "gpt-5.6-terra" => Some(("GPT-5.6 Terra", 1_050_000, 128_000, true, None)),
+        "gpt-5.6-luna" => Some(("GPT-5.6 Luna", 1_050_000, 128_000, true, None)),
         _ => None,
     }
 }
@@ -67,7 +83,7 @@ pub fn enrich(id: &str) -> Model {
             supports_cache: Some(true),
             supports_structured_output: Some(true), // native json_schema mode
             thinking_budgets: None,                 // effort enum, not token budgets
-            pricing: Some(pricing),
+            pricing,
         },
         None => Model {
             id: id.into(),
@@ -150,6 +166,19 @@ mod tests {
         assert_eq!(m.supports_structured_output, Some(true));
         assert_eq!(m.pricing.as_ref().unwrap().input, Some(1.25));
         assert!(m.pricing.as_ref().unwrap().cache_write.is_none());
+    }
+
+    #[test]
+    fn enrich_applies_gpt_5_6_metadata_without_flat_pricing() {
+        for id in ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
+            let model = enrich(id);
+            assert_eq!(model.context_window, 1_050_000);
+            assert_eq!(model.max_output_tokens, 128_000);
+            assert!(
+                model.pricing.is_none(),
+                "the >272K pricing tier cannot be represented by flat rates"
+            );
+        }
     }
 
     #[test]

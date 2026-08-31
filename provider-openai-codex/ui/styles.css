@@ -1,0 +1,90 @@
+[data-iii-ui='provider-openai-codex'] .codex-provider-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  font-family: var(--font-sans, sans-serif);
+}
+
+[data-iii-ui='provider-openai-codex'] .codex-provider-card {
+  padding: 14px;
+  color: var(--color-ink);
+  background: var(--color-surface, var(--color-panel));
+  border: 1px solid var(--color-edge, var(--color-rule));
+  border-radius: 8px;
+}
+
+[data-iii-ui='provider-openai-codex'] .codex-provider-card h3 {
+  margin: 10px 0 4px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+[data-iii-ui='provider-openai-codex'] .codex-provider-card p,
+[data-iii-ui='provider-openai-codex'] .codex-provider-card li,
+[data-iii-ui='provider-openai-codex'] .codex-provider-action span {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='provider-openai-codex'] .codex-provider-card p {
+  margin: 0;
+}
+
+[data-iii-ui='provider-openai-codex'] .codex-provider-card ol {
+  margin: 12px 0;
+  padding-left: 22px;
+}
+
+[data-iii-ui='provider-openai-codex'] .codex-provider-card code {
+  padding: 2px 5px;
+  font-family: var(--font-code, monospace);
+  color: var(--color-ink);
+  background: var(--color-panel-raised, var(--color-bg));
+  border: 1px solid var(--color-edge, var(--color-rule));
+  border-radius: 2px;
+}
+
+[data-iii-ui='provider-openai-codex'] .codex-provider-status,
+[data-iii-ui='provider-openai-codex'] .codex-provider-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+[data-iii-ui='provider-openai-codex'] .codex-provider-status {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-ink-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+[data-iii-ui='provider-openai-codex'] .codex-provider-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  background: var(--color-ink-ghost);
+  border-radius: 999px;
+}
+
+[data-iii-ui='provider-openai-codex'] .codex-provider-dot[data-active='true'] {
+  background: var(--color-ok);
+}
+
+[data-iii-ui='provider-openai-codex'] .codex-provider-action {
+  flex-wrap: wrap;
+  justify-content: space-between;
+}
+
+@media (min-width: 640px) {
+  [data-iii-ui='provider-openai-codex'] .codex-provider-card h3 {
+    font-size: 14px;
+  }
+
+  [data-iii-ui='provider-openai-codex'] .codex-provider-card p,
+  [data-iii-ui='provider-openai-codex'] .codex-provider-card li,
+  [data-iii-ui='provider-openai-codex'] .codex-provider-action span {
+    font-size: 13px;
+  }
+}

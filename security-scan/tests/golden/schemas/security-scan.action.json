@@ -1,0 +1,93 @@
+{
+  "description": "Start an approval-gated GitHub issue or draft fix PR for one validated Harness finding. Duplicate run, finding, and action requests return the same action id.",
+  "function_id": "security-scan::action",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "SecurityActionKindV1": {
+        "enum": [
+          "issue",
+          "fix_pr"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "action": {
+        "$ref": "#/definitions/SecurityActionKindV1"
+      },
+      "finding_index": {
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "run_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "action",
+      "finding_index",
+      "run_id"
+    ],
+    "title": "SecurityScanActionRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "SecurityActionKindV1": {
+        "enum": [
+          "issue",
+          "fix_pr"
+        ],
+        "type": "string"
+      },
+      "SecurityActionStatusV1": {
+        "enum": [
+          "queued",
+          "preparing",
+          "awaiting_approval",
+          "completed",
+          "failed",
+          "cancelled"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "action": {
+        "$ref": "#/definitions/SecurityActionKindV1"
+      },
+      "action_id": {
+        "type": "string"
+      },
+      "deduplicated": {
+        "type": "boolean"
+      },
+      "finding_index": {
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "run_id": {
+        "type": "string"
+      },
+      "status": {
+        "$ref": "#/definitions/SecurityActionStatusV1"
+      }
+    },
+    "required": [
+      "action",
+      "action_id",
+      "deduplicated",
+      "finding_index",
+      "run_id",
+      "status"
+    ],
+    "title": "SecurityScanActionResponseV1",
+    "type": "object"
+  }
+}

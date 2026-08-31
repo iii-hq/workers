@@ -2,7 +2,7 @@
 
 [package]
 name = "shell"
-version = "0.10.3"
+version = "0.11.13-rc.3"
 edition = "2021"
 publish = false
 
@@ -11,8 +11,12 @@ name = "shell"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = "=0.21.6"
-iii-helpers = "=0.21.6"
+iii-sdk = "=0.22.1-alpha.25"
+iii-worker-paths = { path = "../crates/worker-paths" }
+iii-helpers = "=0.22.1-alpha.25"
+iii-console-ui = { path = "../crates/console-ui" }
+# Filesystem watch behind the shell::changed trigger type (FSEvents/inotify).
+notify = "8"
 schemars = { version = "0.8", features = ["uuid1"] }
 libc = "0.2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "process", "time", "io-util", "fs"] }
@@ -33,6 +37,8 @@ url = "2"
 base64 = "0.22"
 walkdir = "2"
 globset = "0.4"
+sha2 = "0.10"
+portable-pty = "0.9.0"
 
 [dev-dependencies]
 tempfile = "3"

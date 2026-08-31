@@ -186,12 +186,6 @@ export const engineTriggersListDone = base(
   wrapHarness({
     triggers: [
       {
-        id: 'directory::prompts::on-change',
-        worker_name: 'iii-directory',
-        description:
-          'Fires after every successful directory::skills::download that wrote at least one prompt.',
-      },
-      {
         id: 'directory::skills::on-change',
         worker_name: 'iii-directory',
         description:
@@ -596,6 +590,7 @@ export const engineRegisterTriggerSubscribe = base(
     trigger_type: 'state',
     config: { key: 'progress', scope: 'research' },
     label: 'research-progress-watch',
+    metadata: { action: 'research progress changed' },
     once: false,
   },
   wrapHarness({

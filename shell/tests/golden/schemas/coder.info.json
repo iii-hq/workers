@@ -1,5 +1,5 @@
 {
-  "description": "Report the coder access contract: the effective mode (jailed = paths confined to the allowed roots; unjailed = deny-only, absolute paths anywhere on the host, roots anchor relative paths only), canonical allowed roots (primary first), per-file size caps, response budgets (max_output_bytes, batch_read_budget_bytes, search_response_budget_bytes), listing/search limits, the non-accessible glob patterns, and the default_exclude_globs noise filter applied by tree/search. Call this FIRST when unsure where coder may read or write, or when a path was rejected — in jailed mode, paths outside every allowed root need the shell worker's shell::fs::* instead.",
+  "description": "Report the coder access contract: the effective mode (jailed = paths confined to the allowed roots; unjailed = deny-only, absolute paths anywhere on the host, roots anchor relative paths only), canonical allowed roots (primary first), the session_root that relative paths actually anchor against when the session is scoped (it overrides primary_root and may sit outside every allowed root), per-file size caps, response budgets (max_output_bytes, batch_read_budget_bytes, search_response_budget_bytes), listing/search limits, the non-accessible glob patterns, and the default_exclude_globs noise filter applied by tree/search. Call this FIRST when unsure where coder may read or write, or when a path was rejected — in jailed mode, paths outside every allowed root need the shell worker's shell::fs::* instead.",
   "function_id": "coder::info",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -100,7 +100,7 @@
         "type": "array"
       },
       "primary_root": {
-        "description": "Convenience duplicate of `base_paths[0]` — the primary allowed root. Relative paths resolve against this directory.",
+        "description": "Convenience duplicate of `base_paths[0]` — the primary allowed root. Relative paths resolve against this directory UNLESS `session_root` is set, which takes precedence.",
         "type": "string"
       },
       "search_default_max_line_bytes": {
@@ -120,6 +120,13 @@
         "format": "uint64",
         "minimum": 0.0,
         "type": "integer"
+      },
+      "session_root": {
+        "description": "The session's working directory when the caller runs under a harness-stamped filesystem scope; `null` otherwise. When set, THIS is what relative wire paths (and `coder::search` glob matching) anchor against — not `primary_root`. In `unjailed` mode it may sit outside every `base_paths` entry, so a relative path that looks wrong against the allowed roots can still be correct here. Check it first when a relative path was rejected.",
+        "type": [
+          "string",
+          "null"
+        ]
       },
       "tree_default_depth": {
         "description": "Default `max_depth` used by `coder::tree` when the caller omits it.",

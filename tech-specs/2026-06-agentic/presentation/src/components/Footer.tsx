@@ -13,7 +13,7 @@ export function Footer() {
         </div>
         <div className="mt-8 inline-flex items-center gap-x-2 border border-rule bg-bg px-4 py-3 font-mono text-[13px]">
           <Prompt symbol="$" />
-          <span className="text-ink">iii worker add harness</span>
+          <span className="text-ink">iii trigger compose::add worker=harness</span>
         </div>
       </div>
       <div className="flex flex-wrap items-center justify-between gap-y-3 border-t border-rule px-4 py-4 @3xl:px-9">

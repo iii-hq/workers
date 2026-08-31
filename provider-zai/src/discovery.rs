@@ -76,6 +76,7 @@ mod tests {
         assert_eq!(
             coding,
             [
+                "glm-5.3",
                 "glm-5.2",
                 "glm-5.1",
                 "glm-5",

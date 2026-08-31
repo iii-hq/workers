@@ -11,6 +11,7 @@ use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::{IIIClient, RegisterFunction};
 use llm_router::provider_scaffold::aborts::{make_abort, StreamAborts};
 use llm_router::provider_scaffold::cache::ScaffoldCache;
+use llm_router::provider_scaffold::registration::typed_async_with_bad_request;
 use llm_router::types::router::{
     ProviderDeclaration, ProviderDefaults, ProviderReadyAck, RouterReadyEvent,
 };
@@ -41,9 +42,6 @@ pub fn declaration() -> ProviderDeclaration {
         // the resolved server's `/v1/models` + `/props` right after
         // registration (see declare_and_refresh) — no credential required.
         models: None,
-        // Identity prompt served to agents via router::system_prompt::get;
-        // operators can override or disable it in the llm-router config slice.
-        system_prompt: Some(include_str!("../prompts/identity.txt").to_string()),
         // Self-reported; availability mapping only, never authorization.
         worker_id: Some("provider-llamacpp".into()),
     }
@@ -134,7 +132,7 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
 
     iii.register_function(
         surface::STREAM_ID,
-        RegisterFunction::new_async_with_bad_request(
+        typed_async_with_bad_request(
             make_stream(iii.clone(), http.clone(), cache.clone(), aborts.clone()),
             invalid_request_from_serde,
         )
@@ -142,12 +140,9 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
     );
     iii.register_function(
         surface::ABORT_ID,
-        RegisterFunction::new_async_with_bad_request(
-            make_abort(aborts),
-            invalid_request_from_serde,
-        )
-        .description(surface::ABORT_DESC)
-        .metadata(json!({ "internal": true })),
+        typed_async_with_bad_request(make_abort(aborts), invalid_request_from_serde)
+            .description(surface::ABORT_DESC)
+            .metadata(json!({ "internal": true })),
     );
     iii.register_function(
         surface::REFRESH_MODELS_ID,
@@ -184,7 +179,13 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
                     Ok::<_, Error>(ProviderReadyAck { ok: true })
                 }
             })
-            .description(surface::ON_ROUTER_READY_DESC),
+            .description(surface::ON_ROUTER_READY_DESC)
+            // Invoked by id (the router's ready fan-out and its re-discovery
+            // nudge), never discovered — same as every other provider's ready
+            // handler. Untagged, this was the ONE provider handler visible in
+            // the default `engine::functions::list`, which made a router-side
+            // provider sweep look like it worked while finding 1 of 4.
+            .metadata(json!({ "internal": true })),
         );
     }
 
@@ -203,12 +204,11 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
             .metadata(json!({ "internal": true })),
         );
     }
-    let _ = iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "router::ready".into(),
-        function_id: surface::ON_ROUTER_READY_ID.into(),
-        config: json!({}),
-        metadata: None,
-    });
+    let _ = iii.register_trigger(RegisterTriggerInput::new(
+        "router::ready",
+        surface::ON_ROUTER_READY_ID,
+        json!({}),
+    ));
 
     // Boot declare, off the boot path (a missing router must not block boot).
     tokio::spawn(declare_and_refresh(iii, http));
@@ -218,17 +218,6 @@ pub async fn register_provider(iii: IIIClient) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::declaration;
-
-    /// The declared identity prompt is the embedded prompts/identity.txt and
-    /// keeps the invariants the harness pins on its default prompt.
-    #[test]
-    fn declaration_ships_the_identity_prompt() {
-        let prompt = declaration().system_prompt.expect("declared prompt");
-        assert_eq!(prompt, include_str!("../prompts/identity.txt"));
-        assert!(prompt.starts_with("You are an iii agent worker."));
-        assert!(prompt.contains("agent_trigger"));
-        assert!(prompt.contains("Never use a function id from memory."));
-    }
 
     #[test]
     fn declaration_uses_credential_env_var_const() {

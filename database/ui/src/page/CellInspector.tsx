@@ -67,26 +67,30 @@ export function CellInspector({
         <span className="db-inspect-path">
           {table}.{column}
         </span>
-        {type ? <Badge variant="default">{type.toLowerCase()}</Badge> : null}
+        {type ? <Badge variant="default">{type}</Badge> : null}
       </div>
 
       <div className="db-inspect-pos">
-        row {row + 1} of {rowCount} · column {col + 1} of {colCount}
+        Row {row + 1} of {rowCount} · Column {col + 1} of {colCount}
       </div>
 
       <dl className="db-kv">
-        <dt>kind</dt>
+        <dt>Kind</dt>
         <dd>{kindOf(value)}</dd>
-        <dt>characters</dt>
+        <dt>Characters</dt>
         <dd className="db-num">{codePoints.toLocaleString()}</dd>
-        <dt>bytes</dt>
+        <dt>Bytes</dt>
         <dd className="db-num">{bytes.toLocaleString()}</dd>
       </dl>
 
       {foreignKey && onFollow && !isNull ? (
-        <Button variant="ghost" size="sm" onClick={() => onFollow(foreignKey, value)}>
-          <Link2 size={12} aria-hidden />
-          show {foreignKey.table} where {foreignKey.column} = {text}
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => onFollow(foreignKey, value)}
+        >
+          <Link2 size={16} aria-hidden />
+          Show {foreignKey.table} where {foreignKey.column} = {text}
         </Button>
       ) : null}
 
@@ -104,13 +108,26 @@ export function CellInspector({
       </div>
 
       <div className="db-inspect-actions">
-        <Button variant="ghost" size="sm" onClick={() => copy('value', text)} disabled={isNull}>
-          {copied === 'value' ? <Check size={12} aria-hidden /> : <Copy size={12} aria-hidden />}
-          {copied === 'value' ? 'copied' : 'copy value'}
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => copy('value', text)}
+          disabled={isNull}
+        >
+          {copied === 'value' ? (
+            <Check size={16} aria-hidden />
+          ) : (
+            <Copy size={16} aria-hidden />
+          )}
+          {copied === 'value' ? 'Copied' : 'Copy value'}
         </Button>
         {json === undefined && text.length > 80 ? (
-          <button type="button" className="db-linkish" onClick={() => setWrap((w) => !w)}>
-            {wrap ? 'no wrap' : 'wrap'}
+          <button
+            type="button"
+            className="db-linkish"
+            onClick={() => setWrap((w) => !w)}
+          >
+            {wrap ? 'No wrap' : 'Wrap'}
           </button>
         ) : null}
       </div>

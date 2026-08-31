@@ -47,6 +47,7 @@ impl TriggerHandler for Handler {
             cfg.folder.clone(),
             config.id.clone(),
             config.function_id.clone(),
+            config.namespace.clone(),
             cfg.handler_timeout_ms,
         );
         tracing::info!(

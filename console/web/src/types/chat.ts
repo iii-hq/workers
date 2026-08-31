@@ -1,3 +1,5 @@
+import type { SystemPromptState } from '@/components/chat/system-prompt-selection'
+
 export type Mode = 'ask' | 'agent'
 
 /** Composite `provider::<catalog_model_id>` (matches harness models-catalog). */
@@ -10,6 +12,12 @@ export interface ModelOption {
   label: string
   contextWindow?: number
   supportsThinking?: boolean
+  /**
+   * Whether the model reads images. `undefined` means the router did not say —
+   * an older catalog, or a model it has no row for — and callers treat that as
+   * "assume it can" rather than refusing to send a picture on missing metadata.
+   */
+  supportsVision?: boolean
   reasoningEfforts?: ReasoningEffortOption[]
 }
 
@@ -68,6 +76,12 @@ export interface UserMessage extends BaseMessage {
   content: string
   attachments?: Attachment[]
   notification?: boolean
+  /**
+   * Harness binding that produced a machine-authored notification. Live
+   * entries carry it in `origin.binding`; persisted histories recover it
+   * from the deterministic `e_fire_*` / `e_expire_*` entry id.
+   */
+  triggerBindingId?: string
   /** A trigger-fired task delivered into this session — machine-sent, not typed. */
   reaction?: boolean
   /** A direct `harness::spawn` task seeding this session — machine-sent, not typed. */
@@ -91,6 +105,12 @@ export interface AssistantMessage extends BaseMessage {
   model?: ModelId
   mode?: Mode
   streaming?: boolean
+  /**
+   * Why the provider ended this assistant entry. `function_call` marks an
+   * intermediate update that continues into tools; `end` marks the turn's
+   * final prose. Older/local fixtures may omit it.
+   */
+  stopReason?: 'end' | 'length' | 'function_call' | 'aborted' | 'error'
   /**
    * What the memory worker fed this turn (from the entry origin's hook
    * annotations): the bank, how many memories were injected, and their
@@ -117,6 +137,12 @@ export interface ThoughtMessage extends BaseMessage {
 export interface FunctionTriggerMessage extends BaseMessage {
   role: 'function-trigger'
   functionId: string
+  /**
+   * Short user-facing action supplied by the agent_trigger wrapper. Calls
+   * recorded before this field existed omit it and keep the function-id
+   * fallback.
+   */
+  description?: string
   input: unknown
   output?: unknown
   durationMs?: number
@@ -168,14 +194,44 @@ export interface TriggerFiredData {
    * carry `model` / `child_session_id`.
    */
   target: string
+  /** Trigger source and canonical registration config on newer records. */
+  trigger_type?: string
+  config?: unknown
   label?: string
+  /** Human-readable event text declared as registration metadata.action. */
+  action?: string
   model?: string
   once: boolean
-  /** This fire unregistered the binding (once teardown). */
+  /** Durable binding fire counter after this activity; absent on older records. */
+  fires?: number
+  /** This activity retired the binding; inspect `retirement_reason` for why. */
   retired: boolean
   scope?: string
   key?: string
   note?: string
+  /** Structured outcome on newer records; absent on historical transcripts. */
+  outcome?:
+    | 'delivered'
+    | 'delivery_failed'
+    | 'skipped'
+    | 'expired'
+    | 'unregistered'
+    | 'invalidated'
+  /** Why a binding was retired, when the outcome ended its lifecycle. */
+  retirement_reason?:
+    | 'once_consumed'
+    | 'max_fires'
+    | 'expired'
+    | 'unregistered'
+    | 'invalidated'
+    | 'exhausted'
+  /**
+   * What the fire delivered: the payload sent to a ƒ-call target (post
+   * conditions/projection/stamping; the attempted payload when dispatch
+   * failed), or the post-conditions event of a wake. Absent on skip/expiry/gc
+   * records and on records from before this field existed.
+   */
+  payload?: unknown
   fired_at: number
 }
 
@@ -190,10 +246,28 @@ export interface SystemMessage extends BaseMessage {
   content: string
   tone?: 'info' | 'warn' | 'error'
   kind?: 'notice' | 'compaction' | 'trigger-fired'
+  /** User-facing remediation supplied by a structured lifecycle record. */
+  nextActions?: string[]
+  /** Diagnostic context kept behind a collapsed disclosure. */
+  technicalDetails?: SystemNoticeTechnicalDetails
+  /**
+   * Live-only fallback for a durable transcript entry with the same id.
+   * It may fill a delivery gap, but must never replace the transcript-backed
+   * message when lifecycle and transcript events arrive out of order.
+   */
+  provisional?: boolean
   summaryText?: string
   tokensBefore?: number
   /** Present on `kind: 'trigger-fired'`. */
   trigger?: TriggerFiredData
+}
+
+export interface SystemNoticeTechnicalDetails {
+  code?: string
+  class?: string
+  detail?: string
+  provider?: string
+  model?: string
 }
 
 export type Message =
@@ -229,12 +303,70 @@ export interface MessagePatch {
   /** SystemMessage variant. */
   tone?: 'info' | 'warn' | 'error'
   kind?: 'notice' | 'compaction'
+  nextActions?: string[]
+  technicalDetails?: SystemNoticeTechnicalDetails
   summaryText?: string
   tokensBefore?: number
 }
 
 /** Mirrors session-manager's SessionStatus. */
 export type ConversationStatus = 'idle' | 'working' | 'done' | 'error'
+
+export interface ConversationMetadataEdits {
+  title?: string
+  titleManual?: boolean
+  model?: ModelId | null
+  thinkingLevel?: ThinkingLevel
+  mode?: Mode
+  workingDir?: string | null
+  memoryBank?: string | null
+  systemPrompt?: SystemPromptState
+  /** An own `undefined` value clears the selected agent profile. */
+  agentProfile?: AgentProfileSnapshot | undefined
+  /** An own `undefined` value records an explicit All-skills selection. */
+  skills?: string[] | undefined
+}
+
+/** Harness-provided presentation hints for a spawned sub-agent session. */
+export type SubagentIcon =
+  | 'agent'
+  | 'code'
+  | 'search'
+  | 'terminal'
+  | 'database'
+  | 'test'
+  | 'review'
+  | 'docs'
+  | 'design'
+
+export type SubagentColor =
+  | 'neutral'
+  | 'blue'
+  | 'purple'
+  | 'teal'
+  | 'green'
+  | 'amber'
+  | 'rose'
+
+/**
+ * Mirrors `SessionMeta.metadata.subagent_display`. The enums deliberately
+ * keep arbitrary wire values out of CSS classes and icon lookup tables.
+ */
+export interface SubagentAppearance {
+  name: string
+  icon?: SubagentIcon
+  color?: SubagentColor
+}
+
+/** Directory agent profile frozen onto session metadata at selection/send. */
+export interface AgentProfileSnapshot {
+  id: string
+  name: string
+  model?: ModelId
+  reasoningEffort?: ThinkingLevel
+  icon?: SubagentIcon
+  color?: SubagentColor
+}
 
 export interface Conversation {
   /**
@@ -247,6 +379,11 @@ export interface Conversation {
   /** flips to true after the user explicitly renames; otherwise auto-derived */
   titleManual?: boolean
   model: ModelId | null
+  /**
+   * Per-session reasoning effort, persisted as session metadata. Drafts seed
+   * it from the most recently chosen effort, just like `model`.
+   */
+  thinkingLevel?: ThinkingLevel
   mode: Mode
   /**
    * Per-session filesystem scope root. Confines this chat's shell/coder
@@ -261,6 +398,47 @@ export interface Conversation {
    * configured default bank.
    */
   memoryBank?: string | null
+  /**
+   * System-prompt choice for this chat (session metadata `system_prompt`).
+   * Picked on the new-session screen before the first send, read-only after
+   * it — which is why it lives on the record rather than in ChatView state:
+   * ChatPanel keys ChatView by conversation id, so a local reset on a tab
+   * switch would be invisible with no interactive control left to show it.
+   * Omitted = `DEFAULT_SYSTEM_PROMPT_STATE`.
+   */
+  systemPrompt?: SystemPromptState
+  /** Selected Directory agent profile, frozen for session identity/rendering. */
+  agentProfile?: AgentProfileSnapshot
+  /** Undefined/empty means all model-invocable skills; otherwise exact IDs. */
+  skills?: string[]
+  /**
+   * One-time conversion of legacy skill addons after an authoritative empty
+   * transcript read. `candidate` retains the legacy body while hydration is
+   * pending; `ready` carries the complete body-free metadata replacement.
+   * `empty` remembers a successful empty transcript read so metadata that
+   * arrives later can be finalized immediately.
+   */
+  legacySkillMigration?:
+    | {
+        state: 'empty'
+        metadata?: Record<string, unknown>
+        edits?: ConversationMetadataEdits
+      }
+    | {
+        state: 'candidate' | 'ready'
+        metadata: Record<string, unknown>
+        edits?: ConversationMetadataEdits
+      }
+  /** Whether durable transcript entries already exist for this session. */
+  started?: boolean
+  /** Raw SessionMeta.metadata, retained because session::set-meta replaces it. */
+  sessionMetadata?: Record<string, unknown>
+  /** Last authoritative SessionMeta/event timestamp; excludes local UI edits. */
+  serverMetaUpdatedAt?: number
+  /** Last authoritative title/metadata timestamp for unordered events. */
+  serverMetadataUpdatedAt?: number
+  /** Last authoritative lifecycle timestamp for unordered status events. */
+  serverStatusUpdatedAt?: number
   messages: Message[]
   /**
    * Spawn-parent session id, from the child session's
@@ -268,6 +446,8 @@ export interface Conversation {
    * Absent for root/orchestrator chats. Drives the sidebar tree grouping.
    */
   parentId?: string
+  /** Parent function call that created this sub-agent session. */
+  parentFunctionCallId?: string
   /** Spawn depth: 0 = root orchestrator (from `metadata.depth`). */
   depth?: number
   /**
@@ -276,6 +456,8 @@ export interface Conversation {
    * Absent on root chats and pre-existing sessions. Drives the sidebar icon.
    */
   spawnedBy?: 'trigger' | 'agent'
+  /** Optional chip identity from `metadata.subagent_display`. */
+  subagentAppearance?: SubagentAppearance
   /** Driver-owned session status (spinner + sidebar indicator). */
   status?: ConversationStatus
   statusReason?: string

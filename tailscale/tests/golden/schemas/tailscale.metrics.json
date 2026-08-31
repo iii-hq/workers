@@ -1,0 +1,23 @@
+{
+  "description": "Return the client's user-facing metrics in Prometheus text format.",
+  "function_id": "tailscale::metrics",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "EmptyInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "output": {
+        "description": "The CLI's own output.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "output"
+    ],
+    "title": "TextOutput",
+    "type": "object"
+  }
+}

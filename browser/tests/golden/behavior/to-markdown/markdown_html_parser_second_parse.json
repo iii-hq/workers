@@ -1,0 +1,11 @@
+{
+  "function": "browser::to-markdown",
+  "case": "markdown_html_parser_second_parse",
+  "request": {
+    "html": "<p>before</p><plaintext><b>looks bold</b><p>tail</p></plaintext><p>after</p>"
+  },
+  "ok": {
+    "format": "markdown",
+    "content": "before\n\n&lt;b&gt;looks bold&lt;/b&gt;&lt;p&gt;tail&lt;/p&gt;&lt;/plaintext&gt;&lt;p&gt;after&lt;/p&gt;</plaintext></body></html>"
+  }
+}

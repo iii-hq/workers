@@ -50,13 +50,13 @@ fn catalog_lists_all_functions_in_registration_order() {
             "router::models::budget",
             "router::models::supports",
             "router::provider::list",
-            "router::system_prompt::get",
             "router::route",
             "router::provider::register",
             "router::provider::resolve",
             "router::provider::update_credential",
             "router::models::reconcile",
             "router::on_config_changed",
+            "router::on_functions_changed",
         ]
     );
 }

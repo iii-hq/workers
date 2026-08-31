@@ -5,7 +5,7 @@ Pi coding agent as an iii worker: the Pi API exposed as functions and streams on
 ## Install
 
 ```bash
-iii worker add pi
+iii trigger compose::add worker=pi
 ```
 
 Pi runs the loop in-process (no CLI subprocess), so the worker environment needs model credentials — `ANTHROPIC_API_KEY` (or the provider key Pi is configured for) or an existing Pi login.
@@ -24,7 +24,7 @@ From zero to a Pi turn over the bus:
 
 ```bash
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
-iii worker add pi
+iii trigger compose::add worker=pi
 iii   # starts the engine + worker
 ```
 

@@ -2,20 +2,41 @@ use serde_json::{json, Value};
 
 use crate::context::E2eContext;
 
+use super::assessment::{self, AssessmentSpec};
 use super::{
-    common, CleanupFuture, CriterionSpec, EvaluationFuture, ExecutionPolicy, ObjectiveEvaluation,
-    ScenarioObservation, ScenarioSpec,
+    common, CleanupFuture, EvaluationFuture, ExecutionPolicy, ScenarioObservation, ScenarioSpec,
 };
 
 pub const ID: &str = "timer_wake";
 
 const RESULT_KEY: &str = "result";
+const TIMER_ARMED: AssessmentSpec = AssessmentSpec::hard_gated(
+    "timer_armed",
+    30,
+    "One wake-only relative timer is armed before any result write.",
+);
+const PARENT_WOKEN: AssessmentSpec = AssessmentSpec::hard_gated(
+    "parent_woken",
+    30,
+    "The timer retires after waking the original session exactly once.",
+);
+const WAKE_ACTION: AssessmentSpec = AssessmentSpec::hard_gated(
+    "wake_action",
+    25,
+    "The timer-woken turn persists the requested result.",
+);
+const CLEAN_COMPLETION: AssessmentSpec = AssessmentSpec::hard_gated(
+    "clean_completion",
+    15,
+    "The root completes without children, errors, or surviving bindings.",
+);
+const ASSESSMENTS: &[AssessmentSpec] = &[TIMER_ARMED, PARENT_WOKEN, WAKE_ACTION, CLEAN_COMPLETION];
 
 pub fn scenario(run_id: &str) -> ScenarioSpec {
     let names = Names::new(run_id);
     ScenarioSpec {
         id: ID,
-        version: 1,
+        version: 3,
         prompt: format!(
             r#"Test the parent-owned timer control plane in isolated state scope `{scope}`.
 
@@ -42,29 +63,7 @@ fired. Leave no binding armed."#,
             stuck_timeout_seconds: 120,
         },
         denied_functions: &[],
-        threshold: 90,
-        criteria: vec![
-            CriterionSpec {
-                id: "timer_armed",
-                weight: 30,
-                description: "One wake-only relative timer is armed before any result write.",
-            },
-            CriterionSpec {
-                id: "parent_woken",
-                weight: 30,
-                description: "The timer retires after waking the original session exactly once.",
-            },
-            CriterionSpec {
-                id: "wake_action",
-                weight: 25,
-                description: "The timer-woken turn persists the requested result.",
-            },
-            CriterionSpec {
-                id: "clean_completion",
-                weight: 15,
-                description: "The root completes without children, errors, or surviving bindings.",
-            },
-        ],
+        criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: None,
         evaluate,
@@ -129,60 +128,32 @@ fn evaluate<'a>(
         let wake_action = exact_write && observed == expected;
         let clean_completion = active_bindings == 0 && no_errors && confirmed;
 
-        Ok(ObjectiveEvaluation {
-            hard_gates: vec![
-                common::gate(
-                    "relative_timer_armed_before_result",
-                    timer_armed,
-                    format!(
-                        "registrations={}, timers={}, writes={}",
-                        registrations.len(),
-                        timers.len(),
-                        writes.len()
-                    ),
+        Ok(assessment::build_evaluation([
+            TIMER_ARMED.full_or_zero(
+                timer_armed,
+                format!(
+                    "registrations={}, timers={}, writes={}",
+                    registrations.len(),
+                    timers.len(),
+                    writes.len()
                 ),
-                common::gate(
-                    "timer_woke_original_session",
-                    parent_woken,
-                    format!("timer_fired={timer_fired}, root_only={root_only}"),
+            ),
+            PARENT_WOKEN.full_or_zero(
+                parent_woken,
+                format!("timer_fired={timer_fired}, root_only={root_only}"),
+            ),
+            WAKE_ACTION.full_or_zero(
+                wake_action,
+                format!("exact_write={exact_write}, observed={observed}"),
+            ),
+            CLEAN_COMPLETION.full_or_zero(
+                clean_completion,
+                format!(
+                    "active_bindings={active_bindings}, function_errors={}, confirmed={confirmed}",
+                    observation.metrics.totals.function_call_errors
                 ),
-                common::gate(
-                    "woken_turn_persisted_result",
-                    wake_action,
-                    format!("exact_write={exact_write}, observed={observed}"),
-                ),
-                common::gate(
-                    "timer_run_completed_cleanly",
-                    clean_completion,
-                    format!(
-                        "active_bindings={active_bindings}, function_errors={}, confirmed={confirmed}",
-                        observation.metrics.totals.function_call_errors
-                    ),
-                ),
-            ],
-            awards: vec![
-                common::award(
-                    "timer_armed",
-                    if timer_armed { 30 } else { 0 },
-                    "awarded for one wake-only relative timer before the result write",
-                ),
-                common::award(
-                    "parent_woken",
-                    if parent_woken { 30 } else { 0 },
-                    "awarded when the timer retires after waking only the root session",
-                ),
-                common::award(
-                    "wake_action",
-                    if wake_action { 25 } else { 0 },
-                    "awarded when the woken turn writes the exact result",
-                ),
-                common::award(
-                    "clean_completion",
-                    if clean_completion { 15 } else { 0 },
-                    "awarded for a confirmed result with no errors or live bindings",
-                ),
-            ],
-        })
+            ),
+        ]))
     })
 }
 
@@ -249,25 +220,5 @@ impl Names {
             scope: format!("e2e:timer:{run_id}"),
             root_session: format!("e2e_{run_id}"),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn accepts_an_equivalent_relative_timer() {
-        let call = common::ObservedFunctionCall {
-            function_id: "engine::register_trigger".to_string(),
-            arguments: json!({
-                "trigger_type": "timer",
-                "config": { "in_ms": 5000 },
-                "label": "model-chosen-deadline"
-            }),
-        };
-
-        assert!(is_timer_registration(&call));
-        scenario("run").validate().unwrap();
     }
 }

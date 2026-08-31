@@ -119,28 +119,28 @@ function OptionChips({
       ) : null}
       {req.solve_cloudflare ? (
         <Chip className="text-warn border-warn/40">
-          <span className="uppercase tracking-[0.06em]">cloudflare</span>
+          <span>Cloudflare</span>
         </Chip>
       ) : null}
       {req.headless === false ? (
         <Chip className="text-warn border-warn/40">
-          <span className="uppercase tracking-[0.06em]">headed</span>
+          <span>Headed</span>
         </Chip>
       ) : null}
-      {req.real_chrome ? <Chip>real chrome</Chip> : null}
-      {req.cdp_url ? <Chip>cdp</Chip> : null}
+      {req.real_chrome ? <Chip>Real Chrome</Chip> : null}
+      {req.cdp_url ? <Chip>CDP</Chip> : null}
       {req.wait_selector ? (
         <FilterChip label="wait" value={req.wait_selector} />
       ) : null}
-      {req.network_idle ? <Chip>network idle</Chip> : null}
+      {req.network_idle ? <Chip>Network idle</Chip> : null}
       {/* proxy values can embed credentials — flag presence, never the value */}
-      {req.proxy ? <Chip>proxy</Chip> : null}
+      {req.proxy ? <Chip>Proxy</Chip> : null}
       {req.selectors?.length ? (
         <FilterChip label="selectors" value={req.selectors.length} />
       ) : null}
       {req.format ? <FilterChip label="as" value={req.format} /> : null}
-      {req.main_content_only ? <Chip>main only</Chip> : null}
-      {req.include_html ? <Chip>html</Chip> : null}
+      {req.main_content_only ? <Chip>Main only</Chip> : null}
+      {req.include_html ? <Chip>HTML</Chip> : null}
     </>
   )
 }

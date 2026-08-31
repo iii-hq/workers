@@ -27,17 +27,22 @@ export interface SessionTriggerInfo {
   config?: unknown
   conditions?: unknown[]
   label?: string
+  /** Human-readable event text declared as registration metadata.action. */
+  action?: string
   once?: boolean
   fires?: number
   maxFires?: number
   expiresAt?: number
   createdAt?: number
+  /** Latest structured trigger activity, when the transcript carries it. */
+  outcome?: TriggerFiredData['outcome']
+  /** Why this row became inactive. Absent on active and historical records. */
+  retirementReason?: TriggerFiredData['retirement_reason']
   /**
-   * This subscription already fired and was retired (per a durable
-   * `trigger_fired` transcript entry — see `mergeFiredTriggers`). Either a
-   * still-polled row annotated ahead of the next poll, or a synthesized
-   * "ghost" row reconstructed after the poll dropped it. Nothing left to
-   * unregister — the ✕ dismisses locally instead.
+   * Historical property name: this subscription is inactive per a retired
+   * `trigger_fired` activity. Its structured reason may be consumption,
+   * expiry, unregistration, invalidation, or a legacy unknown — never infer
+   * one from this boolean alone. Nothing remains to unregister; ✕ dismisses.
    */
   fired?: boolean
   firedAt?: number
@@ -53,6 +58,7 @@ interface TriggerRow {
   target?: string
   conditions?: unknown[]
   label?: string
+  action?: string
   once: boolean
   max_fires?: number
   expires_at?: number
@@ -72,16 +78,19 @@ export function deliveryOf(target: string | undefined | null): TriggerDelivery {
   return { kind: 'call', functionId: target }
 }
 
-/** List the subscriptions `sessionId` owns — one call, straight from the store. */
+/**
+ * List the subscriptions `sessionId` owns — one call, straight from the
+ * store. Transport failures reject; an empty array means the store was read
+ * successfully and the session owns no subscriptions.
+ */
 export async function listSessionTriggers(
   client: Pick<IiiClient, 'trigger'>,
   sessionId: string,
 ): Promise<SessionTriggerInfo[]> {
-  const response = await client
-    .trigger<{ subscriptions: TriggerRow[] }>('harness::triggers::list', {
-      session_id: sessionId,
-    })
-    .catch(() => null)
+  const response = await client.trigger<{ subscriptions: TriggerRow[] }>(
+    'harness::triggers::list',
+    { session_id: sessionId },
+  )
   return (response?.subscriptions ?? []).map((row) => ({
     id: row.subscription_id,
     triggerId: row.trigger_id ?? undefined,
@@ -90,6 +99,7 @@ export async function listSessionTriggers(
     config: row.config,
     conditions: row.conditions,
     label: row.label ?? undefined,
+    action: row.action ?? undefined,
     once: row.once,
     fires: row.fires,
     maxFires: row.max_fires ?? undefined,
@@ -114,66 +124,105 @@ export async function unregisterTrigger(
   })
 }
 
-/** Reconstruct a fired-and-retired subscription's panel row from its record. */
+/** Reconstruct an inactive subscription's panel row from its activity record. */
 function firedGhostRow(t: TriggerFiredData): SessionTriggerInfo {
   const isState = typeof t.key === 'string'
   return {
     id: t.subscription_id,
     triggerId: t.trigger_id ?? undefined,
-    // The record carries no trigger_type; infer state from the watch and fall
-    // back to a generic name so a label-less ghost never renders an empty row.
-    triggerType: isState ? 'state' : 'trigger',
+    // Enriched records carry the exact source. Historical state records can
+    // still be reconstructed from their scope/key watch.
+    triggerType: t.trigger_type ?? (isState ? 'state' : 'trigger'),
     delivery: deliveryOf(t.target),
-    config: isState ? { scope: t.scope, key: t.key } : undefined,
+    config:
+      t.config !== undefined
+        ? t.config
+        : isState
+          ? { scope: t.scope, key: t.key }
+          : undefined,
     label: t.label,
+    action: t.action,
     once: t.once,
+    fires: t.fires,
+    outcome: t.outcome,
+    retirementReason: t.retirement_reason,
     fired: true,
     firedAt: t.fired_at,
   }
 }
 
+/** Overlay record-owned source/lifecycle facts while retaining richer listed
+ * details such as conditions and creation time. */
+function withFiredActivity(
+  row: SessionTriggerInfo,
+  t: TriggerFiredData,
+): SessionTriggerInfo {
+  return {
+    ...row,
+    triggerType: t.trigger_type ?? row.triggerType,
+    config: t.config !== undefined ? t.config : row.config,
+    action: t.action ?? row.action,
+    fires: t.fires ?? row.fires,
+    outcome: t.outcome,
+    retirementReason: t.retirement_reason,
+    ...(t.retired ? { fired: true, firedAt: t.fired_at } : {}),
+  }
+}
+
 /**
- * Merge the live poll with fired-subscription history, correlated on the
+ * Merge the live list with fired-subscription history, correlated on the
  * subscription id (present on both sides). A *retired* fire means the binding
- * is gone: if the (≤5s stale) poll still lists it, annotate that row as fired
- * in place; once the poll drops it, append a greyed "ghost" row. Non-retired
- * fires leave their live row untouched; repeat fires collapse to one record
- * (newest wins).
+ * is gone: if a not-yet-refetched list still carries it, annotate that row as
+ * inactive in place; once the refetch drops it, append a greyed "ghost" row.
+ * The newest non-retired activity enriches its live row without making it
+ * inactive. Live rows use the newest activity; absent rows use the newest
+ * retirement and ignore non-retired activity that arrived after it.
  *
- * Ghost fidelity is two-tier: prefer the FULL last-seen polled row (from
- * `seenRows`) — the fired record alone carries no config or conditions. The
- * thin record-only ghost remains the post-reload fallback.
+ * Ghost fidelity is two-tier: prefer the full last-seen listed row (from
+ * `seenRows`) for conditions and registration metadata, then overlay the
+ * record-owned source/config/lifecycle fields. The enriched record-only ghost
+ * remains the post-reload fallback; historical records may still be thin.
  */
 export function mergeFiredTriggers(
-  polled: SessionTriggerInfo[],
+  listed: SessionTriggerInfo[],
   fired: TriggerFiredData[],
   seenRows?: ReadonlyMap<string, SessionTriggerInfo>,
 ): SessionTriggerInfo[] {
-  const liveIds = new Set(polled.map((t) => t.id))
-  const retiredLive = new Map<string, TriggerFiredData>()
+  const liveIds = new Set(listed.map((t) => t.id))
+  const liveActivity = new Map<string, TriggerFiredData>()
   const ghosts: SessionTriggerInfo[] = []
   const seen = new Set<string>()
   for (let i = fired.length - 1; i >= 0; i--) {
     const t = fired[i]
-    if (!t.retired) continue
     const key = t.subscription_id
-    if (seen.has(key)) continue
-    seen.add(key)
     if (liveIds.has(key)) {
-      retiredLive.set(key, t) // stale poll row — mark, don't ghost
-    } else {
+      if (seen.has(key)) continue
+      seen.add(key)
+      if (
+        t.retired ||
+        t.trigger_type !== undefined ||
+        t.config !== undefined ||
+        t.fires !== undefined ||
+        t.outcome !== undefined ||
+        t.retirement_reason !== undefined
+      ) {
+        liveActivity.set(key, t)
+      }
+    } else if (t.retired && !seen.has(key)) {
+      // Once the durable list has dropped a subscription, only a retirement
+      // can explain its absence. A later non-retired delivery record may have
+      // arrived out of order, so it must not hide the newest retirement.
+      seen.add(key)
       const remembered = seenRows?.get(key)
       ghosts.push(
-        remembered
-          ? { ...remembered, fired: true, firedAt: t.fired_at }
-          : firedGhostRow(t),
+        remembered ? withFiredActivity(remembered, t) : firedGhostRow(t),
       )
     }
   }
-  if (retiredLive.size === 0 && ghosts.length === 0) return polled
-  const rows = polled.map((row) => {
-    const t = retiredLive.get(row.id)
-    return t ? { ...row, fired: true, firedAt: t.fired_at } : row
+  if (liveActivity.size === 0 && ghosts.length === 0) return listed
+  const rows = listed.map((row) => {
+    const t = liveActivity.get(row.id)
+    return t ? withFiredActivity(row, t) : row
   })
   return [...rows, ...ghosts]
 }

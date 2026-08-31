@@ -1,0 +1,1229 @@
+/* Native console surfaces for the storage explorer. Every selector remains
+ * scoped to this worker so the stylesheet can be injected document-wide. */
+
+[data-iii-ui="storage"] .storage-ui-shell {
+  min-height: 360px;
+  color: var(--color-ink);
+  font-family: var(--font-sans, system-ui, sans-serif);
+}
+
+[data-iii-ui="storage"] .storage-ui-browser {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+}
+
+[data-iii-ui="storage"] .storage-ui-browser.right {
+  flex-direction: row-reverse;
+}
+
+[data-iii-ui="storage"] .storage-ui-buckets,
+[data-iii-ui="storage"] .storage-ui-contents,
+[data-iii-ui="storage"] .storage-ui-detail {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+[data-iii-ui="storage"] .storage-ui-buckets {
+  background: var(--color-sidebar);
+  border-right: 1px solid var(--color-edge);
+}
+
+[data-iii-ui="storage"] .storage-ui-contents {
+  flex: 0 0 344px;
+  background: var(--color-sidebar);
+  border-right: 1px solid var(--color-edge);
+}
+
+[data-iii-ui="storage"] .storage-ui-browser.right .storage-ui-buckets,
+[data-iii-ui="storage"] .storage-ui-browser.right .storage-ui-contents {
+  border-right: 0;
+  border-left: 1px solid var(--color-edge);
+}
+
+[data-iii-ui="storage"] .storage-ui-detail {
+  flex: 1 1 auto;
+  background: var(--color-panel);
+  overflow: auto;
+}
+
+[data-iii-ui="storage"] .storage-ui-browser.narrow .storage-ui-buckets,
+[data-iii-ui="storage"] .storage-ui-browser.narrow .storage-ui-contents,
+[data-iii-ui="storage"] .storage-ui-browser.narrow .storage-ui-detail {
+  flex: 1 1 100%;
+  width: 100%;
+  border: 0;
+}
+
+[data-iii-ui="storage"] .storage-ui-column-head,
+[data-iii-ui="storage"] .storage-ui-path-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 6px 10px 6px 14px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--color-edge);
+  background: var(--color-panel-raised);
+}
+
+[data-iii-ui="storage"] .storage-ui-primary-head {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border-bottom: 0;
+  background: transparent;
+}
+
+[data-iii-ui="storage"] .storage-ui-column-label {
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+[data-iii-ui="storage"] .storage-ui-spacer {
+  flex: 1;
+  min-width: 0;
+}
+
+[data-iii-ui="storage"] .storage-ui-count {
+  color: var(--color-ink-ghost);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="storage"] .storage-ui-icon-button,
+[data-iii-ui="storage"] .storage-ui-back-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-ink-ghost);
+  cursor: pointer;
+}
+
+[data-iii-ui="storage"] .storage-ui-icon-button svg,
+[data-iii-ui="storage"] .storage-ui-back-button svg,
+[data-iii-ui="storage"] .storage-ui-button-icon,
+[data-iii-ui="storage"] .storage-ui-row-icon,
+[data-iii-ui="storage"] .storage-ui-chevron,
+[data-iii-ui="storage"] .storage-ui-inspector-icon,
+[data-iii-ui="storage"] .storage-ui-hero-flow svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+[data-iii-ui="storage"] .storage-ui-icon-button:hover,
+[data-iii-ui="storage"] .storage-ui-back-button:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+
+[data-iii-ui="storage"] .storage-ui-icon-button:focus-visible,
+[data-iii-ui="storage"] .storage-ui-back-button:focus-visible,
+[data-iii-ui="storage"] .storage-ui-bucket-row:focus-visible,
+[data-iii-ui="storage"] .storage-ui-object-row:focus-visible,
+[data-iii-ui="storage"] .storage-ui-breadcrumb button:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
+}
+
+[data-iii-ui="storage"] .storage-ui-scroll {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+[data-iii-ui="storage"] .storage-ui-nav-list,
+[data-iii-ui="storage"] .storage-ui-object-list {
+  margin: 0;
+  padding: 5px 0;
+  list-style: none;
+}
+
+[data-iii-ui="storage"] .storage-ui-bucket-row,
+[data-iii-ui="storage"] .storage-ui-object-row {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  width: 100%;
+  min-width: 0;
+  min-height: 46px;
+  padding: 7px 10px 7px 14px;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink-faint);
+  text-align: left;
+  cursor: pointer;
+}
+
+[data-iii-ui="storage"] .storage-ui-bucket-row:hover,
+[data-iii-ui="storage"] .storage-ui-object-row:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
+}
+
+[data-iii-ui="storage"] .storage-ui-bucket-row.active,
+[data-iii-ui="storage"] .storage-ui-object-row.active {
+  background: var(--color-surface-selected);
+  color: var(--color-ink);
+}
+
+[data-iii-ui="storage"] .storage-ui-bucket-row.active::before,
+[data-iii-ui="storage"] .storage-ui-object-row.active::before {
+  position: absolute;
+  inset: 5px auto 5px 0;
+  width: 2px;
+  border-radius: 0 2px 2px 0;
+  background: var(--color-edge);
+  content: "";
+}
+
+[data-iii-ui="storage"] .storage-ui-row-icon {
+  margin-top: 2px;
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui="storage"] .storage-ui-row-icon.folder {
+  color: var(--color-accent);
+}
+
+[data-iii-ui="storage"] .storage-ui-row-copy {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+[data-iii-ui="storage"] .storage-ui-row-name {
+  overflow: hidden;
+  color: inherit;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 17px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="storage"] .storage-ui-row-meta {
+  overflow: hidden;
+  color: var(--color-ink-ghost);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  line-height: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="storage"] .storage-ui-chevron {
+  align-self: center;
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui="storage"] .storage-ui-path-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+[data-iii-ui="storage"] .storage-ui-path-bucket,
+[data-iii-ui="storage"] .storage-ui-path-prefix {
+  overflow: hidden;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="storage"] .storage-ui-path-bucket {
+  color: var(--color-ink);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+[data-iii-ui="storage"] .storage-ui-path-prefix {
+  color: var(--color-ink-ghost);
+  font-size: 10px;
+}
+
+[data-iii-ui="storage"] .storage-ui-work-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 6px 10px 6px 14px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--color-edge);
+  background: var(--color-panel);
+}
+
+[data-iii-ui="storage"] .storage-ui-breadcrumb {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow-x: auto;
+  color: var(--color-ink-ghost);
+  scrollbar-width: none;
+  white-space: nowrap;
+}
+
+[data-iii-ui="storage"] .storage-ui-breadcrumb span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+[data-iii-ui="storage"] .storage-ui-breadcrumb button {
+  padding: 2px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+[data-iii-ui="storage"] .storage-ui-breadcrumb button:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+
+[data-iii-ui="storage"] .storage-ui-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+[data-iii-ui="storage"] .storage-ui-button-icon {
+  margin-right: 4px;
+}
+
+[data-iii-ui="storage"] .storage-ui-skeleton,
+[data-iii-ui="storage"] .storage-ui-detail-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px 14px;
+}
+
+[data-iii-ui="storage"] .storage-ui-skeleton span,
+[data-iii-ui="storage"] .storage-ui-detail-skeleton span {
+  display: block;
+  width: 72%;
+  height: 11px;
+  border-radius: 4px;
+  background: var(--color-surface);
+  animation: storage-ui-skeleton-pulse 1.5s ease-in-out infinite;
+}
+
+[data-iii-ui="storage"] .storage-ui-skeleton span:nth-child(2),
+[data-iii-ui="storage"] .storage-ui-detail-skeleton span:nth-child(2) {
+  width: 48%;
+}
+
+[data-iii-ui="storage"] .storage-ui-skeleton span:nth-child(3),
+[data-iii-ui="storage"] .storage-ui-detail-skeleton span:nth-child(3) {
+  width: 82%;
+}
+
+[data-iii-ui="storage"] .storage-ui-skeleton.listing span {
+  height: 28px;
+}
+
+@keyframes storage-ui-skeleton-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-iii-ui="storage"] .storage-ui-skeleton span,
+  [data-iii-ui="storage"] .storage-ui-detail-skeleton span {
+    animation: none;
+  }
+}
+
+[data-iii-ui="storage"] .storage-ui-column-empty,
+[data-iii-ui="storage"] .storage-ui-inline-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 18px 14px;
+  color: var(--color-ink-faint);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+[data-iii-ui="storage"] .storage-ui-column-empty.roomy {
+  padding-top: 32px;
+}
+
+[data-iii-ui="storage"] .storage-ui-column-empty p,
+[data-iii-ui="storage"] .storage-ui-inline-error p {
+  margin: 0;
+}
+
+[data-iii-ui="storage"] .storage-ui-column-empty p + p,
+[data-iii-ui="storage"] .storage-ui-inline-error span {
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui="storage"] .storage-ui-load-more {
+  display: flex;
+  justify-content: center;
+  padding: 10px;
+  border-top: 1px solid var(--color-edge);
+}
+
+[data-iii-ui="storage"] .storage-ui-status {
+  margin: 10px;
+}
+
+[data-iii-ui="storage"] .storage-ui-transfer {
+  min-height: 28px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--color-edge);
+  background: var(--color-panel-raised);
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+}
+
+[data-iii-ui="storage"] .storage-ui-hero {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 260px;
+  padding: 32px 24px;
+  text-align: center;
+}
+
+[data-iii-ui="storage"] .storage-ui-hero-icon {
+  width: 32px;
+  height: 32px;
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui="storage"] .storage-ui-hero h2 {
+  margin: 0;
+  color: var(--color-ink);
+  font-size: 18px;
+  font-weight: 600;
+}
+
+[data-iii-ui="storage"] .storage-ui-hero p {
+  max-width: 54ch;
+  margin: 0;
+  color: var(--color-ink-faint);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+[data-iii-ui="storage"] .storage-ui-hero-flow {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding-top: 6px;
+  color: var(--color-ink-ghost);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+}
+
+[data-iii-ui="storage"] .storage-ui-inspector {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+[data-iii-ui="storage"] .storage-ui-inspector-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 20px 20px 14px;
+  border-bottom: 1px solid var(--color-edge);
+  background: var(--color-panel-raised);
+}
+
+[data-iii-ui="storage"] .storage-ui-inspector-icon {
+  margin-top: 2px;
+  color: var(--color-accent);
+}
+
+[data-iii-ui="storage"] .storage-ui-inspector-title {
+  min-width: 0;
+}
+
+[data-iii-ui="storage"] .storage-ui-inspector-title h2 {
+  overflow: hidden;
+  margin: 0;
+  color: var(--color-ink);
+  font-size: 18px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="storage"] .storage-ui-inspector-title p {
+  overflow: hidden;
+  margin: 4px 0 0;
+  color: var(--color-ink-ghost);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="storage"] .storage-ui-inspector-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--color-edge);
+  overflow-x: auto;
+}
+
+[data-iii-ui="storage"] .storage-ui-facts {
+  margin: 0;
+  padding: 8px 20px;
+}
+
+[data-iii-ui="storage"] .storage-ui-facts div {
+  display: grid;
+  grid-template-columns: minmax(88px, 0.35fr) minmax(0, 1fr);
+  gap: 14px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--color-edge);
+}
+
+[data-iii-ui="storage"] .storage-ui-facts dt,
+[data-iii-ui="storage"] .storage-ui-facts dd {
+  min-width: 0;
+  margin: 0;
+}
+
+[data-iii-ui="storage"] .storage-ui-facts dt {
+  color: var(--color-ink);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+[data-iii-ui="storage"] .storage-ui-facts dd {
+  overflow: hidden;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="storage"] .storage-ui-transfer-note {
+  margin: 12px 20px 20px;
+  padding: 12px 14px;
+  border-radius: 6px;
+  background: var(--color-surface);
+}
+
+[data-iii-ui="storage"] .storage-ui-transfer-note h3,
+[data-iii-ui="storage"] .storage-ui-transfer-note p {
+  margin: 0;
+}
+
+[data-iii-ui="storage"] .storage-ui-transfer-note h3 {
+  color: var(--color-ink);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+[data-iii-ui="storage"] .storage-ui-transfer-note p {
+  max-width: 64ch;
+  padding-top: 4px;
+  color: var(--color-ink-faint);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+[data-iii-ui="storage"] .storage-ui-browser.narrow .storage-ui-column-head,
+[data-iii-ui="storage"] .storage-ui-browser.narrow .storage-ui-path-head {
+  min-height: 48px;
+}
+
+[data-iii-ui="storage"] .storage-ui-browser.narrow .storage-ui-bucket-row,
+[data-iii-ui="storage"] .storage-ui-browser.narrow .storage-ui-object-row {
+  min-height: 52px;
+  padding-top: 9px;
+  padding-bottom: 9px;
+}
+
+[data-iii-ui="storage"] .storage-ui-browser.narrow .storage-ui-icon-button,
+[data-iii-ui="storage"] .storage-ui-browser.narrow .storage-ui-back-button {
+  width: 44px;
+  height: 44px;
+  margin: -4px;
+}
+
+[data-iii-ui="storage"] .storage-ui-browser.narrow .storage-ui-work-toolbar {
+  min-height: 50px;
+}
+
+[data-iii-ui="storage"] .storage-ui-browser.narrow .storage-ui-row-name,
+[data-iii-ui="storage"] .storage-ui-browser.narrow .storage-ui-column-empty,
+[data-iii-ui="storage"] .storage-ui-browser.narrow .storage-ui-inline-error {
+  font-size: 16px;
+}
+
+[data-iii-ui="storage"] .storage-ui-browser.narrow .storage-ui-row-meta {
+  font-size: 12px;
+}
+
+[data-iii-ui="storage"] .storage-ui-browser.narrow .storage-ui-inspector-head,
+[data-iii-ui="storage"]
+  .storage-ui-browser.narrow
+  .storage-ui-inspector-actions,
+[data-iii-ui="storage"] .storage-ui-browser.narrow .storage-ui-facts {
+  padding-right: 14px;
+  padding-left: 14px;
+}
+
+[data-iii-ui="storage"] .storage-ui-browser.narrow .storage-ui-inspector-title {
+  align-self: center;
+}
+
+[data-iii-ui="storage"] .storage-ui-browser.narrow .storage-ui-transfer-note {
+  margin-right: 14px;
+  margin-left: 14px;
+}
+
+/* -------------------------------------------------------------------------
+ * Worker configuration form. The Console owns the surrounding editor,
+ * validation lifecycle, and save bar; this is the storage-specific draft UI.
+ * ---------------------------------------------------------------------- */
+
+[data-iii-ui="storage"] .storage-cfg {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-ink);
+  font-family: var(--font-sans, system-ui, sans-serif);
+}
+
+[data-iii-ui="storage"] .storage-cfg-workbench {
+  display: flex;
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--color-panel);
+}
+
+[data-iii-ui="storage"] .storage-cfg-nav {
+  display: flex;
+  flex: 0 0 188px;
+  flex-direction: column;
+  min-width: 0;
+  border-right: 1px solid var(--color-edge);
+  background: var(--color-sidebar);
+}
+
+[data-iii-ui="storage"] .storage-cfg-nav-group {
+  padding: 12px 8px 4px;
+}
+
+[data-iii-ui="storage"] .storage-cfg-nav-group.buckets {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-top: 14px;
+  border-top: 1px solid var(--color-edge);
+}
+
+[data-iii-ui="storage"] .storage-cfg-nav-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 6px 6px;
+}
+
+[data-iii-ui="storage"] .storage-cfg-nav-heading > span {
+  margin-left: auto;
+  color: var(--color-ink-ghost);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+[data-iii-ui="storage"] .storage-cfg-nav-label {
+  margin: 0;
+  padding: 0 6px 6px;
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+[data-iii-ui="storage"] .storage-cfg-nav-heading .storage-cfg-nav-label {
+  padding: 0;
+}
+
+[data-iii-ui="storage"] .storage-cfg-nav-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+[data-iii-ui="storage"] .storage-cfg-nav-row {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 7px 7px 7px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-ink-faint);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+[data-iii-ui="storage"] .storage-cfg-nav-row:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
+}
+
+[data-iii-ui="storage"] .storage-cfg-nav-row.active {
+  background: var(--color-surface-selected);
+  color: var(--color-ink);
+}
+
+[data-iii-ui="storage"] .storage-cfg-nav-row.active::before {
+  position: absolute;
+  inset: 5px auto 5px -8px;
+  width: 2px;
+  border-radius: 0 2px 2px 0;
+  background: var(--color-edge);
+  content: "";
+}
+
+[data-iii-ui="storage"] .storage-cfg-nav-icon,
+[data-iii-ui="storage"] .storage-cfg-nav-chevron,
+[data-iii-ui="storage"] .storage-cfg-select-icon,
+[data-iii-ui="storage"] .storage-cfg-button-icon,
+[data-iii-ui="storage"] .storage-cfg-back svg,
+[data-iii-ui="storage"] .storage-cfg-editor-icon svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+[data-iii-ui="storage"] .storage-cfg-nav-icon {
+  margin-top: 2px;
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui="storage"] .storage-cfg-nav-chevron {
+  align-self: center;
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui="storage"] .storage-cfg-nav-copy {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+[data-iii-ui="storage"] .storage-cfg-nav-name,
+[data-iii-ui="storage"] .storage-cfg-nav-meta {
+  overflow: hidden;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="storage"] .storage-cfg-nav-name {
+  color: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 16px;
+}
+
+[data-iii-ui="storage"] .storage-cfg-nav-meta {
+  color: var(--color-ink-ghost);
+  font-size: 9.5px;
+  line-height: 14px;
+}
+
+[data-iii-ui="storage"] .storage-cfg-nav-empty {
+  margin: 0;
+  padding: 8px 6px 12px;
+  color: var(--color-ink-faint);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+[data-iii-ui="storage"] .storage-cfg-nav-action {
+  padding: 8px;
+  border-top: 1px solid var(--color-edge);
+}
+
+[data-iii-ui="storage"] .storage-cfg-nav-action button {
+  width: 100%;
+  justify-content: flex-start;
+}
+
+[data-iii-ui="storage"] .storage-cfg-editor {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--color-panel);
+}
+
+[data-iii-ui="storage"] .storage-cfg-editor-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 58px;
+  padding: 11px 12px;
+  border-bottom: 1px solid var(--color-edge);
+  background: var(--color-panel-raised);
+}
+
+[data-iii-ui="storage"] .storage-cfg-editor-icon {
+  display: inline-flex;
+  padding-top: 3px;
+  color: var(--color-accent);
+}
+
+[data-iii-ui="storage"] .storage-cfg-editor-title {
+  flex: 1;
+  min-width: 0;
+}
+
+[data-iii-ui="storage"] .storage-cfg-editor-title h3,
+[data-iii-ui="storage"] .storage-cfg-editor-title p {
+  overflow: hidden;
+  margin: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui="storage"] .storage-cfg-editor-title h3 {
+  color: var(--color-ink);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+[data-iii-ui="storage"] .storage-cfg-editor-title p {
+  padding-top: 3px;
+  color: var(--color-ink-faint);
+  font-size: 11px;
+}
+
+[data-iii-ui="storage"] .storage-cfg-editor-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+}
+
+[data-iii-ui="storage"] .storage-cfg-button-icon {
+  margin-right: 3px;
+}
+
+[data-iii-ui="storage"] .storage-cfg-back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  margin: 1px 0 0 -5px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+}
+
+[data-iii-ui="storage"] .storage-cfg-back:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
+}
+
+[data-iii-ui="storage"] .storage-cfg-editor-scroll {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+}
+
+[data-iii-ui="storage"] .storage-cfg-section {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  border-top: 1px solid var(--color-edge);
+}
+
+[data-iii-ui="storage"] .storage-cfg-section:first-child {
+  border-top: 0;
+}
+
+[data-iii-ui="storage"] .storage-cfg-section-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+[data-iii-ui="storage"] .storage-cfg-section-head > div {
+  flex: 1;
+  min-width: 0;
+}
+
+[data-iii-ui="storage"] .storage-cfg-section-head h4,
+[data-iii-ui="storage"] .storage-cfg-section-head p {
+  margin: 0;
+}
+
+[data-iii-ui="storage"] .storage-cfg-section-head h4 {
+  color: var(--color-ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+[data-iii-ui="storage"] .storage-cfg-section-head p {
+  max-width: 64ch;
+  padding-top: 4px;
+  color: var(--color-ink-faint);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+[data-iii-ui="storage"] .storage-cfg-field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+[data-iii-ui="storage"] .storage-cfg-field,
+[data-iii-ui="storage"] .storage-cfg-check-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+[data-iii-ui="storage"] .storage-cfg-field-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 17px;
+  color: var(--color-ink);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+[data-iii-ui="storage"] .storage-cfg-input-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+[data-iii-ui="storage"] .storage-cfg-input {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  background: var(--color-panel);
+  color: var(--color-ink);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+}
+
+[data-iii-ui="storage"] .storage-cfg-input::placeholder {
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui="storage"] .storage-cfg-input:focus,
+[data-iii-ui="storage"] .storage-cfg-select:focus,
+[data-iii-ui="storage"] .storage-cfg-editor:focus {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -1px;
+}
+
+[data-iii-ui="storage"] .storage-cfg-reveal {
+  height: 32px;
+  flex: 0 0 auto;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-ink-faint);
+  font: inherit;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+[data-iii-ui="storage"] .storage-cfg-reveal:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
+}
+
+[data-iii-ui="storage"] .storage-cfg-select-wrap {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) 30px;
+}
+
+[data-iii-ui="storage"] .storage-cfg-select {
+  grid-row: 1;
+  grid-column: 1 / -1;
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  padding: 0 32px 0 10px;
+  appearance: none;
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  background: var(--color-panel);
+  color: var(--color-ink);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+[data-iii-ui="storage"] .storage-cfg-select-icon {
+  z-index: 1;
+  grid-row: 1;
+  grid-column: 2;
+  align-self: center;
+  justify-self: center;
+  pointer-events: none;
+  color: var(--color-ink-ghost);
+  transform: rotate(90deg);
+}
+
+[data-iii-ui="storage"] .storage-cfg-check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  color: var(--color-ink);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+[data-iii-ui="storage"] .storage-cfg-check-row input {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  margin: 0;
+  accent-color: var(--color-accent);
+}
+
+[data-iii-ui="storage"] .storage-cfg-provider {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border: 1px solid var(--color-edge);
+  border-radius: 4px;
+  background: var(--color-surface);
+  color: var(--color-ink-faint);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+[data-iii-ui="storage"] .storage-cfg-provider {
+  color: var(--color-accent);
+}
+
+[data-iii-ui="storage"] .storage-cfg-hint,
+[data-iii-ui="storage"] .storage-cfg-error {
+  margin: 0;
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+[data-iii-ui="storage"] .storage-cfg-hint {
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui="storage"] .storage-cfg-error {
+  color: var(--color-alert);
+}
+
+[data-iii-ui="storage"] .storage-cfg-info-note,
+[data-iii-ui="storage"] .storage-cfg-disabled-note {
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-ink-faint);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+[data-iii-ui="storage"] .storage-cfg-disabled-note {
+  border-left: 2px solid var(--color-ink-ghost);
+}
+
+[data-iii-ui="storage"] .storage-cfg-status {
+  margin-top: 14px;
+}
+
+[data-iii-ui="storage"] .storage-cfg-nav-row:focus-visible,
+[data-iii-ui="storage"] .storage-cfg-back:focus-visible,
+[data-iii-ui="storage"] .storage-cfg-reveal:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: -2px;
+}
+
+[data-iii-ui="storage"] .storage-cfg.narrow .storage-cfg-section-head p,
+[data-iii-ui="storage"] .storage-cfg.narrow .storage-cfg-info-note,
+[data-iii-ui="storage"] .storage-cfg.narrow .storage-cfg-disabled-note {
+  font-size: 14px;
+}
+
+[data-iii-ui="storage"] .storage-cfg.narrow .storage-cfg-workbench {
+  display: block;
+  min-height: 0;
+}
+
+[data-iii-ui="storage"] .storage-cfg.narrow .storage-cfg-nav,
+[data-iii-ui="storage"] .storage-cfg.narrow .storage-cfg-editor {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border: 0;
+}
+
+[data-iii-ui="storage"] .storage-cfg.narrow .storage-cfg-nav-row {
+  min-height: 52px;
+  padding-top: 9px;
+  padding-bottom: 9px;
+}
+
+[data-iii-ui="storage"] .storage-cfg.narrow .storage-cfg-nav-name,
+[data-iii-ui="storage"] .storage-cfg.narrow .storage-cfg-field-label,
+[data-iii-ui="storage"] .storage-cfg.narrow .storage-cfg-check-row {
+  font-size: 16px;
+}
+
+[data-iii-ui="storage"] .storage-cfg.narrow .storage-cfg-nav-meta,
+[data-iii-ui="storage"] .storage-cfg.narrow .storage-cfg-hint,
+[data-iii-ui="storage"] .storage-cfg.narrow .storage-cfg-error {
+  font-size: 13px;
+}
+
+[data-iii-ui="storage"] .storage-cfg.narrow .storage-cfg-editor-head {
+  min-height: 64px;
+  padding: 10px 12px;
+}
+
+[data-iii-ui="storage"] .storage-cfg.narrow .storage-cfg-back {
+  width: 44px;
+  height: 44px;
+  margin-top: 0;
+}
+
+[data-iii-ui="storage"] .storage-cfg.narrow .storage-cfg-editor-title {
+  align-self: center;
+}
+
+[data-iii-ui="storage"] .storage-cfg.narrow .storage-cfg-editor-title h3 {
+  font-size: 16px;
+}
+
+[data-iii-ui="storage"] .storage-cfg.narrow .storage-cfg-editor-title p {
+  font-size: 12px;
+}
+
+[data-iii-ui="storage"] .storage-cfg.narrow .storage-cfg-section {
+  gap: 16px;
+  padding: 16px 14px;
+}
+
+[data-iii-ui="storage"] .storage-cfg.narrow .storage-cfg-field-grid {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+}
+
+[data-iii-ui="storage"] .storage-cfg.narrow .storage-cfg-input,
+[data-iii-ui="storage"] .storage-cfg.narrow .storage-cfg-select {
+  height: 44px;
+  font-size: 16px;
+}
+
+[data-iii-ui="storage"] .storage-cfg.narrow .storage-cfg-reveal {
+  min-width: 44px;
+  height: 44px;
+  font-size: 13px;
+}
+
+[data-iii-ui="storage"] .storage-cfg.narrow .storage-cfg-check-row {
+  min-height: 44px;
+}
+
+[data-iii-ui="storage"] .storage-cfg.narrow .storage-cfg-check-row input {
+  width: 20px;
+  height: 20px;
+}

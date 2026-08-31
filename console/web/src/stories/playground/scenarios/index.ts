@@ -12,6 +12,7 @@ import { longMarkdown } from './long-markdown'
 import { markdownStress } from './markdown-stress'
 import { multiFunctionAgent } from './multi-function-agent'
 import { pendingApproval } from './pending-approval'
+import { sandboxLifecycle } from './sandbox'
 import { scraplingCrawlScenario } from './scrapling-crawl'
 import { scraplingParse } from './scrapling-parse'
 import { scraplingScrape } from './scrapling-scrape'
@@ -122,6 +123,15 @@ export const SCENARIOS: PlaygroundScenario[] = [
     group: 'agent',
     preferredMode: 'agent',
     backend: harnessSpawn,
+  },
+  {
+    id: 'sandbox-lifecycle',
+    label: 'sandbox · lifecycle',
+    description:
+      'gated create → fs::write → exec → stop, then a create that fails with the daemon S102 transient error.',
+    group: 'agent',
+    preferredMode: 'agent',
+    backend: sandboxLifecycle,
   },
   {
     id: 'scrapling-scrape',

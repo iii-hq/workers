@@ -21,7 +21,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::catalog::queries::model_supports;
+use crate::catalog::queries::{effective_model_ref, model_supports};
 use crate::catalog::store::CatalogStore;
 use crate::channels::create_router_channel;
 use crate::config::state::{snapshot, ConfigCell};
@@ -48,6 +48,9 @@ use super::synthesize::{synthesize_aborted, synthesize_error};
 pub struct ChatCall {
     #[serde(default)]
     pub request_id: Option<String>,
+    /// Stable conversation identity, forwarded separately from the per-turn request id.
+    #[serde(default)]
+    pub session_id: Option<String>,
     pub model: String,
     #[serde(default)]
     pub provider: Option<String>,
@@ -102,31 +105,293 @@ fn is_router_coded(err: &Error) -> bool {
     matches!(err, Error::Remote { code, .. } if code.starts_with("router/"))
 }
 
+/// Dispatch failures that already carry a stable pre-stream error contract.
+///
+/// Provider typed-handler deserialization happens before the provider handler
+/// can open its stream channel. Retrying `provider/invalid_request` cannot
+/// succeed, and replacing it with a synthetic transient EOF error hides the
+/// actionable cause from the caller.
+fn terminal_dispatch_error(err: &Error) -> Option<(&str, ErrorKind)> {
+    let Error::Remote { code, message, .. } = err else {
+        return None;
+    };
+    if is_router_coded(err) {
+        let kind = if code == RouterCode::ProviderUnavailable.as_str() {
+            ErrorKind::Transient
+        } else {
+            ErrorKind::Permanent
+        };
+        return Some((message, kind));
+    }
+    (code == "provider/invalid_request").then_some((message, ErrorKind::Permanent))
+}
+
+type ProviderCallOutcome = Result<Value, Error>;
+const MAX_PROVIDER_CALLS: usize = 64;
+
+fn provider_call_slots() -> Arc<tokio::sync::Semaphore> {
+    static SLOTS: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+    Arc::clone(SLOTS.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(MAX_PROVIDER_CALLS))))
+}
+
+enum ProviderCallAdmission {
+    Admitted(tokio::sync::OwnedSemaphorePermit),
+    Aborted,
+    Saturated,
+}
+
+fn try_acquire_provider_call_slot(
+    slots: Arc<tokio::sync::Semaphore>,
+    aborted: &std::sync::atomic::AtomicBool,
+) -> ProviderCallAdmission {
+    if aborted.load(Ordering::SeqCst) {
+        return ProviderCallAdmission::Aborted;
+    }
+
+    match slots.try_acquire_owned() {
+        Ok(permit) => {
+            if aborted.load(Ordering::SeqCst) {
+                ProviderCallAdmission::Aborted
+            } else {
+                ProviderCallAdmission::Admitted(permit)
+            }
+        }
+        Err(tokio::sync::TryAcquireError::NoPermits) if aborted.load(Ordering::SeqCst) => {
+            ProviderCallAdmission::Aborted
+        }
+        Err(tokio::sync::TryAcquireError::NoPermits) => ProviderCallAdmission::Saturated,
+        Err(tokio::sync::TryAcquireError::Closed) => {
+            panic!("provider call semaphore is never closed")
+        }
+    }
+}
+
+fn pre_stream_error_kind(code: RouterCode) -> ErrorKind {
+    match code {
+        RouterCode::ProviderUnavailable => ErrorKind::Transient,
+        _ => ErrorKind::Permanent,
+    }
+}
+
+fn error_shape(
+    code: RouterCode,
+    kind: ErrorKind,
+    message: String,
+    detail: Option<String>,
+) -> ErrorShape {
+    ErrorShape {
+        code: code.as_str().to_string(),
+        message,
+        kind: Some(kind),
+        retryable: Some(kind.is_retryable()),
+        detail,
+    }
+}
+
+fn provider_error_presentation(
+    kind: ErrorKind,
+    provider: &str,
+    model: &str,
+) -> (RouterCode, String) {
+    match kind {
+        ErrorKind::AuthExpired => (
+            RouterCode::ProviderAuthExpired,
+            format!(
+                "Authentication for provider \"{provider}\" needs attention. Update its credentials, then try again."
+            ),
+        ),
+        ErrorKind::RateLimited => (
+            RouterCode::ProviderRateLimited,
+            format!("Provider \"{provider}\" is busy right now. Try again shortly."),
+        ),
+        ErrorKind::ContextOverflow => (
+            RouterCode::ContextOverflow,
+            format!(
+                "This conversation is too large for model \"{model}\". Compact it, shorten the input, or choose a model with a larger context window."
+            ),
+        ),
+        ErrorKind::Transient => (
+            RouterCode::ProviderTransient,
+            format!(
+                "Provider \"{provider}\" temporarily failed while generating a response. Try again."
+            ),
+        ),
+        ErrorKind::Permanent => (
+            RouterCode::ProviderRejected,
+            format!(
+                "Provider \"{provider}\" rejected this request. Review the selected model and provider settings, then try again."
+            ),
+        ),
+    }
+}
+
+fn take_provider_outcome(
+    outcome_rx: &mut tokio::sync::oneshot::Receiver<ProviderCallOutcome>,
+) -> Option<ProviderCallOutcome> {
+    outcome_rx.try_recv().ok()
+}
+
+/// Release foreground ownership of a provider RPC once the relay has reached a
+/// definitive result.
+///
+/// The RPC outcome is published before its error path closes the relay reader,
+/// so a pre-stream dispatch failure remains available for classification. If
+/// the RPC is still running, a reaper awaits it in the background instead of
+/// aborting its `IIIClient::trigger` future: that future owns the SDK timeout
+/// which removes the invocation from the SDK pending map. Thus Done, Error,
+/// Idle, and Abort return immediately while cleanup remains bounded by the
+/// `timeout_ms` passed to the trigger. The task itself owns an admission permit
+/// acquired before the trigger is spawned, so the same process-wide bound
+/// covers both foreground RPCs and background reapers.
+///
+/// This cannot repair the SDK's separate synchronous `send_message` failure
+/// path, where `trigger` returns after inserting a pending invocation. That
+/// cleanup belongs in `iii-sdk` itself.
+async fn finish_provider_call(
+    call_task: tokio::task::JoinHandle<()>,
+    mut outcome_rx: tokio::sync::oneshot::Receiver<ProviderCallOutcome>,
+) -> Option<ProviderCallOutcome> {
+    let published = take_provider_outcome(&mut outcome_rx);
+    if call_task.is_finished() {
+        let joined = call_task.await;
+        return published
+            .or_else(|| take_provider_outcome(&mut outcome_rx))
+            .or_else(|| {
+                joined
+                    .err()
+                    .filter(|err| err.is_panic())
+                    .map(|_| Err(Error::Handler("provider task panicked".into())))
+            });
+    }
+
+    tokio::spawn(async move {
+        if call_task.await.as_ref().is_err_and(|err| err.is_panic()) {
+            eprintln!("[llm-router] provider stream task panicked after relay completion");
+        }
+    });
+    published
+}
+
+#[allow(clippy::too_many_arguments)]
+fn send_error_terminal(
+    sink: &dyn FrameSink,
+    partial: Option<&crate::types::messages::AssistantMessage>,
+    model: &str,
+    provider: &str,
+    message: &str,
+    error_kind: ErrorKind,
+    usage: Option<crate::types::events::Usage>,
+) -> AssistantMessageEvent {
+    let frame = synthesize_error(
+        partial,
+        model,
+        provider,
+        message,
+        error_kind,
+        usage,
+        now_ms(),
+    );
+    let _ = sink.send(&serde_json::to_string(&frame).expect("serializable frame"));
+    frame
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fail_with_terminal(
+    sink: &dyn FrameSink,
+    partial: Option<&crate::types::messages::AssistantMessage>,
+    model: &str,
+    provider: &str,
+    code: RouterCode,
+    message: String,
+    error_kind: ErrorKind,
+    usage: Option<crate::types::events::Usage>,
+) -> Error {
+    send_error_terminal(sink, partial, model, provider, &message, error_kind, usage);
+    RouterError::new(code, message).into()
+}
+
+fn provider_call_saturated_response(
+    sink: &dyn FrameSink,
+    partial: Option<&crate::types::messages::AssistantMessage>,
+    model: &str,
+    provider: &str,
+    usage: Option<crate::types::events::Usage>,
+) -> ChatResponse {
+    let detail = format!("provider {provider} call capacity is saturated");
+    let message = format!(
+        "Provider \"{provider}\" is handling too many requests right now. Wait a moment and try again."
+    );
+    let terminal = send_error_terminal(
+        sink,
+        partial,
+        model,
+        provider,
+        &message,
+        ErrorKind::Transient,
+        usage,
+    );
+    let AssistantMessageEvent::Error { error } = terminal else {
+        unreachable!()
+    };
+    ChatResponse {
+        ok: false,
+        provider: provider.to_string(),
+        model: model.to_string(),
+        stop_reason: Some(StopReason::Error),
+        usage: error.usage,
+        error: Some(error_shape(
+            RouterCode::CapacityExceeded,
+            ErrorKind::Transient,
+            message,
+            Some(detail),
+        )),
+    }
+}
+
 impl ChatPipeline {
     pub async fn run(
         &self,
-        call: ChatCall,
+        mut call: ChatCall,
         sink: Arc<dyn FrameSink>,
     ) -> Result<ChatResponse, Error> {
+        // Composite `provider::model` ids — the console's display form —
+        // resolve in models::get/budget; dispatch must agree. Split once, up
+        // front, when the prefix names a registered or catalog provider, so
+        // routing, the structured-output gate, the output budget, and the
+        // provider payload all see the id the provider actually serves —
+        // exactly as if the caller had passed the pair. Unknown prefixes stay
+        // literal: an id may contain `::` without naming a provider.
+        let registered_providers = self.registry.ids().await;
+        let catalog_ids = self.catalog.model_ids().await;
+        {
+            let (provider, model) =
+                effective_model_ref(call.provider.as_deref(), &call.model, |p| {
+                    registered_providers.iter().any(|r| r == p)
+                        || catalog_ids.iter().any(|(owner, _)| owner == p)
+                });
+            let (provider, model) = (provider.map(str::to_owned), model.to_owned());
+            call.provider = provider;
+            call.model = model;
+        }
+        let call = call; // frozen: nothing below mutates the normalized pair
+
         // A pre-stream failure must still leave exactly one terminal frame on
         // the sink. Without it, `router::complete`'s drain blocks for its full
         // reader budget and `router::chat` consumers never see a terminal.
         // (Regression: pre_stream_routing_failure_emits_one_error_terminal_frame.)
         let fail_pre_stream = |provider: &str, code: RouterCode, message: String| -> Error {
-            // Pre-stream failures are permanent: a bad model or an unrouted
-            // request won't succeed on retry. Mark the frame Permanent so a
-            // streaming consumer inspecting error_kind doesn't retry it.
-            let frame = synthesize_error(
+            // Most routing/validation decisions are permanent. Availability is
+            // topology state and may recover without changing the request.
+            fail_with_terminal(
+                sink.as_ref(),
                 None,
                 &call.model,
                 provider,
-                &message,
-                ErrorKind::Permanent,
+                code,
+                message,
+                pre_stream_error_kind(code),
                 None,
-                now_ms(),
-            );
-            let _ = sink.send(&serde_json::to_string(&frame).expect("serializable frame"));
-            RouterError::new(code, message).into()
+            )
         };
 
         // ── validate (pre-stream typed throws) ──
@@ -134,36 +399,47 @@ impl ChatPipeline {
             return Err(fail_pre_stream(
                 "",
                 RouterCode::InvalidRequest,
-                "model is required".into(),
+                "Select a model before sending the request.".into(),
             ));
         }
         if !call.messages.is_array() {
             return Err(fail_pre_stream(
                 "",
                 RouterCode::InvalidRequest,
-                "messages must be an array".into(),
+                "The chat history is invalid. Start a new chat and try again.".into(),
             ));
         }
 
         let config = snapshot(&self.config);
         let settings = config.settings().clone();
+        let provider_records = self.registry.list().await;
         let candidates = decide(&DecideInput {
             model: call.model.clone(),
             provider: call.provider.clone(),
-            registered_providers: self.registry.ids().await,
-            catalog: self.catalog.model_ids().await,
+            registered_providers,
+            available_providers: provider_records
+                .iter()
+                .filter(|record| record.available)
+                .map(|record| record.declaration.id.clone())
+                .collect(),
+            catalog: catalog_ids,
             heuristics: settings.routing_heuristics.clone(),
             default_provider: settings.default_provider.clone(),
         })
         .map_err(|e| fail_pre_stream("", e.code, e.message))?;
         let provider = candidates[0].clone(); // MVP consumes candidates[0]
-        let record = match self.registry.get(&provider).await {
+        let record = match provider_records
+            .into_iter()
+            .find(|record| record.declaration.id == provider)
+        {
             Some(record) => record,
             None => {
                 return Err(fail_pre_stream(
                     &provider,
                     RouterCode::UnknownProvider,
-                    format!("unknown provider {provider}"),
+                    format!(
+                        "Provider \"{provider}\" is not registered. Choose a configured provider and try again."
+                    ),
                 ))
             }
         };
@@ -177,7 +453,10 @@ impl ChatPipeline {
                     return Err(fail_pre_stream(
                         &provider,
                         RouterCode::StructuredOutputUnsupported,
-                        format!("structured output unsupported for model {}", call.model),
+                        format!(
+                            "Model \"{}\" does not support structured output. Choose a compatible model or disable structured output.",
+                            call.model
+                        ),
                     ));
                 }
             }
@@ -198,16 +477,25 @@ impl ChatPipeline {
                 .unwrap_or(8192),
             settings.output_token_max,
         );
+        let provider_generation = record.generation;
 
         let request_id = call
             .request_id
             .clone()
             .unwrap_or_else(|| Uuid::new_v4().to_string());
-        let entry_handle = self.inflight.insert(&request_id);
+        let Some(entry_handle) = self.inflight.reserve(&request_id) else {
+            return Err(fail_pre_stream(
+                &provider,
+                RouterCode::RequestInProgress,
+                "This request is already running. Wait for it to finish or stop it before trying again."
+                    .into(),
+            ));
+        };
         let result = self
             .attempts(
                 &call,
                 &provider,
+                provider_generation,
                 model_meta.as_ref(),
                 max_output_tokens,
                 &settings,
@@ -216,7 +504,6 @@ impl ChatPipeline {
                 sink,
             )
             .await;
-        self.inflight.remove(&request_id);
         // Stamp token usage + cost onto the active `execute router::chat`
         // span. Every terminal outcome of the attempt loop funnels into the
         // ChatResponse, which carries the cost-filled usage.
@@ -237,6 +524,7 @@ impl ChatPipeline {
         &self,
         call: &ChatCall,
         provider: &str,
+        provider_generation: u64,
         model_meta: Option<&crate::types::model::Model>,
         max_output_tokens: u64,
         settings: &RouterSettings,
@@ -251,16 +539,18 @@ impl ChatPipeline {
         let send_frame = |frame: &AssistantMessageEvent| {
             let _ = sink.send(&serde_json::to_string(frame).expect("serializable frame"));
         };
-        let respond_err = |stop: StopReason, code: &str, message: String, usage| ChatResponse {
+        let respond_err = |stop: StopReason,
+                           code: RouterCode,
+                           kind: ErrorKind,
+                           message: String,
+                           detail: Option<String>,
+                           usage| ChatResponse {
             ok: false,
             provider: provider.to_string(),
             model: call.model.clone(),
             stop_reason: Some(stop),
             usage,
-            error: Some(ErrorShape {
-                code: code.to_string(),
-                message,
-            }),
+            error: Some(error_shape(code, kind, message, detail)),
         };
 
         let max_attempts = 1 + settings.retry_max;
@@ -268,8 +558,48 @@ impl ChatPipeline {
             if inflight.aborted.load(Ordering::SeqCst) {
                 break;
             }
-            let channel = create_router_channel(&self.iii).await?;
+            // Admission is synchronous and happens before even allocating the
+            // provider channel. Saturation cannot grow a hidden waiter queue or
+            // create another SDK invocation/in-flight stream.
+            let call_slot = match try_acquire_provider_call_slot(
+                provider_call_slots(),
+                inflight.aborted.as_ref(),
+            ) {
+                ProviderCallAdmission::Admitted(permit) => permit,
+                ProviderCallAdmission::Aborted => break,
+                ProviderCallAdmission::Saturated => {
+                    return Ok(provider_call_saturated_response(
+                        sink.as_ref(),
+                        last_partial.as_ref(),
+                        &call.model,
+                        provider,
+                        last_usage,
+                    ));
+                }
+            };
+            let channel = match create_router_channel(&self.iii).await {
+                Ok(channel) => channel,
+                Err(error) => {
+                    tracing::error!(%error, provider, model = %call.model, "router channel creation failed");
+                    let message =
+                        "The response stream could not be started. Try again.".to_string();
+                    return Err(fail_with_terminal(
+                        sink.as_ref(),
+                        last_partial.as_ref(),
+                        &call.model,
+                        provider,
+                        RouterCode::StreamSetupFailed,
+                        message,
+                        ErrorKind::Transient,
+                        last_usage,
+                    ));
+                }
+            };
             let mut reader = channel.reader;
+            if inflight.aborted.load(Ordering::SeqCst) {
+                drop(call_slot);
+                break;
+            }
             // router::abort closes the relay AND actively cancels the
             // provider's upstream via `provider::<id>::abort` — without it the
             // provider only notices the closed channel on its next (ping)
@@ -314,13 +644,22 @@ impl ChatPipeline {
             let function_id = format!("provider::{provider}::stream");
             let closer = reader.closer();
             let timeout = settings.stream_timeout_ms;
+            // Holding the admission permit inside the call task makes the cap
+            // a real bound on SDK pending stream invocations, including tasks
+            // transferred to the post-terminal reaper.
+            if inflight.aborted.load(Ordering::SeqCst) {
+                drop(call_slot);
+                break;
+            }
             // Carry the caller's OTel context into the spawned task so the
             // provider stream nests under `router::chat` instead of rooting a
             // detached trace. `with_context` (not `cx.attach()`) because the
             // `ContextGuard` is `!Send` and can't cross the `.await` below.
             let parent_cx = iii_helpers::observability::opentelemetry::Context::current();
+            let (outcome_tx, outcome_rx) = tokio::sync::oneshot::channel();
             let call_task = tokio::spawn(
                 async move {
+                    let _call_slot = call_slot;
                     let out = iii
                         .trigger(TriggerRequest {
                             function_id,
@@ -329,10 +668,14 @@ impl ChatPipeline {
                             timeout_ms: Some(timeout),
                         })
                         .await;
-                    if out.is_err() {
+                    let failed = out.is_err();
+                    // Publish before closing: once the reader wakes on EOF the
+                    // orchestration can classify function_not_found without
+                    // waiting for (or racing) the provider task.
+                    let _ = outcome_tx.send(out);
+                    if failed {
                         closer();
                     }
-                    out
                 }
                 .with_context(parent_cx),
             );
@@ -347,9 +690,12 @@ impl ChatPipeline {
                 },
             )
             .await;
-            let call_outcome = call_task
-                .await
-                .unwrap_or(Err(Error::Handler("provider task panicked".into())));
+            // Relay completion owns the foreground attempt lifecycle. Closing
+            // the reader propagates cancellation to a cooperative provider;
+            // the reaper lets a non-cooperative trigger run only until its SDK
+            // timeout without delaying Done/Error/Idle/Abort.
+            reader.close();
+            let call_outcome = finish_provider_call(call_task, outcome_rx).await;
 
             match relay {
                 RelayResult::Done { terminal, .. } => {
@@ -360,7 +706,11 @@ impl ChatPipeline {
                     // serving — heal a stale "down" flag (e.g. the boot-time
                     // reset in `RegistryStore::load`, or a past transient
                     // function_not_found) without waiting for a re-register.
-                    if self.registry.set_availability(provider, true).await {
+                    if self
+                        .registry
+                        .set_availability_if_current(provider, provider_generation, true)
+                        .await
+                    {
                         self.events
                             .emit(
                                 triggers::PROVIDER_CHANGED,
@@ -391,10 +741,12 @@ impl ChatPipeline {
                         && attempt < max_attempts
                         && !inflight.aborted.load(Ordering::SeqCst);
                     if can_retry {
-                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms(
+                        let delay = std::time::Duration::from_millis(backoff_ms(
                             attempt, 500, 8000, rand_unit,
-                        )))
-                        .await;
+                        ));
+                        if inflight.wait_for_abort(delay).await {
+                            break;
+                        }
                         continue;
                     }
                     if !terminal_forwarded {
@@ -403,16 +755,17 @@ impl ChatPipeline {
                     let AssistantMessageEvent::Error { error } = terminal else {
                         unreachable!()
                     };
-                    let code = kind
-                        .and_then(|k| serde_json::to_value(k).ok())
-                        .and_then(|v| v.as_str().map(String::from))
-                        .unwrap_or_else(|| "transient".into());
+                    let kind = kind.unwrap_or(ErrorKind::Transient);
+                    let detail = error
+                        .error_message
+                        .unwrap_or_else(|| "provider returned an error without details".into());
+                    let (code, message) = provider_error_presentation(kind, provider, &call.model);
                     return Ok(respond_err(
                         StopReason::Error,
-                        &code,
-                        error
-                            .error_message
-                            .unwrap_or_else(|| "provider error".into()),
+                        code,
+                        kind,
+                        message,
+                        Some(detail),
                         error.usage,
                     ));
                 }
@@ -440,13 +793,46 @@ impl ChatPipeline {
                 } => {
                     last_partial = partial;
                     last_usage = usage.clone();
-                    if let Err(err) = call_outcome {
+                    if let Some(Err(err)) = call_outcome {
                         if !forwarded {
-                            if is_router_coded(&err) {
+                            if let Some((message, kind)) = terminal_dispatch_error(&err) {
+                                send_error_terminal(
+                                    sink.as_ref(),
+                                    last_partial.as_ref(),
+                                    &call.model,
+                                    provider,
+                                    message,
+                                    kind,
+                                    usage,
+                                );
                                 return Err(err);
                             }
                             if is_function_not_found(&err) {
-                                if self.registry.set_availability(provider, false).await {
+                                let message = format!(
+                                    "Provider \"{provider}\" is temporarily unavailable. Try again or choose another provider."
+                                );
+                                let terminal_error = fail_with_terminal(
+                                    sink.as_ref(),
+                                    last_partial.as_ref(),
+                                    &call.model,
+                                    provider,
+                                    RouterCode::ProviderUnavailable,
+                                    message,
+                                    ErrorKind::Transient,
+                                    usage,
+                                );
+                                // Emit before availability persistence/event
+                                // fan-out: neither side effect may hold the
+                                // consumer's terminal frame hostage.
+                                if self
+                                    .registry
+                                    .set_availability_if_current(
+                                        provider,
+                                        provider_generation,
+                                        false,
+                                    )
+                                    .await
+                                {
                                     self.events
                                         .emit(
                                             triggers::PROVIDER_CHANGED,
@@ -454,11 +840,7 @@ impl ChatPipeline {
                                         )
                                         .await;
                                 }
-                                return Err(RouterError::new(
-                                    RouterCode::ProviderUnavailable,
-                                    format!("provider {provider} unavailable"),
-                                )
-                                .into());
+                                return Err(terminal_error);
                             }
                         }
                     }
@@ -468,19 +850,35 @@ impl ChatPipeline {
                         && attempt < max_attempts
                         && !inflight.aborted.load(Ordering::SeqCst);
                     if can_retry {
-                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms(
+                        let delay = std::time::Duration::from_millis(backoff_ms(
                             attempt, 500, 8000, rand_unit,
-                        )))
-                        .await;
+                        ));
+                        if inflight.wait_for_abort(delay).await {
+                            break;
+                        }
                         continue;
                     }
-                    let message = if is_idle {
-                        format!(
-                            "provider {provider} stream idle past {}ms",
-                            settings.idle_timeout_ms
+                    let (code, message, detail) = if is_idle {
+                        (
+                            RouterCode::StreamIdleTimeout,
+                            format!(
+                                "Provider \"{provider}\" stopped responding before the answer completed. Try again."
+                            ),
+                            format!(
+                                "provider {provider} stream idle past {}ms",
+                                settings.idle_timeout_ms
+                            ),
                         )
                     } else {
-                        format!("provider {provider} stream ended without a terminal frame")
+                        (
+                            RouterCode::StreamIncomplete,
+                            format!(
+                                "Provider \"{provider}\" disconnected before completing the response. Try again."
+                            ),
+                            format!(
+                                "provider {provider} stream ended without a terminal frame"
+                            ),
+                        )
                     };
                     let terminal = synthesize_error(
                         last_partial.as_ref(),
@@ -497,8 +895,10 @@ impl ChatPipeline {
                     };
                     return Ok(respond_err(
                         StopReason::Error,
-                        "transient",
+                        code,
+                        ErrorKind::Transient,
                         message,
+                        Some(detail),
                         error.usage,
                     ));
                 }
@@ -538,7 +938,7 @@ fn rand_unit() -> f64 {
 /// null — provider-side schemas reject `null` where a string or array is
 /// expected. `resolution_key` is the request id: stable across retry attempts
 /// within a turn, fresh per turn, so providers can dedupe per-turn credential
-/// resolution.
+/// resolution. `session_id` remains stable across turns for provider affinity.
 fn build_stream_input(
     call: &ChatCall,
     provider: &str,
@@ -555,6 +955,11 @@ fn build_stream_input(
     input.insert(
         "resolution_key".into(),
         Value::String(request_id.to_string()),
+    );
+    insert_present(
+        &mut input,
+        "session_id",
+        call.session_id.clone().map(Value::String),
     );
     insert_present(
         &mut input,
@@ -592,6 +997,16 @@ fn insert_present(map: &mut serde_json::Map<String, Value>, key: &str, value: Op
 mod tests {
     use super::*;
 
+    struct DropSignal(Option<tokio::sync::oneshot::Sender<()>>);
+
+    impl Drop for DropSignal {
+        fn drop(&mut self) {
+            if let Some(tx) = self.0.take() {
+                let _ = tx.send(());
+            }
+        }
+    }
+
     fn remote(code: &str) -> Error {
         Error::Remote {
             code: code.into(),
@@ -609,6 +1024,259 @@ mod tests {
         assert!(!is_function_not_found(&Error::Timeout));
         assert!(is_router_coded(&remote("router/not_configured")));
         assert!(!is_router_coded(&remote("function_not_found")));
+        assert_eq!(
+            terminal_dispatch_error(&remote("provider/invalid_request")).map(|(_, kind)| kind),
+            Some(ErrorKind::Permanent)
+        );
+        assert!(terminal_dispatch_error(&remote("provider/upstream_unavailable")).is_none());
+    }
+
+    #[test]
+    fn only_provider_unavailable_is_a_transient_pre_stream_decision() {
+        assert_eq!(
+            pre_stream_error_kind(RouterCode::ProviderUnavailable),
+            ErrorKind::Transient
+        );
+        for code in [
+            RouterCode::InvalidRequest,
+            RouterCode::UnknownProvider,
+            RouterCode::NoProviderForModel,
+            RouterCode::AmbiguousModel,
+            RouterCode::NotConfigured,
+            RouterCode::StructuredOutputUnsupported,
+            RouterCode::RegistrationRejected,
+            RouterCode::RequestInProgress,
+            RouterCode::CapacityExceeded,
+            RouterCode::StreamSetupFailed,
+            RouterCode::StreamIdleTimeout,
+            RouterCode::StreamIncomplete,
+            RouterCode::ProviderAuthExpired,
+            RouterCode::ProviderRateLimited,
+            RouterCode::ContextOverflow,
+            RouterCode::ProviderTransient,
+            RouterCode::ProviderRejected,
+        ] {
+            assert_eq!(
+                pre_stream_error_kind(code),
+                ErrorKind::Permanent,
+                "{} must remain permanent",
+                code.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn provider_errors_have_stable_codes_and_actionable_public_messages() {
+        let cases = [
+            (
+                ErrorKind::AuthExpired,
+                RouterCode::ProviderAuthExpired,
+                "Update its credentials",
+            ),
+            (
+                ErrorKind::RateLimited,
+                RouterCode::ProviderRateLimited,
+                "Try again shortly",
+            ),
+            (
+                ErrorKind::ContextOverflow,
+                RouterCode::ContextOverflow,
+                "larger context window",
+            ),
+            (
+                ErrorKind::Transient,
+                RouterCode::ProviderTransient,
+                "Try again",
+            ),
+            (
+                ErrorKind::Permanent,
+                RouterCode::ProviderRejected,
+                "provider settings",
+            ),
+        ];
+
+        for (kind, code, action) in cases {
+            let (actual_code, message) = provider_error_presentation(kind, "openai", "gpt-5");
+            assert_eq!(actual_code, code);
+            assert!(message.contains(action), "missing action in {message}");
+            assert!(!message.contains("terminal frame"));
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_call_admission_slot_stays_held_while_the_rpc_is_reaped() {
+        let slots = Arc::new(tokio::sync::Semaphore::new(1));
+        let aborted = std::sync::atomic::AtomicBool::new(false);
+        let ProviderCallAdmission::Admitted(call_slot) =
+            try_acquire_provider_call_slot(slots.clone(), &aborted)
+        else {
+            panic!("first provider call must be admitted");
+        };
+        let (outcome_tx, outcome_rx) = tokio::sync::oneshot::channel::<ProviderCallOutcome>();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let (dropped_tx, mut dropped_rx) = tokio::sync::oneshot::channel();
+        let call_task = tokio::spawn(async move {
+            let _call_slot = call_slot;
+            let _drop_signal = DropSignal(Some(dropped_tx));
+            let _outcome_tx = outcome_tx;
+            let _ = started_tx.send(());
+            let _ = release_rx.await;
+        });
+        started_rx.await.unwrap();
+
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            finish_provider_call(call_task, outcome_rx),
+        )
+        .await
+        .expect("relay completion must not wait for the provider RPC timeout");
+
+        assert!(outcome.is_none());
+        assert!(
+            slots.clone().try_acquire_owned().is_err(),
+            "a second SDK invocation must not be admitted while the reaper owns the first"
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(25), &mut dropped_rx)
+                .await
+                .is_err(),
+            "cleanup must not abort the SDK trigger future"
+        );
+
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), dropped_rx)
+            .await
+            .expect("the background reaper must observe bounded task completion")
+            .expect("drop signal sender must remain alive until task completion");
+        let permit = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            slots.clone().acquire_owned(),
+        )
+        .await
+        .expect("the admission slot must be released after SDK task completion")
+        .expect("test semaphore remains open");
+        drop(permit);
+    }
+
+    #[tokio::test]
+    async fn saturated_provider_call_is_rejected_transiently_then_admitted_after_release() {
+        use crate::chat::relay::{ReadEvent, RelayRead};
+        use crate::testkit::fake_channels::FakeChannel;
+        use std::time::Duration;
+
+        let slots = Arc::new(tokio::sync::Semaphore::new(1));
+        let aborted = std::sync::atomic::AtomicBool::new(false);
+        let ProviderCallAdmission::Admitted(first_slot) =
+            try_acquire_provider_call_slot(slots.clone(), &aborted)
+        else {
+            panic!("first provider call must be admitted");
+        };
+        assert!(
+            matches!(
+                try_acquire_provider_call_slot(slots.clone(), &aborted),
+                ProviderCallAdmission::Saturated
+            ),
+            "a full limiter must reject synchronously rather than queue"
+        );
+
+        let ch = FakeChannel::new();
+        let response =
+            provider_call_saturated_response(&ch.writer, None, "busy-model", "busy-provider", None);
+        assert!(!response.ok);
+        assert_eq!(response.stop_reason, Some(StopReason::Error));
+        let error = response.error.as_ref().unwrap();
+        assert_eq!(error.code, RouterCode::CapacityExceeded.as_str());
+        assert_eq!(error.kind, Some(ErrorKind::Transient));
+        assert_eq!(error.retryable, Some(true));
+        assert!(error.message.contains("try again"));
+        assert!(error.detail.as_deref().unwrap().contains("capacity"));
+
+        let mut reader = ch.reader;
+        let ReadEvent::Msg(frame) = reader.next(Duration::from_millis(50)).await else {
+            panic!("saturation must emit a terminal error frame");
+        };
+        let AssistantMessageEvent::Error { error } =
+            serde_json::from_str::<AssistantMessageEvent>(&frame).unwrap()
+        else {
+            panic!("saturation terminal must be an error");
+        };
+        assert_eq!(error.error_kind, Some(ErrorKind::Transient));
+        assert!(matches!(
+            reader.next(Duration::from_millis(25)).await,
+            ReadEvent::Timeout
+        ));
+
+        aborted.store(true, Ordering::SeqCst);
+        assert!(matches!(
+            try_acquire_provider_call_slot(slots.clone(), &aborted),
+            ProviderCallAdmission::Aborted
+        ));
+        aborted.store(false, Ordering::SeqCst);
+
+        drop(first_slot);
+        let ProviderCallAdmission::Admitted(_next_slot) =
+            try_acquire_provider_call_slot(slots, &aborted)
+        else {
+            panic!("released capacity must admit the next provider call");
+        };
+    }
+
+    #[tokio::test]
+    async fn dispatch_error_published_before_reader_close_survives_task_cleanup() {
+        let (outcome_tx, outcome_rx) = tokio::sync::oneshot::channel::<ProviderCallOutcome>();
+        let (published_tx, published_rx) = tokio::sync::oneshot::channel();
+        let call_task = tokio::spawn(async move {
+            let _ = outcome_tx.send(Err(remote("function_not_found")));
+            let _ = published_tx.send(());
+        });
+        published_rx.await.unwrap();
+
+        let outcome = finish_provider_call(call_task, outcome_rx)
+            .await
+            .expect("published outcome must be retained");
+        assert!(is_function_not_found(&outcome.unwrap_err()));
+    }
+
+    #[tokio::test]
+    async fn provider_unavailable_failure_emits_exactly_one_terminal_error() {
+        use crate::chat::relay::{ReadEvent, RelayRead};
+        use crate::testkit::fake_channels::FakeChannel;
+        use std::time::Duration;
+
+        let ch = FakeChannel::new();
+        let err = fail_with_terminal(
+            &ch.writer,
+            None,
+            "ghost-model",
+            "ghost",
+            RouterCode::ProviderUnavailable,
+            "provider ghost unavailable".into(),
+            ErrorKind::Transient,
+            None,
+        );
+        assert!(matches!(
+            err,
+            Error::Remote { ref code, .. } if code == "router/provider_unavailable"
+        ));
+
+        let mut reader = ch.reader;
+        let ReadEvent::Msg(frame) = reader.next(Duration::from_millis(50)).await else {
+            panic!("expected terminal error frame");
+        };
+        let event: AssistantMessageEvent = serde_json::from_str(&frame).unwrap();
+        let AssistantMessageEvent::Error { error } = event else {
+            panic!("provider_unavailable must emit an error terminal");
+        };
+        assert_eq!(error.error_kind, Some(ErrorKind::Transient));
+        assert_eq!(
+            error.error_message.as_deref(),
+            Some("provider ghost unavailable")
+        );
+        assert!(matches!(
+            reader.next(Duration::from_millis(25)).await,
+            ReadEvent::Timeout
+        ));
     }
 
     /// A pre-stream failure (here: a model that routes to no provider) must
@@ -714,6 +1382,7 @@ mod tests {
             "thinking_level",
             "provider_options",
             "model_meta",
+            "session_id",
         ] {
             assert!(
                 !obj.contains_key(absent),
@@ -739,12 +1408,14 @@ mod tests {
             "system_prompt": "be brief",
             "tools": [{ "name": "t", "description": "d", "parameters": {} }],
             "thinking_level": "high",
+            "session_id": "s_1",
             "provider_options": { "anthropic": { "beta": true }, "openai": { "x": 1 } },
         }))
         .unwrap();
         let input = build_stream_input(&call, "anthropic", writer_ref, 8192, None, "req-2");
         assert_eq!(input["system_prompt"], json!("be brief"));
         assert_eq!(input["thinking_level"], json!("high"));
+        assert_eq!(input["session_id"], json!("s_1"));
         assert_eq!(input["provider_options"], json!({ "beta": true }));
     }
 }

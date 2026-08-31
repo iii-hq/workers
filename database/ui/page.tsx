@@ -11,6 +11,8 @@
  * - src/page/ — the `#/ext/database` browser: schema tree, sortable row
  *   grid, row inspector, and a read-only SQL editor (shared Monaco). Reads
  *   the live database over `database::query`/`database::listDatabases`.
+ *   Registered with the host's render props so the page follows the pane
+ *   (side, per-tab state, the standard close affordance).
  * - src/configuration/ — the configuration form for the `database` entry
  *   on the Workers tab, replacing the generic schema-driven editor.
  *
@@ -22,14 +24,16 @@ import type { Host } from '@iii-dev/console-ui'
 import { DatabaseConfigForm } from './src/configuration'
 import { createDatabaseTriggerRenderer } from './src/function-trigger-message'
 import { DatabasePage } from './src/page'
+import { registerDatabasePalette } from './src/palette'
 
 export default function setup(host: Host) {
   host.functionTriggers.register(createDatabaseTriggerRenderer(host))
+  registerDatabasePalette(host)
 
   host.pages.register({
     id: 'database',
     title: 'database',
-    render: () => <DatabasePage host={host} />,
+    render: (props) => <DatabasePage host={host} {...props} />,
   })
 
   host.configForms.register('database', (props) => (

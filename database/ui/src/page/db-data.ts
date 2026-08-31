@@ -10,9 +10,9 @@
  * callable by any agent rather than only by this page.
  *
  * What remains is shape translation for the existing components, plus the two
- * client-side SQL affordances (`isReadOnlySql`, `explainPrefix`) that exist to
- * grey out a button before a round trip. The worker enforces both for real;
- * neither is trusted.
+ * client-side SQL affordances (`isReadOnlySql` picks the query vs execute
+ * surface for a statement, `explainPrefix`). The worker enforces read-only on
+ * `query` for real; nothing here is trusted.
  */
 
 import type { Host } from '@iii-dev/console-ui'
@@ -77,8 +77,15 @@ export interface TablePage {
 }
 
 export interface AdhocResult {
+  /** Grid to draw. For writes, synthesized from the RETURNING rows. */
   result: QueryResponse
   durationMs: number
+  /**
+   * Present when the statement ran through `database::execute`. `echo` is the
+   * human account of a schema change ("dropped table x") — the row count is
+   * the wrong summary for DDL, which MySQL reports as `0 affected`.
+   */
+  write?: { affectedRows: number; lastInsertId: string | null; echo: string | null }
 }
 
 /** Split a schema-qualified name for the worker, which takes them apart. */
@@ -193,15 +200,18 @@ const WRITE_ANYWHERE =
   /\b(insert|update|delete|replace|merge|upsert|drop|create|alter|truncate|grant|revoke|attach|detach|reindex|vacuum)\b/i
 
 /**
- * Best-effort read check, used only to grey out the run button before a round
- * trip. The worker re-checks every statement and is the actual authority —
- * this is a UX affordance, not a security boundary.
+ * Best-effort read check. It routes: reads go to `database::query`, anything
+ * else to `database::execute`. Misclassifying a read as a write is harmless —
+ * `execute` runs SELECTs too, it just reports them as `0 affected` — and the
+ * worker's own read-only enforcement on `query` catches the other direction.
+ * A routing hint, not a security boundary.
  */
+function stripSqlComments(sql: string): string {
+  return sql.replace(/--[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '')
+}
+
 export function isReadOnlySql(sql: string): boolean {
-  const stripped = sql
-    .replace(/--[^\n]*/g, '')
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .trim()
+  const stripped = stripSqlComments(sql).trim()
   if (!stripped) return false
   if (stripped.replace(/;+\s*$/, '').includes(';')) return false
   if (!READ_ONLY_LEAD.test(stripped)) return false
@@ -209,13 +219,63 @@ export function isReadOnlySql(sql: string): boolean {
   return !WRITE_ANYWHERE.test(stripped)
 }
 
-export async function runReadOnlySql(host: Host, db: string, sql: string): Promise<AdhocResult> {
-  if (!isReadOnlySql(sql)) {
-    throw new Error('only read-only statements can be run from this panel')
-  }
+/**
+ * Run a statement from the editor: reads through `database::query`, writes
+ * through `database::execute`. Both are the worker's own functions, so an
+ * engine policy that narrows an agent to reads narrows this panel the same
+ * way, and writes land in the `database::row-changed` feed like any other.
+ */
+export async function runAdhocSql(host: Host, db: string, sql: string): Promise<AdhocResult> {
+  // People type SQL with a trailing `;`; the drivers' prepared paths don't
+  // all accept one. Strip it here instead of teaching that per driver.
+  const statement = sql.trim().replace(/;+\s*$/, '')
   const started = performance.now()
-  const result = await rpc.runSql(host, db, sql)
-  return { result, durationMs: Math.round(performance.now() - started) }
+  if (isReadOnlySql(statement)) {
+    const result = await rpc.runSql(host, db, statement)
+    return { result, durationMs: Math.round(performance.now() - started) }
+  }
+  const res = await rpc.execSql(host, db, statement)
+  const rows = res.returned_rows ?? []
+  const ddl = ddlInfo(statement)
+  return {
+    result: {
+      rows,
+      row_count: rows.length,
+      columns: Object.keys(rows[0] ?? {}).map((name) => ({ name })),
+    },
+    durationMs: Math.round(performance.now() - started),
+    write: {
+      affectedRows: res.affected_rows,
+      lastInsertId: res.last_insert_id ?? null,
+      echo: ddl ? ddl.past : null,
+    },
+  }
+}
+
+/** Verb pairs for the statements that reshape the schema itself. */
+const DDL_VERBS: Record<string, [string, string]> = {
+  drop: ['drops', 'dropped'],
+  truncate: ['truncates', 'truncated'],
+  alter: ['alters', 'altered'],
+}
+
+const DDL_RE =
+  /^(drop|truncate|alter)\b(?:\s+(table|view|index|database|schema|trigger))?(?:\s+if\s+(?:not\s+)?exists)?(?:\s+([`"']?[\w.$]+[`"']?))?/i
+
+/**
+ * The statements that reshape the schema, named in both tenses: the armed
+ * note says what is about to happen ("drops table x"), the result line says
+ * what did ("dropped table x"). Display-only — routing does not depend on it.
+ */
+export function ddlInfo(sql: string): { present: string; past: string } | null {
+  const m = DDL_RE.exec(stripSqlComments(sql).trim())
+  if (!m) return null
+  const [present, past] = DDL_VERBS[m[1].toLowerCase()]
+  const object = [m[2]?.toLowerCase(), m[3]?.replace(/[`"']/g, '')].filter(Boolean).join(' ')
+  return {
+    present: object ? `${present} ${object}` : present,
+    past: object ? `${past} ${object}` : past,
+  }
 }
 
 /**
@@ -224,6 +284,16 @@ export async function runReadOnlySql(host: Host, db: string, sql: string): Promi
  */
 export function explainPrefix(driver: DbDriver): string {
   return driver === 'sqlite' ? 'EXPLAIN QUERY PLAN ' : 'EXPLAIN '
+}
+
+/**
+ * The schema qualifying every listed table, or '' when there isn't exactly
+ * one. A universal prefix (postgres's `public.` on every row) is repetition,
+ * not information — display strips it; identity keeps the qualified name.
+ */
+export function commonSchema(names: readonly string[]): string {
+  const schemas = new Set(names.map((n) => (n.includes('.') ? n.slice(0, n.indexOf('.')) : '')))
+  return schemas.size === 1 ? [...schemas][0] : ''
 }
 
 /* ---- identifier quoting, for display only ---- */

@@ -13,7 +13,7 @@ import { useWorkerLifecycle } from './use-worker-lifecycle'
  *   1. An initial `engine::workers::list` read on mount.
  *   2. A real-time `worker` add/remove lifecycle trigger, so the UI reacts the
  *      instant the worker is added or removed — whether from the CLI
- *      (`iii worker add <name>`) or another surface.
+ *      (`iii trigger compose::add worker=<name>`) or another surface.
  *
  * Each consumer MUST pass a unique `watchFnId` so its browser-local handler for
  * the `worker` trigger does not collide with another presence probe's.

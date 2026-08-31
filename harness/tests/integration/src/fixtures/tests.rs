@@ -10,9 +10,34 @@ fn all_selection_returns_the_checked_in_fixtures() {
     assert_eq!(
         ids,
         std::collections::BTreeSet::from([
-            "INT-001", "INT-002", "INT-003", "INT-005", "INT-006", "INT-010", "INT-011", "INT-012",
-            "INT-013", "INT-014", "INT-015", "INT-016", "INT-017", "INT-018", "INT-019", "INT-020",
-            "UI-001", "UI-002"
+            "INT-001",
+            "INT-002",
+            "INT-003",
+            "INT-005",
+            "INT-006",
+            "INT-010",
+            "INT-011",
+            "INT-012",
+            "INT-013",
+            "INT-014",
+            "INT-015",
+            "INT-016",
+            "INT-017",
+            "INT-018",
+            "INT-019",
+            "INT-020",
+            "INT-021",
+            "INT-022",
+            "INT-023",
+            "INT-024",
+            "INT-025",
+            "INT-026",
+            "UI-001",
+            "UI-002",
+            "UI-003",
+            "UI-004",
+            "UI-005",
+            "UI-SEC-001"
         ])
     );
     assert_eq!(
@@ -20,7 +45,7 @@ fn all_selection_returns_the_checked_in_fixtures() {
             .iter()
             .filter(|fixture| fixture.driver == crate::scenarios::ScenarioDriver::Direct)
             .count(),
-        16
+        22
     );
 }
 

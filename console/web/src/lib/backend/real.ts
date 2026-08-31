@@ -13,6 +13,7 @@
  */
 
 import { parseCatalogModelKey } from '@/lib/catalog-model-key'
+import { errText } from '@/lib/errors'
 import { getIiiClient } from '@/lib/iii-client'
 import { newMessageId, newSessionId } from '@/lib/session-id'
 import { appendCustomEntry, fetchTranscript } from '@/lib/sessions/api'
@@ -30,11 +31,14 @@ import { loadApprovalGateDefaults } from './approval-gate-config'
 import {
   getTurnStatus,
   type HarnessFunctionPolicy,
+  type HarnessImageBlock,
   type HarnessSendRequest,
   type HarnessThinkingLevel,
   isTurnActive,
   sendTurn,
   stopTurn,
+  toSkillOptions,
+  toSystemPromptOptions,
 } from './harness-send'
 import {
   isTerminalSource,
@@ -48,6 +52,7 @@ import {
 } from './triggers'
 import {
   startQueuedEventsSubscription,
+  startTriggersChangedSubscription,
   startTurnEventsSubscription,
 } from './turn-events-live'
 import type {
@@ -67,13 +72,18 @@ interface RunParams {
 
 /**
  * The chat composer is a general-purpose agent surface: expose the whole bus
- * via `agent_trigger`. The approval-gate rules supply the structural floor;
- * the gate hook remains the human decision surface.
+ * via `agent_trigger`. When approval-gate configuration is unavailable, this
+ * fallback keeps registration and other control-plane functions hidden while
+ * allowing updates to already-registered configuration entries.
  */
 export const FALLBACK_FUNCTION_POLICY: HarnessFunctionPolicy = {
   allow: ['*'],
-  deny: ['approval::*', 'configuration::*', 'shell::workspace::*'],
+  deny: ['approval::*', 'configuration::register', 'shell::workspace::*'],
   expose: 'agent_trigger',
+}
+
+export function toHarnessSendError(err: unknown): Error {
+  return err instanceof Error ? err : new Error(errText(err))
 }
 
 function resolveRunParams(model: ModelId): RunParams {
@@ -134,14 +144,23 @@ export function buildTurnMetadata(
  * mention expansions appended. Shared by the send/queue path and the
  * edit-queued path so an edit rebuilds content exactly as the original did.
  */
-function buildMessageInput(prompt: string, attachedBlocks: string[]) {
-  if (attachedBlocks.length === 0) return prompt
+function buildMessageInput(
+  prompt: string,
+  attachedBlocks: string[],
+  attachedImages: HarnessImageBlock[] = [],
+) {
+  if (attachedBlocks.length === 0 && attachedImages.length === 0) return prompt
   return {
     role: 'user' as const,
-    content: [prompt, ...attachedBlocks].map((text) => ({
-      type: 'text' as const,
-      text,
-    })),
+    content: [
+      // Images last: the text says what was asked, and a provider that trims
+      // content to fit its own window should drop pixels before the question.
+      ...[prompt, ...attachedBlocks].map((text) => ({
+        type: 'text' as const,
+        text,
+      })),
+      ...attachedImages,
+    ],
     timestamp: Date.now(),
   }
 }
@@ -176,7 +195,11 @@ async function buildSendRequest(
     }
   }
 
-  const message = buildMessageInput(prompt, opts?.attachedBlocks ?? [])
+  const message = buildMessageInput(
+    prompt,
+    opts?.attachedBlocks ?? [],
+    opts?.attachedImages ?? [],
+  )
 
   return {
     session_id: sessionId,
@@ -188,6 +211,9 @@ async function buildSendRequest(
     options: {
       mode,
       functions: functionPolicy,
+      ...(opts?.agent ? { agent: opts.agent } : {}),
+      ...toSystemPromptOptions(opts?.systemPrompt),
+      ...toSkillOptions(opts?.skills),
       ...(thinkingLevel ? { thinking_level: thinkingLevel } : {}),
       ...(providerOptions ? { provider_options: providerOptions } : {}),
       metadata: buildTurnMetadata(sessionId, messageId, opts?.workingDir),
@@ -400,7 +426,7 @@ async function* realStream(
     void sendTurn(client, sendRequest)
       .then((response) => push({ kind: 'send-resolved', response }))
       .catch((err) => {
-        kickoffError = err instanceof Error ? err : new Error(String(err))
+        kickoffError = toHarnessSendError(err)
         if (import.meta.env.DEV) {
           console.warn('[real-backend] harness::send failed', err)
         }
@@ -481,13 +507,17 @@ async function realEditQueued(
   sessionId: string,
   entryId: string,
   prompt: string,
-  opts?: { attachedBlocks?: string[] },
+  opts?: { attachedBlocks?: string[]; attachedImages?: HarnessImageBlock[] },
 ): Promise<void> {
   const client = await getIiiClient()
   await client.trigger('harness::edit_queued', {
     session_id: sessionId,
     entry_id: entryId,
-    message: buildMessageInput(prompt, opts?.attachedBlocks ?? []),
+    message: buildMessageInput(
+      prompt,
+      opts?.attachedBlocks ?? [],
+      opts?.attachedImages ?? [],
+    ),
   })
 }
 
@@ -511,6 +541,37 @@ function realOnQueuedMessage(
   return () => {
     disposed = true
     off?.()
+  }
+}
+
+/**
+ * `harness::triggers-changed` subscription: the doorbell to refetch
+ * `listTriggers`. Same sync-return-over-async-bootstrap shape as
+ * `realOnQueuedMessage`, plus a reconnect reseed: the SDK replays trigger
+ * registrations on reconnect, but doorbells rung during the outage are gone,
+ * so every `connected` transition fires one catch-up event (the same repair
+ * TracesV2 uses).
+ */
+function realOnTriggersChanged(
+  sessionId: string,
+  onEvent: () => void,
+): () => void {
+  let disposed = false
+  let off: (() => void) | null = null
+  let offConn: (() => void) | null = null
+  getIiiClient()
+    .then((client) => {
+      if (disposed) return
+      off = startTriggersChangedSubscription(client, sessionId, () => onEvent())
+      offConn = client.addConnectionStateListener((state) => {
+        if (state === 'connected') onEvent()
+      })
+    })
+    .catch(() => {})
+  return () => {
+    disposed = true
+    off?.()
+    offConn?.()
   }
 }
 
@@ -681,7 +742,7 @@ async function realCompactSession(
   } catch (err) {
     return {
       status: 'error',
-      message: err instanceof Error ? err.message : String(err),
+      message: errText(err),
     }
   }
 }
@@ -695,6 +756,7 @@ export const realBackend: ChatBackend = {
   editQueued: realEditQueued,
   onQueuedMessage: realOnQueuedMessage,
   listTriggers: realListTriggers,
+  onTriggersChanged: realOnTriggersChanged,
   unregisterTrigger: realUnregisterTrigger,
   stateKeyExists: realStateKeyExists,
   watchApprovals: realWatchApprovals,

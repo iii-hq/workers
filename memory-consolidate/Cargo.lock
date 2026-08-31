@@ -642,9 +642,9 @@ dependencies = [
 
 [[package]]
 name = "iii-helpers"
-version = "0.21.6"
+version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0d84d5c149ae4404365a79feca28aa66f6a7dbed56423b4b8c4e2421e0b5add"
+checksum = "0342a8980e12e9bb994d9221637914a719a156cee73705b595d6588e45c9cfca"
 dependencies = [
  "futures-util",
  "opentelemetry",
@@ -663,9 +663,9 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.21.3"
+version = "0.22.1-alpha.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6455e06a9357696d8aa7cf7ba6d6b30ce8803036d85ea53a51de76178b867ec"
+checksum = "5bb1167081b82a1aa9f12b05ad9e093fdf1cd2a3ed282bb66451a26e37f4a459"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -768,7 +768,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "memory-consolidate"
-version = "0.1.6"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "clap",

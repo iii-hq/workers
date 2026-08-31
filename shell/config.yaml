@@ -102,6 +102,13 @@ fs:
 sandbox:
   enabled: true
 
+# Durable per-session change history behind shell::turns::list/get: one small
+# JSON record per session plus content-addressed pre-image blobs, pruned
+# oldest-first past max_blob_bytes. Never stored in the state worker.
+turns:
+  data_dir: data/shell/turns
+  max_blob_bytes: 268435456
+
 # The folded `coder::*` code surface. Its ROOTS are NOT set here — the code
 # resolver uses fs.host_roots above, so the operator sets the project root
 # ONCE. `non_accessible_globs` is the unified protected-paths list: BOTH the

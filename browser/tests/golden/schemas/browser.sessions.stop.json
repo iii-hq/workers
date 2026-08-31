@@ -1,22 +1,28 @@
 {
-  "description": "Stop a browser session and its Chromium process. Idempotent: stopping an unknown or already-stopped session succeeds with was_running=false.",
   "function_id": "browser::sessions::stop",
+  "description": "Stop a browser session and its Chromium process. Idempotent: stopping an unknown or already-stopped session succeeds with was_running=false.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "StopInput",
+    "type": "object",
+    "required": [
+      "session_id"
+    ],
     "properties": {
       "session_id": {
         "description": "Session to stop. Stopping an unknown or already-stopped id succeeds.",
         "type": "string"
       }
-    },
-    "required": [
-      "session_id"
-    ],
-    "title": "StopInput",
-    "type": "object"
+    }
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "StopOutput",
+    "type": "object",
+    "required": [
+      "ok",
+      "was_running"
+    ],
     "properties": {
       "ok": {
         "type": "boolean"
@@ -25,12 +31,6 @@
         "description": "False when the session was already gone.",
         "type": "boolean"
       }
-    },
-    "required": [
-      "ok",
-      "was_running"
-    ],
-    "title": "StopOutput",
-    "type": "object"
+    }
   }
 }

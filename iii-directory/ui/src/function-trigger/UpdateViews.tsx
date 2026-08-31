@@ -8,8 +8,8 @@ import {
   StatusPill,
 } from '../lib/widgets'
 import {
-  promptsUpdateRequestSchema,
-  promptsUpdateResponseSchema,
+  systemPromptsUpdateRequestSchema,
+  systemPromptsUpdateResponseSchema,
   safeParseRequest,
   safeParseResponse,
   skillsUpdateRequestSchema,
@@ -24,7 +24,12 @@ interface ViewProps {
 
 /* ---------------- directory::skills::update ---------------- */
 
-export function SkillsUpdateView({ input, output, running }: ViewProps) {
+export function SkillsUpdateView({
+  input,
+  output,
+  running,
+  verb = 'updated',
+}: ViewProps & { verb?: string }) {
   const req = safeParseRequest(skillsUpdateRequestSchema, input)
 
   if (running) {
@@ -45,7 +50,7 @@ export function SkillsUpdateView({ input, output, running }: ViewProps) {
   return (
     <Card>
       <MetaRow>
-        <StatusPill label="updated" variant="accent" />
+        <StatusPill label={verb} variant="accent" />
         {resp.type ? <KvChip label="type">{resp.type}</KvChip> : null}
         <KvChip label="bytes">{formatBytes(resp.bytes)}</KvChip>
         <KvChip label="modified">{formatRelativeTime(resp.modified_at)}</KvChip>
@@ -60,10 +65,15 @@ export function SkillsUpdateView({ input, output, running }: ViewProps) {
   )
 }
 
-/* ---------------- directory::prompts::update ---------------- */
+/* ---------------- directory::system-prompts::update ---------------- */
 
-export function PromptsUpdateView({ input, output, running }: ViewProps) {
-  const req = safeParseRequest(promptsUpdateRequestSchema, input)
+export function SystemPromptsUpdateView({
+  input,
+  output,
+  running,
+  verb = 'updated',
+}: ViewProps & { verb?: string }) {
+  const req = safeParseRequest(systemPromptsUpdateRequestSchema, input)
 
   if (running) {
     return (
@@ -72,12 +82,12 @@ export function PromptsUpdateView({ input, output, running }: ViewProps) {
           <StatusPill label="saving…" variant="default" />
           {req ? <KvChip label="name">{req.name}</KvChip> : null}
         </MetaRow>
-        <PulseLine label="writing prompt…" />
+        <PulseLine label="writing system prompt…" />
       </Card>
     )
   }
 
-  const resp = safeParseResponse(promptsUpdateResponseSchema, output)
+  const resp = safeParseResponse(systemPromptsUpdateResponseSchema, output)
   if (!resp) return null
 
   const renamed = req && req.name !== resp.name
@@ -85,7 +95,7 @@ export function PromptsUpdateView({ input, output, running }: ViewProps) {
   return (
     <Card>
       <MetaRow>
-        <StatusPill label="updated" variant="accent" />
+        <StatusPill label={verb} variant="accent" />
         {renamed ? <KvChip label="was">{req.name}</KvChip> : null}
         <KvChip label="bytes">{formatBytes(resp.bytes)}</KvChip>
         <KvChip label="modified">{formatRelativeTime(resp.modified_at)}</KvChip>

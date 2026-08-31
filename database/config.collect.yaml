@@ -1,6 +1,6 @@
 # Interface-collection config for the registry publish workflow.
 #
-# The publish job (.github/workflows/_publish-registry.yml) boots a throwaway
+# The CI interface-smoke job boots a throwaway
 # copy of this worker purely to read back the functions and trigger types it
 # registers with the engine — the published "interface". That interface is
 # static: it does NOT depend on which databases are configured.

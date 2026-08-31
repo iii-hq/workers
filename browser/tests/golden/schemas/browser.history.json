@@ -1,8 +1,14 @@
 {
-  "description": "Go back, go forward, or reload the session's page. Back/forward at the history edge is a no-op with moved=false.",
   "function_id": "browser::history",
+  "description": "Go back, go forward, or reload the session's page. Back/forward at the history edge is a no-op with moved=false.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "HistoryInput",
+    "type": "object",
+    "required": [
+      "action",
+      "session_id"
+    ],
     "properties": {
       "action": {
         "description": "`back`, `forward`, or `reload`.",
@@ -11,16 +17,17 @@
       "session_id": {
         "type": "string"
       }
-    },
-    "required": [
-      "action",
-      "session_id"
-    ],
-    "title": "HistoryInput",
-    "type": "object"
+    }
   },
   "response_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "HistoryOutput",
+    "type": "object",
+    "required": [
+      "moved",
+      "ok",
+      "url"
+    ],
     "properties": {
       "moved": {
         "description": "False when back/forward had no entry to move to.",
@@ -33,13 +40,6 @@
         "description": "URL after the action. `back`/`forward` at the history edge is a no-op with ok=true.",
         "type": "string"
       }
-    },
-    "required": [
-      "moved",
-      "ok",
-      "url"
-    ],
-    "title": "HistoryOutput",
-    "type": "object"
+    }
   }
 }

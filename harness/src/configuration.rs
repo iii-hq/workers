@@ -33,7 +33,25 @@ use crate::subscriptions::ON_SESSION_DELETED_ID;
 /// Hot-swappable config snapshot shared with every handler.
 pub type ConfigCell = Arc<RwLock<Arc<WorkerConfig>>>;
 
-pub const CONFIG_ID: &str = "harness";
+pub const DEFAULT_CONFIG_ID: &str = "harness";
+
+/// The configuration entry this worker owns.
+///
+/// `III_CONFIG_NAME` when a supervisor set it, else the built-in name. A worker
+/// that hardcodes its id turns that id into a global scarce name: two instances
+/// share one entry and take turns overwriting it, and each write wakes both.
+/// Being told which entry is its own is what lets them differ.
+pub fn config_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::var("III_CONFIG_NAME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| DEFAULT_CONFIG_ID.to_string())
+    })
+    .as_str()
+}
 const CONFIG_FN_ID: &str = "harness::on-config-change";
 const CONFIG_TIMEOUT_MS: u64 = 5_000;
 const CONFIG_RETRIES: u32 = 3;
@@ -44,9 +62,10 @@ const CONFIG_RETRY_BACKOFF_MS: u64 = 250;
 /// seeded only when nothing is stored yet (safe to call every boot).
 pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Result<(), String> {
     discard_legacy_harness_config_if_needed(iii).await?;
+    drop_stored_provider_identity_prompt_if_needed(iii).await?;
 
     let mut payload = json!({
-        "id": CONFIG_ID,
+        "id": config_id(),
         "name": "Harness",
         "description": "Durable turn-loop settings: default turn cap and pending-call timeout, \
                         sub-agent depth/fan-out budgets, output-contract validation retries, the \
@@ -59,7 +78,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
     } else if should_seed_default_value(iii).await? {
         payload["initial_value"] = WorkerConfig::default().to_json();
     }
-    trigger_with_retry(iii, "configuration::register", payload).await?;
+    trigger_configuration_with_retry(iii, "configuration::register", payload).await?;
     Ok(())
 }
 
@@ -75,7 +94,7 @@ pub async fn fetch_config(iii: &IIIClient) -> Result<WorkerConfig, String> {
 }
 
 async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
-    match try_get_config_value(iii).await? {
+    match try_get_config_value(iii, false).await? {
         None => Ok(true),
         Some(value) if value.is_null() => Ok(true),
         Some(_) => Ok(false),
@@ -83,18 +102,31 @@ async fn should_seed_default_value(iii: &IIIClient) -> Result<bool, String> {
 }
 
 async fn get_config_value(iii: &IIIClient) -> Result<Value, String> {
-    try_get_config_value(iii)
-        .await?
-        .ok_or_else(|| format!("configuration `{CONFIG_ID}` not found"))
+    try_get_config_value(iii, false).await?.ok_or_else(|| {
+        format!(
+            "configuration `{config_entry}` not found",
+            config_entry = config_id()
+        )
+    })
 }
 
 /// Returns `Ok(None)` when the entry does not exist (codes vary in case).
-async fn try_get_config_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_with_retry(iii, "configuration::get", json!({ "id": CONFIG_ID })).await {
+async fn try_get_config_value(iii: &IIIClient, raw: bool) -> Result<Option<Value>, String> {
+    match trigger_configuration_with_retry(
+        iii,
+        "configuration::get",
+        configuration_get_payload(raw),
+    )
+    .await
+    {
         Ok(resp) => Ok(resp.get("value").cloned()),
         Err(e) if e.to_ascii_uppercase().contains("NOT_FOUND") => Ok(None),
         Err(e) => Err(e),
     }
+}
+
+fn configuration_get_payload(raw: bool) -> Value {
+    json!({ "id": config_id(), "raw": raw })
 }
 
 /// True when the stored value matches the pre-Rust harness entry (permissions
@@ -126,7 +158,7 @@ fn legacy_harness_keys(value: &Value) -> Vec<&'static str> {
 /// replace the value with built-in defaults, then let the caller register the
 /// real schema.
 async fn discard_legacy_harness_config_if_needed(iii: &IIIClient) -> Result<(), String> {
-    let Some(value) = try_get_config_value(iii).await? else {
+    let Some(value) = try_get_config_value(iii, false).await? else {
         return Ok(());
     };
     if value.is_null() || !is_legacy_harness_value(&value) {
@@ -141,11 +173,11 @@ async fn discard_legacy_harness_config_if_needed(iii: &IIIClient) -> Result<(), 
          llm-router entry, approval defaults belong in the approval-gate entry"
     );
 
-    trigger_with_retry(
+    trigger_configuration_with_retry(
         iii,
         "configuration::register",
         json!({
-            "id": CONFIG_ID,
+            "id": config_id(),
             "name": "Harness",
             "description": "Legacy harness configuration placeholder (discarding pre-Rust entry).",
             "schema": {
@@ -156,17 +188,88 @@ async fn discard_legacy_harness_config_if_needed(iii: &IIIClient) -> Result<(), 
     )
     .await?;
 
-    trigger_with_retry(
+    trigger_configuration_with_retry(
         iii,
         "configuration::set",
         json!({
-            "id": CONFIG_ID,
+            "id": config_id(),
             "value": WorkerConfig::default().to_json(),
         }),
     )
     .await?;
 
     Ok(())
+}
+
+/// Remove the retired provider-owned prompt setting before re-registering the
+/// strict schema. All other stored settings remain intact.
+async fn drop_stored_provider_identity_prompt_if_needed(iii: &IIIClient) -> Result<(), String> {
+    let Some(value) = try_get_config_value(iii, true).await? else {
+        return Ok(());
+    };
+    let mut migrated = value.clone();
+    if !drop_provider_identity_prompt(&mut migrated) {
+        return Ok(());
+    }
+
+    tracing::info!("removing retired provider_identity_prompt from harness configuration");
+    trigger_configuration_with_retry(
+        iii,
+        "configuration::register",
+        json!({
+            "id": config_id(),
+            "name": "Harness",
+            "description": "Harness configuration migration.",
+            "schema": {
+                "type": "object",
+                "additionalProperties": true
+            },
+        }),
+    )
+    .await?;
+
+    let mut expected = value;
+    loop {
+        let response = trigger_configuration_with_retry(
+            iii,
+            "configuration::set",
+            json!({ "id": config_id(), "value": migrated }),
+        )
+        .await?;
+        let overwritten = response.get("old_value").cloned().ok_or_else(|| {
+            "configuration::set response missing old_value during harness migration".to_string()
+        })?;
+        let Some(rebased) =
+            reconcile_provider_identity_prompt_write(&mut expected, &migrated, overwritten)
+        else {
+            return Ok(());
+        };
+        tracing::warn!(
+            "harness configuration changed during migration; preserving the intervening update"
+        );
+        migrated = rebased;
+    }
+}
+
+fn drop_provider_identity_prompt(value: &mut Value) -> bool {
+    value
+        .as_object_mut()
+        .is_some_and(|settings| settings.remove("provider_identity_prompt").is_some())
+}
+
+fn reconcile_provider_identity_prompt_write(
+    expected: &mut Value,
+    written: &Value,
+    mut overwritten: Value,
+) -> Option<Value> {
+    // `old_value` is atomic with the set. A mismatch means this write replaced
+    // a newer snapshot, so restore that snapshot with only the retired key gone.
+    if overwritten == *expected {
+        return None;
+    }
+    *expected = written.clone();
+    drop_provider_identity_prompt(&mut overwritten);
+    Some(overwritten)
 }
 
 /// Swap the config snapshot under the write lock.
@@ -193,12 +296,11 @@ impl TriggerHandles {
 /// but a transient failure must not brick boot — it surfaces as a `None`
 /// handle.
 fn bind(iii: &IIIClient, trigger_type: &str, function_id: &str, config: Value) -> Option<Trigger> {
-    match iii.register_trigger(RegisterTriggerInput {
-        trigger_type: trigger_type.to_string(),
-        function_id: function_id.to_string(),
+    match iii.register_trigger(RegisterTriggerInput::new(
+        trigger_type.to_string(),
+        function_id.to_string(),
         config,
-        metadata: None,
-    }) {
+    )) {
         Ok(handle) => {
             tracing::info!(trigger_type, function_id, "trigger binding requested");
             Some(handle)
@@ -282,15 +384,14 @@ pub fn register_config_trigger(
         .metadata(json!({ "internal": true })),
     );
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "configuration".to_string(),
-        function_id: CONFIG_FN_ID.to_string(),
-        config: json!({
-            "configuration_id": CONFIG_ID,
+    iii.register_trigger(RegisterTriggerInput::new(
+        "configuration".to_string(),
+        CONFIG_FN_ID.to_string(),
+        json!({
+            "configuration_id": config_id(),
             "event_types": ["configuration:updated"],
         }),
-        metadata: None,
-    })?;
+    ))?;
     Ok(())
 }
 
@@ -315,7 +416,7 @@ async fn on_config_change(iii: &IIIClient, cell: &ConfigCell, handles: &TriggerH
     tracing::info!("harness configuration reloaded");
 }
 
-async fn trigger_with_retry(
+async fn trigger_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,
     payload: Value,
@@ -323,12 +424,15 @@ async fn trigger_with_retry(
     let mut last_err = String::new();
     for attempt in 1..=CONFIG_RETRIES {
         match iii
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload: payload.clone(),
-                action: None,
-                timeout_ms: Some(CONFIG_TIMEOUT_MS),
-            })
+            .trigger(
+                TriggerRequest {
+                    function_id: function_id.to_string(),
+                    payload: payload.clone(),
+                    action: None,
+                    timeout_ms: Some(CONFIG_TIMEOUT_MS),
+                }
+                .namespace("default"),
+            )
             .await
         {
             Ok(v) => return Ok(v),
@@ -363,6 +467,55 @@ mod tests {
         })));
         assert!(!is_legacy_harness_value(&WorkerConfig::default().to_json()));
         assert!(!is_legacy_harness_value(&json!(null)));
+    }
+
+    #[test]
+    fn drop_provider_identity_prompt_preserves_other_stored_settings() {
+        let mut stored = json!({
+            "provider_identity_prompt": true,
+            "default_max_turns": "${MAX_TURNS:500}",
+            "nested": { "provider_identity_prompt": true }
+        });
+
+        assert!(drop_provider_identity_prompt(&mut stored));
+        assert_eq!(
+            stored,
+            json!({
+                "default_max_turns": "${MAX_TURNS:500}",
+                "nested": { "provider_identity_prompt": true }
+            })
+        );
+    }
+
+    #[test]
+    fn provider_identity_prompt_migration_preserves_an_intervening_update() {
+        let mut expected = json!({ "provider_identity_prompt": true, "turns": 1 });
+        let first_write = json!({ "turns": 1 });
+
+        let rebased = reconcile_provider_identity_prompt_write(
+            &mut expected,
+            &first_write,
+            json!({ "provider_identity_prompt": false, "turns": 2 }),
+        )
+        .expect("the intervening value needs a compensating write");
+
+        assert_eq!(rebased, json!({ "turns": 2 }));
+        assert!(
+            reconcile_provider_identity_prompt_write(&mut expected, &rebased, first_write,)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn configuration_get_payload_keeps_raw_reads_separate_from_expanded_reads() {
+        assert_eq!(
+            configuration_get_payload(true),
+            json!({ "id": config_id(), "raw": true })
+        );
+        assert_eq!(
+            configuration_get_payload(false),
+            json!({ "id": config_id(), "raw": false })
+        );
     }
 
     #[tokio::test]

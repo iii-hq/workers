@@ -1,0 +1,61 @@
+{
+  "description": "Destroy a runtime: unregister every bus function it registered, stop its microVM(s), and free the slot(s). Pass exactly one of runtime_id (a kept run's runtime, from sandbox-code-runner::run keep=true) or namespace (a register_function namespace, e.g. \"app\" for ids like app::greet) — never both, never neither.",
+  "function_id": "sandbox-code-runner::teardown",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Exactly one of `runtime_id` (a runtime you got back from `sandbox-code-runner::run keep=true`) or `namespace` (a `register_function` namespace, e.g. \"app\" for ids like `app::greet`) must be set — never both, never neither.",
+    "properties": {
+      "namespace": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "runtime_id": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "TeardownRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "namespace": {
+        "description": "Set when this teardown was addressed by `namespace` — echoes the namespace, since more than one runtime (one per language) can back it and there is no single `runtime_id` to report.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "runtime_id": {
+        "description": "Set when this teardown was addressed by `runtime_id` (never present alongside `namespace`).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "torn_down": {
+        "type": "boolean"
+      },
+      "unregistered": {
+        "description": "Bus function ids this teardown unregistered, across every runtime it destroyed.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "torn_down",
+      "unregistered"
+    ],
+    "title": "TeardownResponse",
+    "type": "object"
+  }
+}

@@ -63,6 +63,47 @@ pub struct FunctionPolicy {
     pub expose: ExposeMode,
 }
 
+/// New-format, names-only skill context. The filter remains live against the
+/// harness catalog; the baseline is the immutable index admitted to the
+/// session's system-prompt prefix.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SkillContext {
+    /// `None` means all skills; a non-empty list is an exact-id curation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<String>,
+}
+
+/// The effective skill view this session most recently admitted. A
+/// fingerprint of `None` is the explicit removed view; no `SkillAck` means
+/// the source has not yet produced an authoritative observation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SkillAck {
+    pub generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+}
+
+/// The agent profile a turn runs as, frozen at resolution time
+/// (`options.agent` on `harness::send`, `agent` on `harness::spawn`). Only
+/// what later turn machinery needs survives here: the id for display and
+/// inheritance. Which agent profile a spawn may name is the prompt's decision — the
+/// profile body steers it; nothing gates it. Directory edits after
+/// resolution never reach a live session.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentIdentity {
+    pub id: String,
+    /// Display name frozen with the profile so clients never need to resolve
+    /// the mutable Directory catalog to label an established session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+}
+
 /// Per-send options frozen onto the turn record when it is created; they
 /// apply unchanged until the turn ends (a merged send never changes them).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -72,6 +113,14 @@ pub struct TurnOptions {
     pub provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
+    /// Legacy-only attribution for skill bodies previously frozen from
+    /// session metadata. New sessions never populate this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills_prompt: Option<String>,
+    /// Names-and-descriptions-only skill context for new-format sessions.
+    /// Absence identifies a durable legacy session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_context: Option<SkillContext>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<Mode>,
     pub max_turns: u32,
@@ -100,6 +149,11 @@ pub struct TurnOptions {
     pub functions: Option<FunctionPolicy>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    /// The agent profile this turn runs as, resolved once and frozen. Sticky
+    /// like the system prompt: a send naming neither prompt field inherits it;
+    /// naming an explicit prompt field sheds it (the escape hatch).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentIdentity>,
     /// Cap on output-contract validation retries before finalising with a
     /// best-effort result (harness.md § Output contract).
     #[serde(default = "default_max_validation_retries")]
@@ -187,6 +241,11 @@ pub struct CallCheckpoint {
     pub child_session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub child_turn_id: Option<String>,
+    /// Whether this spawn appended work to a session that already existed.
+    /// Defaults to false so checkpoints written before this field existed are
+    /// conservatively treated as session creations by the fan-out guard.
+    #[serde(default)]
+    pub child_session_reused: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub held_by: Option<String>,
     /// The call's arguments as mutated by the hook chain up to the hold, so a
@@ -207,6 +266,20 @@ pub struct ParentLink {
     pub session_id: String,
     pub turn_id: String,
     pub function_call_id: String,
+}
+
+/// A model-visible function contract retained for reuse within one session.
+/// Digests keep the durable turn record small; raw contracts remain only in
+/// the session transcript.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FunctionContractLedgerEntry {
+    pub contract_digest: String,
+    pub source_function_call_id: String,
+    pub source_content_digest: String,
+    /// True only after final context assembly confirmed the exact source is
+    /// still model-visible. Newly appended and legacy rows start ineligible.
+    #[serde(default)]
+    pub eligible: bool,
 }
 
 /// The durable loop record (`harness_turn/<session_id>`). Seeded by CAS from
@@ -248,6 +321,21 @@ pub struct TurnRecord {
     /// contracts get re-fetched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub functions_generation: Option<u64>,
+    /// Function contracts whose exact full source result was retained in the
+    /// most recently assembled model context for this session.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub function_contract_ledger: BTreeMap<String, FunctionContractLedgerEntry>,
+    /// Last effective names-only skill view admitted to the transcript.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_ack: Option<SkillAck>,
+    /// Whether this session has begun a model generation under the new skill
+    /// context. Before then, first availability may still become the baseline.
+    #[serde(default)]
+    pub skills_started: bool,
+    /// Latest generation's context accounting (also stored under
+    /// `harness_context/<session_id>` once the generation completes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_snapshot: Option<crate::context_snapshot::ContextSnapshotV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -270,10 +358,10 @@ impl TurnRecord {
             .collect()
     }
 
-    /// Children spawned by this turn, regardless of checkpoint state
-    /// (fire-and-forget spawns settle `Done` instantly). Feeds the per-turn
-    /// fan-out guard, `harness::status` children, and the stop cascade —
-    /// stopping an already-finished child is a harmless no-op.
+    /// Children targeted by this turn, regardless of checkpoint state or
+    /// whether their session was created or reused (fire-and-forget spawns
+    /// settle `Done` instantly). Feeds `harness::status` children and the stop
+    /// cascade — stopping an already-finished child is a harmless no-op.
     pub fn spawned_children(&self) -> Vec<ParentLink> {
         self.calls
             .iter()
@@ -284,6 +372,20 @@ impl TurnRecord {
                 function_call_id: call_id.clone(),
             })
             .collect()
+    }
+
+    /// Number of child SESSIONS this turn actually created. Re-tasking an
+    /// existing session still appears in [`Self::spawned_children`] for status
+    /// and cancellation, but does not consume another fan-out slot.
+    pub fn created_child_session_count(&self) -> usize {
+        self.calls
+            .values()
+            .filter(|checkpoint| {
+                checkpoint.child_session_id.is_some()
+                    && checkpoint.child_turn_id.is_some()
+                    && !checkpoint.child_session_reused
+            })
+            .count()
     }
 }
 
@@ -317,6 +419,8 @@ mod tests {
                 model: "m".into(),
                 provider: None,
                 system_prompt: None,
+                skills_prompt: None,
+                skill_context: None,
                 mode: None,
                 max_turns: 16,
                 max_output_tokens: None,
@@ -328,6 +432,7 @@ mod tests {
                 output: OutputContract::Text,
                 functions: None,
                 metadata: None,
+                agent: None,
                 max_validation_retries: 2,
                 max_transient_resumes: 1,
             },
@@ -335,6 +440,10 @@ mod tests {
             parent: None,
             display_parent_session_id: None,
             functions_generation: None,
+            function_contract_ledger: Default::default(),
+            skill_ack: None,
+            skills_started: false,
+            context_snapshot: None,
             result: None,
             result_error: None,
             validation_retries: 0,
@@ -344,13 +453,38 @@ mod tests {
         }
     }
 
-    fn cp(state: CallState, child: Option<&str>) -> CallCheckpoint {
+    #[test]
+    fn legacy_turn_records_default_to_an_empty_function_contract_ledger() {
+        let mut value = serde_json::to_value(record()).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("function_contract_ledger");
+
+        let decoded: TurnRecord = serde_json::from_value(value).unwrap();
+        assert!(decoded.function_contract_ledger.is_empty());
+    }
+
+    #[test]
+    fn legacy_contract_ledger_entries_default_to_ineligible() {
+        let decoded: FunctionContractLedgerEntry = serde_json::from_value(serde_json::json!({
+            "contract_digest": "contract",
+            "source_function_call_id": "call-1",
+            "source_content_digest": "content"
+        }))
+        .unwrap();
+
+        assert!(!decoded.eligible);
+    }
+
+    fn cp(state: CallState, child: Option<&str>, reused: bool) -> CallCheckpoint {
         CallCheckpoint {
             state,
             function_id: Some("harness::spawn".into()),
             entry_id: None,
             child_session_id: child.map(|s| s.to_string()),
             child_turn_id: child.map(|_| "t_child".to_string()),
+            child_session_reused: reused,
             held_by: None,
             held_arguments: None,
             pending_timeout_ms: None,
@@ -379,9 +513,11 @@ mod tests {
     #[test]
     fn pending_call_ids_lists_triggered_and_pending() {
         let mut r = record();
-        r.calls.insert("a".into(), cp(CallState::Done, None));
-        r.calls.insert("b".into(), cp(CallState::Pending, None));
-        r.calls.insert("c".into(), cp(CallState::Triggered, None));
+        r.calls.insert("a".into(), cp(CallState::Done, None, false));
+        r.calls
+            .insert("b".into(), cp(CallState::Pending, None, false));
+        r.calls
+            .insert("c".into(), cp(CallState::Triggered, None, false));
         let mut ids = r.pending_call_ids();
         ids.sort();
         assert_eq!(ids, vec!["b", "c"]);
@@ -392,24 +528,57 @@ mod tests {
         let mut r = record();
         // Legacy parked spawn (pre-deploy record).
         r.calls
-            .insert("a".into(), cp(CallState::Pending, Some("s_child")));
-        r.calls.insert("b".into(), cp(CallState::Pending, None)); // hook hold, no child
-                                                                  // Fire-and-forget spawn: Done instantly, still counts.
+            .insert("a".into(), cp(CallState::Pending, Some("s_child"), false));
         r.calls
-            .insert("c".into(), cp(CallState::Done, Some("s_done")));
+            .insert("b".into(), cp(CallState::Pending, None, false)); // hook hold, no child
+                                                                      // Fire-and-forget spawn: Done instantly, still counts.
+        r.calls
+            .insert("c".into(), cp(CallState::Done, Some("s_done"), true));
         let children = r.spawned_children();
         assert_eq!(children.len(), 2);
         assert_eq!(children[0].session_id, "s_child");
         assert_eq!(children[0].function_call_id, "a");
         assert_eq!(children[1].session_id, "s_done");
         assert_eq!(children[1].function_call_id, "c");
+        assert_eq!(r.created_child_session_count(), 1);
+    }
+
+    #[test]
+    fn reused_sessions_do_not_consume_fanout_slots() {
+        let mut r = record();
+        r.calls
+            .insert("fresh".into(), cp(CallState::Done, Some("s_child"), false));
+        for n in 0..8 {
+            r.calls.insert(
+                format!("reuse-{n}"),
+                cp(CallState::Done, Some("s_child"), true),
+            );
+        }
+        assert_eq!(r.spawned_children().len(), 9);
+        assert_eq!(r.created_child_session_count(), 1);
+    }
+
+    #[test]
+    fn legacy_spawn_checkpoint_counts_as_a_session_creation() {
+        let checkpoint: CallCheckpoint = serde_json::from_value(json!({
+            "state": "done",
+            "function_id": "harness::spawn",
+            "child_session_id": "s_child",
+            "child_turn_id": "t_child"
+        }))
+        .unwrap();
+        assert!(!checkpoint.child_session_reused);
+
+        let mut r = record();
+        r.calls.insert("legacy".into(), checkpoint);
+        assert_eq!(r.created_child_session_count(), 1);
     }
 
     #[test]
     fn turn_record_round_trips_through_json() {
         let mut r = record();
         r.calls
-            .insert("a".into(), cp(CallState::Pending, Some("s_child")));
+            .insert("a".into(), cp(CallState::Pending, Some("s_child"), false));
         // Populate the trigger-spawn fields so the round trip exercises them
         // with values, not just their skip-if-none defaults.
         r.display_parent_session_id = Some("s_display_parent".into());
@@ -433,6 +602,51 @@ mod tests {
         assert_eq!(r.options.max_transient_resumes, 3);
         assert_eq!(r.transient_resumes, 0);
         assert_eq!(r.options.output, OutputContract::Text);
+        assert_eq!(r.options.skill_context, None);
+        assert_eq!(r.skill_ack, None);
+        assert!(!r.skills_started);
+        assert_eq!(r.options.agent, None);
+    }
+
+    #[test]
+    fn agent_identity_round_trips_and_stays_off_the_wire_when_absent() {
+        let mut r = record();
+        assert!(!serde_json::to_value(&r.options)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("agent"));
+        r.options.agent = Some(AgentIdentity {
+            id: "tech-leader".into(),
+            name: Some("Tech Leader".into()),
+            icon: Some("agent".into()),
+            color: Some("purple".into()),
+        });
+        let back: TurnRecord = serde_json::from_value(serde_json::to_value(&r).unwrap()).unwrap();
+        assert_eq!(back, r);
+    }
+
+    #[test]
+    fn new_skill_context_and_ack_round_trip() {
+        let mut r = record();
+        r.options.skill_context = Some(SkillContext {
+            filter: Some(vec!["review".into()]),
+            baseline: Some("<available_skills>review</available_skills>".into()),
+        });
+        r.skill_ack = Some(SkillAck {
+            generation: 3,
+            fingerprint: Some("sha256:abc".into()),
+        });
+        r.skills_started = true;
+
+        let value = serde_json::to_value(&r).unwrap();
+        assert_eq!(
+            value["options"]["skill_context"]["filter"],
+            json!(["review"])
+        );
+        assert_eq!(value["skill_ack"]["generation"], 3);
+        let back: TurnRecord = serde_json::from_value(value).unwrap();
+        assert_eq!(back, r);
     }
 
     #[test]

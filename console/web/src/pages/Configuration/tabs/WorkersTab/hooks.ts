@@ -55,7 +55,7 @@ const WORKER_REGISTRY_WATCH_FN = 'console::workers-config-watch'
 
 /**
  * Keep the worker configuration list fresh when workers are added or removed
- * out of band — e.g. `iii worker add harness` run in a terminal — purely off
+ * out of band — e.g. `iii trigger compose::add worker=harness` run in a terminal — purely off
  * the engine's `worker` lifecycle trigger (its push channel). No polling.
  * Each event re-pulls `configuration::list` so a freshly-installed worker's
  * entry appears once it registers.

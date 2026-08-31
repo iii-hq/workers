@@ -3,11 +3,12 @@ name: worktree
 language: rust
 deploy: binary
 manifest: Cargo.toml
+license: Apache-2.0
 bin: worktree
 tags: [git, worktree, parallel, agents, branches, ci]
 description: Git worktree lifecycle for parallel agents — mint, claim, and track isolated worktrees per repo, emit lifecycle trigger types, and land branches back through a per-repo FIFO queue (rebase, test gate, ff-only merge).
 
 dependencies:
-  configuration: "^0.21.6"
-  state: "^0.21.2"
-  shell: "^0.7.0"
+  configuration: "0.x"
+  state: "^0.22.2"
+  shell: "^0.11.9"

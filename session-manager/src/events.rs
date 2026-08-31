@@ -285,7 +285,7 @@ pub struct StatusChangedEvent {
     pub session_id: String,
     pub status: SessionStatus,
     pub previous_status: SessionStatus,
-    /// Short cause, set on `"error"`.
+    /// Short lifecycle detail retained on `working`, `done`, and `error`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status_reason: Option<String>,
     pub timestamp: i64,
@@ -987,12 +987,11 @@ pub fn attach_bridge_relay(remote: &Arc<IIIClient>, local_emitter: Arc<Emitter>)
         .metadata(serde_json::json!({ "trace_hidden": true })),
     );
 
-    match remote.register_trigger(iii_sdk::protocol::RegisterTriggerInput {
-        trigger_type: STORE_EVENTS.to_string(),
-        function_id: relay_id.clone(),
-        config: serde_json::json!({}),
-        metadata: None,
-    }) {
+    match remote.register_trigger(iii_sdk::protocol::RegisterTriggerInput::new(
+        STORE_EVENTS.to_string(),
+        relay_id.clone(),
+        serde_json::json!({}),
+    )) {
         Ok(_) => tracing::info!(relay = %relay_id, "attached to the main instance's event feed"),
         Err(e) => tracing::warn!(
             error = %e,
@@ -1284,6 +1283,7 @@ mod tests {
                 function_id: "ui::recv".into(),
                 config: json!({}),
                 metadata: None,
+                namespace: None,
             })
             .unwrap();
 
@@ -1312,6 +1312,7 @@ mod tests {
             function_id: "ui::recv".into(),
             config: json!({ "session_id": "s_1", "roles": ["assistant"] }),
             metadata: None,
+            namespace: None,
         })
         .unwrap();
         assert_eq!(set.len(), 1);
@@ -1321,6 +1322,7 @@ mod tests {
             function_id: "ui::recv".into(),
             config: json!({ "bogus": true }),
             metadata: None,
+            namespace: None,
         });
         assert!(err.is_err());
         assert_eq!(set.len(), 1);

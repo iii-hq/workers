@@ -1,0 +1,17 @@
+iii: v1
+name: opengantry
+language: javascript
+deploy: bundle
+manifest: package.json
+license: Apache-2.0
+tags:
+  - governance
+  - verify
+  - policy
+  - gxt
+  - opengantry
+description: OpenGantry governance for iii. Kernel verify and middleware gate before promote-class calls.
+runtime:
+  kind: javascript
+scripts:
+  start: node ./index.mjs

@@ -1,0 +1,235 @@
+{
+  "description": "Transcribe a document that holds no readable text: a scanned PDF, a photographed page, or a deck whose content is pictures. Renders the pages that need it and reads them with a vision model, so it costs money per page — pass `pages` (pdf::classify names them) to narrow it. Needs the browser worker for PDFs and a vision model through llm-router.",
+  "function_id": "document::ocr",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "FsScope": {
+        "description": "The filesystem jail a call runs under.\n\nThe harness stamps this onto every function it dispatches, so a `path` an agent supplies has to be checked against it. Without the check these functions would read any document on the machine and hand back its text, which is a way around the scope the session was granted. Mirrors the shape the shell and pdf workers take.",
+        "properties": {
+          "grants": {
+            "default": [],
+            "description": "Additional directories or files explicitly granted to this session.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "root": {
+            "description": "The session's working directory.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "root"
+        ],
+        "type": "object"
+      }
+    },
+    "description": "Where the document comes from. Exactly one of `path` and `bytes_base64` must be set.",
+    "properties": {
+      "bytes_base64": {
+        "default": null,
+        "description": "Base64-encoded document bytes, for a document with no path — an attachment held in memory. Mutually exclusive with `path`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "file_name": {
+        "default": null,
+        "description": "Original file name for inline bytes, used only to recognise a format the content cannot name. A `.csv` needs this; nothing else does. Ignored when `path` is set, which carries its own name.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "fs_scope": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/FsScope"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The filesystem jail this call runs under. Stamped by the harness on an agent's call; absent on an operator or console call, which is already user-initiated and not subject to the agent's scope."
+      },
+      "max_chars": {
+        "default": null,
+        "description": "Characters to return before truncating. Omit for the configured default; `0` returns everything transcribed.",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "model": {
+        "default": null,
+        "description": "Vision model to read with. Omit for the configured default. The model is checked for vision support before anything is rendered.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "pages": {
+        "default": null,
+        "description": "1-indexed pages to transcribe, for a PDF. Omit for every page up to the configured ceiling. This is the cost control: `pdf::classify` reports which pages are scans, and passing that list keeps a long report from being read a page at a time when only its cover is an image.",
+        "items": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "path": {
+        "default": null,
+        "description": "Filesystem path to the document. Mutually exclusive with `bytes_base64`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "Request",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Body": {
+        "description": "A body that may have been shortened to fit one response, and the numbers a caller needs to decide what to do about it.\n\nThe cap is what keeps a long document from flooding a model's context. A caller that genuinely wants the whole thing asks for `max_chars: 0`, which is the shape a worker-to-worker pipeline uses to move a document without it passing through anyone's context. Same shape the pdf worker returns, so a caller handling both reads one field set.",
+        "properties": {
+          "chars": {
+            "description": "Characters returned in `text`.",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "preview": {
+            "description": "Leading characters of the content. Present only when the body was truncated, so a caller can see the shape of what it did not get without re-reading the start of `text`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "description": "The markdown, shortened to the effective character cap.",
+            "type": "string"
+          },
+          "total_chars": {
+            "description": "Characters the document actually holds. Equal to `chars` when nothing was dropped.",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "truncated": {
+            "description": "`true` when `text` stops short of the document. Ask again with `max_chars: 0` to take everything.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "chars",
+          "text",
+          "total_chars",
+          "truncated"
+        ],
+        "type": "object"
+      },
+      "PageText": {
+        "description": "What one page turned into.",
+        "properties": {
+          "cached": {
+            "description": "`true` when this page came from the cache rather than the model.",
+            "type": "boolean"
+          },
+          "chars": {
+            "format": "uint",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "page": {
+            "description": "1-indexed page number, or the asset's index for an office document.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "text": {
+            "description": "The transcription. Empty when the page held no legible text.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cached",
+          "chars",
+          "page",
+          "text"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "body": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/Body"
+          }
+        ],
+        "description": "The joined transcription, capped per `max_chars`."
+      },
+      "elapsed_ms": {
+        "description": "Wall-clock time, rendering included.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "model": {
+        "description": "The model that read them.",
+        "type": "string"
+      },
+      "pages": {
+        "description": "Per-page transcriptions, in order.",
+        "items": {
+          "$ref": "#/definitions/PageText"
+        },
+        "type": "array"
+      },
+      "pages_cached": {
+        "description": "Pages served from the cache, costing nothing.",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "pages_transcribed": {
+        "description": "Pages actually read by the model this call. Excludes cache hits, so this is what was paid for.",
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "source": {
+        "description": "Source label: the file name, or `<inline>` for an in-memory document.",
+        "type": "string"
+      },
+      "via": {
+        "description": "How the pixels were obtained: `image`, `pdf-render` or `document-assets`.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "body",
+      "elapsed_ms",
+      "model",
+      "pages",
+      "pages_cached",
+      "pages_transcribed",
+      "source",
+      "via"
+    ],
+    "title": "Response",
+    "type": "object"
+  }
+}

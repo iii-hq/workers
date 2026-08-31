@@ -21,6 +21,14 @@ export const Default: Story = {
   ),
 }
 
+export const Inset: Story = {
+  render: () => (
+    <div className="flex items-center justify-center bg-bg p-8">
+      <Wordmark appearance="inset" />
+    </div>
+  ),
+}
+
 export const InverseOnInk: Story = {
   name: 'inverse (on ink panel)',
   render: () => (

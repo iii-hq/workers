@@ -31,9 +31,7 @@ stale write, and keeping open buffers correct when a folder moves under them.
 ## Install
 
 ```bash
-iii worker add editor
-iii worker add shell   # required — editor has no filesystem access of its own
-iii worker add state   # required — the workspace record lives here
+iii trigger compose::add worker=editor worker=shell worker=state
 ```
 
 ### Companion workers

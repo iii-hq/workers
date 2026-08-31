@@ -1,0 +1,119 @@
+{
+  "description": "Analyse the local network for Tailscale: UDP reachability, IPv4/IPv6, NAT mapping, port-mapping protocols, the preferred DERP relay and relay latencies.",
+  "function_id": "tailscale::netcheck",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "EmptyInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "RegionLatency": {
+        "properties": {
+          "latency_ms": {
+            "description": "Round-trip latency in milliseconds.",
+            "format": "double",
+            "type": "number"
+          },
+          "region": {
+            "description": "DERP region id.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "latency_ms",
+          "region"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "captive_portal": {
+        "description": "Captive portal detected on the network.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "global_v4": {
+        "description": "Public IPv4 address seen by the relays.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "global_v6": {
+        "description": "Public IPv6 address seen by the relays.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "ipv4": {
+        "description": "Whether IPv4 is usable.",
+        "type": "boolean"
+      },
+      "ipv6": {
+        "description": "Whether IPv6 is usable.",
+        "type": "boolean"
+      },
+      "mapping_varies_by_dest_ip": {
+        "description": "True when the NAT maps to different ports per destination (hard NAT).",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "pcp": {
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "pmp": {
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "preferred_derp": {
+        "description": "DERP relay region the client prefers.",
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "region_latency_ms": {
+        "description": "Round-trip latency to each DERP region in milliseconds.",
+        "items": {
+          "$ref": "#/definitions/RegionLatency"
+        },
+        "type": "array"
+      },
+      "udp": {
+        "description": "Whether UDP traffic reaches the internet.",
+        "type": "boolean"
+      },
+      "upnp": {
+        "description": "Port-mapping protocols the router offers.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "ipv4",
+      "ipv6",
+      "region_latency_ms",
+      "udp"
+    ],
+    "title": "NetcheckOutput",
+    "type": "object"
+  }
+}

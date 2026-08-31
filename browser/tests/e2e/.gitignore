@@ -1,0 +1,16 @@
+node_modules/
+dist/
+reports/*.log
+reports/report.json
+reports/config.runtime.yaml
+reports/browser.runtime.json
+reports/elements.db
+!reports/.gitkeep
+# The engine's builtin `configuration` worker persists any config it
+# resolves through its fs adapter to `./config/<id>.yaml`, relative to CWD
+# (engine/src/workers/configuration/adapters/fs.rs's DEFAULT_DIRECTORY, in
+# the iii engine repo) — observed locally for `iii-observability`.
+# run-tests.sh removes this directory before each run; ignore it too in case
+# a run is interrupted before that cleanup fires on the next one.
+/config/
+.DS_Store

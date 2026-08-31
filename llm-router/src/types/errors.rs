@@ -11,6 +11,16 @@ pub enum RouterCode {
     NotConfigured,
     StructuredOutputUnsupported,
     RegistrationRejected, // token mismatch (spec adaptation: identity binding)
+    RequestInProgress,
+    CapacityExceeded,
+    StreamSetupFailed,
+    StreamIdleTimeout,
+    StreamIncomplete,
+    ProviderAuthExpired,
+    ProviderRateLimited,
+    ContextOverflow,
+    ProviderTransient,
+    ProviderRejected,
 }
 
 impl RouterCode {
@@ -24,6 +34,16 @@ impl RouterCode {
             RouterCode::NotConfigured => "router/not_configured",
             RouterCode::StructuredOutputUnsupported => "router/structured_output_unsupported",
             RouterCode::RegistrationRejected => "router/registration_rejected",
+            RouterCode::RequestInProgress => "router/request_in_progress",
+            RouterCode::CapacityExceeded => "router/capacity_exceeded",
+            RouterCode::StreamSetupFailed => "router/stream_setup_failed",
+            RouterCode::StreamIdleTimeout => "router/stream_idle_timeout",
+            RouterCode::StreamIncomplete => "router/stream_incomplete",
+            RouterCode::ProviderAuthExpired => "router/provider_auth_expired",
+            RouterCode::ProviderRateLimited => "router/provider_rate_limited",
+            RouterCode::ContextOverflow => "router/context_overflow",
+            RouterCode::ProviderTransient => "router/provider_transient",
+            RouterCode::ProviderRejected => "router/provider_rejected",
         }
     }
 }
@@ -57,10 +77,9 @@ impl From<RouterError> for iii_sdk::errors::Error {
     }
 }
 
-/// Map a serde deserialization failure (the typed-handler bad-request path) to
-/// the router's stable `invalid_request` wire error. Used with
-/// `RegisterFunction::new_async_with_bad_request` so typed schemas are emitted
-/// while the malformed-payload contract stays `router/invalid_request`.
+/// Map a serde deserialization failure to the router's stable
+/// `invalid_request` wire error. The shared typed registration adapter keeps
+/// schemas emitted while preserving `router/invalid_request`.
 pub fn invalid_request_from_serde(e: serde_json::Error) -> iii_sdk::errors::Error {
     RouterError::new(RouterCode::InvalidRequest, e.to_string()).into()
 }

@@ -22,10 +22,13 @@ rules:
   - '!state::delete'
   - '!stream::set'
   - '!iii::durable::publish'
+  - '!email::on-config-change'
+  - '!email::config-status'
   # Provider credentials live in the `llm-router` configuration entry. Agents
-  # must never resolve a secret, self-register a provider, poison the model
-  # catalog, or read/rewrite the configuration value (which carries plaintext
-  # api keys). Direct router spend (chat/complete) bypasses the harness
+  # must never resolve a secret through router internals, self-register a
+  # provider, poison the model catalog, or rewrite the configuration value
+  # (which carries plaintext api keys). Direct router spend (chat/complete)
+  # bypasses the harness
   # loop's accounting; the routing preview is orchestrator-internal. The
   # console edits config as a user-initiated SDK call, which bypasses this gate.
   - '!router::provider::resolve'
@@ -41,16 +44,25 @@ rules:
   # bypass the router's accounting, budgets, and retry policy. The router
   # invokes these worker-to-worker; agents never call them.
   - '!provider::*'
-  - '!configuration::get'
+  # configuration::get can expose stored secrets, so it has no default rule:
+  # no match means needs_approval. list/schema return no stored values and are
+  # safe read-only introspection. Mutations stay denied.
   - '!configuration::set'
   - '!configuration::register'
+  - '!directory::pre-generate'
+  - '!directory::on-functions-change'
+  - '!directory::hint-preview'
+  - directory::search_functions
   # Internal hot-reload trigger handler — must not be agent-callable; it is
   # invoked only by the engine's `configuration:updated` trigger dispatch.
   - '!shell::on-config-change'
+  - '!cursor::on-config-change'
   # Operator/automation health signal, not an agent tool: it can surface a
   # build-error string (e.g. a host_root path). Operators/console reach it via
   # the privileged dispatch path that bypasses this agent gate.
   - '!shell::config-status'
+  # Interactive PTY lifecycle is driven only by the console UI.
+  - '!shell::pty::*'
   - '!oauth::anthropic::login'
   - '!oauth::openai-codex::login'
   - '!run::start'
@@ -113,12 +125,26 @@ rules:
   - '!harness::stop'
   - '!harness::on-config-change'
   - '!harness::sweep-pending'
+  # kanban: Console asset delivery and lifecycle sinks are engine plumbing.
+  # Run/task mutations stay at the needs_approval default; read-only board,
+  # model, and executor discovery are allowlisted below.
+  - '!kanban::ui-content'
+  - '!kanban::on-agent-task'
+  - '!kanban::on-harness-completed'
+  - '!kanban::on-session-changed'
+  - '!kanban::on-worktree-changed'
   # eval: durable orchestration internals are trigger/queue targets only.
   # Starting, cancelling, and deleting evaluations remain approval-gated by
   # the default. Status/result are read-only and the exact evaluator is pure.
   - '!eval::step'
   - '!eval::on-turn-completed'
   - '!eval::sweep'
+  # security-scan: durable queue, cron, and Harness callback targets trust
+  # private State checkpoints or operator configuration. Agents must use the
+  # report-only request/list/read surface.
+  - '!security-scan::execute'
+  - '!security-scan::on-turn-completed'
+  - '!security-scan::on-schedule'
   # The shaping hop for a trigger bound to an ordinary function: the engine
   # fires it, agents never call it. Agents name their real target in
   # engine::register_trigger's `function_id`, which is checked against the
@@ -195,7 +221,42 @@ rules:
   # other on-config-change denies.
   - '!pdf::on-config-change'
 
+  # document: internal target. The hot-reload hook follows the same pattern as
+  # the other on-config-change denies.
+  - '!document::on-config-change'
+
+  # canvas: internal target. The hot-reload hook follows the same pattern as
+  # the other on-config-change denies.
+  - '!canvas::on-config-change'
+  # a2ui: Console action ingress and lifecycle hooks are trusted plumbing.
+  # Agents compose/apply surfaces through the public functions below; only the
+  # Console may inject a user gesture into an existing Harness session.
+  - '!a2ui::action'
+  - '!a2ui::binding::apply'
+  - '!a2ui::stamp-session'
+  - '!a2ui::on-config-change'
+  # code-runner: internal hot-reload hook, same pattern as the other
+  # on-config-change denies.
+  - '!code-runner::on-config-change'
+
+  # The guidance-knob configuration entries (web/workflow/fp/
+  # sandbox-code-runner/scrapling): internal hot-reload hooks, same pattern
+  # as the other on-config-change denies.
+  - '!web::on-config-change'
+  - '!workflow::on-config-change'
+  - '!fp::on-config-change'
+  - '!sandbox-code-runner::on-config-change'
+  - '!scrapling::on-config-change'
+
+  # opengantry: bus-internal registration hooks; agents must not call them.
+  # gantry::verify and gantry::middleware stay at needs_approval (not listed).
+  - '!gantry::on-function-registration'
+  - '!gantry::on-trigger-registration'
+  - '!gantry::on-trigger-type-registration'
+
   # Read-only / introspection (extend below for your tools).
+  - configuration::list
+  - configuration::schema
   - state::get
   - state::list
   - router::models::list
@@ -246,6 +307,8 @@ rules:
   - worktree::get
   - worktree::status
   - worktree::validate
+  - kanban::executors::list
+  - kanban::models::list
   # editor: the reading half. editor::diff is pure (two strings in, a patch
   # out — no I/O at all); the rest read through the shell worker, so they reach
   # nothing shell::fs::read and shell::exec could not already reach.
@@ -267,6 +330,37 @@ rules:
   - editor::git::status
   - editor::git::hunks
   - editor::git::show
+  # vscode: the Console page starts a loopback-only VS Code Server per folder.
+  # Stop/delete remain approval-gated; the config-reload callback and the
+  # Console asset function are bus-internal.
+  - '!vscode::on-config-change'
+  - '!vscode::ui-content'
+  - vscode::start
+  - vscode::instances::list
+  # tailscale: read-only status/configuration are safe; share publishes the
+  # Console on a new listener and stop tears a route down, so both stay
+  # approval-gated. Config-reload callback and Console asset are bus-internal.
+  - '!tailscale::on-config-change'
+  - '!tailscale::ui-content'
+  - tailscale::status
+  - tailscale::configuration
+  - tailscale::version
+  - tailscale::ip
+  - tailscale::netcheck
+  - tailscale::ping
+  - tailscale::whois
+  - tailscale::dns::status
+  - tailscale::dns::query
+  - tailscale::peers::list
+  - tailscale::exit-node::list
+  - tailscale::exit-node::suggest
+  - tailscale::prefs::get
+  - tailscale::serve::list
+  - tailscale::file::targets
+  - tailscale::drive::list
+  - tailscale::lock::status
+  - tailscale::accounts::list
+  - tailscale::metrics
   # Read-only code surface (coder::*, now served by the shell worker).
   # Mutating ops (create/update/move/delete-file) stay approval-gated.
   - coder::info
@@ -341,3 +435,60 @@ rules:
   - pdf::extract-text
   - pdf::extract-items
   - pdf::extract-regions
+
+  # document: same reasoning as pdf. Every function listed is a pure read of a
+  # file the agent could already reach through the filesystem scope, and reaching
+  # an office document any other way returns compressed noise. Nothing here
+  # writes, spends, or leaves the machine, and each response is capped by the
+  # worker's own configuration.
+  #
+  # `document::ocr` is deliberately absent: it renders pages and reads them with
+  # a vision model, so it spends money per page. It stays behind an approval,
+  # which is also what keeps an agent from transcribing a four-hundred-page scan
+  # because a document happened to be attached.
+  - document::detect
+  - document::to-markdown
+  - document::extract-assets
+
+  # canvas: every function touches only the worker's own store (state scope
+  # "canvas"), sources are size-capped by its configuration, and nothing here
+  # spends, executes, or leaves the machine. Storing and revising a diagram is
+  # the point of the surface, so the write half stays agent-callable too —
+  # gating it would mean an approval prompt to draw a picture.
+  - canvas::create
+  - canvas::get
+  - canvas::list
+  - canvas::update
+  - canvas::delete
+  - canvas::syntax
+  - canvas::validate
+  - canvas::element::add
+  - canvas::element::update
+  - canvas::element::delete
+  - canvas::element::list
+
+  # a2ui: generated content is declarative data rendered through the fixed
+  # Console catalog, never executable code. Size/component caps and the bounded
+  # router correction budget are enforced by the worker. Surface reads and
+  # writes stay agent-callable so requesting a UI does not create an approval
+  # prompt in the middle of an ordinary Harness turn.
+  - a2ui::generate
+  - a2ui::surface::apply
+  - a2ui::surface::get
+  - a2ui::surface::list
+  - a2ui::surface::delete
+  - a2ui::surface::patch
+  - a2ui::surface::export
+  - a2ui::surface::history
+  - a2ui::surface::undo
+  - a2ui::surface::duplicate
+  - a2ui::surface::pin
+  - a2ui::surface::import
+  - a2ui::surface::export-code
+  - a2ui::binding::set
+  - a2ui::binding::delete
+  - a2ui::template::save
+  - a2ui::template::list
+  - a2ui::template::get
+  - a2ui::template::apply
+  - a2ui::template::delete

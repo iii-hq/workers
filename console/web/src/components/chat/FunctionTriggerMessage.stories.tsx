@@ -1,10 +1,19 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { useEffect } from 'react'
+import { SpawnActivityCard } from '@/components/chat/harness/SpawnView'
 import { FunctionTriggerCard } from '@/components/function-trigger/FunctionTriggerCard'
+import { registerExtRenderer } from '@/lib/ui-slots'
 import { coderFixtures } from '@/stories/fixtures/coder-fixtures'
 import { directoryFixtures } from '@/stories/fixtures/directory-fixtures'
-import { engineFixtures } from '@/stories/fixtures/engine-fixtures'
+import {
+  engineFixtures,
+  engineRegisterTriggerSubscribe,
+} from '@/stories/fixtures/engine-fixtures'
 import { fpFixtures } from '@/stories/fixtures/fp-fixtures'
-import { harnessFixtures } from '@/stories/fixtures/harness-fixtures'
+import {
+  harnessFixtures,
+  spawnDirectDone,
+} from '@/stories/fixtures/harness-fixtures'
 import { routerFixtures } from '@/stories/fixtures/router-fixtures'
 import { sandboxFixtures } from '@/stories/fixtures/sandbox-fixtures'
 import { scraplingFixtures } from '@/stories/fixtures/scrapling-fixtures'
@@ -15,6 +24,9 @@ import { workerFixtures } from '@/stories/fixtures/worker-fixtures'
 import { workflowFixtures } from '@/stories/fixtures/workflow-fixtures'
 import { worktreeFixtures } from '@/stories/fixtures/worktree-fixtures'
 import type { FunctionTriggerMessage as FTriggerType } from '@/types/chat'
+import { FileChangesCard } from '../../../../../shell/ui/src/function-trigger/FileChangesCard'
+import { summarizeFileChanges } from '../../../../../shell/ui/src/function-trigger/file-changes'
+import '../../../../../shell/ui/styles.css'
 
 const ftriggerPendingSingle: FTriggerType = {
   id: 'f0a',
@@ -42,6 +54,7 @@ const ftriggerRunning: FTriggerType = {
   id: 'f1',
   role: 'function-trigger',
   functionId: 'engine::echo',
+  description: 'Checking the service response',
   input: { text: 'hello, world.' },
   running: true,
   createdAt: Date.now(),
@@ -55,6 +68,92 @@ const ftriggerDone: FTriggerType = {
   output: { text: 'hello, world.' },
   durationMs: 132,
   createdAt: Date.now(),
+}
+
+const ftriggerActivity: FTriggerType = {
+  ...ftriggerDone,
+  id: 'f2-activity',
+  description: 'Checking the service response',
+}
+
+const fileChangesActivity: FTriggerType = {
+  id: 'f-files-activity',
+  role: 'function-trigger',
+  functionId: 'coder::update-file',
+  description: 'Updating project files',
+  input: {
+    files: [
+      'pnpm-workspace.yaml',
+      'storage/Cargo.toml',
+      'storage/README.md',
+      'src/config.ts',
+      'src/index.ts',
+      'tests/config.test.ts',
+      'docs/setup.md',
+      'package.json',
+    ].map((path, index) => ({
+      path,
+      ops: [
+        {
+          op: 'update_lines',
+          from_line: index + 1,
+          to_line: index + 1,
+          content: `updated line ${index + 1}\nadded line\n`,
+        },
+      ],
+    })),
+  },
+  output: {
+    results: [
+      'pnpm-workspace.yaml',
+      'storage/Cargo.toml',
+      'storage/README.md',
+      'src/config.ts',
+      'src/index.ts',
+      'tests/config.test.ts',
+      'docs/setup.md',
+      'package.json',
+    ].map((path, index) => ({
+      path: `/repo/${path}`,
+      success: true,
+      applied: 1,
+      change_id: `story-change-${index}`,
+    })),
+  },
+  durationMs: 824,
+  createdAt: Date.now(),
+}
+
+const fileChangesSummary = summarizeFileChanges(
+  fileChangesActivity.functionId,
+  fileChangesActivity.input,
+  fileChangesActivity.output,
+)
+
+function FileChangesActivityStory() {
+  useEffect(
+    () =>
+      registerExtRenderer({
+        renderer: {
+          id: 'shell/story#file-changes',
+          isMatch: (functionId) => functionId === 'coder::update-file',
+          tryRender: () =>
+            fileChangesSummary ? (
+              <FileChangesCard
+                summary={fileChangesSummary}
+                running={false}
+                onOpenDiff={() => {}}
+                onOpenFile={() => {}}
+              />
+            ) : null,
+          metadata: { display: true },
+        },
+        scope: 'shell',
+        path: 'shell/page.js',
+      }),
+    [],
+  )
+  return <FunctionTriggerCard message={fileChangesActivity} />
 }
 
 const ftriggerDoneMulti: FTriggerType = {
@@ -168,6 +267,58 @@ export const Running: Story = {
 export const DoneCollapsed: Story = {
   name: 'triggered (collapsed)',
   args: { message: ftriggerDone },
+}
+
+export const DescribedActivity: Story = {
+  name: 'agent activity (collapsed)',
+  args: { message: ftriggerActivity },
+}
+
+export const FileChangesArtifact: Story = {
+  name: 'agent activity · file changes artifact',
+  render: () => <FileChangesActivityStory />,
+}
+
+export const SpawnedSubagentWidget: Story = {
+  name: 'spawned sub-agent widget',
+  args: { message: spawnDirectDone },
+}
+
+export const TriggerRegisteredWidget: Story = {
+  name: 'trigger registered widget',
+  args: { message: engineRegisterTriggerSubscribe },
+}
+
+export const SubagentLiveStates: Story = {
+  name: 'sub-agent live states',
+  render: () => {
+    const now = Date.now()
+    return (
+      <div className="grid max-w-5xl gap-3">
+        {(
+          [
+            ['active', 'Active'],
+            ['working', 'Working'],
+            ['thinking', 'Thinking'],
+            ['messaging', 'Sending a message'],
+            ['error', 'Needs attention'],
+          ] as const
+        ).map(([status, title]) => (
+          <SpawnActivityCard
+            key={status}
+            title={title}
+            task="Audit the release candidate and report any blocker."
+            status={status}
+            sessionId={`sub_${status}_8f3a7d2e`}
+            createdAt={now - 120_000}
+            activityAt={now - 120_000}
+            now={now}
+            onOpen={() => {}}
+          />
+        ))}
+      </div>
+    )
+  },
 }
 
 export const DoneExpanded: Story = {

@@ -6,11 +6,15 @@ import type {
   EvalStatus,
   EvalStatusResponse,
   EvalSummary,
+  SessionComparisonResponse,
+  SessionMeta,
 } from './types'
 
 const TIMEOUT_MS = 30_000
 
 export interface EvalApi {
+  sessions(): Promise<SessionMeta[]>
+  compareSessions(sessionIds: string[], baselineSessionId: string): Promise<SessionComparisonResponse>
   list(): Promise<EvalSummary[]>
   start(request: EvalRequest): Promise<{
     evaluation_id: string
@@ -25,7 +29,6 @@ export interface EvalApi {
   cancel(evaluationId: string): Promise<{ cancelled: boolean; status: EvalStatus }>
   delete(evaluationId: string): Promise<{ deleted: boolean }>
   models(): Promise<CatalogModel[]>
-  systemPrompt(provider?: string): Promise<string | null>
 }
 
 export function createEvalApi(host: Host): EvalApi {
@@ -33,6 +36,19 @@ export function createEvalApi(host: Host): EvalApi {
     host.iii.trigger<T>(functionId, payload, { timeoutMs: TIMEOUT_MS })
 
   return {
+    async sessions() {
+      const response = await trigger<{ sessions: SessionMeta[] }>('session::list', {
+        limit: 200,
+        order: 'updated_desc',
+      })
+      return response.sessions
+    },
+    compareSessions(sessionIds, baselineSessionId) {
+      return trigger('eval::compare-sessions', {
+        session_ids: sessionIds,
+        baseline_session_id: baselineSessionId,
+      })
+    },
     async list() {
       const response = await trigger<{ evaluations: EvalSummary[] }>(
         'eval::list',
@@ -67,15 +83,6 @@ export function createEvalApi(host: Host): EvalApi {
         {},
       )
       return response.models
-    },
-    async systemPrompt(provider) {
-      const response = await trigger<{
-        system_prompt?: string | null
-      }>(
-        'router::system_prompt::get',
-        provider ? { provider } : {},
-      )
-      return response.system_prompt?.trim() || null
     },
   }
 }

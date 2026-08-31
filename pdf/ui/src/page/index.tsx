@@ -14,6 +14,7 @@ import {
   CodeEditor,
   EmptyState,
   MarkdownPreview,
+  type PageRenderProps,
   StatusPanel,
   Tabs,
   TabsContent,
@@ -24,7 +25,7 @@ import {
   TooltipTrigger,
   type Host,
 } from '@iii-dev/console-ui'
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   documentTypeLabel,
@@ -40,7 +41,11 @@ type State =
   | { status: 'done'; name: string; result: Inspection }
   | { status: 'failed'; name: string; error: string }
 
-export function PdfPage({ host }: { host: Host }) {
+export function PdfPage({
+  host,
+  onRequestClose,
+  commands,
+}: { host: Host } & Partial<PageRenderProps>) {
   const [state, setState] = useState<State>({ status: 'idle' })
   const [dragging, setDragging] = useState(false)
   const input = useRef<HTMLInputElement>(null)
@@ -77,13 +82,41 @@ export function PdfPage({ host }: { host: Host }) {
   const hasResult = state.status === 'done' || state.status === 'failed'
   const loadedName = hasResult ? state.name : null
 
+  useEffect(
+    () =>
+      commands?.register([
+        {
+          id: 'choose-file',
+          title: 'Choose a file',
+          detail: 'Pick a PDF to classify and extract',
+          keywords: ['open', 'upload', 'drop'],
+          shortcut: 'O',
+          enabled: () => state.status !== 'reading',
+          run: () => input.current?.click(),
+        },
+      ]),
+    [commands, state.status],
+  )
+
   return (
     <div className="pdf-ui">
       <header className="pdf-ui__head">
-        <h1 className="pdf-ui__title">pdf</h1>
+        <div className="pdf-ui__head-row">
+          <h1 className="pdf-ui__title">pdf</h1>
+          {onRequestClose ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onRequestClose}
+              aria-label="close pdf"
+            >
+              close
+            </Button>
+          ) : null}
+        </div>
         <p className="pdf-ui__lede">
-          Classify a document, see which pages need OCR, and read the markdown an
-          agent would get. Parsing runs in the worker on this machine.
+          Classify a document, see which pages need OCR, and read the markdown
+          an agent would get. Parsing runs in the worker on this machine.
         </p>
       </header>
 
@@ -122,6 +155,7 @@ export function PdfPage({ host }: { host: Host }) {
           variant={hasResult ? 'ghost' : 'pill'}
           onClick={() => input.current?.click()}
           disabled={state.status === 'reading'}
+          data-autofocus=""
         >
           {hasResult ? 'Read another' : 'Choose a file'}
         </Button>
@@ -153,7 +187,9 @@ export function PdfPage({ host }: { host: Host }) {
         />
       )}
 
-      {state.status === 'done' && <Result name={state.name} result={state.result} />}
+      {state.status === 'done' && (
+        <Result name={state.name} result={state.result} />
+      )}
     </div>
   )
 }
@@ -190,7 +226,10 @@ function Result({ name, result }: { name: string; result: Inspection }) {
       </div>
 
       <dl className="pdf-ui__stats">
-        <Stat label="confidence" value={`${Math.round(classify.confidence * 100)}%`} />
+        <Stat
+          label="confidence"
+          value={`${Math.round(classify.confidence * 100)}%`}
+        />
         <Stat label="pages" value={String(classify.page_count)} />
         <Stat
           label="sampled"
@@ -200,7 +239,10 @@ function Result({ name, result }: { name: string; result: Inspection }) {
               : `${classify.pages_sampled} of ${classify.page_count}`
           }
         />
-        <Stat label="need ocr" value={String(classify.pages_needing_ocr.length)} />
+        <Stat
+          label="need ocr"
+          value={String(classify.pages_needing_ocr.length)}
+        />
         <Stat
           label="classify"
           value={`${classify.elapsed_ms} ms`}
@@ -227,7 +269,9 @@ function Result({ name, result }: { name: string; result: Inspection }) {
             . Parsed on this machine, with nothing uploaded.
           </>
         ) : (
-          <>Classified in {totalMs} ms on this machine, with nothing uploaded.</>
+          <>
+            Classified in {totalMs} ms on this machine, with nothing uploaded.
+          </>
         )}
       </p>
 
@@ -261,11 +305,11 @@ function Result({ name, result }: { name: string; result: Inspection }) {
       {markdown ? (
         <Tabs defaultValue="document" className="pdf-ui__tabs">
           <TabsList>
-            <TabsTrigger value="document">document</TabsTrigger>
+            <TabsTrigger value="document">Document</TabsTrigger>
             <TabsTrigger value="pages">
-              pages{markdown.pages ? ` (${markdown.pages.length})` : ''}
+              Pages{markdown.pages ? ` (${markdown.pages.length})` : ''}
             </TabsTrigger>
-            <TabsTrigger value="source">markdown source</TabsTrigger>
+            <TabsTrigger value="source">Markdown Source</TabsTrigger>
           </TabsList>
 
           <TabsContent value="document" className="pdf-ui__pane">
@@ -279,7 +323,9 @@ function Result({ name, result }: { name: string; result: Inspection }) {
                   <span className="pdf-ui__page-no">page {page.page}</span>
                   {page.needs_ocr && (
                     <Badge variant="warn">
-                      {page.ocr_reason ? ocrReasonLabel(page.ocr_reason) : 'needs ocr'}
+                      {page.ocr_reason
+                        ? ocrReasonLabel(page.ocr_reason)
+                        : 'needs ocr'}
                     </Badge>
                   )}
                   {tables.has(page.page) && <Badge>table</Badge>}

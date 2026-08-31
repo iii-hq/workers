@@ -1,9 +1,34 @@
-import type { ReactNode } from 'react'
-import { Chip, MetaRow, StatusPill } from '@/components/chat/sandbox/shared'
-import { JsonHighlight } from '@/lib/syntax'
 import {
-  configFilters,
-  describeCron,
+  Activity,
+  Bell,
+  CircleAlert,
+  CircleOff,
+  FunctionSquare,
+  Info,
+  RadioTower,
+  ShieldCheck,
+} from 'lucide-react'
+import { registrationFromCall } from '@/components/trigger-activity/model'
+import {
+  firstRenderedTriggerActivitySlot,
+  useTriggerActivityRenderers,
+} from '@/components/trigger-activity/renderer-registry'
+import {
+  TriggerJsonPane,
+  TriggerStats,
+  TriggerTrace,
+  TriggerTraceNode,
+} from '@/components/trigger-activity/TriggerDetails'
+import { TriggerSource } from '@/components/trigger-activity/TriggerSource'
+import { ActivityMetadata } from '@/components/ui/ActivityMetadata'
+import { ActivityStatus } from '@/components/ui/ActivityStatus'
+import { OpenDetailsAffordance } from '@/components/ui/OpenDetailsAffordance'
+import { CardHighlight } from '@/components/ui/Surface'
+import { useRelativeClock } from '@/hooks/use-relative-clock'
+import { formatElapsed, timestampMilliseconds } from '@/lib/relative-time'
+import { cn } from '@/lib/utils'
+import { useRegisteredTriggerActive } from '../RegisteredTriggerStatus'
+import {
   type RegisterTriggerRequest,
   type RegisterTriggerResponse,
   registerTriggerRequestSchema,
@@ -14,6 +39,7 @@ import {
 import { FilterChip } from './shared'
 
 interface RegisterTriggerViewProps {
+  messageId: string
   input: unknown
   output: unknown
   running?: boolean
@@ -27,11 +53,25 @@ interface RegisterTriggerViewProps {
  * binding's meaning is legible at a glance. Raw payloads stay one tab away in
  * RAW JSON; this view is the readable one.
  */
+/** "45s" / "12m" / "3h" / "2d" — coarse duration for the relative deadline
+ * stat; mirrors formatElapsed's buckets without the timestamp semantics. */
+function formatDurationMs(ms: number): string {
+  const seconds = Math.max(1, Math.round(ms / 1000))
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.round(minutes / 60)
+  if (hours < 24) return `${hours}h`
+  return `${Math.round(hours / 24)}d`
+}
+
 export function RegisterTriggerView({
+  messageId,
   input,
   output,
   running,
 }: RegisterTriggerViewProps) {
+  const triggerRenderers = useTriggerActivityRenderers()
   const req = safeParseRequest<RegisterTriggerRequest>(
     registerTriggerRequestSchema,
     input,
@@ -47,122 +87,328 @@ export function RegisterTriggerView({
         output,
       )
   const regId = resp?.id ?? resp?.subscription_id
-  const once = resp?.once ?? req.once
+  const registered = Boolean(regId)
+  const once = resp?.once ?? req.once ?? req.lifecycle?.once
   const target =
     req.target ??
     (req.function_id ? { function_id: req.function_id } : undefined)
+  const registration = registrationFromCall({
+    id: messageId,
+    input: req,
+    ...(regId ? { subscriptionId: regId } : {}),
+    ...(typeof once === 'boolean' ? { effectiveOnce: once } : {}),
+    ...(resp?.note ? { note: resp.note } : {}),
+  })
+  const workerDetails = registered
+    ? firstRenderedTriggerActivitySlot(
+        triggerRenderers,
+        registration.activity,
+        (renderer) =>
+          renderer.tryRenderDetails?.(registration.activity) ?? null,
+      )
+    : null
 
-  // Cron schedules read as WHEN content, not as an opaque config dump: the
-  // expression chip plus (for the common shapes) a human reading of it.
-  const cronExpression =
-    req.trigger_type === 'cron' &&
-    req.config &&
-    typeof req.config === 'object' &&
-    typeof (req.config as { expression?: unknown }).expression === 'string'
-      ? (req.config as { expression: string }).expression
-      : null
-  const cronHuman = cronExpression ? describeCron(cronExpression) : null
-  const cronOnlyConfig =
-    cronExpression != null &&
-    Object.keys(req.config as Record<string, unknown>).length === 1
+  if (workerDetails) return workerDetails.node
 
-  const filters = configFilters(req.config)
-  const showRawConfig = !filters && !isEmpty(req.config) && !cronOnlyConfig
+  const metadata = objectOf(req.metadata)
+  const eventInto =
+    target?.event_into ??
+    (typeof metadata?.event_into === 'string' ? metadata.event_into : undefined)
+  const callPayload =
+    target?.payload !== undefined ? target.payload : metadata?.payload
+  const registrationMetadata = metadata
+    ? Object.fromEntries(
+        Object.entries(metadata).filter(([key]) => key !== 'action'),
+      )
+    : req.metadata
+  const stats = [
+    {
+      label: 'Mode',
+      value: once === true ? 'Once' : 'Recurring',
+    },
+    ...(req.lifecycle?.max_fires !== undefined
+      ? [{ label: 'Fire limit', value: String(req.lifecycle.max_fires) }]
+      : []),
+    ...(req.lifecycle?.expires_in_ms !== undefined
+      ? [
+          {
+            label: 'Expires',
+            value: `in ${formatDurationMs(req.lifecycle.expires_in_ms)}`,
+          },
+        ]
+      : []),
+    // Legacy cards: requests recorded before `expires_at` was retired.
+    ...(req.lifecycle?.expires_at !== undefined
+      ? [
+          {
+            label: 'Expires',
+            value: new Date(
+              timestampMilliseconds(req.lifecycle.expires_at),
+            ).toLocaleString(),
+          },
+        ]
+      : []),
+    ...(regId ? [{ label: 'ID', value: regId }] : []),
+  ]
 
   return (
-    <div className="border-t border-rule-2 bg-bg">
-      <MetaRow>
-        <StatusPill
-          label={running ? 'registering trigger…' : 'trigger registered'}
-          variant={running ? 'default' : 'accent'}
-        />
-        {req.label ? <FilterChip label="label" value={req.label} /> : null}
-        {typeof once === 'boolean' ? (
-          <FilterChip label="mode" value={once ? 'one-shot' : 'persistent'} />
-        ) : null}
-        {regId ? (
-          <Chip>
-            <span className="text-ink-faint uppercase tracking-[0.06em]">
-              id
-            </span>
-            <span className="ml-1 text-ink" title={regId}>
-              {shortenId(regId)}
-            </span>
-          </Chip>
-        ) : null}
-      </MetaRow>
-
-      <PaneLabel>when</PaneLabel>
-      <div className="px-3 py-2 border-b border-rule-2 bg-bg flex flex-col gap-1.5">
-        <span className="font-mono text-[13px] text-ink break-all">
-          {req.trigger_type}
-        </span>
-        {cronExpression ? (
-          <div className="flex flex-wrap items-center gap-1.5">
-            {cronHuman ? (
-              <span className="font-mono text-[12px] text-ink">
-                {cronHuman}
-              </span>
-            ) : null}
-            <FilterChip label="expression" value={cronExpression} />
+    <div
+      className="flex min-w-0 flex-col gap-4"
+      data-trigger-registration-details=""
+    >
+      {running || !registered ? (
+        <div className="flex min-w-0 items-start gap-3">
+          <div
+            className={cn(
+              'flex size-9 shrink-0 items-center justify-center rounded-full',
+              running ? 'bg-accent-muted' : 'bg-warn-muted',
+            )}
+          >
+            {running ? (
+              <RadioTower
+                aria-hidden
+                className="size-5 animate-pulse stroke-accent motion-reduce:animate-none"
+              />
+            ) : (
+              <CircleAlert aria-hidden className="size-5 stroke-warn" />
+            )}
           </div>
-        ) : filters ? (
-          <div className="flex flex-wrap items-center gap-1.5">
-            {filters.map((f) => (
-              <FilterChip key={f.label} label={f.label} value={f.value} />
-            ))}
+          <div className="min-w-0 flex-1 font-sans">
+            <div className="text-base font-medium text-ink sm:text-sm">
+              {running ? 'registering trigger…' : 'trigger registration failed'}
+            </div>
+            <p className="text-pretty text-base text-ink-faint sm:text-sm">
+              {running
+                ? 'Creating this binding and preparing it to listen for events.'
+                : 'The binding was not created. Check the raw response for details.'}
+            </p>
           </div>
-        ) : showRawConfig ? null : (
-          <span className="font-mono text-[11px] text-ink-ghost">
-            · no filter — fires on every event
-          </span>
-        )}
-      </div>
-      {showRawConfig ? <LabeledJson label="config" value={req.config} /> : null}
-
-      {req.conditions?.length ? (
-        <>
-          <PaneLabel>only if</PaneLabel>
-          {req.conditions.map((c, i) => (
-            <ConditionRow
-              // Conditions have no id of their own; order is the identity.
-              key={`${c.function_id ?? 'condition'}-${i}`}
-              condition={c}
-            />
-          ))}
-        </>
+        </div>
       ) : null}
 
-      <PaneLabel>then</PaneLabel>
-      <div className="px-3 py-2 border-b border-rule-2 bg-bg flex flex-col gap-1.5">
-        <div className="flex items-baseline gap-2 flex-wrap">
-          <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-            {target ? 'call' : 'notify'}
-          </span>
-          {target ? (
-            <span className="font-mono text-[12.5px] text-accent break-all">
-              {target.function_id}
-            </span>
-          ) : (
-            <span className="font-mono text-[12.5px] text-ink-faint italic">
-              this session
-            </span>
+      <TriggerTrace
+        when={
+          <TriggerTraceNode
+            kind="when"
+            icon={<RadioTower aria-hidden />}
+            label="When"
+            title={registration.activity.triggerType}
+          >
+            <div className="flex min-w-0 flex-col gap-2">
+              <TriggerSource
+                activity={registration.activity}
+                presentation="compact"
+              />
+            </div>
+          </TriggerTraceNode>
+        }
+        then={
+          <TriggerTraceNode
+            kind="then"
+            icon={
+              target ? <FunctionSquare aria-hidden /> : <Bell aria-hidden />
+            }
+            label="Then"
+            title={target ? 'Call' : 'Notify'}
+          >
+            <div className="flex min-w-0 flex-col gap-2">
+              <div
+                className={cn(
+                  'min-w-0 font-sans text-base break-all sm:text-sm',
+                  target ? 'text-ink' : 'text-ink-faint italic',
+                )}
+              >
+                {target?.function_id ?? 'this session'}
+              </div>
+              {eventInto !== undefined ? (
+                <FilterChip label="event into" value={eventInto || '(root)'} />
+              ) : null}
+            </div>
+          </TriggerTraceNode>
+        }
+      />
+
+      <TriggerStats items={stats} />
+
+      {req.conditions?.length ? (
+        <CardHighlight className="p-3 @xl:p-4">
+          <div className="flex min-w-0 items-start gap-3">
+            <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-accent-muted">
+              <ShieldCheck
+                aria-hidden
+                className="size-5 shrink-0 stroke-accent"
+              />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="font-mono text-base tracking-wide text-ink-ghost uppercase sm:text-xs">
+                Only if
+              </div>
+              <div className="mt-2 flex min-w-0 flex-col divide-y divide-edge">
+                {req.conditions.map((condition, index) => (
+                  <ConditionRow
+                    // biome-ignore lint/suspicious/noArrayIndexKey: conditions have no id; their declared order is their identity and execution order.
+                    key={`${condition.function_id ?? 'condition'}-${index}`}
+                    condition={condition}
+                  />
+                ))}
+              </div>
+            </div>
+          </div>
+        </CardHighlight>
+      ) : null}
+
+      {callPayload !== undefined ? (
+        <TriggerJsonPane
+          label="Call payload"
+          value={callPayload}
+          variant="secondary"
+        />
+      ) : null}
+      {registrationMetadata !== undefined && !isEmpty(registrationMetadata) ? (
+        <TriggerJsonPane
+          label="Registration metadata"
+          value={registrationMetadata}
+          variant="secondary"
+        />
+      ) : null}
+
+      {resp?.note ? (
+        <div className="flex min-w-0 items-start gap-3 border-t border-edge pt-4">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-accent-muted">
+            <Info aria-hidden className="size-5 shrink-0 stroke-accent" />
+          </div>
+          <div className="min-w-0 flex-1 font-sans">
+            <div className="text-base font-medium text-ink sm:text-sm">
+              Registration note
+            </div>
+            <p className="text-pretty text-base wrap-break-word text-ink-faint sm:text-sm">
+              {resp.note}
+            </p>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+interface TriggerRegisteredDisplayProps {
+  messageId?: string
+  input: unknown
+  output: unknown
+  createdAt?: number
+  now?: number
+}
+
+/** Compact registration receipt. The full WHEN/IF/THEN model remains in the
+ * expanded renderer; this surface makes the new active binding unmistakable. */
+export function TriggerRegisteredDisplay({
+  messageId,
+  input,
+  output,
+  createdAt,
+  now,
+}: TriggerRegisteredDisplayProps) {
+  const triggerRenderers = useTriggerActivityRenderers()
+  const req = safeParseRequest<RegisterTriggerRequest>(
+    registerTriggerRequestSchema,
+    input,
+  )
+  const resp = safeParseResponse<RegisterTriggerResponse>(
+    registerTriggerResponseSchema,
+    output,
+  )
+  const registrationId = resp?.subscription_id ?? resp?.id
+  const active = useRegisteredTriggerActive({
+    subscriptionId: registrationId,
+    registered: Boolean(registrationId),
+  })
+  const clock = useRelativeClock(createdAt)
+  const currentTime = now ?? clock
+
+  if (!req || !registrationId) return null
+  const registration = registrationFromCall({
+    id: messageId ?? `trigger-registration:${registrationId}`,
+    input: req,
+    subscriptionId: registrationId,
+    ...(typeof (resp?.once ?? req.once ?? req.lifecycle?.once) === 'boolean'
+      ? { effectiveOnce: resp?.once ?? req.once ?? req.lifecycle?.once }
+      : {}),
+    ...(resp?.note ? { note: resp.note } : {}),
+  })
+  const workerDisplay = firstRenderedTriggerActivitySlot(
+    triggerRenderers,
+    registration.activity,
+    (renderer) => renderer.tryRenderDisplay?.(registration.activity) ?? null,
+  )
+  if (workerDisplay) return workerDisplay.node
+  const label = req.label?.trim() || 'Unlabeled trigger'
+  const once = resp?.once ?? req.once ?? req.lifecycle?.once
+  const createdAge = formatElapsed(createdAt, currentTime)
+
+  return (
+    <div
+      className="grid min-w-0 gap-4 @xl:grid-cols-[minmax(0,1fr)_auto] @xl:items-center"
+      data-trigger-registration-state={active ? 'active' : 'inactive'}
+      data-trigger-registration-id={registrationId}
+    >
+      <div className="flex min-w-0 items-start gap-3">
+        <div
+          className={cn(
+            'flex size-12 shrink-0 items-center justify-center rounded-md sm:size-10',
+            active ? 'bg-ok-muted text-ok' : 'bg-surface text-ink-ghost',
           )}
-          {target?.event_into !== undefined ? (
-            <FilterChip
-              label="event into"
-              value={target.event_into || '(root)'}
-            />
-          ) : null}
+        >
+          <RadioTower
+            aria-hidden
+            strokeWidth={2.25}
+            className={cn(
+              'size-6 h-lh shrink-0 sm:size-5',
+              active
+                ? 'animate-pulse stroke-ok motion-reduce:animate-none'
+                : 'stroke-ink-ghost',
+            )}
+          />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="font-sans text-base font-semibold text-ink sm:text-sm">
+            Trigger registered
+          </div>
+          <div
+            className="truncate font-sans text-base text-ink-faint sm:text-sm"
+            data-trigger-registration-label=""
+          >
+            {label}
+          </div>
+          <div className="truncate font-mono text-base text-ink-ghost sm:text-[0.6875rem]">
+            {req.trigger_type}
+            {once === true ? ' · one-shot' : ' · persistent'}
+          </div>
+          <ActivityMetadata
+            className="mt-3"
+            createdAt={createdAt}
+            identifier={registrationId}
+            now={currentTime}
+          />
         </div>
       </div>
 
-      {target?.payload !== undefined ? (
-        <LabeledJson label="payload" value={target.payload} />
-      ) : null}
-      {req.metadata !== undefined && !isEmpty(req.metadata) ? (
-        <LabeledJson label="metadata" value={req.metadata} />
-      ) : null}
+      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-rule-2 pt-3 @xl:flex @xl:flex-col @xl:items-stretch @xl:border-t-0 @xl:pt-0">
+        <ActivityStatus
+          label={active ? 'Active' : 'Inactive'}
+          detail={
+            active
+              ? createdAge === 'just now'
+                ? 'Active now'
+                : createdAge
+                  ? `Active for ${createdAge}`
+                  : 'Listening for events'
+              : 'No longer listening'
+          }
+          icon={active ? Activity : CircleOff}
+          tone={active ? 'positive' : 'neutral'}
+        />
+        <OpenDetailsAffordance />
+      </div>
     </div>
   )
 }
@@ -197,43 +443,39 @@ function ConditionRow({
     ([, v]) => !(isScalar(v) || (Array.isArray(v) && v.every(isScalar))),
   )
   return (
-    <>
-      <div className="px-3 py-2 border-b border-rule-2 bg-bg flex flex-col gap-1.5">
-        <div className="flex items-baseline gap-2 flex-wrap">
-          <span className="font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-            gate
-          </span>
-          {condition.function_id ? (
-            <span className="font-mono text-[12.5px] text-accent break-all">
-              {condition.function_id}
-            </span>
-          ) : (
-            <span className="font-mono text-[12.5px] text-ink-faint italic">
-              condition
-            </span>
-          )}
-        </div>
-        {chippable.length > 0 ? (
-          <div className="flex flex-wrap items-center gap-1.5">
-            {chippable.map(([k, v]) => (
-              <FilterChip
-                key={k}
-                label={k}
-                value={Array.isArray(v) ? v.map(String).join(', ') : String(v)}
-              />
-            ))}
-          </div>
-        ) : null}
+    <div className="flex min-w-0 flex-col gap-2 py-3 first:pt-0 last:pb-0">
+      <div className="font-sans text-base font-medium break-all text-ink sm:text-sm">
+        {condition.function_id ?? 'Condition'}
       </div>
+      {chippable.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {chippable.map(([key, value]) => (
+            <FilterChip
+              key={key}
+              label={key}
+              value={
+                Array.isArray(value)
+                  ? value.map(String).join(', ')
+                  : String(value)
+              }
+            />
+          ))}
+        </div>
+      ) : null}
       {rest.length > 0 ? (
-        <LabeledJson
-          label="condition config"
+        <TriggerJsonPane
+          label="Condition config"
           value={Object.fromEntries(rest)}
+          variant="secondary"
         />
       ) : config === null && condition.config !== undefined ? (
-        <LabeledJson label="condition config" value={condition.config} />
+        <TriggerJsonPane
+          label="Condition config"
+          value={condition.config}
+          variant="secondary"
+        />
       ) : null}
-    </>
+    </div>
   )
 }
 
@@ -245,24 +487,16 @@ function isEmpty(v: unknown): boolean {
   return false
 }
 
-function shortenId(id: string): string {
-  if (id.length <= 14) return id
-  return `${id.slice(0, 8)}…${id.slice(-4)}`
-}
-
-function PaneLabel({ children }: { children: ReactNode }) {
-  return (
-    <div className="bg-paper-2 px-3 py-1.5 border-b border-rule-2 font-mono text-[11px] uppercase tracking-[0.06em] text-ink-faint">
-      {children}
-    </div>
-  )
-}
-
 function LabeledJson({ label, value }: { label: string; value: unknown }) {
   return (
-    <div>
-      <PaneLabel>{label}</PaneLabel>
-      <JsonHighlight code={JSON.stringify(value ?? null, null, 2)} />
-    </div>
+    <TriggerJsonPane
+      label={label.charAt(0).toUpperCase() + label.slice(1)}
+      value={value}
+    />
   )
 }
+
+const objectOf = (value: unknown): Record<string, unknown> | null =>
+  value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null

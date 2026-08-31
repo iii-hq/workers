@@ -3,6 +3,7 @@
 use crate::errors::classify;
 use crate::wire::names::decode_tool_name;
 use crate::{now_ms, PROVIDER_ID};
+use llm_router::provider_scaffold::sse_transport::{arguments_incomplete, StreamEndView};
 use llm_router::types::content::ContentBlock;
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind, StopReason, Usage};
 use llm_router::types::messages::{AssistantMessage, AssistantRoleTag};
@@ -33,6 +34,7 @@ pub struct PartialState {
     native_stop_reason: Option<String>,
     error_message: Option<String>,
     warnings: Vec<String>,
+    terminated: bool,
 }
 
 impl PartialState {
@@ -48,6 +50,7 @@ impl PartialState {
             native_stop_reason: None,
             error_message: None,
             warnings,
+            terminated: false,
         }
     }
 
@@ -57,6 +60,24 @@ impl PartialState {
 
     pub fn has_content(&self) -> bool {
         !self.text.is_empty() || !self.thinking.is_empty() || !self.function_calls.is_empty()
+    }
+}
+
+impl StreamEndView for PartialState {
+    fn saw_terminator(&self) -> bool {
+        self.terminated
+    }
+
+    fn has_content(&self) -> bool {
+        PartialState::has_content(self)
+    }
+
+    fn has_unfinished_call(&self) -> bool {
+        matches!(self.open_block, Some(OpenBlock::Call(_)))
+            || self
+                .function_calls
+                .iter()
+                .any(|fc| arguments_incomplete(&fc.args_json))
     }
 }
 
@@ -155,19 +176,40 @@ pub fn map_finish_reason(s: &str) -> StopReason {
 /// values — overwriting is correct for both, adding double-counts.
 pub fn merge_usage(raw: &Value, into: &mut Usage) {
     let num = |k: &str| raw.get(k).and_then(Value::as_u64);
-    if let Some(v) = num("prompt_tokens").or_else(|| num("input_tokens")) {
-        into.input = Some(v);
-    }
-    if let Some(v) = num("completion_tokens").or_else(|| num("output_tokens")) {
-        into.output = Some(v);
-    }
+    // `Usage.input` is the cache-MISS slice, disjoint from `cache_read`
+    // (pricing bills the splits additively). The wire's `prompt_tokens` is a
+    // TOTAL that includes the cached slice, so the miss slice is derived —
+    // mapping the total verbatim would bill the cached prefix twice.
+    let mut cache_read = None;
+    let mut cache_write = None;
     for parent in ["prompt_tokens_details", "input_tokens_details"] {
         if let Some(v) = raw
             .pointer(&format!("/{parent}/cached_tokens"))
             .and_then(Value::as_u64)
         {
-            into.cache_read = Some(v);
+            cache_read = Some(v);
         }
+        if let Some(v) = raw
+            .pointer(&format!("/{parent}/cache_write_tokens"))
+            .and_then(Value::as_u64)
+        {
+            cache_write = Some(v);
+        }
+    }
+    if let Some(v) = cache_read {
+        into.cache_read = Some(v);
+    }
+    if let Some(v) = cache_write {
+        into.cache_write = Some(v);
+    }
+    if let Some(v) = num("prompt_tokens").or_else(|| num("input_tokens")) {
+        into.input = Some(
+            v.saturating_sub(cache_read.unwrap_or(0))
+                .saturating_sub(cache_write.unwrap_or(0)),
+        );
+    }
+    if let Some(v) = num("completion_tokens").or_else(|| num("output_tokens")) {
+        into.output = Some(v);
     }
     if let Some(v) = raw
         .pointer("/completion_tokens_details/reasoning_tokens")
@@ -298,6 +340,7 @@ pub fn handle_chunk(
                             partial: None,
                             delta: args.to_string(),
                             id: state.function_calls[index].id.clone(),
+                            arguments_preview: None,
                         });
                     }
                 }
@@ -306,6 +349,7 @@ pub fn handle_chunk(
     }
 
     if let Some(finish) = choice.get("finish_reason").and_then(Value::as_str) {
+        state.terminated = true;
         state.stop_reason = map_finish_reason(finish);
         state.native_stop_reason = Some(finish.to_string());
         if finish == "content_filter" {
@@ -337,6 +381,19 @@ fn responses_usage(event: &Value, state: &mut PartialState) {
     if let Some(usage) = usage.filter(|usage| usage.is_object()) {
         merge_usage(usage, &mut state.usage);
         state.usage_seen = true;
+    }
+}
+
+fn responses_error_kind(event: &Value, message: &str) -> ErrorKind {
+    let error = event
+        .get("error")
+        .or_else(|| event.pointer("/response/error"));
+    match error {
+        Some(error) => {
+            let envelope = serde_json::json!({ "error": error });
+            classify(None, &envelope.to_string())
+        }
+        None => classify(None, message),
     }
 }
 
@@ -446,6 +503,7 @@ fn handle_responses_event(
                 partial: None,
                 delta: delta.to_string(),
                 id,
+                arguments_preview: None,
             });
         }
         "response.output_item.done" => {
@@ -465,6 +523,7 @@ fn handle_responses_event(
             }
         }
         "response.completed" => {
+            state.terminated = true;
             responses_usage(event, state);
             state.stop_reason = if state.function_calls.is_empty() {
                 StopReason::End
@@ -482,6 +541,7 @@ fn handle_responses_event(
             });
         }
         "response.incomplete" => {
+            state.terminated = true;
             responses_usage(event, state);
             let reason = event
                 .pointer("/response/incomplete_details/reason")
@@ -519,7 +579,7 @@ fn handle_responses_event(
             state.stop_reason = StopReason::Error;
             state.error_message = Some(message.clone());
             let mut error = build_final(state, model);
-            error.error_kind = Some(classify(None, &message));
+            error.error_kind = Some(responses_error_kind(event, &message));
             events.push(AssistantMessageEvent::Error { error });
         }
         _ => {}
@@ -589,10 +649,22 @@ mod tests {
         assert_eq!(final_msg.stop_reason, StopReason::End);
         assert_eq!(final_msg.native_stop_reason.as_deref(), Some("stop"));
         let usage = final_msg.usage.unwrap();
-        assert_eq!(usage.input, Some(12));
+        assert_eq!(usage.input, Some(8));
         assert_eq!(usage.output, Some(2));
         assert_eq!(usage.cache_read, Some(4));
         assert_eq!(usage.reasoning, Some(0));
+    }
+
+    #[test]
+    fn usage_keeps_cache_reads_and_writes_disjoint_from_input() {
+        let (state, _) = run(&[json!({"choices":[],"usage":{
+            "prompt_tokens":12,
+            "prompt_tokens_details":{"cached_tokens":6,"cache_write_tokens":2}
+        }})]);
+        let usage = build_final(&state, "gpt-test").usage.unwrap();
+        assert_eq!(usage.input, Some(4));
+        assert_eq!(usage.cache_read, Some(6));
+        assert_eq!(usage.cache_write, Some(2));
     }
 
     #[test]
@@ -781,10 +853,48 @@ mod tests {
             matches!(&final_message.content[0], ContentBlock::Text { text } if text == "Hello")
         );
         let usage = final_message.usage.unwrap();
-        assert_eq!(usage.input, Some(12));
+        assert_eq!(usage.input, Some(8));
         assert_eq!(usage.output, Some(2));
         assert_eq!(usage.cache_read, Some(4));
         assert_eq!(usage.reasoning, Some(1));
+    }
+
+    #[test]
+    fn responses_credit_exhaustion_events_are_permanent() {
+        let message = "You have no credits remaining.";
+        let events = [
+            json!({
+                "type": "error",
+                "error": {
+                    "type": "insufficient_quota",
+                    "code": "credit_balance_exhausted",
+                    "message": message,
+                    "param": null
+                }
+            }),
+            json!({
+                "type": "response.failed",
+                "response": {
+                    "status": "failed",
+                    "error": {
+                        "code": "credit_balance_exhausted",
+                        "message": message
+                    }
+                }
+            }),
+        ];
+
+        for event in events {
+            let (_, emitted) = run(&[event]);
+            assert_eq!(emitted.len(), 1);
+            match &emitted[0] {
+                AssistantMessageEvent::Error { error } => {
+                    assert_eq!(error.error_kind, Some(ErrorKind::Permanent));
+                    assert_eq!(error.error_message.as_deref(), Some(message));
+                }
+                other => panic!("want permanent error frame, got {other:?}"),
+            }
+        }
     }
 
     #[test]

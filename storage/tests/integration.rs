@@ -1,12 +1,14 @@
 //! End-to-end test (docs/sops/binary-worker.md §9 pattern A): spawn the `iii` engine
 //! and the `storage` worker as subprocesses, drive the worker through
-//! `iii-sdk` as a client, then tear both down. **Self-skips** when `iii` is
-//! not on `PATH` so CI hosts without the engine still pass.
+//! `iii-sdk` as a client, then tear both down. **Self-skips** when neither
+//! `III_ENGINE_BIN` nor an `iii` binary on `PATH` is available.
 //!
-//! What we exercise: a `storage::putObject` round-trip against the bundled
-//! rustfs `local` backend (no cloud credentials needed), then a `getObject`
+//! What we exercise: a `storage::putObject` round-trip against the native
+//! local backend (no cloud credentials or sidecar needed), then a `getObject`
 //! to confirm the bytes round-trip.
 
+use std::net::TcpListener;
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
@@ -16,11 +18,11 @@ use iii_sdk::{register_worker, InitOptions};
 use serde_json::json;
 use tokio::time::{sleep, timeout};
 
-const ENGINE_WS: &str = "ws://127.0.0.1:49134";
-
 struct Harness {
     iii: Child,
     worker: Child,
+    url: String,
+    _directory: tempfile::TempDir,
 }
 
 impl Drop for Harness {
@@ -33,18 +35,28 @@ impl Drop for Harness {
 }
 
 async fn boot() -> Option<Harness> {
-    let iii_bin = which::which("iii").ok()?;
-
-    // The default `config.yaml` declares a `local` (rustfs-backed) bucket so
-    // the worker has something useful to serve out of the box. Without a
-    // rustfs binary, the worker errors during startup before registering
-    // functions — self-skip rather than fail.
-    if std::env::var("RUSTFS_BIN").ok().is_none() && which::which("rustfs").is_err() {
-        return None;
-    }
+    let iii_bin = std::env::var_os("III_ENGINE_BIN")
+        .map(PathBuf::from)
+        .or_else(|| which::which("iii").ok())?;
+    let port = TcpListener::bind("127.0.0.1:0")
+        .ok()?
+        .local_addr()
+        .ok()?
+        .port();
+    let directory = tempfile::tempdir().ok()?;
+    let engine_config_path = directory.path().join("engine.yaml");
+    std::fs::write(
+        &engine_config_path,
+        format!("workers:\n  - name: iii-worker-manager\n    config:\n      port: {port}\n"),
+    )
+    .ok()?;
+    let url = format!("ws://127.0.0.1:{port}");
 
     let mut iii = Command::new(&iii_bin)
-        .arg("--use-default-config")
+        .arg("--no-update-check")
+        .arg("--config")
+        .arg(&engine_config_path)
+        .current_dir(directory.path())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -61,7 +73,7 @@ async fn boot() -> Option<Harness> {
     // process entirely). Without this, a transient spawn failure could
     // leave a stray engine bound to the test port.
     let worker = match Command::new(worker_bin)
-        .args(["--url", ENGINE_WS, "--config", &config_path])
+        .args(["--url", &url, "--config", &config_path])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -74,13 +86,18 @@ async fn boot() -> Option<Harness> {
         }
     };
 
-    Some(Harness { iii, worker })
+    Some(Harness {
+        iii,
+        worker,
+        url,
+        _directory: directory,
+    })
 }
 
 /// Poll `storage::putObject` until the worker has registered, or give up.
 /// Returns the last response value (or panics with the last error). The worker
-/// spawns rustfs and waits for the sidecar to become healthy before
-/// registering functions, so there's a non-trivial readiness window.
+/// initializes its local data directory before registering functions, so
+/// there can still be a short readiness window.
 async fn put_when_ready(
     client: &iii_sdk::IIIClient,
     payload: serde_json::Value,
@@ -118,13 +135,13 @@ async fn put_when_ready(
 }
 
 #[tokio::test]
-async fn put_then_get_round_trips_via_rustfs() {
-    let Some(_h) = boot().await else {
-        eprintln!("skipping: `iii` and/or `rustfs` (or $RUSTFS_BIN) not on PATH");
+async fn put_then_get_round_trips_via_native_local_storage() {
+    let Some(harness) = boot().await else {
+        eprintln!("skipping: iii engine is unavailable");
         return;
     };
 
-    let client = register_worker(ENGINE_WS, InitOptions::default());
+    let client = register_worker(&harness.url, InitOptions::default());
     sleep(Duration::from_millis(500)).await;
 
     let body = b"hello from integration.rs";
@@ -159,9 +176,9 @@ async fn put_then_get_round_trips_via_rustfs() {
     .expect("getObject timed out")
     .expect("getObject failed");
 
-    let got_b64 = get["body"]
+    let got_b64 = get["body_base64"]
         .as_str()
-        .expect("getObject response should have base64 `body`");
+        .expect("getObject response should have base64 `body_base64`");
     let got = B64.decode(got_b64).expect("response body is valid base64");
     assert_eq!(got, body, "round-tripped body must match");
 

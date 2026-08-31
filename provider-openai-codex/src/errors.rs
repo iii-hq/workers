@@ -44,13 +44,16 @@ fn classify_openai_value(v: &Value, status: Option<u16>) -> Option<ErrorKind> {
         "context_length_exceeded" => return Some(ErrorKind::ContextOverflow),
         // 429 with insufficient_quota is a billing wall, not a rate limit:
         // the router's retry/backoff cannot fix it.
-        "insufficient_quota" => return Some(ErrorKind::Permanent),
+        "insufficient_quota" | "credit_balance_exhausted" => {
+            return Some(ErrorKind::Permanent);
+        }
         "invalid_api_key" | "account_deactivated" => return Some(ErrorKind::AuthExpired),
         _ => {}
     }
     match err_type {
         "authentication_error" | "permission_error" => Some(ErrorKind::AuthExpired),
         "rate_limit_error" => Some(ErrorKind::RateLimited),
+        "insufficient_quota" => Some(ErrorKind::Permanent),
         "server_error" => Some(ErrorKind::Transient),
         "invalid_request_error" => {
             if status == Some(413) || is_context_overflow_message(msg) {
@@ -82,10 +85,9 @@ pub fn invalid_request(message: impl Into<String>) -> Error {
     }
 }
 
-/// Map a serde deserialization failure (the typed-handler bad-request path) to
-/// the provider's `invalid_request` wire error. Used with
-/// `RegisterFunction::new_async_with_bad_request` so typed schemas are emitted
-/// while the malformed-payload contract stays `provider/invalid_request`.
+/// Map a serde deserialization failure to the provider's stable
+/// `invalid_request` wire error. The shared typed registration adapter keeps
+/// schemas emitted while preserving `provider/invalid_request`.
 pub fn invalid_request_from_serde(e: serde_json::Error) -> Error {
     invalid_request(format!("bad ProviderStreamInput: {e}"))
 }
@@ -122,6 +124,10 @@ mod tests {
 
         let body = r#"{"error":{"message":"You exceeded your current quota.","type":"insufficient_quota","code":"insufficient_quota"}}"#;
         assert_eq!(classify(Some(429), body), ErrorKind::Permanent);
+
+        let body = r#"{"error":{"message":"You have no credits remaining.","type":"insufficient_quota","code":"credit_balance_exhausted"}}"#;
+        assert_eq!(classify(Some(429), body), ErrorKind::Permanent);
+        assert_eq!(classify(None, body), ErrorKind::Permanent);
 
         let body = r#"{"error":{"message":"Incorrect API key provided.","type":"invalid_request_error","code":"invalid_api_key"}}"#;
         assert_eq!(classify(Some(401), body), ErrorKind::AuthExpired);

@@ -19,8 +19,13 @@
 //    needed (the common case: most rows are rooted in unhidden work);
 // 2. the all-spans feed (`useAllSpans`) — the spans the strip draws;
 // 3. a one-shot batched read of the trace's stored spans for hidden-rooted
-//    rows the feed doesn't cover (the feed retains ~2min; the list's 500
-//    rows reach much further back).
+//    rows the feed doesn't cover (the feed retains ~2min; paged history
+//    can reach much further back).
+//
+// Failed rows always survive this composition filter even when every span is
+// hidden. Otherwise an early failure in a producer-default-hidden root (for
+// example `harness::send` failing before it creates a child) disappears from
+// the only surface where the user can diagnose it.
 //
 // Both span sources count only what the DETAIL views can render: engine
 // builtin spans (`include_internal: false` drops them from the detail
@@ -49,7 +54,7 @@
 // second, so the exemption never resurfaces them.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { fetchTraces, type StoredSpan } from '../api/traces'
+import { fetchTraceSpans, type StoredSpan } from '../api/traces'
 import type { TimelineSpan } from '../components/timeline/layout'
 import {
   isSpanBarHidden,
@@ -168,7 +173,10 @@ export function reconcileTraceVisibility(
     }
   }
   const kept = rows.filter(
-    (r) => verdicts.get(r.traceId) !== false || liveTraces.has(r.traceId),
+    (r) =>
+      r.status === 'error' ||
+      verdicts.get(r.traceId) !== false ||
+      liveTraces.has(r.traceId),
   )
   // Identity-stable when nothing is hidden, so downstream memos hold.
   return kept.length === rows.length ? rows : kept
@@ -303,7 +311,7 @@ export function useSpanFilteredTraceRows(
       for (let i = 0; i < unknown.length; i += FETCH_TRACE_CHUNK) {
         const chunk = unknown.slice(i, i + FETCH_TRACE_CHUNK)
         try {
-          const res = await fetchTraces({
+          const res = await fetchTraceSpans({
             trace_ids: chunk,
             search_all_spans: true,
             include_internal: true,

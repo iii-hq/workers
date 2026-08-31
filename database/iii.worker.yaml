@@ -3,6 +3,7 @@ name: database
 language: rust
 deploy: binary
 manifest: Cargo.toml
+license: Apache-2.0
 bin: database
 tags: [sql, sqlite, postgres, mysql, db]
 description: Talk to PostgreSQL, MySQL, and SQLite from iii — query, execute, transactions, prepared statements, and change feeds.

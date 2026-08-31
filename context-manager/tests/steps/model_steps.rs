@@ -23,6 +23,7 @@ async fn router_model(world: &mut ContextWorld, id: String, context_window: u64,
         max_output_tokens: max_output,
         input_limit: None,
         thinking_budgets: None,
+        supports_vision: None,
     });
     world.model_inputs.insert(id.clone(), json!({ "id": id }));
 }
@@ -44,8 +45,22 @@ async fn router_model_input_limit(
         max_output_tokens: max_output,
         input_limit: Some(input_limit),
         thinking_budgets: None,
+        supports_vision: None,
     });
     world.model_inputs.insert(id.clone(), json!({ "id": id }));
+}
+
+#[given(regex = r#"^the router model "([^"]+)" declares vision support (true|false)$"#)]
+async fn router_model_vision(world: &mut ContextWorld, id: String, value: String) {
+    let mut models = world
+        .resolver
+        .models
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    models
+        .get_mut(&id)
+        .unwrap_or_else(|| panic!("declare the router model {id} first"))
+        .supports_vision = Some(value == "true");
 }
 
 #[given(

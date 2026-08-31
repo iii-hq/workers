@@ -7,6 +7,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use axum::extract::{FromRef, Path, State};
@@ -15,22 +16,73 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use tokio::net::TcpListener;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, Mutex};
+use tokio::task::{AbortHandle, JoinHandle};
+use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::ui_assets::UiRegistry;
 use crate::{assets, proxy};
+
+/// Grace period before a superseded listener is hard-aborted. Graceful
+/// shutdown is the primary path; the abort only bounds how long a stuck
+/// connection can keep the old port occupied after a configuration rebind.
+/// This matches the HTTP worker's listener-rebind strategy.
+const OLD_SERVER_HARD_STOP_GRACE: Duration = Duration::from_secs(2);
+
+/// Control handle for the currently running HTTP listener.
+pub struct ServerControl {
+    pub graceful: oneshot::Sender<()>,
+    pub abort: AbortHandle,
+    pub local_addr: SocketAddr,
+    pub join: JoinHandle<()>,
+}
+
+/// Shared slot holding the current listener. A configuration change replaces
+/// this only after the new port has bound successfully.
+pub type ServerControlCell = Arc<Mutex<Option<ServerControl>>>;
+
+/// Handle returned once the initial listener is bound and serving.
+pub struct ServerHandle {
+    pub local_addr: SocketAddr,
+    pub control: ServerControlCell,
+}
+
+impl ServerHandle {
+    /// The address currently serving Console. This changes after a live port
+    /// rebind and becomes `None` after shutdown.
+    pub async fn current_addr(&self) -> Option<SocketAddr> {
+        self.control.lock().await.as_ref().map(|c| c.local_addr)
+    }
+
+    /// Gracefully stop the current listener and wait for it to finish.
+    pub async fn shutdown(self) {
+        if let Some(control) = self.control.lock().await.take() {
+            let _ = control.graceful.send(());
+            let _ = control.join.await;
+        }
+    }
+}
 
 /// Router state. `ui: None` means injectable UI is disabled (config kill
 /// switch) — the `/ui` and `/vendor` routes are not mounted at all.
 #[derive(Clone)]
 pub struct AppState {
     pub engine_url: Arc<String>,
+    pub namespace: Option<String>,
     pub ui: Option<Arc<UiRegistry>>,
 }
 
 impl AppState {
-    pub fn new(engine_url: Arc<String>, ui: Option<Arc<UiRegistry>>) -> Self {
-        Self { engine_url, ui }
+    pub fn new(
+        engine_url: Arc<String>,
+        namespace: Option<String>,
+        ui: Option<Arc<UiRegistry>>,
+    ) -> Self {
+        Self {
+            engine_url,
+            namespace,
+            ui,
+        }
     }
 }
 
@@ -47,6 +99,7 @@ pub fn router(state: AppState) -> Router {
     let mut router = Router::new()
         .route("/", get(assets::index_handler))
         .route("/assets/*path", get(assets::asset_handler))
+        .route("/runtime", get(runtime_handler))
         .route("/ws", get(proxy::ws_proxy));
 
     if state.ui.is_some() {
@@ -56,11 +109,47 @@ pub fn router(state: AppState) -> Router {
             .route("/vendor/*path", get(assets::vendor_handler));
     }
 
-    router.fallback(not_found).with_state(state)
+    router
+        .fallback(not_found)
+        .with_state(state)
+        .layer(SetResponseHeaderLayer::if_not_present(
+            header::HeaderName::from_static("content-security-policy"),
+            HeaderValue::from_static("frame-ancestors 'none'; object-src 'none'; base-uri 'none'"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            header::HeaderName::from_static("cross-origin-resource-policy"),
+            HeaderValue::from_static("same-origin"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            header::HeaderName::from_static("referrer-policy"),
+            HeaderValue::from_static("no-referrer"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            header::X_FRAME_OPTIONS,
+            HeaderValue::from_static("DENY"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        ))
 }
 
 async fn not_found() -> (StatusCode, &'static str) {
     (StatusCode::NOT_FOUND, "not found")
+}
+
+/// `GET /runtime` — connection settings that cannot be baked into the SPA.
+/// A browser has no process environment, so it needs the console worker to
+/// tell it which namespace its proxied engine connection must join.
+async fn runtime_handler(State(state): State<AppState>) -> Response {
+    let mut response = Json(serde_json::json!({
+        "namespace": state.namespace,
+    }))
+    .into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 /// `Cache-Control` for every injected-UI response: mutable content, so the
@@ -132,30 +221,80 @@ pub async fn serve(
     shutdown: oneshot::Receiver<()>,
     bound: Option<oneshot::Sender<SocketAddr>>,
 ) -> anyhow::Result<()> {
-    let app = router(state);
-
-    let addr: SocketAddr = (std::net::Ipv4Addr::UNSPECIFIED, http_port).into();
-    let listener = TcpListener::bind(addr)
-        .await
-        .with_context(|| format!("binding TCP listener on {addr}"))?;
-    let local = listener
-        .local_addr()
-        .with_context(|| "reading bound listener local_addr")?;
-    tracing::info!(addr = %local, "console http listening");
+    let handle = start(http_port, state).await?;
 
     if let Some(tx) = bound {
-        let _ = tx.send(local);
+        let _ = tx.send(handle.local_addr);
     }
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            let _ = shutdown.await;
-        })
-        .await
-        .context("axum::serve loop exited with error")?;
-
-    tracing::info!("console http stopped");
+    let _ = shutdown.await;
+    handle.shutdown().await;
     Ok(())
+}
+
+/// Bind the initial listener and spawn its server task.
+pub async fn start(http_port: u16, state: AppState) -> anyhow::Result<ServerHandle> {
+    let listener = bind_listener(http_port).await?;
+    let local_addr = listener
+        .local_addr()
+        .with_context(|| "reading bound listener local_addr")?;
+    let control = spawn_server(listener, state);
+    Ok(ServerHandle {
+        local_addr,
+        control: Arc::new(Mutex::new(Some(control))),
+    })
+}
+
+/// Bind `0.0.0.0:<http_port>` without changing any live server state. Rebinds
+/// use this bind-new-before-stop-old step so a failed port change leaves the
+/// existing Console listener untouched.
+pub async fn bind_listener(http_port: u16) -> anyhow::Result<TcpListener> {
+    let addr: SocketAddr = (std::net::Ipv4Addr::UNSPECIFIED, http_port).into();
+    TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("binding TCP listener on {addr}"))
+}
+
+/// Spawn a server over an already-bound listener. The same shared app state is
+/// reused when configuration moves the listener to a different port.
+pub fn spawn_server(listener: TcpListener, state: AppState) -> ServerControl {
+    let local_addr = listener
+        .local_addr()
+        .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)));
+    let (graceful_tx, graceful_rx) = oneshot::channel::<()>();
+    let app = router(state);
+
+    let join = tokio::spawn(async move {
+        tracing::info!(addr = %local_addr, "console http listening");
+        if let Err(error) = axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                let _ = graceful_rx.await;
+            })
+            .await
+        {
+            tracing::error!(%error, "console http server exited with error");
+        }
+        tracing::info!(addr = %local_addr, "console http stopped");
+    });
+
+    let abort = join.abort_handle();
+    ServerControl {
+        graceful: graceful_tx,
+        abort,
+        local_addr,
+        join,
+    }
+}
+
+/// Gracefully drain a superseded listener, with a bounded hard-stop fallback.
+/// The replacement listener is already serving before this is called.
+pub fn stop_old_server(old: ServerControl) {
+    let _ = old.graceful.send(());
+    let abort = old.abort;
+    tokio::spawn(async move {
+        tokio::time::sleep(OLD_SERVER_HARD_STOP_GRACE).await;
+        abort.abort();
+    });
 }
 
 #[cfg(test)]
@@ -166,7 +305,11 @@ mod tests {
     fn state_with_ui() -> (AppState, Arc<UiRegistry>) {
         let ui = Arc::new(UiRegistry::default());
         (
-            AppState::new(Arc::new("ws://127.0.0.1:1".to_string()), Some(ui.clone())),
+            AppState::new(
+                Arc::new("ws://127.0.0.1:1".to_string()),
+                Some("project-a".to_string()),
+                Some(ui.clone()),
+            ),
             ui,
         )
     }
@@ -237,11 +380,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn runtime_exposes_the_worker_namespace_without_caching() {
+        let (state, _ui) = state_with_ui();
+        let response = get_response(router(state), "/runtime", &[]).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value, serde_json::json!({ "namespace": "project-a" }));
+    }
+
+    #[tokio::test]
     async fn kill_switch_removes_ui_routes() {
-        let state = AppState::new(Arc::new("ws://127.0.0.1:1".to_string()), None);
+        let state = AppState::new(Arc::new("ws://127.0.0.1:1".to_string()), None, None);
         let response = get_response(router(state.clone()), "/ui", &[]).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let response = get_response(router(state), "/vendor/react.js", &[]).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn every_http_response_carries_defensive_browser_headers() {
+        let state = AppState::new(Arc::new("ws://127.0.0.1:1".to_string()), None, None);
+        for uri in ["/", "/missing"] {
+            let response = get_response(router(state.clone()), uri, &[]).await;
+            assert_eq!(
+                response.headers().get(header::X_CONTENT_TYPE_OPTIONS),
+                Some(&HeaderValue::from_static("nosniff"))
+            );
+            assert_eq!(
+                response.headers().get(header::X_FRAME_OPTIONS),
+                Some(&HeaderValue::from_static("DENY"))
+            );
+            assert_eq!(
+                response.headers().get("referrer-policy"),
+                Some(&HeaderValue::from_static("no-referrer"))
+            );
+            assert_eq!(
+                response.headers().get("cross-origin-resource-policy"),
+                Some(&HeaderValue::from_static("same-origin"))
+            );
+            assert_eq!(
+                response.headers().get("content-security-policy"),
+                Some(&HeaderValue::from_static(
+                    "frame-ancestors 'none'; object-src 'none'; base-uri 'none'"
+                ))
+            );
+        }
     }
 }

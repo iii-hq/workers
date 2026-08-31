@@ -13,14 +13,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useState } from 'react'
 import {
-  type ConsoleConfigValue,
-  fetchConsoleConfigValue,
-  setConsoleConfigValue,
-} from '@/lib/console-config'
-
-// Same key as `useTraceViews` / `useSpanFilterSelection` — all three hooks
-// read the one `console` entry, sharing the React Query cache.
-const CONSOLE_CONFIG_QUERY_KEY = ['consoleConfig']
+  CONSOLE_CONFIG_QUERY_KEY,
+  consoleConfigWriter,
+} from '@/hooks/lib/console-config-writer'
+import type { ConsoleConfigValue } from '@/lib/console-config'
 
 /** Parse `traces.followTurns` out of the raw console-config value.
  *  `undefined` = no choice recorded (callers default to ON). */
@@ -53,10 +49,11 @@ export interface UseFollowTurnsReturn {
 
 export function useFollowTurns(): UseFollowTurnsReturn {
   const qc = useQueryClient()
+  const writer = consoleConfigWriter(qc)
 
   const { data } = useQuery<ConsoleConfigValue | null>({
     queryKey: CONSOLE_CONFIG_QUERY_KEY,
-    queryFn: fetchConsoleConfigValue,
+    queryFn: () => writer.readForQuery(),
     staleTime: 30_000,
     retry: 1,
   })
@@ -69,13 +66,12 @@ export function useFollowTurns(): UseFollowTurnsReturn {
 
   const mutation = useMutation({
     mutationFn: async (on: boolean) => {
-      const current = (await fetchConsoleConfigValue()) ?? {}
-      const next = withFollowTurns(current, on)
-      await setConsoleConfigValue(next)
+      const next = writer.enqueue(
+        (value) => withFollowTurns(value, on),
+        data ?? {},
+      )
+      await writer.whenIdle()
       return next
-    },
-    onSuccess: (next) => {
-      qc.setQueryData(CONSOLE_CONFIG_QUERY_KEY, next)
     },
   })
 

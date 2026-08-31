@@ -25,11 +25,13 @@
  */
 
 import { parseAttachedFileHeader } from '@/lib/file-mentions'
+import { parseSlashBlockHeader, slashChip } from '@/lib/slash-commands'
 import type {
   Attachment,
   FunctionTriggerMessage,
   Message,
   SystemMessage,
+  SystemNoticeTechnicalDetails,
   TriggerFiredData,
   UserMessage,
 } from '@/types/chat'
@@ -109,7 +111,14 @@ function customNotice(
 export function triggerFiredName(t: TriggerFiredData): string {
   if (t.label) return t.label
   if (t.key) return t.scope ? `${t.scope}/${t.key}` : t.key
-  return 'trigger'
+  return t.trigger_type ?? 'trigger'
+}
+
+/** The compact timeline copy: an explicit event action, then the binding's
+ * existing display name for historical registrations. */
+export function triggerFiredEventText(t: TriggerFiredData): string {
+  const action = t.action?.trim()
+  return action || triggerFiredName(t)
 }
 
 /**
@@ -120,14 +129,55 @@ export function triggerFiredName(t: TriggerFiredData): string {
  * rendering as they did.
  */
 export function triggerFiredSummary(t: TriggerFiredData): string {
-  const name = triggerFiredName(t)
-  const action =
+  const name = triggerFiredEventText(t)
+  const deliveredAction =
     t.target === 'spawn'
       ? `spawned${t.model ? ` ${t.model}` : ''}`
       : !t.target || t.target === 'notify' || t.target === 'harness::send'
         ? 'notified this chat'
         : `called ${t.target}`
-  return `${name} · ${action}${t.retired ? ' · unregistered' : ''}`
+  const lifecycle = triggerLifecycleSummary(t)
+  // Lifecycle-only records did not attempt their target. Keeping a call or
+  // notification verb in their fallback summary would invent a delivery.
+  if (
+    t.outcome === 'expired' ||
+    t.outcome === 'unregistered' ||
+    t.outcome === 'invalidated'
+  ) {
+    return `${name} · ${lifecycle ?? 'binding retired'}`
+  }
+  const action =
+    t.outcome === 'skipped'
+      ? 'delivery skipped'
+      : t.outcome === 'delivery_failed'
+        ? !t.target || t.target === 'notify' || t.target === 'harness::send'
+          ? 'notification failed'
+          : `call to ${t.target} failed`
+        : deliveredAction
+  return `${name} · ${action}${lifecycle ? ` · ${lifecycle}` : ''}`
+}
+
+function triggerLifecycleSummary(t: TriggerFiredData): string | null {
+  switch (t.retirement_reason) {
+    case 'once_consumed':
+      return 'once consumed'
+    case 'max_fires':
+      return 'delivery limit reached'
+    case 'expired':
+      return 'binding expired'
+    case 'unregistered':
+      return 'binding manually removed'
+    case 'invalidated':
+      return 'binding invalidated'
+    case 'exhausted':
+      return 'binding exhausted'
+  }
+  if (!t.retired) return null
+  // Historical successful one-shot records predate the structured reason;
+  // "consumed" is accurate, while "unregistered" falsely implies a person.
+  if (t.once && (!t.outcome || t.outcome === 'delivered'))
+    return 'once consumed'
+  return 'binding retired'
 }
 
 function triggerFiredMessage(
@@ -165,6 +215,35 @@ function lifecycleNotice(
 
   if (customType === ERROR_CUSTOM_TYPE) {
     const code = typeof d.code === 'string' ? d.code : undefined
+    const errorClass = typeof d.class === 'string' ? d.class : undefined
+    const detail =
+      typeof d.detail === 'string'
+        ? d.detail
+        : typeof d.reason === 'string'
+          ? d.reason
+          : typeof d.message === 'string'
+            ? d.message
+            : undefined
+    const provider = typeof d.provider === 'string' ? d.provider : undefined
+    const model = typeof d.model === 'string' ? d.model : undefined
+    const technicalDetails: SystemNoticeTechnicalDetails = {
+      code,
+      class: errorClass,
+      detail,
+      provider,
+      model,
+    }
+    const hasTechnicalDetails = Object.values(technicalDetails).some(Boolean)
+    const nextActions = Array.isArray(d.next_actions)
+      ? d.next_actions.filter(
+          (action): action is string =>
+            typeof action === 'string' && action.trim().length > 0,
+        )
+      : []
+    const publicSummary =
+      typeof d.summary === 'string'
+        ? d.summary
+        : 'The response could not be completed.'
     const partial = d.partial_result_available === true
     const recovery =
       d.recovery && typeof d.recovery === 'object'
@@ -177,20 +256,22 @@ function lifecycleNotice(
         ? recovery.max_attempts
         : undefined
     const parts = [
-      `turn failed${code ? ` [${code}]` : ''}${summary ? ` — ${summary}` : ''}`,
+      publicSummary,
       partial
-        ? 'partial output above was preserved and may be incomplete'
+        ? 'A partial response was preserved in this conversation and may be incomplete.'
         : undefined,
       attempted > 0
-        ? `recovery exhausted (${attempted}/${maxAttempts ?? attempted})`
+        ? `Automatic recovery stopped after ${attempted} of ${maxAttempts ?? attempted} attempts.`
         : undefined,
     ].filter((part): part is string => Boolean(part))
     return {
       id: entryId,
       role: 'system',
       kind: 'notice',
-      content: parts.join(' · '),
+      content: parts.join(' '),
       tone: 'error',
+      ...(nextActions.length > 0 ? { nextActions } : {}),
+      ...(hasTechnicalDetails ? { technicalDetails } : {}),
       createdAt,
     }
   }
@@ -245,38 +326,63 @@ function unwrapFunctionTrigger(
 ): {
   functionId: string
   input: unknown
+  description?: string
   unresolvedTarget?: boolean
 } {
   if (block.function_id === 'agent_trigger') {
     if (block.arguments && typeof block.arguments === 'object') {
       const args = block.arguments as {
         function?: unknown
+        description?: unknown
         payload?: unknown
         _streaming?: unknown
       }
-      // Mid-stream, the harness rides the raw in-flight arguments tail on
-      // `_streaming` (providers degrade the incomplete JSON itself), so the
-      // command can be watched forming in the request pane.
+      // Mid-stream, the harness supplies both incrementally reconstructed
+      // fields and a bounded raw tail. Preserve the structured payload for
+      // the request pane while `_streaming` keeps its live-state treatment.
       const streaming =
         typeof args._streaming === 'string' ? args._streaming : undefined
+      const description =
+        typeof args.description === 'string' &&
+        args.description.trim().length > 0
+          ? args.description.trim()
+          : undefined
       if (typeof args.function === 'string' && args.function.length > 0) {
         if (streaming !== undefined) {
-          return { functionId: args.function, input: { _streaming: streaming } }
+          const input =
+            args.payload &&
+            typeof args.payload === 'object' &&
+            !Array.isArray(args.payload)
+              ? {
+                  ...(args.payload as Record<string, unknown>),
+                  _streaming: streaming,
+                }
+              : { _streaming: streaming }
+          return {
+            functionId: args.function,
+            input,
+            description,
+          }
         }
-        return { functionId: args.function, input: args.payload ?? {} }
+        return {
+          functionId: args.function,
+          input: args.payload ?? {},
+          description,
+        }
       }
       if (streaming !== undefined) {
         return {
           functionId: block.function_id,
           input: { _streaming: streaming },
+          description,
           unresolvedTarget: true,
         }
       }
     }
-    // The target is unknown while the wrapper's arguments are still
-    // streaming (providers degrade partial JSON to `{}`). Flag it so the UI
-    // can render a placeholder instead of the literal `agent_trigger`; the
-    // next snapshot self-corrects once the arguments finish streaming.
+    // Before the incremental parser has observed a non-empty target (or for
+    // malformed provider output), render a placeholder instead of the literal
+    // `agent_trigger`; the next snapshot self-corrects as soon as a value is
+    // available.
     return {
       functionId: block.function_id,
       input: block.arguments,
@@ -296,10 +402,16 @@ function textOf(blocks: ContentBlock[]): string {
 
 /**
  * Split a user message's blocks into visible text and attachment chips.
- * `<attached-file …>` blocks are console-authored `#file(...)` mention
- * expansions — rendering their full content in the user bubble would dump
- * whole files into the chat, so they collapse to chips instead (failure
- * placeholders keep the error visible in the chip name).
+ * `<attached-file …>` blocks are console-authored `#file(...)` mention and
+ * document expansions — rendering their full content in the user bubble would
+ * dump whole files into the chat, so they collapse to chips instead (failure
+ * placeholders keep the error visible in the chip name). `<skill>` blocks
+ * are slash expansions and collapse the same way — the typed command stays
+ * the visible text, the body becomes a chip.
+ *
+ * An image block is the picture itself, sent to a vision model. It becomes a
+ * chip carrying its own thumbnail: without this a conversation reloaded from
+ * history shows the question and no sign that a screenshot went with it.
  */
 function splitUserContent(blocks: ContentBlock[]): {
   text: string
@@ -307,7 +419,22 @@ function splitUserContent(blocks: ContentBlock[]): {
 } {
   let text = ''
   const attachments: Attachment[] = []
+  let imageIndex = 0
   for (const block of blocks) {
+    if (block.type === 'image') {
+      imageIndex += 1
+      const mime = block.mime || 'image/png'
+      attachments.push({
+        id: `image-${imageIndex}`,
+        name: `image ${imageIndex}`,
+        // Base64 inflates by a third; the original byte count is what a
+        // person recognises, so report that rather than the encoded length.
+        size: Math.floor((block.data?.length ?? 0) * 0.75),
+        type: mime,
+        dataUrl: block.data ? `data:${mime};base64,${block.data}` : undefined,
+      })
+      continue
+    }
     if (block.type !== 'text') continue
     const header = parseAttachedFileHeader(block.text)
     if (header) {
@@ -317,6 +444,11 @@ function splitUserContent(blocks: ContentBlock[]): {
         size: header.size ?? 0,
         type: 'text/x-file-mention',
       })
+      continue
+    }
+    const slash = parseSlashBlockHeader(block.text)
+    if (slash) {
+      attachments.push(slashChip(slash, block.text.length))
     } else {
       text += block.text
     }
@@ -408,13 +540,37 @@ export function entrySegments(
       const origin = item.origin as
         | {
             notification?: unknown
+            binding?: unknown
             reaction?: unknown
             spawn?: unknown
             validation?: unknown
+            skill_update?: unknown
           }
         | undefined
+      const { text, attachments } = splitUserContent(message.content)
+      if (
+        origin?.skill_update === true ||
+        /^e_.+_skills_\d+$/.test(item.entry_id)
+      ) {
+        return [
+          {
+            id: item.entry_id,
+            role: 'system',
+            kind: 'notice',
+            tone: 'info',
+            content: text,
+            createdAt: message.timestamp,
+          },
+        ]
+      }
       const isNotif =
-        origin?.notification === true || item.entry_id.startsWith('e_notify_')
+        origin?.notification === true ||
+        /^(?:e_notify_|e_fire_|e_expire_|e_stalespawn_|e_claimfail_|e_condfail_)/.test(
+          item.entry_id,
+        )
+      const triggerBindingId = isNotif
+        ? notificationBindingId(item.entry_id, origin?.binding)
+        : undefined
       // A react-fired task delivered into this session (origin on events;
       // persisted reads carry no origin, so recognize both entry formats).
       const isReaction =
@@ -429,7 +585,6 @@ export function entrySegments(
       // entries are `e_<turn_id>_nudge_<attempt>`.
       const isValidation =
         origin?.validation === true || /_nudge_\d+$/.test(item.entry_id)
-      const { text, attachments } = splitUserContent(message.content)
       const split = isReaction ? splitReactionTask(text) : { task: text }
       const msg: UserMessage = {
         id: item.entry_id,
@@ -438,6 +593,7 @@ export function entrySegments(
         createdAt: message.timestamp,
         ...(attachments.length > 0 ? { attachments } : {}),
         ...(isNotif ? { notification: true } : {}),
+        ...(triggerBindingId ? { triggerBindingId } : {}),
         ...(isReaction ? { reaction: true } : {}),
         ...(isSpawn ? { spawn: true } : {}),
         ...(isValidation ? { validation: true } : {}),
@@ -512,6 +668,34 @@ export function entrySegments(
   }
 }
 
+/**
+ * Recover the binding identity from the trusted origin first, then from the
+ * deterministic ids used by current and historical Harness versions.
+ */
+export function notificationBindingId(
+  entryId: string,
+  originBinding?: unknown,
+): string | undefined {
+  if (typeof originBinding === 'string' && originBinding) return originBinding
+
+  const ordinalFire = /^e_fire_(.+)_\d+$/.exec(entryId)
+  if (ordinalFire?.[1]) return ordinalFire[1]
+
+  for (const prefix of [
+    'e_expire_',
+    'e_stalespawn_',
+    'e_claimfail_',
+    'e_condfail_',
+    'e_notify_',
+  ]) {
+    if (entryId.startsWith(prefix)) {
+      const id = entryId.slice(prefix.length)
+      return id || undefined
+    }
+  }
+  return undefined
+}
+
 function assistantSegments(
   entryId: string,
   message: Extract<AgentMessage, { role: 'assistant' }>,
@@ -537,16 +721,18 @@ function assistantSegments(
           role: 'assistant',
           content: block.text,
           model: message.model,
+          stopReason: message.stop_reason,
           createdAt: message.timestamp,
         })
         break
       case 'function_call': {
-        const { functionId, input, unresolvedTarget } =
+        const { functionId, input, description, unresolvedTarget } =
           unwrapFunctionTrigger(block)
         const msg: FunctionTriggerMessage = {
           id,
           role: 'function-trigger',
           functionId,
+          description,
           input,
           unresolvedTarget,
           functionTriggerId: block.id,

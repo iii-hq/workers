@@ -3,7 +3,13 @@
 
 Subcommands:
     read <path>            print the manifest's version to stdout
-    bump <path> --kind ... bump the version in-place
+    bump <path> --kind ... resolve and write the release version
+                           [--suffix ...] [--target VERSION]
+    resolve <path> --kind ...
+                           resolve without writing the manifest
+    maturity <version>     print experimental|alpha|beta|stable
+    check-history <worker> <version>
+                           validate the target against existing git tags
     verify <path> --expected V
                            assert the file's version equals V
     deploy-mode <worker>   print the interface-collection mode
@@ -35,12 +41,41 @@ def cmd_bump(args: argparse.Namespace) -> int:
     path = Path(args.manifest)
     try:
         current = _lib.read_version(path)
-        new = current if args.kind == "none" else _lib.bump(current, args.kind)
+        new = _lib.resolve_release_version(current, args.kind, args.suffix, args.target)
         _lib.write_version(path, new)
     except (FileNotFoundError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
     print(new)
+    return 0
+
+
+def cmd_resolve(args: argparse.Namespace) -> int:
+    path = Path(args.manifest)
+    try:
+        current = _lib.read_version(path)
+        print(_lib.resolve_release_version(current, args.kind, args.suffix, args.target))
+    except (FileNotFoundError, ValueError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def cmd_maturity(args: argparse.Namespace) -> int:
+    try:
+        print(_lib.release_maturity(args.version))
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def cmd_check_history(args: argparse.Namespace) -> int:
+    try:
+        _lib.validate_release_history(args.version, _lib.list_tagged_versions(args.worker))
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -57,43 +92,6 @@ def cmd_verify(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    return 0
-
-
-def cmd_deploy_mode(args: argparse.Namespace) -> int:
-    """Mirrors the historic _publish-registry.yml heredoc.
-
-    Decides how _publish-registry should start a local copy of the worker
-    for interface collection. Output is one of:
-      release-binary  -> download binary tarball from GitHub Release
-      release-bundle  -> download bundle tar.gz from GitHub Release
-      iii-add         -> `iii worker add ./<dir>` (worker is self-bootstrapping)
-      cargo-run       -> `cargo run` from source
-      unsupported     -> can't collect locally
-    """
-    worker_dir = Path(args.worker_dir)
-    try:
-        m = _lib.read_iii_worker_yaml(worker_dir)
-    except (FileNotFoundError, ValueError) as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 1
-
-    raw = m.raw
-    scripts = raw.get("scripts") or {}
-    runtime = raw.get("runtime") or {}
-    has_scripts_start = bool(str(scripts.get("start") or "").strip())
-    has_runtime = bool(runtime.get("kind") or runtime.get("language"))
-
-    if m.deploy == "binary":
-        print("release-binary")
-    elif m.deploy == "bundle":
-        print("release-bundle")
-    elif has_scripts_start or has_runtime:
-        print("iii-add")
-    elif (m.language or "").lower() == "rust":
-        print("cargo-run")
-    else:
-        print("unsupported")
     return 0
 
 
@@ -131,16 +129,34 @@ def main(argv: list[str] | None = None) -> int:
     p_bump = sub.add_parser("bump", help="bump the manifest version in place")
     p_bump.add_argument("manifest")
     p_bump.add_argument("--kind", choices=["patch", "minor", "major", "none"], required=True)
+    p_bump.add_argument("--suffix", choices=_lib.RELEASE_SUFFIXES, default="none")
+    p_bump.add_argument(
+        "--target",
+        default="",
+        help="exact release version; authoritative when provided",
+    )
     p_bump.set_defaults(func=cmd_bump)
+
+    p_resolve = sub.add_parser("resolve", help="resolve without writing the manifest")
+    p_resolve.add_argument("manifest")
+    p_resolve.add_argument("--kind", choices=["patch", "minor", "major", "none"], required=True)
+    p_resolve.add_argument("--suffix", choices=_lib.RELEASE_SUFFIXES, default="none")
+    p_resolve.add_argument("--target", default="")
+    p_resolve.set_defaults(func=cmd_resolve)
+
+    p_maturity = sub.add_parser("maturity", help="print a release version's maturity")
+    p_maturity.add_argument("version")
+    p_maturity.set_defaults(func=cmd_maturity)
+
+    p_history = sub.add_parser("check-history", help="validate a release against existing worker tags")
+    p_history.add_argument("worker")
+    p_history.add_argument("version")
+    p_history.set_defaults(func=cmd_check_history)
 
     p_verify = sub.add_parser("verify", help="assert the manifest version equals --expected")
     p_verify.add_argument("manifest")
     p_verify.add_argument("--expected", required=True)
     p_verify.set_defaults(func=cmd_verify)
-
-    p_dm = sub.add_parser("deploy-mode", help="print the interface-collection mode")
-    p_dm.add_argument("worker_dir")
-    p_dm.set_defaults(func=cmd_deploy_mode)
 
     p_sl = sub.add_parser("sync-lock", help="sync Cargo.lock self-version to Cargo.toml")
     p_sl.add_argument("manifest", help="path to the bumped Cargo.toml")

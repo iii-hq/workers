@@ -1,0 +1,71 @@
+{
+  "description": "Internal durable queue step for approval-gated GitHub issue and draft PR publication.",
+  "function_id": "security-scan::action-execute",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "action_id": {
+        "type": "string"
+      },
+      "attempt": {
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "run_id": {
+        "type": "string"
+      },
+      "step": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "action_id",
+      "attempt",
+      "run_id",
+      "step"
+    ],
+    "title": "ActionEnqueueRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "SecurityActionStatusV1": {
+        "enum": [
+          "queued",
+          "preparing",
+          "awaiting_approval",
+          "completed",
+          "failed",
+          "cancelled"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "skipped": {
+        "type": "boolean"
+      },
+      "status": {
+        "$ref": "#/definitions/SecurityActionStatusV1"
+      },
+      "step": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "skipped",
+      "status",
+      "step"
+    ],
+    "title": "ActionExecuteResponseV1",
+    "type": "object"
+  }
+}

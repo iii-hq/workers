@@ -1,20 +1,35 @@
-import { AlertCircle, RefreshCw } from 'lucide-react'
+import { AlertCircle, Blocks, Layers, RefreshCw } from 'lucide-react'
+import { useEffect, useRef } from 'react'
 import { Button } from '@/components/ui/Button'
+import { PageHeader, PageShell } from '@/components/ui/PageChrome'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { TooltipProvider } from '@/components/ui/Tooltip'
 import { useWorkersConfigurationRoute } from '@/hooks/use-hash-route'
+import { requestPanelOpen } from '@/lib/panel-context'
+import { useExtPages } from '@/lib/ui-slots'
 import { cn } from '@/lib/utils'
-import { WorkerConfigurationDialog } from './components/WorkerConfigurationDialog'
+import type { PageCommandsApi } from '@/types/injectable-ui'
+import { WorkerConfigurationPanel } from './components/WorkerConfigurationPanel'
 import { WorkersFilters } from './components/WorkersFilters'
 import { WorkersTable } from './components/WorkersTable'
 import { useWorkersLive } from './hooks/useWorkersLive'
 
-export function Workers() {
-  const [configurationRoute, navigateConfiguration] =
+const COMPOSE_PAGE_ID = 'compose'
+
+interface WorkersProps {
+  /** Close the hosting pane — the header's standard ✕ when present. */
+  onRequestClose?: () => void
+  /** The pane's command registrar: the page's verbs and keys. */
+  commands?: PageCommandsApi
+}
+
+export function Workers({ onRequestClose, commands }: WorkersProps) {
+  const [configurationRoute, navigateConfiguration, closeConfiguration] =
     useWorkersConfigurationRoute()
   const {
     rows,
     allRows,
+    compose,
     filters,
     updateFilters,
     clearFilters,
@@ -24,76 +39,146 @@ export function Workers() {
     refetch,
     stoppingName,
     stopWorker,
+    pendingCompose,
+    composeAction,
+    composeError,
   } = useWorkersLive()
+  const composePage = useExtPages().some((page) => page.id === COMPOSE_PAGE_ID)
+  const rootRef = useRef<HTMLDivElement>(null)
+  useEffect(
+    () =>
+      commands?.register([
+        {
+          id: 'refresh',
+          title: 'Refresh workers',
+          detail: 'Read the fleet again',
+          keywords: ['reload', 'fleet'],
+          shortcut: 'R',
+          run: () => void refetch(),
+        },
+        {
+          id: 'search',
+          title: 'Search workers',
+          detail: 'Put the caret in the filter',
+          keywords: ['filter', 'find'],
+          shortcut: '/',
+          run: () =>
+            rootRef.current
+              ?.querySelector<HTMLElement>('[aria-label="search workers"]')
+              ?.focus(),
+        },
+        {
+          id: 'compose',
+          title: 'Open Compose',
+          detail: 'Containers, lifecycle, worker packages, and logs',
+          keywords: ['compose', 'containers', 'daemon', 'logs'],
+          shortcut: 'C',
+          enabled: () => composePage,
+          run: () => requestPanelOpen({ pageId: COMPOSE_PAGE_ID, context: {} }),
+        },
+      ]),
+    [commands, refetch, composePage],
+  )
 
   const countLabel = isLoading ? '…' : String(allRows.length)
+  const description = compose
+    ? `${countLabel} connected or declared · compose${compose.namespace ? ` ${compose.namespace}` : ''} ${compose.ready}/${compose.total} ready`
+    : `${countLabel} connected or installed`
 
   return (
     <TooltipProvider>
-      <main
-        className="flex-1 flex flex-col min-h-0 overflow-hidden"
-        aria-label="workers"
-      >
-        <header className="shrink-0 px-4 sm:px-6 lg:px-8 py-4 border-b border-rule flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h1 className="font-mono text-[16px] font-semibold tracking-[-0.01em] text-ink lowercase">
-              workers
-            </h1>
-            <p className="font-mono text-[12px] text-ink-faint mt-0.5 lowercase">
-              {countLabel} connected or installed
-            </p>
-          </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => void refetch()}
-            disabled={isLoading}
-            className="gap-1.5"
-          >
-            <RefreshCw
-              className={cn('w-3.5 h-3.5', isLoading && 'animate-spin')}
-              aria-hidden
-            />
-            refresh
-          </Button>
-        </header>
-
-        <div className="flex-1 overflow-y-auto px-4 sm:px-6 lg:px-8 py-4 space-y-4">
-          {isError ? (
-            <StatusPanel
-              variant="alert"
-              icon={<AlertCircle className="w-full h-full" />}
-              headline="failed to load workers"
-              detail={
-                error instanceof Error
-                  ? error.message
-                  : 'check that the engine is running and reachable.'
-              }
-            />
-          ) : null}
-
-          <WorkersFilters
-            rows={allRows}
-            filters={filters}
-            onFilterChange={updateFilters}
-            onClear={clearFilters}
-          />
-
-          <WorkersTable
-            rows={rows}
-            isLoading={isLoading}
-            stoppingName={stoppingName}
-            onStop={stopWorker}
-            onConfigure={(configurationId) =>
-              navigateConfiguration(configurationId)
+      {configurationRoute.open ? (
+        <WorkerConfigurationPanel
+          selectedId={configurationRoute.configurationId}
+          onSelect={navigateConfiguration}
+          onClose={closeConfiguration}
+        />
+      ) : (
+        <PageShell ref={rootRef} aria-label="workers">
+          <PageHeader
+            icon={<Blocks />}
+            title="Workers"
+            description={description}
+            onClose={onRequestClose}
+            actions={
+              <>
+                {composePage ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() =>
+                      requestPanelOpen({ pageId: COMPOSE_PAGE_ID, context: {} })
+                    }
+                    className="gap-1.5"
+                  >
+                    <Layers className="size-4" aria-hidden />
+                    compose
+                  </Button>
+                ) : null}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => void refetch()}
+                  disabled={isLoading}
+                  className="gap-1.5"
+                >
+                  <RefreshCw
+                    className={cn('size-4', isLoading && 'animate-spin')}
+                    aria-hidden
+                  />
+                  refresh
+                </Button>
+              </>
             }
           />
-        </div>
-        <WorkerConfigurationDialog
-          configurationId={configurationRoute.configurationId}
-          onClose={() => navigateConfiguration(null)}
-        />
-      </main>
+          <div className="flex-1 overflow-y-auto px-4 sm:px-6 lg:px-8 py-4 space-y-4">
+            {isError ? (
+              <StatusPanel
+                variant="alert"
+                icon={<AlertCircle className="w-full h-full" />}
+                headline="failed to load workers"
+                detail={
+                  error instanceof Error
+                    ? error.message
+                    : 'check that the engine is running and reachable.'
+                }
+              />
+            ) : null}
+
+            {composeError ? (
+              <StatusPanel
+                variant="alert"
+                icon={<AlertCircle className="w-full h-full" />}
+                headline="compose action failed"
+                detail={
+                  composeError instanceof Error
+                    ? composeError.message
+                    : String(composeError)
+                }
+              />
+            ) : null}
+
+            <WorkersFilters
+              rows={allRows}
+              filters={filters}
+              onFilterChange={updateFilters}
+              onClear={clearFilters}
+            />
+
+            <WorkersTable
+              rows={rows}
+              isLoading={isLoading}
+              stoppingName={stoppingName}
+              pendingCompose={pendingCompose}
+              onStop={stopWorker}
+              onComposeAction={composeAction}
+              onConfigure={(configurationId) =>
+                navigateConfiguration(configurationId)
+              }
+            />
+          </div>
+        </PageShell>
+      )}
     </TooltipProvider>
   )
 }

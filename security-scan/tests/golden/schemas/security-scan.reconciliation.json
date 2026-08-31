@@ -1,0 +1,423 @@
+{
+  "description": "Read or refresh a persisted, sanitized comparison of one Harness report with separately counted Dependabot and code-scanning snapshots. Supports bounded source, severity, lifecycle, and cursor filters; never reports a combined unique total.",
+  "function_id": "security-scan::reconciliation",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "ReconciliationLifecycleV1": {
+        "enum": [
+          "open"
+        ],
+        "type": "string"
+      },
+      "ReconciliationSourceV1": {
+        "enum": [
+          "dependabot",
+          "code_scanning"
+        ],
+        "type": "string"
+      },
+      "SeverityV1": {
+        "enum": [
+          "critical",
+          "high",
+          "medium",
+          "low",
+          "info"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "cursor": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "lifecycle": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ReconciliationLifecycleV1"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "limit": {
+        "format": "uint32",
+        "minimum": 0.0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "refresh": {
+        "default": false,
+        "type": "boolean"
+      },
+      "run_id": {
+        "type": "string"
+      },
+      "severity": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/SeverityV1"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "source": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ReconciliationSourceV1"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "required": [
+      "run_id"
+    ],
+    "title": "SecurityScanReconciliationRequestV1",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "definitions": {
+      "HarnessReconciliationStatusV1": {
+        "enum": [
+          "verified",
+          "not_available"
+        ],
+        "type": "string"
+      },
+      "HarnessReconciliationSummaryV1": {
+        "additionalProperties": false,
+        "properties": {
+          "scope": {
+            "$ref": "#/definitions/ReconciliationScopeV1"
+          },
+          "status": {
+            "$ref": "#/definitions/HarnessReconciliationStatusV1"
+          },
+          "verified_at": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "verified_count": {
+            "description": "Validated Harness report findings. This is never added to GitHub source counts.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "scope",
+          "status"
+        ],
+        "type": "object"
+      },
+      "ReconciliationAlertV1": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "end_line": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "lifecycle": {
+            "$ref": "#/definitions/ReconciliationLifecycleV1"
+          },
+          "number": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "public_url": {
+            "description": "Reconstructed public github.com URL. Dependency-provided URLs are never persisted.",
+            "type": "string"
+          },
+          "scope": {
+            "$ref": "#/definitions/ReconciliationScopeV1"
+          },
+          "severity": {
+            "$ref": "#/definitions/SeverityV1"
+          },
+          "source": {
+            "$ref": "#/definitions/ReconciliationSourceV1"
+          },
+          "start_line": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "structured_ids": {
+            "default": [],
+            "description": "Exact source identifiers only, such as GHSA, CVE, or scanner rule IDs.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "description",
+          "lifecycle",
+          "number",
+          "public_url",
+          "scope",
+          "severity",
+          "source",
+          "title"
+        ],
+        "type": "object"
+      },
+      "ReconciliationHealthStatusV1": {
+        "enum": [
+          "healthy",
+          "warning",
+          "error",
+          "unknown"
+        ],
+        "type": "string"
+      },
+      "ReconciliationLifecycleV1": {
+        "enum": [
+          "open"
+        ],
+        "type": "string"
+      },
+      "ReconciliationMatchingStatusV1": {
+        "enum": [
+          "available",
+          "unavailable"
+        ],
+        "type": "string"
+      },
+      "ReconciliationMatchingV1": {
+        "additionalProperties": false,
+        "properties": {
+          "matched_records": {
+            "description": "Present only when exact structured identifiers produced matches.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/definitions/ReconciliationMatchingStatusV1"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      },
+      "ReconciliationScopeV1": {
+        "enum": [
+          "exact_commit",
+          "repository_default_branch",
+          "repository_snapshot"
+        ],
+        "type": "string"
+      },
+      "ReconciliationSourceHealthV1": {
+        "additionalProperties": false,
+        "properties": {
+          "commit_sha": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "observed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/definitions/ReconciliationHealthStatusV1"
+          },
+          "tool": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      },
+      "ReconciliationSourceStatusV1": {
+        "enum": [
+          "complete",
+          "partial",
+          "unavailable",
+          "authentication_required",
+          "permission_denied",
+          "disabled",
+          "not_configured",
+          "not_collected"
+        ],
+        "type": "string"
+      },
+      "ReconciliationSourceSummaryV1": {
+        "additionalProperties": false,
+        "properties": {
+          "collected_at": {
+            "description": "Collection time in Unix milliseconds. Null means the source was not queried.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "health": {
+            "$ref": "#/definitions/ReconciliationSourceHealthV1"
+          },
+          "record_count": {
+            "description": "Number of normalized records when collection returned usable data. Null is unavailable/not-collected and is deliberately distinct from zero.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "scope": {
+            "$ref": "#/definitions/ReconciliationScopeV1"
+          },
+          "source": {
+            "$ref": "#/definitions/ReconciliationSourceV1"
+          },
+          "status": {
+            "$ref": "#/definitions/ReconciliationSourceStatusV1"
+          }
+        },
+        "required": [
+          "health",
+          "scope",
+          "source",
+          "status"
+        ],
+        "type": "object"
+      },
+      "ReconciliationSourceV1": {
+        "enum": [
+          "dependabot",
+          "code_scanning"
+        ],
+        "type": "string"
+      },
+      "SeverityV1": {
+        "enum": [
+          "critical",
+          "high",
+          "medium",
+          "low",
+          "info"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "github_repository": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "harness": {
+        "$ref": "#/definitions/HarnessReconciliationSummaryV1"
+      },
+      "matching": {
+        "$ref": "#/definitions/ReconciliationMatchingV1"
+      },
+      "next_cursor": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "records": {
+        "items": {
+          "$ref": "#/definitions/ReconciliationAlertV1"
+        },
+        "type": "array"
+      },
+      "repository": {
+        "type": "string"
+      },
+      "run_id": {
+        "type": "string"
+      },
+      "schema_version": {
+        "type": "string"
+      },
+      "sources": {
+        "items": {
+          "$ref": "#/definitions/ReconciliationSourceSummaryV1"
+        },
+        "type": "array"
+      },
+      "target_sha": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "harness",
+      "matching",
+      "records",
+      "repository",
+      "run_id",
+      "schema_version",
+      "sources",
+      "target_sha"
+    ],
+    "title": "SecurityScanReconciliationResponseV1",
+    "type": "object"
+  }
+}

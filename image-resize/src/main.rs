@@ -17,6 +17,11 @@ struct Cli {
     /// WebSocket URL of the III engine (port 49134 = engine main WS, not StreamModule 3112)
     #[arg(long, env = "III_URL", default_value = "ws://127.0.0.1:49134")]
     url: String,
+
+    /// Namespace to register under. Absent uses the engine's default namespace.
+    /// Falls back to the III_NAMESPACE env var.
+    #[arg(long, env = "III_NAMESPACE")]
+    namespace: Option<String>,
 }
 
 #[tokio::main]
@@ -49,9 +54,15 @@ async fn main() -> Result<()> {
 
     let config = Arc::new(resize_config);
 
-    tracing::info!(url = %cli.url, "connecting to III engine");
+    tracing::info!(url = %cli.url, namespace = ?cli.namespace, "connecting to III engine");
 
-    let iii = register_worker(&cli.url, InitOptions::default());
+    let iii = register_worker(
+        &cli.url,
+        InitOptions {
+            namespace: cli.namespace.clone(),
+            ..Default::default()
+        },
+    );
 
     let resize_handler = handler::build_handler(cli.url.clone(), config);
 

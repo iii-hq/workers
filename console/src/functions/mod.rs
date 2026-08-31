@@ -2,10 +2,14 @@
 //!
 //! `console` is mostly an HTTP server + WS proxy, so the SDK surface is
 //! deliberately small: one health/identity function (`console::status`)
-//! that returns the runtime knobs the worker booted with, plus the
-//! injectable-UI debug surface (`console::ui-manifest`).
+//! that returns the runtime knobs the worker booted with, the
+//! injectable-UI debug surface (`console::ui-manifest`), and the workspace
+//! layout functions (`console::workspace::*`) that let an agent show a
+//! screen to the human.
 
 pub mod status;
+pub mod working_directory;
+pub mod workspace;
 
 use std::sync::Arc;
 
@@ -14,23 +18,30 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::config::ConsoleConfig;
+use crate::configuration::PortCell;
 use crate::ui_assets::{ManifestAsset, ManifestWorker, UiRegistry};
 use status::{StatusInput, StatusOutput};
 
 /// Register every `console::*` function. Called once from `main` after
 /// `register_worker` (and after `ui_assets::start`, which owns the
 /// trigger-type registrations — types register before functions). Each
-/// handler captures the runtime knobs without re-parsing the YAML.
+/// handler captures the live runtime state without re-parsing the YAML.
 pub fn register_all(
     iii: &Arc<IIIClient>,
-    config: &Arc<ConsoleConfig>,
+    port: PortCell,
     engine_url: &str,
     ui: Option<Arc<UiRegistry>>,
 ) {
-    register_status(iii, config, engine_url);
+    register_status(iii, port, engine_url);
     register_ui_manifest(iii, ui);
-    tracing::info!("registered console::status, console::ui-manifest");
+    working_directory::register(iii);
+    if let Err(error) = working_directory::bind(iii) {
+        tracing::warn!(%error, "failed to bind Harness working-directory proposal context");
+    }
+    workspace::register(iii);
+    tracing::info!(
+        "registered console::status, console::ui-manifest, console::working-directory::{{propose,inject-guidance}}, console::workspace::{{list,open,close}}"
+    );
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -81,17 +92,16 @@ fn register_ui_manifest(iii: &Arc<IIIClient>, ui: Option<Arc<UiRegistry>>) {
     );
 }
 
-fn register_status(iii: &Arc<IIIClient>, config: &Arc<ConsoleConfig>, engine_url: &str) {
-    let cfg = config.clone();
+fn register_status(iii: &Arc<IIIClient>, port: PortCell, engine_url: &str) {
     let engine_url = engine_url.to_string();
     iii.register_function(
         "console::status",
         RegisterFunction::new_async(move |_: StatusInput| {
-            let cfg = cfg.clone();
+            let port = port.clone();
             let engine_url = engine_url.clone();
             async move {
                 Ok::<_, Error>(StatusOutput {
-                    http_port: cfg.http_port,
+                    http_port: *port.read().await,
                     engine_url,
                     version: env!("CARGO_PKG_VERSION").to_string(),
                 })

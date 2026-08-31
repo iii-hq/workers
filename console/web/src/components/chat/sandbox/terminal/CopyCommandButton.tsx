@@ -1,5 +1,6 @@
 import { Copy } from 'lucide-react'
 import { useCallback, useState } from 'react'
+import { copyTextToClipboard } from '@/lib/clipboard'
 import { cn } from '@/lib/utils'
 
 interface CopyCommandButtonProps {
@@ -15,8 +16,10 @@ export function CopyCommandButton({ text, className }: CopyCommandButtonProps) {
   const [copied, setCopied] = useState(false)
 
   const handleCopy = useCallback(() => {
-    if (typeof navigator === 'undefined' || !navigator.clipboard) return
-    void navigator.clipboard.writeText(text).then(() => {
+    // Helper, not navigator.clipboard: the API is undefined over
+    // `http://<LAN-IP>` (insecure context) and the raw call no-ops.
+    void copyTextToClipboard(text).then((ok) => {
+      if (!ok) return
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1200)
     })
@@ -39,7 +42,7 @@ export function CopyCommandButton({ text, className }: CopyCommandButtonProps) {
         </span>
       ) : (
         <>
-          <Copy className="size-3 flex-shrink-0" aria-hidden />
+          <Copy className="size-4 flex-shrink-0" aria-hidden />
           <span className="font-mono text-[10px] uppercase tracking-[0.06em]">
             copy
           </span>

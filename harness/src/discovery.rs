@@ -86,7 +86,13 @@ fn fingerprint_of(functions: &[FunctionDescriptor]) -> u64 {
 }
 
 /// Swap the snapshot under the write lock, bumping the generation only when the
-/// incoming set's fingerprint differs from the current one.
+/// incoming set's fingerprint differs from the current one. Availability events
+/// with a byte-identical set deliberately do NOT bump: the generation feeds the
+/// registry-changed notice and the discovery hint, and a no-op bump invalidates
+/// the provider's prompt-cache prefix for nothing. A response-schema-only
+/// change is fingerprint-invisible and goes un-noticed until a list-visible
+/// field moves — the schema-aware `functions_hash` named at the safety-reload
+/// ponytail comment is the real fix for that.
 pub async fn apply(cell: &FunctionsCell, functions: Vec<FunctionDescriptor>) {
     let fingerprint = fingerprint_of(&functions);
     let mut guard = cell.write().await;
@@ -265,12 +271,11 @@ pub fn register_functions_trigger(iii: &Arc<IIIClient>, cell: FunctionsCell, tim
         .metadata(json!({ "internal": true })),
     );
 
-    match iii.register_trigger(RegisterTriggerInput {
-        trigger_type: FUNCTIONS_TRIGGER_TYPE.to_string(),
-        function_id: FUNCTIONS_FN_ID.to_string(),
-        config: json!({}),
-        metadata: None,
-    }) {
+    match iii.register_trigger(RegisterTriggerInput::new(
+        FUNCTIONS_TRIGGER_TYPE.to_string(),
+        FUNCTIONS_FN_ID.to_string(),
+        json!({}),
+    )) {
         Ok(_) => tracing::info!(
             trigger_type = FUNCTIONS_TRIGGER_TYPE,
             function_id = FUNCTIONS_FN_ID,
@@ -335,6 +340,21 @@ mod tests {
         )
         .await;
         assert_eq!(cell.read().await.generation, 2);
+    }
+
+    #[tokio::test]
+    async fn re_applying_an_identical_set_does_not_bump_generation() {
+        // Availability events now route through this same `apply` (the forced
+        // bump was removed), so this covers that path too. A no-op bump would
+        // fire the registry-changed notice and re-arm the discovery hint,
+        // invalidating the provider prompt-cache for nothing.
+        let cell = new_cell();
+        let fns = vec![desc("a::b", Some(json!({ "type": "object" })))];
+        apply(&cell, fns.clone()).await;
+
+        apply(&cell, fns).await;
+
+        assert_eq!(cell.read().await.generation, 1);
     }
 
     #[test]

@@ -75,12 +75,11 @@ async fn register_request_body_echo_backend(
         }),
     );
 
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: iii_http::TRIGGER_TYPE.to_string(),
+    iii.register_trigger(RegisterTriggerInput::new(
+        iii_http::TRIGGER_TYPE.to_string(),
         function_id,
-        config: json!({ "api_path": api_path, "http_method": http_method }),
-        metadata: None,
-    })
+        json!({ "api_path": api_path, "http_method": http_method }),
+    ))
     .expect("register http trigger for request-body echo backend");
 }
 

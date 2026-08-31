@@ -2,14 +2,14 @@
 """Discover worker folders that changed between two git refs.
 
 Outputs a JSON object to stdout AND (if $GITHUB_OUTPUT is set) writes keys:
-    changed_workers (alias `all`) : all workers with any change
+    changed_workers               : all workers with any change
     source_changed                : workers whose change wasn't only metadata
     rust / node / python          : language buckets (subset of changed_workers)
     integration_changed          : bool, did an integration-stack input change
-    e2e_changed                  : bool, did a real-model E2E input change
+    llm_router_integration        : bool, must the live llm-router suite run
+    provider_contract            : providers whose hermetic contract must run
     crates                        : shared crates/<name> dirs with source changes
-    vscode_changed                : bool, did lsp-vscode/ change
-    any                           : bool, any worker, crate, or vscode change
+    any                           : bool, any worker or crate change
 """
 from __future__ import annotations
 
@@ -21,11 +21,13 @@ import pathlib
 import subprocess
 import sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import _lib  # noqa: E402
+
 # Files inside a worker dir that DON'T count as a real source change. If the
 # only files a worker touched match these globs, version-bump + tests/ gates
 # in pr-checks downgrade to notices.
 METADATA_GLOBS = (
-    "iii.worker.yaml",
     "README.md",
     "AGENTS.md",
     "AGENTS-*.md",
@@ -35,9 +37,6 @@ METADATA_GLOBS = (
 
 # Top-level dirs we never treat as workers, regardless of contents.
 IGNORE_DIRS = {".git", ".github", "registry", "target", "node_modules"}
-
-# Special non-worker dir tracked separately for the vscode-changed gate.
-VSCODE_DIR = "lsp-vscode"
 
 # The integration suite boots this stack directly. Its path gate is separate
 # from the per-worker matrices, which only contain directly changed workers.
@@ -49,25 +48,6 @@ INTEGRATION_WORKERS = {
     "iii-directory",
     "state",
     "console",
-}
-E2E_WORKERS = {
-    "database",
-    "harness",
-    "queue",
-    "session-manager",
-    "context-manager",
-    "iii-directory",
-    "state",
-    "cron",
-    "llm-router",
-    "provider-anthropic",
-    "provider-claude-code",
-    "provider-kimi",
-    "provider-llamacpp",
-    "provider-openai",
-    "provider-openai-codex",
-    "provider-xai",
-    "provider-zai",
 }
 INTEGRATION_DOC_GLOBS = (
     "README.md",
@@ -81,28 +61,48 @@ INTEGRATION_INFRA_PATHS = {
     ".github/scripts/discover_changed_workers.py",
     ".github/workflows/ci.yml",
     ".github/workflows/_harness-integration.yml",
-    ".github/workflows/cache-warm.yml",
-}
-E2E_INFRA_PATHS = {
-    ".github/scripts/discover_changed_workers.py",
-    ".github/scripts/collect_harness_e2e_benchmarks.py",
-    ".github/workflows/_harness-e2e.yml",
-    ".github/workflows/harness-e2e-benchmark.yml",
-    ".github/workflows/harness-e2e-daily.yml",
-    ".github/workflows/harness-e2e-main.yml",
-    "harness/tests/integration/engine.lock",
+    ".github/workflows/cache-cleanup.yml",
 }
 INTEGRATION_EXCLUDED_PREFIXES = (
     "harness/tests/e2e/",
     "harness/tests/quickstart/",
 )
-E2E_EXCLUDED_PREFIXES = (
-    "harness/tests/integration/",
-    "harness/tests/quickstart/",
-)
 
-# Shared Rust crates live under crates/<name>/ (no iii.worker.yaml — not
-# workers). A source change there (1) reports the crate in the `crates`
+# The llm-router owns a separate real-engine lifecycle suite. Keep this gate
+# independent from Harness Integration: that stack intentionally substitutes a
+# ScriptedRouter and therefore cannot validate router transport/lifecycle bugs.
+LLM_ROUTER_INTEGRATION_WORKERS = {"llm-router"}
+LLM_ROUTER_INTEGRATION_INFRA_PATHS = {
+    ".github/scripts/discover_changed_workers.py",
+    ".github/workflows/ci.yml",
+}
+
+# Hermetic provider contracts run the real engine, llm-router, and selected
+# provider against a loopback HTTP/SSE upstream. Direct provider changes stay
+# narrow; shared router/testkit/CI changes fan out to every supported provider.
+PROVIDER_CONTRACT_WORKERS = {
+    "provider-anthropic",
+    "provider-claude-code",
+    "provider-command-code",
+    "provider-deepseek",
+    "provider-kimi",
+    "provider-openai",
+    "provider-openai-codex",
+    "provider-openrouter",
+    "provider-xai",
+    "provider-zai",
+}
+PROVIDER_CONTRACT_SHARED_PREFIXES = (
+    "llm-router/",
+    "crates/provider-integration-testkit/",
+)
+PROVIDER_CONTRACT_INFRA_PATHS = {
+    ".github/scripts/discover_changed_workers.py",
+    ".github/workflows/ci.yml",
+}
+
+# Shared Rust crates live under crates/<name>/ and are not catalog workers. A
+# source change there (1) reports the crate in the `crates`
 # bucket so ci.yml's crate lint+test job runs it, and (2) fans out to every
 # worker whose Cargo.toml declares a path dependency on it: dependents join
 # the matrix but not source_changed (no version-bump gate on the PR author).
@@ -130,6 +130,29 @@ def is_crate_metadata(rel: str) -> bool:
     return any(fnmatch.fnmatch(rel, g) for g in CRATE_METADATA_GLOBS)
 
 
+def provider_contract_selection(files: list[str], workers: set[str]) -> list[str]:
+    supported = PROVIDER_CONTRACT_WORKERS & workers
+    shared_changed = any(
+        path in PROVIDER_CONTRACT_INFRA_PATHS
+        or (
+            path.startswith(PROVIDER_CONTRACT_SHARED_PREFIXES)
+            and not is_integration_doc(path)
+        )
+        for path in files
+    )
+    if shared_changed:
+        return sorted(supported)
+
+    selected = set()
+    for path in files:
+        parts = path.split("/", 1)
+        if len(parts) != 2 or parts[0] not in supported:
+            continue
+        if not is_integration_doc(parts[1]):
+            selected.add(parts[0])
+    return sorted(selected)
+
+
 def suite_changed(
     files: list[str],
     forced: set[str],
@@ -143,20 +166,17 @@ def suite_changed(
             not f.startswith(excluded_prefixes)
             and f.split("/", 1)[0] in workers
             and len(f.split("/", 1)) == 2
-            and not is_integration_doc(f.split("/", 1)[1])
+            and not is_metadata(f.split("/", 1)[1])
         )
         for f in files
     )
 
 
-def list_worker_dirs(repo_root: pathlib.Path) -> set[str]:
+def publishable_workers(repo_root: pathlib.Path) -> dict[str, _lib.WorkerSpec]:
     return {
-        p.name
-        for p in repo_root.iterdir()
-        if p.is_dir()
-        and not p.name.startswith(".")
-        and p.name not in IGNORE_DIRS
-        and (p / "iii.worker.yaml").exists()
+        worker_id: spec
+        for worker_id, spec in _lib.read_worker_catalog(repo_root / ".deploy" / "workers.yaml").items()
+        if spec.publish and spec.path.parent == repo_root
     }
 
 
@@ -172,18 +192,51 @@ def changed_files(base: str, head: str) -> list[str]:
     return out.splitlines()
 
 
-def language_of(worker_dir: pathlib.Path) -> str | None:
-    meta = worker_dir / "iii.worker.yaml"
-    if not meta.exists():
-        return None
-    for line in meta.read_text().splitlines():
-        s = line.strip()
-        if s.startswith("language:"):
-            lang = s.split(":", 1)[1].strip()
-            if lang == "javascript":
-                return "node"
-            return lang
-    return None
+def language_of(spec: _lib.WorkerSpec) -> str | None:
+    return {
+        "rust-binary": "rust",
+        "javascript-bundle": "node",
+        "python-bundle": "python",
+        # The only first-party OCI worker currently uses a Python package.
+        "oci-image": "python",
+    }.get(spec.artifact_kind)
+
+
+def catalog_at_ref(ref: str) -> dict:
+    import yaml
+
+    try:
+        text = subprocess.check_output(
+            ["git", "show", f"{ref}:.deploy/workers.yaml"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except subprocess.CalledProcessError:
+        return {}
+    value = yaml.safe_load(text) or {}
+    return value if isinstance(value, dict) else {}
+
+
+def catalog_deltas(base: str, head: str) -> tuple[set[str], set[str], bool]:
+    """Return changed entries, source-affecting entries, and legacy stack changes."""
+    before = catalog_at_ref(base)
+    after = catalog_at_ref(head)
+    before_workers = before.get("workers") or {}
+    after_workers = after.get("workers") or {}
+    changed: set[str] = set()
+    source_changed: set[str] = set()
+    for worker in set(before_workers) | set(after_workers):
+        old = before_workers.get(worker)
+        new = after_workers.get(worker)
+        if old == new:
+            continue
+        changed.add(worker)
+        if not isinstance(old, dict) or not isinstance(new, dict):
+            source_changed.add(worker)
+            continue
+        if any(old.get(section) != new.get(section) for section in ("source", "artifact")):
+            source_changed.add(worker)
+    return changed, source_changed, False
 
 
 def crate_dependents(repo_root: pathlib.Path, crate: str, workers: set[str]) -> list[str]:
@@ -219,20 +272,24 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
 
     repo_root = pathlib.Path(".").resolve()
-    workers = list_worker_dirs(repo_root)
+    worker_specs = publishable_workers(repo_root)
+    workers = set(worker_specs)
     files = changed_files(args.base, args.head)
+    catalog_changed: set[str] = set()
+    catalog_source_changed: set[str] = set()
+    stack_changed = False
+    if ".deploy/workers.yaml" in files:
+        catalog_changed, catalog_source_changed, stack_changed = catalog_deltas(args.base, args.head)
+        catalog_changed &= workers
+        catalog_source_changed &= workers
 
     touched: dict[str, list[str]] = {}
     touched_crates: dict[str, list[str]] = {}
-    vscode_changed = False
     for f in files:
         parts = f.split("/", 1)
         if len(parts) < 2:
             continue
         top, rel = parts[0], parts[1]
-        if top == VSCODE_DIR:
-            vscode_changed = True
-            continue
         if top == CRATES_DIR:
             crate_parts = rel.split("/", 1)
             if len(crate_parts) == 2:
@@ -257,28 +314,32 @@ def main(argv: list[str] | None = None) -> int:
     forced = set(args.force_worker)
     for crate in changed_crates:
         forced.update(crate_dependents(repo_root, crate, workers))
-    changed = sorted(set(touched) | forced)
+    changed = sorted(set(touched) | forced | catalog_changed)
     source_changed = sorted(
-        w for w, rels in touched.items()
-        if any(not is_metadata(rel) for rel in rels)
+        {
+            w for w, rels in touched.items()
+            if any(not is_metadata(rel) for rel in rels)
+        }
+        | catalog_source_changed
     )
-    integration_changed = suite_changed(
+    integration_changed = stack_changed or suite_changed(
         files,
         forced,
         INTEGRATION_WORKERS,
         INTEGRATION_INFRA_PATHS,
         INTEGRATION_EXCLUDED_PREFIXES,
     )
-    e2e_changed = suite_changed(
+    llm_router_integration = suite_changed(
         files,
         forced,
-        E2E_WORKERS,
-        E2E_INFRA_PATHS,
-        E2E_EXCLUDED_PREFIXES,
+        LLM_ROUTER_INTEGRATION_WORKERS,
+        LLM_ROUTER_INTEGRATION_INFRA_PATHS,
+        (),
     )
+    provider_contract = provider_contract_selection(files, workers)
     by_language: dict[str, list[str]] = {"rust": [], "node": [], "python": []}
     for w in changed:
-        lang = language_of(repo_root / w)
+        lang = language_of(worker_specs[w])
         if lang in by_language:
             by_language[lang].append(w)
         else:
@@ -289,28 +350,29 @@ def main(argv: list[str] | None = None) -> int:
         "source_changed": source_changed,
         "by_language": by_language,
         "integration_changed": integration_changed,
-        "e2e_changed": e2e_changed,
+        "llm_router_integration": llm_router_integration,
+        "provider_contract": provider_contract,
         "crates": changed_crates,
-        "vscode_changed": vscode_changed,
     }
     print(json.dumps(payload))
 
     gh_out = os.environ.get("GITHUB_OUTPUT")
     if gh_out:
-        any_change = bool(changed) or bool(changed_crates) or vscode_changed
+        any_change = bool(changed) or bool(changed_crates)
         with open(gh_out, "a") as f:
             f.write(f"changed_workers={json.dumps(changed)}\n")
-            # Back-compat alias used by ci.yml downstream matrix jobs.
-            f.write(f"all={json.dumps(changed)}\n")
             f.write(f"source_changed={json.dumps(source_changed)}\n")
             for lang in ("rust", "node", "python"):
                 f.write(f"{lang}={json.dumps(by_language[lang])}\n")
             f.write(
                 f"integration_changed={'true' if integration_changed else 'false'}\n"
             )
-            f.write(f"e2e_changed={'true' if e2e_changed else 'false'}\n")
+            f.write(
+                "llm_router_integration="
+                f"{'true' if llm_router_integration else 'false'}\n"
+            )
+            f.write(f"provider_contract={json.dumps(provider_contract)}\n")
             f.write(f"crates={json.dumps(changed_crates)}\n")
-            f.write(f"vscode_changed={'true' if vscode_changed else 'false'}\n")
             f.write(f"any={'true' if any_change else 'false'}\n")
 
     return 0

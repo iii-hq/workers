@@ -6,21 +6,41 @@
  * is this tab's own handler. The console worker answers with a `sync` push
  * (the subscription IS the seed) and follows with incremental `set`/`delete`
  * pushes. The loader diffs every event against loaded state — new/changed
- * hash ⇒ dispose + cache-busted re-import + `setup(host)`; missing path ⇒
+ * hash ⇒ cache-busted import + `setup(host)` + atomic swap; missing path ⇒
  * dispose. Styles are `<link>` swaps; scripts are ES modules.
  */
 
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
+import {
+  attachToComposer,
+  insertIntoComposer,
+  requestComposerFocus,
+} from '@/lib/composer-insert'
 import type { IiiClient } from '@/lib/iii-client'
+import { registerPageCommands } from '@/lib/page-commands'
+import { requestPaletteOpen } from '@/lib/palette/open-request'
+import { registerPaletteSource } from '@/lib/palette/providers'
+import { requestPanelOpen } from '@/lib/panel-context'
+import { loadRecentProjects } from '@/lib/storage'
+import { ExtensionScopeProvider } from '@/lib/ui-scope'
 import {
   registerExtConfigForm,
   registerExtPage,
+  registerExtProviderConfigForm,
   registerExtRenderer,
+  registerExtSessionChip,
+  registerExtSessionTurnSummary,
+  registerExtTriggerActivityRenderer,
+  setUiAssetsStatus,
 } from '@/lib/ui-slots'
+import { requestWorkingDirectoryChange } from '@/lib/working-directory-request'
 import type {
   ConfigFormProps,
   ConsoleApi,
   Host,
+  ProviderConfigFormProps,
+  SessionChipProps,
+  SessionTurnSummaryProps,
   SetupFn,
   UiAssetKind,
   UiAssetRef,
@@ -48,6 +68,18 @@ interface LoadedStyle {
 
 type Loaded = LoadedScript | LoadedStyle
 
+interface UiLoaderOptions {
+  /** Test seam; production resolves assets against the document base. */
+  baseUrl?: URL
+  /** Test seam; production uses a cache-busted dynamic import. */
+  importModule?: (url: string) => Promise<{ default?: SetupFn }>
+}
+
+export interface ConversationAdapter {
+  selectConversation(sessionId: string): void
+  composerModel(conversationId?: string | null): string | null
+}
+
 /**
  * The scope wrapper every injected render mounts inside: `data-iii-ui`
  * carries the first segment of the script's path (worker CSS compiles
@@ -65,13 +97,15 @@ export function ScopedExtension({
   children: React.ReactNode
 }) {
   return (
-    <div data-iii-ui={scope} style={{ display: 'contents' }}>
-      <ErrorBoundary
-        fallback={(error) => <ExtErrorChip path={path} error={error} />}
-      >
-        {children}
-      </ErrorBoundary>
-    </div>
+    <ExtensionScopeProvider scope={scope}>
+      <div data-iii-ui={scope} style={{ display: 'contents' }}>
+        <ErrorBoundary
+          fallback={(error) => <ExtErrorChip path={path} error={error} />}
+        >
+          {children}
+        </ErrorBoundary>
+      </div>
+    </ExtensionScopeProvider>
   )
 }
 
@@ -88,6 +122,7 @@ export function ExtErrorChip({ path, error }: { path: string; error: Error }) {
 
 function makeHost(
   api: ConsoleApi,
+  conversationAdapter: ConversationAdapter,
   path: string,
   cleanups: Array<() => void>,
 ): Host {
@@ -100,6 +135,7 @@ function makeHost(
     iii: api.iii,
     components: api.components,
     useTheme: api.useTheme,
+    uiClasses: api.uiClasses,
     path,
     pages: {
       register(page) {
@@ -109,13 +145,33 @@ function makeHost(
             ...page,
             scope,
             path,
-            render: () => (
+            render: (renderProps) => (
               <ScopedExtension scope={scope} path={path}>
-                <Body />
+                <Body {...renderProps} />
               </ScopedExtension>
             ),
           }),
         )
+      },
+    },
+    commands: {
+      register(pageId, commands) {
+        return track(
+          registerPageCommands({ pageId, source: 'worker', commands }),
+        )
+      },
+    },
+    workspace: {
+      recentDirectories() {
+        return loadRecentProjects()
+      },
+    },
+    palette: {
+      registerSource(source) {
+        return track(registerPaletteSource(scope, source))
+      },
+      open(options) {
+        requestPaletteOpen(options)
       },
     },
     functionTriggers: {
@@ -123,12 +179,25 @@ function makeHost(
         return track(registerExtRenderer({ renderer, scope, path }))
       },
     },
+    triggerRenderers: {
+      register(renderer) {
+        return track(
+          registerExtTriggerActivityRenderer({ renderer, scope, path }),
+        )
+      },
+    },
+    panels: {
+      open(request) {
+        requestPanelOpen(request)
+      },
+    },
     configForms: {
-      register(configurationId, component) {
+      register(configurationId, component, options) {
         const Form = component
         return track(
           registerExtConfigForm({
             configurationId,
+            layout: options?.layout ?? 'contained',
             scope,
             path,
             component: (props: ConfigFormProps) => (
@@ -140,6 +209,69 @@ function makeHost(
         )
       },
     },
+    providerConfigForms: {
+      register(providerId, component) {
+        const Form = component
+        return track(
+          registerExtProviderConfigForm({
+            providerId,
+            scope,
+            path,
+            component: (props: ProviderConfigFormProps) => (
+              <ScopedExtension scope={scope} path={path}>
+                <Form {...props} />
+              </ScopedExtension>
+            ),
+          }),
+        )
+      },
+    },
+    chat: {
+      registerSessionChip(chip) {
+        const Chip = chip.render
+        return track(
+          registerExtSessionChip({
+            ...chip,
+            scope,
+            path,
+            render: (props: SessionChipProps) => (
+              <ScopedExtension scope={scope} path={path}>
+                <Chip {...props} />
+              </ScopedExtension>
+            ),
+          }),
+        )
+      },
+      registerTurnSummary(summary) {
+        const Summary = summary.render
+        return track(
+          registerExtSessionTurnSummary({
+            ...summary,
+            scope,
+            path,
+            render: (props: SessionTurnSummaryProps) => (
+              <ScopedExtension scope={scope} path={path}>
+                <Summary {...props} />
+              </ScopedExtension>
+            ),
+          }),
+        )
+      },
+      compose(draft) {
+        if (draft.files && draft.files.length > 0) attachToComposer(draft.files)
+        if (draft.text) insertIntoComposer(draft.text)
+        requestComposerFocus()
+      },
+      selectConversation(sessionId) {
+        conversationAdapter.selectConversation(sessionId)
+      },
+      requestWorkingDirectoryChange(request) {
+        return requestWorkingDirectoryChange(request)
+      },
+      composerModel(conversationId) {
+        return conversationAdapter.composerModel(conversationId)
+      },
+    },
   }
 }
 
@@ -148,17 +280,28 @@ function makeHost(
  * unsubscribes and disposes every loaded asset (tests; the real tab never
  * calls it).
  */
-export function startUiLoader(client: IiiClient, api: ConsoleApi): () => void {
+export function startUiLoader(
+  client: IiiClient,
+  api: ConsoleApi,
+  conversationAdapter: ConversationAdapter,
+  options: UiLoaderOptions = {},
+): () => void {
   const loaded = new Map<string, Loaded>()
+  let active = true
+  let receivedInitialSync = false
+  setUiAssetsStatus('loading')
   // Asset URLs resolve against the DOCUMENT base (the console supports
   // arbitrary subpath mounting); the loader itself lives in a Vite chunk
   // under assets/, so module-relative resolution would be wrong.
-  const base = new URL('.', document.baseURI)
+  const base = options.baseUrl ?? new URL('.', document.baseURI)
+  const importModule =
+    options.importModule ??
+    ((url: string) =>
+      import(/* @vite-ignore */ url) as Promise<{
+        default?: SetupFn
+      }>)
 
-  function dispose(path: string) {
-    const entry = loaded.get(path)
-    if (!entry) return
-    loaded.delete(path)
+  function disposeEntry(entry: Loaded) {
     if (entry.kind === 'style') {
       entry.link.remove()
       return
@@ -167,9 +310,16 @@ export function startUiLoader(client: IiiClient, api: ConsoleApi): () => void {
       try {
         cleanup()
       } catch (err) {
-        console.error(`[iii-ui] cleanup for ${path} threw`, err)
+        console.error(`[iii-ui] cleanup for ${entry.path} threw`, err)
       }
     }
+  }
+
+  function dispose(path: string) {
+    const entry = loaded.get(path)
+    if (!entry) return
+    loaded.delete(path)
+    disposeEntry(entry)
   }
 
   function assetUrl(path: string, hash: string): string {
@@ -177,22 +327,21 @@ export function startUiLoader(client: IiiClient, api: ConsoleApi): () => void {
   }
 
   async function applyScript(path: string, hash: string) {
-    dispose(path)
+    const previous = loaded.get(path)
     const cleanups: Array<() => void> = []
     try {
-      const mod = (await import(/* @vite-ignore */ assetUrl(path, hash))) as {
-        default?: SetupFn
-      }
+      const mod = await importModule(assetUrl(path, hash))
       if (typeof mod.default !== 'function') {
         throw new Error('no default setup() export')
       }
-      const host = makeHost(api, path, cleanups)
+      const host = makeHost(api, conversationAdapter, path, cleanups)
       const teardown = await mod.default(host)
       if (typeof teardown === 'function') cleanups.push(teardown)
       loaded.set(path, { kind: 'script', path, hash, cleanups })
+      if (previous) disposeEntry(previous)
     } catch (err) {
-      // Non-fatal: the previous version was already disposed, so this
-      // script's contributions simply drop out until the next good version.
+      // Non-fatal and atomic: discard only the failed candidate. The last
+      // good version stays registered until a replacement finishes setup.
       for (const cleanup of [...cleanups].reverse()) {
         try {
           cleanup()
@@ -264,7 +413,12 @@ export function startUiLoader(client: IiiClient, api: ConsoleApi): () => void {
       if (!payload || typeof payload !== 'object') return
       switch (payload.event) {
         case 'sync':
-          return applySync(Array.isArray(payload.assets) ? payload.assets : [])
+          return applySync(
+            Array.isArray(payload.assets) ? payload.assets : [],
+          ).then(() => {
+            receivedInitialSync = true
+            if (active) setUiAssetsStatus('ready')
+          })
         case 'set':
           return applySet(payload.path, payload.kind, payload.hash)
         case 'delete':
@@ -281,9 +435,32 @@ export function startUiLoader(client: IiiClient, api: ConsoleApi): () => void {
     config: {},
   })
 
+  // With injectable UI disabled, the console intentionally does not own the
+  // `console:assets` trigger type, so no initial sync will arrive. The
+  // manifest remains registered specifically to expose that kill switch and
+  // lets built-in forms fall back instead of waiting forever.
+  void client
+    .trigger<{ disabled?: boolean }>(
+      'console::ui-manifest',
+      {},
+      { timeoutMs: 5_000 },
+    )
+    .then((manifest) => {
+      if (active && !receivedInitialSync && manifest.disabled) {
+        setUiAssetsStatus('unavailable')
+      }
+    })
+    .catch((err) => {
+      if (!active || receivedInitialSync) return
+      setUiAssetsStatus('unavailable')
+      console.warn('[iii-ui] availability check failed', err)
+    })
+
   return () => {
+    active = false
     offTrigger()
     offHandler()
     for (const path of [...loaded.keys()]) dispose(path)
+    setUiAssetsStatus('unavailable')
   }
 }

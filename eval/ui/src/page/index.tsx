@@ -1,18 +1,22 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { EmptyState, Skeleton, StatusPanel, type Host } from '@iii-dev/console-ui'
+import { EmptyState, type Host, type PageRenderProps, Skeleton, StatusPanel } from '@iii-dev/console-ui'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createEvalApi, errorMessage, isTerminal } from '../api'
 import { useEvalCompleted } from '../events'
 import type { CatalogModel, EvalRequest, EvalResultResponse, EvalStatusResponse, EvalSummary } from '../types'
 import { EvaluationDetail } from './EvaluationDetail'
 import { History } from './History'
 import { NewEvaluationForm } from './NewEvaluationForm'
+import { SessionComparison } from './SessionComparison'
 
-export function EvalPage({ host }: { host: Host }) {
+export function EvalPage({ host, panelSide = 'left', panelContext, commands }: { host: Host } & Partial<PageRenderProps>) {
   const api = useMemo(() => createEvalApi(host), [host])
+  const [surface, setSurface] = useState<'sessions' | 'experiments'>('sessions')
+  const sessionsTabRef = useRef<HTMLButtonElement>(null)
+  const experimentsTabRef = useRef<HTMLButtonElement>(null)
   const [evaluations, setEvaluations] = useState<EvalSummary[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
-  const [historyLoading, setHistoryLoading] = useState(true)
+  const [historyLoading, setHistoryLoading] = useState(false)
   const [historyError, setHistoryError] = useState<string | null>(null)
   const [models, setModels] = useState<CatalogModel[]>([])
   const [modelCatalogError, setModelCatalogError] = useState<string | null>(null)
@@ -80,6 +84,7 @@ export function EvalPage({ host }: { host: Host }) {
   )
 
   useEffect(() => {
+    if (surface !== 'experiments') return
     void loadHistory()
     api
       .models()
@@ -91,33 +96,36 @@ export function EvalPage({ host }: { host: Host }) {
         setModels([])
         setModelCatalogError(errorMessage(error))
       })
-  }, [api, loadHistory])
+  }, [api, loadHistory, surface])
 
   useEffect(() => {
+    if (surface !== 'experiments') return
     if (!selectedId || creating) {
       setStatus(null)
       setResult(null)
       return
     }
     void loadDetail(selectedId)
-  }, [creating, loadDetail, selectedId])
+  }, [creating, loadDetail, selectedId, surface])
 
   useEffect(() => {
+    if (surface !== 'experiments') return
     if (!selectedId || creating || !status || isTerminal(status.status)) return
     const timer = window.setInterval(() => {
       void loadDetail(selectedId, true)
     }, 2_000)
     return () => window.clearInterval(timer)
-  }, [creating, loadDetail, selectedId, status])
+  }, [creating, loadDetail, selectedId, status, surface])
 
   const onCompleted = useCallback(
     (event: { evaluation_id: string }) => {
+      if (surface !== 'experiments') return
       void loadHistory()
       if (event.evaluation_id === selectedId) {
         void loadDetail(event.evaluation_id, true)
       }
     },
-    [loadDetail, loadHistory, selectedId],
+    [loadDetail, loadHistory, selectedId, surface],
   )
   useEvalCompleted(host, onCompleted)
 
@@ -162,49 +170,138 @@ export function EvalPage({ host }: { host: Host }) {
     }
   }, [api, loadHistory, selectedId])
 
-  const rerun = useCallback(async (reverseOrder: boolean) => {
-    if (!selectedId) return
-    setActionPending(true)
-    try {
-      const started = await api.rerun(selectedId, reverseOrder)
-      setSelectedId(started.evaluation_id)
-      await loadHistory()
-      await loadDetail(started.evaluation_id)
-    } catch (error) {
-      setDetailError(errorMessage(error))
-    } finally {
-      setActionPending(false)
+  const rerun = useCallback(
+    async (reverseOrder: boolean) => {
+      if (!selectedId) return
+      setActionPending(true)
+      try {
+        const started = await api.rerun(selectedId, reverseOrder)
+        setSelectedId(started.evaluation_id)
+        await loadHistory()
+        await loadDetail(started.evaluation_id)
+      } catch (error) {
+        setDetailError(errorMessage(error))
+      } finally {
+        setActionPending(false)
+      }
+    },
+    [api, loadDetail, loadHistory, selectedId],
+  )
+
+  // Context from `host.panels.open` — the palette source and the setup-time
+  // "new evaluation" command both open the page this way.
+  const appliedContextRef = useRef(0)
+  useEffect(() => {
+    if (!panelContext || panelContext.id === appliedContextRef.current) return
+    appliedContextRef.current = panelContext.id
+    const context = panelContext.context as
+      | { type?: string; evaluationId?: string }
+      | undefined
+    if (context?.type === 'new') {
+      setSurface('experiments')
+      setCreating(true)
+    } else if (context?.type === 'evaluation' && context.evaluationId) {
+      setSurface('experiments')
+      setCreating(false)
+      setSelectedId(context.evaluationId)
     }
-  }, [api, loadDetail, loadHistory, selectedId])
+  }, [panelContext])
+
+  const switchSurface = useCallback((next: 'sessions' | 'experiments') => {
+    setSurface(next)
+    ;(next === 'sessions' ? sessionsTabRef : experimentsTabRef).current?.focus()
+  }, [])
+
+  useEffect(
+    () =>
+      commands?.register([
+        {
+          id: 'new-evaluation',
+          title: 'New evaluation',
+          detail: 'Start a prompt comparison',
+          keywords: ['experiment', 'compare prompts'],
+          shortcut: 'N',
+          run: () => {
+            setSurface('experiments')
+            setCreating(true)
+          },
+        },
+        {
+          id: 'refresh-history',
+          title: 'Refresh evaluation history',
+          keywords: ['reload'],
+          shortcut: 'R',
+          enabled: () => surface === 'experiments',
+          run: () => void loadHistory(),
+        },
+      ]),
+    [commands, loadHistory, surface],
+  )
 
   const selected = evaluations.find((item) => item.evaluation_id === selectedId) ?? null
 
   return (
     <div className="eval-ui-container">
-      <div className={`eval-ui${creating ? ' creating' : ''}`}>
-        <History
-          evaluations={evaluations}
-          selectedId={creating ? null : selectedId}
-          loading={historyLoading}
-          onSelect={(evaluationId) => {
-            setCreating(false)
-            setSelectedId(evaluationId)
-          }}
-          onNew={() => setCreating(true)}
-          onRefresh={() => void loadHistory()}
-        />
+      <div
+        className="eval-ui-tabs"
+        role="tablist"
+        aria-label="Eval views"
+        onKeyDown={(event) => {
+          if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+          event.preventDefault()
+          switchSurface(surface === 'sessions' ? 'experiments' : 'sessions')
+        }}
+      >
+        <button
+          ref={sessionsTabRef}
+          className={surface === 'sessions' ? 'active' : ''}
+          type="button"
+          role="tab"
+          aria-selected={surface === 'sessions'}
+          onClick={() => setSurface('sessions')}
+        >
+          Sessions
+        </button>
+        <button
+          ref={experimentsTabRef}
+          className={surface === 'experiments' ? 'active' : ''}
+          type="button"
+          role="tab"
+          aria-selected={surface === 'experiments'}
+          onClick={() => setSurface('experiments')}
+        >
+          Prompt experiments
+        </button>
+      </div>
+      <div
+        className={`eval-ui${creating && surface === 'experiments' ? ' creating' : ''}${surface === 'sessions' ? ' sessions-mode' : ''}${panelSide === 'right' ? ' right' : ''}`}
+      >
+        {surface === 'experiments' ? (
+          <History
+            side={panelSide}
+            evaluations={evaluations}
+            selectedId={creating ? null : selectedId}
+            loading={historyLoading}
+            onSelect={(evaluationId) => {
+              setCreating(false)
+              setSelectedId(evaluationId)
+            }}
+            onNew={() => setCreating(true)}
+            onRefresh={() => void loadHistory()}
+          />
+        ) : null}
         <main className="eval-ui-main">
-          {historyError ? (
+          {surface === 'sessions' ? <SessionComparison host={host} /> : null}
+          {surface === 'experiments' && historyError ? (
             <StatusPanel variant="alert" headline="evaluation history unavailable" detail={historyError} />
           ) : null}
-          {creating ? (
+          {surface === 'experiments' && creating ? (
             <NewEvaluationForm
               models={models}
               modelCatalogError={modelCatalogError}
-              onLoadDefaultSystemPrompt={(provider) => api.systemPrompt(provider)}
               onCreate={create}
             />
-          ) : selected ? (
+          ) : surface === 'experiments' && selected ? (
             <EvaluationDetail
               summary={selected}
               status={status}
@@ -216,19 +313,22 @@ export function EvalPage({ host }: { host: Host }) {
               onDelete={() => void remove()}
               onRerun={(reverseOrder) => void rerun(reverseOrder)}
             />
-          ) : historyLoading ? (
+          ) : surface === 'experiments' && historyLoading ? (
             <div className="eval-ui-loading">
               <Skeleton />
               <Skeleton />
               <Skeleton />
             </div>
-          ) : (
+          ) : surface === 'experiments' ? (
             <EmptyState
               title="select an evaluation"
               description="choose a recent report or start a new prompt comparison."
-              action={{ label: 'new evaluation', onClick: () => setCreating(true) }}
+              action={{
+                label: 'new evaluation',
+                onClick: () => setCreating(true),
+              }}
             />
-          )}
+          ) : null}
         </main>
       </div>
     </div>

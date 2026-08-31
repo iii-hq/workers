@@ -1,0 +1,813 @@
+/*
+ * Public iii Schematic recipes. Keep these names stable: injectable worker
+ * pages consume them through `uiClasses` without bundling Tailwind. Recipes
+ * own internal layout, never external margins.
+ */
+
+.iii-ui-list {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.iii-ui-list-group {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.iii-ui-list-group__label {
+  padding: 0.5rem 0.75rem 0.25rem;
+  color: var(--color-ink-faint);
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1rem;
+}
+
+.iii-ui-list-item {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 2.75rem;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  text-align: left;
+  transition:
+    background-color var(--motion-duration-control) var(--motion-ease-standard),
+    border-color var(--motion-duration-control) var(--motion-ease-standard),
+    color var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+button.iii-ui-list-item,
+a.iii-ui-list-item,
+[role="option"].iii-ui-list-item {
+  width: 100%;
+}
+
+.iii-ui-list-item:not([aria-disabled="true"]):not(:disabled):hover,
+.iii-ui-list-item[data-highlighted="true"] {
+  background: var(--color-surface-hover);
+}
+
+.iii-ui-list-item[data-selected="true"],
+.iii-ui-list-item[aria-selected="true"],
+.iii-ui-list-item[aria-current="true"] {
+  border-color: var(--color-edge);
+  background: var(--color-surface-selected);
+  box-shadow: inset 2px 0 0 var(--color-edge);
+  color: var(--color-ink);
+}
+
+.iii-ui-list-item:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--color-ink) 55%, transparent);
+  outline-offset: 1px;
+}
+
+.iii-ui-list-item:disabled,
+.iii-ui-list-item[aria-disabled="true"] {
+  pointer-events: none;
+  opacity: 0.4;
+}
+
+.iii-ui-list-item__icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-ink-faint);
+}
+
+.iii-ui-list-item__icon > svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.iii-ui-list-item__content {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+.iii-ui-list-item__title {
+  min-width: 0;
+  overflow: hidden;
+  color: inherit;
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.iii-ui-list-item__description {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-ink-faint);
+  font-size: 0.75rem;
+  line-height: 1.125rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.iii-ui-list-item__meta {
+  flex: 0 0 auto;
+  color: var(--color-ink-faint);
+  font-size: 0.75rem;
+  line-height: 1rem;
+}
+
+.iii-ui-card,
+.iii-ui-panel {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-edge);
+  border-radius: var(--radius-md);
+  background: var(--color-panel-raised);
+  color: var(--color-ink);
+}
+
+.iii-ui-card {
+  box-shadow: var(--shadow-raised);
+  transition:
+    background-color var(--motion-duration-control) var(--motion-ease-standard),
+    border-color var(--motion-duration-control) var(--motion-ease-standard),
+    box-shadow var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+.iii-ui-card[data-interactive="true"]:hover {
+  background: color-mix(
+    in oklab,
+    var(--color-panel-raised),
+    var(--color-surface-hover) 60%
+  );
+}
+
+.iii-ui-card[data-selected="true"] {
+  border-color: var(--color-edge);
+  background: var(--color-surface-selected);
+  box-shadow:
+    inset 2px 0 0 var(--color-edge),
+    var(--shadow-raised);
+}
+
+.iii-ui-card:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--color-ink) 55%, transparent);
+  outline-offset: 2px;
+}
+
+/* Shared card disclosure. The grid track provides an auto-height transition
+ * without measuring worker content; the inner region remains mounted so local
+ * state survives a collapse. Global duration tokens reduce to 0ms when the
+ * operator prefers reduced motion. */
+.iii-ui-collapsible-card {
+  container-type: inline-size;
+}
+
+.iii-ui-collapsible-card[data-disabled="true"] {
+  opacity: 0.6;
+}
+
+.iii-ui-collapsible-card__trigger {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+
+.iii-ui-collapsible-card__trigger:hover {
+  background: var(--color-surface-hover);
+}
+
+.iii-ui-collapsible-card__trigger:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--color-ink) 55%, transparent);
+  outline-offset: -2px;
+}
+
+.iii-ui-collapsible-card__trigger:disabled {
+  cursor: default;
+}
+
+.iii-ui-collapsible-card__trigger:disabled:hover {
+  background: transparent;
+}
+
+.iii-ui-collapsible-card__content {
+  display: grid;
+  min-width: 0;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    grid-template-rows var(--motion-duration-panel) var(--motion-ease-exit),
+    opacity var(--motion-duration-control) var(--motion-ease-exit);
+}
+
+.iii-ui-collapsible-card__content[data-state="open"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  pointer-events: auto;
+  transition-timing-function: var(--motion-ease-enter);
+}
+
+.iii-ui-collapsible-card__content-inner {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  transform: translateY(-0.25rem);
+  transition: transform var(--motion-duration-panel) var(--motion-ease-exit);
+}
+
+.iii-ui-collapsible-card__content[data-state="open"]
+  > .iii-ui-collapsible-card__content-inner {
+  transform: translateY(0);
+  transition-timing-function: var(--motion-ease-enter);
+}
+
+.iii-ui-card__header,
+.iii-ui-panel__header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 2.5rem;
+  padding: 0.625rem 0.75rem;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.iii-ui-card__header > svg,
+.iii-ui-panel__header > svg {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+}
+
+.iii-ui-card__body,
+.iii-ui-panel__body {
+  min-width: 0;
+  padding: 0.75rem;
+}
+
+/* Borderless inset used to emphasize related content inside a card. It is
+ * structural, never interactive: hover, selection, focus, and status each
+ * keep their own semantic recipes. */
+.iii-ui-card-highlight {
+  min-width: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: var(--color-card-highlight);
+  color: var(--color-ink);
+}
+
+.iii-ui-chip {
+  display: inline-flex;
+  min-height: 1.5rem;
+  max-width: 100%;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.125rem 0.5rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-ink-faint);
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1rem;
+}
+
+.iii-ui-chip[data-selected="true"] {
+  border-color: var(--color-edge);
+  background: var(--color-surface-selected);
+  color: var(--color-ink);
+}
+
+.iii-ui-chip[data-tone="accent"] {
+  background: var(--color-accent-muted);
+  color: var(--color-accent);
+}
+
+.iii-ui-chip[data-tone="success"] {
+  background: var(--color-ok-muted);
+  color: var(--color-ok);
+}
+
+.iii-ui-chip[data-tone="warning"] {
+  background: var(--color-warn-muted);
+  color: var(--color-warn);
+}
+
+.iii-ui-chip[data-tone="danger"] {
+  background: var(--color-alert-muted);
+  color: var(--color-alert);
+}
+
+.iii-ui-icon {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+}
+
+.iii-ui-table-viewport {
+  width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: thin;
+  container-type: inline-size;
+}
+
+.iii-ui-table-frame {
+  display: inline-block;
+  box-sizing: border-box;
+  min-width: 100%;
+  vertical-align: middle;
+}
+
+.iii-ui-table {
+  width: 100%;
+  border-collapse: collapse;
+  border-spacing: 0;
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 0.875rem;
+  line-height: 1.375rem;
+  text-align: left;
+}
+
+.iii-ui-table__header .iii-ui-table__row,
+.iii-ui-table__body .iii-ui-table__row {
+  border-bottom: 1px solid var(--color-edge);
+}
+
+.iii-ui-table__body .iii-ui-table__row:last-child {
+  border-bottom: 0;
+}
+
+.iii-ui-table__footer .iii-ui-table__row {
+  border-top: 1px solid var(--color-edge);
+}
+
+.iii-ui-table__row[data-interactive="true"] {
+  cursor: pointer;
+}
+
+.iii-ui-table__row[data-interactive="true"]:hover {
+  background: var(--color-surface-hover);
+}
+
+.iii-ui-table__row[data-selected="true"] {
+  background: var(--color-surface-selected);
+}
+
+.iii-ui-table__head,
+.iii-ui-table__cell {
+  padding: 0.75rem;
+  vertical-align: top;
+}
+
+.iii-ui-table__head:first-child,
+.iii-ui-table__cell:first-child {
+  padding-left: 0;
+}
+
+.iii-ui-table__head:last-child,
+.iii-ui-table__cell:last-child {
+  padding-right: 0;
+}
+
+.iii-ui-table__head {
+  color: var(--color-ink-faint);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.iii-ui-table__cell {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.iii-ui-table__cell .iii-ui-chip {
+  border-color: var(--color-edge);
+}
+
+.iii-ui-table__caption {
+  padding-block: 0.75rem;
+  color: var(--color-ink-faint);
+  font-size: 0.8125rem;
+  text-align: left;
+}
+
+.iii-ui-table[data-density="compact"] .iii-ui-table__head,
+.iii-ui-table[data-density="compact"] .iii-ui-table__cell {
+  padding-block: 0.5rem;
+}
+
+@container (min-width: 40rem) {
+  .iii-ui-table {
+    font-size: 0.8125rem;
+    line-height: 1.25rem;
+  }
+
+  .iii-ui-table__head {
+    font-size: 0.75rem;
+  }
+}
+
+.iii-ui-tabs-list {
+  display: flex;
+  width: max-content;
+  max-width: 100%;
+  align-items: center;
+  gap: 1.25rem;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--color-edge);
+  scrollbar-width: thin;
+}
+
+.iii-ui-tab {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+  min-height: 2.5rem;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.125rem;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink-faint);
+  font-family: var(--font-sans);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.25rem;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.iii-ui-tab::after {
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 2px;
+  background: var(--color-ink);
+  content: "";
+  transform: scaleX(0);
+  transform-origin: center;
+  transition: transform var(--motion-duration-control)
+    var(--motion-ease-standard);
+}
+
+.iii-ui-tab:hover {
+  color: var(--color-ink);
+}
+
+.iii-ui-tab[data-state="active"],
+.iii-ui-tab[data-selected="true"],
+.iii-ui-tab[aria-selected="true"] {
+  color: var(--color-ink);
+}
+
+.iii-ui-tab[data-state="active"]::after,
+.iii-ui-tab[data-selected="true"]::after,
+.iii-ui-tab[aria-selected="true"]::after {
+  transform: scaleX(1);
+}
+
+.iii-ui-tab:focus-visible {
+  border-radius: var(--radius-xs);
+  outline: 2px solid color-mix(in oklab, var(--color-ink) 55%, transparent);
+  outline-offset: -2px;
+}
+
+.iii-ui-tab:disabled,
+.iii-ui-tab[aria-disabled="true"] {
+  pointer-events: none;
+  opacity: 0.4;
+}
+
+.iii-ui-tab__icon {
+  display: inline-flex;
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+}
+
+.iii-ui-tab__icon > svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.iii-ui-segmented {
+  display: inline-flex;
+  max-width: 100%;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+}
+
+.iii-ui-segmented__item {
+  min-width: 0;
+  padding: 0.25rem 0.75rem;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--color-ink-faint);
+  font-family: var(--font-sans);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.25rem;
+  transition:
+    background-color var(--motion-duration-control) var(--motion-ease-standard),
+    color var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+.iii-ui-segmented__item:hover {
+  color: var(--color-ink);
+}
+
+.iii-ui-segmented__item[data-selected="true"],
+.iii-ui-segmented__item[aria-selected="true"],
+.iii-ui-segmented__item[aria-checked="true"] {
+  background: var(--color-surface-selected);
+  color: var(--color-ink);
+}
+
+.iii-ui-segmented__item:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--color-ink) 55%, transparent);
+  outline-offset: -1px;
+}
+
+.iii-ui-field {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.iii-ui-field__label {
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1rem;
+}
+
+.iii-ui-field__description,
+.iii-ui-field__error {
+  font-family: var(--font-sans);
+  font-size: 0.6875rem;
+  line-height: 1rem;
+}
+
+.iii-ui-field__description {
+  color: var(--color-ink-faint);
+}
+
+.iii-ui-field__error {
+  color: var(--color-alert);
+}
+
+.iii-ui-motion-control {
+  transition-duration: var(--motion-duration-control);
+  transition-timing-function: var(--motion-ease-standard);
+}
+
+.iii-ui-motion-panel {
+  animation: iii-ui-panel-enter var(--motion-duration-panel)
+    var(--motion-ease-enter) both;
+}
+
+.iii-ui-motion-panel[data-state="closed"] {
+  animation-name: iii-ui-panel-exit;
+  animation-timing-function: var(--motion-ease-exit);
+}
+
+.iii-ui-motion-overlay {
+  animation: iii-ui-overlay-enter var(--motion-duration-fast)
+    var(--motion-ease-enter) both;
+}
+
+.iii-ui-motion-overlay[data-state="closed"] {
+  animation-name: iii-ui-overlay-exit;
+  animation-timing-function: var(--motion-ease-exit);
+}
+
+/* Compact menus share a directional scale/fade instead of the generic
+   overlay fade. Radix keeps content mounted while the closed animation runs,
+   so both the entrance and exit remain visible without consumer timers. */
+.iii-ui-motion-dropdown {
+  transform-origin: var(
+    --radix-select-content-transform-origin,
+    var(
+      --radix-dropdown-menu-content-transform-origin,
+      var(--radix-popover-content-transform-origin, top center)
+    )
+  );
+  animation: iii-ui-dropdown-enter var(--duration-fast) var(--ease-smooth-out)
+    both;
+  will-change: transform, opacity;
+}
+
+.iii-ui-motion-dropdown[data-state="closed"] {
+  pointer-events: none;
+  animation: iii-ui-dropdown-exit var(--duration-quick) var(--ease-smooth-out)
+    both;
+}
+
+/* Radix keeps dialog content mounted while its closed keyframe runs. This is
+   the panel-reveal recipe expressed as keyframes so every BottomSheet gets
+   the same enter and exit presence behavior without consumer-owned timers. */
+.iii-ui-motion-sheet {
+  animation: iii-ui-sheet-enter var(--duration-slow) var(--ease-smooth-out) both;
+  will-change: transform, opacity, filter;
+}
+
+.iii-ui-motion-sheet[data-state="closed"] {
+  pointer-events: none;
+  animation: iii-ui-sheet-exit var(--duration-medium) var(--ease-smooth-out)
+    both;
+}
+
+.iii-ui-motion-sheet-overlay {
+  animation: iii-ui-sheet-overlay-enter var(--duration-slow)
+    var(--ease-smooth-out) both;
+  will-change: opacity;
+}
+
+.iii-ui-motion-sheet-overlay[data-state="closed"] {
+  pointer-events: none;
+  animation: iii-ui-sheet-overlay-exit var(--duration-medium)
+    var(--ease-smooth-out) both;
+}
+
+/* Picker and sheet-detail views occupy the same panel and move in opposing
+   directions: the root page leaves left, while detail pages leave right. */
+.iii-ui-motion-picker-page {
+  opacity: 0;
+  pointer-events: none;
+  filter: blur(var(--blur-medium));
+  transform: translateX(var(--picker-page-offset, var(--distance-base)));
+  transition:
+    opacity var(--duration-fast) var(--ease-smooth-out),
+    transform var(--duration-fast) var(--ease-smooth-out),
+    filter var(--duration-fast) var(--ease-smooth-out);
+  will-change: transform, opacity, filter;
+}
+
+.iii-ui-motion-picker-page[data-active="true"] {
+  opacity: 1;
+  pointer-events: auto;
+  filter: blur(0);
+  transform: translateX(0);
+}
+
+@keyframes iii-ui-panel-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes iii-ui-overlay-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes iii-ui-panel-exit {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes iii-ui-overlay-exit {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes iii-ui-dropdown-enter {
+  from {
+    opacity: 0;
+    transform: scale(var(--scale-medium));
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes iii-ui-dropdown-exit {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(var(--scale-tiny));
+  }
+}
+
+@keyframes iii-ui-sheet-enter {
+  from {
+    opacity: 0;
+    filter: blur(var(--blur-small));
+    transform: translateY(50%);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0);
+  }
+}
+
+@keyframes iii-ui-sheet-exit {
+  from {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    filter: blur(var(--blur-small));
+    transform: translateY(50%);
+  }
+}
+
+@keyframes iii-ui-sheet-overlay-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes iii-ui-sheet-overlay-exit {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@media (max-width: 640px) {
+  .iii-ui-list-item {
+    min-height: 3rem;
+  }
+
+  .iii-ui-segmented__item {
+    min-height: 2.75rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .iii-ui-motion-panel,
+  .iii-ui-motion-overlay,
+  .iii-ui-motion-dropdown,
+  .iii-ui-motion-sheet,
+  .iii-ui-motion-sheet-overlay {
+    animation: none;
+  }
+
+  .iii-ui-motion-picker-page {
+    transition: none;
+  }
+}

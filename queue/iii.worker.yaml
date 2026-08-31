@@ -3,6 +3,7 @@ name: queue
 language: rust
 deploy: binary
 manifest: Cargo.toml
+license: Apache-2.0
 bin: queue
 tags: [queue, async, jobs, retry, rabbitmq, redis]
 description: Durable function queues - registers the `durable:subscriber` trigger type and the queue/DLQ service functions.
@@ -29,14 +30,14 @@ description: Durable function queues - registers the `durable:subscriber` trigge
 #     name: builtin
 #     config:
 #       store_method: file_based
-#       file_path: ./data/queue
+#       file_path: data/queue
 #       save_interval_ms: 5000
 config:
   adapter:
     name: builtin
     config:
       store_method: file_based
-      file_path: ./data/queue
+      file_path: data/queue
       save_interval_ms: 5000
 dependencies:
-  configuration: "^0.21.6"
+  configuration: "0.x"

@@ -4,6 +4,7 @@
 use crate::errors::classify;
 use crate::wire::names::decode_tool_name;
 use crate::{now_ms, PROVIDER_ID};
+use llm_router::provider_scaffold::sse_transport::{arguments_incomplete, StreamEndView};
 use llm_router::types::content::ContentBlock;
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind, StopReason, Usage};
 use llm_router::types::messages::{AssistantMessage, AssistantRoleTag};
@@ -35,6 +36,7 @@ pub struct PartialState {
     native_stop_reason: Option<String>,
     error_message: Option<String>,
     warnings: Vec<String>,
+    terminated: bool,
 }
 
 impl PartialState {
@@ -50,11 +52,30 @@ impl PartialState {
             native_stop_reason: None,
             error_message: None,
             warnings,
+            terminated: false,
         }
     }
 
     pub fn stop_reason(&self) -> StopReason {
         self.stop_reason
+    }
+}
+
+impl StreamEndView for PartialState {
+    fn saw_terminator(&self) -> bool {
+        self.terminated
+    }
+
+    fn has_content(&self) -> bool {
+        !self.text.is_empty() || !self.thinking.is_empty() || !self.function_calls.is_empty()
+    }
+
+    fn has_unfinished_call(&self) -> bool {
+        matches!(self.open_block, Some(OpenBlock::Call(_)))
+            || self
+                .function_calls
+                .iter()
+                .any(|fc| arguments_incomplete(&fc.args_json))
     }
 }
 
@@ -153,19 +174,27 @@ pub fn map_finish_reason(s: &str) -> StopReason {
 /// values — overwriting is correct for both, adding double-counts.
 pub fn merge_usage(raw: &Value, into: &mut Usage) {
     let num = |k: &str| raw.get(k).and_then(Value::as_u64);
-    if let Some(v) = num("prompt_tokens").or_else(|| num("input_tokens")) {
-        into.input = Some(v);
-    }
-    if let Some(v) = num("completion_tokens").or_else(|| num("output_tokens")) {
-        into.output = Some(v);
-    }
+    // `Usage.input` is the cache-MISS slice, disjoint from `cache_read`
+    // (pricing bills the splits additively). The wire's `prompt_tokens` is a
+    // TOTAL that includes the cached slice, so the miss slice is derived —
+    // mapping the total verbatim would bill the cached prefix twice.
+    let mut cached = None;
     for parent in ["prompt_tokens_details", "input_tokens_details"] {
         if let Some(v) = raw
             .pointer(&format!("/{parent}/cached_tokens"))
             .and_then(Value::as_u64)
         {
-            into.cache_read = Some(v);
+            cached = Some(v);
         }
+    }
+    if let Some(v) = cached {
+        into.cache_read = Some(v);
+    }
+    if let Some(v) = num("prompt_tokens").or_else(|| num("input_tokens")) {
+        into.input = Some(v.saturating_sub(cached.unwrap_or(0)));
+    }
+    if let Some(v) = num("completion_tokens").or_else(|| num("output_tokens")) {
+        into.output = Some(v);
     }
     if let Some(v) = raw
         .pointer("/completion_tokens_details/reasoning_tokens")
@@ -311,6 +340,7 @@ pub fn handle_chunk(
                             partial: None,
                             delta: args.to_string(),
                             id: state.function_calls[index].id.clone(),
+                            arguments_preview: None,
                         });
                     }
                 }
@@ -320,6 +350,7 @@ pub fn handle_chunk(
 
     if let Some(finish) = choice.get("finish_reason").and_then(Value::as_str) {
         state.stop_reason = map_finish_reason(finish);
+        state.terminated = true;
         state.native_stop_reason = Some(finish.to_string());
         if finish == "content_filter" {
             state
@@ -427,7 +458,7 @@ mod tests {
         assert_eq!(final_msg.stop_reason, StopReason::End);
         assert_eq!(final_msg.native_stop_reason.as_deref(), Some("stop"));
         let usage = final_msg.usage.unwrap();
-        assert_eq!(usage.input, Some(12));
+        assert_eq!(usage.input, Some(8));
         assert_eq!(usage.output, Some(2));
         assert_eq!(usage.cache_read, Some(4));
         assert_eq!(usage.reasoning, Some(0));

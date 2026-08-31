@@ -493,9 +493,11 @@
             ]
           },
           "orchestrator": {
-            "default": false,
             "description": "Grant this child the orchestration surface. Default false: a spawned child is a LEAF — its policy gains deny globs for `harness::spawn`, `harness::send`, `engine::register_trigger`, `engine::unregister_trigger` and `engine::registered-triggers::*`, so it performs its assignment and updates shared state without spawning, messaging sessions, or touching trigger registrations. `true` skips those denies; the child still never exceeds its parent's policy.",
-            "type": "boolean"
+            "type": [
+              "boolean",
+              "null"
+            ]
           },
           "output": {
             "anyOf": [
@@ -507,6 +509,16 @@
               }
             ],
             "description": "The child's deliverable: text / json / json+schema."
+          },
+          "skills": {
+            "description": "Exact skill ids advertised to the child. On a fresh child, omitted or empty means all. A reused child inherits when omitted and resets to all when empty. Explicit changes require no active child turn.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "system_prompt": {
             "type": [
@@ -543,6 +555,67 @@
           "function_call",
           "aborted",
           "error"
+        ],
+        "type": "string"
+      },
+      "SubagentColor": {
+        "enum": [
+          "neutral",
+          "blue",
+          "purple",
+          "teal",
+          "green",
+          "amber",
+          "rose"
+        ],
+        "type": "string"
+      },
+      "SubagentDisplay": {
+        "description": "Display-only identity for a spawned child. The name becomes the session title; icon and color are closed semantic tokens consumed by UIs.",
+        "properties": {
+          "color": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/SubagentColor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "icon": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/SubagentIcon"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "description": "Short functional name, such as `Frontend` or `Explorer`. Leading and trailing whitespace is removed; the result must be 1-48 characters.",
+            "maxLength": 48,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "SubagentIcon": {
+        "enum": [
+          "agent",
+          "code",
+          "search",
+          "terminal",
+          "database",
+          "test",
+          "review",
+          "docs",
+          "design"
         ],
         "type": "string"
       },
@@ -665,6 +738,24 @@
       }
     },
     "properties": {
+      "agent": {
+        "description": "Run the child as a directory agent profile (`directory::agents::*` id). The profile's resolved system prompt (its `extends` chain composed by the directory) becomes the child's whole identity — no shared identity underneath, only the `mode` paragraph in front — its skill filter applies when `options.skills` is omitted, its `model` slots between an explicit `model` and the parent's, and its name/icon become the display defaults. Which agent profile to name is the prompt's decision. Refused combined with `options.system_prompt`, and when the profile's `extends` chain does not resolve.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "display": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/SubagentDisplay"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Optional display-only identity for the child session. This never affects session ids, policy, routing, or execution. On named-session reuse the existing session title and metadata are retained."
+      },
       "model": {
         "type": [
           "string",

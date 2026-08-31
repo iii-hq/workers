@@ -1,0 +1,40 @@
+{
+  "description": "Internal: a worker's function registrations changed — re-discover live providers and nudge them to re-declare, so a provider that reconnected is resolvable again without waiting for its own catalog timer.",
+  "function_id": "router::on_functions_changed",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Advisory function-registry change event delivered to `router::on_functions_changed`. The handler ignores event values and re-fetches the authoritative registry before nudging live providers.",
+    "properties": {
+      "event": {
+        "description": "Engine event tag (advisory).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "worker_id": {
+        "description": "Worker whose registered functions changed (advisory).",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "FunctionsChangedEvent",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "Generic acknowledgement returned by trigger-bound handlers whose result is not consumed by callers (kept typed so the response schema is concrete).",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ],
+    "title": "RouterAck",
+    "type": "object"
+  }
+}

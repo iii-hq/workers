@@ -5,8 +5,8 @@ directory is a self-contained worker module: a process that connects to the
 engine over WebSocket, registers functions + triggers, and does something
 useful.
 
-Workers are installed via `iii worker add <name>`, which resolves the matching
-asset for the host from the workers registry API.
+Workers are installed via `iii trigger compose::add worker=<name>`, which
+resolves the matching asset for the host from the workers registry API.
 
 ## Skills
 
@@ -42,10 +42,12 @@ npx skills add iii-hq/iii --all
 | [`approval-gate`](approval-gate/) | Rust | Human-in-the-loop approval gate — evaluates each function call (continue / deny / hold), holds pending calls for a human, and emits `approval::pending-*` events. Binds the harness `pre_trigger` hook. See [`approval-gate/architecture/`](approval-gate/architecture/). |
 | [`harness`](harness/) | Node | TS port of the iii harness stack — bundles `harness` (provider registry + credentials/settings/permissions via the `configuration` worker), `turn-orchestrator`, `hook-fanout`, `models-catalog`, the `provider-*` workers, `llm-budget`, and `context-compaction` as one pnpm monorepo. Approval is delegated to the standalone `approval-gate` worker via the `pre_trigger` hook. Conversations persist in `session-manager`. See [`harness/README.md`](harness/README.md). |
 | [`eval`](eval/) | Rust | Durable same-model A/B evaluation for prompts and system prompts — runs paired harness sessions, delegates correctness to iii evaluator functions, and reports pass rates with token, cost, latency, function-call, trace, and span metrics. |
+| [`security-scan`](security-scan/) | Rust | Report-only security reviews of operator-configured repositories at immutable Git commits, using a read-only Harness policy and durable deduplication. |
 | [`codex`](codex/) | Rust | OpenAI Codex as an iii worker — `codex::*` spawn the codex CLI for headless turns, mirror raw thread events onto `codex::events`, and stream AgentEvent frames onto `agent::events`. |
 | [`grok`](grok/) | Rust | xAI Grok CLI as an iii worker — `grok::*` spawn the grok CLI for headless turns (`grok --print --output-format streaming-json`), mirror raw events onto `grok::events`, and stream AgentEvent frames onto `agent::events`. |
 | [`devin`](devin/) | Rust | Devin as an iii worker: `devin::run` drives the local devin CLI and streams AgentEvent frames onto `agent::events`, `devin::session::*` wrap the Devin cloud session lifecycle, and `devin::api` reaches any v3 endpoint. |
 | [`claude-code`](claude-code/) | Node | Claude Code as an iii worker — `claude::*` runs headless Claude Code turns, mirrors raw messages onto `claude::events`, and streams AgentEvent frames onto `agent::events`. |
+| [`cursor`](cursor/) | Node | Cursor through normal Cursor CLI login as a text-only LLM Router provider plus a coding-agent worker for local ACP turns, with the optional `sdk.v1` Bridge for cloud/API-key agent sessions. |
 | [`pi`](pi/) | Node | Pi coding agent as an iii worker — `pi::*` run headless Pi turns, mirror raw events onto `pi::events`, and stream AgentEvent frames onto `agent::events`. |
 | [`hermes`](hermes/) | Python | Hermes agent as an iii worker — `hermes::run` runs headless turns with the iii runtime context, `hermes::send` delivers to 27+ messaging platforms, and inbound platform/webhook events republish via `hermes::inbound`. |
 | [`opencode`](opencode/) | Node | OpenCode as an iii worker — `opencode::*` run headless OpenCode turns via `opencode run --format json`, mirror raw JSON events onto `opencode::events`, and stream AgentEvent frames (with usage + cost) onto `agent::events`. |
@@ -55,7 +57,10 @@ npx skills add iii-hq/iii --all
 | [`context-manager`](context-manager/) | Rust | Model-ready context assembly — four `context::*` functions for token counting, function-result pruning, and history compaction over caller-supplied messages. Storage-agnostic; summarisation via `llm-router` when installed. |
 | [`database`](database/) | Rust | PostgreSQL, MySQL, and SQLite client — query, execute, transactions, prepared statements, and change feeds. |
 | [`editor`](editor/) | Rust | A shared code workspace — open buffers, file tree, unified diffs, fuzzy find and conflict-safe saves, held in `state` so an agent and a person see one editor. Files and git go through `shell`; ships a console editor page. |
-| [`iii-directory`](iii-directory/) | Rust | Engine introspection (functions / triggers / workers), workers-registry proxy, and filesystem-backed skill + prompt reader. |
+| [`vscode`](vscode/) | Node | VS Code as an iii worker — `vscode::*` runs the VS Code Server through the `code` CLI per workspace, and a Console page embeds the Workbench for the working directory. |
+| [`compose-ui`](compose-ui/) | Node | The compose daemon in the Console — a **Compose** page over `compose::*` with live container state, lifecycle actions, worker packages, and per-container log tails, plus a `compose-ui::changed` trigger type for supervisor changes. |
+| [`kanban`](kanban/) | Node | Repository-aware multi-worker Kanban runs — launch Harness and external worker tasks under one root session, isolate them in managed Git worktrees, gate dependencies, review results, and land approved branches from the Console. |
+| [`iii-directory`](iii-directory/) | Rust | Engine introspection, workers-registry proxy, filesystem-backed skills, system prompts, and agent profiles, plus one-shot lexical function search — `directory::search_functions` returns compact candidates for the relevant functions (BM25 + coverage pruning, installed + installable-from-registry) and directs callers to batch selected ids through `engine::functions::info`; its search hint is injected at most once per turn. |
 | [`lsp`](lsp/) | Rust | Language Server for iii function ids, trigger configs, and worker discovery. Autocomplete / hover across JS/TS, Python, Rust. |
 | [`lsp-vscode`](lsp-vscode/) | Node | VS Code extension package `iii-lsp`, embedding the `lsp` server. |
 | [`image-resize`](image-resize/) | Rust | Image resize via channel I/O — JPEG/PNG/WebP with EXIF auto-orient, scale-to-fit / crop-to-fit. |
@@ -67,20 +72,31 @@ npx skills add iii-hq/iii --all
 | [`rbac-proxy`](rbac-proxy/) | Rust | RBAC boundary proxy for the iii worker protocol — opens its own port and reverse-proxies functions + channels to a trusted engine listener, authenticating each connection, gating every invocation and trigger binding, namespacing registrations, running middleware + registration hooks, and filtering the `engine::*` discovery results to the caller's boundaries. The [`console`](console/) reverse-proxy with the engine's RBAC vendored in front, out of process. |
 | [`provider-anthropic`](provider-anthropic/) | Rust | Anthropic Messages API provider behind `llm-router` — `provider::anthropic::stream` with prompt caching, thinking, and live model discovery. |
 | [`provider-claude-code`](provider-claude-code/) | Rust | Claude Code (Pro/Max subscription) Messages API provider behind `llm-router` — `provider::claude-code::stream` using OAuth credentials from the auth-credentials vault or `~/.claude/.credentials.json`, namespaced `claude-code/*` catalog. Local/personal dev only (ToS caveat). |
+| [`provider-command-code`](provider-command-code/) | Rust | Command Code multi-vendor provider behind `llm-router`; Claude ids use Anthropic Messages, other ids use OpenAI Chat Completions, and the live catalog is namespaced `command-code/*`. |
 | [`provider-deepseek`](provider-deepseek/) | Rust | DeepSeek Chat Completions provider behind `llm-router` — `provider::deepseek::stream` with thinking-mode toggle + effort, reasoning replay for tool-calling turns, and live model discovery against `api.deepseek.com`. |
+| [`provider-github-copilot`](provider-github-copilot/) | Rust | GitHub Copilot subscription provider behind `llm-router` — sign in with GitHub once (device-flow login surface, editor-credential import) and the models the plan grants land in the picker; `provider::github-copilot::stream` with worker-owned bearer exchange/refresh and a fully live `copilot/`-prefixed catalog. |
 | [`provider-llamacpp`](provider-llamacpp/) | Rust | llama.cpp server (`llama-server`) Chat Completions provider behind `llm-router` — `provider::llamacpp::stream` with optional (no-`--api-key`) auth, real json_schema-constrained output, and live model discovery via `/v1/models` + `/props`. |
 | [`provider-openai`](provider-openai/) | Rust | OpenAI Chat Completions provider behind `llm-router` — `provider::openai::stream` with reasoning support and live chat-model discovery, plus `provider::openai::embed` for batch embeddings (OpenAI-compatible endpoints included). |
+| [`provider-opencode-go`](provider-opencode-go/) | Rust | OpenCode Go Chat Completions provider behind `llm-router` — `provider::opencode_go::stream`, live models.dev-enriched catalog via `refresh_models` |
+| [`provider-openrouter`](provider-openrouter/) | Rust | OpenRouter Chat Completions provider behind `llm-router` — one API key in front of every major vendor; `provider::openrouter::stream` with unified reasoning-effort support, billed-cost usage accounting, and a fully live catalog (context/pricing/capabilities from `GET /api/v1/models`, ids prefixed `openrouter/`). |
 | [`provider-xai`](provider-xai/) | Rust | xAI (Grok) Chat Completions provider behind `llm-router` — `provider::xai::stream` with grok reasoning support and live model discovery against `api.x.ai`. |
 | [`provider-zai`](provider-zai/) | Rust | Z.AI (GLM) Chat Completions provider behind `llm-router` — `provider::zai::stream` with GLM thinking/effort support and a curated catalog against `api.z.ai` (no upstream model listing). |
 | [`shell`](shell/) | Rust | Unix shell + filesystem worker — `shell::exec` with denylist/timeout/output caps and background jobs; `fs::ls`/`stat`/`mkdir`/`rm`/`chmod`/`mv`/`grep`/`sed`/`read`/`write` with host jail, denylist, and size caps. |
 | [`storage`](storage/) | Rust | S3-compatible object storage across AWS S3, GCS, Cloudflare R2, and a managed local rustfs backend. Streamed uploads, presigned URLs, and object change triggers. |
+| [`tailscale`](tailscale/) | Rust | Tailscale as an iii worker — the `tailscale` CLI as 38 typed `tailscale::*` functions (connectivity, peers, exit nodes, preferences, Serve and Funnel publishing, Taildrop, certificates, Taildrive, accounts, tailnet lock, updates) with a Console page: links as QR codes, devices, network diagnostics, settings. |
 | [`scrapling`](scrapling/) | Python | [Scrapling](https://github.com/D4Vinci/Scrapling) as an iii worker — `scrapling::*` map three fetch tiers (HTTP / Camoufox stealth / Playwright), screenshots, and CSS/XPath/regex/adaptive extraction over the bus. |
 | [`browser`](browser/) | Rust | Interactive Chromium sessions over CDP with console/network capture, a11y-tree snapshots with actionable refs, viewable screenshots, and DevTools element picking for the console UI. |
+| [`a2ui`](a2ui/) | Rust | A2UI v0.9.1 generative interfaces for Harness sessions — `a2ui::generate` turns compact intent into validated declarative surfaces, persists them per conversation, renders them inline in chat and on an injectable Console page, and routes user actions back into the originating session. |
+| [`canvas`](canvas/) | Rust | Diagrams as editable source — `canvas::*` store mermaid text and freeform whiteboard scenes under stable 8-character ids, draw element by element via `canvas::element::*`, serve the per-family mermaid syntax primer, and validate source before it lands; the console streams each canvas live in chat and on a canvas page. |
 | [`computer`](computer/) | Rust | Full-desktop computer use — start a session on this machine, a sandboxed desktop, or a remote one, screenshot it, click and type by coordinate, and stream the live screen into the console. |
 | [`worktree`](worktree/) | Rust | Git worktree lifecycle for parallel agents — `worktree::*` mint, claim, and track isolated worktrees per repo, emit six lifecycle trigger types, and land branches back through a per-repo FIFO queue (rebase, test gate, ff-only merge). |
 | [`github`](github/) | Rust | GitHub CLI (`gh`) as an iii worker — typed `github::pr/issue/repo/run/workflow/release/search::*` functions plus `github::exec` argv passthrough and `github::api` for any GitHub REST endpoint. |
+| [`sandbox-code-runner`](sandbox-code-runner/) | Rust | Run Node.js and Python in iii-sandbox microVMs — run code, register bus functions from working source, and tear down runtimes on demand. |
+| [`code-runner`](code-runner/) | Rust | Run untrusted Node.js and Python in-process — V8 isolates and CPython-on-WebAssembly behind one run/register_function/teardown API, with no microVM and no /dev/kvm. Code gets a global `iii` and a private scratch directory. |
 | [`openwiki`](openwiki/) | Node | Source-grounded markdown wiki for any git repository — a lead agent plans the index and writer sub-agents store cited pages via `openwiki::write-page`, with router and heuristic fallback tiers, incremental refresh from git diffs on a per-wiki cron schedule, and a browser UI + JSON API under `/openwiki`. |
+| [`opengantry`](opengantry/) | Node | OpenGantry governance — `gantry::verify` runs the repo gate command and mints a verdict token; `gantry::middleware` on the governed port blocks promote-class calls until the token matches the current mission revision. |
 | [`pdf`](pdf/) | Rust | Read PDFs locally — `pdf::classify` routes text-based versus scanned in tens of milliseconds and names the pages that still need OCR, `pdf::to-markdown` converts with headings, lists and tables intact, and `pdf::extract-items` / `::extract-regions` expose positions and the text inside a box. Ships a console page. |
+| [`document`](document/) | Rust | Read office documents locally — `document::to-markdown` converts Word, PowerPoint, Excel, OpenDocument, RTF, EPUB, CSV and text-based PDFs with their structure intact, `document::detect` names a format from its bytes in microseconds, `document::extract-assets` returns the images markdown cannot carry, and `document::ocr` transcribes a scan by rendering its pages through `browser` and reading them with a vision model. |
 
 ## SDK
 
@@ -106,20 +122,18 @@ Node/Python workers follow the standard `npm install` / `pip install -e .`
 flow — see each module's README for specifics. `harness` is a pnpm
 monorepo (`pnpm install && pnpm build`).
 
+## Harness local development
+
+See [`harness/DEVELOPMENT.md`](harness/DEVELOPMENT.md) to start the iii engine
+and the local Harness stack with `worker-compose.yaml`.
+
 ## Binary releases
 
-Rust workers ship as standalone binaries — see the modules table above —
-and are released via GitHub Actions:
-
-1. Trigger the **Create Tag** workflow (Actions tab) — pick a worker, bump
-   type (`patch`/`minor`/`major`), and a registry tag (`latest` / `next`).
-2. A tag of the form `<worker>/v<X.Y.Z>` is pushed to `main`, with the
-   registry tag embedded in the tag's annotated message.
-3. The unified **Release** workflow fires on the tag, cross-compiles
-   binaries for up to 9 targets (Linux gnu/musl, macOS x86_64 + aarch64,
-   Windows x86_64/i686/aarch64, armv7), uploads them to a GitHub Release
-   with SHA-256 checksums, and calls `POST /publish` on the workers
-   registry API.
+Rust workers ship as standalone binaries. Release Control is the only
+supported interface for starting, retrying, reconciling, or canceling a
+deployment. GitHub Actions only executes its authenticated steps.
+See [`docs/sops/release.md`](docs/sops/release.md) for the sequence and recovery
+rules.
 
 Targets per build (Windows targets are skipped on POSIX-only workers such
 as `shell`):
@@ -141,35 +155,37 @@ armv7-unknown-linux-gnueabihf
 Workers are discovered through the workers registry API at
 `https://api.workers.iii.dev`. Each release publishes a manifest entry
 declaring the worker kind (`binary` / container image), supported targets,
-download URLs, and the worker's collected function + trigger interface.
-`iii worker add <name>` queries this API to locate the right asset for the
-host.
+download URLs, and immutable package metadata.
+`iii trigger compose::add worker=<name>` queries this API to locate the right
+asset for the host.
 
 ## Add a new worker
 
 Start with [`docs/sops/new-worker.md`](docs/sops/new-worker.md) — the
 cross-cutting checklist (naming, required files, CI gates, release wiring).
-For the inside of a Rust `deploy: binary` worker, continue with
+For the inside of a Rust `artifact.kind: rust-binary` worker, continue with
 [`docs/sops/binary-worker.md`](docs/sops/binary-worker.md). Each worker ships
 a consumer `README.md` per the [`worker-readme.md`](worker-readme.md)
-contract (install via `iii worker add`, quickstart, configuration).
+contract (install via `iii trigger compose::add worker=<name>`, quickstart,
+configuration).
 [`docs/README.md`](docs/README.md) indexes all shared docs.
 
 ## CI
 
 Pull requests trigger per-worker lint + tests for the changed worker(s).
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) discovers changes by
-reading each worker's `iii.worker.yaml`, then routes:
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) discovers changes from
+the private [`.deploy/workers.yaml`](.deploy/workers.yaml) build catalog,
+then routes:
 
 - Rust → `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test --all-features`
 - Node → `biome ci` against [`biome.json`](biome.json) and `npm test`
 - Python → `ruff check` + `ruff format --check` against [`ruff.toml`](ruff.toml) and `pytest`
 
 The `pr-checks` job additionally enforces, per changed worker: `README.md`
-present, `iii.worker.yaml` valid, `tests/` non-empty, and the manifest
-version is greater than the version on the PR's base branch. It also requires
-a non-empty `tags:` list on every publishable worker for registry discovery
-(workers with `interface_smoke: false` are exempt) — see the
+present, the private build entry and public `iii.worker.yaml` valid,
+`tests/` non-empty, and the package version not behind the PR base. It also
+requires non-empty public discovery tags on workers whose public
+`interface_smoke` PR check is enabled — see the
 [Discovery tags step](docs/sops/new-worker.md#discovery-tags-required).
 
 Full reference (discovery buckets, interface boot smoke, e2e workflows):
@@ -177,21 +193,25 @@ Full reference (discovery buckets, interface boot smoke, e2e workflows):
 
 ## CD
 
-Releases are cut manually via the **Create Tag** workflow
-([`.github/workflows/create-tag.yml`](.github/workflows/create-tag.yml)) —
-pick a worker, a bump type, and a registry tag (`latest` / `next`). The
-resulting `<worker>/v<X.Y.Z>` tag drives a single dispatcher
-([`.github/workflows/release.yml`](.github/workflows/release.yml)) that:
+Release Control is the only supported release interface. For each source SHA,
+[`deploy-descriptor-index.yml`](.github/workflows/deploy-descriptor-index.yml)
+uses the repository-owned compiler to join `.deploy/workers.yaml`, the public
+manifest, and the package manifest exactly once. Release
+Control selects those immutable bytes and dispatches the bounded phases:
 
-1. Routes on `deploy` from `iii.worker.yaml`:
-   - `binary` → cross-compile via
-     [`_rust-binary.yml`](.github/workflows/_rust-binary.yml).
-   - `image` → multi-arch image to `ghcr.io/<owner>/<worker>` via
-     [`_container.yml`](.github/workflows/_container.yml).
-   - `bundle` → single-file archive via
-     [`_bundle.yml`](.github/workflows/_bundle.yml).
-2. Calls `POST /publish` against the workers registry API via
-   [`_publish-registry.yml`](.github/workflows/_publish-registry.yml).
+1. [`deploy-prepare.yml`](.github/workflows/deploy-prepare.yml) validates the
+   selected descriptor and source, then builds one
+   independent job per build unit through
+   [`_deploy-build.yml`](.github/workflows/_deploy-build.yml).
+2. [`deploy-publish.yml`](.github/workflows/deploy-publish.yml) publishes the
+   exact immutable target and CASes the requested `@next` or `@latest` channel,
+   including a digest-pinned OCI image and alias when applicable.
+3. [`deploy-verify.yml`](.github/workflows/deploy-verify.yml) verifies the
+   selected channel and all public surfaces.
+
+Every phase uploads `deployment-result.json` and posts the same bytes to Release
+Control. The target version is selected independently from package-manifest
+metadata; no phase rebuilds or rereads the catalog after prepare.
 
 Step-by-step (variants, troubleshooting, rollback):
 [`docs/sops/release.md`](docs/sops/release.md).

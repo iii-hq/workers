@@ -1,10 +1,11 @@
 /**
- * Live feed of ALL spans across all traces for the masthead strip: one seed
- * read (`engine::traces::list` with `search_all_spans` and no name filter —
- * which returns every stored span, newest first) then live appends from the
- * engine's `iii:devtools:all-spans` stream, keyed by `span_id` so a pending
- * live snapshot is replaced in place by its final close frame (never the
- * other way around).
+ * Live feed of ALL spans across all traces for the masthead strip. The seed
+ * first reads compact recent trace summaries, then fetches complete spans only
+ * for enough trace IDs to fill the strip. This avoids the expensive global
+ * full-span scan while preserving parented internal spans from real traces.
+ * Live appends then come from the engine's `iii:devtools:all-spans` stream,
+ * keyed by `span_id` so a pending snapshot is replaced in place by its final
+ * close frame (never the other way around).
  *
  * Retention is bounded twice: entries older than the strip's usable history
  * are pruned as frames arrive, and a hard cap keeps a busy engine from
@@ -21,16 +22,27 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getIiiClient } from '@/lib/iii-client'
-import { startAllSpansFeed } from '@/lib/traces-stream'
-import { fetchTraces, type StoredSpan } from '../api/traces'
+import { startTraceActivityFeed } from '@/lib/traces-activity'
+import {
+  fetchTraceSpans,
+  fetchTraces,
+  type StoredSpan,
+  type TraceSummary,
+} from '../api/traces'
 import { isPendingSpan, toMs } from '../lib/traceTransform'
 
 /** Forget spans that ended this long ago (strip window + wide slack). */
 const RETENTION_MS = 120_000
 /** Seed read size — bounds a busy engine's history, not the live feed. */
 const SEED_LIMIT = 500
+/** Maximum compact summaries examined to find the seed's trace IDs. */
+const SEED_TRACE_LIMIT = 500
+/** Debounce over activity ticks before re-seeding the strip. */
+const ACTIVITY_RESEED_DEBOUNCE_MS = 300
 /** Hard ceiling on retained spans; oldest effective-end evicted first. */
 const MAX_SPANS = 1_500
+/** Let focus/visibility churn settle before the expensive seed read. */
+const VISIBILITY_RESEED_DELAY_MS = 1_000
 
 function effectiveEndMs(span: StoredSpan, now: number): number {
   return isPendingSpan(span) ? now : toMs(span.end_time_unix_nano)
@@ -82,8 +94,64 @@ export function isContextFreeInternalSpan(span: StoredSpan): boolean {
   )
 }
 
+/** Select newest traces until their non-internal span counts fill the seed. */
+export function selectSeedTraceIds(traces: readonly TraceSummary[]): string[] {
+  const traceIds: string[] = []
+  let spanCount = 0
+
+  for (const trace of traces) {
+    traceIds.push(trace.trace_id)
+    spanCount += Math.max(1, trace.span_count)
+    if (spanCount >= SEED_LIMIT) break
+  }
+
+  return traceIds
+}
+
+/**
+ * Build a bounded recent-span seed without asking the engine to page every
+ * stored span. The summary RPC is trace-first and compact; the detail RPC then
+ * uses the archive's trace-id index and filters the same retention window the
+ * client applies below.
+ */
+export async function fetchLiveSpanSeed(
+  now = Date.now(),
+): Promise<StoredSpan[]> {
+  const summaries = await fetchTraces({
+    include_internal: false,
+    sort_by: 'start_time',
+    sort_order: 'desc',
+    limit: SEED_TRACE_LIMIT,
+  })
+  if (summaries.legacyContract) {
+    const legacyResult = await fetchTraceSpans({
+      search_all_spans: true,
+      include_internal: true,
+      sort_by: 'start_time',
+      sort_order: 'desc',
+      limit: SEED_LIMIT,
+    })
+    return legacyResult.spans
+  }
+
+  const traceIds = selectSeedTraceIds(summaries.traces)
+  if (traceIds.length === 0) return []
+
+  const result = await fetchTraceSpans({
+    trace_ids: traceIds,
+    search_all_spans: true,
+    include_internal: true,
+    start_time: now - RETENTION_MS,
+    sort_by: 'start_time',
+    sort_order: 'desc',
+    limit: SEED_LIMIT,
+  })
+  return result.spans
+}
+
 export function useAllSpans(isPaused: boolean): readonly StoredSpan[] {
   const [spans, setSpans] = useState<ReadonlyMap<string, StoredSpan>>(new Map())
+  const seedInFlightRef = useRef<Promise<void> | null>(null)
 
   const isPausedRef = useRef(isPaused)
   useEffect(() => {
@@ -93,26 +161,28 @@ export function useAllSpans(isPaused: boolean): readonly StoredSpan[] {
   // Seed read — run on mount, and re-run on reconnect and on unpause (the
   // stream dropped frames while away). REPLACES the map; see the module
   // docstring.
-  const seed = useCallback(async () => {
-    try {
-      const res = await fetchTraces({
-        search_all_spans: true,
-        include_internal: true,
-        sort_by: 'start_time',
-        sort_order: 'desc',
-        limit: SEED_LIMIT,
-      })
-      setSpans(
-        mergeSpans(
-          new Map(),
-          res.spans.filter((s) => !isContextFreeInternalSpan(s)),
-          Date.now(),
-        ),
-      )
-    } catch {
-      // Traces unavailable (memory exporter off, transient error) — the
-      // strip simply renders empty until data arrives.
-    }
+  const seed = useCallback((): Promise<void> => {
+    if (seedInFlightRef.current) return seedInFlightRef.current
+
+    const request = (async () => {
+      try {
+        const seedSpans = await fetchLiveSpanSeed()
+        setSpans(
+          mergeSpans(
+            new Map(),
+            seedSpans.filter((s) => !isContextFreeInternalSpan(s)),
+            Date.now(),
+          ),
+        )
+      } catch {
+        // Traces unavailable (memory exporter off, transient error) — the
+        // strip simply renders empty until data arrives.
+      }
+    })().finally(() => {
+      if (seedInFlightRef.current === request) seedInFlightRef.current = null
+    })
+    seedInFlightRef.current = request
+    return request
   }, [])
   const seedRef = useRef(seed)
   useEffect(() => {
@@ -136,9 +206,18 @@ export function useAllSpans(isPaused: boolean): readonly StoredSpan[] {
     void (async () => {
       const client = await getIiiClient()
       if (disposed) return
-      const offFeed = startAllSpansFeed(client, (incoming) => {
+      // Notify-then-query: each activity tick re-seeds the strip's recent
+      // window (REPLACE semantics, same reads as the initial seed), debounced
+      // so a burst of consecutive 300ms windows costs one read.
+      let reseedTimer: ReturnType<typeof setTimeout> | undefined
+      const offFeed = startTraceActivityFeed(client, () => {
         if (isPausedRef.current || isHidden()) return
-        setSpans((prev) => mergeSpans(prev, incoming, Date.now()))
+        if (reseedTimer !== undefined) return
+        reseedTimer = setTimeout(() => {
+          reseedTimer = undefined
+          if (disposed || isPausedRef.current || isHidden()) return
+          void seedRef.current()
+        }, ACTIVITY_RESEED_DEBOUNCE_MS)
       })
       const offConn = client.addConnectionStateListener((state) => {
         if (state === 'connected' && !isPausedRef.current) {
@@ -150,19 +229,35 @@ export function useAllSpans(isPaused: boolean): readonly StoredSpan[] {
       // `useTraceData`. (REPLACE semantics, see the module docstring.)
       let offVisibility: (() => void) | undefined
       if (typeof document !== 'undefined') {
+        let visibilitySeedTimer: ReturnType<typeof setTimeout> | undefined
         const onVisible = () => {
+          if (visibilitySeedTimer !== undefined) {
+            clearTimeout(visibilitySeedTimer)
+            visibilitySeedTimer = undefined
+          }
           if (document.visibilityState === 'visible' && !isPausedRef.current) {
-            void seedRef.current()
+            visibilitySeedTimer = setTimeout(() => {
+              visibilitySeedTimer = undefined
+              if (!isPausedRef.current) void seedRef.current()
+            }, VISIBILITY_RESEED_DELAY_MS)
           }
         }
         document.addEventListener('visibilitychange', onVisible)
-        offVisibility = () =>
+        offVisibility = () => {
           document.removeEventListener('visibilitychange', onVisible)
+          if (visibilitySeedTimer !== undefined) {
+            clearTimeout(visibilitySeedTimer)
+          }
+        }
       }
       stop = () => {
         offFeed()
         offConn()
         offVisibility?.()
+        if (reseedTimer !== undefined) {
+          clearTimeout(reseedTimer)
+          reseedTimer = undefined
+        }
       }
     })()
 

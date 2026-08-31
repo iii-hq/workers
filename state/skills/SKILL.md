@@ -9,9 +9,9 @@ description: >-
 
 # state
 
-The `state` worker is a server-side key/value store. Values are addressed by a `scope` (namespace) and a `key`, shared across every worker connected to the engine, and persisted through a pluggable adapter (`kv` or `redis`). Callers reach the core store through six `state::*` functions invoked with `iii.trigger({ function_id: 'state::...', payload })`. The worker also exposes `state::list_keys` and the internal `state::ui-content` function. Install it with `iii worker add state`; it replaces the engine's legacy built-in state service, which must be removed from the engine config first.
+The `state` worker is a server-side key/value store. Values are addressed by a `scope` (namespace) and a `key`, shared across every worker connected to the engine, and persisted through a pluggable adapter (`kv` or `redis`). Callers reach the core store through six `state::*` functions invoked with `iii.trigger({ function_id: 'state::...', payload })`. The worker also exposes `state::list_keys` and the internal `state::ui-content` function. Install it with `iii trigger compose::add worker=state`; it replaces the engine's legacy built-in state service, which must be removed from the engine config first.
 
-State does not push updates to SDK clients. Reactivity is delivered by a `state` trigger type that fires `state:created`, `state:updated`, or `state:deleted` after every successful mutation, so downstream functions can react to data changes without polling. The `kv` adapter (default) supports `in_memory` or `file_based` persistence; `redis` proxies to a Redis backend. The function surface is identical across adapters.
+State does not push updates to SDK clients. Reactivity is delivered by a `state` trigger type that fires `state:created`, `state:updated`, or `state:deleted` after every successful mutation, so downstream functions can react to data changes without polling. The `kv` adapter (default) supports `file_based` persistence (the default) or a volatile `in_memory` mode; `redis` proxies to a Redis backend. The function surface is identical across adapters.
 
 ## When to Use
 
@@ -26,7 +26,7 @@ State does not push updates to SDK clients. Reactivity is delivered by a `state`
 - Reads (`state::get`, `state::list`, `state::list_groups`) never fire triggers; only `set`/`update`/`delete` do.
 - Trigger delivery is asynchronous and does not roll back the write on handler failure; a delete of a missing key still emits `state:deleted` with a null old value.
 - Stream-shaped, broadcast-to-subscribers data belongs in the engine's stream surface, not here.
-- The store lives in the worker process: the `kv` `in_memory` backend is lost when the worker stops. Use `file_based` or `redis` for data that must survive a restart.
+- The store lives in the worker process: the `kv` `in_memory` backend is lost when the worker stops. The default `file_based` backend (and `redis`) survives restarts.
 
 ## Functions
 

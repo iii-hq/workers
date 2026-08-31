@@ -23,7 +23,12 @@ use super::runner::{BootedRun, ExpandedRun, ScenarioRunner};
 use super::state::{ActiveTurn, PreparedRun};
 
 const CONSOLE_CONNECT_INTERVAL: Duration = Duration::from_millis(100);
-const SHUTDOWN_COMPLETION_GRACE: Duration = Duration::from_secs(1);
+// Console and evidence subscribers receive the same completion concurrently.
+// Under CI load, Playwright can observe the terminal turn and request shutdown
+// before the probe has drained its delivery. Keep shutdown graceful long
+// enough for that already-emitted event without relaxing the scenario deadline
+// or the required completion count.
+const SHUTDOWN_COMPLETION_GRACE: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

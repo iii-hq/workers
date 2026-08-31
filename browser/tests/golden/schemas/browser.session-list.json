@@ -1,0 +1,46 @@
+{
+  "function_id": "browser::session-list",
+  "description": "List open sessions with their type and idle time.",
+  "request_schema": {
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "enum": [
+          "http",
+          "dynamic",
+          "stealthy"
+        ],
+        "description": "filter by type"
+      }
+    }
+  },
+  "response_schema": {
+    "type": "object",
+    "properties": {
+      "sessions": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "session_id": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "number"
+            },
+            "last_used": {
+              "type": "number"
+            },
+            "idle_s": {
+              "type": "number"
+            }
+          }
+        }
+      }
+    }
+  }
+}

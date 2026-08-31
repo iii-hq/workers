@@ -83,7 +83,7 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "approval-gate"
-version = "1.0.12"
+version = "1.0.15-rc.3"
 dependencies = [
  "anyhow",
  "approval-gate",
@@ -545,12 +545,13 @@ dependencies = [
 
 [[package]]
 name = "harness"
-version = "1.7.0"
+version = "1.8.8-rc.3"
 dependencies = [
  "anyhow",
  "async-trait",
  "clap",
  "globset",
+ "iii-console-ui",
  "iii-helpers",
  "iii-sdk",
  "jsonschema",
@@ -558,6 +559,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "thiserror",
  "tokio",
  "tracing",
@@ -805,10 +807,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "iii-console-ui"
+version = "0.1.0"
+dependencies = [
+ "iii-sdk",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "iii-helpers"
-version = "0.21.8"
+version = "0.22.1-alpha.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "84bdc7bbc3abfde934a62cdc5d3045adf52914dfc1ed6c20f8af691fc561dc55"
+checksum = "2d24f39bff5a54a18ad0dbe92fff0311fe7d12445ec26da12b8d6b09056166bc"
 dependencies = [
  "futures-util",
  "opentelemetry",
@@ -827,9 +841,9 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.21.8"
+version = "0.22.1-alpha.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4dd563a1d2f55f893d9a433b747f0bf9bc426656413b136b6ed3a699f3c757b2"
+checksum = "5bb1167081b82a1aa9f12b05ad9e093fdf1cd2a3ed282bb66451a26e37f4a459"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -1288,9 +1302,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-proto"
-version = "0.11.14"
+version = "0.11.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "434b42fec591c96ef50e21e886936e66d3cc3f737104fdb9b737c40ffb94c098"
+checksum = "4fcb935c5bec503c2f0e306bdd3e58bb9029dcb14fa8d9ac76e3a5256ac0763e"
 dependencies = [
  "bytes",
  "getrandom 0.3.4",
@@ -1678,6 +1692,17 @@ name = "sha1"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3bf829a2d51ab4a5ddf1352d8470c140cadc8301b2ae1789db023f01cedd6ba"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
+]
+
+[[package]]
+name = "sha2"
+version = "0.10.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
 dependencies = [
  "cfg-if",
  "cpufeatures",

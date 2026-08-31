@@ -4,13 +4,15 @@
 //! disk. The high-level `skills::download` function in
 //! [`crate::functions::download`] picks one of these based on the
 //! incoming arguments and fires the `skills::on-change` /
-//! `prompts::on-change` triggers afterwards.
+//! `system-prompts::on-change` / `agents::on-change` triggers afterwards.
 
 pub mod git;
 pub mod registry;
 
+use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 /// User-agent string sent on every outbound HTTP request from this
 /// worker. Mirrors the `iii-directory/<version>` convention so the
@@ -36,7 +38,8 @@ pub fn build_http_client(timeout_ms: u64) -> Result<reqwest::Client, String> {
 pub struct DownloadResult {
     pub namespace: String,
     pub skills_written: Vec<String>,
-    pub prompts_written: Vec<String>,
+    pub system_prompts_written: Vec<String>,
+    pub agents_written: Vec<String>,
 }
 
 impl DownloadResult {
@@ -44,12 +47,13 @@ impl DownloadResult {
         Self {
             namespace: namespace.into(),
             skills_written: Vec::new(),
-            prompts_written: Vec::new(),
+            system_prompts_written: Vec::new(),
+            agents_written: Vec::new(),
         }
     }
 
     pub fn total_files(&self) -> usize {
-        self.skills_written.len() + self.prompts_written.len()
+        self.skills_written.len() + self.system_prompts_written.len() + self.agents_written.len()
     }
 }
 
@@ -101,9 +105,53 @@ pub fn write_file_atomic(dest: &Path, contents: &[u8]) -> Result<(), String> {
         None => "tmp".to_string(),
     });
     std::fs::write(&tmp, contents).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    // Mark BEFORE the rename, not after: the kernel queues `IN_MOVED_TO`
+    // inside `rename(2)`, so the watcher thread can observe the event
+    // before this one resumes — marking afterwards races, and losing that
+    // race both fires a spurious `external` and leaves an unconsumed mark
+    // that swallows the next genuine edit. A rename that then fails leaves
+    // a stale mark for at most `SELF_WRITE_TTL`, and already returns Err.
+    mark_self_write(dest);
     std::fs::rename(&tmp, dest)
         .map_err(|e| format!("rename {} -> {}: {e}", tmp.display(), dest.display()))?;
     Ok(())
+}
+
+/// Paths this worker just wrote, so the fs watcher can tell its own
+/// writes from external ones (worker-mediated writes already fan out a
+/// precise on-change op; re-reporting them as `external` would double-
+/// wake subscribers). TTL bounds the map when no watcher is draining
+/// (tests, watch-init failure). Best-effort: a symlinked skills root or
+/// >TTL watcher lag yields a spurious extra refresh, never a lost one.
+static SELF_WRITES: OnceLock<Mutex<HashMap<PathBuf, Instant>>> = OnceLock::new();
+const SELF_WRITE_TTL: Duration = Duration::from_secs(5);
+
+fn self_writes() -> &'static Mutex<HashMap<PathBuf, Instant>> {
+    SELF_WRITES.get_or_init(Default::default)
+}
+
+/// `pub(crate)` so delete paths (which have no atomic write to piggyback
+/// on) can suppress their own watcher event before `remove_file`.
+pub(crate) fn mark_self_write(path: &Path) {
+    let mut map = self_writes().lock().unwrap_or_else(|p| p.into_inner());
+    let now = Instant::now();
+    map.retain(|_, t| now.duration_since(*t) < SELF_WRITE_TTL);
+    map.insert(path.to_path_buf(), now);
+}
+
+/// True (consuming the mark) when `path` was written by this worker
+/// within the TTL — the fs watcher drops such events.
+pub fn take_self_write(path: &Path) -> bool {
+    let mut map = self_writes().lock().unwrap_or_else(|p| p.into_inner());
+    let now = Instant::now();
+    map.retain(|_, t| now.duration_since(*t) < SELF_WRITE_TTL);
+    map.remove(path).is_some()
+}
+
+/// Test seam for the suppression set.
+#[cfg(test)]
+pub fn mark_self_write_for_tests(path: &Path) {
+    mark_self_write(path);
 }
 
 #[cfg(test)]
@@ -173,7 +221,6 @@ mod tests {
         let mut r = DownloadResult::new("foo");
         r.skills_written.push("a.md".into());
         r.skills_written.push("b.md".into());
-        r.prompts_written.push("p1".into());
-        assert_eq!(r.total_files(), 3);
+        assert_eq!(r.total_files(), 2);
     }
 }

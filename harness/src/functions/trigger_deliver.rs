@@ -188,8 +188,9 @@ pub async fn handle(
 
     let now = AgentMessage::now_ms();
     if binding.is_exhausted(now) {
-        retire(deps, &binding).await;
-        return Ok(record_stop(
+        let retirement_reason = exhausted_retirement_reason(&binding, now);
+        let retired = retire(deps, &binding).await;
+        return Ok(finish_pre_delivery_retirement(
             deps,
             &binding,
             &event,
@@ -198,6 +199,8 @@ pub async fn handle(
                 reason: "binding already spent".into(),
                 retire: true,
             },
+            retirement_reason,
+            retired,
         )
         .await);
     }
@@ -208,7 +211,7 @@ pub async fn handle(
             // A skipped fire does NOT consume the lifecycle: a barrier that
             // answers "not yet" ten times still gets its one delivery.
             let e = json!({ "skipped": skip.reason });
-            return Ok(record_stop(deps, &binding, &e, skip).await);
+            return Ok(record_stop(deps, &binding, &e, skip, None).await);
         }
     };
 
@@ -219,8 +222,9 @@ pub async fn handle(
     let claimed = match store.claim_fire(&binding).await {
         Ok(crate::bindings::ClaimOutcome::Claimed(b)) => *b,
         Ok(crate::bindings::ClaimOutcome::Exhausted) => {
-            retire(deps, &binding).await;
-            return Ok(record_stop(
+            let retirement_reason = exhausted_retirement_reason(&binding, AgentMessage::now_ms());
+            let retired = retire(deps, &binding).await;
+            return Ok(finish_pre_delivery_retirement(
                 deps,
                 &binding,
                 &event,
@@ -229,6 +233,8 @@ pub async fn handle(
                     reason: "another fire spent the last of the budget".into(),
                     retire: true,
                 },
+                retirement_reason,
+                retired,
             )
             .await);
         }
@@ -277,7 +283,7 @@ pub async fn handle(
     let fires_after = claimed.fires;
     let retiring = binding.retires_after_fire(fires_after);
 
-    let outcome = dispatch(deps, &claimed, &event).await;
+    let (delivered, outcome) = dispatch(deps, &claimed, &event).await;
 
     if retiring {
         retire(deps, &claimed).await;
@@ -287,6 +293,17 @@ pub async fn handle(
         .as_ref()
         .err()
         .map(|e| format!("dispatch failed: {e}"));
+    let record_outcome = if outcome.is_ok() {
+        fired::TriggerOutcome::Delivered
+    } else {
+        fired::TriggerOutcome::DeliveryFailed
+    };
+    let retirement_reason = delivery_retirement_reason(&binding, fires_after);
+    let (trigger_type, config) = binding
+        .trigger_watch()
+        .map_or((None, None), |(trigger_type, config)| {
+            (Some(trigger_type), Some(config))
+        });
     fired::emit(
         &deps.session().await,
         &binding.owner.session_id,
@@ -296,11 +313,18 @@ pub async fn handle(
             trigger_id: binding.trigger_id.as_deref(),
             target: &binding.target.function_id,
             label: binding_label(&binding),
+            action: binding.event_action(),
+            trigger_type,
+            config,
+            outcome: record_outcome,
             once: binding.lifecycle.once,
+            fires: fires_after,
             retired: retiring,
+            retirement_reason,
             scope: fired::event_state_watch(&event).0,
             key: fired::event_state_watch(&event).1,
             note: note.as_deref(),
+            payload: Some(&delivered),
             fired_at: now,
         },
     )
@@ -316,10 +340,11 @@ pub async fn handle(
 /// owner session, or a plain function call. The selection depends ONLY on the
 /// target function id — never on the event's source or shape, which is what
 /// keeps delivery generic across state, database, queue, cron, timer, and
-/// trigger types that do not exist yet.
-async fn dispatch(deps: &Deps, binding: &Binding, event: &Value) -> Result<(), String> {
+/// trigger types that do not exist yet. Returns the best-known delivered
+/// payload alongside the outcome so the fired record can carry it.
+async fn dispatch(deps: &Deps, binding: &Binding, event: &Value) -> (Value, Result<(), String>) {
     match binding.target.function_id.as_str() {
-        crate::functions::SEND_ID => wake_target(deps, binding, event).await,
+        crate::functions::SEND_ID => (event.clone(), wake_target(deps, binding, event).await),
         other => call_target(deps, binding, other, project(binding, event)).await,
     }
 }
@@ -406,26 +431,37 @@ fn call_allowed(binding: &Binding, target: &str) -> Result<(), String> {
 }
 
 /// A mechanical reaction: any ordinary function, checked against the
-/// capability the binding froze at registration.
+/// capability the binding froze at registration. Returns the payload as
+/// finally dispatched (or as far as it got before the failure) so the fired
+/// record shows what ran — or what was attempted.
 async fn call_target(
     deps: &Deps,
     binding: &Binding,
     target: &str,
     mut payload: Value,
-) -> Result<(), String> {
-    call_allowed(binding, target)?;
+) -> (Value, Result<(), String>) {
+    if let Err(e) = call_allowed(binding, target) {
+        return (payload, Err(e));
+    }
     let cfg = deps.cfg().await;
-    let turn = crate::state::get_turn(&deps.iii, &binding.owner.session_id, cfg.session_timeout_ms)
-        .await
-        .map_err(|e| e.to_string())?;
+    let turn =
+        match crate::state::get_turn(&deps.iii, &binding.owner.session_id, cfg.session_timeout_ms)
+            .await
+        {
+            Ok(turn) => turn,
+            Err(e) => return (payload, Err(e.to_string())),
+        };
     let grants = if turn.is_some() {
-        crate::filesystem_grants::roots(
+        match crate::filesystem_grants::roots(
             &deps.iii,
             &binding.owner.session_id,
             cfg.session_timeout_ms,
         )
         .await
-        .map_err(|e| e.to_string())?
+        {
+            Ok(grants) => grants,
+            Err(e) => return (payload, Err(e.to_string())),
+        }
     } else {
         Vec::new()
     };
@@ -441,29 +477,34 @@ async fn call_target(
     );
     // Argument-constrained approval rules must see the payload that will
     // actually run, after event projection and trusted filesystem stamping.
-    crate::functions::subscribe::approval_allows_unattended(
+    if let Err(e) = crate::functions::subscribe::approval_allows_unattended(
         deps,
         target,
         &binding.owner.session_id,
         &payload,
     )
-    .await?;
+    .await
+    {
+        return (payload, Err(e));
+    }
     // AWAITED, not fire-and-forget. A void dispatch reports success the moment
     // the engine accepts it, so a target that then fails — a bad statement, a
     // rejected payload — is recorded as delivered and "why did nothing
     // happen?" becomes unanswerable from the timeline. The dispatch timeout
     // bounds the wait.
     let timeout_ms = deps.cfg().await.dispatch_timeout_ms;
-    deps.iii
+    let outcome = deps
+        .iii
         .trigger(TriggerRequest {
             function_id: target.to_string(),
-            payload,
+            payload: payload.clone(),
             action: None,
             timeout_ms: Some(timeout_ms),
         })
         .await
         .map(|_| ())
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+    (payload, outcome)
 }
 
 fn notification_text(binding: &Binding, event: &Value) -> String {
@@ -523,39 +564,55 @@ fn record_entry_id(binding_id: &str, ordinal: u64) -> String {
 /// Tear a binding down on both sides. A placeholder with no provider id is
 /// compare-deleted first so a concurrent registrar either loses its attach
 /// and unregisters the returned id, or wins the attach and lets us retry
-/// against that exact id-only update.
-async fn retire(deps: &Deps, binding: &Binding) {
+/// against that exact id-only update. Returns `true` only to the caller whose
+/// exact binding snapshot was deleted; only that caller may report retirement.
+async fn retire(deps: &Deps, binding: &Binding) -> bool {
     let store = deps.bindings().await;
     if let Some(trigger_id) = binding.trigger_id.as_deref() {
         crate::functions::subscribe::unregister_engine_trigger(deps, trigger_id).await;
-        if !matches!(store.delete_if_unchanged(binding).await, Ok(true)) {
-            tracing::warn!(binding = %binding.id, "binding changed while retiring");
-        }
-        return;
+        return match store.delete_if_unchanged(binding).await {
+            Ok(true) => true,
+            Ok(false) => {
+                tracing::warn!(binding = %binding.id, "binding changed while retiring");
+                false
+            }
+            Err(error) => {
+                tracing::warn!(binding = %binding.id, %error, "binding record delete failed");
+                false
+            }
+        };
     }
 
     match store.delete_if_unchanged(binding).await {
-        Ok(true) => return,
+        Ok(true) => return true,
         Err(error) => {
             tracing::warn!(binding = %binding.id, %error, "binding record delete failed");
-            return;
+            return false;
         }
         Ok(false) => {}
     }
 
     let current = match store.get(&binding.id).await {
         Ok(Some(current)) if differs_only_by_trigger_id(binding, &current) => current,
-        Ok(_) => return,
+        Ok(_) => return false,
         Err(error) => {
             tracing::warn!(binding = %binding.id, %error, "binding re-read failed during retirement");
-            return;
+            return false;
         }
     };
     if let Some(trigger_id) = current.trigger_id.as_deref() {
         crate::functions::subscribe::unregister_engine_trigger(deps, trigger_id).await;
     }
-    if !matches!(store.delete_if_unchanged(&current).await, Ok(true)) {
-        tracing::warn!(binding = %binding.id, "binding changed after trigger-id attach during retirement");
+    match store.delete_if_unchanged(&current).await {
+        Ok(true) => true,
+        Ok(false) => {
+            tracing::warn!(binding = %binding.id, "binding changed after trigger-id attach during retirement");
+            false
+        }
+        Err(error) => {
+            tracing::warn!(binding = %binding.id, %error, "binding record delete failed after trigger-id attach");
+            false
+        }
     }
 }
 
@@ -565,12 +622,72 @@ fn differs_only_by_trigger_id(expected: &Binding, current: &Binding) -> bool {
     &normalized == expected && current.trigger_id != expected.trigger_id
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreDeliveryRetirementAction {
+    /// Another actor changed or removed the binding first, so this attempt
+    /// owns neither a retirement record nor a wake-lost notification.
+    LostRace,
+    /// Expiry has its own lifecycle record; an unfired once-wake also gets the
+    /// wake-lost notification from `report_expired_retirement`.
+    Expired,
+    /// Non-expiry exhaustion remains a structured skipped attempt.
+    Skipped(fired::RetirementReason),
+}
+
+fn pre_delivery_retirement_action(
+    reason: fired::RetirementReason,
+    retired: bool,
+) -> PreDeliveryRetirementAction {
+    if !retired {
+        return PreDeliveryRetirementAction::LostRace;
+    }
+    if reason == fired::RetirementReason::Expired {
+        PreDeliveryRetirementAction::Expired
+    } else {
+        PreDeliveryRetirementAction::Skipped(reason)
+    }
+}
+
+/// Finish a pre-delivery lifecycle stop after the CAS result is known. Expiry
+/// writes exactly its lifecycle record (plus the wake-lost notification when
+/// applicable); it never also writes a `skipped` record for the same event.
+async fn finish_pre_delivery_retirement(
+    deps: &Deps,
+    binding: &Binding,
+    event: &Value,
+    skip: Skip,
+    reason: fired::RetirementReason,
+    retired: bool,
+) -> DeliverResult {
+    match pre_delivery_retirement_action(reason, retired) {
+        PreDeliveryRetirementAction::LostRace => DeliverResult::stopped(skip.gate, skip.reason),
+        PreDeliveryRetirementAction::Expired => {
+            crate::bindings::expiry::report_expired_retirement(deps, binding).await;
+            DeliverResult::stopped(skip.gate, skip.reason)
+        }
+        PreDeliveryRetirementAction::Skipped(reason) => {
+            record_stop(deps, binding, event, skip, Some(reason)).await
+        }
+    }
+}
+
 /// Record a non-delivery in the owner's timeline. This is the half today's
 /// bookkeeping is missing: a binding that never fires and a binding that fires
 /// and skips look identical from the outside, which is why a mis-wired
 /// condition is so expensive to debug.
-async fn record_stop(deps: &Deps, binding: &Binding, event: &Value, skip: Skip) -> DeliverResult {
+async fn record_stop(
+    deps: &Deps,
+    binding: &Binding,
+    event: &Value,
+    skip: Skip,
+    retirement_reason: Option<fired::RetirementReason>,
+) -> DeliverResult {
     let (scope, key) = fired::event_state_watch(event);
+    let (trigger_type, config) = binding
+        .trigger_watch()
+        .map_or((None, None), |(trigger_type, config)| {
+            (Some(trigger_type), Some(config))
+        });
     fired::emit(
         &deps.session().await,
         &binding.owner.session_id,
@@ -580,11 +697,18 @@ async fn record_stop(deps: &Deps, binding: &Binding, event: &Value, skip: Skip) 
             trigger_id: binding.trigger_id.as_deref(),
             target: &binding.target.function_id,
             label: binding_label(binding),
+            action: binding.event_action(),
+            trigger_type,
+            config,
+            outcome: fired::TriggerOutcome::Skipped,
             once: binding.lifecycle.once,
+            fires: binding.fires,
             retired: skip.retire,
+            retirement_reason,
             scope,
             key,
             note: Some(&skip.reason),
+            payload: None,
             fired_at: AgentMessage::now_ms(),
         },
     )
@@ -593,6 +717,41 @@ async fn record_stop(deps: &Deps, binding: &Binding, event: &Value, skip: Skip) 
         notify_condition_failure(deps, binding, &skip).await;
     }
     DeliverResult::stopped(skip.gate, skip.reason)
+}
+
+/// Why a successful claim consumes the binding after dispatch. `once` wins
+/// when both shorthands are present because it is the stronger user-facing
+/// explanation for the very first fire.
+fn delivery_retirement_reason(
+    binding: &Binding,
+    fires_after: u64,
+) -> Option<fired::RetirementReason> {
+    if binding.lifecycle.once && fires_after >= 1 {
+        return Some(fired::RetirementReason::OnceConsumed);
+    }
+    if binding
+        .lifecycle
+        .max_fires
+        .is_some_and(|max| fires_after >= max)
+    {
+        return Some(fired::RetirementReason::MaxFires);
+    }
+    None
+}
+
+/// A delivery attempt that finds an already-spent binding did not itself
+/// consume it. Preserve an elapsed deadline when it is observable; otherwise
+/// the only honest reason for this skipped attempt is `exhausted`.
+fn exhausted_retirement_reason(binding: &Binding, now: i64) -> fired::RetirementReason {
+    if binding
+        .lifecycle
+        .expires_at
+        .is_some_and(|expires_at| now >= expires_at)
+    {
+        fired::RetirementReason::Expired
+    } else {
+        fired::RetirementReason::Exhausted
+    }
 }
 
 /// The record above is for the timeline; this is for the OWNER. A condition
@@ -790,8 +949,8 @@ mod tests {
         let id = condition_failure_entry_id("sub_1");
         assert_eq!(id, condition_failure_entry_id("sub_1"));
         for other in [
-            "e_fire_sub_1_0",
-            "e_trigfired_sub_1_0",
+            "e_fire_sub_1_1",
+            "e_trigfired_sub_1_1",
             "e_trigskip_sub_1_condition-error_x",
             "e_expire_sub_1",
             "e_claimfail_sub_1",
@@ -810,6 +969,71 @@ mod tests {
         let mut fired = attached.clone();
         fired.fires += 1;
         assert!(!differs_only_by_trigger_id(&expected, &fired));
+    }
+
+    #[test]
+    fn delivered_retirement_names_once_and_fire_budget_consumption() {
+        let once = wake_binding("state");
+        assert_eq!(
+            delivery_retirement_reason(&once, 1),
+            Some(fired::RetirementReason::OnceConsumed)
+        );
+
+        let mut bounded = wake_binding("cron");
+        bounded.lifecycle.once = false;
+        bounded.lifecycle.max_fires = Some(3);
+        assert_eq!(delivery_retirement_reason(&bounded, 2), None);
+        assert_eq!(
+            delivery_retirement_reason(&bounded, 3),
+            Some(fired::RetirementReason::MaxFires)
+        );
+
+        // An explicitly redundant max_fires cannot obscure the simpler once
+        // explanation for the first and only delivered fire.
+        let mut both = once.clone();
+        both.lifecycle.max_fires = Some(1);
+        assert_eq!(
+            delivery_retirement_reason(&both, 1),
+            Some(fired::RetirementReason::OnceConsumed)
+        );
+    }
+
+    #[test]
+    fn skipped_spent_attempts_preserve_expiry_or_report_exhaustion() {
+        let mut expired = wake_binding("timer");
+        expired.lifecycle.expires_at = Some(100);
+        assert_eq!(
+            exhausted_retirement_reason(&expired, 100),
+            fired::RetirementReason::Expired
+        );
+
+        let consumed = wake_binding("state");
+        assert_eq!(
+            exhausted_retirement_reason(&consumed, 100),
+            fired::RetirementReason::Exhausted
+        );
+    }
+
+    #[test]
+    fn late_expiry_records_only_for_the_retirement_cas_winner() {
+        let mut wake = wake_binding("timer");
+        wake.lifecycle.expires_at = Some(100);
+        assert!(crate::bindings::expiry::is_unfired_wake(&wake));
+
+        assert_eq!(
+            pre_delivery_retirement_action(fired::RetirementReason::Expired, false),
+            PreDeliveryRetirementAction::LostRace,
+            "a losing late event must emit neither the wake notice nor a record"
+        );
+        assert_eq!(
+            pre_delivery_retirement_action(fired::RetirementReason::Expired, true),
+            PreDeliveryRetirementAction::Expired,
+            "the winner uses expiry reporting, never an additional skipped record"
+        );
+        assert_eq!(
+            pre_delivery_retirement_action(fired::RetirementReason::Exhausted, true),
+            PreDeliveryRetirementAction::Skipped(fired::RetirementReason::Exhausted)
+        );
     }
 
     #[test]
@@ -907,5 +1131,30 @@ mod tests {
             call_allowed(&b, "run::record").is_err(),
             "no frozen capability must deny, not pass"
         );
+    }
+
+    /// What a ƒ-call target actually receives — the value the fired record now
+    /// carries. Default `event_into` nests the event under `/event`; an
+    /// explicit pointer places it verbatim, template fields untouched.
+    #[test]
+    fn a_call_payload_is_the_template_with_the_event_at_its_pointer() {
+        let mut b = wake_binding("database::row-changed");
+        b.target = crate::bindings::BindingTarget::new("receiving::check_completion");
+        let event = json!({ "db": "primary", "table": "courier_status", "op": "update" });
+
+        // No template, default pointer: the event lands under `/event`.
+        assert_eq!(project(&b, &event), json!({ "event": event }));
+
+        // A template is preserved and the pointer is honoured.
+        b.target.payload = Some(json!({ "run_id": "r1", "args": {} }));
+        b.target.event_into = Some("/args/change".into());
+        assert_eq!(
+            project(&b, &event),
+            json!({ "run_id": "r1", "args": { "change": event } })
+        );
+
+        // An empty pointer replaces the whole payload with the raw event.
+        b.target.event_into = Some(String::new());
+        assert_eq!(project(&b, &event), event);
     }
 }

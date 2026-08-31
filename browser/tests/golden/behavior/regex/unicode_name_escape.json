@@ -1,0 +1,13 @@
+{
+  "function": "browser::regex",
+  "case": "unicode_name_escape",
+  "request": {
+    "html": "<p>A—B</p>",
+    "pattern": "\\N{EM DASH}"
+  },
+  "ok": {
+    "result": [
+      "—"
+    ]
+  }
+}

@@ -1,0 +1,83 @@
+{
+  "description": "Console-only: persist a value delivered by a declared A2UI live binding.",
+  "function_id": "a2ui::binding::apply",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "binding_id": {
+        "type": "string"
+      },
+      "surface_id": {
+        "description": "Surface receiving the event value.",
+        "type": "string"
+      },
+      "value": true
+    },
+    "required": [
+      "binding_id",
+      "surface_id",
+      "value"
+    ],
+    "title": "BindingApplyRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "SurfaceStatus": {
+        "enum": [
+          "active",
+          "deleted"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "catalog_id": {
+        "type": "string"
+      },
+      "component_count": {
+        "format": "uint",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "page": {
+        "type": "string"
+      },
+      "protocol_version": {
+        "type": "string"
+      },
+      "revision": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "status": {
+        "$ref": "#/definitions/SurfaceStatus"
+      },
+      "surface_id": {
+        "type": "string"
+      },
+      "title": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "catalog_id",
+      "component_count",
+      "page",
+      "protocol_version",
+      "revision",
+      "session_id",
+      "status",
+      "surface_id",
+      "title"
+    ],
+    "title": "SurfaceReceipt",
+    "type": "object"
+  }
+}

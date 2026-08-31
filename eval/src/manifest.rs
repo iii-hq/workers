@@ -13,9 +13,7 @@ pub fn build_manifest() -> ModuleManifest {
     ModuleManifest {
         name: env!("CARGO_PKG_NAME").to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        description:
-            "Durable same-model A/B evaluation for prompts and system prompts over harness turns."
-                .to_string(),
+        description: "Live comparison of 2–5 root session metrics, with durable prompt and system-prompt experiments retained as an advanced surface.".to_string(),
         default_config: serde_json::json!({}),
         supported_targets: vec![env!("TARGET").to_string()],
     }

@@ -1,8 +1,10 @@
 //! The async orchestration trigger types the harness emits —
 //! `harness::ready` after boot, `harness::turn-started` /
-//! `harness::turn-completed` at turn boundaries, and `harness::message-queued`
-//! when a message parks in the mid-turn queue (harness.md § Trigger types
-//! emitted). Consumers and siblings bind these to react without polling.
+//! `harness::turn-completed` at turn boundaries, `harness::message-queued`
+//! when a message parks in the mid-turn queue, and
+//! `harness::triggers-changed` when a session's binding set or fire count
+//! changes (harness.md § Trigger types emitted). Consumers and siblings bind
+//! these to react without polling.
 //!
 //! Delivery is fire-and-forget (`TriggerAction::Void`), at-least-once, and
 //! unordered. Per-binding `config` filters (`session_id`, `parent_session_id`)
@@ -27,6 +29,7 @@ use crate::types::turn::ParentLink;
 pub const TURN_STARTED: &str = "harness::turn-started";
 pub const TURN_COMPLETED: &str = "harness::turn-completed";
 pub const MESSAGE_QUEUED: &str = "harness::message-queued";
+pub const TRIGGERS_CHANGED: &str = "harness::triggers-changed";
 pub const READY: &str = "harness::ready";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -91,6 +94,7 @@ impl BindingFilter {
 #[derive(Debug, Clone)]
 struct Binding {
     function_id: String,
+    namespace: Option<String>,
     filter: BindingFilter,
     /// The trigger's registration `metadata`, forwarded to the bound function
     /// as the invocation sidecar so targets like `harness::spawn` and
@@ -115,6 +119,7 @@ impl SubscriberSet {
             config.id,
             Binding {
                 function_id: config.function_id,
+                namespace: config.namespace,
                 filter,
                 metadata: config.metadata,
             },
@@ -129,6 +134,7 @@ impl SubscriberSet {
     fn add_unfiltered(&self, config: TriggerConfig) -> Binding {
         let binding = Binding {
             function_id: config.function_id,
+            namespace: config.namespace,
             filter: BindingFilter::default(),
             metadata: config.metadata,
         };
@@ -216,6 +222,7 @@ pub struct TurnEvents {
     started: SubscriberSet,
     completed: SubscriberSet,
     queued: SubscriberSet,
+    triggers_changed: SubscriberSet,
 }
 
 impl TurnEvents {
@@ -227,6 +234,7 @@ impl TurnEvents {
         let started = SubscriberSet::default();
         let completed = SubscriberSet::default();
         let queued = SubscriberSet::default();
+        let triggers_changed = SubscriberSet::default();
 
         let _ = iii.register_trigger_type(
             RegisterTriggerType::new(
@@ -273,8 +281,19 @@ impl TurnEvents {
             )
             .trigger_request_format::<TurnEventBindingConfig>(),
         );
+        let _ = iii.register_trigger_type(
+            RegisterTriggerType::new(
+                TRIGGERS_CHANGED,
+                "A session's trigger-binding set or fire count changed — refetch harness::triggers::list.",
+                TurnEventTriggerHandler {
+                    type_id: TRIGGERS_CHANGED,
+                    set: triggers_changed.clone(),
+                },
+            )
+            .trigger_request_format::<TurnEventBindingConfig>(),
+        );
         tracing::info!(
-            "registered harness::ready / harness::turn-started / harness::turn-completed / harness::message-queued trigger types"
+            "registered harness::ready / harness::turn-started / harness::turn-completed / harness::message-queued / harness::triggers-changed trigger types"
         );
 
         Self {
@@ -284,6 +303,7 @@ impl TurnEvents {
             started,
             completed,
             queued,
+            triggers_changed,
         }
     }
 
@@ -311,6 +331,25 @@ impl TurnEvents {
         self.fan_out(
             &self.queued,
             MESSAGE_QUEUED,
+            session_id,
+            None,
+            None,
+            payload,
+        )
+        .await;
+    }
+
+    /// Doorbell only — a session's binding set or fires count changed;
+    /// consumers refetch `harness::triggers::list`. No per-event logging:
+    /// a single fire rings twice (claim + retirement).
+    pub async fn emit_triggers_changed(&self, session_id: &str) {
+        let payload = serde_json::json!({
+            "session_id": session_id,
+            "timestamp": now_ms(),
+        });
+        self.fan_out(
+            &self.triggers_changed,
+            TRIGGERS_CHANGED,
             session_id,
             None,
             None,
@@ -361,6 +400,7 @@ impl TurnEvents {
         parent: Option<&ParentLink>,
         display_parent: Option<&str>,
         terminal: bool,
+        context: Option<&crate::context_snapshot::ContextSnapshotV1>,
     ) {
         tracing::info!(
             session_id,
@@ -397,6 +437,11 @@ impl TurnEvents {
         if let Some(dp) = display_parent {
             payload["parent_session_id"] = Value::String(dp.to_string());
         }
+        // The latest generation's context accounting (categories, budget,
+        // usage) so live consumers never re-walk the transcript for it.
+        if let Some(snapshot) = context {
+            payload["context"] = serde_json::to_value(snapshot).unwrap_or(Value::Null);
+        }
         self.fan_out(
             &self.completed,
             TURN_COMPLETED,
@@ -429,10 +474,13 @@ impl TurnEvents {
                 action: Some(TriggerAction::Void),
                 timeout_ms: None,
             };
-            let res = match binding.metadata.clone() {
-                Some(m) => self.iii.trigger(request.metadata(m)).await,
-                None => self.iii.trigger(request).await,
-            };
+            let request: iii_sdk::protocol::TriggerRequestWithMetadata =
+                match binding.metadata.clone() {
+                    Some(metadata) => request.metadata(metadata),
+                    None => request.into(),
+                };
+            let namespace = binding.namespace.as_deref().unwrap_or("default");
+            let res = self.iii.trigger(request.namespace(namespace)).await;
             if let Err(e) = res {
                 tracing::warn!(trigger_type, function_id = %binding.function_id, error = %e, "turn-event fan-out failed");
             }
@@ -450,10 +498,12 @@ async fn deliver_ready(iii: &IIIClient, binding: &Binding) {
         action: Some(TriggerAction::Void),
         timeout_ms: None,
     };
-    let result = match &binding.metadata {
-        Some(metadata) => iii.trigger(request.metadata(metadata.clone())).await,
-        None => iii.trigger(request).await,
+    let request: iii_sdk::protocol::TriggerRequestWithMetadata = match &binding.metadata {
+        Some(metadata) => request.metadata(metadata.clone()),
+        None => request.into(),
     };
+    let namespace = binding.namespace.as_deref().unwrap_or("default");
+    let result = iii.trigger(request.namespace(namespace)).await;
     if let Err(error) = result {
         tracing::warn!(
             trigger_type = READY,
@@ -516,5 +566,19 @@ mod tests {
             BindingFilter::parse(&Value::Null).unwrap(),
             BindingFilter::default()
         );
+    }
+
+    #[test]
+    fn subscriber_preserves_target_namespace() {
+        let set = SubscriberSet::default();
+        set.add(TriggerConfig {
+            id: "sub-1".into(),
+            function_id: "ui::refresh".into(),
+            config: json!({}),
+            metadata: None,
+            namespace: Some("project-a".into()),
+        })
+        .unwrap();
+        assert_eq!(set.snapshot()[0].namespace.as_deref(), Some("project-a"));
     }
 }

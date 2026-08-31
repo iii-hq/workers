@@ -5,7 +5,7 @@
 **A single binary. A chat. A trace explorer. The whole [iii](https://github.com/iii-hq) engine in your browser.**
 
 <p>
-  <a href="#install"><img alt="Install: iii worker add console" src="https://img.shields.io/badge/install-iii%20worker%20add%20console-0a84ff?style=flat-square"></a>
+  <a href="#install"><img alt="Install: iii trigger compose::add worker=console" src="https://img.shields.io/badge/install-iii%20trigger%20compose%3A%3Aadd%20worker%3Dconsole-0a84ff?style=flat-square"></a>
   <a href="../LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg?style=flat-square"></a>
   <a href="https://www.rust-lang.org"><img alt="Built with Rust" src="https://img.shields.io/badge/built%20with-rust-orange?style=flat-square&logo=rust&logoColor=white"></a>
   <a href="https://react.dev"><img alt="React 19" src="https://img.shields.io/badge/react-19-149eca?style=flat-square&logo=react&logoColor=white"></a>
@@ -23,22 +23,22 @@
 ## Install
 
 ```bash
-iii worker add console
+iii trigger compose::add worker=console
 ```
 
-This fetches the prebuilt binary, writes a `console:` block into `~/.iii/config.yaml`, and the engine launches the worker the next time it boots.
+This resolves the worker, writes its declaration to `worker-compose.yaml`, and reconciles the Compose project.
 
 ## Quickstart
 
 ```bash
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 iii project init iii-app && cd iii-app
-iii                              # engine on ws://127.0.0.1:49134
+iii compose --up                 # engine on ws://127.0.0.1:49134
 ```
 
 ```bash
 # New terminal, same folder
-iii worker add console          # UI + /ws proxy on :3113
+iii trigger compose::add worker=console # UI + /ws proxy on :3113
 open http://127.0.0.1:3113
 ```
 
@@ -49,7 +49,7 @@ The browser hits `/` for the SPA shell and upgrades `/ws` to the engine WebSocke
 Chat runs on the [`harness`](https://github.com/iii-hq/workers/tree/main/harness) durable turn loop. Its manifest declares the whole stack as dependencies — [`session-manager`](https://github.com/iii-hq/workers/tree/main/session-manager) (the conversation store the sidebar, transcripts, and live token rendering are backed by), [`llm-router`](https://github.com/iii-hq/workers/tree/main/llm-router) (generation + the model catalog), [`context-manager`](https://github.com/iii-hq/workers/tree/main/context-manager) (the `/compact` summariser), [`approval-gate`](https://github.com/iii-hq/workers/tree/main/approval-gate) (human-in-the-loop approvals), and the provider workers — so a single command resolves and installs all of it:
 
 ```bash
-iii worker add harness
+iii trigger compose::add worker=harness
 ```
 
 ### Add a provider key
@@ -105,8 +105,8 @@ A purpose-built agentic chat UI on top of [Lexical](https://lexical.dev). Lives 
 - **`@`-mentions** — fuzzy-search every function registered against the engine
 - **`/compact` slash command** — summarises conversation history via the `context-manager` worker's `context::compact`, then persists a `compaction` custom session entry; the durable transcript is untouched — the marker renders from that entry and the summary anchors future turns
 - **Attachments** — multi-file picker with text/image previews
-- **Function calls** — running / pending / error cards, consecutive calls grouped, with **approve/deny** gating for pending approvals (`approval::resolve`)
-- **Streaming** — abortable mid-flight; thinking shimmer; collapsible thought messages
+- **Function calls** — running / pending / error cards; consecutive calls collapse to the latest and expand as one tight stack, while rich code/screenshot displays, approvals, and live calls stay visible; intermediate agent prose summarizes the completed batch; pending approvals use **approve/deny** gating (`approval::resolve`)
+- **Streaming** — abortable mid-flight; live thought stream removed from the DOM on completion
 - **Markdown** — GFM, code blocks with [prism-react-renderer](https://github.com/FormidableLabs/prism-react-renderer), syntax-highlighted JSON inputs and outputs
 - **Conversation sidebar** — create, inline rename, delete, auto-title from the first message
 - **Context-usage meter** — token estimate with warn / danger thresholds and a `/compact` nudge
@@ -158,47 +158,67 @@ Light and dark themes via `data-theme` + CSS custom properties. Persisted to `lo
 
 ### Worker SDK surface
 
-`console` registers a single function against the engine for health probes and `iii worker info` smoke tests:
+`console` registers a health probe for `iii worker info` smoke tests, plus the workspace functions that let an agent show the human a screen next to the conversation:
 
 | Function | Input | Output |
 |---|---|---|
 | `console::status` | `{}` | `{ http_port, engine_url, version }` |
+| `console::workspace::list` | `{}` | `{ tabs: [{ id, name?, columns, screens, active }], active_tab_id }` |
+| `console::workspace::open` | `{ screen, session_id?, activate? }` | `{ tab_id, column, placement, screens, activated }` |
+| `console::workspace::close` | `{ screen, session_id? }` | `{ tab_ids }` |
 
-Defined in [`src/functions/status.rs`](src/functions/status.rs).
+A screen is `chat`, `chat:<session-id>`, `traces`, `workers`, or `ext:<page-id>` for a worker page (`ext:shell`, `ext:browser`, `ext:editor`, ...). Call `open` with `{ screen: "chat", session_id: "<id>" }` to open a panel pinned to one conversation; the structured input is persisted as `chat:<session-id>`, and opening that exact session again reuses its existing panel. The workspace layout is the `workspace` section of the `console` configuration entry, so every browser pointed at this engine picks the change up. `open` stays on the active tab when it already shows the screen, else switches to the tab that does, else places the screen beside chat in the active tab (adjacent empty column, any empty column, new column), else opens a fresh tab; `placement` reports which (`existing`, `empty_column`, `new_column`, `new_tab`). It never replaces a mounted screen. `close` detaches the screen everywhere it is mounted and is idempotent; pass the same `screen: "chat"` and `session_id` to close one pinned conversation panel. Unknown screens fail with `WORKSPACE_INVALID_SCREEN`; an unreachable configuration worker with `WORKSPACE_UNAVAILABLE`.
+
+Defined in [`src/functions/status.rs`](src/functions/status.rs) and [`src/functions/workspace.rs`](src/functions/workspace.rs).
 
 ## Architecture
 
 ```mermaid
 flowchart LR
     Browser["Browser SPA<br/>(iii-browser-sdk)"] -->|"HTTP GET /"| Console
+    Browser -->|"HTTP GET /runtime"| Console
     Browser -->|"WS /ws"| Console
     Console["console binary<br/>(axum + rust-embed)"] -->|"WebSocket"| Engine["iii engine<br/>:49134"]
-    Console -. "registers console::status" .-> Engine
+    Console -. "registers console::status, console::workspace::*" .-> Engine
 ```
 
-`console` is a thin HTTP server with exactly two jobs: serve the embedded SPA bundle (with appropriate cache headers) and transparently proxy `/ws` to the iii engine. The browser only ever talks to one origin.
+`console` is a thin HTTP server. It serves the embedded SPA bundle and
+runtime connection settings, hosts injected worker UI assets, and transparently
+proxies `/ws` to the iii engine. The browser only ever talks to one origin.
 
 ## Configuration
 
-### `config.yaml`
+Console registers a `console` entry with the central `configuration` worker.
+Its `http_port` value is authoritative after first registration: Console reads
+it before binding, watches `configuration:updated`, and moves the listener live
+when the port changes. The replacement port is bound and started before the old
+listener is gracefully drained; a failed bind keeps the previous listener and
+port active.
+
+The local `config.yaml` is a first-registration seed and a fallback for direct
+runs where the configuration worker is unavailable:
 
 ```yaml
-http_port: 3113       # port the UI + /ws are served on (default: 3113)
+http_port: 3113       # initial port seed for the UI + /ws (default: 3113)
 injectable_ui: true   # kill switch for runtime-injected worker UI (default: true)
 ```
 
 | Key | Default | Description |
 |---|---|---|
-| `http_port` | `3113` | TCP port the worker binds for `/`, `/assets/*`, and `/ws` |
+| `http_port` | `3113` | Initial TCP port seed for `/`, `/assets/*`, and `/ws`; the stored `console.http_port` wins thereafter |
 | `injectable_ui` | `true` | When `false`, skips the `console:script` / `console:style` / `console:assets` trigger types, the `/ui` + `/vendor` routes, and the SPA loader (`console::ui-manifest` answers `disabled: true`) |
+
+The configuration entry also stores UI preferences and
+`injectableUi.disabledWorkers`. Port and per-worker UI changes apply without a
+Console restart; the local `injectable_ui` kill switch remains startup-only.
 
 ### CLI flags
 
 | Flag | Default | Description |
 |---|---|---|
-| `--config <path>` | `./config.yaml` | Path to the YAML config |
+| `--config <path>` | `./config.yaml` | Path to the first-registration YAML seed/fallback |
 | `--url <ws://…>` | `ws://127.0.0.1:49134` | iii engine WebSocket URL (`DEFAULT_ENGINE_URL` in [`src/config.rs`](src/config.rs)) |
-| `--http-port <port>` | from config | Overrides `http_port` from the config file |
+| `--http-port <port>` | from seed | Overrides the YAML port seed; an existing configuration-worker value still wins |
 | `--manifest` | — | Print the publish manifest as JSON and exit (used by the registry pipeline) |
 
 ## Routes
@@ -207,6 +227,7 @@ injectable_ui: true   # kill switch for runtime-injected worker UI (default: tru
 |---|---|
 | `GET /` | Embedded `index.html` (SPA shell, hash-routed client-side). `Cache-Control: no-cache, must-revalidate` |
 | `GET /assets/*` | Embedded JS / CSS, content-hashed filenames. `Cache-Control: public, max-age=31536000, immutable` |
+| `GET /runtime` | Runtime connection settings for the SPA, including the console worker namespace. `Cache-Control: no-store` |
 | `GET /ui` | Injected-asset manifest JSON (same shape as `console::ui-manifest`). `no-cache` |
 | `GET /ui/*` | Current bytes for a registered injected UI asset. `no-cache` + `ETag: "<hash>"` (304 on `If-None-Match`) |
 | `GET /vendor/*` | Shared-dep ESM shims for injected scripts (react, `@iii-dev/console-ui`), generated at web build time. `no-cache` |
@@ -217,8 +238,9 @@ The SPA bundle is embedded into the binary at compile time via [`rust-embed`](ht
 
 ## Injectable UI
 
-Workers extend the console at **runtime** — whole pages and function-trigger
-renderers as plain React components sharing the console's React instance
+Workers extend the console at **runtime** — whole pages, function-trigger
+renderers, and layered trigger-activity renderers as plain React
+components sharing the console's React instance
 (spec: `iii/tech-specs/2026-07-17-injectable-ui`). The console owns three
 trigger types:
 
@@ -235,12 +257,19 @@ disposes the old module and re-imports the new one. Injected scripts default-
 export `setup(host)` and register through `host.pages` (whole pages at
 `#/ext/<id>`), `host.functionTriggers` (function-trigger message renderers —
 injected renderers dispatch before the built-in families, so matching a
-built-in id overrides it), and `host.configForms` (replace the workers-tab
-form region for one configuration id; dirty/save/reset stay host-owned).
+built-in id overrides it; `metadata.display` promotes the winning renderer's
+rich result into the collapsed chat flow), `host.triggerRenderers` (override
+the compact timeline display, expanded details, source section, and raw-data
+redaction for normalized registration/fired/retirement activities, with host
+fallbacks for every slot), and
+`host.configForms` (replace the workers-tab
+form region for one configuration id; dirty/save/reset stay host-owned). A
+configuration form can opt into `{ layout: 'full' }` to receive the entire
+available editor width and height; contained layout remains the default.
 Renders are fenced by an ErrorBoundary and scoped under
 `data-iii-ui="<worker>"`. `console::ui-manifest` (internal) lists the
-loadable assets. The `state` worker's `ui/` directory is the working
-reference implementation of all three slot kinds.
+loadable assets. The `state` worker's `ui/` directory is the broad delivery
+reference; `cron/ui/` is the trigger-activity renderer reference.
 
 ## Tech stack
 

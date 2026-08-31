@@ -18,6 +18,13 @@ use std::collections::HashMap;
 pub const DEFAULT_DB_NAME: &str = "primary";
 pub const DEFAULT_SQLITE_URL: &str = "sqlite:./data/iii.db";
 
+fn default_sqlite_url() -> String {
+    format!(
+        "sqlite:{}",
+        iii_worker_paths::project_path("data/iii.db").display()
+    )
+}
+
 /// Top-level worker config registered with the `configuration` worker.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[schemars(example = "worker_config_example")]
@@ -25,6 +32,18 @@ pub struct WorkerConfig {
     #[serde(default)]
     #[schemars(schema_with = "databases_schema")]
     pub databases: HashMap<String, DatabaseConfig>,
+    /// Maximum entries kept per database in the console query history
+    /// (`database::history`, stored on the `state` worker). Oldest entries
+    /// are dropped first. `0` disables history recording. Applied live.
+    #[serde(default = "default_history_max_entries")]
+    pub history_max_entries: usize,
+    /// Maximum JSON-serialized size in bytes of one database's stored query
+    /// history; oldest entries are dropped until the list fits. The hard
+    /// guard that keeps history from growing into a value large enough to
+    /// break the `state` worker's connection. `0` disables history
+    /// recording. Applied live.
+    #[serde(default = "default_history_max_bytes")]
+    pub history_max_bytes: usize,
 }
 
 fn worker_config_example() -> WorkerConfig {
@@ -41,7 +60,7 @@ fn databases_schema(gen: &mut schemars::gen::SchemaGenerator) -> Schema {
         );
         obj.metadata().examples = vec![json!({
             "primary": {
-                "url": DEFAULT_SQLITE_URL,
+                "url": default_sqlite_url(),
                 "pool": {
                     "max": 10,
                     "idle_timeout_ms": 30000,
@@ -211,6 +230,12 @@ fn default_idle_timeout_ms() -> u64 {
 fn default_acquire_timeout_ms() -> u64 {
     5_000
 }
+fn default_history_max_entries() -> usize {
+    200
+}
+fn default_history_max_bytes() -> usize {
+    262_144
+}
 
 impl Default for WorkerConfig {
     fn default() -> Self {
@@ -224,13 +249,15 @@ impl WorkerConfig {
             databases: HashMap::from([(
                 DEFAULT_DB_NAME.to_string(),
                 DatabaseConfig {
-                    url: DEFAULT_SQLITE_URL.to_string(),
+                    url: default_sqlite_url(),
                     pool: PoolConfig::default(),
                     tls: TlsConfig::default(),
                     capture: CaptureMode::default(),
                     driver: DriverKind::default(),
                 },
             )]),
+            history_max_entries: default_history_max_entries(),
+            history_max_bytes: default_history_max_bytes(),
         })
         .expect("built-in default config is valid")
     }
@@ -273,14 +300,16 @@ impl WorkerConfig {
                 json!({
                     "databases": {
                         DEFAULT_DB_NAME: {
-                            "url": DEFAULT_SQLITE_URL,
+                            "url": default_sqlite_url(),
                             "pool": {
                                 "max": default_pool_max(),
                                 "idle_timeout_ms": default_idle_timeout_ms(),
                                 "acquire_timeout_ms": default_acquire_timeout_ms(),
                             }
                         }
-                    }
+                    },
+                    "history_max_entries": default_history_max_entries(),
+                    "history_max_bytes": default_history_max_bytes(),
                 }),
             );
         }
@@ -298,6 +327,9 @@ impl WorkerConfig {
                     redact_url(&db.url)
                 )
             })?;
+            if matches!(db.driver, DriverKind::Sqlite) {
+                db.url = resolve_sqlite_url(&db.url);
+            }
             if db.capture == CaptureMode::Native {
                 match db.driver {
                     // Postgres captures via LISTEN/NOTIFY; server-side
@@ -336,6 +368,32 @@ impl WorkerConfig {
             }
         }
         Ok(cfg)
+    }
+}
+
+fn resolve_sqlite_url(url: &str) -> String {
+    let Some((scheme, path)) = url.split_once(':') else {
+        return url.to_string();
+    };
+    if !scheme.eq_ignore_ascii_case("sqlite") {
+        return url.to_string();
+    }
+    if path.contains(":memory:") {
+        return url.to_string();
+    }
+
+    let (file_prefix, path) = path
+        .get(..5)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("file:"))
+        .map_or(("", path), |prefix| (prefix, &path[5..]));
+    let (path, query) = path
+        .split_once('?')
+        .map_or((path, ""), |(path, query)| (path, query));
+    let resolved = iii_worker_paths::resolve_path(path);
+    if query.is_empty() {
+        format!("{scheme}:{file_prefix}{}", resolved.display())
+    } else {
+        format!("{scheme}:{file_prefix}{}?{query}", resolved.display())
     }
 }
 
@@ -456,7 +514,13 @@ mod tests {
         });
         let c = WorkerConfig::from_json(&json).unwrap();
         assert!(matches!(c.databases["primary"].driver, DriverKind::Sqlite));
-        assert_eq!(c.databases["primary"].url, "sqlite:./data/iii.db");
+        assert_eq!(
+            c.databases["primary"].url,
+            format!(
+                "sqlite:{}",
+                iii_worker_paths::project_path("data/iii.db").display()
+            )
+        );
     }
 
     #[test]
@@ -528,7 +592,7 @@ mod tests {
         let cfg = WorkerConfig::default();
         assert_eq!(cfg.databases.len(), 1);
         let db = &cfg.databases[DEFAULT_DB_NAME];
-        assert_eq!(db.url, DEFAULT_SQLITE_URL);
+        assert_eq!(db.url, default_sqlite_url());
         assert!(matches!(db.driver, DriverKind::Sqlite));
         assert_eq!(db.pool.max, 10);
         assert_eq!(db.pool.idle_timeout_ms, 30_000);
@@ -541,7 +605,7 @@ mod tests {
         let json = cfg.to_json();
         assert!(json["databases"][DEFAULT_DB_NAME].get("driver").is_none());
         let back = WorkerConfig::from_json(&json).unwrap();
-        assert_eq!(back.databases[DEFAULT_DB_NAME].url, DEFAULT_SQLITE_URL);
+        assert_eq!(back.databases[DEFAULT_DB_NAME].url, default_sqlite_url());
         assert!(matches!(
             back.databases[DEFAULT_DB_NAME].driver,
             DriverKind::Sqlite
@@ -554,6 +618,14 @@ mod tests {
         let databases = schema["properties"]["databases"].as_object().unwrap();
         assert!(databases.get("description").is_some());
         assert_eq!(databases["minProperties"], 1);
+        assert_eq!(
+            databases["examples"][0]["primary"]["url"],
+            default_sqlite_url()
+        );
+        assert_eq!(
+            schema["example"]["databases"][DEFAULT_DB_NAME]["url"],
+            default_sqlite_url()
+        );
 
         let db_schema = schema["definitions"]["DatabaseConfig"].as_object().unwrap();
         let url = db_schema["properties"]["url"].as_object().unwrap();
@@ -569,7 +641,26 @@ mod tests {
             );
         }
 
+        for field in ["history_max_entries", "history_max_bytes"] {
+            assert!(
+                schema["properties"][field].get("description").is_some(),
+                "missing description for {field}"
+            );
+        }
+
         assert!(schema.get("example").is_some());
+    }
+
+    #[test]
+    fn history_caps_default_and_override() {
+        let d = cfg("databases:\n  p:\n    url: postgres://u@h/db\n");
+        assert_eq!(d.history_max_entries, 200);
+        assert_eq!(d.history_max_bytes, 262_144);
+
+        let c = cfg("databases:\n  p:\n    url: postgres://u@h/db\n\
+             history_max_entries: 25\nhistory_max_bytes: 4096\n");
+        assert_eq!(c.history_max_entries, 25);
+        assert_eq!(c.history_max_bytes, 4096);
     }
 
     /// Regenerate the e2e harness schema fixture when `WorkerConfig` changes:
@@ -600,10 +691,21 @@ databases:
         assert_eq!(c.databases.len(), 1);
         let db = &c.databases["primary"];
         assert!(matches!(db.driver, DriverKind::Sqlite));
-        assert_eq!(db.url, "sqlite:./data/iii.db");
+        assert_eq!(db.url, default_sqlite_url());
         assert_eq!(db.pool.max, 10);
         assert_eq!(db.pool.idle_timeout_ms, 30_000);
         assert_eq!(db.pool.acquire_timeout_ms, 5_000);
+    }
+
+    #[test]
+    fn uppercase_sqlite_scheme_resolves_project_path() {
+        let c = cfg("databases:\n  primary:\n    url: SQLiTE:FiLe:./data/case.db?mode=rwc\n");
+        let expected = format!(
+            "SQLiTE:FiLe:{}?mode=rwc",
+            iii_worker_paths::project_path("data/case.db").display()
+        );
+
+        assert_eq!(c.databases["primary"].url, expected);
     }
 
     #[test]

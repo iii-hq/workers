@@ -15,9 +15,9 @@ use std::sync::OnceLock;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkerConfig {
-    /// Root directory managed worktrees are created under. A leading `~/`
-    /// expands to the home directory. Must be inside the shell worker's
-    /// `fs.host_roots` for the land test gate to work.
+    /// Root directory managed worktrees are created under. Relative paths
+    /// resolve against `III_COMPOSE_DIR` when available. Must be inside the
+    /// shell worker's `fs.host_roots` for the land test gate to work.
     #[serde(default = "default_worktree_root")]
     pub worktree_root: String,
     /// Prefix for auto-minted branches (`<prefix><worktree_id>`).
@@ -224,7 +224,7 @@ pub(crate) fn compile_globs(patterns: &[String]) -> GlobSet {
 }
 
 fn default_worktree_root() -> String {
-    "~/.iii/worktrees".to_string()
+    iii_worker_paths::default_path("worktrees")
 }
 
 fn default_branch_prefix() -> String {
@@ -288,9 +288,9 @@ impl WorkerConfig {
         }
     }
 
-    /// `worktree_root` with a leading `~/` expanded.
+    /// `worktree_root` resolved against the Compose project directory.
     pub fn expanded_worktree_root(&self) -> PathBuf {
-        expand_home(&self.worktree_root)
+        iii_worker_paths::resolve_path(&self.worktree_root)
     }
 
     /// Default branch name for a new worktree under the configured naming
@@ -332,15 +332,6 @@ impl WorkerConfig {
         let contents = std::fs::read_to_string(path)?;
         Self::from_yaml(&contents)
     }
-}
-
-fn expand_home(path: &str) -> PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest);
-        }
-    }
-    PathBuf::from(path)
 }
 
 /// Expand `${VAR}` and `${VAR:default}` against the live process env.
@@ -495,7 +486,10 @@ mod tests {
 
     #[test]
     fn expand_home_handles_tilde() {
-        let cfg = WorkerConfig::default();
+        let cfg = WorkerConfig {
+            worktree_root: "~/.iii/worktrees".into(),
+            ..WorkerConfig::default()
+        };
         let root = cfg.expanded_worktree_root();
         assert!(!root.to_string_lossy().starts_with("~"));
     }

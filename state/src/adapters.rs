@@ -85,6 +85,11 @@ pub trait StateAdapter: Send + Sync + 'static {
     async fn reconfigure(&self, _config: &Value) -> anyhow::Result<()> {
         Ok(())
     }
+    /// Persist pending writes now (shutdown path). Default no-op — correct
+    /// for write-through adapters (redis); kv file_based overrides it.
+    async fn flush(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
     async fn destroy(&self) -> anyhow::Result<()>;
 }
 
@@ -165,6 +170,9 @@ impl StateAdapter for KvStoreAdapter {
     async fn reconfigure(&self, config: &Value) -> anyhow::Result<()> {
         self.storage.reconfigure(config);
         Ok(())
+    }
+    async fn flush(&self) -> anyhow::Result<()> {
+        self.storage.flush().await
     }
     async fn destroy(&self) -> anyhow::Result<()> {
         Ok(())
@@ -1010,7 +1018,9 @@ mod tests {
 
     #[tokio::test]
     async fn kv_adapter_set_get_delete_update_list_roundtrip() {
-        let a = KvStoreAdapter::new(None);
+        // Pin in_memory: the default store_method is file_based and would
+        // write under ./data/state in the test cwd.
+        let a = KvStoreAdapter::new(Some(serde_json::json!({"store_method": "in_memory"})));
         a.set("s", "k", serde_json::json!({"count": 0}))
             .await
             .unwrap();
@@ -1095,10 +1105,38 @@ mod tests {
 
     #[tokio::test]
     async fn build_adapter_defaults_to_kv_and_rejects_unknown() {
-        let kv = build_adapter(&StateConfig::default()).await;
-        assert!(kv.is_ok());
+        // In-memory keeps the default-adapter check off ./data/state (the
+        // file_based default dir) in the test cwd.
+        let kv_default: StateConfig = serde_json::from_value(serde_json::json!({
+            "adapter": {"name": "kv", "config": {"store_method": "in_memory"}}
+        }))
+        .unwrap();
+        assert_eq!(StateConfig::default().effective_adapter_name(), "kv");
+        assert!(build_adapter(&kv_default).await.is_ok());
         let bad: StateConfig =
             serde_json::from_value(serde_json::json!({"adapter": {"name": "postgres"}})).unwrap();
         assert!(build_adapter(&bad).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn flush_persists_dirty_entries_without_waiting_a_save_window() {
+        let dir = std::env::temp_dir().join(format!("state-flush-{}", uuid::Uuid::new_v4()));
+        let config = serde_json::json!({
+            "store_method": "file_based",
+            "file_path": dir.to_string_lossy(),
+            // A cadence far beyond the test: only flush() can persist in time.
+            "save_interval_ms": 3_600_000,
+        });
+
+        let a = KvStoreAdapter::new(Some(config.clone()));
+        a.set("s", "k", serde_json::json!({"v": 1})).await.unwrap();
+        a.flush().await.unwrap();
+
+        let reloaded = KvStoreAdapter::new(Some(config));
+        assert_eq!(
+            reloaded.get("s", "k").await.unwrap(),
+            Some(serde_json::json!({"v": 1}))
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

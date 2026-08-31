@@ -18,7 +18,7 @@ export interface IconProps {
 }
 
 function Svg({
-  size = 14,
+  size = 16,
   children,
   className,
   style,
@@ -99,6 +99,16 @@ export function Crosshair(props: IconProps) {
   )
 }
 
+/** lucide `message-square-plus`: a comment with a plus, for annotating. */
+export function MessageSquarePlus(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+      <path d="M12 7v6M9 10h6" />
+    </Svg>
+  )
+}
+
 export function Square(props: IconProps) {
   return (
     <Svg {...props}>
@@ -121,6 +131,59 @@ export function ExternalLink(props: IconProps) {
       <path d="M15 3h6v6" />
       <path d="M10 14 21 3" />
       <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+    </Svg>
+  )
+}
+
+export function MoreVertical(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <circle cx="12" cy="5" r="1" />
+      <circle cx="12" cy="12" r="1" />
+      <circle cx="12" cy="19" r="1" />
+    </Svg>
+  )
+}
+
+export function Search(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <circle cx="11" cy="11" r="8" />
+      <path d="m21 21-4.3-4.3" />
+    </Svg>
+  )
+}
+
+export function ChevronUp(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="m18 15-6-6-6 6" />
+    </Svg>
+  )
+}
+
+export function ChevronDown(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="m6 9 6 6 6-6" />
+    </Svg>
+  )
+}
+
+export function Minus(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M5 12h14" />
+    </Svg>
+  )
+}
+
+export function Download(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <path d="M7 10l5 5 5-5" />
+      <path d="M12 15V3" />
     </Svg>
   )
 }

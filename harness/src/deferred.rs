@@ -7,7 +7,7 @@
 //! parent-resolve path below survives only so turns parked before the
 //! fire-and-forget deploy still resolve.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{json, Value};
 
@@ -17,7 +17,15 @@ use crate::functions::function_resolve::{FunctionResolveRequest, FunctionResolve
 use crate::ids;
 use crate::types::content::ContentBlock;
 use crate::types::message::{AgentMessage, FunctionResultMessage, FunctionResultRoleTag};
-use crate::types::turn::{CallState, TurnStatus};
+use crate::types::turn::{CallState, FunctionContractLedgerEntry, TurnStatus};
+
+fn apply_deferred_contract_updates_after_append(
+    ledger: &mut BTreeMap<String, FunctionContractLedgerEntry>,
+    call_id: &str,
+    updates: Vec<(String, FunctionContractLedgerEntry)>,
+) {
+    crate::trigger::apply_contract_updates_after_append(ledger, call_id, updates);
+}
 
 /// Settle a pending call and resume the parked turn.
 pub async fn resolve(
@@ -71,6 +79,11 @@ pub async fn resolve(
                     Some(&json!({ "turn_id": record.turn_id })),
                 )
                 .await?;
+            apply_deferred_contract_updates_after_append(
+                &mut record.function_contract_ledger,
+                &req.function_call_id,
+                Vec::new(),
+            );
 
             if let Some(cp) = record.calls.get_mut(&req.function_call_id) {
                 cp.state = CallState::Done;
@@ -145,6 +158,11 @@ pub async fn resolve(
                             Some(&json!({ "turn_id": record.turn_id })),
                         )
                         .await?;
+                    apply_deferred_contract_updates_after_append(
+                        &mut record.function_contract_ledger,
+                        &req.function_call_id,
+                        Vec::new(),
+                    );
                     if let Some(cp) = record.calls.get_mut(&req.function_call_id) {
                         cp.state = CallState::Done;
                         cp.entry_id = Some(entry_id);
@@ -222,12 +240,18 @@ pub async fn resolve(
                         Some(&json!({ "turn_id": record.turn_id })),
                     )
                     .await?;
+                apply_deferred_contract_updates_after_append(
+                    &mut record.function_contract_ledger,
+                    &req.function_call_id,
+                    Vec::new(),
+                );
                 if let Some(cp) = record.calls.get_mut(&req.function_call_id) {
                     cp.state = CallState::Done;
                     cp.entry_id = Some(entry_id);
                     cp.held_by = None;
                     cp.child_session_id = child.as_ref().map(|c| c.session_id.clone());
                     cp.child_turn_id = child.as_ref().map(|c| c.turn_id.clone());
+                    cp.child_session_reused = child.as_ref().is_some_and(|c| c.reused);
                 }
                 let turn_resumed = persist_and_maybe_resume(deps, &cfg, &mut record).await?;
                 return Ok(FunctionResolveResponse {
@@ -278,11 +302,13 @@ pub async fn resolve(
                 &function_id,
                 &arguments,
                 &record.session_id,
+                true, // resolve holds this session's lock
                 Some(crate::functions::subscribe::CallerModel::from_options(
                     &record.options,
                 )),
             )
             .await;
+            let info_raw = (function_id == "engine::functions::info").then(|| raw.clone());
             let post_outcome = deps
                 .hooks
                 .run_post_trigger(
@@ -318,6 +344,16 @@ pub async fn resolve(
                     });
                 }
             };
+            let (data, contract_updates) = match info_raw {
+                Some(raw) => crate::trigger::prepare_info_result(
+                    &req.function_call_id,
+                    &arguments,
+                    &data,
+                    &record.function_contract_ledger,
+                    raw == data,
+                ),
+                None => (data, Vec::new()),
+            };
 
             let entry_id = ids::function_result_entry_id(&record.turn_id, &req.function_call_id);
             let mut origin = serde_json::Map::new();
@@ -346,6 +382,11 @@ pub async fn resolve(
                     Some(&Value::Object(origin)),
                 )
                 .await?;
+            apply_deferred_contract_updates_after_append(
+                &mut record.function_contract_ledger,
+                &req.function_call_id,
+                contract_updates,
+            );
             if let Some(cp) = record.calls.get_mut(&req.function_call_id) {
                 cp.state = CallState::Done;
                 cp.entry_id = Some(entry_id);
@@ -437,6 +478,30 @@ pub async fn resolve_parent(
     result: Option<&Value>,
     reason: Option<&str>,
 ) -> bool {
+    // Lock-free pre-check. Every caller is a child-finalize tail that still
+    // holds the CHILD session lock; `resolve` below takes the PARENT lock. A
+    // parent turn holding its own lock while spawning into this child (the
+    // in-turn re-task) waits on the child lock — taking the parent lock here
+    // unconditionally is an AB-BA deadlock. Fire-and-forget children have no
+    // parked parent call, so skip the lock when there is nothing to resolve;
+    // a genuinely parked parent is between steps and its lock is free.
+    // `resolve` re-validates under the lock, so this stale read only skips.
+    let cfg = deps.cfg().await;
+    // On a state read error, fall through and let `resolve` report it.
+    if let Ok(record) =
+        crate::state::get_turn(&deps.iii, &parent.session_id, cfg.session_timeout_ms).await
+    {
+        let pending = record.is_some_and(|r| {
+            r.turn_id == parent.turn_id
+                && !r.status.is_terminal()
+                && r.calls
+                    .get(&parent.function_call_id)
+                    .is_some_and(|c| c.state == CallState::Pending)
+        });
+        if !pending {
+            return false;
+        }
+    }
     let (content, details, is_error) = if status == "completed" {
         let text = result.map(render_text).unwrap_or_default();
         (
@@ -564,7 +629,98 @@ fn union_roots(session_roots: Vec<String>, fs_scope_grants: Vec<String>) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::turn::{CallCheckpoint, CallState};
+    use crate::types::turn::{CallCheckpoint, CallState, FunctionContractLedgerEntry};
+
+    #[test]
+    fn deferred_sibling_info_results_wait_for_context_validation_before_reuse() {
+        let details = json!({
+            "function_id": "worker::function",
+            "request_schema": { "type": "object" },
+            "response_schema": { "type": "object" }
+        });
+        let data = crate::trigger::ResultData {
+            content: vec![ContentBlock::text(details.to_string())],
+            is_error: false,
+            details,
+        };
+        let arguments = json!({ "function_id": "worker::function" });
+        let mut ledger = BTreeMap::new();
+
+        let (first, updates) =
+            crate::trigger::prepare_info_result("held-1", &arguments, &data, &ledger, true);
+        apply_deferred_contract_updates_after_append(&mut ledger, "held-1", updates);
+
+        let (second, updates) =
+            crate::trigger::prepare_info_result("held-2", &arguments, &data, &ledger, true);
+        assert_eq!(second.content, first.content, "a sibling result stays full");
+        apply_deferred_contract_updates_after_append(&mut ledger, "held-2", updates);
+
+        crate::trigger::retain_visible_contract_sources(
+            &mut ledger,
+            &[json!({
+                "role": "function_result",
+                "function_call_id": "held-2",
+                "function_id": "engine::functions::info",
+                "content": serde_json::to_value(&second.content).unwrap()
+            })],
+        );
+        let (third, updates) =
+            crate::trigger::prepare_info_result("held-3", &arguments, &data, &ledger, true);
+
+        assert_eq!(
+            third.content,
+            vec![ContentBlock::text(
+                json!({
+                    "function_id": "worker::function",
+                    "contract_status": "unchanged_in_context",
+                    "source_function_call_id": "held-2"
+                })
+                .to_string()
+            )]
+        );
+        assert!(updates.is_empty());
+        assert_eq!(
+            first.content,
+            crate::trigger::prepare_info_result(
+                "probe",
+                &arguments,
+                &data,
+                &Default::default(),
+                true
+            )
+            .0
+            .content,
+            "the first result is the full (response-schema-stripped) rendering"
+        );
+    }
+
+    #[test]
+    fn deferred_result_append_invalidates_every_contract_using_its_reused_call_id() {
+        let reused_source = FunctionContractLedgerEntry {
+            contract_digest: "contract".into(),
+            source_function_call_id: "held-call".into(),
+            source_content_digest: "content".into(),
+            eligible: true,
+        };
+        let unrelated_source = FunctionContractLedgerEntry {
+            contract_digest: "other".into(),
+            source_function_call_id: "other-call".into(),
+            source_content_digest: "other-content".into(),
+            eligible: true,
+        };
+        let mut ledger = std::collections::BTreeMap::from([
+            ("worker::one".into(), reused_source.clone()),
+            ("worker::two".into(), reused_source),
+            ("worker::other".into(), unrelated_source.clone()),
+        ]);
+
+        apply_deferred_contract_updates_after_append(&mut ledger, "held-call", Vec::new());
+
+        assert_eq!(
+            ledger,
+            std::collections::BTreeMap::from([("worker::other".into(), unrelated_source)])
+        );
+    }
 
     fn cp(
         state: CallState,
@@ -586,6 +742,7 @@ mod tests {
             } else {
                 None
             },
+            child_session_reused: false,
             held_by: held_by.map(str::to_string),
             held_arguments: None,
             pending_timeout_ms: timeout_ms,

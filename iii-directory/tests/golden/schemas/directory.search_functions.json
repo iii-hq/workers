@@ -1,0 +1,145 @@
+{
+  "description": "Search available functions for one to six external capabilities; returns compact function-id candidates grouped by worker.",
+  "function_id": "directory::search_functions",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "capabilities": {
+        "description": "One to six non-empty capability searches derived from the goal and current execution state. For one search at each decision point, include all unmet external capabilities once. Exclude intrinsic reasoning, summarization, planning, or formatting, and do not repeat needs already represented or satisfied. Requests to summarize provided text or content are ignored. Write every entry in English, translating non-English user requests while preserving proper names, URLs, and function IDs.",
+        "items": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "maxItems": 6,
+        "minItems": 1,
+        "type": "array",
+        "uniqueItems": true
+      }
+    },
+    "required": [
+      "capabilities"
+    ],
+    "title": "SearchFunctionsRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "FunctionCandidate": {
+        "properties": {
+          "description": {
+            "description": "First description sentence, capped at 160 bytes.",
+            "type": "string"
+          },
+          "function_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "description",
+          "function_id"
+        ],
+        "type": "object"
+      },
+      "InstallCall": {
+        "description": "A ready-made `compose::add` target and payload. Under agent-trigger exposure, the caller still supplies the wrapper's user-facing `description`.",
+        "properties": {
+          "function": {
+            "type": "string"
+          },
+          "payload": true
+        },
+        "required": [
+          "function",
+          "payload"
+        ],
+        "type": "object"
+      },
+      "InstallableWorker": {
+        "description": "A registry worker that is NOT installed but carries functions matching the requested capabilities. `name` is the registry slug `compose::add` installs.",
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "functions": {
+            "description": "Compact candidates only. After installation, search again and fetch selected contracts through `engine::functions::info`.",
+            "items": {
+              "$ref": "#/definitions/FunctionCandidate"
+            },
+            "type": "array"
+          },
+          "install": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/InstallCall"
+              }
+            ],
+            "description": "The `compose::add` target and payload; agent-trigger callers add `description`."
+          },
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "description",
+          "functions",
+          "install",
+          "name",
+          "version"
+        ],
+        "type": "object"
+      },
+      "SearchWorker": {
+        "properties": {
+          "functions": {
+            "items": {
+              "$ref": "#/definitions/FunctionCandidate"
+            },
+            "type": "array"
+          },
+          "namespace": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "functions",
+          "namespace"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "guidance": {
+        "type": "string"
+      },
+      "installable": {
+        "description": "Matching registry workers from verified authors. Their functions are NOT callable until the worker is installed.",
+        "items": {
+          "$ref": "#/definitions/InstallableWorker"
+        },
+        "type": "array"
+      },
+      "latency_ms": {
+        "format": "double",
+        "type": "number"
+      },
+      "workers": {
+        "items": {
+          "$ref": "#/definitions/SearchWorker"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "guidance",
+      "installable",
+      "latency_ms",
+      "workers"
+    ],
+    "title": "SearchFunctionsResponse",
+    "type": "object"
+  }
+}

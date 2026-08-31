@@ -5,6 +5,8 @@ import {
   predictedUserEntryId,
   sendTurn,
   stopTurn,
+  toSkillOptions,
+  toSystemPromptOptions,
 } from './harness-send'
 
 function fakeClient(impl?: (fn: string, payload: unknown) => unknown) {
@@ -104,5 +106,43 @@ describe('predictedUserEntryId', () => {
 
   it('replaces characters outside [A-Za-z0-9_-]', () => {
     expect(predictedUserEntryId('a/b c')).toBe('e_idem_a_b_c')
+  })
+})
+
+describe('toSystemPromptOptions', () => {
+  it('returns no fields for default/empty selections', () => {
+    expect(toSystemPromptOptions(null)).toEqual({})
+    expect(toSystemPromptOptions(undefined)).toEqual({})
+    expect(toSystemPromptOptions({ body: '   ', strategy: 'enrich' })).toEqual(
+      {},
+    )
+  })
+
+  it('maps body + strategy onto the snake_case wire fields', () => {
+    expect(
+      toSystemPromptOptions({
+        body: 'Talk like a pirate.',
+        strategy: 'override',
+      }),
+    ).toEqual({
+      system_prompt: 'Talk like a pirate.',
+      system_prompt_strategy: 'override',
+    })
+    expect(
+      toSystemPromptOptions({ body: 'Be terse.', strategy: 'enrich' }),
+    ).toEqual({
+      system_prompt: 'Be terse.',
+      system_prompt_strategy: 'enrich',
+    })
+  })
+})
+
+describe('toSkillOptions', () => {
+  it('omits all-skills selections and maps an exact subset to the wire', () => {
+    expect(toSkillOptions(undefined)).toEqual({})
+    expect(toSkillOptions([])).toEqual({})
+    expect(toSkillOptions(['review', 'release'])).toEqual({
+      skills: ['review', 'release'],
+    })
   })
 })

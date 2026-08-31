@@ -1,0 +1,61 @@
+{
+  "function_id": "code-runner::teardown",
+  "description": "Destroy a runtime: unregister every bus function it registered, kill it, and free its slot. Pass exactly one of runtime_id (a kept run's runtime, from code-runner::run keep=true) or namespace (a register_function namespace, e.g. \"app\" for ids like app::greet) — never both, never neither.",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "TeardownRequest",
+    "description": "Exactly one of `runtime_id` (a kept run's runtime) or `namespace` (a `register_function` namespace) must be set — never both, never neither.",
+    "type": "object",
+    "properties": {
+      "namespace": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "runtime_id": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    }
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "TeardownResponse",
+    "type": "object",
+    "required": [
+      "torn_down",
+      "unregistered"
+    ],
+    "properties": {
+      "namespace": {
+        "description": "Set when addressed by `namespace` — echoed in its canonical `app::` form, since more than one runtime (one per language) can back it and there is no single `runtime_id` to report.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "runtime_id": {
+        "description": "Set when this teardown was addressed by `runtime_id`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "torn_down": {
+        "type": "boolean"
+      },
+      "unregistered": {
+        "description": "Bus function ids this teardown unregistered, across every runtime it destroyed.",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

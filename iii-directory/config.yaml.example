@@ -13,17 +13,43 @@
 #
 # Tunable fields hot-reload on change (registry_url, download_timeout_ms,
 # registry_cache_ttl_ms, filter_unregistered). Topology fields require a
-# worker restart (skills_folder, local_skills_folder, auto_download).
+# worker restart (skills_folder, local_skills_folder, agents_folder,
+# global_agents_folder, agents_skills_folder, global_agents_skills_folder,
+# auto_download).
 #
 # When omitted entirely, the worker seeds the built-in defaults
-# (skills_folder: ~/.iii/skills, registry_url: https://api.workers.iii.dev).
+# (skills_folder: skills, agents_folder: agents,
+# registry_url: https://api.workers.iii.dev).
 
 # Folder that backs every read (`directory::skills::list`,
-# `directory::skills::get`, `directory::prompts::*`) and every write
+# `directory::skills::get`, `directory::system-prompts::*`) and every write
 # from `directory::skills::download`. Relative paths are resolved
-# against the process current working directory; absolute paths are
+# against III_COMPOSE_DIR (or the process current working directory when
+# running outside Compose); absolute paths are
 # used as-is.
 skills_folder: ./skills
+
+# Read-write root for reusable agent profiles. Each agent is one direct
+# `<id>.md` file. Relative paths resolve like skills_folder.
+agents_folder: ./agents
+
+# USER-GLOBAL agent profile root, shared by every project on the machine.
+# Same direct <id>.md scan as agents_folder; an id present under
+# agents_folder shadows the same id here. Profiles resolved here are updated
+# and deleted in place; create still writes agents_folder only. A missing
+# directory is treated as empty and never materialized.
+# global_agents_folder: ~/.iii/agents
+
+# Read-only root for system-installed agent skills (one directory per
+# skill, each containing a SKILL.md). Scanned shallowly; a missing
+# directory is treated as empty and the worker never writes here.
+# agents_skills_folder: .agents/skills
+
+# Read-only USER-GLOBAL agent skills root — the home-directory side of the
+# ~/.agents/skills convention, shared by every project on the machine. Same
+# scan and read-only contract as agents_skills_folder; namespaces present in
+# the managed roots or the project agents root shadow the same namespace here.
+# global_agents_skills_folder: ~/.agents/skills
 
 # Workers registry base URL — used by `directory::skills::download` and
 # the `directory::registry::*` proxies when a `worker=` source is
@@ -32,3 +58,18 @@ registry_url: https://api.workers.iii.dev
 
 # Timeout for a single download (`git clone` or HTTP request) in ms.
 download_timeout_ms: 60000
+
+# --- Function search (tunable, hot-reload) ---
+
+# Bind the directory::pre-generate hook so the conditional search hint can
+# be injected into agent generations. Off unbinds the hook entirely.
+inject_hint: true
+
+# Only inject the search hint when the session's surface spans at least
+# this many distinct non-engine workers. 0 hints on every surface.
+hint_min_workers: 2
+
+# Also search the public worker registry (verified authors only) on every
+# directory::search_functions call and return matching NOT-installed
+# workers as an `installable` section alongside the installed results.
+registry_search: true

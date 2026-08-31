@@ -2,9 +2,10 @@
 //!
 //! Each scenario spins up a local fixture git repo in a tempdir
 //! (`git init` + `git add` + `git commit`) and points
-//! `skills::download repo=…` at the resulting `file:///` URL. This
-//! exercises the production code path against a real `git clone
-//! --depth 1` without touching the network.
+//! `skills::download repo=…` at an allowed `https://` fixture URL. A
+//! temporary Git config rewrites that exact URL to the local repository,
+//! exercising the production clone path without weakening URL validation
+//! or touching the network.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -128,7 +129,39 @@ async fn update_local_repo_file(world: &mut IiiSkillsWorld, rel: String, body: S
 
 fn repo_url(world: &IiiSkillsWorld) -> String {
     let path = current_repo_path(world).expect("no repo registered");
-    format!("file://{}", path.display())
+    let name = path.file_name().and_then(|name| name.to_str()).unwrap();
+    format!("https://iii-directory-bdd.invalid/{name}")
+}
+
+struct ScopedGitConfig {
+    previous: Option<std::ffi::OsString>,
+}
+
+impl ScopedGitConfig {
+    fn rewrite_fixture_url(repo: &std::path::Path, url: &str) -> Self {
+        let config_path = repo.join("bdd-gitconfig");
+        std::fs::write(
+            &config_path,
+            format!(
+                "[url \"file://{}\"]\n\tinsteadOf = {url}\n[protocol \"file\"]\n\tallow = always\n",
+                repo.display()
+            ),
+        )
+        .expect("write temporary Git config");
+
+        let previous = std::env::var_os("GIT_CONFIG_GLOBAL");
+        std::env::set_var("GIT_CONFIG_GLOBAL", &config_path);
+        Self { previous }
+    }
+}
+
+impl Drop for ScopedGitConfig {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => std::env::set_var("GIT_CONFIG_GLOBAL", value),
+            None => std::env::remove_var("GIT_CONFIG_GLOBAL"),
+        }
+    }
 }
 
 #[when(regex = r#"^I trigger directory::skills::download with repo=local skill="([^"]+)"$"#)]
@@ -138,7 +171,9 @@ async fn trigger_download_repo(world: &mut IiiSkillsWorld, skill: String) {
     let Some(iii) = world.iii.clone() else {
         return;
     };
+    let repo = current_repo_path(world).expect("no repo registered");
     let url = repo_url(world);
+    let _git_config = ScopedGitConfig::rewrite_fixture_url(&repo, &url);
     match iii
         .trigger(TriggerRequest {
             function_id: "directory::skills::download".to_string(),
@@ -282,14 +317,24 @@ fn response_skills_count(world: &mut IiiSkillsWorld, n: usize) {
     assert_eq!(arr.len(), n, "skills_written: {arr:?}");
 }
 
-#[then(regex = r#"^the download prompts_written count is (\d+)$"#)]
-fn response_prompts_count(world: &mut IiiSkillsWorld, n: usize) {
+#[then(regex = r#"^the file \"([^\"]+)\" does not exist in skills_folder$"#)]
+fn file_does_not_exist(world: &mut IiiSkillsWorld, rel: String) {
+    if world.iii.is_none() {
+        return;
+    }
+    let folder = world.skills_folder.clone().unwrap();
+    assert!(
+        !folder.join(&rel).exists(),
+        "{} should not exist",
+        folder.join(rel).display()
+    );
+}
+
+#[then("the download response has no prompts_written field")]
+fn response_has_no_prompts_written(world: &mut IiiSkillsWorld) {
     if world.iii.is_none() {
         return;
     }
     let v = world.stash.get(LAST_OK).expect("no download recorded");
-    let arr = v["prompts_written"]
-        .as_array()
-        .expect("missing .prompts_written array");
-    assert_eq!(arr.len(), n, "prompts_written: {arr:?}");
+    assert!(v.get("prompts_written").is_none(), "response: {v:?}");
 }

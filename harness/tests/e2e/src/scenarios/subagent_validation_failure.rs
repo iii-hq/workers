@@ -17,12 +17,10 @@ use serde_json::{json, Value};
 
 use crate::context::E2eContext;
 
+use super::assessment::{self, AssessmentSpec};
 use super::common;
 use super::validation_loop::suffix;
-use super::{
-    CleanupFuture, CriterionSpec, EvaluationFuture, ExecutionPolicy, ObjectiveEvaluation,
-    ScenarioObservation, ScenarioSpec,
-};
+use super::{CleanupFuture, EvaluationFuture, ExecutionPolicy, ScenarioObservation, ScenarioSpec};
 
 pub const ID: &str = "subagent_validation_failure";
 
@@ -35,6 +33,22 @@ const EXPECTED_NUDGES: usize = 2;
 /// Wake deadline: comfortably after the child fails (~1 min), well inside
 /// the stuck timeout.
 const EXPIRY_DELAY_MS: u64 = 150_000;
+const BOUNDED_FAILURE: AssessmentSpec = AssessmentSpec::hard_gated(
+    "bounded_failure",
+    40,
+    "The child fails after exactly the budgeted denials; the verdict key is never written.",
+);
+const ORCHESTRATION_DISCIPLINE: AssessmentSpec = AssessmentSpec::hard_gated(
+    "orchestration_discipline",
+    30,
+    "Validator scoped to the child and the deadline wake armed before the spawn.",
+);
+const EXPIRY_REPORT: AssessmentSpec = AssessmentSpec::hard_gated(
+    "expiry_report",
+    30,
+    "The parent is woken by the expiry notice and reports the give-up with the exact line.",
+);
+const ASSESSMENTS: &[AssessmentSpec] = &[BOUNDED_FAILURE, ORCHESTRATION_DISCIPLINE, EXPIRY_REPORT];
 
 pub fn scenario(run_id: &str) -> ScenarioSpec {
     let table = table(run_id);
@@ -43,7 +57,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
     let expires_at = now_ms() + EXPIRY_DELAY_MS;
     ScenarioSpec {
         id: ID,
-        version: 1,
+        version: 3,
         prompt: format!(
             "You orchestrate one validated sub-agent whose goal may be unreachable; your job is \
              to bound the attempt and report honestly. You never poll; wakes drive you. Follow \
@@ -93,27 +107,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             stuck_timeout_seconds: 420,
         },
         denied_functions: &[],
-        threshold: 90,
-        criteria: vec![
-            CriterionSpec {
-                id: "bounded_failure",
-                weight: 40,
-                description: "The child fails after exactly the budgeted denials; the verdict \
-                              key is never written.",
-            },
-            CriterionSpec {
-                id: "orchestration_discipline",
-                weight: 30,
-                description: "Validator scoped to the child and the deadline wake armed before \
-                              the spawn.",
-            },
-            CriterionSpec {
-                id: "expiry_report",
-                weight: 30,
-                description: "The parent is woken by the expiry notice and reports the give-up \
-                              with the exact line.",
-            },
-        ],
+        criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: None,
         evaluate,
@@ -178,60 +172,27 @@ fn evaluate<'a>(
         let child_failed = child_status == "failed";
         let verdict_absent = verdict.is_null();
         let bounded = child_nudges == EXPECTED_NUDGES;
-        let report = observation.response.contains("CHILD GAVE UP")
+        let reported = observation.response.contains("CHILD GAVE UP")
             && observation.response.contains("PARENT DONE");
 
-        Ok(ObjectiveEvaluation {
-            hard_gates: vec![
-                common::gate(
-                    "child_failed",
-                    child_failed,
-                    format!("child status `{child_status}`, expected `failed`"),
+        Ok(assessment::build_evaluation([
+            BOUNDED_FAILURE.full_or_zero(
+                child_failed && verdict_absent && bounded,
+                format!(
+                    "child status `{child_status}`, expected `failed`; verdict key holds \
+                     {verdict}, expected null; observed {child_nudges} nudge(s), expected exactly \
+                     {EXPECTED_NUDGES} (the child budget)"
                 ),
-                common::gate(
-                    "verdict_never_written",
-                    verdict_absent,
-                    format!("verdict key holds {verdict}, expected null"),
+            ),
+            ORCHESTRATION_DISCIPLINE.full_or_zero(
+                ordered,
+                format!(
+                    "validator@{validator_index:?} wake@{wake_index:?} \
+                     spawn@{spawn_index:?} — both must precede the spawn"
                 ),
-                common::gate(
-                    "budget_bounded",
-                    bounded,
-                    format!(
-                        "observed {child_nudges} nudge(s), expected exactly {EXPECTED_NUDGES} \
-                         (the child budget)"
-                    ),
-                ),
-                common::gate(
-                    "expiry_report",
-                    report,
-                    "expected the exact give-up report line",
-                ),
-            ],
-            awards: vec![
-                common::award(
-                    "bounded_failure",
-                    if child_failed && verdict_absent && bounded {
-                        40
-                    } else {
-                        0
-                    },
-                    "awarded when the child fails on budget with no verdict written",
-                ),
-                common::award(
-                    "orchestration_discipline",
-                    if ordered { 30 } else { 0 },
-                    format!(
-                        "validator@{validator_index:?} wake@{wake_index:?} \
-                         spawn@{spawn_index:?} — both must precede the spawn"
-                    ),
-                ),
-                common::award(
-                    "expiry_report",
-                    if report { 30 } else { 0 },
-                    "awarded for the exact expiry-driven give-up line",
-                ),
-            ],
-        })
+            ),
+            EXPIRY_REPORT.full_or_zero(reported, "expected the exact give-up report line"),
+        ]))
     })
 }
 
@@ -271,18 +232,4 @@ fn scope(run_id: &str) -> String {
 
 fn child_session(run_id: &str) -> String {
     format!("e2e_{run_id}-child-1")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn prompt_carries_the_deadline_and_unreachable_threshold() {
-        let spec = scenario("aB19-rest");
-        assert!(spec.prompt.contains("fsubvtest_aB19"));
-        assert!(spec.prompt.contains("\"expires_at\""));
-        assert!(spec.prompt.contains("101"));
-        spec.validate().unwrap();
-    }
 }

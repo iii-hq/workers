@@ -3,6 +3,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use crate::configuration::ConfigCell;
+
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct AccountsListReq {}
 
@@ -21,13 +23,14 @@ struct AccountInfo {
     folders: Vec<String>,
 }
 
-pub fn register(iii: &Arc<IIIClient>, cfg: &Arc<crate::config::WorkerConfig>) {
-    let cfg = cfg.clone();
+pub fn register(iii: &Arc<IIIClient>, cell: &ConfigCell) {
+    let cell = cell.clone();
     iii.register_function(
         "email::accounts::list",
         RegisterFunction::new_async(move |_: AccountsListReq| {
-            let cfg = cfg.clone();
+            let cell = cell.clone();
             async move {
+                let cfg = cell.read().await.clone();
                 let accounts: Vec<_> = cfg
                     .accounts
                     .iter()

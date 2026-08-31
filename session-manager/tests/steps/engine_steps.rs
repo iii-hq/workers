@@ -171,12 +171,11 @@ async fn engine_subscriber(
     // before routing events at it.
     tokio::time::sleep(Duration::from_millis(150)).await;
 
-    iii.register_trigger(RegisterTriggerInput {
+    iii.register_trigger(RegisterTriggerInput::new(
         trigger_type,
-        function_id: function_id.clone(),
+        function_id.clone(),
         config,
-        metadata: None,
-    })
+    ))
     .expect("register engine trigger");
     // And a beat for the registration to round-trip to our handler.
     tokio::time::sleep(Duration::from_millis(250)).await;

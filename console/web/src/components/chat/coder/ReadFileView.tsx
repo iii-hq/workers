@@ -209,7 +209,7 @@ function MoreLinesPill({ entry }: { entry: ReadEntryModel }) {
   if (r?.more_lines !== true) return null
   return (
     <span className="inline-flex items-center gap-1.5">
-      <FooterPill tone="warn">file continues</FooterPill>
+      <FooterPill tone="warn">File continues</FooterPill>
       <span className="font-mono text-[11px] text-ink-faint tabular-nums">
         next window from L
         {nextWindowStart(entry.requested.lineFrom, r.lines_returned)}
@@ -380,7 +380,7 @@ function BatchEntry({
         <MetaChips entry={entry} />
         {failed ? (
           <span className="inline-flex items-center gap-1 font-mono text-[11px] text-warn">
-            <TriangleAlert aria-hidden className="w-3.5 h-3.5" />
+            <TriangleAlert aria-hidden className="size-4" />
             {result.error?.code ?? 'err'}
           </span>
         ) : null}

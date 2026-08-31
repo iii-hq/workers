@@ -21,6 +21,7 @@ use super::dsl::{
 };
 use super::ScenarioDriver;
 use crate::fixtures::ScenarioFixture;
+use crate::types::script::RouterDispatchV1;
 
 const REGISTER: &str = "engine::register_trigger";
 const SPAWN: &str = "harness::spawn";
@@ -47,7 +48,7 @@ pub(super) fn scenario() -> ScenarioFixture {
         "session_id": "{{run_id}}-leaf",
     });
 
-    Scenario::new(
+    let mut fixture = Scenario::new(
         ID,
         "leaf-denied-control-plane",
         "A spawned child without the orchestrator grant is policy-denied trigger registration \
@@ -84,9 +85,8 @@ pub(super) fn scenario() -> ScenarioFixture {
                 4,
             )),
     )
-    // The child's opening step arrives BEFORE the parent's post-spawn step
-    // (its turn job is enqueued during the spawn dispatch, ahead of the
-    // parent's re-enqueued next step). Its ONLY visible tool is the recorder:
+    // The child's opening step may race the parent's post-spawn step. Its ONLY
+    // visible tool is the recorder:
     // the leaf deny globs filtered `harness::spawn` out of the native toolset
     // even though the inherited allow covers it — this tools_exact IS
     // acceptance criterion 4.
@@ -95,7 +95,7 @@ pub(super) fn scenario() -> ScenarioFixture {
             .expect(
                 Request::new()
                     .turn_request_step(0)
-                    .system_prompt_regex("You are an iii sub-agent")
+                    .system_prompt_regex("You are an iii agent")
                     .messages_subset([json!({ "role": "user" })])
                     .tools_exact([record.tool()]),
             )
@@ -134,7 +134,7 @@ pub(super) fn scenario() -> ScenarioFixture {
             .expect(
                 Request::new()
                     .turn_request_step(1)
-                    .system_prompt_regex("You are an iii sub-agent")
+                    .system_prompt_regex("You are an iii agent")
                     .messages_subset([
                         json!({ "role": "user" }),
                         json!({ "role": "assistant", "content": [
@@ -158,7 +158,7 @@ pub(super) fn scenario() -> ScenarioFixture {
             .expect(
                 Request::new()
                     .turn_request_step(2)
-                    .system_prompt_regex("You are an iii sub-agent")
+                    .system_prompt_regex("You are an iii agent")
                     .messages_subset([
                         json!({ "role": "user" }),
                         json!({ "role": "assistant" }),
@@ -184,7 +184,7 @@ pub(super) fn scenario() -> ScenarioFixture {
             .expect(
                 Request::new()
                     .turn_request_step(3)
-                    .system_prompt_regex("You are an iii sub-agent")
+                    .system_prompt_regex("You are an iii agent")
                     .messages_subset([json!({ "role": "user" })])
                     .tools_exact([record.tool()]),
             )
@@ -210,7 +210,10 @@ pub(super) fn scenario() -> ScenarioFixture {
         }
         run.expect_no_duplicate_messages()
     })
-    .build()
+    .build();
+    // Spawn schedules the parent continuation and child independently.
+    fixture.script.dispatch = RouterDispatchV1::MatchAny;
+    fixture
 }
 
 #[cfg(test)]
@@ -225,5 +228,6 @@ mod tests {
         assert_eq!(fixture.await_target_calls, Some(1));
         assert_eq!(fixture.expected_traces(), 1);
         assert_eq!(fixture.script.generations.len(), 6);
+        assert_eq!(fixture.script.dispatch, RouterDispatchV1::MatchAny);
     }
 }

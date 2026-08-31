@@ -1,0 +1,14 @@
+{
+  "function": "browser::css",
+  "case": "sibling_text_pseudo",
+  "request": {
+    "html": "<h1>H</h1>x<p>A<b>B</b>C</p><p>D</p>",
+    "query": "h1 + p::text"
+  },
+  "ok": {
+    "result": [
+      "A",
+      "C"
+    ]
+  }
+}

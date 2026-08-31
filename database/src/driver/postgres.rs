@@ -193,6 +193,14 @@ fn pg_cell_to_row_value(
             Some(s) => RowValue::Text(s),
             None => RowValue::Null,
         },
+        // The internal one-byte "char" (OID 18) — what pg_catalog uses for
+        // relkind/contype/attidentity. It is NOT text-family: `String`'s
+        // FromSql rejects it (so the `_` fallback below fails with "error
+        // deserializing column N"), and tokio-postgres decodes it as i8.
+        T::CHAR => match get!(i8) {
+            Some(c) => RowValue::Text(((c as u8) as char).to_string()),
+            None => RowValue::Null,
+        },
         T::BYTEA => match get!(Vec<u8>) {
             Some(b) => RowValue::Bytes(b),
             None => RowValue::Null,

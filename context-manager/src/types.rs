@@ -13,6 +13,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::core::estimate::{ByRole, EstimatorKind};
+
 /// Message role discriminator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -175,6 +177,15 @@ impl AgentMessage {
         }
     }
 
+    pub(crate) fn content_mut(&mut self) -> &mut Vec<ContentBlock> {
+        match self {
+            AgentMessage::User { content, .. }
+            | AgentMessage::Assistant { content, .. }
+            | AgentMessage::FunctionResult { content, .. }
+            | AgentMessage::Custom { content, .. } => content,
+        }
+    }
+
     pub fn set_content(&mut self, new_content: Vec<ContentBlock>) {
         match self {
             AgentMessage::User { content, .. }
@@ -260,6 +271,9 @@ pub struct Model {
     /// Reasoning-token budgets per thinking tier.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_budgets: Option<BTreeMap<ThinkingLevel, u64>>,
+    /// Whether the model accepts image content blocks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supports_vision: Option<bool>,
 }
 
 /// An invocation-surface schema entry (README.md § AgentFunction) —
@@ -285,6 +299,43 @@ pub struct AgentFunction {
 pub enum ExecutionMode {
     Parallel,
     Sequential,
+}
+
+/// Per-role token breakdown of the `messages` array.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ByRoleTokens {
+    pub user: u64,
+    pub assistant: u64,
+    pub function_result: u64,
+    pub custom: u64,
+}
+
+impl From<ByRole> for ByRoleTokens {
+    fn from(by_role: ByRole) -> Self {
+        ByRoleTokens {
+            user: by_role.user,
+            assistant: by_role.assistant,
+            function_result: by_role.function_result,
+            custom: by_role.custom,
+        }
+    }
+}
+
+/// Which estimator produced the count.
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EstimatorName {
+    Tokenizer,
+    Heuristic,
+}
+
+impl From<EstimatorKind> for EstimatorName {
+    fn from(kind: EstimatorKind) -> Self {
+        match kind {
+            EstimatorKind::Tokenizer => EstimatorName::Tokenizer,
+            EstimatorKind::Heuristic => EstimatorName::Heuristic,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -353,6 +404,7 @@ mod tests {
             "id": "claude-sonnet-4", "provider": "anthropic",
             "context_window": 200_000, "max_output_tokens": 16_000,
             "thinking_budgets": { "low": 1024, "high": 8192 },
+            "supports_vision": false,
             "display_name": "Sonnet", "supports_tools": true,
             "pricing": { "input": 3.0 }
         }))
@@ -362,6 +414,7 @@ mod tests {
             m.thinking_budgets.unwrap().get(&ThinkingLevel::High),
             Some(&8192)
         );
+        assert_eq!(m.supports_vision, Some(false));
     }
 
     #[test]

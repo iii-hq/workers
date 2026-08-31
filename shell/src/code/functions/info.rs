@@ -16,7 +16,14 @@ use crate::code::path::PathResolver;
 // examples are wire-contract; goldens pin them.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[schemars(example = "example_info_input")]
-pub struct InfoInput {}
+pub struct InfoInput {
+    /// Internal harness filesystem scope; omitted from published schema.
+    /// Echoed back as `session_root` so a caller whose path was rejected
+    /// learns the anchor its relative paths ACTUALLY resolve against.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub fs_scope: Option<crate::fs::FsScope>,
+}
 
 // examples are wire-contract; goldens pin them.
 fn example_info_input() -> serde_json::Value {
@@ -52,8 +59,18 @@ pub struct InfoOutput {
     pub base_paths: Vec<String>,
 
     /// Convenience duplicate of `base_paths[0]` — the primary allowed root.
-    /// Relative paths resolve against this directory.
+    /// Relative paths resolve against this directory UNLESS `session_root`
+    /// is set, which takes precedence.
     pub primary_root: String,
+
+    /// The session's working directory when the caller runs under a
+    /// harness-stamped filesystem scope; `null` otherwise. When set, THIS
+    /// is what relative wire paths (and `coder::search` glob matching)
+    /// anchor against — not `primary_root`. In `unjailed` mode it may sit
+    /// outside every `base_paths` entry, so a relative path that looks
+    /// wrong against the allowed roots can still be correct here. Check it
+    /// first when a relative path was rejected.
+    pub session_root: Option<String>,
 
     /// Glob patterns matched per root (root-relative). Files whose
     /// root-relative path matches are listable but not
@@ -136,21 +153,28 @@ pub struct InfoOutput {
 pub async fn handle(
     resolver: Arc<PathResolver>,
     cfg: Arc<CoderConfig>,
+    req: InfoInput,
 ) -> Result<InfoOutput, String> {
     // info canonicalizes the configured roots (fs), so keep it off the executor
     // for consistency with the other read handlers.
-    tokio::task::spawn_blocking(move || Ok(inner(&resolver, &cfg)))
+    tokio::task::spawn_blocking(move || Ok(inner(&resolver, &cfg, &req)))
         .await
         .map_err(|e| format!("info task join failed: {e}"))?
 }
 
-fn inner(resolver: &PathResolver, cfg: &CoderConfig) -> InfoOutput {
+fn inner(resolver: &PathResolver, cfg: &CoderConfig, req: &InfoInput) -> InfoOutput {
     let base_paths: Vec<String> = resolver
         .roots()
         .iter()
         .map(|p| p.display().to_string())
         .collect();
     let primary_root = base_paths[0].clone();
+    // Canonicalized through the same gate the path resolution uses, so a
+    // scope this worker would reject is reported as absent rather than as a
+    // usable anchor.
+    let session_root = crate::fs::scope_anchor(req.fs_scope.as_ref())
+        .and_then(|root| resolver.session_root(root))
+        .map(|p| p.display().to_string());
 
     InfoOutput {
         mode: if resolver.unjailed() {
@@ -160,6 +184,7 @@ fn inner(resolver: &PathResolver, cfg: &CoderConfig) -> InfoOutput {
         },
         base_paths,
         primary_root,
+        session_root,
         non_accessible_globs: cfg.non_accessible_globs.clone(),
         default_exclude_globs: cfg.default_exclude_globs.clone(),
         max_read_bytes: cfg.max_read_bytes,
@@ -206,7 +231,7 @@ mod tests {
         let non_canon = tmp.path().join(".");
         let (resolver, cfg) = make_resolver_cfg(vec![non_canon], vec![]);
 
-        let out = inner(&resolver, &cfg);
+        let out = inner(&resolver, &cfg, &InfoInput::default());
 
         let expected_canon = std::fs::canonicalize(tmp.path())
             .unwrap()
@@ -248,7 +273,7 @@ mod tests {
         });
         let resolver = Arc::new(PathResolver::new(&cfg).unwrap());
 
-        let out = inner(&resolver, &cfg);
+        let out = inner(&resolver, &cfg, &InfoInput::default());
 
         // primary_root == base_paths[0]
         assert!(!out.base_paths.is_empty());
@@ -277,5 +302,45 @@ mod tests {
 
         // version
         assert_eq!(out.version, env!("CARGO_PKG_VERSION"));
+    }
+
+    /// The harness-stamped session scope is what relative paths anchor
+    /// against, and in unjailed mode it can sit outside every allowed root.
+    /// Reporting only `primary_root` sends a caller whose relative path was
+    /// rejected hunting in the wrong tree — the whole point of this call.
+    #[test]
+    fn reports_session_root_when_scoped() {
+        let roots = tempdir().unwrap();
+        let scope = tempdir().unwrap();
+        let cfg = Arc::new(CoderConfig {
+            base_paths: vec![roots.path().to_path_buf()],
+            unjailed: true,
+            ..CoderConfig::default()
+        });
+        let resolver = Arc::new(PathResolver::new(&cfg).unwrap());
+        let req = InfoInput {
+            fs_scope: Some(crate::fs::FsScope {
+                root: scope.path().display().to_string(),
+                grants: vec![],
+                boundary: crate::fs::FsBoundary::ConfiguredRoots,
+            }),
+        };
+
+        let out = inner(&resolver, &cfg, &req);
+
+        let expected = std::fs::canonicalize(scope.path())
+            .unwrap()
+            .display()
+            .to_string();
+        assert_eq!(out.session_root.as_deref(), Some(expected.as_str()));
+        assert_ne!(
+            out.session_root.as_deref(),
+            Some(out.primary_root.as_str()),
+            "the scope this test pins must differ from the configured anchor"
+        );
+
+        // Unscoped callers keep the old contract: null, anchor is primary_root.
+        let unscoped = inner(&resolver, &cfg, &InfoInput::default());
+        assert_eq!(unscoped.session_root, None);
     }
 }

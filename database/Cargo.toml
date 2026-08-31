@@ -2,7 +2,7 @@
 
 [package]
 name = "database"
-version = "0.4.0"
+version = "0.5.5-rc.3"
 edition = "2021"
 publish = false
 
@@ -14,8 +14,9 @@ path = "src/main.rs"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.21.6"
-iii-helpers = "=0.21.6"
+iii-sdk = "=0.22.1-alpha.25"
+iii-worker-paths = { path = "../crates/worker-paths" }
+iii-helpers = "=0.22.1-alpha.25"
 iii-console-ui = { path = "../crates/console-ui" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
 serde = { version = "1", features = ["derive"] }

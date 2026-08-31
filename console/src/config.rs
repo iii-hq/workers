@@ -1,9 +1,10 @@
-//! Runtime configuration for the `console` worker.
+//! Local seed/fallback configuration for the `console` worker.
 //!
 //! The YAML config file exposes two operator-facing knobs:
 //!
-//! - `http_port` — TCP port the worker binds for `/`, `/assets/*`, and
-//!   `/ws`. Defaults to `3113`.
+//! - `http_port` — first-registration seed/fallback for the TCP port serving
+//!   `/`, `/assets/*`, and `/ws`. Defaults to `3113`; after registration the
+//!   central `console.http_port` value is authoritative and hot-reloads.
 //! - `injectable_ui` — kill switch for runtime-injected worker UI
 //!   (`console:script` / `console:style` / `console:assets` trigger types,
 //!   the `/ui` + `/vendor` routes, and the SPA loader). Defaults to `true`.

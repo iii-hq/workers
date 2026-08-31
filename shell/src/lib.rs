@@ -5,6 +5,7 @@
 pub mod code;
 pub mod config;
 pub mod configuration;
+pub mod events;
 pub mod exec;
 pub mod exec_dispatch;
 pub mod filesystem_access;
@@ -12,7 +13,9 @@ pub mod fs;
 pub mod functions;
 pub mod jobs;
 pub mod path;
+pub mod pty;
 pub mod scode;
 pub mod target;
 pub mod telemetry;
 pub mod triggers;
+pub mod ui;

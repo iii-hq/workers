@@ -7,21 +7,30 @@
 /// Mount (once) the ghost-cursor element and move it to `(x, y)`. `click`
 /// flashes it. Injected on each act so the overlay follows the agent.
 pub fn ghost_cursor_script(x: f64, y: f64, click: bool) -> String {
+    // An arrow pointer (lucide MousePointer2), the console's icon language,
+    // with a white outline so it reads on any background. Its tip is the
+    // top-left of the 24x24 box, so the element anchors there and the tip
+    // lands on (x, y).
     format!(
         r#"(() => {{
   let c = document.getElementById('iii-ghost-cursor');
   if (!c) {{
     c = document.createElement('div');
     c.id = 'iii-ghost-cursor';
-    c.style.cssText = 'position:fixed;width:18px;height:18px;margin:-9px 0 0 -9px;'
-      + 'border-radius:50%;background:rgba(16,185,129,.6);border:2px solid #10b981;'
-      + 'z-index:2147483646;pointer-events:none;transition:left .08s,top .08s,transform .1s';
+    c.style.cssText = 'position:fixed;width:22px;height:22px;margin:-2px 0 0 -2px;'
+      + 'z-index:2147483646;pointer-events:none;transform-origin:4px 4px;'
+      + 'filter:drop-shadow(0 1px 2px rgba(0,0,0,.45));'
+      + 'transition:left .08s,top .08s,transform .1s';
+    c.innerHTML = '<svg width="22" height="22" viewBox="0 0 24 24" '
+      + 'fill="rgb(16,185,129)" stroke="rgb(255,255,255)" stroke-width="1.5" '
+      + 'stroke-linejoin="round"><path d="M4 4 L11.5 20.5 L13.9 13.9 L20.5 11.5 Z"/>'
+      + '</svg>';
     (document.body || document.documentElement).appendChild(c);
   }}
   c.style.left = {x} + 'px';
   c.style.top = {y} + 'px';
   if ({click}) {{
-    c.style.transform = 'scale(1.8)';
+    c.style.transform = 'scale(1.35)';
     setTimeout(() => {{ const e = document.getElementById('iii-ghost-cursor'); if (e) e.style.transform = 'scale(1)'; }}, 120);
   }}
   return true;

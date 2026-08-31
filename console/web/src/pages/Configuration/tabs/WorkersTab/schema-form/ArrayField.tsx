@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { moveItem } from '@/lib/reorder'
 import { cn } from '@/lib/utils'
 import type { JsonSchema, JsonValue } from '../api'
 import { wt } from '../typography'
@@ -7,7 +8,6 @@ import { errorForField, FieldShell } from './FieldShell'
 import { pathToDomId } from './path'
 import { DeleteButton, DragHandle } from './RowChrome'
 import { isInlineLeaf, schemaDefault } from './ref-resolver'
-import { moveItem } from './reorder'
 import { useDragReorder } from './useDragReorder'
 
 let _itemIdCounter = 0
@@ -143,7 +143,7 @@ export function ArrayField(props: FieldProps) {
                 inlineItem
                   ? 'flex items-center gap-2'
                   : 'border border-rule p-3 space-y-3',
-                isOver && 'bg-rule/40',
+                isOver && 'bg-surface-hover',
                 isDragging && 'opacity-40',
               )}
             >

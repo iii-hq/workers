@@ -7,11 +7,11 @@ replace the legacy built-in queue worker.
 ## Install
 
 ```bash
-iii worker add queue
+iii trigger compose::add worker=queue
 ```
 
-`iii worker add` fetches the binary, writes a config block into
-`~/.iii/config.yaml`, and the engine starts the worker the next time it boots.
+`iii trigger compose::add` resolves the worker and its dependencies, writes
+exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 
 ## Trigger Type
 
@@ -41,6 +41,20 @@ compatibility, including `maxRetries` and `backoffDelayMs`.
 | `engine::queue::topic_stats` | `{ "topic" \| "queue" }` | `{ "depth", "consumer_count", "dlq_depth", "config" }` |
 | `engine::queue::dlq_topics` | `{}` | DLQ topic list |
 | `engine::queue::dlq_messages` | `{ "topic" \| "queue", "offset", "limit" }` | DLQ messages |
+
+### Namespace connections
+
+When the worker runs in a project namespace, the process opens two engine
+connections. This keeps project functions isolated while engine queue provider
+functions remain available from `default`.
+
+| Worker name | Namespace | Registered functions |
+|---|---|---|
+| `queue` | project namespace | `queue::define`, publish, redrive, redrive-message, and discard functions |
+| `queue-engine` | `default` | `engine::queue::enqueue`, list, stats, and DLQ query functions |
+
+Both names therefore appear in `engine::workers::list`. They belong to one
+queue process and stop together.
 
 ## Configuration
 
@@ -93,14 +107,14 @@ adapter:
   name: builtin
   config:
     store_method: file_based
-    file_path: ./data/queue
+    file_path: data/queue
     save_interval_ms: 5000
 ```
 
 | Field | Default | Description |
 |---|---|---|
 | `adapter.config.store_method` | `file_based` | `in_memory` or `file_based`. |
-| `adapter.config.file_path` | `queue_store_data` | Directory used by `file_based`. |
+| `adapter.config.file_path` | `data/queue` | Directory used by `file_based`. |
 | `adapter.config.save_interval_ms` | `5000` | Accepted for parity; this worker persists on mutation rather than on an interval. |
 
 #### `redis`

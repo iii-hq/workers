@@ -9,11 +9,11 @@ engine. There are no trigger types.
 ## Install
 
 ```bash
-iii worker add bridge
+iii trigger compose::add worker=bridge
 ```
 
-`iii worker add` fetches the binary, writes a config block into
-`~/.iii/config.yaml`, and the engine starts the worker the next time it boots.
+`iii trigger compose::add` resolves the worker and its dependencies, writes
+exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 
 ## Function surface
 
@@ -35,9 +35,16 @@ Configuration is owned by the `configuration` worker — edit it from the
 console (**Configuration → Workers → bridge**) or seed it once via
 `--config <file>.yaml` on first boot:
 
+The worker uses two independent WebSocket connections:
+
+| Connection | URL selection | Purpose |
+|---|---|---|
+| Local/control engine | `--url` → `III_URL` → `ws://127.0.0.1:49134` | Register the `bridge` worker and receive local invocations. |
+| Remote target | `config.url` | Forward invocations to the other iii engine. |
+
 | Field | Default | Description |
 |---|---|---|
-| `url` | `ws://0.0.0.0:49134` | Remote engine WebSocket URL. Fallback chain: `config.url` → `III_URL` env var → the default above. |
+| `url` | `ws://0.0.0.0:49134` | Remote target WebSocket URL. Set it explicitly when `III_URL` selects a non-default local/control engine. |
 | `expose[]` | `[]` | `{ local_function, remote_function? }` — local functions the remote engine may call; `remote_function` is the name registered on the remote (defaults to `local_function`). |
 | `forward[]` | `[]` | `{ local_function, remote_function, timeout_ms? }` — local aliases that proxy outbound to a remote function; `timeout_ms` overrides the per-call default (`30000`). |
 
@@ -48,6 +55,12 @@ entries registers just the additions live. **Removing** a `forward`/`expose`
 entry does not un-register its handler — the SDK has no unregister — so the
 function id stays live but its handler returns `bridge_error` until the worker
 is restarted.
+
+For backward compatibility, a missing remote `config.url` still falls back to
+`III_URL`, then `ws://0.0.0.0:49134`. This fallback predates `III_URL` support
+for the local/control connection. In Compose or other supervised deployments,
+always set `config.url`; otherwise both connections can point to the local
+engine and create a self-bridge.
 
 ## Requires removing the legacy built-in bridge worker
 
@@ -78,7 +91,8 @@ depended on the legacy built-in worker.
 | `invoke_async` result | `NoResult` (absent) | `null` (SDK functions must return a value) |
 | Forward functions | one local function per entry, description `Forward to remote function {id}` | same |
 | Expose functions | registered on the remote engine, name defaults to local, real error body forwarded | same |
-| Remote URL | `config.url` → `III_URL` env → `ws://0.0.0.0:49134` | same |
+| Local/control URL | engine-managed | `--url` → `III_URL` → `ws://127.0.0.1:49134` |
+| Remote target URL | `config.url` → `III_URL` env → `ws://0.0.0.0:49134` | same legacy-compatible chain; set `config.url` explicitly under Compose |
 | Trigger types | none | none |
 | Config source | engine `config.yaml` (restart to change) | `configuration` worker entry `bridge`, hot-reload |
 | Removing forward/expose entries | restart re-registers cleanly | entry disabled (handler errors); full removal needs worker restart |

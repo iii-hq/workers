@@ -1,20 +1,29 @@
-import { useEffect, useState } from 'react'
-import { Button, CodeEditor, EmptyState, Input } from '@iii-dev/console-ui'
+import {
+  Button,
+  CodeEditor,
+  type CodeEditorHandle,
+  EmptyState,
+  Input,
+} from '@iii-dev/console-ui'
+import { useEffect, useRef, useState } from 'react'
 import { Plus, X } from './icons'
 import type { MemoryRule } from './memory-data'
+import { useDirtyDelta } from './widgets'
 
 /**
  * The bank's markdown rules — injected whole into the system prompt of
  * every session using this bank. Each rule is a plain `.md` file on disk;
  * editing here and editing the file are equivalent. Saving empty content
  * removes a rule. Editing uses the console's shared Monaco `CodeEditor`
- * (never a bundled editor).
+ * (never a bundled editor); ⌘S in an editor saves that rule. Dirty
+ * editors report into the page-level guard so navigating away asks first.
  */
 
 interface RulesPanelProps {
   rules: MemoryRule[]
   onSet: (name: string, content: string) => Promise<boolean>
   busy: boolean
+  reportDirty: (delta: number) => void
 }
 
 function RuleEditor({
@@ -22,12 +31,18 @@ function RuleEditor({
   initial,
   onSet,
   busy,
+  reportDirty,
+  autofocus,
 }: {
   name: string
   initial: string
   onSet: (name: string, content: string) => Promise<boolean>
   busy: boolean
+  reportDirty: (delta: number) => void
+  /** This is the rules panel's default focus target — see its own comment. */
+  autofocus?: boolean
 }) {
+  const editorRef = useRef<CodeEditorHandle>(null)
   const [content, setContent] = useState(initial)
   // Re-seed the editor when a live refresh changes the rule on disk and
   // the user has no local edits in flight. After a successful save,
@@ -41,28 +56,28 @@ function RuleEditor({
   }, [initial, touched, content])
 
   const dirty = content !== initial
+  useDirtyDelta(dirty, reportDirty)
+
+  const save = () => {
+    if (!dirty || busy) return
+    // Emptied content means delete — that path gets the explicit
+    // confirm, never a silent removal via save.
+    if (content.trim() === '') {
+      setConfirmDelete(true)
+      return
+    }
+    void onSet(name, content)
+  }
+
   return (
-    <div className="mem-rule">
-      <div className="mem-rule-head">
-        <span className="mem-rule-name">{name}.md</span>
-        <div className="mem-rule-actions">
+    <div className="mem-ui-rule">
+      <div className="mem-ui-rule-head">
+        <span className="mem-ui-rule-name">{name}.md</span>
+        <div className="mem-ui-rule-actions">
           {dirty ? (
             <>
-              <span className="mem-unsaved">unsaved</span>
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={busy}
-                onClick={() => {
-                  // Emptied content means delete — that path gets the
-                  // explicit confirm, never a silent removal via save.
-                  if (content.trim() === '') {
-                    setConfirmDelete(true)
-                    return
-                  }
-                  void onSet(name, content)
-                }}
-              >
+              <span className="mem-ui-unsaved">Unsaved</span>
+              <Button variant="ghost" size="sm" disabled={busy} onClick={save}>
                 save
               </Button>
             </>
@@ -73,7 +88,7 @@ function RuleEditor({
                 variant="ghost"
                 size="sm"
                 disabled={busy}
-                className="mem-danger"
+                className="mem-ui-danger"
                 onClick={() => {
                   void onSet(name, '')
                   setConfirmDelete(false)
@@ -97,13 +112,29 @@ function RuleEditor({
               aria-label={`delete rule ${name}`}
               onClick={() => setConfirmDelete(true)}
             >
-              <X size={14} aria-hidden />
+              <X size={16} aria-hidden />
             </Button>
           )}
         </div>
       </div>
-      <div className="mem-rule-editor">
+      <div
+        className="mem-ui-rule-editor"
+        // Forwards a page-level `.focus()` (⌘K, a go-to chord, or
+        // `host.panels.open`) into Monaco — data-autofocus can only target a
+        // DOM node, not the editor's own imperative handle.
+        {...(autofocus
+          ? {
+              'data-autofocus': '',
+              tabIndex: -1,
+              onFocus: (event: React.FocusEvent<HTMLDivElement>) => {
+                if (event.target === event.currentTarget)
+                  editorRef.current?.focus()
+              },
+            }
+          : {})}
+      >
         <CodeEditor
+          ref={editorRef}
           value={content}
           onChange={(next) => {
             setContent(next)
@@ -111,8 +142,16 @@ function RuleEditor({
           }}
           language="markdown"
           aria-label={`rule ${name}`}
-          className="mem-editor"
+          className="mem-ui-editor"
           placeholder="empty the content and save to remove this rule (asks to confirm)"
+          onKeyDown={(e) => {
+            // Observes keys bubbling out of Monaco — editing keys never
+            // reach here; ⌘S saves this rule in place.
+            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+              e.preventDefault()
+              save()
+            }
+          }}
         />
       </div>
     </div>
@@ -132,14 +171,19 @@ function slugifyRuleName(raw: string): string {
     .replace(/[-_]+$/, '')
 }
 
-export function RulesPanel({ rules, onSet, busy }: RulesPanelProps) {
+export function RulesPanel({
+  rules,
+  onSet,
+  busy,
+  reportDirty,
+}: RulesPanelProps) {
   const [newName, setNewName] = useState('')
   const validName = /^[a-z0-9][a-z0-9_-]{0,63}$/.test(newName)
   const suggestion = validName ? '' : slugifyRuleName(newName)
 
   return (
-    <div className="mem-stack">
-      <p className="mem-hint">
+    <div className="mem-ui-stack">
+      <p className="mem-ui-hint">
         every chat on this bank starts with these — word for word, every turn.
         put what must always hold here: voice, conventions, constants. correct
         the agent in chat ("stop using em-dashes") and the correction lands in
@@ -152,18 +196,20 @@ export function RulesPanel({ rules, onSet, busy }: RulesPanelProps) {
           description="add one named 'style' with a line like 'answer tersely, code first' — then ask anything in chat on this bank and watch every reply follow it. corrections you make in chat will grow a learned.md here on their own."
         />
       ) : (
-        rules.map((rule) => (
+        rules.map((rule, index) => (
           <RuleEditor
             key={rule.name}
             name={rule.name}
             initial={rule.content}
             onSet={onSet}
             busy={busy}
+            reportDirty={reportDirty}
+            autofocus={index === 0}
           />
         ))
       )}
       <form
-        className="mem-stack tight"
+        className="mem-ui-stack tight"
         onSubmit={(e) => {
           e.preventDefault()
           if (busy) return
@@ -174,27 +220,27 @@ export function RulesPanel({ rules, onSet, busy }: RulesPanelProps) {
           })
         }}
       >
-        <div className="mem-row">
+        <div className="mem-ui-row">
           <Input
             value={newName}
             onChange={setNewName}
             placeholder="name the rule first (e.g. style) — content goes in the editor after"
             aria-label="new rule name"
-            className="mem-flex1"
+            className="mem-ui-flex1"
           />
           <Button
             type="submit"
             variant="ghost"
             size="sm"
             disabled={busy || (!validName && !suggestion)}
-            className="mem-gap1"
+            className="mem-ui-gap1"
           >
-            <Plus size={14} aria-hidden />
+            <Plus size={16} aria-hidden />
             add rule
           </Button>
         </div>
         {newName && !validName ? (
-          <p className="mem-subhint">
+          <p className="mem-ui-subhint">
             {suggestion
               ? `names are lowercase-with-dashes (it becomes ${suggestion}.md) — adding will create "${suggestion}"; paste the content into its editor after`
               : 'names are lowercase letters, numbers, and dashes — like style or coding-rules'}

@@ -26,13 +26,17 @@ function userItem(
 function assistantItem(
   entryId: string,
   content: Extract<AgentMessage, { role: 'assistant' }>['content'],
+  stopReason: Extract<
+    AgentMessage,
+    { role: 'assistant' }
+  >['stop_reason'] = 'end',
 ): TranscriptItem {
   return {
     entry_id: entryId,
     message: {
       role: 'assistant',
       content,
-      stop_reason: 'end',
+      stop_reason: stopReason,
       model: 'm',
       provider: 'p',
       timestamp: 2,
@@ -67,6 +71,26 @@ describe('entrySegments', () => {
       id: 'msg-1-user-0',
       role: 'user',
       content: 'hello',
+    })
+  })
+
+  it('preserves the assistant stop reason for progress grouping', () => {
+    const [msg] = entrySegments(
+      assistantItem(
+        'msg-2-assistant-0',
+        [
+          {
+            type: 'text',
+            text: 'The scan found two matches; next I will edit.',
+          },
+        ],
+        'function_call',
+      ),
+    )
+
+    expect(msg).toMatchObject({
+      role: 'assistant',
+      stopReason: 'function_call',
     })
   })
 
@@ -111,6 +135,72 @@ describe('entrySegments', () => {
     expect((msg as { content: string }).content).not.toContain('fn main')
   })
 
+  /* A pasted screenshot IS the message's content for a vision model. Dropping
+     the block on the way in would leave a reloaded conversation showing the
+     question with no sign a picture went with it. */
+  it('turns image blocks into chips that keep their thumbnail', () => {
+    const item: TranscriptItem = {
+      entry_id: 'msg-3-user-0',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'what is wrong with this screen?' },
+          { type: 'image', mime: 'image/png', data: 'AAAA' },
+        ],
+        timestamp: 1,
+      },
+    }
+    const [msg] = entrySegments(item)
+    expect(msg).toMatchObject({
+      role: 'user',
+      content: 'what is wrong with this screen?',
+      attachments: [
+        {
+          id: 'image-1',
+          name: 'image 1',
+          type: 'image/png',
+          dataUrl: 'data:image/png;base64,AAAA',
+        },
+      ],
+    })
+  })
+
+  it('keeps command blocks visible and collapses skill blocks into chips', () => {
+    const commandBlock =
+      '<command name="review-pr">\nThe entire prompt body.\n</command>'
+    const skillBlock =
+      '<skill id="coder/index">\nThe entire skill body.\n</skill>'
+    const item: TranscriptItem = {
+      entry_id: 'msg-4-user-0',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'text', text: '/review-pr the auth changes' },
+          { type: 'text', text: commandBlock },
+          { type: 'text', text: skillBlock },
+        ],
+        timestamp: 1,
+      },
+    }
+    const [msg] = entrySegments(item)
+    expect(msg).toMatchObject({
+      role: 'user',
+      content: `/review-pr the auth changes${commandBlock}`,
+      attachments: [
+        {
+          id: 'slash-/skill:coder/index',
+          name: '/skill:coder/index',
+          size: skillBlock.length,
+          type: 'text/x-skill',
+        },
+      ],
+    })
+    expect((msg as { content: string }).content).toContain('entire prompt body')
+    expect((msg as { content: string }).content).not.toContain(
+      'entire skill body',
+    )
+  })
+
   it('marks only trusted notification user entries', () => {
     expect(
       entrySegments(userItem('e-1', 'normal', { notification: false }))[0],
@@ -120,7 +210,23 @@ describe('entrySegments', () => {
     ).toMatchObject({ notification: true })
     expect(entrySegments(userItem('e_notify_sub_1', 'wake'))[0]).toMatchObject({
       notification: true,
+      triggerBindingId: 'sub_1',
     })
+    expect(entrySegments(userItem('e_fire_sub_2_4', 'wake'))[0]).toMatchObject({
+      notification: true,
+      triggerBindingId: 'sub_2',
+    })
+    expect(
+      entrySegments(userItem('e_condfail_sub_3', 'delivery failed'))[0],
+    ).toMatchObject({ notification: true, triggerBindingId: 'sub_3' })
+    expect(
+      entrySegments(
+        userItem('opaque-id', 'wake', {
+          notification: true,
+          binding: 'sub_live',
+        }),
+      )[0],
+    ).toMatchObject({ notification: true, triggerBindingId: 'sub_live' })
   })
 
   it('splits a reaction task from its appended event block', () => {
@@ -208,6 +314,24 @@ describe('entrySegments', () => {
     ).not.toHaveProperty('validation')
   })
 
+  it('renders durable skill catalog updates as informational notices', () => {
+    const content =
+      'The available skills have changed. This list supersedes the previous available skills list.'
+
+    for (const item of [
+      userItem('opaque-id', content, { skill_update: true }),
+      userItem('e_t_123_skills_7', content),
+    ]) {
+      expect(entrySegments(item)[0]).toMatchObject({
+        role: 'system',
+        kind: 'notice',
+        tone: 'info',
+        content,
+      })
+    }
+    expect(entrySegments(userItem('ordinary-id', content))[0].role).toBe('user')
+  })
+
   it('hides the machine-authored transient recovery prompt', () => {
     expect(
       entrySegments(
@@ -228,7 +352,11 @@ describe('entrySegments', () => {
           type: 'function_call',
           id: 'fc-1',
           function_id: 'agent_trigger',
-          arguments: { function: 'shell::run', payload: { command: 'ls' } },
+          arguments: {
+            function: 'shell::run',
+            description: 'Listing project files',
+            payload: { command: 'ls' },
+          },
         },
       ]),
       'sess-1',
@@ -240,6 +368,7 @@ describe('entrySegments', () => {
     ])
     expect(segments[2]).toMatchObject({
       functionId: 'shell::run',
+      description: 'Listing project files',
       input: { command: 'ls' },
       functionTriggerId: 'fc-1',
       sessionId: 'sess-1',
@@ -250,10 +379,10 @@ describe('entrySegments', () => {
     expect(entrySegments(assistantItem('e-a', []))).toEqual([])
   })
 
-  // Mid-stream, the harness rides the raw in-flight args tail on
-  // `_streaming` beside the salvaged fields — the request pane shows the
-  // command forming instead of `empty` for the whole stream.
-  it('surfaces the streaming arguments tail while wrapper args form', () => {
+  // Mid-stream, the harness exposes the router's bounded identity preview
+  // beside the raw tail. The row can render the action before valid JSON has
+  // reached the closing delimiters without parsing JSON in the harness.
+  it('surfaces partial wrapper identity while args form', () => {
     const withTarget = entrySegments(
       assistantItem('e-a', [
         {
@@ -261,14 +390,17 @@ describe('entrySegments', () => {
           id: 'fc-1',
           function_id: 'agent_trigger',
           arguments: {
-            function: 'state::set',
+            function: 'state::se',
+            description: 'Updating arti',
+            _partial: true,
             _streaming: '"payload":{"value":"grow',
           },
         },
       ]),
     )[0]
     expect(withTarget).toMatchObject({
-      functionId: 'state::set',
+      functionId: 'state::se',
+      description: 'Updating arti',
       input: { _streaming: '"payload":{"value":"grow' },
     })
     expect(withTarget).not.toMatchObject({ unresolvedTarget: true })
@@ -342,8 +474,11 @@ describe('entrySegments', () => {
     expect(err).toMatchObject({
       role: 'system',
       tone: 'error',
-      content:
-        'turn failed — remote error (router/provider_unavailable): provider zai unavailable',
+      content: 'The response could not be completed.',
+      technicalDetails: {
+        detail:
+          'remote error (router/provider_unavailable): provider zai unavailable',
+      },
       createdAt: 9,
     })
     const [fired] = entrySegments({
@@ -392,7 +527,8 @@ describe('entrySegments', () => {
       role: 'system',
       kind: 'notice',
       tone: 'error',
-      content: 'turn failed — provider zai unavailable',
+      content: 'The response could not be completed.',
+      technicalDetails: { detail: 'provider zai unavailable' },
     })
     const [notice] = entrySegments({
       entry_id: 'e_t1_max_turns',
@@ -422,6 +558,7 @@ describe('entrySegments', () => {
           retired: true,
           scope: 'cache-repl-pipeline',
           key: 'facts',
+          payload: { event: { db: 'primary', op: 'update' } },
           fired_at: 42,
         },
       },
@@ -431,10 +568,15 @@ describe('entrySegments', () => {
       role: 'system',
       kind: 'trigger-fired',
       createdAt: 42,
-      trigger: { subscription_id: 'sub_1', target: 'spawn', retired: true },
+      trigger: {
+        subscription_id: 'sub_1',
+        target: 'spawn',
+        retired: true,
+        payload: { event: { db: 'primary', op: 'update' } },
+      },
     })
     expect((notice as { content: string }).content).toBe(
-      'cache-repl-pipeline/facts · spawned claude-sonnet-4-6 · unregistered',
+      'cache-repl-pipeline/facts · spawned claude-sonnet-4-6 · once consumed',
     )
   })
 
@@ -458,7 +600,63 @@ describe('entrySegments', () => {
         retired: true,
         fired_at: 0,
       }),
-    ).toBe('ping · notified this chat · unregistered')
+    ).toBe('ping · notified this chat · once consumed')
+  })
+
+  it('does not invent delivery for lifecycle-only or skipped records', () => {
+    expect(
+      triggerFiredSummary({
+        subscription_id: 's',
+        target: 'state::set',
+        label: 'cleanup',
+        once: false,
+        retired: true,
+        outcome: 'unregistered',
+        retirement_reason: 'unregistered',
+        fired_at: 0,
+      }),
+    ).toBe('cleanup · binding manually removed')
+    expect(
+      triggerFiredSummary({
+        subscription_id: 's',
+        target: 'state::set',
+        label: 'guarded',
+        once: false,
+        retired: false,
+        outcome: 'skipped',
+        fired_at: 0,
+      }),
+    ).toBe('guarded · delivery skipped')
+  })
+
+  it('uses an enriched trigger type when no label or state key exists', () => {
+    expect(
+      triggerFiredSummary({
+        subscription_id: 's',
+        trigger_type: 'cron',
+        target: 'harness::send',
+        once: false,
+        retired: false,
+        outcome: 'delivered',
+        fired_at: 0,
+      }),
+    ).toBe('cron · notified this chat')
+  })
+
+  it('prefers registration action as the fired event summary', () => {
+    expect(
+      triggerFiredSummary({
+        subscription_id: 's',
+        trigger_type: 'on-message',
+        target: 'harness::send',
+        label: 'explorer-messages',
+        action: 'new Explorer message received',
+        once: false,
+        retired: false,
+        outcome: 'delivered',
+        fired_at: 0,
+      }),
+    ).toBe('new Explorer message received · notified this chat')
   })
 
   it('renders a persisted failure with partial-output and recovery context', () => {
@@ -469,7 +667,12 @@ describe('entrySegments', () => {
         data: {
           status: 'error',
           code: 'llm.transient',
-          summary: 'stream ended without a terminal frame',
+          class: 'llm.transient',
+          summary: 'The response was interrupted.',
+          detail: 'stream ended without a terminal frame',
+          provider: 'zai',
+          model: 'glm-5',
+          next_actions: ['Try again in a moment.', '', 42],
           partial_result_available: true,
           recovery: { attempted: 1, max_attempts: 1, outcome: 'exhausted' },
           timestamp: 42,
@@ -483,9 +686,49 @@ describe('entrySegments', () => {
       createdAt: 42,
     })
     if (notice.role !== 'system') throw new Error('expected a system notice')
-    expect(notice.content).toContain('turn failed [llm.transient]')
-    expect(notice.content).toContain('partial output above was preserved')
-    expect(notice.content).toContain('recovery exhausted (1/1)')
+    expect(notice.content).toBe(
+      'The response was interrupted. A partial response was preserved in this conversation and may be incomplete. Automatic recovery stopped after 1 of 1 attempts.',
+    )
+    expect(notice.content).not.toContain('llm.transient')
+    expect(notice.content).not.toContain('terminal frame')
+    expect(notice.nextActions).toEqual(['Try again in a moment.'])
+    expect(notice.technicalDetails).toEqual({
+      code: 'llm.transient',
+      class: 'llm.transient',
+      detail: 'stream ended without a terminal frame',
+      provider: 'zai',
+      model: 'glm-5',
+    })
+  })
+
+  it('keeps permanent provider diagnostics out of the primary copy', () => {
+    const [notice] = entrySegments({
+      entry_id: 'e-permanent-error',
+      custom: {
+        custom_type: 'error',
+        data: {
+          status: 'error',
+          summary: 'The provider rejected this request.',
+          next_actions: [
+            'Review the selected model and provider settings, then try again.',
+          ],
+          code: 'llm.permanent',
+          class: 'llm.permanent',
+          detail: 'openai responses: credit balance exhausted',
+        },
+      },
+    })
+    expect(notice).toMatchObject({
+      content: 'The provider rejected this request.',
+      nextActions: [
+        'Review the selected model and provider settings, then try again.',
+      ],
+      technicalDetails: {
+        code: 'llm.permanent',
+        class: 'llm.permanent',
+        detail: 'openai responses: credit balance exhausted',
+      },
+    })
   })
 
   it('renders recovery and blocked reaction lifecycle entries', () => {

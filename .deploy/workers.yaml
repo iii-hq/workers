@@ -1,0 +1,2064 @@
+workers:
+  a2ui:
+    source:
+      path: a2ui
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: a2ui
+      targets: &id001
+      - x86_64-apple-darwin
+      - aarch64-apple-darwin
+      - x86_64-unknown-linux-gnu
+      - x86_64-unknown-linux-musl
+      - aarch64-unknown-linux-gnu
+      - armv7-unknown-linux-gnueabihf
+      frontends:
+      - workspace_root: .
+        source_path: a2ui/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  acp:
+    source:
+      path: acp
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: iii-acp
+      targets: *id001
+    publish: true
+  approval-gate:
+    source:
+      path: approval-gate
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: approval-gate
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: harness/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  bridge:
+    source:
+      path: bridge
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: bridge
+      targets: *id001
+    publish: true
+  browser:
+    source:
+      path: browser
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: browser
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: browser/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  canvas:
+    source:
+      path: canvas
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: canvas
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: canvas/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  claude-code:
+    source:
+      path: claude-code
+      package_manifest: package.json
+    artifact:
+      kind: javascript-bundle
+      workspace_root: claude-code
+      runtime:
+        name: node
+        version: 22.20.0
+      package_manager:
+        name: pnpm
+        version: 10.18.2
+      lockfile: pnpm-lock.yaml
+      install_command:
+      - pnpm
+      - install
+      - --ignore-workspace
+      - --frozen-lockfile
+      build_command:
+      - pnpm
+      - run
+      - build:bundle
+      include:
+      - dist/bundle/index.mjs
+      - iii.worker.yaml
+    publish: true
+  code-runner:
+    source:
+      path: code-runner
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: code-runner
+      targets:
+      - x86_64-apple-darwin
+      - aarch64-apple-darwin
+      - x86_64-unknown-linux-gnu
+      - x86_64-unknown-linux-musl
+      - aarch64-unknown-linux-gnu
+      frontends:
+      - workspace_root: .
+        source_path: code-runner/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  fixture-code-runner-harness:
+    source:
+      path: code-runner/tests/e2e/workers/harness
+      package_manifest: package.json
+    artifact:
+      kind: javascript-bundle
+      workspace_root: code-runner/tests/e2e/workers/harness
+      runtime:
+        name: node
+        version: 22.20.0
+      package_manager:
+        name: npm
+        version: 10.9.3
+      lockfile: package-lock.json
+      install_command:
+      - npm
+      - ci
+      - --ignore-scripts
+      build_command:
+      - npx
+      - --no-install
+      - tsc
+      - --noEmit
+      include:
+      - package.json
+      - src/cases-errors.ts
+      - src/cases-keep.ts
+      - src/cases-register.ts
+      - src/cases-run.ts
+      - src/cases.ts
+      - src/groups.ts
+      - src/runner.ts
+      - src/worker.ts
+      - tsconfig.json
+      - iii.worker.yaml
+    publish: false
+  codex:
+    source:
+      path: codex
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: codex
+      targets: *id001
+    publish: true
+  compose-ui:
+    source:
+      path: compose-ui
+      package_manifest: package.json
+    artifact:
+      kind: javascript-bundle
+      workspace_root: compose-ui
+      runtime:
+        name: node
+        version: 22.20.0
+      package_manager:
+        name: pnpm
+        version: 11.13.1
+      lockfile: pnpm-lock.yaml
+      install_command:
+      - pnpm
+      - install
+      - --ignore-workspace
+      - --frozen-lockfile
+      build_command:
+      - pnpm
+      - run
+      - build:bundle
+      include:
+      - dist/bundle/index.mjs
+      - iii.worker.yaml
+    publish: true
+  computer:
+    source:
+      path: computer
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: computer
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: computer/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  console:
+    source:
+      path: console
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: console
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: console/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+      - workspace_root: .
+        source_path: console/web
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  context-manager:
+    source:
+      path: context-manager
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: context-manager
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: context-manager/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  cron:
+    source:
+      path: cron
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: cron
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: cron/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  cursor:
+    source:
+      path: cursor
+      package_manifest: package.json
+    artifact:
+      kind: javascript-bundle
+      workspace_root: cursor
+      runtime:
+        name: node
+        version: 22.20.0
+      package_manager:
+        name: pnpm
+        version: 10.18.2
+      lockfile: pnpm-lock.yaml
+      install_command:
+      - pnpm
+      - install
+      - --ignore-workspace
+      - --frozen-lockfile
+      build_command:
+      - pnpm
+      - run
+      - build:bundle
+      include:
+      - dist/bundle/index.mjs
+      - iii.worker.yaml
+    publish: true
+  database:
+    source:
+      path: database
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: database
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: database/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  fixture-database-harness:
+    source:
+      path: database/tests/e2e/workers/harness
+      package_manifest: package.json
+    artifact:
+      kind: javascript-bundle
+      workspace_root: database/tests/e2e/workers/harness
+      runtime:
+        name: node
+        version: 22.20.0
+      package_manager:
+        name: npm
+        version: 10.9.3
+      lockfile: package-lock.json
+      install_command:
+      - npm
+      - ci
+      - --ignore-scripts
+      build_command:
+      - npx
+      - --no-install
+      - tsc
+      - --noEmit
+      include:
+      - fixtures/database.schema.json
+      - package.json
+      - src/cases-boundary.ts
+      - src/cases-concurrency.ts
+      - src/cases-history.ts
+      - src/cases-interactive-tx.ts
+      - src/cases-native-capture.ts
+      - src/cases-protocol.ts
+      - src/cases-row-changed.ts
+      - src/cases-transaction.ts
+      - src/cases-tx-control-bypass.ts
+      - src/cases.ts
+      - src/database-config.ts
+      - src/dialect.test.ts
+      - src/dialect.ts
+      - src/runner.ts
+      - src/seed-configuration.ts
+      - src/test.ts
+      - src/worker.ts
+      - tsconfig.json
+      - iii.worker.yaml
+    publish: false
+  devin:
+    source:
+      path: devin
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: devin
+      targets: *id001
+    publish: true
+  document:
+    source:
+      path: document
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: document
+      targets: *id001
+    publish: true
+  editor:
+    source:
+      path: editor
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: editor
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: editor/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  email:
+    source:
+      path: email
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: email
+      targets: *id001
+    publish: true
+  eval:
+    source:
+      path: eval
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: eval
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: eval/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+      - workspace_root: .
+        source_path: harness/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  fp:
+    source:
+      path: fp
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: fp
+      targets: *id001
+    publish: true
+  github:
+    source:
+      path: github
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: github
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: github/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  grok:
+    source:
+      path: grok
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: grok
+      targets: *id001
+    publish: true
+  harness:
+    source:
+      path: harness
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: harness
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: harness/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  hermes:
+    source:
+      path: hermes
+      package_manifest: pyproject.toml
+    artifact:
+      kind: oci-image
+      context: .
+      dockerfile: Dockerfile
+      platforms:
+      - linux/amd64
+      - linux/arm64
+    publish: true
+  http:
+    source:
+      path: http
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: http
+      targets: *id001
+    publish: true
+  iii-directory:
+    source:
+      path: iii-directory
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: iii-directory
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: iii-directory/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  fixture-image-resize-demo:
+    source:
+      path: image-resize/example
+      package_manifest: package.json
+    artifact:
+      kind: javascript-bundle
+      workspace_root: image-resize/example
+      runtime:
+        name: node
+        version: 22.20.0
+      package_manager:
+        name: npm
+        version: 10.9.3
+      lockfile: package-lock.json
+      install_command:
+      - npm
+      - ci
+      - --ignore-scripts
+      build_command:
+      - npx
+      - --no-install
+      - tsc
+      - --noEmit
+      include:
+      - package.json
+      - src/hooks.ts
+      - src/iii.ts
+      - src/index.ts
+      - tsconfig.json
+      - iii.worker.yaml
+    publish: false
+  image-resize:
+    source:
+      path: image-resize
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: image-resize
+      targets: *id001
+    publish: true
+  llm-router:
+    source:
+      path: llm-router
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: llm-router
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: llm-router/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  lsp:
+    source:
+      path: lsp
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: lsp
+      targets: *id001
+    publish: true
+  mcp:
+    source:
+      path: mcp
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: mcp
+      targets: *id001
+    publish: true
+  memory:
+    source:
+      path: memory
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: memory
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: memory/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  memory-consolidate:
+    source:
+      path: memory-consolidate
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: memory-consolidate
+      targets: *id001
+    publish: true
+  opencode:
+    source:
+      path: opencode
+      package_manifest: package.json
+    artifact:
+      kind: javascript-bundle
+      workspace_root: opencode
+      runtime:
+        name: node
+        version: 22.20.0
+      package_manager:
+        name: pnpm
+        version: 10.18.2
+      lockfile: pnpm-lock.yaml
+      install_command:
+      - pnpm
+      - install
+      - --ignore-workspace
+      - --frozen-lockfile
+      build_command:
+      - pnpm
+      - run
+      - build:bundle
+      include:
+      - dist/bundle/index.mjs
+      - iii.worker.yaml
+    publish: true
+  opengantry:
+    source:
+      path: opengantry
+      package_manifest: package.json
+    artifact:
+      kind: javascript-bundle
+      workspace_root: opengantry
+      runtime:
+        name: node
+        version: 22.20.0
+      package_manager:
+        name: pnpm
+        version: 10.18.2
+      lockfile: pnpm-lock.yaml
+      install_command:
+      - pnpm
+      - install
+      - --ignore-workspace
+      - --frozen-lockfile
+      build_command:
+      - pnpm
+      - run
+      - build:bundle
+      include:
+      - dist/bundle/index.mjs
+      - iii.worker.yaml
+    publish: true
+  openwiki:
+    source:
+      path: openwiki
+      package_manifest: package.json
+    artifact:
+      kind: javascript-bundle
+      workspace_root: openwiki
+      runtime:
+        name: node
+        version: 22.20.0
+      package_manager:
+        name: pnpm
+        version: 10.18.2
+      lockfile: pnpm-lock.yaml
+      install_command:
+      - pnpm
+      - install
+      - --ignore-workspace
+      - --frozen-lockfile
+      build_command:
+      - pnpm
+      - run
+      - build:bundle
+      include:
+      - dist/bundle/index.mjs
+      - iii.worker.yaml
+    publish: true
+  pdf:
+    source:
+      path: pdf
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: pdf
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: pdf/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  pi:
+    source:
+      path: pi
+      package_manifest: package.json
+    artifact:
+      kind: javascript-bundle
+      workspace_root: pi
+      runtime:
+        name: node
+        version: 22.20.0
+      package_manager:
+        name: pnpm
+        version: 10.18.2
+      lockfile: pnpm-lock.yaml
+      install_command:
+      - pnpm
+      - install
+      - --ignore-workspace
+      - --frozen-lockfile
+      build_command:
+      - pnpm
+      - run
+      - build:bundle
+      include:
+      - dist/bundle/index.mjs
+      - iii.worker.yaml
+    publish: true
+  provider-anthropic:
+    source:
+      path: provider-anthropic
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: provider-anthropic
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: llm-router/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  provider-claude-code:
+    source:
+      path: provider-claude-code
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: provider-claude-code
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: llm-router/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  provider-command-code:
+    source:
+      path: provider-command-code
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: provider-command-code
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: llm-router/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  provider-deepseek:
+    source:
+      path: provider-deepseek
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: provider-deepseek
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: llm-router/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  provider-github-copilot:
+    source:
+      path: provider-github-copilot
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: provider-github-copilot
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: llm-router/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  provider-kimi:
+    source:
+      path: provider-kimi
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: provider-kimi
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: llm-router/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  provider-llamacpp:
+    source:
+      path: provider-llamacpp
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: provider-llamacpp
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: llm-router/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  provider-openai:
+    source:
+      path: provider-openai
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: provider-openai
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: llm-router/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  provider-openai-codex:
+    source:
+      path: provider-openai-codex
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: provider-openai-codex
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: llm-router/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+      - workspace_root: .
+        source_path: provider-openai-codex/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  provider-opencode-go:
+    source:
+      path: provider-opencode-go
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: provider-opencode-go
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: llm-router/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  provider-openrouter:
+    source:
+      path: provider-openrouter
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: provider-openrouter
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: llm-router/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  provider-xai:
+    source:
+      path: provider-xai
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: provider-xai
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: llm-router/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  provider-zai:
+    source:
+      path: provider-zai
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: provider-zai
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: llm-router/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  pubsub:
+    source:
+      path: pubsub
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: pubsub
+      targets: *id001
+    publish: true
+  queue:
+    source:
+      path: queue
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: queue
+      targets: *id001
+    publish: true
+  rbac-proxy:
+    source:
+      path: rbac-proxy
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: rbac-proxy
+      targets: *id001
+    publish: true
+  fixture-rbac-proxy-harness:
+    source:
+      path: rbac-proxy/tests/e2e/workers/harness
+      package_manifest: package.json
+    artifact:
+      kind: javascript-bundle
+      workspace_root: rbac-proxy/tests/e2e/workers/harness
+      runtime:
+        name: node
+        version: 22.20.0
+      package_manager:
+        name: npm
+        version: 10.9.3
+      lockfile: package-lock.json
+      install_command:
+      - npm
+      - ci
+      - --ignore-scripts
+      build_command:
+      - npx
+      - --no-install
+      - tsc
+      - --noEmit
+      include:
+      - mock-router.mts
+      - package.json
+      - src/cases.ts
+      - src/runner.ts
+      - src/support.ts
+      - src/worker.ts
+      - tsconfig.json
+      - iii.worker.yaml
+    publish: false
+  sandbox-code-runner:
+    source:
+      path: sandbox-code-runner
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: sandbox-code-runner
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: sandbox-code-runner/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  scrapling:
+    source:
+      path: scrapling
+      package_manifest: pyproject.toml
+    artifact:
+      kind: python-bundle
+      workspace_root: scrapling
+      runtime:
+        name: python
+        version: 3.12.3
+      package_manager:
+        name: uv
+        version: 0.12.5
+      lockfile: uv.lock
+      install_command:
+      - uv
+      - sync
+      - --frozen
+      - --no-dev
+      - --no-install-project
+      build_command:
+      - python
+      - scripts/build_release_runtime.py
+      include:
+      - dist/site-packages.tar.gz
+      - pyproject.toml
+      - scripts/build_release_runtime.py
+      - src/__init__.py
+      - src/configuration.py
+      - src/core.py
+      - src/crawl.py
+      - src/guidance.py
+      - src/handlers.py
+      - src/main.py
+      - src/schemas.py
+      - src/sessions.py
+      - src/storage.py
+      - uv.lock
+      - iii.worker.yaml
+    publish: true
+  security-scan:
+    source:
+      path: security-scan
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: security-scan
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: security-scan/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  session-manager:
+    source:
+      path: session-manager
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: session-manager
+      targets: *id001
+    publish: true
+  shell:
+    source:
+      path: shell
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: shell
+      targets:
+      - x86_64-apple-darwin
+      - aarch64-apple-darwin
+      - x86_64-unknown-linux-gnu
+      - x86_64-unknown-linux-musl
+      - aarch64-unknown-linux-gnu
+      - armv7-unknown-linux-gnueabihf
+      frontends:
+      - workspace_root: .
+        source_path: shell/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  fixture-shell-harness:
+    source:
+      path: shell/tests/e2e/workers/harness
+      package_manifest: package.json
+    artifact:
+      kind: javascript-bundle
+      workspace_root: shell/tests/e2e/workers/harness
+      runtime:
+        name: node
+        version: 22.20.0
+      package_manager:
+        name: npm
+        version: 10.9.3
+      lockfile: package-lock.json
+      install_command:
+      - npm
+      - ci
+      - --ignore-scripts
+      build_command:
+      - npx
+      - --no-install
+      - tsc
+      - --noEmit
+      include:
+      - package.json
+      - src/cases-concurrency.ts
+      - src/cases-edge.ts
+      - src/cases-exec-break.ts
+      - src/cases-exec-sandbox.ts
+      - src/cases-exec-stdin.ts
+      - src/cases-fs-encoding.ts
+      - src/cases-fs-errors.ts
+      - src/cases-fs-host-jail.ts
+      - src/cases-fs-host.ts
+      - src/cases-fs-protocol-break.ts
+      - src/cases-fs-sandbox.ts
+      - src/cases-fs-write-inline.ts
+      - src/cases-jobs-bg-timeout.ts
+      - src/cases-jobs-break.ts
+      - src/cases-jobs.ts
+      - src/cases-safety.ts
+      - src/cases-sandbox-break.ts
+      - src/cases-streaming-break.ts
+      - src/cases-vuln-repro-jailed.ts
+      - src/cases-vuln-repro.ts
+      - src/cases.ts
+      - src/runner.ts
+      - src/worker.ts
+      - tsconfig.json
+      - iii.worker.yaml
+    publish: false
+  slack:
+    source:
+      path: slack
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: slack
+      targets: *id001
+    publish: true
+  state:
+    source:
+      path: state
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: state
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: state/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  storage:
+    source:
+      path: storage
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: storage
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: storage/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  fixture-storage-harness:
+    source:
+      path: storage/tests/e2e/workers/harness
+      package_manifest: package.json
+    artifact:
+      kind: javascript-bundle
+      workspace_root: storage/tests/e2e/workers/harness
+      runtime:
+        name: node
+        version: 22.20.0
+      package_manager:
+        name: npm
+        version: 10.9.3
+      lockfile: package-lock.json
+      install_command:
+      - npm
+      - ci
+      - --ignore-scripts
+      build_command:
+      - npx
+      - --no-install
+      - tsc
+      - --noEmit
+      include:
+      - package.json
+      - src/cases-concurrency.ts
+      - src/cases-edge.ts
+      - src/cases-errors.ts
+      - src/cases-provider.ts
+      - src/cases-triggers.ts
+      - src/cases.ts
+      - src/runner.ts
+      - src/worker.ts
+      - tsconfig.json
+      - iii.worker.yaml
+    publish: false
+  tailscale:
+    source:
+      path: tailscale
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: tailscale
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: tailscale/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  telegram-bot:
+    source:
+      path: telegram-bot
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: telegram-bot
+      targets: *id001
+    publish: true
+  vscode:
+    source:
+      path: vscode
+      package_manifest: package.json
+    artifact:
+      kind: javascript-bundle
+      workspace_root: vscode
+      runtime:
+        name: node
+        version: 22.20.0
+      package_manager:
+        name: pnpm
+        version: 10.18.2
+      lockfile: pnpm-lock.yaml
+      install_command:
+      - pnpm
+      - install
+      - --ignore-workspace
+      - --frozen-lockfile
+      build_command:
+      - pnpm
+      - run
+      - build:bundle
+      include:
+      - dist/bundle/index.mjs
+      - iii.worker.yaml
+    publish: true
+  web:
+    source:
+      path: web
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: web
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: web/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true
+  workflow:
+    source:
+      path: workflow
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: workflow
+      targets: *id001
+    publish: true
+  worktree:
+    source:
+      path: worktree
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: worktree
+      targets: *id001
+      frontends:
+      - workspace_root: .
+        source_path: worktree/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
+    publish: true

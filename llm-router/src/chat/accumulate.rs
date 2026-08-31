@@ -11,7 +11,7 @@
 //! byte-identical to the old behavior, so old producers interop.
 
 use crate::types::content::ContentBlock;
-use crate::types::events::AssistantMessageEvent;
+use crate::types::events::{AssistantMessageEvent, FunctionCallArgumentsPreview};
 use crate::types::messages::{degraded_arguments, AssistantMessage};
 
 #[derive(Default)]
@@ -23,9 +23,18 @@ pub struct PartialAccumulator {
 }
 
 enum OpenBlock {
-    Text { seed: String, acc: String },
-    Thinking { seed: String, acc: String },
-    Call { args: String },
+    Text {
+        seed: String,
+        acc: String,
+    },
+    Thinking {
+        seed: String,
+        acc: String,
+    },
+    Call {
+        raw: String,
+        stream: crate::json_stream::JsonStream,
+    },
 }
 
 impl PartialAccumulator {
@@ -78,7 +87,8 @@ impl PartialAccumulator {
             AssistantMessageEvent::FunctioncallStart { partial } => {
                 self.base = Some(partial.clone());
                 self.open = Some(OpenBlock::Call {
-                    args: String::new(),
+                    raw: String::new(),
+                    stream: crate::json_stream::JsonStream::new(),
                 });
             }
             AssistantMessageEvent::TextDelta { partial, delta } => match partial {
@@ -118,10 +128,16 @@ impl PartialAccumulator {
                     self.open = None;
                 }
                 None => match &mut self.open {
-                    Some(OpenBlock::Call { args }) => args.push_str(delta),
+                    Some(OpenBlock::Call { raw, stream }) => {
+                        raw.push_str(delta);
+                        let _ = stream.write(delta);
+                    }
                     _ => {
+                        let mut stream = crate::json_stream::JsonStream::new();
+                        let _ = stream.write(delta);
                         self.open = Some(OpenBlock::Call {
-                            args: delta.clone(),
+                            raw: delta.clone(),
+                            stream,
                         })
                     }
                 },
@@ -150,25 +166,80 @@ impl PartialAccumulator {
                     signature: None,
                 });
             }
-            // Mid-call death: replace the open call block's placeholder args
-            // with the same replay-safe degraded object providers produce.
-            Some(OpenBlock::Call { args }) if !args.is_empty() => {
+            // Mid-call view: replace the open call block's placeholder args
+            // with every value observable so far. The incremental parser also
+            // exposes an open string, so agent_trigger's function and
+            // description no longer wait for their closing quote.
+            Some(OpenBlock::Call { raw, stream }) if !raw.is_empty() => {
                 if let Some(ContentBlock::FunctionCall { arguments, .. }) = out
                     .content
                     .iter_mut()
                     .rev()
                     .find(|b| matches!(b, ContentBlock::FunctionCall { .. }))
                 {
-                    *arguments = serde_json::from_str(args)
-                        .ok()
-                        .filter(serde_json::Value::is_object)
-                        .unwrap_or_else(|| degraded_arguments(args));
+                    *arguments = stream
+                        .snapshot()
+                        .and_then(|snapshot| match snapshot.value {
+                            serde_json::Value::Object(mut map) => {
+                                if !snapshot.complete {
+                                    map.insert("_partial".into(), serde_json::Value::Bool(true));
+                                }
+                                Some(serde_json::Value::Object(map))
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| degraded_arguments(raw));
                 }
             }
             _ => {}
         }
         Some(out)
     }
+
+    /// Only the small top-level identity needed by an in-flight call card.
+    /// Payload is deliberately excluded so relayed delta frames stay O(chunk)
+    /// instead of growing with the cumulative arguments document.
+    pub fn call_arguments_preview(&self) -> Option<FunctionCallArgumentsPreview> {
+        let arguments = match &self.open {
+            Some(OpenBlock::Call { stream, .. }) => stream.snapshot()?.value,
+            _ => self.base.as_ref()?.content.iter().rev().find_map(|block| {
+                let ContentBlock::FunctionCall { arguments, .. } = block else {
+                    return None;
+                };
+                Some(arguments.clone())
+            })?,
+        };
+        let object = arguments.as_object()?;
+        let function = object
+            .get("function")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(|value| utf8_head(value, 512).to_string());
+        let description = object
+            .get("description")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(|value| utf8_head(value, 120).to_string());
+        if function.is_none() && description.is_none() {
+            None
+        } else {
+            Some(FunctionCallArgumentsPreview {
+                function,
+                description,
+            })
+        }
+    }
+}
+
+fn utf8_head(value: &str, max: usize) -> &str {
+    if value.len() <= max {
+        return value;
+    }
+    let mut end = max;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
 }
 
 #[cfg(test)]
@@ -270,7 +341,15 @@ mod tests {
             partial: None,
             delta: r#"{"function":"state::set","payload":{"x":"#.into(),
             id: "c1".into(),
+            arguments_preview: None,
         });
+        assert_eq!(
+            acc.call_arguments_preview(),
+            Some(FunctionCallArgumentsPreview {
+                function: Some("state::set".into()),
+                description: None,
+            })
+        );
         let cum = acc.current().unwrap();
         let ContentBlock::FunctionCall { arguments, .. } = &cum.content[0] else {
             panic!("want function_call");
@@ -294,12 +373,37 @@ mod tests {
             partial: None,
             delta: r#"{"function":"state::get"}"#.into(),
             id: "c1".into(),
+            arguments_preview: None,
         });
         let cum = acc.current().unwrap();
         let ContentBlock::FunctionCall { arguments, .. } = &cum.content[0] else {
             panic!("want function_call");
         };
         assert_eq!(arguments, &json!({"function":"state::get"}));
+    }
+
+    #[test]
+    fn open_call_strings_are_visible_before_their_closing_quote() {
+        let mut with_call = base();
+        with_call.content = vec![ContentBlock::FunctionCall {
+            id: "c1".into(),
+            function_id: "agent_trigger".into(),
+            arguments: json!({}),
+        }];
+        let mut acc = PartialAccumulator::default();
+        acc.apply(&Ev::FunctioncallStart { partial: with_call });
+        acc.apply(&Ev::FunctioncallDelta {
+            partial: None,
+            delta: r#"{"function":"state::se"#.into(),
+            id: "c1".into(),
+            arguments_preview: None,
+        });
+        let cum = acc.current().unwrap();
+        let ContentBlock::FunctionCall { arguments, .. } = &cum.content[0] else {
+            panic!("want function_call");
+        };
+        assert_eq!(arguments["function"], "state::se");
+        assert_eq!(arguments["_partial"], true);
     }
 
     #[test]

@@ -6,7 +6,7 @@
 use crate::config::build_config;
 use crate::errors::classify_bus_error;
 use crate::reasoning::{is_reasoning_model, native_reasoning_effort, reasoning_effort_for};
-use crate::request::{build_body, build_headers, BodyArgs};
+use crate::request::{build_body, build_headers, resolve_cache_routing, BodyArgs};
 use crate::sse::synthetic_error_event;
 use crate::upstream::{spawn_upstream, UpstreamArgs};
 use crate::{auth, router_client, state};
@@ -126,12 +126,13 @@ async fn run_stream_call(
                 return;
             }
         };
-    let reasoning_effort = if native_effort.is_some() {
-        native_effort
-    } else if is_reasoning_model(
+    let supports_thinking = is_reasoning_model(
         &cfg.model,
         model_meta.as_ref().and_then(|m| m.supports_thinking),
-    ) {
+    );
+    let reasoning_effort = if native_effort.is_some() {
+        native_effort
+    } else if supports_thinking {
         let effort = reasoning_effort_for(input.thinking_level, &cfg.model);
         if input.thinking_level.is_some() && effort.is_none() {
             warnings.push(format!(
@@ -150,15 +151,29 @@ async fn run_stream_call(
         None
     };
 
+    let system_prompt = input.system_prompt.unwrap_or_default();
+    let (affinity_headers, prompt_cache_key) = resolve_cache_routing(
+        input.provider_options.as_ref(),
+        input.session_id.as_deref(),
+        input.resolution_key.as_deref(),
+    );
+    tracing::debug!(
+        affinity_configured = !affinity_headers.is_empty(),
+        prompt_cache_key_configured = prompt_cache_key.is_some(),
+        "codex cache affinity key"
+    );
+    let mut headers = build_headers(&cfg);
+    headers.extend(affinity_headers);
     let body = build_body(&BodyArgs {
         model: cfg.model.clone(),
         max_tokens: cfg.max_tokens,
-        system_prompt: input.system_prompt.unwrap_or_default(),
+        system_prompt,
         messages: input.messages,
         tools: input.tools.unwrap_or_default(),
+        supports_thinking,
         reasoning_effort,
+        prompt_cache_key,
     });
-    let headers = build_headers(&cfg);
 
     // Aborted while we were setting up — never start the upstream request.
     if abort_reg.is_some_and(|g| g.is_fired()) {

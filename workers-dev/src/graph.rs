@@ -11,31 +11,43 @@ pub struct WorkerGraph {
 }
 
 #[derive(Debug, Deserialize)]
-struct WorkerYaml {
-    name: Option<String>,
+struct ComposeFile {
+    workers: HashMap<String, CatalogWorker>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CatalogWorker {
+    registry: CatalogRegistry,
+}
+
+#[derive(Debug, Deserialize)]
+struct CatalogRegistry {
+    #[serde(default)]
     dependencies: Option<HashMap<String, String>>,
 }
 
 impl WorkerGraph {
     pub fn load(repo_root: &Path, workers: &[String]) -> Result<Self> {
+        if workers.is_empty() {
+            return Ok(Self {
+                workers: Vec::new(),
+                deps: HashMap::new(),
+            });
+        }
         let managed: HashSet<&str> = workers.iter().map(String::as_str).collect();
         let mut deps = HashMap::new();
 
+        let catalog_path = repo_root.join("worker-compose.yaml");
+        let raw = std::fs::read_to_string(&catalog_path)
+            .with_context(|| format!("read {}", catalog_path.display()))?;
+        let catalog: ComposeFile = serde_yaml::from_str(&raw)
+            .with_context(|| format!("parse {}", catalog_path.display()))?;
         for worker in workers {
-            let yaml_path = repo_root.join(worker).join("iii.worker.yaml");
-            let raw = std::fs::read_to_string(&yaml_path)
-                .with_context(|| format!("read {}", yaml_path.display()))?;
-            let parsed: WorkerYaml = serde_yaml::from_str(&raw)
-                .with_context(|| format!("parse {}", yaml_path.display()))?;
-
-            if let Some(name) = &parsed.name {
-                if name != worker {
-                    bail!("worker folder {worker} has iii.worker.yaml name={name} (mismatch)");
-                }
-            }
-
-            let worker_deps: Vec<String> = parsed
+            let parsed = catalog.workers.get(worker)
+                .with_context(|| format!("worker {worker} is absent from root catalog"))?;
+            let worker_deps: Vec<String> = parsed.registry
                 .dependencies
+                .clone()
                 .unwrap_or_default()
                 .into_keys()
                 .filter(|dep| managed.contains(dep.as_str()))
@@ -185,30 +197,27 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    fn write_worker_yaml(dir: &Path, name: &str, deps: &[&str]) {
+    fn write_worker_catalog(dir: &Path, name: &str, deps: &[&str]) {
         let worker_dir = dir.join(name);
         fs::create_dir_all(&worker_dir).unwrap();
-        let mut yaml = format!(
-            "iii: v1\nname: {name}\nlanguage: rust\ndeploy: binary\nmanifest: Cargo.toml\nbin: {name}\ndescription: test\n"
-        );
-        if !deps.is_empty() {
-            yaml.push_str("dependencies:\n");
-            for dep in deps {
-                yaml.push_str(&format!("  {dep}: \"^1.0.0\"\n"));
-            }
+        let catalog = dir.join("worker-compose.yaml");
+        if !catalog.exists() { fs::write(&catalog, "workers:\n").unwrap(); }
+        let mut yaml = format!("  {name}:\n    registry:\n      dependencies:\n");
+        for dep in deps {
+            yaml.push_str(&format!("        {dep}: \"^1.0.0\"\n"));
         }
-        fs::write(worker_dir.join("iii.worker.yaml"), yaml).unwrap();
+        let mut text = fs::read_to_string(&catalog).unwrap(); text.push_str(&yaml); fs::write(&catalog, text).unwrap();
     }
 
     fn fixture_repo() -> TempDir {
         let tmp = TempDir::new().unwrap();
-        write_worker_yaml(tmp.path(), "session-manager", &[]);
-        write_worker_yaml(tmp.path(), "llm-router", &[]);
-        write_worker_yaml(tmp.path(), "context-manager", &["llm-router"]);
-        write_worker_yaml(tmp.path(), "provider-anthropic", &["llm-router"]);
-        write_worker_yaml(tmp.path(), "provider-openai", &["llm-router"]);
-        write_worker_yaml(tmp.path(), "approval-gate", &["session-manager"]);
-        write_worker_yaml(
+        write_worker_catalog(tmp.path(), "session-manager", &[]);
+        write_worker_catalog(tmp.path(), "llm-router", &[]);
+        write_worker_catalog(tmp.path(), "context-manager", &["llm-router"]);
+        write_worker_catalog(tmp.path(), "provider-anthropic", &["llm-router"]);
+        write_worker_catalog(tmp.path(), "provider-openai", &["llm-router"]);
+        write_worker_catalog(tmp.path(), "approval-gate", &["session-manager"]);
+        write_worker_catalog(
             tmp.path(),
             "harness",
             &[

@@ -54,7 +54,7 @@ export function FilterChip({ label, value }: FilterChipProps) {
 export function InternalChip() {
   return (
     <Chip className="text-warn border-warn/40">
-      <span className="uppercase tracking-[0.06em]">internal</span>
+      <span>Internal</span>
     </Chip>
   )
 }

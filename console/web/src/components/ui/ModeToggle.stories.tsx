@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { useState } from 'react'
 import { ModeToggle } from './ModeToggle'
 
-type Pick = 'a' | 'b' | 'c'
+type Pick = 'data' | 'sql' | 'diagram'
 
 // ModeToggle is generic (`ModeToggle<T>`); stories drive their own state via
 // `render`, so the `component` field is omitted to keep Meta typing simple.
@@ -14,35 +14,37 @@ const meta = {
 export default meta
 type Story = StoryObj
 
-export const TwoOption: Story = {
-  name: 'two options',
+export const ContentTabs: Story = {
+  name: 'content tabs',
   render: () => {
-    const [value, setValue] = useState<'on' | 'off'>('on')
+    const [value, setValue] = useState<Pick>('data')
     return (
-      <ModeToggle<'on' | 'off'>
+      <ModeToggle<Pick>
         value={value}
         onChange={setValue}
         options={[
-          { value: 'on', label: 'on' },
-          { value: 'off', label: 'off' },
+          { value: 'data', label: 'Data' },
+          { value: 'sql', label: 'SQL' },
+          { value: 'diagram', label: 'Diagram' },
         ]}
       />
     )
   },
 }
 
-export const ThreeOption: Story = {
-  name: 'three options',
+export const PersistentChoice: Story = {
+  name: 'persistent choice',
   render: () => {
-    const [value, setValue] = useState<Pick>('a')
+    const [value, setValue] = useState<'light' | 'dark'>('dark')
     return (
-      <ModeToggle<Pick>
+      <ModeToggle<'light' | 'dark'>
         value={value}
         onChange={setValue}
+        variant="radio"
+        aria-label="Theme"
         options={[
-          { value: 'a', label: 'one' },
-          { value: 'b', label: 'two' },
-          { value: 'c', label: 'three' },
+          { value: 'light', label: 'Light' },
+          { value: 'dark', label: 'Dark' },
         ]}
       />
     )

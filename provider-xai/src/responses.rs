@@ -48,16 +48,21 @@ pub fn build_responses_body(
     messages: &[AgentMessage],
     tools: &[String],
     max_tokens: u64,
+    prompt_cache_key: Option<&str>,
 ) -> Value {
     let input = to_wire_messages(messages, system_prompt);
     let tool_specs: Vec<Value> = tools.iter().map(|t| json!({ "type": t })).collect();
-    json!({
+    let mut body = json!({
         "model": model,
         "input": input,
         "tools": tool_specs,
         "max_output_tokens": max_tokens,
         "stream": true,
-    })
+    });
+    if let Some(key) = prompt_cache_key {
+        body["prompt_cache_key"] = json!(key);
+    }
+    body
 }
 
 /// Accumulated Responses-stream state; folded into the terminal message.
@@ -229,17 +234,21 @@ pub fn handle_event(
 /// Map the Responses usage object onto the shared `Usage`.
 fn merge_usage(raw: &Value, into: &mut Usage) {
     let num = |k: &str| raw.get(k).and_then(Value::as_u64);
+    // `Usage.input` is the cache-MISS slice, disjoint from `cache_read`
+    // (pricing bills the splits additively). The wire's `input_tokens` is a
+    // TOTAL that includes the cached slice, so the miss slice is derived —
+    // mapping the total verbatim would bill the cached prefix twice.
+    let cached = raw
+        .pointer("/input_tokens_details/cached_tokens")
+        .and_then(Value::as_u64);
+    if let Some(v) = cached {
+        into.cache_read = Some(v);
+    }
     if let Some(v) = num("input_tokens") {
-        into.input = Some(v);
+        into.input = Some(v.saturating_sub(cached.unwrap_or(0)));
     }
     if let Some(v) = num("output_tokens") {
         into.output = Some(v);
-    }
-    if let Some(v) = raw
-        .pointer("/input_tokens_details/cached_tokens")
-        .and_then(Value::as_u64)
-    {
-        into.cache_read = Some(v);
     }
     if let Some(v) = raw
         .pointer("/output_tokens_details/reasoning_tokens")
@@ -452,6 +461,7 @@ mod tests {
             &[user("hi")],
             &["x_search".into(), "web_search".into()],
             8192,
+            Some("stable-session-key"),
         );
         assert_eq!(b["model"], "grok-4.3");
         assert_eq!(b["stream"], true);
@@ -460,6 +470,12 @@ mod tests {
         assert_eq!(b["input"][1]["content"], "hi");
         assert_eq!(b["tools"][0]["type"], "x_search");
         assert_eq!(b["tools"][1]["type"], "web_search");
+        assert_eq!(b["prompt_cache_key"], "stable-session-key");
+        assert!(
+            build_responses_body("grok-4.3", "be brief", &[user("hi")], &[], 8192, None)
+                .get("prompt_cache_key")
+                .is_none()
+        );
     }
 
     fn run(events: &[(&str, Value)]) -> (ResponsesState, Vec<AssistantMessageEvent>) {
@@ -580,6 +596,23 @@ mod tests {
         assert_eq!(u.output, Some(4));
         assert_eq!(u.reasoning, Some(2));
         assert_eq!(state.tool_calls, vec!["x_search"]);
+    }
+
+    #[test]
+    fn cached_input_tokens_are_disjoint_from_responses_input() {
+        let (state, events) = run(&[(
+            "response.completed",
+            json!({"response":{"usage":{
+                "input_tokens": 10,
+                "output_tokens": 4,
+                "input_tokens_details":{"cached_tokens":6}
+            }}}),
+        )]);
+        assert_eq!(tags(&events), vec!["usage"]);
+        let usage = build_final(&state, "grok-4.3").usage.unwrap();
+        assert_eq!(usage.input, Some(4));
+        assert_eq!(usage.cache_read, Some(6));
+        assert_eq!(usage.output, Some(4));
     }
 
     #[test]

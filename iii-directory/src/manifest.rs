@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-use crate::config::{DEFAULT_LOCAL_SKILLS_FOLDER, DEFAULT_REGISTRY_URL, DEFAULT_SKILLS_FOLDER};
+use crate::config::SkillsConfig;
 
 #[derive(Serialize)]
 pub struct ModuleManifest {
@@ -17,18 +17,11 @@ pub fn build_manifest() -> ModuleManifest {
     ModuleManifest {
         name: env!("CARGO_PKG_NAME").to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        description: "Engine introspection (functions / triggers / workers), workers \
-             registry proxy, and filesystem-backed skill + prompt reader."
+        description: "Engine introspection, workers registry proxy, filesystem-backed \
+             skills, system prompts, and agent profiles, plus lexical function search \
+             with a conditional pre-generate hint."
             .to_string(),
-        default_config: serde_json::json!({
-            "skills_folder": DEFAULT_SKILLS_FOLDER,
-            "local_skills_folder": DEFAULT_LOCAL_SKILLS_FOLDER,
-            "registry_url": DEFAULT_REGISTRY_URL,
-            "download_timeout_ms": 60_000,
-            "registry_cache_ttl_ms": 60_000,
-            "filter_unregistered": true,
-            "auto_download": true,
-        }),
+        default_config: SkillsConfig::default().to_json(),
         supported_targets: vec![env!("TARGET").to_string()],
     }
 }
@@ -36,6 +29,7 @@ pub fn build_manifest() -> ModuleManifest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::DEFAULT_REGISTRY_URL;
 
     #[test]
     fn json_roundtrip_has_required_fields() {
@@ -48,10 +42,18 @@ mod tests {
         assert!(parsed["description"]
             .as_str()
             .is_some_and(|s| !s.is_empty()));
-        assert_eq!(
-            parsed["default_config"]["skills_folder"],
-            DEFAULT_SKILLS_FOLDER
-        );
+        let description = parsed["description"]
+            .as_str()
+            .unwrap()
+            .to_lowercase()
+            .replace('-', " ");
+        for surface in ["skills", "system prompt", "agent", "registry", "search"] {
+            assert!(
+                description.contains(surface),
+                "manifest description omits {surface}: {description}"
+            );
+        }
+        assert_eq!(parsed["default_config"], SkillsConfig::default().to_json());
         assert_eq!(
             parsed["default_config"]["registry_url"],
             DEFAULT_REGISTRY_URL

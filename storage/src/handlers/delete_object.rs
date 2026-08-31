@@ -50,17 +50,13 @@ mod tests {
     use serde_json::json;
     use std::collections::HashMap;
     use std::sync::Arc;
-    use tokio::sync::RwLock;
 
     fn state_with(resp: Option<Result<BackendDeleteResp, BackendError>>) -> AppState {
         let m = Arc::new(MockBackend::default());
         m.responses.lock().unwrap().delete = resp;
         let mut map = HashMap::new();
         map.insert("uploads".to_string(), m as Arc<dyn Backend>);
-        AppState {
-            backends: Arc::new(RwLock::new(map)),
-            local_ctx: None,
-        }
+        AppState::new(map)
     }
 
     fn req(v: serde_json::Value) -> DeleteReq {

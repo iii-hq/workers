@@ -11,16 +11,21 @@ import {
   unwrapEnvelope,
 } from './parsers'
 import { RegisteredTriggersListView } from './RegisteredTriggersListView'
-import { RegisterTriggerView } from './RegisterTriggerView'
+import {
+  RegisterTriggerView,
+  TriggerRegisteredDisplay,
+} from './RegisterTriggerView'
 import { TriggerInfoView } from './TriggerInfoView'
 import { TriggersListView } from './TriggersListView'
+import { UnregisterTriggerView } from './UnregisterTriggerView'
 import { WorkerInfoView } from './WorkerInfoView'
 import { WorkersListView } from './WorkersListView'
 import { WorkersRegisterView } from './WorkersRegisterView'
 
 /**
- * Header label for `engine::*::list` ids. Mirrors `SandboxFunctionIdLabel`:
- * dims the namespace prefix so the tail is readable in the FCM header.
+ * Header label for `engine::*::list` ids. Mirrors the other families'
+ * FunctionIdLabels: dims the namespace prefix so the tail is readable in
+ * the FCM header.
  */
 export function EngineFunctionIdLabel({ functionId }: { functionId: string }) {
   if (!functionId.startsWith('engine::')) {
@@ -99,7 +104,20 @@ function tryRender(message: FunctionTriggerMessage): React.ReactNode | null {
       )
     case 'engine::register_trigger':
       return (
-        <RegisterTriggerView input={input} output={output} running={running} />
+        <RegisterTriggerView
+          messageId={message.id}
+          input={input}
+          output={output}
+          running={running}
+        />
+      )
+    case 'engine::unregister_trigger':
+      return (
+        <UnregisterTriggerView
+          input={input}
+          output={output}
+          running={running}
+        />
       )
     default:
       return null
@@ -123,4 +141,48 @@ export const EngineToolView = {
   tryRender,
   tryRenderRunning: tryRender,
   tryRenderPreview,
+}
+
+function tryRenderRegisterTriggerDisplay(
+  message: FunctionTriggerMessage,
+): React.ReactNode | null {
+  if (
+    message.functionId !== 'engine::register_trigger' ||
+    message.pendingApproval ||
+    message.running ||
+    parseSandboxErrorDisplay(message.output)
+  ) {
+    return null
+  }
+  return (
+    <TriggerRegisteredDisplay
+      messageId={message.id}
+      input={coerceJsonObject(unwrapEnvelope(message.input))}
+      output={
+        message.output != null
+          ? coerceJsonObject(unwrapEnvelope(message.output))
+          : undefined
+      }
+      createdAt={message.createdAt}
+    />
+  )
+}
+
+const isRegisterTriggerFunction = (functionId: string) =>
+  functionId === 'engine::register_trigger'
+
+function tryRenderRegisterTrigger(
+  message: FunctionTriggerMessage,
+): React.ReactNode | null {
+  if (!isRegisterTriggerFunction(message.functionId)) return null
+  return tryRender(message)
+}
+
+/** Focused entry registered ahead of the engine family so registrations get
+ * a compact prominent receipt without promoting every engine function. */
+export const EngineRegisterTriggerToolView = {
+  isRegisterTriggerFunction,
+  tryRender: tryRenderRegisterTrigger,
+  tryRenderRunning: tryRenderRegisterTrigger,
+  tryRenderDisplay: tryRenderRegisterTriggerDisplay,
 }

@@ -1,0 +1,44 @@
+/* Every selector is scoped: injected CSS is otherwise global and unlayered. */
+
+[data-iii-ui='web'] .web-ui-image {
+  overflow: hidden;
+  margin: 0;
+  border: 1px solid var(--color-rule-2);
+  background: var(--color-bg);
+}
+
+[data-iii-ui='web'] .web-ui-image__asset {
+  display: block;
+  width: 100%;
+  max-height: 32rem;
+  object-fit: contain;
+  background: var(--color-paper-2);
+}
+
+[data-iii-ui='web'] .web-ui-image__caption {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--color-rule-2);
+  color: var(--color-ink-faint);
+  font-size: 12px;
+}
+
+[data-iii-ui='web'] .web-ui-image__url {
+  overflow: hidden;
+  min-width: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--color-ink-ghost);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 520px) {
+  [data-iii-ui='web'] .web-ui-image__caption {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 3px;
+  }
+}

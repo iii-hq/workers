@@ -1,0 +1,62 @@
+{
+  "function_id": "browser::clear-data",
+  "description": "Clear the session's browsing data (cookies, cache, storage), like the browser's Clear browsing data. Scoped to this session's browser context.",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ClearDataInput",
+    "type": "object",
+    "required": [
+      "session_id"
+    ],
+    "properties": {
+      "cache": {
+        "description": "Clear the HTTP cache. Default true.",
+        "default": null,
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "cookies": {
+        "description": "Clear cookies. Default true.",
+        "default": null,
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "session_id": {
+        "type": "string"
+      },
+      "storage": {
+        "description": "Clear localStorage / sessionStorage / IndexedDB for the current origin. Default true.",
+        "default": null,
+        "type": [
+          "boolean",
+          "null"
+        ]
+      }
+    }
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ClearDataOutput",
+    "type": "object",
+    "required": [
+      "cleared",
+      "ok"
+    ],
+    "properties": {
+      "cleared": {
+        "description": "What was cleared, for the confirmation message.",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "ok": {
+        "type": "boolean"
+      }
+    }
+  }
+}

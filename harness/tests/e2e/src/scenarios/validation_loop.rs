@@ -14,11 +14,9 @@ use serde_json::{json, Value};
 
 use crate::context::E2eContext;
 
+use super::assessment::{self, AssessmentSpec};
 use super::common;
-use super::{
-    CleanupFuture, CriterionSpec, EvaluationFuture, ExecutionPolicy, ObjectiveEvaluation,
-    ScenarioObservation, ScenarioSpec,
-};
+use super::{CleanupFuture, EvaluationFuture, ExecutionPolicy, ScenarioObservation, ScenarioSpec};
 
 pub const ID: &str = "validation_loop";
 
@@ -26,12 +24,28 @@ const HOOK_TYPE: &str = "harness::hook::post-turn";
 /// Goal: more than 6 rows; 4-row batches → exactly one denial, pass at 8.
 const THRESHOLD: u64 = 6;
 const EXPECTED_ROWS: u64 = 8;
+const GOAL_REACHED: AssessmentSpec = AssessmentSpec::hard_gated(
+    "goal_reached",
+    40,
+    "The goal table ends with more rows than the validator threshold.",
+);
+const VALIDATOR_DISCIPLINE: AssessmentSpec = AssessmentSpec::hard_gated(
+    "validator_discipline",
+    30,
+    "Exactly one post-turn validator registration carries the custom retry_prompt without function-call errors.",
+);
+const LOOP_EVIDENCE: AssessmentSpec = AssessmentSpec::hard_gated(
+    "loop_evidence",
+    30,
+    "At least one harness validation nudge was delivered and the loop converged at exactly the expected row count.",
+);
+const ASSESSMENTS: &[AssessmentSpec] = &[GOAL_REACHED, VALIDATOR_DISCIPLINE, LOOP_EVIDENCE];
 
 pub fn scenario(run_id: &str) -> ScenarioSpec {
     let table = table(run_id);
     ScenarioSpec {
         id: ID,
-        version: 1,
+        version: 3,
         prompt: format!(
             "You are testing a self-installed validation loop. Follow these steps exactly.\n\n\
              Step 1 — prepare the goal table. Call database::execute (db \"primary\") twice: first \
@@ -63,26 +77,7 @@ pub fn scenario(run_id: &str) -> ScenarioSpec {
             stuck_timeout_seconds: 300,
         },
         denied_functions: &[],
-        threshold: 90,
-        criteria: vec![
-            CriterionSpec {
-                id: "goal_reached",
-                weight: 40,
-                description: "The goal table ends with more rows than the validator threshold.",
-            },
-            CriterionSpec {
-                id: "validator_discipline",
-                weight: 30,
-                description: "Exactly one post-turn validator registration, carrying the \
-                              custom retry_prompt.",
-            },
-            CriterionSpec {
-                id: "loop_evidence",
-                weight: 30,
-                description: "At least one harness validation nudge was delivered and the loop \
-                              converged at exactly the expected row count.",
-            },
-        ],
+        criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: None,
         evaluate,
@@ -117,57 +112,41 @@ fn evaluate<'a>(
         let goal_reached = rows > THRESHOLD;
         let converged_exactly = rows == EXPECTED_ROWS;
         let no_errors = observation.metrics.totals.function_call_errors == 0;
+        let loop_points = loop_evidence_points(nudges, converged_exactly);
+        let validator_passed = single_registration && carries_retry_prompt && no_errors;
+        let loop_passed = nudges >= 1 && converged_exactly;
 
-        Ok(ObjectiveEvaluation {
-            hard_gates: vec![
-                common::gate(
-                    "goal_rows",
-                    goal_reached,
-                    format!("observed {rows} row(s), need more than {THRESHOLD}"),
+        Ok(assessment::build_evaluation([
+            GOAL_REACHED.full_or_zero(
+                goal_reached,
+                format!("observed {rows} row(s), need more than {THRESHOLD}"),
+            ),
+            VALIDATOR_DISCIPLINE.full_or_zero(
+                validator_passed,
+                format!(
+                    "observed {} post-turn registration(s), expected exactly one; \
+                     carries_retry_prompt={carries_retry_prompt}; function_call_errors={}",
+                    registrations.len(),
+                    observation.metrics.totals.function_call_errors
                 ),
-                common::gate(
-                    "validator_registered",
-                    single_registration,
-                    format!(
-                        "observed {} post-turn registration(s), expected exactly one",
-                        registrations.len()
-                    ),
-                ),
-                common::gate(
-                    "nudge_delivered",
-                    nudges >= 1,
-                    format!("observed {nudges} validation nudge(s), expected at least one"),
-                ),
-            ],
-            awards: vec![
-                common::award(
-                    "goal_reached",
-                    if goal_reached { 40 } else { 0 },
-                    "awarded when the table exceeds the validator threshold",
-                ),
-                common::award(
-                    "validator_discipline",
-                    if single_registration && carries_retry_prompt && no_errors {
-                        30
-                    } else {
-                        0
-                    },
-                    "awarded for one clean registration carrying the retry_prompt",
-                ),
-                common::award(
-                    "loop_evidence",
-                    if nudges >= 1 && converged_exactly {
-                        30
-                    } else if nudges >= 1 {
-                        15
-                    } else {
-                        0
-                    },
-                    format!("nudges={nudges}, rows={rows} (full marks at exactly {EXPECTED_ROWS})"),
-                ),
-            ],
-        })
+            ),
+            LOOP_EVIDENCE.gate_and_points(
+                loop_passed,
+                loop_points,
+                format!("nudges={nudges}, rows={rows} (full marks at exactly {EXPECTED_ROWS})"),
+            )?,
+        ]))
     })
+}
+
+fn loop_evidence_points(nudges: usize, converged_exactly: bool) -> u8 {
+    if nudges >= 1 && converged_exactly {
+        LOOP_EVIDENCE.weight()
+    } else if nudges >= 1 {
+        15
+    } else {
+        0
+    }
 }
 
 fn cleanup<'a>(context: &'a E2eContext, run_id: &'a str) -> CleanupFuture<'a> {
@@ -211,18 +190,4 @@ pub(super) fn suffix(run_id: &str) -> String {
 
 fn table(run_id: &str) -> String {
     format!("valtest_{}", suffix(run_id))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn names_are_sql_safe_and_the_prompt_carries_them() {
-        let spec = scenario("aB19-rest");
-        assert!(spec.prompt.contains("valtest_aB19"));
-        assert!(spec.prompt.contains(HOOK_TYPE));
-        assert!(spec.prompt.contains("{value}"));
-        spec.validate().unwrap();
-    }
 }

@@ -2,42 +2,28 @@
 
 How agent-facing skill docs and default permissions are managed.
 
-## skills/SKILL.md lifecycle
+## Skill documentation lifecycle
 
 ### Authoring
 
 Each worker may ship `skills/SKILL.md` — a lean intent doc for agents (when to
-use, boundaries, function catalogue). **Not** JSON schemas or worked examples;
-those live in `iii get function info`.
+use, boundaries, function catalogue). It is optional, including when other
+markdown documents exist under `skills/`. **Not** JSON schemas or worked
+examples; those live in `iii get function info`.
 
 Author per [`DOCUMENTATION_GUIDELINES.md`](../../DOCUMENTATION_GUIDELINES.md).
 
 ### PR validation
 
-| Case | Rule |
-|---|---|
-| Bootstrap workers (`shell`, `iii-directory`) | `skills/SKILL.md` **required**, non-empty, ≤ 256 KiB |
-| Other workers | Optional; validated only if present |
-
-Bootstrap list: `BOOTSTRAP_WORKERS` in
-[`validate_worker.py`](../../.github/scripts/validate_worker.py) — the workers
-whose skills the harness stack requires at boot. Keep it in sync with what the
-harness actually bootstraps when that set changes.
+Skill documents are optional for every worker. PR validation does not require a
+canonical `skills/SKILL.md` entrypoint.
 
 ### Publish
 
 On every successful release (when `interface_smoke != false`):
 
-1. `build_skills_payload.py` collects `skills/SKILL.md` and `skills/<rel>.md`
+1. `build_skills_payload.py` collects any non-empty markdown under `skills/`
 2. `POST /w/<worker>/skills` — skipped cleanly when no markdown found
-
-### Out-of-band republish
-
-[`publish-worker-skills.yml`](../../.github/workflows/publish-worker-skills.yml)
-updates skills without a version bump. Worker must be in `ALLOWED_WORKERS`
-([`parse_publish_workers_input.py`](../../.github/scripts/parse_publish_workers_input.py)).
-
-**Drift note:** `email` ships skills but is not yet in `ALLOWED_WORKERS`.
 
 ## iii-permissions.yaml
 
@@ -67,6 +53,17 @@ rules:
 
 Precedent: `session-manager` block — deny all writes and `session::store::*`;
 reads stay at default approval.
+
+For the configuration worker, `configuration::list` and
+`configuration::schema` are read-only and allowed. `configuration::get` is a
+sensitive read and needs approval by default when the gate is configured. When
+approval-gate configuration is unavailable, the Console fallback permits both
+`configuration::get` and `configuration::set` for existing entries. With the
+gate configured, `configuration::set` follows its deployment rules; the
+repository default denies it. Agents cannot call
+`configuration::register`. Direct Console configuration pages and
+worker-to-worker configuration calls use privileged paths; this agent policy
+does not change them.
 
 Update [`iii-permissions.yaml`](../../iii-permissions.yaml) when adding a worker
 whose functions agents should or should not call without approval.

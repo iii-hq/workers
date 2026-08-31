@@ -35,13 +35,20 @@ test('shows two traces and exposes function arguments in trace events', async ({
   ).toHaveCount(1)
 
   const traces = page.getByRole('region', { name: 'traces' })
-  const grouping = traces.getByRole('button', {
-    name: /^(?:no grouping|group by .+)$/,
-  })
-  if ((await grouping.textContent())?.trim() !== 'group by session') {
-    await grouping.click()
-    await page.getByRole('button', { name: 'session', exact: true }).click()
-  }
+  // The list follows the active chat (MOT-4479): scoped to this session,
+  // flat (grouping is suspended while scoped), with a dismissable chip.
+  // Assert the scoped arrival, then clear the scope to exercise the
+  // classic grouped flow below.
+  const clearScope = traces.getByRole('button', { name: 'show all sessions' })
+  await expect(clearScope).toBeVisible()
+  await expect(traces.locator('[data-trace-row-id]')).toHaveCount(2)
+  await clearScope.click()
+
+  await traces.getByRole('button', { name: 'group traces by' }).click()
+  await page
+    .getByRole('listbox', { name: 'group traces by' })
+    .getByRole('option', { name: 'session', exact: true })
+    .click()
 
   const group = traces.locator(
     `[data-trace-group-value="${stack.ready.session.id}"]`,
@@ -98,7 +105,7 @@ test('shows two traces and exposes function arguments in trace events', async ({
     'data-span-name',
     `execute ${functionId}`,
   )
-  await spanPanel.getByRole('tab', { name: /^events/ }).click()
+  await spanPanel.getByRole('tab', { name: /^events(?:\s*\d+)?$/i }).click()
 
   const inputEvent = spanPanel.locator(
     '[data-span-event-name="iii.invocation.input"]',

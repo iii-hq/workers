@@ -79,15 +79,14 @@ async fn main() -> Result<()> {
     functions::register_all(&iii, &cfg);
 
     let api_path = cfg.api_path.clone();
-    match iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "http".to_string(),
-        function_id: functions::FUNCTION_ID.to_string(),
-        config: json!({
+    match iii.register_trigger(RegisterTriggerInput::new(
+        "http".to_string(),
+        functions::FUNCTION_ID.to_string(),
+        json!({
             "api_path": api_path,
             "http_method": "POST",
         }),
-        metadata: None,
-    }) {
+    )) {
         Ok(_) => tracing::info!(
             function_id = functions::FUNCTION_ID,
             api_path = %api_path,

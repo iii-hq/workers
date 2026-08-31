@@ -1,5 +1,11 @@
 import { useMemo, useState } from 'react'
-import { Badge, Button, EmptyState, type Host, Input } from '@iii-dev/console-ui'
+import {
+  Badge,
+  Button,
+  EmptyState,
+  type Host,
+  Input,
+} from '@iii-dev/console-ui'
 import {
   ChevronLeft,
   ChevronRight,
@@ -12,13 +18,16 @@ import {
   X,
 } from './icons'
 import { type MemoryItem, recall } from './memory-data'
+import { useDirtyDelta } from './widgets'
 
 /**
  * The selected bank's memories, built for large banks: server-side pages of
  * `pageSize` (newest first) with explicit paging controls, and a search
  * box that runs `memory::recall` (the ranked scorer, not a client filter)
  * so finding one memory among 10k costs one call. Every row is editable in
- * place: pin, edit text (revision bump), tombstone delete.
+ * place: pin, edit text (revision bump), tombstone delete. In-place edits
+ * and the new-memory draft report into the page-level dirty guard; rows
+ * are keyed by memory id, so an open edit survives live refreshes.
  */
 
 /** "2h ago" style relative time; day precision past a week. */
@@ -65,6 +74,7 @@ interface MemoriesPanelProps {
   onEdit: (memory: MemoryItem, text: string) => Promise<boolean>
   onDelete: (memory: MemoryItem) => void
   busy: boolean
+  reportDirty: (delta: number) => void
 }
 
 function FactRow({
@@ -75,6 +85,7 @@ function FactRow({
   onOpenChat,
   busy,
   score,
+  reportDirty,
 }: {
   memory: MemoryItem
   onPin: (memory: MemoryItem) => void
@@ -83,18 +94,22 @@ function FactRow({
   onOpenChat: (sessionId: string) => void
   busy: boolean
   score?: number
+  reportDirty: (delta: number) => void
 }) {
   const [editing, setEditing] = useState(false)
   const [editText, setEditText] = useState(memory.text)
   const superseded = memory.invalid_at != null
+  // An open edit with changed text guards navigation; the row is keyed by
+  // memory id, so the draft itself survives live refreshes.
+  useDirtyDelta(editing && editText !== memory.text, reportDirty)
 
   return (
     <li
-      className={`mem-fact${memory.pinned ? ' pinned' : ''}${superseded ? ' superseded' : ''}`}
+      className={`mem-ui-fact${memory.pinned ? ' pinned' : ''}${superseded ? ' superseded' : ''}`}
     >
       {editing ? (
         <form
-          className="mem-row"
+          className="mem-ui-row"
           onSubmit={(e) => {
             e.preventDefault()
             const text = editText.trim()
@@ -109,7 +124,7 @@ function FactRow({
             onChange={setEditText}
             preserveCase
             aria-label="edit memory"
-            className="mem-flex1"
+            className="mem-ui-flex1"
           />
           <Button type="submit" variant="primary" size="sm">
             save
@@ -124,21 +139,21 @@ function FactRow({
           </Button>
         </form>
       ) : (
-        <p className="mem-fact-text">{memory.text}</p>
+        <p className="mem-ui-fact-text">{memory.text}</p>
       )}
-      <div className="mem-fact-meta">
+      <div className="mem-ui-fact-meta">
         {score !== undefined ? (
-          <span className="mem-score">{score.toFixed(2)}</span>
+          <span className="mem-ui-score">{score.toFixed(2)}</span>
         ) : null}
         {memory.entities.map((entity) => (
           <Badge key={entity}>{entity}</Badge>
         ))}
         {memory.tags.map((tag) => (
-          <span key={tag} className="mem-tag">
+          <span key={tag} className="mem-ui-tag">
             #{tag}
           </span>
         ))}
-        <span className="mem-meta-note">
+        <span className="mem-ui-meta-note">
           {timeAgo(memory.created_at)}
           {memory.corroboration > 0 && ` · seen ×${memory.corroboration + 1}`}
           {memory.confidence === 'stated' && ' · saved explicitly'}
@@ -149,13 +164,13 @@ function FactRow({
             type="button"
             onClick={() => onOpenChat(memory.source?.session_id ?? '')}
             title="open the conversation this memory came from"
-            className="mem-fromchat"
+            className="mem-ui-fromchat"
           >
-            <MessageSquare size={12} aria-hidden />
+            <MessageSquare size={16} aria-hidden />
             from chat
           </button>
         ) : null}
-        <span className="mem-spacer" />
+        <span className="mem-ui-spacer" />
         <Button
           variant="icon"
           size="icon"
@@ -169,9 +184,9 @@ function FactRow({
           }
         >
           {memory.pinned ? (
-            <PinOff size={14} aria-hidden />
+            <PinOff size={16} aria-hidden />
           ) : (
-            <Pin size={14} aria-hidden />
+            <Pin size={16} aria-hidden />
           )}
         </Button>
         <Button
@@ -184,7 +199,7 @@ function FactRow({
           disabled={busy || superseded}
           aria-label="edit memory"
         >
-          <Pencil size={14} aria-hidden />
+          <Pencil size={16} aria-hidden />
         </Button>
         <Button
           variant="icon"
@@ -194,7 +209,7 @@ function FactRow({
           aria-label="delete memory"
           title="tombstone (leaves recall; stays on disk under show history)"
         >
-          <Trash2 size={14} aria-hidden />
+          <Trash2 size={16} aria-hidden />
         </Button>
       </div>
     </li>
@@ -220,6 +235,7 @@ export function MemoriesPanel({
   onEdit,
   onDelete,
   busy,
+  reportDirty,
 }: MemoriesPanelProps) {
   const [draft, setDraft] = useState('')
   const [query, setQuery] = useState('')
@@ -227,6 +243,8 @@ export function MemoriesPanel({
     { memory: MemoryItem; score: number }[] | null
   >(null)
   const [searching, setSearching] = useState(false)
+  // A typed-but-unsaved new memory is worth a confirm before navigating.
+  useDirtyDelta(draft.trim().length > 0, reportDirty)
 
   const searchMode = results !== null
 
@@ -249,7 +267,11 @@ export function MemoriesPanel({
   const pages = Math.max(1, Math.ceil(total / pageSize))
 
   const buckets = useMemo(
-    () => activityBuckets(memories.map((m) => m.created_at), 30),
+    () =>
+      activityBuckets(
+        memories.map((m) => m.created_at),
+        30,
+      ),
     [memories],
   )
   const capturedThisWeek = useMemo(
@@ -259,35 +281,35 @@ export function MemoriesPanel({
   const maxBucket = Math.max(1, ...buckets)
 
   return (
-    <div className="mem-stack">
-      <p className="mem-hint">
+    <div className="mem-ui-stack">
+      <p className="mem-ui-hint">
         one line per durable thing said in chat — captured automatically after
-        each turn, each with the conversation it came from. a memory reaches
-        the agent only when it matches the question being asked; rules are the
+        each turn, each with the conversation it came from. a memory reaches the
+        agent only when it matches the question being asked; rules are the
         always-on half.
       </p>
 
       {total > 0 ? (
-        <div className="mem-activity">
-          <div className="mem-bars" aria-hidden>
+        <div className="mem-ui-activity">
+          <div className="mem-ui-bars" aria-hidden>
             {buckets.map((count, i) => (
               <span
                 // biome-ignore lint/suspicious/noArrayIndexKey: fixed-size day series
                 key={i}
-                className={`mem-bar${count > 0 ? ' on' : ''}`}
+                className={`mem-ui-bar${count > 0 ? ' on' : ''}`}
                 style={{
                   height: `${count > 0 ? Math.max(15, Math.round((count / maxBucket) * 100)) : 6}%`,
                 }}
               />
             ))}
           </div>
-          <div className="mem-activity-text">
-            <span className="mem-activity-count">
+          <div className="mem-ui-activity-text">
+            <span className="mem-ui-activity-count">
               {capturedThisWeek > 0
                 ? `${capturedThisWeek} captured this week`
                 : 'nothing captured this week'}
             </span>
-            <span className="mem-subhint">
+            <span className="mem-ui-subhint">
               last 30 days · {total} total · chat and this page stay in sync
               live
             </span>
@@ -296,7 +318,7 @@ export function MemoriesPanel({
       ) : null}
 
       <form
-        className="mem-row"
+        className="mem-ui-row"
         onSubmit={(e) => {
           e.preventDefault()
           const text = draft.trim()
@@ -312,7 +334,7 @@ export function MemoriesPanel({
           preserveCase
           placeholder="remember something..."
           aria-label="new memory"
-          className="mem-flex1"
+          className="mem-ui-flex1"
         />
         <Button
           type="submit"
@@ -325,7 +347,7 @@ export function MemoriesPanel({
       </form>
 
       <form
-        className="mem-row"
+        className="mem-ui-row"
         onSubmit={(e) => {
           e.preventDefault()
           void runSearch()
@@ -340,16 +362,16 @@ export function MemoriesPanel({
           preserveCase
           placeholder={`search ${total} memories (ranked recall)...`}
           aria-label="search memories"
-          className="mem-flex1"
+          className="mem-ui-flex1"
         />
         <Button
           type="submit"
           variant="ghost"
           size="sm"
           disabled={!query.trim() || searching}
-          className="mem-gap1"
+          className="mem-ui-gap1"
         >
-          <Search size={14} aria-hidden />
+          <Search size={16} aria-hidden />
           search
         </Button>
         {searchMode ? (
@@ -361,23 +383,23 @@ export function MemoriesPanel({
               setQuery('')
               setResults(null)
             }}
-            className="mem-gap1"
+            className="mem-ui-gap1"
           >
-            <X size={14} aria-hidden />
+            <X size={16} aria-hidden />
             clear
           </Button>
         ) : null}
       </form>
 
       {tags.length > 0 ? (
-        <div className="mem-row wrap">
-          <span className="mem-caption">tags</span>
+        <div className="mem-ui-row wrap">
+          <span className="mem-ui-caption">Tags</span>
           {tags.map(({ tag: t, count }) => (
             <button
               key={t}
               type="button"
               onClick={() => onTagChange(tag === t ? null : t)}
-              className={`mem-tagbtn${tag === t ? ' active' : ''}`}
+              className={`mem-ui-tagbtn${tag === t ? ' active' : ''}`}
             >
               #{t} · {count}
             </button>
@@ -386,7 +408,7 @@ export function MemoriesPanel({
             <button
               type="button"
               onClick={() => onTagChange(null)}
-              className="mem-linklike"
+              className="mem-ui-linkish quiet"
             >
               clear
             </button>
@@ -394,15 +416,15 @@ export function MemoriesPanel({
         </div>
       ) : null}
 
-      <div className="mem-spread wrap">
-        <span className="mem-hint">
+      <div className="mem-ui-spread wrap">
+        <span className="mem-ui-hint">
           {searchMode
             ? `${results.length} matches (top 50 by score)`
             : `${total} memories · page ${page}/${pages}`}
         </span>
-        <div className="mem-row">
+        <div className="mem-ui-row">
           {!searchMode && pages > 1 ? (
-            <span className="mem-row tight">
+            <span className="mem-ui-row tight">
               <Button
                 variant="icon"
                 size="icon"
@@ -410,7 +432,7 @@ export function MemoriesPanel({
                 onClick={() => onOffsetChange(Math.max(0, offset - pageSize))}
                 aria-label="previous page"
               >
-                <ChevronLeft size={14} aria-hidden />
+                <ChevronLeft size={16} aria-hidden />
               </Button>
               <Button
                 variant="icon"
@@ -419,11 +441,11 @@ export function MemoriesPanel({
                 onClick={() => onOffsetChange(offset + pageSize)}
                 aria-label="next page"
               >
-                <ChevronRight size={14} aria-hidden />
+                <ChevronRight size={16} aria-hidden />
               </Button>
             </span>
           ) : null}
-          <label className="mem-check">
+          <label className="mem-ui-check">
             <input
               type="checkbox"
               checked={includeSuperseded}
@@ -441,7 +463,7 @@ export function MemoriesPanel({
             description="recall matches on words and entity handles. try different terms or clear the search."
           />
         ) : (
-          <ul className="mem-fact-list">
+          <ul className="mem-ui-fact-list">
             {results.map(({ memory, score }) => (
               <FactRow
                 key={memory.id}
@@ -452,6 +474,7 @@ export function MemoriesPanel({
                 onDelete={onDelete}
                 onOpenChat={onOpenChat}
                 busy={busy}
+                reportDirty={reportDirty}
               />
             ))}
           </ul>
@@ -462,7 +485,7 @@ export function MemoriesPanel({
           description="pick this bank in the chat composer, then just talk — say something durable ('our api port is 3111') and it appears here after the turn, linked to that conversation. or type one above."
         />
       ) : (
-        <ul className="mem-fact-list">
+        <ul className="mem-ui-fact-list">
           {memories.map((memory) => (
             <FactRow
               key={memory.id}
@@ -472,6 +495,7 @@ export function MemoriesPanel({
               onDelete={onDelete}
               onOpenChat={onOpenChat}
               busy={busy}
+              reportDirty={reportDirty}
             />
           ))}
         </ul>

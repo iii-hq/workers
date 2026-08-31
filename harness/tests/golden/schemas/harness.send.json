@@ -429,6 +429,13 @@
       "SendOptions": {
         "description": "Per-send options frozen onto the turn record (harness.md § `harness::send`).",
         "properties": {
+          "agent": {
+            "description": "Run the session as a directory agent profile (`directory::agents::*` id). Session-creating sends only — the profile's resolved system prompt (its `extends` chain composed by the directory) REPLACES the built-in identity (only the `mode` paragraph is prepended), its skill filter becomes the session's skill selection, its `model` is the fallback when this send names none, and its identity sticks like the system prompt (later sends inherit; naming an explicit prompt field sheds it). Refused on an existing session, combined with either prompt field, or when the profile's `extends` chain does not resolve.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "functions": {
             "anyOf": [
               {
@@ -515,6 +522,16 @@
               "null"
             ]
           },
+          "skills": {
+            "description": "Exact skill ids advertised to the model. On a fresh session, omitted or empty means all. On an existing session, omitted inherits its filter and empty resets to all. Explicit changes require no active turn. This is index curation, not authorization.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "system_prompt": {
             "type": [
               "string",
@@ -522,13 +539,15 @@
             ]
           },
           "system_prompt_strategy": {
-            "allOf": [
+            "anyOf": [
               {
                 "$ref": "#/definitions/SystemPromptStrategy"
+              },
+              {
+                "type": "null"
               }
             ],
-            "default": "enrich",
-            "description": "How `system_prompt` combines with the built-in prompt: `override` replaces it; `enrich` (default) appends to it; `disabled` omits it."
+            "description": "How `system_prompt` combines with the built-in prompt: `override` replaces it; `enrich` (default) appends to it; `disabled` omits it. When BOTH prompt fields are omitted on an existing session, the prior turn's resolved prompt is inherited; naming a strategy (even bare) resolves fresh — the reset-to-default escape hatch."
           },
           "thinking_level": {
             "anyOf": [
@@ -701,7 +720,7 @@
         "description": "The incoming message; a string is sugar for a user text message. The role must be `user` or `custom`."
       },
       "model": {
-        "description": "Required to start a NEW session. Steering or waking an EXISTING session may omit it — the session's last turn's model (and provider, unless overridden) is inherited, the same rule the notification inject path uses.",
+        "description": "Required to start a NEW session unless `options.agent` supplies a model. Steering or waking an EXISTING session may omit it — the session's last turn's model (and provider, unless overridden) is inherited, the same rule the notification inject path uses. A model declared by the selected agent profile is authoritative.",
         "type": [
           "string",
           "null"

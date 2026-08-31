@@ -39,6 +39,17 @@ async fn count_tokens_tools(world: &mut ContextWorld, model: String, step: &Step
     world.call_pure("context::count-tokens", payload).await;
 }
 
+#[when(regex = r#"^I count tokens with model "([^"]+)" and parts:$"#)]
+async fn count_tokens_parts(world: &mut ContextWorld, model: String, step: &Step) {
+    let parts = docstring_payload(world, step);
+    let payload = json!({
+        "messages": history(world),
+        "model": world.model_input(&model),
+        "parts": parts
+    });
+    world.call_pure("context::count-tokens", payload).await;
+}
+
 #[when("I prune the history")]
 async fn prune(world: &mut ContextWorld) {
     let payload = json!({ "messages": history(world) });

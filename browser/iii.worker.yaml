@@ -3,6 +3,13 @@ name: browser
 language: rust
 deploy: binary
 manifest: Cargo.toml
+license: Apache-2.0
 bin: browser
-tags: [browser, chromium, automation, web, cdp]
-description: Interactive Chromium sessions on the iii bus. Navigate, act, read the page console, pick elements.
+tags: [browser, chromium, automation, web, cdp, scraping, extraction, parsing]
+description: Interactive Chromium sessions on the iii bus. Navigate, act, read the page console, pick elements. Also parses HTML natively without a browser (browser::* — css/xpath/regex, element search, markdown).
+
+# Browser compatibility validation budgets for five concurrent Chromium
+# processes inside this production envelope. Runtime session caps still apply.
+resources:
+  memory: 4096
+  cpus: 2

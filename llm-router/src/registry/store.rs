@@ -1,5 +1,5 @@
 //! Durable provider registry. Single writer: the records Mutex is held across
-//! mutate + state::set (spec § Registration lifecycle, "Serialized merges").
+//! prepare + state::set + publish (spec § Registration lifecycle, "Serialized merges").
 //! Persistence is iii state (`state::get`/`state::set` engine functions via
 //! src/state.rs) under scope "llm-router"; the router is the only writer of
 //! its state keys (single-instance worker).
@@ -37,11 +37,18 @@ pub struct ProviderRecord {
     pub worker_id: Option<String>,
     pub available: bool,
     pub registered_at: i64,
+    /// Monotonic identity for one successful registration of this provider.
+    /// Legacy snapshots deserialize as generation zero; their first
+    /// re-registration advances to one.
+    #[serde(default)]
+    pub generation: u64,
 }
 
 pub struct RegistryStore {
     iii: IIIClient,
     records: Mutex<HashMap<String, ProviderRecord>>,
+    #[cfg(test)]
+    persist_result: Option<Result<(), Error>>,
 }
 
 /// Outcome of `upsert`: the stored record, the raw registration token (it
@@ -51,6 +58,27 @@ pub struct Upserted {
     pub record: ProviderRecord,
     pub token: String,
     pub availability_recovered: bool,
+}
+
+/// Token-gated registration assembled without changing durable or in-memory
+/// state. The register handler may safely perform its other fallible setup
+/// before passing this value to `commit_upsert`.
+pub struct PreparedUpsert {
+    record: ProviderRecord,
+    token: String,
+    expected: Option<RegistrationRevision>,
+}
+
+#[derive(Clone)]
+struct RegistrationRevision {
+    token_hash: String,
+    generation: u64,
+}
+
+impl PreparedUpsert {
+    pub fn record(&self) -> &ProviderRecord {
+        &self.record
+    }
 }
 
 /// Pure record assembly for upsert (no I/O — persistence is the caller's job).
@@ -72,7 +100,30 @@ fn build_record(
         // flips this back down (chat.rs).
         available: true,
         registered_at: existing.map(|e| e.registered_at).unwrap_or_else(now_ms),
+        generation: existing
+            .map(|e| e.generation.wrapping_add(1).max(1))
+            .unwrap_or(1),
         declaration,
+    }
+}
+
+fn revision(record: &ProviderRecord) -> RegistrationRevision {
+    RegistrationRevision {
+        token_hash: record.token_hash.clone(),
+        generation: record.generation,
+    }
+}
+
+fn revision_matches(
+    current: Option<&ProviderRecord>,
+    expected: Option<&RegistrationRevision>,
+) -> bool {
+    match (current, expected) {
+        (None, None) => true,
+        (Some(current), Some(expected)) => {
+            current.token_hash == expected.token_hash && current.generation == expected.generation
+        }
+        _ => false,
     }
 }
 
@@ -90,6 +141,8 @@ impl RegistryStore {
         Self {
             iii,
             records: Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            persist_result: None,
         }
     }
 
@@ -122,6 +175,10 @@ impl RegistryStore {
     }
 
     async fn persist(&self, records: &HashMap<String, ProviderRecord>) -> Result<(), Error> {
+        #[cfg(test)]
+        if let Some(result) = &self.persist_result {
+            return result.clone();
+        }
         let value = serde_json::to_value(records).unwrap_or_default();
         state_set(&self.iii, REGISTRY_KEY, value).await
     }
@@ -138,13 +195,13 @@ impl RegistryStore {
     /// First register binds (mints a token, persists its hash); later
     /// registers must present the raw token. Returns the raw token — it
     /// exists nowhere else.
-    pub async fn upsert(
+    pub async fn prepare_upsert(
         &self,
         declaration: ProviderDeclaration,
         worker_id: Option<String>,
         token: Option<String>,
-    ) -> Result<Upserted, RouterError> {
-        let mut records = self.records.lock().await; // serialized writer
+    ) -> Result<PreparedUpsert, RouterError> {
+        let records = self.records.lock().await;
         let existing = records.get(&declaration.id);
         if let Some(existing) = existing {
             let presented = token.as_deref().map(hash_token);
@@ -159,20 +216,55 @@ impl RegistryStore {
             }
         }
         let raw_token = token.unwrap_or_else(|| Uuid::new_v4().to_string());
-        let recovered = availability_recovered(existing);
         let record = build_record(existing, declaration, worker_id, &raw_token);
-        records.insert(record.declaration.id.clone(), record.clone());
-        self.persist(&records).await.map_err(|e| {
+        Ok(PreparedUpsert {
+            record,
+            token: raw_token,
+            expected: existing.map(revision),
+        })
+    }
+
+    /// Persist and publish a prepared registration if its predecessor is
+    /// still current. The revision check makes the two-phase API safe even if
+    /// a caller fails to hold the higher-level registration lock.
+    pub async fn commit_upsert(&self, prepared: PreparedUpsert) -> Result<Upserted, RouterError> {
+        let mut records = self.records.lock().await; // serialized writer
+        let id = prepared.record.declaration.id.clone();
+        let existing = records.get(&id);
+        if !revision_matches(existing, prepared.expected.as_ref()) {
+            return Err(RouterError::new(
+                RouterCode::RegistrationRejected,
+                format!("provider {id} changed while registration was being prepared; retry"),
+            ));
+        }
+        let recovered = availability_recovered(existing);
+        let mut next_records = records.clone();
+        next_records.insert(id, prepared.record.clone());
+        self.persist(&next_records).await.map_err(|e| {
             RouterError::new(
                 RouterCode::InvalidRequest,
                 format!("registry persist failed: {e}"),
             )
         })?;
+        // Publish only after the durable write succeeds. In particular, a
+        // failed first registration must not retain a hash for the raw token
+        // that the caller never received.
+        *records = next_records;
         Ok(Upserted {
-            record,
-            token: raw_token,
+            record: prepared.record,
+            token: prepared.token,
             availability_recovered: recovered,
         })
+    }
+
+    pub async fn upsert(
+        &self,
+        declaration: ProviderDeclaration,
+        worker_id: Option<String>,
+        token: Option<String>,
+    ) -> Result<Upserted, RouterError> {
+        let prepared = self.prepare_upsert(declaration, worker_id, token).await?;
+        self.commit_upsert(prepared).await
     }
 
     /// Token gate for resolve / reconcile / update_credential (and re-register).
@@ -197,19 +289,30 @@ impl RegistryStore {
         }
     }
 
-    /// Returns true when the flag actually changed (callers emit on change only).
-    pub async fn set_availability(&self, id: &str, available: bool) -> bool {
+    /// Change availability only for the registration that originated an
+    /// observed dispatch result. Availability is deliberately memory-only:
+    /// persisted flags are stale after a restart and `load` always restores
+    /// them as down. Avoiding a full-registry state write here also keeps a
+    /// state-worker outage out of the dispatch hot path and prevents an old
+    /// availability snapshot from overwriting a newer registration.
+    /// Returns true when the in-memory flag changed.
+    pub async fn set_availability_if_current(
+        &self,
+        id: &str,
+        generation: u64,
+        available: bool,
+    ) -> bool {
         let mut records = self.records.lock().await;
-        let Some(rec) = records.get_mut(id) else {
+        let Some(rec) = records.get(id) else {
             return false;
         };
-        if rec.available == available {
+        if rec.generation != generation || rec.available == available {
             return false;
         }
-        rec.available = available;
-        let snapshot = records.clone();
-        drop(records);
-        let _ = self.persist(&snapshot).await; // best-effort persist of a flag flip
+        records
+            .get_mut(id)
+            .expect("record came from the same snapshot")
+            .available = available;
         true
     }
 }
@@ -221,6 +324,14 @@ mod tests {
 
     fn decl(id: &str) -> ProviderDeclaration {
         serde_json::from_value(json!({ "id": id })).expect("minimal declaration")
+    }
+
+    fn store_with_persistence(result: Result<(), Error>) -> RegistryStore {
+        RegistryStore {
+            iii: IIIClient::new("ws://unused.invalid"),
+            records: Mutex::new(HashMap::new()),
+            persist_result: Some(result),
+        }
     }
 
     // F9: the engine keys topology events by a per-connection UUID while the
@@ -236,6 +347,7 @@ mod tests {
             record.available,
             "a provider that just registered must be marked available"
         );
+        assert_eq!(record.generation, 1);
     }
 
     #[test]
@@ -250,6 +362,7 @@ mod tests {
             back.available,
             "re-registering brings a downed provider back up"
         );
+        assert_eq!(back.generation, down.generation + 1);
     }
 
     // A down→up transition on re-register must be reported so the register
@@ -269,8 +382,158 @@ mod tests {
     }
 
     #[test]
+    fn legacy_record_without_generation_deserializes_as_zero() {
+        let record: ProviderRecord = serde_json::from_value(json!({
+            "declaration": { "id": "anthropic" },
+            "token_hash": "hash",
+            "worker_id": "w-legacy",
+            "available": true,
+            "registered_at": 1
+        }))
+        .expect("legacy registry snapshot remains readable");
+        assert_eq!(record.generation, 0);
+        let next = build_record(
+            Some(&record),
+            decl("anthropic"),
+            Some("w-new".into()),
+            "ignored",
+        );
+        assert_eq!(next.generation, 1);
+    }
+
+    #[test]
     fn reregistering_an_up_provider_is_not_a_recovery() {
         let up = build_record(None, decl("anthropic"), Some("w-1".into()), "tok"); // available: true
         assert!(!availability_recovered(Some(&up)));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_persist_does_not_publish_registration_or_orphan_token() {
+        // An unconnected client makes state::set time out. Tokio's paused
+        // clock advances directly to the SDK timeout, so this stays a fast
+        // unit test without a live engine.
+        let store = RegistryStore::new(IIIClient::new("ws://unconnected.invalid"));
+
+        for _ in 0..2 {
+            let err = store
+                .upsert(decl("anthropic"), Some("w-1".into()), None)
+                .await
+                .err()
+                .expect("persistence must fail");
+            assert_eq!(err.code, RouterCode::InvalidRequest);
+            assert!(err.message.contains("registry persist failed"));
+            assert!(
+                store.get("anthropic").await.is_none(),
+                "a failed write must not publish a record or its token hash"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_persist_keeps_previous_registration_unchanged() {
+        let store = RegistryStore::new(IIIClient::new("ws://unconnected.invalid"));
+        let original = ProviderRecord {
+            available: false,
+            ..build_record(None, decl("anthropic"), Some("w-old".into()), "tok")
+        };
+        store
+            .records
+            .lock()
+            .await
+            .insert("anthropic".into(), original.clone());
+
+        let mut replacement = decl("anthropic");
+        replacement.display_name = Some("replacement".into());
+        let err = store
+            .upsert(replacement, Some("w-new".into()), Some("tok".into()))
+            .await
+            .err()
+            .expect("persistence must fail");
+        assert_eq!(err.code, RouterCode::InvalidRequest);
+
+        let current = store
+            .get("anthropic")
+            .await
+            .expect("the previous registration must remain");
+        assert_eq!(current.token_hash, original.token_hash);
+        assert_eq!(current.worker_id, original.worker_id);
+        assert_eq!(current.registered_at, original.registered_at);
+        assert_eq!(current.available, original.available);
+        assert_eq!(current.declaration, original.declaration);
+    }
+
+    #[tokio::test]
+    async fn stale_prepared_registration_is_rejected_after_another_commit() {
+        let store = store_with_persistence(Ok(()));
+        let stale = store
+            .prepare_upsert(decl("anthropic"), Some("w-stale".into()), None)
+            .await
+            .expect("first prepare");
+        let winner = store
+            .prepare_upsert(decl("anthropic"), Some("w-winner".into()), None)
+            .await
+            .expect("concurrent prepare");
+        let winner = store.commit_upsert(winner).await.expect("winner commits");
+
+        let err = store
+            .commit_upsert(stale)
+            .await
+            .err()
+            .expect("stale candidate must lose the compare-and-set");
+        assert_eq!(err.code, RouterCode::RegistrationRejected);
+        let current = store.get("anthropic").await.expect("winner remains");
+        assert_eq!(current.worker_id.as_deref(), Some("w-winner"));
+        assert_eq!(current.generation, winner.record.generation);
+    }
+
+    #[tokio::test]
+    async fn old_generation_cannot_change_reregistered_provider_availability() {
+        let store = store_with_persistence(Ok(()));
+        let first = store
+            .upsert(decl("anthropic"), Some("w-1".into()), None)
+            .await
+            .expect("first registration");
+        let old_generation = first.record.generation;
+        let second = store
+            .upsert(decl("anthropic"), Some("w-2".into()), Some(first.token))
+            .await
+            .expect("re-registration");
+        assert!(second.record.generation > old_generation);
+
+        assert!(
+            !store
+                .set_availability_if_current("anthropic", old_generation, false)
+                .await,
+            "a late function_not_found from the old registration must be ignored"
+        );
+        let current = store.get("anthropic").await.expect("provider remains");
+        assert_eq!(current.generation, second.record.generation);
+        assert!(current.available);
+    }
+
+    #[tokio::test]
+    async fn availability_change_does_not_depend_on_state_persistence() {
+        let store = store_with_persistence(Err(Error::Timeout));
+        let record = build_record(None, decl("anthropic"), Some("w-1".into()), "tok");
+        let generation = record.generation;
+        store
+            .records
+            .lock()
+            .await
+            .insert("anthropic".into(), record);
+
+        assert!(
+            store
+                .set_availability_if_current("anthropic", generation, false)
+                .await
+        );
+        assert!(
+            !store
+                .get("anthropic")
+                .await
+                .expect("provider remains")
+                .available,
+            "availability must remain operational while durable state is unavailable"
+        );
     }
 }

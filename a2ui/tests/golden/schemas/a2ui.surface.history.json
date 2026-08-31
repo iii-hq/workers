@@ -1,0 +1,124 @@
+{
+  "description": "List the bounded, restorable revision snapshots for one A2UI surface.",
+  "function_id": "a2ui::surface::history",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "additionalProperties": false,
+    "properties": {
+      "surface_id": {
+        "description": "Surface whose restorable snapshots should be listed.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "surface_id"
+    ],
+    "title": "HistoryRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ActionRecord": {
+        "properties": {
+          "action_id": {
+            "default": "",
+            "type": "string"
+          },
+          "context": true,
+          "data_model": true,
+          "name": {
+            "type": "string"
+          },
+          "source_component_id": {
+            "type": "string"
+          },
+          "timestamp_ms": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "context",
+          "name",
+          "source_component_id",
+          "timestamp_ms"
+        ],
+        "type": "object"
+      },
+      "Component": {
+        "additionalProperties": true,
+        "properties": {
+          "component": {
+            "description": "Component name from the negotiated catalog.",
+            "type": "string"
+          },
+          "id": {
+            "description": "Unique component id within the surface. `root` is the render root.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "component",
+          "id"
+        ],
+        "type": "object"
+      },
+      "SurfaceRevision": {
+        "properties": {
+          "components": {
+            "items": {
+              "$ref": "#/definitions/Component"
+            },
+            "type": "array"
+          },
+          "data_model": true,
+          "last_action": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/ActionRecord"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "send_data_model": {
+            "type": "boolean"
+          },
+          "theme": true,
+          "title": {
+            "type": "string"
+          },
+          "updated_at_ms": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "components",
+          "data_model",
+          "reason",
+          "revision",
+          "send_data_model",
+          "title",
+          "updated_at_ms"
+        ],
+        "type": "object"
+      }
+    },
+    "items": {
+      "$ref": "#/definitions/SurfaceRevision"
+    },
+    "title": "Array_of_SurfaceRevision",
+    "type": "array"
+  }
+}

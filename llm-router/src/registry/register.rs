@@ -1,6 +1,8 @@
 //! The `router::provider::register` iii function (spec § register,
-//! § Registration lifecycle): validate → token-gated upsert → entry-schema
-//! re-compose (under the entry write lock) → static models reconcile → emits.
+//! § Registration lifecycle): validate → token-gated prepare → entry-schema
+//! re-compose → durable static models → registry commit → publish + emits.
+//! The entry write lock spans that transaction so concurrent provider boots
+//! cannot invalidate one another's staged schemas or tokens.
 //!
 //! Engine-backed coverage: tests/integration.rs (declare, token gate,
 //! takeover rejection, schema composition).
@@ -16,7 +18,7 @@ use serde_json::{json, Value};
 use crate::catalog::store::CatalogStore;
 use crate::config::entry::{register_entry, EntryWriteLock};
 use crate::config::schema::{provider_entry_schema, validate_custom_schema};
-use crate::registry::store::RegistryStore;
+use crate::registry::store::{ProviderRecord, RegistryStore};
 use crate::triggers::{self, RouterEvents};
 
 fn valid_id(id: &str) -> bool {
@@ -25,6 +27,30 @@ fn valid_id(id: &str) -> bool {
         && id
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+}
+
+fn schemas_for(records: &[ProviderRecord]) -> BTreeMap<String, Value> {
+    records
+        .iter()
+        .map(|rec| {
+            let schema = provider_entry_schema(
+                rec.declaration.config_schema.as_ref(),
+                &serde_json::to_value(rec.declaration.defaults.clone()).unwrap_or(Value::Null),
+            );
+            (rec.declaration.id.clone(), schema)
+        })
+        .collect()
+}
+
+fn failure_with_rollbacks(original: Error, failures: Vec<String>) -> Error {
+    if failures.is_empty() {
+        original
+    } else {
+        Error::Handler(format!(
+            "{original}; registration rollback incomplete: {}",
+            failures.join("; ")
+        ))
+    }
 }
 
 pub fn make_provider_register(
@@ -72,33 +98,89 @@ pub fn make_provider_register(
                     }
                 }
             }
-
             let worker_id = declaration.worker_id.clone();
             let static_models = declaration.models.clone();
             let id = declaration.id.clone();
-            let upserted = registry
-                .upsert(declaration, worker_id, input.token)
+            // This lock is the provider-registration transaction boundary. It
+            // also serializes against configuration writes/reloads.
+            let entry_guard = entry_lock.lock().await;
+            let prepared = registry
+                .prepare_upsert(declaration, worker_id, input.token)
                 .await
                 .map_err(Error::from)?;
+            let current_records = registry.list().await;
+            let previous_schemas = schemas_for(&current_records);
+            let mut candidate_records = current_records;
+            candidate_records.retain(|record| record.declaration.id != id);
+            candidate_records.push(prepared.record().clone());
+            let candidate_schemas = schemas_for(&candidate_records);
+
+            // Configuration is the first fallible external step. If the call
+            // reports failure after a partial remote apply, restore the prior
+            // schema while the transaction lock is still held.
+            if let Err(error) = register_entry(&iii, &candidate_schemas).await {
+                let mut rollback_failures = Vec::new();
+                if let Err(rollback) = register_entry(&iii, &previous_schemas).await {
+                    rollback_failures.push(format!("configuration: {rollback}"));
+                }
+                drop(entry_guard);
+                return Err(failure_with_rollbacks(error, rollback_failures));
+            }
+
+            // Persist static models without exposing them in memory. A failed
+            // catalog write leaves the registry untouched, so a fresh token
+            // can be minted again on retry.
+            let mut prepared_catalog = if let Some(models) = static_models {
+                if models.is_empty() {
+                    None
+                } else {
+                    match catalog.prepare_slice(&id, models).await {
+                        Ok(prepared) => Some(prepared),
+                        Err(error) => {
+                            let mut rollback_failures = Vec::new();
+                            if let Err(rollback) = register_entry(&iii, &previous_schemas).await {
+                                rollback_failures.push(format!("configuration: {rollback}"));
+                            }
+                            drop(entry_guard);
+                            return Err(failure_with_rollbacks(error, rollback_failures));
+                        }
+                    }
+                }
+            } else {
+                None
+            };
+
+            // The token hash becomes durable only after configuration and the
+            // optional catalog slice succeeded. If registry persistence fails,
+            // keep the staged catalog invisible and compensate both durable
+            // side effects before returning the original failure.
+            let upserted = match registry.commit_upsert(prepared).await {
+                Ok(upserted) => upserted,
+                Err(error) => {
+                    let mut rollback_failures = Vec::new();
+                    if let Some(prepared) = prepared_catalog.take() {
+                        if let Err(rollback) = prepared.rollback().await {
+                            // No registry record was published, so routing
+                            // excludes this owner even if its durable catalog
+                            // rollback also fails. A restart may temporarily
+                            // reload that orphan until the next reconcile.
+                            rollback_failures.push(format!("catalog: {rollback}"));
+                        }
+                    }
+                    if let Err(rollback) = register_entry(&iii, &previous_schemas).await {
+                        rollback_failures.push(format!("configuration: {rollback}"));
+                    }
+                    drop(entry_guard);
+                    return Err(failure_with_rollbacks(error.into(), rollback_failures));
+                }
+            };
+            if let Some(prepared) = prepared_catalog {
+                prepared.commit();
+            }
+            drop(entry_guard);
+
             let token = upserted.token;
             let availability_recovered = upserted.availability_recovered;
-
-            // Re-compose the entry schema from every registered declaration —
-            // under the entry write lock so concurrent boots compose.
-            {
-                let _guard = entry_lock.lock().await;
-                let mut provider_schemas = BTreeMap::new();
-                for rec in registry.list().await {
-                    let schema = provider_entry_schema(
-                        rec.declaration.config_schema.as_ref(),
-                        &serde_json::to_value(rec.declaration.defaults.clone())
-                            .unwrap_or(Value::Null),
-                        rec.declaration.system_prompt.as_deref(),
-                    );
-                    provider_schemas.insert(rec.declaration.id.clone(), schema);
-                }
-                register_entry(&iii, &provider_schemas).await?;
-            }
 
             events
                 .emit(
@@ -119,18 +201,20 @@ pub fn make_provider_register(
                     .await;
             }
 
-            // Static catalog slice: reconciled at registration (spec § register).
-            if let Some(models) = static_models {
-                if !models.is_empty() {
-                    let count = models.len();
-                    catalog.set_slice(&id, models).await?;
-                    events
-                        .emit(
-                            triggers::MODELS_CHANGED,
-                            json!({ "provider": id, "count": count }),
-                        )
-                        .await;
-                }
+            if let Some(count) = upserted
+                .record
+                .declaration
+                .models
+                .as_ref()
+                .filter(|models| !models.is_empty())
+                .map(Vec::len)
+            {
+                events
+                    .emit(
+                        triggers::MODELS_CHANGED,
+                        json!({ "provider": id, "count": count }),
+                    )
+                    .await;
             }
 
             Ok(ProviderRegisterResponse {

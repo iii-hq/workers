@@ -1,0 +1,226 @@
+{
+  "open": [
+    {
+      "name": "stays on the active tab when it already shows the screen",
+      "tabs": [
+        { "id": "a", "columns": 1, "screens": ["ext:shell"] },
+        { "id": "b", "columns": 2, "screens": ["chat", "ext:shell"] }
+      ],
+      "activeTabId": "a",
+      "screen": "ext:shell",
+      "expect": {
+        "activeTabId": "a",
+        "tabs": [
+          { "id": "a", "columns": 1, "screens": ["ext:shell"] },
+          { "id": "b", "columns": 2, "screens": ["chat", "ext:shell"] }
+        ]
+      }
+    },
+    {
+      "name": "switches to the tab that already shows the screen",
+      "tabs": [
+        { "id": "a", "columns": 2, "screens": ["chat", "traces"] },
+        { "id": "b", "columns": 2, "screens": ["chat", "ext:shell"] }
+      ],
+      "activeTabId": "a",
+      "screen": "ext:shell",
+      "expect": {
+        "activeTabId": "b",
+        "tabs": [
+          { "id": "a", "columns": 2, "screens": ["chat", "traces"] },
+          { "id": "b", "columns": 2, "screens": ["chat", "ext:shell"] }
+        ]
+      }
+    },
+    {
+      "name": "reuses the exact session-specific chat screen",
+      "tabs": [
+        { "id": "a", "columns": 2, "screens": ["chat", "traces"] },
+        {
+          "id": "b",
+          "columns": 1,
+          "screens": ["chat:child:attempt:1"]
+        }
+      ],
+      "activeTabId": "a",
+      "screen": "chat:child:attempt:1",
+      "expect": {
+        "activeTabId": "b",
+        "tabs": [
+          { "id": "a", "columns": 2, "screens": ["chat", "traces"] },
+          {
+            "id": "b",
+            "columns": 1,
+            "screens": ["chat:child:attempt:1"]
+          }
+        ]
+      }
+    },
+    {
+      "name": "inserts a distinct session beside a pinned chat",
+      "tabs": [
+        {
+          "id": "a",
+          "columns": 2,
+          "screens": ["chat:parent:attempt:1", "traces"],
+          "sizes": [0.5, 0.5]
+        }
+      ],
+      "activeTabId": "a",
+      "screen": "chat:child:attempt:2",
+      "expect": {
+        "activeTabId": "a",
+        "tabs": [
+          {
+            "id": "a",
+            "columns": 3,
+            "screens": [
+              "chat:parent:attempt:1",
+              "chat:child:attempt:2",
+              "traces"
+            ],
+            "paneIds": ["a:pane:0", "pane-new", "a:pane:1"],
+            "sizes": [
+              0.33333333333333337, 0.3333333333333333, 0.33333333333333337
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "fills the empty column beside chat",
+      "tabs": [
+        { "id": "a", "columns": 3, "screens": ["traces", "chat", null] }
+      ],
+      "activeTabId": "a",
+      "screen": "workers",
+      "expect": {
+        "activeTabId": "a",
+        "tabs": [
+          { "id": "a", "columns": 3, "screens": ["traces", "chat", "workers"] }
+        ]
+      }
+    },
+    {
+      "name": "falls back to any empty column",
+      "tabs": [
+        { "id": "a", "columns": 3, "screens": [null, "chat", "traces"] }
+      ],
+      "activeTabId": "a",
+      "screen": "workers",
+      "expect": {
+        "activeTabId": "a",
+        "tabs": [
+          { "id": "a", "columns": 3, "screens": ["workers", "chat", "traces"] }
+        ]
+      }
+    },
+    {
+      "name": "inserts a new column after chat and rescales widths",
+      "tabs": [
+        {
+          "id": "a",
+          "columns": 2,
+          "screens": ["chat", "traces"],
+          "sizes": [0.5, 0.5]
+        }
+      ],
+      "activeTabId": "a",
+      "screen": "ext:shell",
+      "expect": {
+        "activeTabId": "a",
+        "tabs": [
+          {
+            "id": "a",
+            "columns": 3,
+            "screens": ["chat", "ext:shell", "traces"],
+            "paneIds": ["a:pane:0", "pane-new", "a:pane:1"],
+            "sizes": [
+              0.33333333333333337, 0.3333333333333333, 0.33333333333333337
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "appends the column when the tab has no chat",
+      "tabs": [{ "id": "a", "columns": 1, "screens": ["traces"] }],
+      "activeTabId": "a",
+      "screen": "workers",
+      "expect": {
+        "activeTabId": "a",
+        "tabs": [
+          {
+            "id": "a",
+            "columns": 2,
+            "screens": ["traces", "workers"],
+            "paneIds": ["a:pane:0", "pane-new"],
+            "sizes": [0.5, 0.5]
+          }
+        ]
+      }
+    }
+  ],
+  "close": [
+    {
+      "name": "drops the column in multi-column tabs and empties a lone column",
+      "tabs": [
+        {
+          "id": "a",
+          "columns": 2,
+          "screens": ["chat", "ext:shell"],
+          "sizes": [0.25, 0.75]
+        },
+        { "id": "b", "columns": 1, "screens": ["ext:shell"] },
+        { "id": "c", "columns": 2, "screens": ["chat", "traces"] }
+      ],
+      "screen": "ext:shell",
+      "expect": {
+        "tabIds": ["a", "b"],
+        "tabs": [
+          {
+            "id": "a",
+            "columns": 1,
+            "screens": ["chat"],
+            "paneIds": ["a:pane:0"],
+            "sizes": [1.0]
+          },
+          { "id": "b", "columns": 1, "screens": [null] },
+          { "id": "c", "columns": 2, "screens": ["chat", "traces"] }
+        ]
+      }
+    },
+    {
+      "name": "is a no-op when the screen is not mounted",
+      "tabs": [{ "id": "a", "columns": 2, "screens": ["chat", "traces"] }],
+      "screen": "workers",
+      "expect": {
+        "tabIds": [],
+        "tabs": [{ "id": "a", "columns": 2, "screens": ["chat", "traces"] }]
+      }
+    },
+    {
+      "name": "removes only the exact session-specific chat screen",
+      "tabs": [
+        {
+          "id": "a",
+          "columns": 3,
+          "screens": ["chat", "chat:child:attempt:1", "chat:child:attempt:2"]
+        }
+      ],
+      "screen": "chat:child:attempt:1",
+      "expect": {
+        "tabIds": ["a"],
+        "tabs": [
+          {
+            "id": "a",
+            "columns": 2,
+            "screens": ["chat", "chat:child:attempt:2"],
+            "paneIds": ["a:pane:0", "a:pane:2"],
+            "sizes": [0.5, 0.5]
+          }
+        ]
+      }
+    }
+  ]
+}

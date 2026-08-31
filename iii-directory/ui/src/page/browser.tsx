@@ -1,73 +1,253 @@
 /**
- * The generic list + editor browser both tabs are built on: a searchable
- * sidebar of entries, and an editor pane that round-trips one entry's RAW
- * markdown (frontmatter included) through the shared `CodeEditor` /
- * `MarkdownPreview` pair, saving over the worker's `*::update` functions.
+ * The generic list + editor browser both collections are built on: a
+ * navigation sidebar (collection switcher, search, count, entry list) and
+ * a document workspace with a stable header (identity crumb, segmented
+ * Edit/Split/Preview control, save state) over the shared `CodeEditor` /
+ * `MarkdownPreview` pair, saving through the worker's `*::update`
+ * functions.
  *
  * Live updates: the page registers a tab-scoped binding on the worker's
  * `directory::*::on-change` trigger type (see `useOnChange`) — a download
  * or update landing anywhere refreshes the list, and reloads the open
  * entry when the editor isn't dirty (an unsaved draft is never clobbered;
- * a note offers the reload instead).
+ * a banner offers the reload instead).
  *
  * Layout adapts to the width the browser HAS (a ResizeObserver on its own
  * root, not a viewport media query — the console can host it in panes of
- * any size). Under NARROW_BELOW px it becomes a drill-in flow like the
- * state worker's page: the list fills the width, opening an entry swaps
- * the list for the editor with a ← back button, and split preview stacks
- * vertically.
+ * any size). Under NARROW_BELOW px it becomes a drill-in flow: the list
+ * fills the width, opening an entry swaps the list for the document with
+ * a ← back button, and split mode is unavailable (edit/preview only).
+ *
+ * The editor pane stays MOUNTED across mode switches (hidden in preview
+ * mode) so Monaco keeps cursor and scroll position; the split divider is
+ * draggable and its ratio, like the view mode, persists per tab+collection
+ * in localStorage.
  */
 
 import {
   Button,
   CodeEditor,
+  ConfirmDialog,
   type Host,
   Input,
   MarkdownPreview,
+  type PageCommandsApi,
+  PageSidebar,
+  SegmentedControl,
+  uiClasses,
 } from '@iii-dev/console-ui'
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { BackButton } from '../lib/widgets'
+import type { ReactNode } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { BackButton, MarkdownFileIcon, PlusIcon, SearchIcon, XIcon } from '../lib/widgets'
+import { draftAction, parseStoredDraft } from './draft-storage'
+import {
+  frontmatterBody,
+  frontmatterFieldIsSimpleBoolean,
+  readFrontmatterField,
+  restoreFrontmatterFields,
+  setFrontmatterField,
+  withoutFrontmatterFields,
+} from './frontmatter'
 
 /** Container width (px) below which the browser collapses to the
- * drill-in list ⇄ editor flow. */
+ * drill-in list ⇄ document flow. */
 const NARROW_BELOW = 850
 
 export interface BrowserRow {
   /** Stable key + the id/name passed to load/save. */
   key: string
+  /** Optional leading glyph (agents: the tree-icon token). */
+  icon?: ReactNode
   title: string
   description: string
   /** Fine-print line (size · modified). */
   fine: string
+  /** Built-in entries can be viewed and copied but not changed. */
+  readOnly?: boolean
+  /** Editable entries with no backing file yet (saving creates one) have
+   * nothing to delete. */
+  noDelete?: boolean
+}
+
+/** What an adapter's `extraFields` renderer gets to work with: the full
+ * draft document plus the same guarded editor the built-in fields use. */
+export interface ExtraFieldsContext {
+  host: Host
+  draft: string
+  editDraft: (next: string) => void
+  readOnly: boolean
+  fieldId: string
+  /** The opened entry's key; null while creating a new one. */
+  entryKey: string | null
+}
+
+/** Context for a full custom form (`adapter.customForm`), which replaces
+ * the built-in name/description grid entirely. Name and description stay
+ * managed frontmatter fields — the setters here write them the same way
+ * the built-in inputs would. */
+export interface FormContext extends ExtraFieldsContext {
+  nameValue: string
+  descriptionValue: string
+  setName: (next: string) => void
+  setDescription: (next: string) => void
+  creating: boolean
+  dirty: boolean
+  saving: boolean
+  saved: boolean
+  deleting: boolean
+  onSave: () => void
+  onRemove?: () => void
 }
 
 export interface BrowserAdapter {
   /** Singular noun for labels ("skill" / "prompt"). */
   noun: string
+  /** Breadcrumb root segment ("skills" / "prompts"). */
+  crumbRoot: string
+  /** Frontmatter keys that may carry the displayed name, in precedence
+      order. Skills support both legacy `title` and standard `name`. */
+  nameKeys?: readonly string[]
+  /** Field inserted when the document has no declared name yet. */
+  defaultNameKey?: string
+  /** Prompt names use the worker's lowercase identifier grammar. */
+  slugName?: boolean
+  /** Overrides the slug grammar for name validation on save — skills allow
+      slash-separated segments. */
+  namePattern?: RegExp
+  /** Error copy shown when the name fails `namePattern` (falls back to the
+      slug message). */
+  nameHint?: string
+  /** Prompt scanners reject an empty description; skills keep it optional. */
+  descriptionRequired?: boolean
+  /** The entry's key is a slug SEPARATE from its free-text display name
+      (agents: the id is the file stem, frontmatter `name` is display
+      only). The name field stays free text; the id is derived from it
+      (slugified) at create time and shown as a hint, never typed. */
+  separateId?: { pattern: RegExp; hint: string }
+  /** The scanner rejects an empty display name (agents). */
+  nameRequired?: boolean
+  /** Starter document for a new entry (defaults to name+description). */
+  newTemplate?: string
+  /** Treat the starter document as the pristine create-form baseline. */
+  newTemplateStartsClean?: boolean
+  /** Extra frontmatter keys managed by `extraFields` — hidden from the
+      content editor and restored verbatim on save, like name/description. */
+  extraManagedKeys?: readonly string[]
+  /** Adapter-specific form controls rendered under the built-in fields. */
+  extraFields?: (ctx: ExtraFieldsContext) => ReactNode
+  /** Full replacement for the built-in fields block (agents: the
+      sectioned Identity / Behavior / Execution form). Wins over
+      `extraFields`. */
+  customForm?: (ctx: FormContext) => ReactNode
+  /** Shape-matched loading state for a custom form. */
+  customLoading?: () => ReactNode
+  /** The custom form edits the markdown body itself, so omit CodeEditor. */
+  customFormOwnsContent?: boolean
+  /** The custom form provides its own identity/actions, so omit the generic
+      title, mode tabs, and save toolbar. */
+  customFormOwnsWorkspaceHeader?: boolean
+  /** Render list entries as identity rows with a larger glyph and title. */
+  prominentListItems?: boolean
+  /** Label for the source editor header (default "Content"). */
+  sourceLabel?: string
+  /** Show the skill's model-invocation control. */
+  modelInvocationOption?: boolean
+  /** Workspace empty-state copy. */
+  emptyTitle: string
+  emptyBody: string
   list(host: Host): Promise<BrowserRow[]>
   /** Load one entry's full on-disk content (frontmatter included). */
   load(host: Host, key: string): Promise<string>
   /** Save; returns the entry's effective key after the write (a prompt
       rename via frontmatter `name:` moves the selection along). */
   save(host: Host, key: string, content: string): Promise<string>
+  /** Create a NEW entry; returns its key. Omit to hide the "new" button. */
+  create?(host: Host, name: string, content: string): Promise<string>
+  /** Permanently remove an existing entry. Omit when deletion is unsupported. */
+  remove?(host: Host, key: string): Promise<void>
   /** Worker trigger type to subscribe for external-change refreshes. */
   onChangeType: string
 }
 
+/** Starter frontmatter for a new entry — the scanner rejects a file without
+ *  a `description`, so scaffold both required keys rather than a blank page. */
+const NEW_TEMPLATE = '---\nname: \ndescription: ""\n---\n\n'
+const SLUG_NAME = /^[a-z0-9_-]+$/
+
+/** Derive a slug id from a free-text display name ("Release Captain" →
+ * "release-captain"), used to prefill the id field while creating. */
+export function slugify(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+}
+
 type EditorMode = 'edit' | 'split' | 'preview'
+
+const EDITOR_MODE_LABELS: Record<EditorMode, string> = {
+  edit: 'Edit',
+  split: 'Split',
+  preview: 'Preview',
+}
 
 interface Loaded {
   key: string
   content: string
 }
 
+function readStored(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+function writeStored(key: string, value: string) {
+  try {
+    window.localStorage.setItem(key, value)
+  } catch {
+    /* private mode / quota — persistence is best-effort */
+  }
+}
+
+function removeStored(key: string) {
+  try {
+    window.localStorage.removeItem(key)
+  } catch {
+    /* private mode / quota — persistence is best-effort */
+  }
+}
+
+const clampRatio = (n: number) => Math.min(0.75, Math.max(0.25, n))
+
+// Human text for a rejection of any shape. Worker calls reject with
+// `{ code, message, stacktrace }` objects; `String(e)` on those renders
+// "[object Object]" (the tech-leader Save-failed banner bug).
+function errorText(e: unknown): string {
+  if (e instanceof Error) return e.message
+  if (typeof e === 'string') return e
+  if (e && typeof e === 'object') {
+    const o = e as { message?: unknown; error?: { message?: unknown } }
+    if (typeof o.message === 'string') return o.message
+    if (o.error && typeof o.error.message === 'string') return o.error.message
+    try {
+      return JSON.stringify(e)
+    } catch {
+      return String(e)
+    }
+  }
+  return String(e)
+}
+
 /** Observe the browser root's own width. Returns a callback ref to put
  * on the root plus whether it is currently narrower than `threshold` —
  * container-driven, so the same page adapts inside any pane the console
- * gives it. Measures synchronously on mount to avoid a wide-mode flash. */
-function useContainerNarrow(
-  threshold: number,
-): [(node: HTMLDivElement | null) => void, boolean] {
+ * gives it. Measures synchronously on mount to avoid a wide-mode flash;
+ * zero widths (display:none — the inactive collection) are ignored so a
+ * hidden browser keeps its last real layout. */
+function useContainerNarrow(threshold: number): [(node: HTMLDivElement | null) => void, boolean] {
   const [narrow, setNarrow] = useState(false)
   const observerRef = useRef<ResizeObserver | null>(null)
   const refCb = useCallback(
@@ -75,10 +255,11 @@ function useContainerNarrow(
       observerRef.current?.disconnect()
       observerRef.current = null
       if (!node) return
-      setNarrow(node.getBoundingClientRect().width < threshold)
+      const width = node.getBoundingClientRect().width
+      if (width > 0) setNarrow(width < threshold)
       const observer = new ResizeObserver((entries) => {
-        const width = entries[0]?.contentRect.width
-        if (typeof width === 'number') setNarrow(width < threshold)
+        const next = entries[0]?.contentRect.width
+        if (typeof next === 'number' && next > 0) setNarrow(next < threshold)
       })
       observer.observe(node)
       observerRef.current = observer
@@ -116,28 +297,85 @@ function useOnChange(host: Host, triggerType: string, onEvent: () => void) {
 export function CollectionBrowser({
   host,
   adapter,
+  nav,
+  panelSide = 'left',
+  storageKey,
+  commands,
+  active = true,
+  pendingOpen,
 }: {
   host: Host
   adapter: BrowserAdapter
+  /** Sidebar top slot — the collection switcher lives here. */
+  nav?: ReactNode
+  panelSide?: 'left' | 'right'
+  /** localStorage namespace for per-tab+collection UI state. */
+  storageKey: string
+  /** The page's command surface — shared across every mounted collection. */
+  commands?: PageCommandsApi
+  /** Whether this collection is the one currently shown (all three stay
+      mounted); only the active one registers page-level commands/keys. */
+  active?: boolean
+  /** A palette row picked this collection's entry — open it (see
+      palette.ts + the page's panelContext handler). `id` is monotonic, so
+      a repeated identical selection still re-applies. */
+  pendingOpen?: { id: number; key: string } | null
 }) {
   const [rows, setRows] = useState<BrowserRow[] | null>(null)
   const [listError, setListError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
+  const searchRef = useRef<HTMLInputElement | null>(null)
+  const fieldId = useId()
 
-  const [selected, setSelected] = useState<string | null>(null)
-  const [loaded, setLoaded] = useState<Loaded | null>(null)
-  const [draft, setDraft] = useState('')
+  /* Restore unsaved work from the last unmount (tab switch). A creating
+     draft is self-contained; a selected-entry draft still needs the disk
+     baseline, loaded by the mount effect below. */
+  const [restored] = useState(() => parseStoredDraft(readStored(`${storageKey}:draft`)))
+  const [selected, setSelected] = useState<string | null>(restored && !restored.creating ? restored.key : null)
+  const [creating, setCreating] = useState(restored?.creating ?? false)
+  const [loaded, setLoaded] = useState<Loaded | null>(restored?.creating ? { key: '', content: '' } : null)
+  const [draft, setDraft] = useState(restored?.content ?? '')
   const [loadError, setLoadError] = useState<string | null>(null)
 
-  const [mode, setMode] = useState<EditorMode>('split')
+  const [mode, setModeState] = useState<EditorMode>(() => {
+    const v = readStored(`${storageKey}:mode`)
+    return v === 'edit' || v === 'split' || v === 'preview' ? v : 'split'
+  })
+  const setMode = useCallback(
+    (m: EditorMode) => {
+      setModeState(m)
+      writeStored(`${storageKey}:mode`, m)
+    },
+    [storageKey],
+  )
+
+  const [split, setSplit] = useState(() => {
+    const v = Number.parseFloat(readStored(`${storageKey}:split`) ?? '')
+    return Number.isFinite(v) ? clampRatio(v) : 0.5
+  })
+  const [dragging, setDragging] = useState(false)
+
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
   const [savedFlash, setSavedFlash] = useState(false)
   const [staleOnDisk, setStaleOnDisk] = useState(false)
+  const flashTimer = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(flashTimer.current), [])
 
   const [rootRef, narrow] = useContainerNarrow(NARROW_BELOW)
+  const bodyRef = useRef<HTMLDivElement | null>(null)
 
-  const dirty = loaded !== null && draft !== loaded.content
+  const row = rows?.find((item) => item.key === (loaded?.key || selected))
+  const readOnly = !creating && row?.readOnly === true
+  const dirty = !readOnly && loaded !== null && draft !== loaded.content
+  // Split needs side-by-side room; narrow containers fall back to edit.
+  const effMode: EditorMode = adapter.customFormOwnsWorkspaceHeader
+    ? 'edit'
+    : narrow && mode === 'split'
+      ? 'edit'
+      : mode
 
   const refreshList = useCallback(() => {
     adapter
@@ -146,7 +384,7 @@ export function CollectionBrowser({
         setRows(next)
         setListError(null)
       })
-      .catch((e) => setListError(String(e)))
+      .catch((e) => setListError(errorText(e)))
   }, [host, adapter])
 
   useEffect(() => {
@@ -155,33 +393,133 @@ export function CollectionBrowser({
 
   const dirtyRef = useRef(dirty)
   dirtyRef.current = dirty
+  // A dirty draft asks in the console's own dialog, never window.confirm:
+  // the native box blocks the whole tab and cannot say what is at stake
+  // when the draft is a new, unnamed entry.
+  const [pendingConfirm, setPendingConfirm] = useState<{
+    title: string
+    description: string
+    confirmLabel: string
+    proceed: () => void
+  } | null>(null)
+  const guardDirty = useCallback((proceed: () => void) => {
+    if (!dirtyRef.current) {
+      proceed()
+      return
+    }
+    const label = selectedRef.current ?? 'this new entry'
+    setPendingConfirm({
+      title: 'Discard unsaved changes?',
+      description: `The unsaved changes to ${label} will be lost.`,
+      confirmLabel: 'Discard',
+      proceed,
+    })
+  }, [])
   const selectedRef = useRef(selected)
   selectedRef.current = selected
+  const creatingRef = useRef(creating)
+  creatingRef.current = creating
+
+  /* One-shot: fetch the disk baseline under a restored selected-entry draft
+     so dirty tracking and save() have the real `loaded.content` to diff
+     against. The restored draft itself is kept, never overwritten. */
+  // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only restore
+  useEffect(() => {
+    if (!restored || restored.creating || !restored.key) return
+    const key = restored.key
+    adapter
+      .load(host, key)
+      .then((content) => {
+        if (selectedRef.current !== key) return
+        setLoaded({ key, content })
+      })
+      .catch((e) => {
+        if (selectedRef.current === key) setLoadError(errorText(e))
+      })
+  }, [])
+
+  /* Mirror unsaved work to storage on every change, so a tab switch (which
+     unmounts this page) can restore it. See `draftAction` for the cases. */
+  useEffect(() => {
+    const action = draftAction({
+      creating,
+      selected,
+      draft,
+      loadedContent: loaded?.content ?? null,
+    })
+    if (action.kind === 'write') {
+      writeStored(`${storageKey}:draft`, JSON.stringify(action.draft))
+    } else if (action.kind === 'clear') {
+      removeStored(`${storageKey}:draft`)
+    }
+  }, [creating, selected, draft, loaded, storageKey])
 
   const open = useCallback(
-    (key: string) => {
-      setSelected(key)
-      setLoaded(null)
-      setDraft('')
+    (key: string, opts?: { reload?: boolean }) => {
+      // Discard confirmed (or a reload): the persisted draft dies now, not
+      // when the load lands — an unmount in between must not resurrect it.
+      const proceed = () => {
+        removeStored(`${storageKey}:draft`)
+        setSelected(key)
+        setCreating(false)
+        setLoaded(null)
+        setDraft('')
+        setLoadError(null)
+        setSaveError(null)
+        setDeleteError(null)
+        setStaleOnDisk(false)
+        adapter
+          .load(host, key)
+          .then((content) => {
+            // Stale async result: the user opened another entry (or drilled
+            // out) while this load was in flight — applying it would show A's
+            // content under B's title and risk saving it there.
+            if (selectedRef.current !== key) return
+            setLoaded({ key, content })
+            setDraft(content)
+          })
+          .catch((e) => {
+            if (selectedRef.current === key) setLoadError(errorText(e))
+          })
+      }
+      if (opts?.reload) {
+        proceed()
+        return
+      }
+      // Re-clicking the open entry must not clobber the draft; switching
+      // away from an unsaved draft asks first.
+      if (key === selectedRef.current) return
+      guardDirty(proceed)
+    },
+    [host, adapter, storageKey, guardDirty],
+  )
+
+  const appliedOpenRef = useRef(0)
+  useEffect(() => {
+    if (!pendingOpen || pendingOpen.id === appliedOpenRef.current) return
+    appliedOpenRef.current = pendingOpen.id
+    open(pendingOpen.key)
+  }, [pendingOpen, open])
+
+  /** Blank editor for a new entry. Most collections count their scaffold as
+      unsaved work; custom forms can treat it as a pristine visual baseline. */
+  const startCreate = useCallback(() => {
+    guardDirty(() => {
+      const template = adapter.newTemplate ?? NEW_TEMPLATE
+      removeStored(`${storageKey}:draft`)
+      setCreating(true)
+      setSelected(null)
+      setLoaded({
+        key: '',
+        content: adapter.newTemplateStartsClean ? template : '',
+      })
+      setDraft(template)
       setLoadError(null)
       setSaveError(null)
+      setDeleteError(null)
       setStaleOnDisk(false)
-      adapter
-        .load(host, key)
-        .then((content) => {
-          // Stale async result: the user opened another entry (or drilled
-          // out) while this load was in flight — applying it would show A's
-          // content under B's title and risk saving it there.
-          if (selectedRef.current !== key) return
-          setLoaded({ key, content })
-          setDraft(content)
-        })
-        .catch((e) => {
-          if (selectedRef.current === key) setLoadError(String(e))
-        })
-    },
-    [host, adapter],
-  )
+    })
+  }, [storageKey, guardDirty, adapter])
 
   // External change (download / update from anywhere): refresh the list;
   // reload the open entry only when the editor has no unsaved edits.
@@ -196,9 +534,7 @@ export function CollectionBrowser({
     adapter
       .load(host, key)
       .then((content) => {
-        setLoaded((prev) =>
-          prev && prev.key === key ? { key, content } : prev,
-        )
+        setLoaded((prev) => (prev && prev.key === key ? { key, content } : prev))
         setDraft((prev) => {
           const current = selectedRef.current
           return current === key ? content : prev
@@ -210,10 +546,70 @@ export function CollectionBrowser({
   })
 
   const save = useCallback(() => {
-    if (!loaded || saving || draft === loaded.content) return
+    if (readOnly || !loaded || saving || deleting || draft === loaded.content) return
+    const name = readFrontmatterField(draft, adapter.nameKeys ?? ['name'], adapter.defaultNameKey).value.trim()
+    if (adapter.nameRequired && !name) {
+      setSaveError(`enter a display name for this ${adapter.noun}`)
+      return
+    }
+    let effectiveName = name || (!creating ? loaded.key : '')
+    if (adapter.separateId) {
+      // The name is free-text display copy; the key is the slug id —
+      // derived from the name at create time, fixed to the file stem
+      // afterwards. A collision surfaces as the server's conflict error.
+      effectiveName = creating ? slugify(name) : loaded.key
+      if (creating && !adapter.separateId.pattern.test(effectiveName)) {
+        setSaveError(adapter.separateId.hint)
+        return
+      }
+    } else {
+      // namePattern governs the CREATE id only: on update the frontmatter
+      // name/title is a display field for skills (the id is the key), so a
+      // human-readable title must not block saving. Prompt updates keep the
+      // slug gate — there the frontmatter name IS a rename.
+      const pattern = creating
+        ? (adapter.namePattern ?? (adapter.slugName ? SLUG_NAME : null))
+        : adapter.slugName
+          ? SLUG_NAME
+          : null
+      if (pattern && !pattern.test(effectiveName)) {
+        setSaveError(adapter.nameHint ?? 'enter a name using lowercase letters, numbers, hyphens or underscores')
+        return
+      }
+    }
+    const description = readFrontmatterField(draft, ['description']).value
+    if (adapter.descriptionRequired && !description.trim()) {
+      setSaveError('enter a description before saving')
+      return
+    }
+    if (creating) {
+      if (!adapter.create) return
+      setSaving(true)
+      setSaveError(null)
+      setDeleteError(null)
+      adapter
+        .create(host, effectiveName, draft)
+        .then((effectiveKey) => {
+          refreshList()
+          if (!creatingRef.current) return
+          setCreating(false)
+          setLoaded({ key: effectiveKey, content: draft })
+          setSelected(effectiveKey)
+          setStaleOnDisk(false)
+          setSavedFlash(true)
+          window.clearTimeout(flashTimer.current)
+          flashTimer.current = window.setTimeout(() => setSavedFlash(false), 2400)
+        })
+        .catch((e) => {
+          if (creatingRef.current) setSaveError(errorText(e))
+        })
+        .finally(() => setSaving(false))
+      return
+    }
     const key = loaded.key
     setSaving(true)
     setSaveError(null)
+    setDeleteError(null)
     adapter
       .save(host, key, draft)
       .then((effectiveKey) => {
@@ -226,31 +622,169 @@ export function CollectionBrowser({
         setSelected(effectiveKey)
         setStaleOnDisk(false)
         setSavedFlash(true)
-        window.setTimeout(() => setSavedFlash(false), 1600)
+        window.clearTimeout(flashTimer.current)
+        flashTimer.current = window.setTimeout(() => setSavedFlash(false), 2400)
       })
       .catch((e) => {
-        if (selectedRef.current === key) setSaveError(String(e))
+        if (selectedRef.current === key) setSaveError(errorText(e))
       })
       .finally(() => setSaving(false))
-  }, [host, adapter, loaded, draft, saving, refreshList])
+  }, [host, adapter, loaded, draft, saving, deleting, creating, readOnly, refreshList])
 
-  const onEditorKeyDown = (e: React.KeyboardEvent) => {
+  const revert = useCallback(() => {
+    setDraft(loaded?.content ?? '')
+    setSaveError(null)
+  }, [loaded])
+
+  const removeNow = useCallback(
+    (key: string) => {
+      if (!adapter.remove) return
+      setDeleting(true)
+      setDeleteError(null)
+      setSaveError(null)
+      adapter
+        .remove(host, key)
+        .then(() => {
+          setRows((current) => current?.filter((row) => row.key !== key) ?? null)
+          refreshList()
+          if (selectedRef.current !== key) return
+          setSelected(null)
+          setLoaded(null)
+          setDraft('')
+          setLoadError(null)
+          setStaleOnDisk(false)
+        })
+        .catch((error) => {
+          if (selectedRef.current === key) setDeleteError(errorText(error))
+        })
+        .finally(() => setDeleting(false))
+    },
+    [host, adapter, refreshList],
+  )
+
+  const remove = useCallback(() => {
+    if (readOnly || row?.noDelete === true) return
+    if (!adapter.remove || !loaded || creating || saving || deleting) return
+    const key = loaded.key
+    const dirtyNote = dirty ? ' Your unsaved changes will also be lost.' : ''
+    setPendingConfirm({
+      title: `Delete ${adapter.noun} “${key}”?`,
+      description: `This removes its file and cannot be undone.${dirtyNote}`,
+      confirmLabel: 'Delete',
+      proceed: () => removeNow(key),
+    })
+  }, [adapter, loaded, creating, saving, deleting, readOnly, row?.noDelete, dirty, removeNow])
+
+  const onWorkspaceKeyDown = (e: React.KeyboardEvent) => {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
       e.preventDefault()
       save()
     }
   }
 
+  // `/` anywhere outside a text surface jumps to the list filter.
+  const onRootKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey) return
+    const t = e.target as HTMLElement
+    if (t.closest('input, textarea, [contenteditable], .monaco-editor')) return
+    e.preventDefault()
+    searchRef.current?.focus()
+  }
+
   // Narrow-mode drill-out: back to the list, guarding an unsaved draft.
   const goBack = () => {
-    if (dirty && !window.confirm('Discard unsaved changes?')) return
-    setSelected(null)
-    setLoaded(null)
-    setDraft('')
-    setLoadError(null)
-    setSaveError(null)
-    setStaleOnDisk(false)
+    guardDirty(() => {
+      removeStored(`${storageKey}:draft`)
+      setSelected(null)
+      setCreating(false)
+      setLoaded(null)
+      setDraft('')
+      setLoadError(null)
+      setSaveError(null)
+      setDeleteError(null)
+      setStaleOnDisk(false)
+    })
   }
+
+  // The collection's primary verbs, for the palette and for the keyboard
+  // while this pane has the focus — only the visible collection registers,
+  // since all three stay mounted at once. The `/` and ⌘S raw handlers above
+  // keep working as-is; these just make the same actions ⌘K-visible.
+  useEffect(() => {
+    if (!active) return
+    return commands?.register([
+      {
+        id: 'new-entry',
+        title: `New ${adapter.noun}`,
+        shortcut: 'N',
+        enabled: () => !!adapter.create,
+        run: startCreate,
+      },
+      {
+        id: 'filter',
+        title: `Filter ${adapter.noun}s`,
+        shortcut: '/',
+        run: () => searchRef.current?.focus(),
+      },
+      {
+        id: 'save',
+        title: 'Save',
+        shortcut: 'Mod+S',
+        firesWhileTyping: true,
+        enabled: () => dirty && !saving && !deleting,
+        run: save,
+      },
+    ])
+  }, [commands, active, adapter, startCreate, save, dirty, saving, deleting])
+
+  // ── split divider ───────────────────────────────────────────────────
+
+  const draggingRef = useRef(false)
+  const applyDividerAt = (clientX: number) => {
+    const body = bodyRef.current
+    if (!body) return
+    const rect = body.getBoundingClientRect()
+    if (rect.width <= 0) return
+    setSplit(clampRatio((clientX - rect.left) / rect.width))
+  }
+  const persistSplit = useCallback((value: number) => writeStored(`${storageKey}:split`, String(value)), [storageKey])
+  const onDividerPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    draggingRef.current = true
+    setDragging(true)
+  }
+  const onDividerPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!draggingRef.current) return
+    applyDividerAt(e.clientX)
+  }
+  const endDividerDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!draggingRef.current) return
+    draggingRef.current = false
+    setDragging(false)
+    e.currentTarget.releasePointerCapture(e.pointerId)
+    setSplit((v) => {
+      persistSplit(v)
+      return v
+    })
+  }
+  const onDividerKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const step = e.key === 'ArrowLeft' ? -0.05 : e.key === 'ArrowRight' ? 0.05 : null
+    if (step !== null) {
+      e.preventDefault()
+      setSplit((v) => {
+        const next = clampRatio(v + step)
+        persistSplit(next)
+        return next
+      })
+    } else if (e.key === 'Enter') {
+      e.preventDefault()
+      setSplit(0.5)
+      persistSplit(0.5)
+    }
+  }
+
+  // ── derived view state ──────────────────────────────────────────────
 
   const needle = search.trim().toLowerCase()
   const visible = (rows ?? []).filter(
@@ -263,188 +797,570 @@ export function CollectionBrowser({
 
   // Narrow: one pane at a time — the list, or the opened entry.
   const showSide = !narrow || selected === null
-  const showEditor = !narrow || selected !== null
+  const showDoc = !narrow || selected !== null || creating
+
+  const docKey = loaded?.key ?? selected
+  const docSegments = docKey ? docKey.split('/') : []
+  const docName = creating ? `New ${adapter.noun}` : (docSegments[docSegments.length - 1] ?? '')
+
+  const modeOptions: EditorMode[] = narrow ? ['edit', 'preview'] : ['edit', 'split', 'preview']
+
+  const nameField = readFrontmatterField(draft, adapter.nameKeys ?? ['name'], adapter.defaultNameKey)
+  const descriptionField = readFrontmatterField(draft, ['description'])
+  const nameValue = nameField.present ? nameField.value : creating ? '' : row?.title || row?.key || ''
+  const descriptionValue = descriptionField.present ? descriptionField.value : creating ? '' : row?.description || ''
+  const modelInvocationField = readFrontmatterField(draft, ['disable-model-invocation'])
+  const modelInvocationSimple = frontmatterFieldIsSimpleBoolean(draft, 'disable-model-invocation')
+  const modelInvocationDisabled = /:\s*(?:true|True|TRUE)\s*$/.test(modelInvocationField.raw ?? '')
+  const managedFields = [
+    { ...nameField, value: nameValue, bare: adapter.slugName },
+    { ...descriptionField, value: descriptionValue },
+    ...(adapter.modelInvocationOption && modelInvocationSimple ? [{ ...modelInvocationField, bare: true }] : []),
+    // Extra keys an adapter's custom controls own (agents: logo, skills):
+    // hidden from the content editor, restored verbatim from `raw` on save.
+    ...(adapter.extraManagedKeys ?? []).map((key) => readFrontmatterField(draft, [key])),
+  ]
+  const editorSource = withoutFrontmatterFields(
+    draft,
+    managedFields.map((field) => field.key),
+  )
+
+  const editDraft = (next: string) => {
+    if (readOnly) return
+    setDraft(next)
+    setSaveError(null)
+  }
+
+  const draftLines = loaded === null ? 0 : draft.split('\n').length
+  const draftBytes = loaded === null ? 0 : new Blob([draft]).size
+
+  const saveStatus = saving ? 'Saving…' : savedFlash ? '✓ Saved' : dirty ? 'Unsaved' : ''
 
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: shortcut relay ('/' jumps to the filter) around real controls
     <div
-      className={`dir-ui-browser${narrow ? ' narrow' : ''}`}
+      className={`dir-ui-browser${narrow ? ' narrow' : ''}${panelSide === 'right' ? ' right' : ''}${adapter.prominentListItems ? ' prominent-list' : ''}`}
       ref={rootRef}
+      onKeyDown={onRootKeyDown}
     >
+      <ConfirmDialog
+        open={pendingConfirm !== null}
+        onOpenChange={(next) => {
+          if (!next) setPendingConfirm(null)
+        }}
+        title={pendingConfirm?.title ?? ''}
+        description={pendingConfirm?.description}
+        confirmLabel={pendingConfirm?.confirmLabel}
+        onConfirm={() => {
+          pendingConfirm?.proceed()
+          setPendingConfirm(null)
+        }}
+      />
       {showSide ? (
-      <div className="dir-ui-side">
-        <div className="dir-ui-side-search">
-          <Input
-            value={search}
-            onChange={setSearch}
-            placeholder={`filter ${adapter.noun}s…`}
-            aria-label={`filter ${adapter.noun}s`}
-          />
-        </div>
-        {listError ? (
-          <div className="dir-ui-error">{listError}</div>
-        ) : rows === null ? (
-          <div className="dir-ui-pulse">· loading {adapter.noun}s…</div>
-        ) : visible.length === 0 ? (
-          <div className="dir-ui-empty">
-            · no {adapter.noun}s{needle ? ' match' : ''}
-          </div>
-        ) : (
-          <ul className="dir-ui-side-list">
-            {visible.map((r) => (
-              <li key={r.key}>
+        <PageSidebar
+          label={`${adapter.noun} list`}
+          side={panelSide}
+          collapsible
+          storageKey="iii-directory:navigation"
+          defaultWidth={300}
+          narrow={narrow}
+          className="dir-ui-side"
+          header={nav}
+          collapsedActions={
+            adapter.create ? (
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={startCreate}
+                aria-label={`new ${adapter.noun}`}
+                title={`new ${adapter.noun}`}
+              >
+                <PlusIcon className="dir-ui-new-icon" />
+              </Button>
+            ) : undefined
+          }
+        >
+          <div className="dir-ui-side-top">
+            {adapter.create ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="dir-ui-new-btn"
+                onClick={startCreate}
+                aria-label={`new ${adapter.noun}`}
+                title={`new ${adapter.noun}`}
+              >
+                <span className="dir-ui-new-mark">
+                  <PlusIcon className="dir-ui-new-icon" />
+                </span>
+                <span>New {adapter.noun}</span>
+              </Button>
+            ) : null}
+            <div className="dir-ui-search">
+              <SearchIcon className="dir-ui-search-icon" />
+              <Input
+                ref={searchRef}
+                value={search}
+                onChange={setSearch}
+                placeholder={`filter ${adapter.noun}s…`}
+                aria-label={`filter ${adapter.noun}s`}
+                className="dir-ui-search-input"
+                data-autofocus={active ? '' : undefined}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape' && search) {
+                    e.stopPropagation()
+                    setSearch('')
+                  }
+                }}
+              />
+              {search ? (
                 <button
                   type="button"
-                  className={`dir-ui-side-row${
-                    r.key === selected ? ' active' : ''
-                  }`}
-                  onClick={() => open(r.key)}
-                >
-                  <span className="dir-ui-id">{r.key}</span>
-                  {r.title && r.title !== r.key ? (
-                    <span className="dir-ui-title">{r.title}</span>
-                  ) : null}
-                  {r.description ? (
-                    <span className="dir-ui-desc clamp">{r.description}</span>
-                  ) : null}
-                  <span className="dir-ui-fine">{r.fine}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-      ) : null}
-
-      {showEditor ? (
-      <div className="dir-ui-editor">
-        {narrow && selected !== null && loaded === null ? (
-          <div className="dir-ui-editor-head">
-            <BackButton
-              onClick={goBack}
-              label={`back to ${adapter.noun} list`}
-            />
-            <span className="dir-ui-id lg grow">{selected}</span>
-          </div>
-        ) : null}
-        {selected === null ? (
-          <div className="dir-ui-empty pad">
-            · select a {adapter.noun} to view and edit its markdown
-          </div>
-        ) : loadError ? (
-          <div className="dir-ui-error">{loadError}</div>
-        ) : loaded === null ? (
-          <div className="dir-ui-pulse">· loading {selected}…</div>
-        ) : (
-          <>
-            <div className="dir-ui-editor-head">
-              {narrow ? (
-                <BackButton
-                  onClick={goBack}
-                  label={`back to ${adapter.noun} list`}
-                />
-              ) : null}
-              <span className="dir-ui-id lg grow">{loaded.key}</span>
-              <span className="dir-ui-modes" role="group" aria-label="editor mode">
-                {(['edit', 'split', 'preview'] as const).map((m) => (
-                  <Button
-                    key={m}
-                    variant="ghost"
-                    size="sm"
-                    aria-pressed={mode === m}
-                    className={mode === m ? 'dir-ui-mode-active' : undefined}
-                    onClick={() => setMode(m)}
-                  >
-                    {m}
-                  </Button>
-                ))}
-              </span>
-              {dirty ? (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={saving}
+                  className="dir-ui-search-clear"
+                  aria-label="clear filter"
                   onClick={() => {
-                    setDraft(loaded.content)
-                    setSaveError(null)
+                    setSearch('')
+                    searchRef.current?.focus()
                   }}
                 >
-                  revert
-                </Button>
-              ) : null}
-              <Button
-                variant="primary"
-                size="sm"
-                disabled={!dirty || saving}
-                onClick={save}
-              >
-                {saving ? 'saving…' : 'save'}
-              </Button>
-              <span className="dir-ui-save-note" aria-live="polite">
-                {saving
-                  ? ''
-                  : savedFlash
-                    ? 'saved'
-                    : dirty
-                      ? 'unsaved changes · ⌘S saves'
-                      : ''}
-              </span>
-            </div>
-            {staleOnDisk ? (
-              <div className="dir-ui-stale-note">
-                changed on disk while you were editing —{' '}
-                <button
-                  type="button"
-                  className="dir-ui-linkish"
-                  onClick={() => open(loaded.key)}
-                >
-                  reload (discards your draft)
+                  <XIcon className="dir-ui-x-icon" />
                 </button>
+              ) : null}
+            </div>
+            {rows !== null && !listError ? (
+              <div className="dir-ui-count" aria-live="polite">
+                {needle
+                  ? `${visible.length} of ${rows.length} ${adapter.noun}s`
+                  : `${rows.length} ${adapter.noun}${rows.length === 1 ? '' : 's'}`}
               </div>
             ) : null}
-            <div
-              className={`dir-ui-editor-body mode-${mode}`}
-              onKeyDown={onEditorKeyDown}
-            >
-              {mode !== 'preview' ? (
-                <div className="dir-ui-pane">
-                  <CodeEditor
-                    value={draft}
-                    onChange={setDraft}
-                    language="markdown"
-                    className="dir-ui-code"
-                    aria-label={`${adapter.noun} markdown source`}
-                    placeholder="# markdown…"
-                  />
-                </div>
-              ) : null}
-              {mode !== 'edit' ? (
-                <div className="dir-ui-pane">
-                  <MarkdownPreview
-                    markdown={stripFrontmatter(draft)}
-                    className="dir-ui-preview"
-                  />
-                </div>
-              ) : null}
+          </div>
+
+          <div className="dir-ui-side-scroll">
+            {listError ? (
+              <div className="dir-ui-error-panel">
+                <p>
+                  The {adapter.noun} list could not be loaded.
+                  <span className="detail">{listError}</span>
+                </p>
+                <Button variant="ghost" size="sm" onClick={refreshList}>
+                  Retry
+                </Button>
+              </div>
+            ) : rows === null ? (
+              <div className="dir-ui-side-skel" aria-hidden>
+                {[0, 1, 2, 3].map((i) => (
+                  <div key={i} className="dir-ui-skel-row">
+                    <span className="bar w60" />
+                    <span className="bar w90" />
+                    <span className="bar w40" />
+                  </div>
+                ))}
+              </div>
+            ) : visible.length === 0 ? (
+              <div className="dir-ui-side-empty">
+                {needle ? (
+                  <>
+                    <p>
+                      No {adapter.noun}s match “{search.trim()}”.
+                    </p>
+                    <Button variant="ghost" size="sm" onClick={() => setSearch('')}>
+                      Clear filter
+                    </Button>
+                  </>
+                ) : (
+                  <p>No {adapter.noun}s yet.</p>
+                )}
+              </div>
+            ) : (
+              <ul className="dir-ui-nav-list">
+                {visible.map((r) => {
+                  const isTitled = r.title !== '' && r.title !== r.key
+                  return (
+                    <li key={r.key}>
+                      <button
+                        type="button"
+                        className={`dir-ui-nav-row${r.icon ? ' with-icon' : ''}${r.key === selected ? ' active' : ''}`}
+                        aria-current={r.key === selected ? 'true' : undefined}
+                        onClick={() => open(r.key)}
+                      >
+                        {r.icon ? (
+                          <span className="dir-ui-nav-ico" aria-hidden>
+                            {r.icon}
+                          </span>
+                        ) : null}
+                        <span className={`name${isTitled ? '' : ' mono'}`}>{isTitled ? r.title : r.key}</span>
+                        {isTitled || adapter.prominentListItems ? <span className="id">{r.key}</span> : null}
+                        {r.description ? <span className="desc">{r.description}</span> : null}
+                        <span className="fine">{r.fine}</span>
+                      </button>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+          </div>
+        </PageSidebar>
+      ) : null}
+
+      {showDoc ? (
+        <section className="dir-ui-doc" onKeyDown={onWorkspaceKeyDown} aria-label={`${adapter.noun} workspace`}>
+          {selected === null && !creating ? (
+            <div className="dir-ui-hero">
+              <MarkdownFileIcon className="dir-ui-hero-icon" />
+              <h2 className="dir-ui-hero-title">{adapter.emptyTitle}</h2>
+              <p className="dir-ui-hero-body">{adapter.emptyBody}</p>
+              <p className="dir-ui-hero-hint">
+                <kbd>/</kbd> filters the list · <kbd>⌘S</kbd> saves
+              </p>
             </div>
-            {saveError ? <div className="dir-ui-error">{saveError}</div> : null}
-          </>
-        )}
-      </div>
+          ) : (
+            <>
+              {!adapter.customFormOwnsWorkspaceHeader ? (
+                <header className="dir-ui-doc-head">
+                  {narrow ? <BackButton onClick={goBack} label={`back to ${adapter.noun} list`} /> : null}
+                  <div className="dir-ui-doc-identity">
+                    <span className="dir-ui-doc-name" title={docKey ?? ''}>
+                      <span className="txt">{docName}</span>
+                      {dirty ? <span className="dir-ui-dirty-dot" title="unsaved changes" aria-hidden /> : null}
+                    </span>
+                    {!narrow ? (
+                      <span className="dir-ui-doc-crumb">{[adapter.crumbRoot, ...docSegments].join(' / ')}</span>
+                    ) : null}
+                  </div>
+                  <SegmentedControl<EditorMode>
+                    value={effMode}
+                    onChange={setMode}
+                    options={modeOptions.map((mode) => ({
+                      value: mode,
+                      label: EDITOR_MODE_LABELS[mode],
+                    }))}
+                    className="dir-ui-editor-tabs"
+                    aria-label="Editor mode"
+                  />
+                  <div className="dir-ui-save-area">
+                    {adapter.remove && !creating && !readOnly && row?.noDelete !== true ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="dir-ui-delete-btn"
+                        disabled={!loaded || saving || deleting}
+                        onClick={remove}
+                      >
+                        {deleting ? 'Deleting…' : 'Delete'}
+                      </Button>
+                    ) : null}
+                    <span className="dir-ui-save-note" aria-live="polite">
+                      {readOnly ? 'Read only' : saveStatus}
+                    </span>
+                    {dirty && !saving ? (
+                      <Button variant="ghost" size="sm" disabled={deleting} onClick={revert}>
+                        Revert
+                      </Button>
+                    ) : null}
+                    {!readOnly ? (
+                      <Button variant="primary" size="sm" disabled={!dirty || saving || deleting} onClick={save}>
+                        {saving ? 'Saving…' : 'Save'}
+                      </Button>
+                    ) : null}
+                  </div>
+                </header>
+              ) : null}
+
+              {adapter.customFormOwnsWorkspaceHeader && (narrow || (dirty && !readOnly)) ? (
+                <div className="dir-ui-af-save-panel">
+                  {narrow ? (
+                    <div className="dir-ui-doc-mobile-back">
+                      <BackButton onClick={goBack} label={`back to ${adapter.noun} list`} />
+                      <span>{adapter.noun}s</span>
+                    </div>
+                  ) : null}
+                  {dirty && !readOnly ? (
+                    <div className="dir-ui-af-save-actions">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="dir-ui-af-revert"
+                        disabled={saving || deleting}
+                        onClick={revert}
+                      >
+                        Revert
+                      </Button>
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        className="dir-ui-af-save"
+                        disabled={saving || deleting}
+                        onClick={save}
+                      >
+                        {saving ? 'Saving…' : 'Save'}
+                      </Button>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {staleOnDisk ? (
+                <div className="dir-ui-banner warn" role="status">
+                  <span>This {adapter.noun} changed on disk while you were editing.</span>
+                  <button
+                    type="button"
+                    className="dir-ui-linkish"
+                    onClick={() => docKey && open(docKey, { reload: true })}
+                  >
+                    reload (discards your draft)
+                  </button>
+                </div>
+              ) : null}
+
+              {saveError ? (
+                <div className="dir-ui-banner alert" role="alert">
+                  <span>
+                    Save failed.
+                    <span className="detail">{saveError}</span>
+                  </span>
+                  <button type="button" className="dir-ui-linkish" onClick={save}>
+                    Retry
+                  </button>
+                  <button type="button" className="dir-ui-linkish quiet" onClick={() => setSaveError(null)}>
+                    dismiss
+                  </button>
+                </div>
+              ) : null}
+
+              {deleteError ? (
+                <div className="dir-ui-banner alert" role="alert">
+                  <span>
+                    Delete failed.
+                    <span className="detail">{deleteError}</span>
+                  </span>
+                  <button type="button" className="dir-ui-linkish" onClick={remove}>
+                    Retry
+                  </button>
+                  <button type="button" className="dir-ui-linkish quiet" onClick={() => setDeleteError(null)}>
+                    dismiss
+                  </button>
+                </div>
+              ) : null}
+
+              {loadError ? (
+                <div className="dir-ui-error-panel grow">
+                  <p>
+                    {docKey} could not be loaded.
+                    <span className="detail">{loadError}</span>
+                  </p>
+                  <Button variant="ghost" size="sm" onClick={() => docKey && open(docKey, { reload: true })}>
+                    Retry
+                  </Button>
+                </div>
+              ) : loaded === null ? (
+                adapter.customLoading ? (
+                  adapter.customLoading()
+                ) : (
+                  <div className="dir-ui-doc-loading" aria-hidden>
+                    <span className="bar w40" />
+                    <span className="bar w90" />
+                    <span className="bar w75" />
+                    <span className="bar w85" />
+                    <span className="bar w30" />
+                  </div>
+                )
+              ) : (
+                <>
+                  <div className={`dir-ui-doc-body mode-${effMode}${dragging ? ' dragging' : ''}`} ref={bodyRef}>
+                    <div className="dir-ui-pane editor" style={effMode === 'split' ? { flexGrow: split } : undefined}>
+                      {adapter.customForm ? (
+                        adapter.customForm({
+                          host,
+                          draft,
+                          editDraft,
+                          readOnly,
+                          fieldId,
+                          entryKey: creating ? null : (loaded?.key ?? selected),
+                          nameValue,
+                          descriptionValue,
+                          setName: (next) =>
+                            editDraft(
+                              setFrontmatterField(
+                                draft,
+                                nameField.key,
+                                adapter.slugName ? next.toLowerCase() : next,
+                                adapter.slugName,
+                              ),
+                            ),
+                          setDescription: (next) => editDraft(setFrontmatterField(draft, descriptionField.key, next)),
+                          creating,
+                          dirty,
+                          saving,
+                          saved: savedFlash,
+                          deleting,
+                          onSave: save,
+                          onRemove:
+                            adapter.remove && !creating && !readOnly && row?.noDelete !== true
+                              ? remove
+                              : undefined,
+                        })
+                      ) : (
+                        <div className="dir-ui-edit-fields">
+                          <label className="dir-ui-edit-field" htmlFor={`${fieldId}-name`}>
+                            <span className="dir-ui-edit-label">
+                              name
+                              {adapter.slugName ? (
+                                <span className="dir-ui-edit-hint">a–z · 0–9 · - · _</span>
+                              ) : adapter.separateId && creating ? (
+                                <span className="dir-ui-edit-hint">
+                                  {slugify(nameValue) ? `→ ${slugify(nameValue)}.md` : 'the id derives from the name'}
+                                </span>
+                              ) : null}
+                            </span>
+                            <Input
+                              id={`${fieldId}-name`}
+                              value={nameValue}
+                              onChange={(next) =>
+                                editDraft(
+                                  setFrontmatterField(
+                                    draft,
+                                    nameField.key,
+                                    adapter.slugName ? next.toLowerCase() : next,
+                                    adapter.slugName,
+                                  ),
+                                )
+                              }
+                              placeholder={`${adapter.noun} name`}
+                              preserveCase={!adapter.slugName}
+                              required={adapter.slugName || adapter.nameRequired}
+                              pattern={adapter.slugName ? '[a-z0-9_-]+' : undefined}
+                              spellCheck={false}
+                              readOnly={readOnly}
+                              className="dir-ui-edit-input"
+                            />
+                          </label>
+                          <label className="dir-ui-edit-field" htmlFor={`${fieldId}-description`}>
+                            <span className="dir-ui-edit-label">Description</span>
+                            <textarea
+                              id={`${fieldId}-description`}
+                              value={descriptionValue}
+                              onChange={(event) =>
+                                editDraft(setFrontmatterField(draft, descriptionField.key, event.currentTarget.value))
+                              }
+                              placeholder={`what this ${adapter.noun} is for…`}
+                              required={adapter.descriptionRequired}
+                              readOnly={readOnly}
+                              rows={2}
+                              className="dir-ui-edit-textarea"
+                            />
+                          </label>
+                          {adapter.modelInvocationOption ? (
+                            modelInvocationSimple ? (
+                              <label className="dir-ui-checkrow dir-ui-model-invocation">
+                                <input
+                                  id={`${fieldId}-disable-model-invocation`}
+                                  type="checkbox"
+                                  checked={modelInvocationDisabled}
+                                  disabled={readOnly}
+                                  onChange={(event) =>
+                                    editDraft(
+                                      event.currentTarget.checked
+                                        ? setFrontmatterField(draft, 'disable-model-invocation', 'true', true)
+                                        : withoutFrontmatterFields(draft, ['disable-model-invocation']),
+                                    )
+                                  }
+                                />
+                                <span className={uiClasses.field}>
+                                  <span className={uiClasses.fieldLabel}>Require explicit invocation</span>
+                                  <span className={uiClasses.fieldDescription}>
+                                    The model won’t select this skill automatically.
+                                  </span>
+                                </span>
+                              </label>
+                            ) : (
+                              <div className={`${uiClasses.field} dir-ui-model-invocation`}>
+                                <span className={uiClasses.fieldLabel}>Model invocation</span>
+                                <span className={uiClasses.fieldDescription}>Advanced value — edit it in Content.</span>
+                              </div>
+                            )
+                          ) : null}
+                          {adapter.extraFields?.({
+                            host,
+                            draft,
+                            editDraft,
+                            readOnly,
+                            fieldId,
+                            entryKey: creating ? null : (loaded?.key ?? selected),
+                          })}
+                        </div>
+                      )}
+                      {!adapter.customFormOwnsContent ? (
+                        <>
+                          <div className="dir-ui-source-head" aria-hidden>
+                            <span>{adapter.sourceLabel ?? 'Content'}</span>
+                            <span>Markdown</span>
+                          </div>
+                          <CodeEditor
+                            value={editorSource}
+                            onChange={(next) => editDraft(restoreFrontmatterFields(next, managedFields))}
+                            language="markdown"
+                            readOnly={readOnly}
+                            className="dir-ui-code"
+                            aria-label={`${adapter.noun} markdown content`}
+                            placeholder="# markdown…"
+                          />
+                        </>
+                      ) : null}
+                    </div>
+                    {effMode === 'split' ? (
+                      // biome-ignore lint/a11y/useSemanticElements: drag handle is not an <hr>; semantic separator + tabIndex is enough
+                      <div
+                        className="dir-ui-divider"
+                        role="separator"
+                        aria-orientation="vertical"
+                        aria-label="resize editor and preview"
+                        aria-valuemin={25}
+                        aria-valuemax={75}
+                        aria-valuenow={Math.round(split * 100)}
+                        tabIndex={0}
+                        onPointerDown={onDividerPointerDown}
+                        onPointerMove={onDividerPointerMove}
+                        onPointerUp={endDividerDrag}
+                        onPointerCancel={endDividerDrag}
+                        onDoubleClick={() => {
+                          setSplit(0.5)
+                          persistSplit(0.5)
+                        }}
+                        onKeyDown={onDividerKeyDown}
+                      />
+                    ) : null}
+                    {effMode !== 'edit' ? (
+                      <div
+                        className="dir-ui-pane preview"
+                        style={effMode === 'split' ? { flexGrow: 1 - split } : undefined}
+                      >
+                        <div className="dir-ui-reading">
+                          <MarkdownPreview markdown={frontmatterBody(draft)} className="dir-ui-preview" />
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                  <footer className="dir-ui-statusbar">
+                    <span className="fact">Markdown</span>
+                    <span className="fact">
+                      {draftLines} line{draftLines === 1 ? '' : 's'}
+                    </span>
+                    <span className="fact">{formatKb(draftBytes)}</span>
+                    <span className="spacer" />
+                    <span className="fact">{readOnly ? 'read only' : dirty ? '⌘S saves' : 'all changes saved'}</span>
+                  </footer>
+                </>
+              )}
+            </>
+          )}
+        </section>
       ) : null}
     </div>
   )
 }
 
-/** Preview the body the way readers serve it: without the leading YAML
- * frontmatter block (same fence rules as the worker's split_frontmatter). */
-function stripFrontmatter(content: string): string {
-  if (!content.startsWith('---\n') && !content.startsWith('---\r\n')) {
-    return content
-  }
-  const rest = content.slice(content.indexOf('\n') + 1)
-  for (const fence of ['\n---\n', '\n---\r\n']) {
-    const idx = rest.indexOf(fence)
-    if (idx !== -1) return rest.slice(idx + fence.length)
-  }
-  return content
+function formatKb(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  return `${(bytes / 1024).toFixed(1)} KB`
 }

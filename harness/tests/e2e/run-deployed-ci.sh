@@ -5,6 +5,7 @@ set -Eeuo pipefail
 
 : "${HARNESS_E2E_RELEASE_WORKER:?HARNESS_E2E_RELEASE_WORKER is required}"
 : "${HARNESS_E2E_RELEASE_VERSION:?HARNESS_E2E_RELEASE_VERSION is required}"
+: "${HARNESS_E2E_STACK_VERSIONS:?HARNESS_E2E_STACK_VERSIONS is required}"
 : "${HARNESS_E2E_MODEL:?HARNESS_E2E_MODEL is required}"
 : "${HARNESS_E2E_PROVIDER:?HARNESS_E2E_PROVIDER is required}"
 : "${HARNESS_E2E_JUDGE_MODEL:?HARNESS_E2E_JUDGE_MODEL is required}"
@@ -19,10 +20,14 @@ e2e_bin=${HARNESS_E2E_BIN:-"$harness_root/target/release/harness-e2e"}
 install_url=${III_INSTALL_URL:-https://install.iii.dev/iii/main/install.sh}
 cli_channel=${III_CLI_CHANNEL:-latest}
 worker_tag=${III_WORKER_TAG:-latest}
+stack_versions=$HARNESS_E2E_STACK_VERSIONS
 runs=${HARNESS_E2E_RUNS:-1}
 engine_port=49134
 wait_seconds=180
 add_timeout_seconds=600
+release_worker=$HARNESS_E2E_RELEASE_WORKER
+release_version=$HARNESS_E2E_RELEASE_VERSION
+lock_digest=
 
 if [[ -n "${III_CHANNEL:-}" ]]; then
   echo "III_CHANNEL was split into III_CLI_CHANNEL and III_WORKER_TAG" >&2
@@ -40,6 +45,17 @@ esac
   echo "III_WORKER_TAG must be a valid Registry tag" >&2
   exit 2
 }
+stack_versions=$(jq -c . <<<"$stack_versions")
+jq -e --arg worker "$release_worker" --arg version "$release_version" '
+  type == "object" and length > 0 and
+  all(to_entries[];
+    (.key | test("^[a-z0-9][a-z0-9_-]*$")) and
+    (.value | type == "string" and test("^[0-9]+\\.[0-9]+\\.[0-9]+(-(experimental|alpha|beta))?$"))
+  ) and .[$worker] == $version
+' <<<"$stack_versions" >/dev/null || {
+  echo "HARNESS_E2E_STACK_VERSIONS must contain strict exact versions and the release worker identity" >&2
+  exit 2
+}
 [[ -x "$e2e_bin" ]] || {
   echo "Harness E2E binary is not executable: $e2e_bin" >&2
   exit 2
@@ -51,7 +67,7 @@ mkdir -p "$artifact_dir/logs" "$artifact_dir/stack" "$artifact_dir/results"
 artifact_dir=$(cd "$artifact_dir" && pwd)
 log_dir="$artifact_dir/logs"
 stack_dir="$artifact_dir/stack"
-run_root=$(mktemp -d "${TMPDIR:-/tmp}/harness-e2e-deployed.XXXXXX")
+run_root=$(mktemp -d "${TMPDIR:-/tmp}/harness-e2e-registry.XXXXXX")
 project_dir="$run_root/project"
 e2e_home="$run_root/home"
 mkdir -p "$project_dir" "$e2e_home"
@@ -81,20 +97,25 @@ die() {
 }
 
 write_deployment_result() {
-  local status=$1
+  local outcome=$1
+  local result_status=$outcome
+  if [[ "$outcome" != passed && "$failure_phase" == registry ]]; then
+    result_status=infra_failed
+  fi
   jq -n \
-    --arg status "$status" \
+    --arg status "$result_status" \
     --arg reason "$failure_reason" \
     --arg phase "$failure_phase" \
     --arg cli_version "$cli_version" \
     --arg cli_channel "$cli_channel" \
     --arg worker_tag "$worker_tag" \
-    --arg release_worker "$HARNESS_E2E_RELEASE_WORKER" \
-    --arg release_version "$HARNESS_E2E_RELEASE_VERSION" \
+    --arg release_worker "$release_worker" \
+    --arg release_version "$release_version" \
     --arg actual_release_version "$actual_release_version" \
     --arg release_tag "${HARNESS_E2E_RELEASE_TAG:-}" \
     --arg release_run_id "${HARNESS_E2E_RELEASE_RUN_ID:-}" \
-    --arg smoke_run_id "${HARNESS_E2E_SMOKE_RUN_ID:-}" \
+    --arg lock_digest "$lock_digest" \
+    --argjson stack_versions "$stack_versions" \
     --argjson elapsed_ms "$(((SECONDS - started_at_seconds) * 1000))" \
     '{
       status: $status,
@@ -108,9 +129,11 @@ write_deployment_result() {
       actual_release_version: $actual_release_version,
       release_tag: $release_tag,
       release_run_id: $release_run_id,
-      smoke_run_id: $smoke_run_id,
+      stack_versions: $stack_versions,
+      stack_lock_digest: $lock_digest,
       elapsed_ms: $elapsed_ms
     }' >"$artifact_dir/deployment.json"
+  cp "$artifact_dir/deployment.json" "$artifact_dir/results/deployment.json"
 }
 
 snapshot_stack() {
@@ -174,7 +197,7 @@ collect_worker_logs() {
   local name
   while IFS= read -r name; do
     [[ -n "$name" ]] || continue
-    timeout 20 "$iii_bin" worker logs "$name" --port "$engine_port" \
+    (cd "$project_dir" && timeout 20 "$iii_bin" worker logs "$name") \
       >"$log_dir/worker-$name.log" 2>&1 || true
   done < <(python3 - "$project_dir/config.yaml" <<'PY'
 import sys
@@ -293,11 +316,15 @@ printf 'workers: []\n' >"$project_dir/config.yaml"
 engine_pid=$!
 wait_for_engine
 
-workers=("harness@$worker_tag" "database@$worker_tag" "fp@$worker_tag" "web@$worker_tag")
+# Auxiliary E2E workers are not released as part of this operation and may not
+# expose a candidate tag, so keep them on their stable channel unless the
+# entire live stack is being frozen below.
+support_worker_tag=latest
+workers=("database@$support_worker_tag" "fp@$support_worker_tag" "web@$support_worker_tag")
 declare -A providers=()
 for provider in "$HARNESS_E2E_PROVIDER" "$HARNESS_E2E_JUDGE_PROVIDER"; do
   if [[ -z "${providers[$provider]:-}" ]]; then
-    workers+=("provider-$provider@$worker_tag")
+    workers+=("provider-$provider@$support_worker_tag")
     providers[$provider]=1
   fi
 done
@@ -319,13 +346,25 @@ add_with_retry() {
   return 1
 }
 
-log "Installing registry stack: ${workers[*]}"
+failure_phase=registry
+log "Installing stable E2E support stack: ${workers[*]}"
 add_with_retry worker-add "${workers[@]}"
 
-log "Installing exact release candidate: ${HARNESS_E2E_RELEASE_WORKER}@${HARNESS_E2E_RELEASE_VERSION}"
-add_with_retry candidate-override \
-  "${HARNESS_E2E_RELEASE_WORKER}@${HARNESS_E2E_RELEASE_VERSION}" --force
+# Apply every exact version selected by Release Control after installing the
+# support stack, so Registry dependency resolution cannot overwrite a pin.
+while IFS=$'\t' read -r candidate_worker candidate_version; do
+  log "Installing exact stack candidate: ${candidate_worker}@${candidate_version}"
+  add_with_retry "candidate-${candidate_worker}" \
+    "${candidate_worker}@${candidate_version}" --force
+done < <(jq -r --arg release_worker "$release_worker" '
+  to_entries
+  | sort_by([if .key == $release_worker then 0 else 1 end])[]
+  | [.key, .value]
+  | @tsv
+' <<<"$stack_versions")
+lock_digest=$(sha256sum "$project_dir/iii.lock" | awk '{print $1}')
 
+failure_phase=e2e
 wait_for_functions \
   harness::send harness::status worker::add database::query state::get \
   queue::define session::messages context::assemble router::models::get \
@@ -339,16 +378,18 @@ wait_for_model "$HARNESS_E2E_JUDGE_PROVIDER" "$HARNESS_E2E_JUDGE_MODEL"
 
 verify_args=(
   --lock "$project_dir/iii.lock"
-  --manifest "$harness_root/iii.worker.yaml"
+  --catalog "$repo_root/worker-compose.yaml"
   --required harness
   --required database
-  --worker "$HARNESS_E2E_RELEASE_WORKER"
-  --version "$HARNESS_E2E_RELEASE_VERSION"
+  --worker "$release_worker"
+  --version "$release_version"
+  --expected-versions-json "$stack_versions"
   --output "$stack_dir/lock-verification.json"
 )
 for worker in "${workers[@]}"; do
   verify_args+=(--required "${worker%@*}")
 done
+failure_phase=registry
 verification=$(python3 "$repo_root/.github/scripts/verify_registry_lock.py" "${verify_args[@]}")
 actual_release_version=$(jq -r '.actual_version' <<<"$verification")
 

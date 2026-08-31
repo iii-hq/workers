@@ -67,7 +67,7 @@ export function NumberField(props: FieldProps) {
             'w-full border border-rule bg-bg px-3 h-9 text-ink',
             wt.control,
             'placeholder:text-ink-faint',
-            'focus:outline-none focus:border-ink transition-colors',
+            'focus:outline-none focus:border-rule-focus transition-colors',
             'disabled:opacity-40 disabled:pointer-events-none',
           )}
         />

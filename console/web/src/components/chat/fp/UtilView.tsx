@@ -30,7 +30,12 @@ function isEmptyValue(v: unknown): boolean {
 
 /** `fp::*` — the seventeen lodash-style transforms (`FP_TRANSFORM_OPS`).
     Op label + its params as chips, then the transformed value. */
-export function UtilView({ functionId, input, output, running }: UtilViewProps) {
+export function UtilView({
+  functionId,
+  input,
+  output,
+  running,
+}: UtilViewProps) {
   const req = safeParseRequest(utilRequestSchema, input)
   const op = transformOp(functionId)
 

@@ -60,11 +60,18 @@ pub fn build_body(args: &BodyArgs) -> Value {
     body
 }
 
-pub fn build_headers(cfg: &XaiConfig) -> Vec<(&'static str, String)> {
-    vec![
+pub fn build_headers(
+    cfg: &XaiConfig,
+    conversation_id: Option<&str>,
+) -> Vec<(&'static str, String)> {
+    let mut headers = vec![
         ("authorization", format!("Bearer {}", cfg.credential_value)),
         ("content-type", "application/json".to_string()),
-    ]
+    ];
+    if let Some(conversation_id) = conversation_id {
+        headers.push(("x-grok-conv-id", conversation_id.to_string()));
+    }
+    headers
 }
 
 #[cfg(test)]
@@ -157,8 +164,12 @@ mod tests {
             max_tokens: 4096,
             api_url: "https://api.x.ai/v1/chat/completions".into(),
         };
-        let h = build_headers(&cfg);
+        let h = build_headers(&cfg, Some("stable-session-key"));
         assert!(h.contains(&("authorization", "Bearer sk-test".to_string())));
         assert!(h.contains(&("content-type", "application/json".to_string())));
+        assert!(h.contains(&("x-grok-conv-id", "stable-session-key".to_string())));
+        assert!(!build_headers(&cfg, None)
+            .iter()
+            .any(|(name, _)| *name == "x-grok-conv-id"));
     }
 }

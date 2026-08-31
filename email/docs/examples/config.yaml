@@ -1,0 +1,31 @@
+accounts:
+  notifications:
+    provider: smtp
+    from: "Notifications <noreply@example.com>"
+    smtp:
+      host: smtp.example.com
+      port: 587
+      starttls: true
+      username: ${SMTP_USERNAME}
+      password: ${SMTP_PASSWORD}
+  inbox:
+    provider: imap
+    from: "Inbox <inbox@example.com>"
+    smtp:
+      host: smtp.example.com
+      port: 587
+      starttls: true
+      username: ${SMTP_USERNAME}
+      password: ${SMTP_PASSWORD}
+    imap:
+      host: imap.example.com
+      port: 993
+      tls: true
+      folders: ["INBOX"]
+      username: ${SMTP_USERNAME}
+      password: ${SMTP_PASSWORD}
+limits:
+  max_attachment_bytes: 26214400
+  max_recipients: 100
+  send_timeout_ms: 30000
+  imap_connect_timeout_ms: 15000

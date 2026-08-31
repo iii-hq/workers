@@ -36,6 +36,13 @@ struct Args {
 
     #[arg(
         long,
+        env = "IIIACP_BRAIN_STOP_FN",
+        help = "iii function id that stops the configured external brain for a session"
+    )]
+    brain_stop_fn: Option<String>,
+
+    #[arg(
+        long,
         env = "IIIACP_USE_CANONICAL_BRAIN",
         help = "Shortcut for --brain-fn run::start_and_wait. Wires iii-acp \
                 straight to turn-orchestrator. Ignored if --brain-fn is \
@@ -116,6 +123,7 @@ async fn main() -> anyhow::Result<()> {
         outbound,
         BrainConfig {
             function_id: brain_fn,
+            stop_function_id: args.brain_stop_fn,
             model: args.model,
             provider: args.provider,
             system_prompt: args.system_prompt,

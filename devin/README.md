@@ -7,7 +7,7 @@ This worker is deliberately thin. It does not re-implement scheduling, sub-agent
 ## Install
 
 ```bash
-iii worker add devin
+iii trigger compose::add worker=devin
 ```
 
 For the API surface (`devin::session::*`, `devin::api`), set `DEVIN_API_KEY` in the worker environment. Get a key from the [Devin settings page](https://app.devin.ai/settings/api-keys).
@@ -30,7 +30,7 @@ From zero to a Devin cloud session over the bus:
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 export DEVIN_API_KEY=...       # personal token (v1) or service key (cog_..., v3)
 # service-key users only: also `export DEVIN_ORG_ID=org_...` and set base_url to v3
-iii worker add devin
+iii trigger compose::add worker=devin
 iii   # starts the engine + worker
 ```
 
@@ -115,7 +115,7 @@ Because the CLI agent runs locally with the iii runtime context, a plain questio
 iii trigger devin::run --json '{"prompt":"What workers are connected to this iii engine and what does each do?","cwd":"/tmp"}' | jq -r '.result'
 ```
 
-![Devin answering a plain question by discovering the live iii mesh through the iii CLI](https://raw.githubusercontent.com/iii-hq/workers/main/devin/assets/iii-discovery.png)
+![Devin answering a plain question by discovering the live iii worker functionality through the iii CLI](https://raw.githubusercontent.com/iii-hq/workers/main/devin/assets/iii-discovery.png)
 
 Or ask it to map the whole engine by capability area, and it groups what it finds itself:
 

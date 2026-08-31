@@ -1,18 +1,21 @@
 /**
- * The directory page (#/ext/directory): browse every filesystem-backed
- * skill and prompt, open one in the shared CodeEditor/MarkdownPreview
- * pair, and save through the worker's update functions.
+ * The directory page (#/ext/directory): a full-height application shell —
+ * slim product top bar, a navigation sidebar carrying the directory
+ * switcher, and a document workspace that opens one entry in the shared
+ * CodeEditor/MarkdownPreview pair, saving through the worker's update
+ * functions.
+ *
+ * All collections stay MOUNTED (the inactive ones are display:none) so an
+ * unsaved draft survives switching between them.
  */
 
-import {
-  type Host,
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from '@iii-dev/console-ui'
+import { type Host, PageHeader, type PageRenderProps, PageShell, SegmentedControl } from '@iii-dev/console-ui'
+import { useEffect, useRef, useState } from 'react'
 import { formatBytes, formatRelativeTime } from '../lib/format'
+import { MarkdownFileIcon } from '../lib/widgets'
+import { AgentForm, AgentFormSkeleton } from './agent-fields'
 import { type BrowserAdapter, CollectionBrowser } from './browser'
+import { TokenIcon } from './token-icons'
 
 interface SkillRow {
   id: string
@@ -22,20 +25,47 @@ interface SkillRow {
   modified_at: string
 }
 
-interface PromptRow {
+interface SystemPromptRow {
   name: string
   description: string
   modified_at: string
+  /** Bundled with the worker, no file behind it yet: editing creates the
+   * local file; nothing to delete. */
+  builtin?: boolean
+}
+
+interface AgentRow {
+  id: string
+  name: string
+  description: string
+  logo: string | null
+  icon: string | null
+  color: string | null
+  modified_at: string
+  /** Bundled with the worker (`iii`, the base identity): editing creates
+   * the local file that shadows it; nothing to delete. */
+  builtin?: boolean
+}
+
+interface SystemPromptPreview {
+  parts: { kind: string; body: string }[]
 }
 
 const skillsAdapter: BrowserAdapter = {
   noun: 'skill',
+  crumbRoot: 'skills',
+  nameKeys: ['name', 'title'],
+  defaultNameKey: 'name',
+  modelInvocationOption: true,
+  // Skill ids are slash-separated lowercase segments (ns/skill/…).
+  namePattern: /^[a-z0-9_-]+(\/[a-z0-9_-]+)*$/,
+  nameHint: 'enter an id of lowercase slash-separated segments (a–z, 0–9, hyphens or underscores)',
   onChangeType: 'directory::skills::on-change',
+  emptyTitle: 'Select a skill',
+  emptyBody:
+    'Choose a skill from the sidebar to view and edit its markdown. New skills arrive through the new-skill button, downloads (directory::skills::download), or direct edits to the skills folder.',
   async list(host) {
-    const out = await host.iii.trigger<{ skills: SkillRow[] }>(
-      'directory::skills::list',
-      { include_description: true },
-    )
+    const out = await host.iii.trigger<{ skills: SkillRow[] }>('directory::skills::list', { include_description: true })
     return (out.skills ?? []).map((s) => ({
       key: s.id,
       title: s.title,
@@ -44,76 +74,282 @@ const skillsAdapter: BrowserAdapter = {
     }))
   },
   async load(host, id) {
-    const out = await host.iii.trigger<{ body: string; raw?: string | null }>(
-      'directory::skills::get',
-      { id, raw: true },
-    )
+    const out = await host.iii.trigger<{ body: string; raw?: string | null }>('directory::skills::get', {
+      id,
+      raw: true,
+    })
     // `raw` is the exact on-disk file; body (frontmatter-stripped) is the
     // fallback against a not-yet-updated worker.
     return out.raw ?? out.body
   },
   async save(host, id, content) {
-    const out = await host.iii.trigger<{ id: string }>(
-      'directory::skills::update',
-      { id, content },
-    )
+    const out = await host.iii.trigger<{ id: string }>('directory::skills::update', { id, content })
     return out.id ?? id
+  },
+  async create(host, id, content) {
+    const out = await host.iii.trigger<{ id: string }>('directory::skills::create', { id, content })
+    return out.id ?? id
+  },
+  async remove(host, id) {
+    await host.iii.trigger('directory::skills::delete', { id })
   },
 }
 
-const promptsAdapter: BrowserAdapter = {
-  noun: 'prompt',
-  onChangeType: 'directory::prompts::on-change',
+export const HARNESS_DEFAULT_SYSTEM_PROMPT_KEY = 'harness/default'
+
+/** Frontmatter the built-in default is wrapped in when opened for editing:
+ * saving that draft copy-on-writes a LOCAL `default` store entry, which the
+ * harness then uses instead of the embedded prompt (deleting the local entry
+ * falls back to the embedded one). */
+const HARNESS_DEFAULT_FRONTMATTER =
+  '---\nname: default\ndescription: Harness default system prompt (local override)\n---\n'
+
+function frontmatterName(content: string): string {
+  const match = /^---\n[\s\S]*?^name:[ \t]*(.+?)[ \t]*$[\s\S]*?\n---\n/m.exec(content)
+  return match?.[1] ?? 'default'
+}
+
+export const systemPromptsAdapter: BrowserAdapter = {
+  noun: 'system prompt',
+  crumbRoot: 'system-prompts',
+  slugName: true,
+  descriptionRequired: true,
+  onChangeType: 'directory::system-prompts::on-change',
+  emptyTitle: 'Select a system prompt',
+  emptyBody:
+    'Choose a system prompt from the sidebar to view and edit its markdown. These are what the chat picker offers as an identity prompt — filesystem-backed, so files added to the system-prompts folders appear here automatically.',
   async list(host) {
-    const out = await host.iii.trigger<{ prompts: PromptRow[] }>(
-      'directory::prompts::list',
-    )
-    return (out.prompts ?? []).map((p) => ({
-      key: p.name,
-      title: '',
-      description: p.description,
-      fine: formatRelativeTime(p.modified_at),
-    }))
+    const out = await host.iii.trigger<{ prompts: SystemPromptRow[] }>('directory::system-prompts::list')
+    const prompts = out.prompts ?? []
+    // The built-in row exists only while no LOCAL `default` overrides it:
+    // editing the built-in saves that local entry (copy-on-write), and the
+    // local row then replaces this one in the list.
+    const overridden = prompts.some((p) => p.name === 'default')
+    return [
+      ...(overridden
+        ? []
+        : [
+            {
+              key: HARNESS_DEFAULT_SYSTEM_PROMPT_KEY,
+              title: 'default',
+              description: 'Harness default system prompt',
+              fine: 'Built-in · edits save a local override',
+              noDelete: true,
+            },
+          ]),
+      ...prompts.map((p) =>
+        p.builtin
+          ? {
+              key: p.name,
+              title: '',
+              description: p.description,
+              fine: 'Built-in · edits save a local override',
+              noDelete: true,
+            }
+          : {
+              key: p.name,
+              title: '',
+              description: p.description,
+              fine: formatRelativeTime(p.modified_at),
+            },
+      ),
+    ]
   },
   async load(host, name) {
-    const out = await host.iii.trigger<{ body: string; raw?: string | null }>(
-      'directory::prompts::get',
-      { name, raw: true },
-    )
+    if (name === HARNESS_DEFAULT_SYSTEM_PROMPT_KEY) {
+      const out = await host.iii.trigger<SystemPromptPreview>('harness::system-prompt::get', {
+        session_id: `iii-directory:${host.iii.browserId}`,
+        default_only: true,
+      })
+      const builtIn = out.parts.find((part) => part.kind === 'built_in')
+      if (!builtIn) throw new Error('Harness default system prompt is unavailable')
+      return HARNESS_DEFAULT_FRONTMATTER + builtIn.body
+    }
+    const out = await host.iii.trigger<{ body: string; raw?: string | null }>('directory::system-prompts::get', {
+      name,
+      raw: true,
+    })
     return out.raw ?? out.body
   },
   async save(host, name, content) {
+    if (name === HARNESS_DEFAULT_SYSTEM_PROMPT_KEY) {
+      // Copy-on-write: the built-in prompt has no store file; saving it
+      // CREATES the local `default` entry, which the harness picks up on
+      // the next send. Only that exact name overrides the embedded
+      // identity, so a rename here would silently save an inactive prompt.
+      const local = frontmatterName(content)
+      if (local !== 'default') {
+        throw new Error(
+          'the Harness default override must keep the name "default" — use "New system prompt" to save it under another name',
+        )
+      }
+      const out = await host.iii.trigger<{ name: string }>(
+        'directory::system-prompts::create',
+        { name: local, content },
+      )
+      return out.name ?? local
+    }
     // The effective name after the write follows a frontmatter rename.
-    const out = await host.iii.trigger<{ name: string }>(
-      'directory::prompts::update',
-      { name, content },
-    )
+    const out = await host.iii.trigger<{ name: string }>('directory::system-prompts::update', { name, content })
     return out.name ?? name
+  },
+  async create(host, name, content) {
+    const out = await host.iii.trigger<{ name: string }>('directory::system-prompts::create', { name, content })
+    return out.name ?? name
+  },
+  async remove(host, name) {
+    await host.iii.trigger('directory::system-prompts::delete', { name })
   },
 }
 
-export function DirectoryPage({ host }: { host: Host }) {
+export const agentsAdapter: BrowserAdapter = {
+  noun: 'agent profile',
+  crumbRoot: 'agents',
+  // The id (file stem) and the display name are different things for an
+  // agent: "Release Captain" lives in frontmatter `name`, the file is
+  // `release-captain.md`.
+  separateId: {
+    pattern: /^[a-z0-9_-]+$/,
+    hint: 'enter a name containing at least one letter or number — it becomes the file name',
+  },
+  nameRequired: true,
+  newTemplate: '---\nname: \ndescription: ""\n---\n\n',
+  newTemplateStartsClean: true,
+  extraManagedKeys: ['logo', 'skills', 'model', 'reasoning_effort', 'icon', 'color', 'extends'],
+  customForm: (ctx) => <AgentForm {...ctx} />,
+  customLoading: () => <AgentFormSkeleton />,
+  customFormOwnsContent: true,
+  customFormOwnsWorkspaceHeader: true,
+  prominentListItems: true,
+  onChangeType: 'directory::agents::on-change',
+  emptyTitle: 'Select an agent profile',
+  emptyBody: 'Choose an agent profile from the sidebar to edit its identity, default model, system prompt, and skills.',
+  async list(host) {
+    const out = await host.iii.trigger<{ agents: AgentRow[] }>('directory::agents::list')
+    return (out.agents ?? []).map((a) => ({
+      key: a.id,
+      // The row glyph is the SAME token glyph the avatar picker and the
+      // console session tree render — one identity, one pictogram.
+      icon: <TokenIcon token={a.icon || 'agent'} size={20} />,
+      title: a.name,
+      description: a.description,
+      fine: a.builtin ? 'Built-in · edits save a local override' : formatRelativeTime(a.modified_at),
+      ...(a.builtin ? { noDelete: true } : {}),
+    }))
+  },
+  async load(host, id) {
+    // `raw` is the profile's OWN file; `system_prompt` would be the
+    // inheritance-resolved prompt, never what the editor should save.
+    const out = await host.iii.trigger<{
+      system_prompt: string
+      raw?: string | null
+    }>('directory::agents::get', { id, raw: true })
+    return out.raw ?? out.system_prompt
+  },
+  async save(host, id, content) {
+    const out = await host.iii.trigger<{ id: string }>('directory::agents::update', { id, content })
+    return out.id ?? id
+  },
+  async create(host, id, content) {
+    const out = await host.iii.trigger<{ id: string }>('directory::agents::create', { id, content })
+    return out.id ?? id
+  },
+  async remove(host, id) {
+    await host.iii.trigger('directory::agents::delete', { id })
+  },
+}
+
+type Collection = 'skills' | 'system-prompts' | 'agents'
+
+const COLLECTIONS: { value: Collection; label: string }[] = [
+  { value: 'skills', label: 'Skills' },
+  { value: 'system-prompts', label: 'System Prompts' },
+  { value: 'agents', label: 'Agent Profiles' },
+]
+
+const ADAPTERS: Record<Collection, BrowserAdapter> = {
+  skills: skillsAdapter,
+  'system-prompts': systemPromptsAdapter,
+  agents: agentsAdapter,
+}
+
+export function DirectoryPage({
+  host,
+  panelSide = 'left',
+  tabId = '',
+  onRequestClose,
+  panelContext,
+  commands,
+}: { host: Host } & Partial<PageRenderProps>) {
+  const [collection, setCollection] = useState<Collection>('skills')
+  const [pendingOpen, setPendingOpen] = useState<{
+    id: number
+    collection: Collection
+    key: string
+  } | null>(null)
+
+  // A palette row (see palette.ts) selects a collection + entry here once
+  // the page is open. `panelContext.id` is monotonic, so a repeated
+  // identical click still re-applies.
+  const appliedContextRef = useRef(0)
+  useEffect(() => {
+    if (!panelContext || panelContext.id === appliedContextRef.current) return
+    appliedContextRef.current = panelContext.id
+    const context = panelContext.context as {
+      collection?: string
+      key?: string
+    } | null
+    const collectionValue = context?.collection
+    if (
+      !context ||
+      typeof collectionValue !== 'string' ||
+      typeof context.key !== 'string' ||
+      !COLLECTIONS.some((c) => c.value === collectionValue)
+    ) {
+      return
+    }
+    const nextCollection = collectionValue as Collection
+    setCollection(nextCollection)
+    setPendingOpen({
+      id: panelContext.id,
+      collection: nextCollection,
+      key: context.key,
+    })
+  }, [panelContext])
+
+  const switcher = (
+    <SegmentedControl<Collection>
+      value={collection}
+      onChange={setCollection}
+      options={COLLECTIONS}
+      iconOnly
+      className="dir-ui-collection-tabs"
+      aria-label="Browse skills, system prompts or agent profiles"
+    />
+  )
+
   return (
-    <div className="dir-ui-page">
-      <div className="dir-ui-page-head">
-        <span className="dir-ui-page-title">directory</span>
-        <span className="dir-ui-page-sub">
-          filesystem-backed skills &amp; prompts — edit the markdown, save
-          writes through directory::*::update
-        </span>
-      </div>
-      <Tabs defaultValue="skills">
-        <TabsList>
-          <TabsTrigger value="skills">skills</TabsTrigger>
-          <TabsTrigger value="prompts">prompts</TabsTrigger>
-        </TabsList>
-        <TabsContent value="skills">
-          <CollectionBrowser host={host} adapter={skillsAdapter} />
-        </TabsContent>
-        <TabsContent value="prompts">
-          <CollectionBrowser host={host} adapter={promptsAdapter} />
-        </TabsContent>
-      </Tabs>
-    </div>
+    <PageShell className="dir-ui-shell">
+      <PageHeader
+        icon={<MarkdownFileIcon />}
+        title="Directory"
+        description="Filesystem-backed skills, system prompts and agent profiles"
+        onClose={onRequestClose}
+      />
+      {COLLECTIONS.map((c) => (
+        <div key={c.value} className="dir-ui-shell-body" hidden={collection !== c.value}>
+          <CollectionBrowser
+            host={host}
+            adapter={ADAPTERS[c.value]}
+            nav={switcher}
+            panelSide={panelSide}
+            storageKey={`iii-directory-ui:${tabId || 'page'}:${c.value}`}
+            commands={commands}
+            active={collection === c.value}
+            pendingOpen={pendingOpen && pendingOpen.collection === c.value ? pendingOpen : null}
+          />
+        </div>
+      ))}
+    </PageShell>
   )
 }

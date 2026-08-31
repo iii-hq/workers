@@ -34,7 +34,7 @@ export function IconToggleButton({
             'inline-flex items-center justify-center w-7 h-7 border transition-colors',
             active
               ? 'bg-ink text-bg border-ink'
-              : 'bg-bg text-ink-faint border-rule hover:text-ink hover:border-ink',
+              : 'bg-transparent text-ink-faint border-transparent hover:text-ink hover:bg-surface-hover',
           )}
         >
           {children}

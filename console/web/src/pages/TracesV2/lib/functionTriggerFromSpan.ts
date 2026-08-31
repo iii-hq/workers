@@ -24,7 +24,9 @@
  * event for an error output.
  */
 
+import { rawRedactor } from '@/components/function-trigger/renderer-registry'
 import type { FunctionTriggerMessage } from '@/types/chat'
+import type { FunctionTriggerRenderer } from '@/types/injectable-ui'
 import type { VisualizationSpan } from './traceTransform'
 
 const PAYLOAD_ATTR = 'iii.payload.json'
@@ -225,4 +227,26 @@ export function functionTriggerFromSpan(
     durationMs: Math.round(span.duration_ms),
     ...(inherited ? { identityInherited: true } : {}),
   }
+}
+
+/**
+ * The redactor `SpanTagsTab`/`SpanLogsTab` should apply to a span's own
+ * attributes/events, resolved the SAME way `functionTriggerFromSpan` above
+ * resolves the info tab's card — `spanFunctionId`, not the narrower
+ * `identityInherited` gating this function applies before deciding whether
+ * to SHOW a card at all. That gate is about the info tab's card; it is not
+ * a reason to under-redact a sibling tab that always renders regardless.
+ *
+ * `undefined` when `spanFunctionId` resolves no function id (the span is
+ * not part of any function invocation) or when no injected renderer's
+ * `redactRaw` claims it — the overwhelmingly common case, matching
+ * `rawRedactor`'s own contract.
+ */
+export function spanRawRedactor(
+  span: VisualizationSpan,
+  spansById: Map<string, VisualizationSpan> | undefined,
+  renderers: readonly FunctionTriggerRenderer[],
+): ((value: unknown) => unknown) | undefined {
+  const functionId = spanFunctionId(span, spansById)
+  return functionId ? rawRedactor(renderers, functionId) : undefined
 }

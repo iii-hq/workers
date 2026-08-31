@@ -1,0 +1,4 @@
+adapter:
+  name: kv
+  config:
+    store_method: file_based

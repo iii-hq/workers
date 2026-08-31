@@ -1,0 +1,153 @@
+{
+  "function_id": "browser::crawl",
+  "description": "BFS-crawl from start_urls (follow same-domain links), extract per page, stream items.",
+  "request_schema": {
+    "type": "object",
+    "properties": {
+      "start_urls": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "url": {
+        "type": "string",
+        "description": "single start URL (alternative to start_urls)"
+      },
+      "fetcher": {
+        "type": "string",
+        "enum": [
+          "http",
+          "stealthy",
+          "dynamic"
+        ]
+      },
+      "selectors": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "css": {
+              "type": "string"
+            },
+            "xpath": {
+              "type": "string"
+            },
+            "regex": {
+              "type": "string"
+            },
+            "attr": {
+              "type": "string",
+              "description": "extract this attribute instead of text"
+            },
+            "html": {
+              "type": "boolean",
+              "description": "extract inner HTML instead of text"
+            },
+            "all": {
+              "type": "boolean",
+              "description": "return every match as a list"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      },
+      "allowed_domains": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "only follow links on these hosts"
+      },
+      "same_domain": {
+        "type": "boolean",
+        "description": "follow only same-host links (default true)"
+      },
+      "max_pages": {
+        "type": "integer"
+      },
+      "max_depth": {
+        "type": "integer"
+      },
+      "concurrency": {
+        "type": "integer"
+      },
+      "download_delay": {
+        "type": "number",
+        "description": "seconds to wait between crawl rounds"
+      },
+      "format": {
+        "type": "string",
+        "enum": [
+          "markdown",
+          "text"
+        ],
+        "description": "render page body to this format"
+      },
+      "main_content_only": {
+        "type": "boolean",
+        "description": "strip nav/scripts/hidden before rendering"
+      },
+      "css_selector": {
+        "type": "string",
+        "description": "scope the render to this CSS subtree (e.g. a page's content div)"
+      },
+      "include_html": {
+        "type": "boolean"
+      },
+      "impersonate": {
+        "type": "string"
+      },
+      "stream_name": {
+        "type": "string",
+        "description": "stream to emit items on (default browser::crawl)"
+      }
+    }
+  },
+  "response_schema": {
+    "type": "object",
+    "properties": {
+      "stats": {
+        "type": "object",
+        "properties": {
+          "crawled": {
+            "type": "integer"
+          },
+          "items": {
+            "type": "integer"
+          },
+          "errors": {
+            "type": "integer"
+          },
+          "stopped": {
+            "type": "string"
+          }
+        }
+      },
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        },
+        "description": "a small sample of streamed items"
+      },
+      "stream": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "group_id": {
+            "type": "string"
+          }
+        },
+        "description": "read the full item stream via stream::on with this name + group_id"
+      }
+    }
+  }
+}

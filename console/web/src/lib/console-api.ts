@@ -10,9 +10,21 @@
  * observe a null `api`.
  */
 
+import tokenNames from '@iii-dev/console-ui/token-names'
+import sharedUiClasses from '@iii-dev/console-ui/ui-classes'
+import { ModelPicker } from '@/components/chat/ModelPicker'
+import { AnnotationLayer, AnnotationList } from '@/components/ui/Annotations'
+import { AnsiText } from '@/components/ui/AnsiText'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
+import { Chip } from '@/components/ui/Chip'
 import { CodeEditor } from '@/components/ui/CodeEditor'
+import {
+  CollapsibleCard,
+  CollapsibleCardContent,
+  CollapsibleCardTrigger,
+} from '@/components/ui/CollapsibleCard'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import {
   Dialog,
   DialogClose,
@@ -31,13 +43,49 @@ import {
 } from '@/components/ui/DropdownMenu'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
+import { FileDiff } from '@/components/ui/FileDiff'
+import { IconButton } from '@/components/ui/IconButton'
+import { ImageThumbnailButton, ImageViewer } from '@/components/ui/ImageViewer'
 import { Input } from '@/components/ui/Input'
+import { List, ListGroup, ListGroupLabel, ListItem } from '@/components/ui/List'
 import { MarkdownPreview } from '@/components/ui/MarkdownPreview'
+import { SegmentedControl } from '@/components/ui/ModeToggle'
+import {
+  PageBody,
+  PageHeader,
+  PageMain,
+  PageShell,
+  PageSidebar,
+} from '@/components/ui/PageChrome'
 import { Select } from '@/components/ui/Select'
+import { Selector } from '@/components/ui/Selector'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { StatusPanel } from '@/components/ui/StatusPanel'
+import {
+  Card,
+  CardBody,
+  CardHeader,
+  CardHighlight,
+  Panel,
+  PanelBody,
+  PanelHeader,
+} from '@/components/ui/Surface'
+import {
+  Table,
+  TableBody,
+  TableCaption,
+  TableCell,
+  TableFooter,
+  TableFrame,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableViewport,
+} from '@/components/ui/Table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
+import { TerminalCommandLine } from '@/components/ui/TerminalCommandLine'
+import { TerminalStream } from '@/components/ui/TerminalStream'
 import {
   Tooltip,
   TooltipContent,
@@ -47,6 +95,7 @@ import { useTheme } from '@/hooks/use-theme'
 import type { IiiClient } from '@/lib/iii-client'
 import { Markdown } from '@/lib/markdown'
 import { CodeHighlight, JsonHighlight } from '@/lib/syntax'
+import { WorkerConfigurationDialog } from '@/pages/Workers/components/WorkerConfigurationDialog'
 import type { ConsoleApi, ExtensionIii } from '@/types/injectable-ui'
 
 /**
@@ -56,9 +105,21 @@ import type { ConsoleApi, ExtensionIii } from '@/types/injectable-ui'
  * component-names manifest (the shim's export list).
  */
 export const components: ConsoleApi['components'] = {
+  AnnotationLayer,
+  AnnotationList,
+  AnsiText,
   Badge,
   Button,
+  Card,
+  CardBody,
+  CardHighlight,
+  CardHeader,
+  Chip,
+  ConfirmDialog,
   Dialog,
+  CollapsibleCard,
+  CollapsibleCardContent,
+  CollapsibleCardTrigger,
   DialogTrigger,
   DialogClose,
   DialogContent,
@@ -72,15 +133,45 @@ export const components: ConsoleApi['components'] = {
   DropdownMenuSeparator,
   EmptyState,
   ErrorBoundary,
+  FileDiff,
+  IconButton,
+  ImageThumbnailButton,
+  ImageViewer,
   Input,
+  List,
+  ListGroup,
+  ListGroupLabel,
+  ListItem,
+  PageShell,
+  PageHeader,
+  PageBody,
+  PageSidebar,
+  PageMain,
+  Panel,
+  PanelBody,
+  PanelHeader,
   Select,
+  SegmentedControl,
+  Selector,
   Skeleton,
   StatusDot,
   StatusPanel,
+  Table,
+  TableBody,
+  TableCaption,
+  TableCell,
+  TableFooter,
+  TableFrame,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableViewport,
   Tabs,
   TabsList,
   TabsTrigger,
   TabsContent,
+  TerminalCommandLine,
+  TerminalStream,
   Tooltip,
   TooltipTrigger,
   TooltipContent,
@@ -89,25 +180,16 @@ export const components: ConsoleApi['components'] = {
   JsonHighlight,
   Markdown,
   MarkdownPreview,
+  ModelPicker,
+  // The one page-level composite in the kit: worker pages offer "configure"
+  // in place instead of navigating to the workers tab and stranding the
+  // operator there when the editor closes.
+  WorkerConfigurationDialog,
 }
 
-/** Token names mirroring `index.css`'s `@theme` block (documentation aid). */
-const tokens: readonly string[] = [
-  '--color-bg',
-  '--color-ink',
-  '--color-ink-faint',
-  '--color-ink-ghost',
-  '--color-accent',
-  '--color-accent-fg',
-  '--color-alert',
-  '--color-ok',
-  '--color-warn',
-  '--color-panel',
-  '--color-paper-2',
-  '--color-ring',
-  '--color-rule',
-  '--color-rule-2',
-]
+/** Public token/recipe inventories are canonicalized in the workspace package. */
+export const tokens: readonly string[] = tokenNames
+export const uiClasses = sharedUiClasses
 
 /** Reactive theme, without the setter — extensions follow, never drive. */
 function useThemeValue(): 'light' | 'dark' {
@@ -135,5 +217,6 @@ export function buildConsoleApi(client: IiiClient): ConsoleApi {
     components: Object.freeze({ ...components }),
     useTheme: useThemeValue,
     tokens: Object.freeze([...tokens]),
+    uiClasses,
   })
 }

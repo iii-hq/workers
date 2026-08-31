@@ -6,10 +6,11 @@
  * through a 60s window; hovering a bar shows the span's details, clicking
  * it opens its owning trace.
  *
- * Bars come straight from the all-spans feed (`useAllSpans`: one seed read
- * + the engine's `iii:devtools:all-spans` stream): a pending span renders
- * as a LIVE bar growing along the now-edge and settles when its close frame
- * arrives, so liveness is span-accurate — no trace-level correction needed.
+ * Bars come straight from the all-spans feed (`useAllSpans`: a compact
+ * trace-first seed + the engine's `iii:devtools:all-spans` stream): a pending
+ * span renders as a LIVE bar growing along the now-edge and settles when its
+ * close frame arrives, so liveness is span-accurate — no trace-level
+ * correction needed.
  * Engine routing wrappers are skipped (see `storedSpansToTimelineSpans`).
  *
  * The visualization: every parent sits on a line above the spans it
@@ -636,7 +637,7 @@ function Timeline({
             {ticks.map((t) => (
               <div
                 key={t}
-                className="absolute inset-y-0 w-px bg-rule-2"
+                className="absolute inset-y-0 w-px bg-ink/8"
                 style={{ left: x(t) }}
               />
             ))}
@@ -646,7 +647,7 @@ function Timeline({
               <div
                 key={rail.id}
                 aria-hidden
-                className="absolute w-px bg-rule"
+                className="absolute w-px bg-ink/15"
                 style={{
                   left: rail.left,
                   top: rail.top,
@@ -658,7 +659,7 @@ function Timeline({
               <div
                 key={stub.id}
                 aria-hidden
-                className="absolute h-px bg-rule"
+                className="absolute h-px bg-ink/15"
                 style={{
                   left: stub.left,
                   top: stub.top,
@@ -804,19 +805,19 @@ export function TimelineStrip({
   return (
     <div
       className={cn(
-        'flex h-36 flex-shrink-0 flex-col border-b border-rule overflow-hidden',
+        'flex h-36 flex-shrink-0 flex-col border-b border-rule-2 overflow-hidden',
         className,
       )}
     >
-      <div className="flex shrink-0 items-center justify-between border-b border-rule bg-bg">
+      <div className="flex shrink-0 items-center justify-between border-b border-rule-2 bg-bg">
         <div className="flex items-center gap-3 px-3 py-2">
           <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-ink-faint">
             <span className="text-accent">$</span>
-            <span className="text-ink ml-2">traces</span>
+            <span className="text-ink ml-2">Traces</span>
           </div>
           {isPaused ? (
             <Badge variant="warn">
-              <Pause className="w-3 h-3" />
+              <Pause className="size-4" />
               paused
             </Badge>
           ) : (
@@ -842,7 +843,7 @@ export function TimelineStrip({
                     : 'follow your turns: auto-open the trace when you send a message'
                 }
               >
-                <Crosshair className="w-3.5 h-3.5" />
+                <Crosshair className="size-4" />
               </IconToggleButton>
             )}
             {spanFilter && (

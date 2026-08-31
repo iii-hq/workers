@@ -252,7 +252,10 @@ export function ConsoleEntryRow({ entry }: { entry: BrowserConsoleEntry }) {
   return (
     <li className="br-ui-log-row">
       <span className="br-ui-log-time">{formatTime(entry.timestamp)}</span>
-      <Badge variant={levelBadgeVariant(entry.level)} className="br-ui-log-level">
+      <Badge
+        variant={levelBadgeVariant(entry.level)}
+        className="br-ui-log-level"
+      >
         {entry.level}
       </Badge>
       <span className="br-ui-log-text">
@@ -304,9 +307,7 @@ export function ConsoleReadView({
 export function NetworkEntryRow({ entry }: { entry: BrowserNetworkEntry }) {
   return (
     <li className="br-ui-log-row">
-      <span
-        className={cn('br-ui-net-status', entry.failed && 'is-failed')}
-      >
+      <span className={cn('br-ui-net-status', entry.failed && 'is-failed')}>
         {entry.status ?? (entry.failed ? 'err' : '...')}
       </span>
       <span className="br-ui-net-method">{entry.method}</span>
@@ -338,7 +339,7 @@ export function NetworkReadView({
           variant={res.entries.length > 0 ? 'accent' : 'default'}
         />
         {req?.failed_only ? (
-          <Chip className="br-ui-chip-warn">failed only</Chip>
+          <Chip className="br-ui-chip-warn">Failed only</Chip>
         ) : null}
         {req?.pattern ? <Chip>/{req.pattern}/</Chip> : null}
         {res.dropped > 0 ? (
@@ -513,7 +514,9 @@ export function EvaluateView({
           <div className="br-ui-empty-line">· undefined</div>
         ) : (
           <div className="br-ui-json-sm">
-            <JsonHighlight code={JSON.stringify(res.value, null, 2) ?? 'null'} />
+            <JsonHighlight
+              code={JSON.stringify(res.value, null, 2) ?? 'null'}
+            />
           </div>
         )
       ) : (

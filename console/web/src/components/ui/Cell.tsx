@@ -9,13 +9,13 @@ interface CellProps {
 
 export function Cell({ title, children, className }: CellProps) {
   return (
-    <div className={cn('border border-rule bg-bg p-7', className)}>
+    <div className={cn('rounded-md bg-surface p-5', className)}>
       {title ? (
-        <div className="font-mono text-[16px] font-semibold tracking-[-0.01em] text-ink mb-3 lowercase">
+        <div className="mb-3 font-sans text-[16px] font-semibold tracking-[-0.01em] text-ink">
           {title}
         </div>
       ) : null}
-      <div className="font-mono text-[13px] leading-[1.7] text-ink-faint max-w-[34ch]">
+      <div className="max-w-[34ch] font-sans text-[13px] leading-[1.7] text-ink-faint">
         {children}
       </div>
     </div>

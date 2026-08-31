@@ -14,16 +14,21 @@ use crate::discovery::{FunctionsCell, FunctionsSnapshot};
 use crate::events::TurnEvents;
 use crate::hooks::HookRegistry;
 use crate::locks::{SessionLocks, TurnCancels};
+use crate::skills::{SkillsCell, SkillsSnapshot};
 
 #[derive(Clone)]
 pub struct Deps {
     pub iii: Arc<IIIClient>,
     pub config: ConfigCell,
     pub functions: FunctionsCell,
+    pub skills: SkillsCell,
     pub events: TurnEvents,
     pub hooks: HookRegistry,
     pub locks: SessionLocks,
     pub cancels: TurnCancels,
+    /// SDK handles for the delivery triggers this process registered; see
+    /// [`crate::bindings::TriggerHandles`].
+    pub trigger_handles: crate::bindings::TriggerHandles,
 }
 
 impl Deps {
@@ -31,6 +36,7 @@ impl Deps {
         iii: Arc<IIIClient>,
         config: ConfigCell,
         functions: FunctionsCell,
+        skills: SkillsCell,
         events: TurnEvents,
         hooks: HookRegistry,
     ) -> Self {
@@ -38,10 +44,12 @@ impl Deps {
             iii,
             config,
             functions,
+            skills,
             events,
             hooks,
             locks: SessionLocks::new(),
             cancels: TurnCancels::new(),
+            trigger_handles: crate::bindings::TriggerHandles::default(),
         }
     }
 
@@ -55,6 +63,10 @@ impl Deps {
     /// Carries both the callable set (`.functions`) and its `.generation`.
     pub async fn functions(&self) -> Arc<FunctionsSnapshot> {
         self.functions.read().await.clone()
+    }
+
+    pub async fn skills(&self) -> Arc<SkillsSnapshot> {
+        self.skills.read().await.clone()
     }
 
     pub async fn session(&self) -> SessionClient {
@@ -85,6 +97,10 @@ impl Deps {
     /// clients so a hot-reloaded timeout applies to the next read.
     pub async fn bindings(&self) -> BindingStore {
         let cfg = self.cfg().await;
-        BindingStore::new(self.iii.clone(), cfg.session_timeout_ms)
+        BindingStore::new(
+            self.iii.clone(),
+            cfg.session_timeout_ms,
+            self.events.clone(),
+        )
     }
 }

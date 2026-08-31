@@ -6,9 +6,11 @@ use crate::sse::{
     build_partial, handle_sse_event, synthetic_error_event, synthetic_error_event_from_state,
     PartialState,
 };
+use crate::PROVIDER_ID;
 use futures::StreamExt;
 use llm_router::provider_scaffold::sse_transport::{
-    append_utf8_chunk, drain_sse_blocks, error_chain,
+    append_utf8_chunk, classify_stream_end, drain_sse_blocks, error_chain, tail_frame_is_partial,
+    truncated_stream_error, CloseFraming, StreamEnd, TailFlush,
 };
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind};
 use serde_json::Value;
@@ -135,27 +137,31 @@ async fn run_upstream(
         text.push_str(&String::from_utf8_lossy(&byte_buf));
         byte_buf.clear();
     }
-    if !text.trim().is_empty() {
-        let remainder = std::mem::take(&mut text);
-        let _ = drain_blocks(&mut (remainder + "\n\n"), &mut state, &args.model, &tx).await;
-    }
-
-    if state.saw_message_stop {
-        let _ = tx
-            .send(AssistantMessageEvent::Done {
-                message: build_partial(&state, &args.model),
-            })
-            .await;
+    // A final block missing only its blank line still decodes; a cut frame is reported.
+    let tail = if tail_frame_is_partial(&text) {
+        TailFlush::Partial {
+            bytes: text.trim().len(),
+        }
+    } else if text.trim().is_empty() {
+        TailFlush::Clean
     } else {
-        let _ = tx
-            .send(synthetic_error_event_from_state(
-                &state,
-                "anthropic stream ended before message_stop",
-                &args.model,
-                ErrorKind::Transient,
-            ))
-            .await;
-    }
+        let remainder = std::mem::take(&mut text);
+        if drain_blocks(&mut (remainder + "\n\n"), &mut state, &args.model, &tx).await {
+            return;
+        }
+        TailFlush::Clean
+    };
+
+    // Messages always ends with message_stop, so close framing is never accepted.
+    let event = match classify_stream_end(&state, tail, CloseFraming::Rejected) {
+        StreamEnd::Complete => AssistantMessageEvent::Done {
+            message: build_partial(&state, &args.model),
+        },
+        StreamEnd::Truncated(truncation) => {
+            truncated_stream_error(build_partial(&state, &args.model), PROVIDER_ID, truncation)
+        }
+    };
+    let _ = tx.send(event).await;
 }
 
 #[cfg(test)]
@@ -262,10 +268,9 @@ mod tests {
         match events.last() {
             Some(AssistantMessageEvent::Error { error }) => {
                 assert_eq!(error.error_kind, Some(ErrorKind::Transient));
-                assert!(error
-                    .error_message
-                    .as_deref()
-                    .is_some_and(|m| m.contains("message_stop")));
+                let message = error.error_message.as_deref().unwrap_or_default();
+                assert!(message.contains("stream truncated"), "{message}");
+                assert!(message.contains("reason=no_terminator"), "{message}");
             }
             other => panic!("want error, got {other:?}"),
         }
@@ -300,6 +305,88 @@ mod tests {
                 assert_eq!(error.error_kind, Some(ErrorKind::Transient));
             }
             other => panic!("want error, got {other:?}"),
+        }
+    }
+
+    const TRUNCATED_MID_ARGUMENTS: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\nevent: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Listing\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"shell__fs__ls\",\"input\":{}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\\\"/tm\"}}\n\n";
+
+    const TRUNCATED_MID_FRAME: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\nevent: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" wor";
+
+    const FINAL_BLOCK_WITHOUT_BLANK_LINE: &str = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\nevent: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\nevent: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":2}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}";
+
+    fn single_terminal_error(
+        events: &[AssistantMessageEvent],
+    ) -> &llm_router::types::messages::AssistantMessage {
+        assert_eq!(
+            events.iter().filter(|e| e.is_terminal()).count(),
+            1,
+            "{events:?}"
+        );
+        match events.last() {
+            Some(AssistantMessageEvent::Error { error }) => error,
+            other => panic!("want error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stream_cut_inside_function_call_arguments_ends_as_one_error() {
+        let url = stub(TRUNCATED_MID_ARGUMENTS).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        let error = single_terminal_error(&events);
+        assert_eq!(error.error_kind, Some(ErrorKind::Transient));
+        let message = error.error_message.as_deref().unwrap_or_default();
+        assert!(message.contains("stream truncated"), "{message}");
+        assert!(message.contains("reason=open_function_call"), "{message}");
+        assert!(error.content.iter().any(
+            |b| matches!(b, llm_router::types::content::ContentBlock::Text { text } if text == "Listing")
+        ));
+        let call = error.content.iter().find_map(|b| match b {
+            llm_router::types::content::ContentBlock::FunctionCall { arguments, .. } => {
+                Some(arguments)
+            }
+            _ => None,
+        });
+        let arguments = call.expect("function call block kept as evidence");
+        assert!(
+            arguments.get("_partial").is_some() || arguments.get("_raw").is_some(),
+            "arguments must be marked degraded: {arguments}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stream_cut_inside_an_event_frame_ends_as_one_error() {
+        let url = stub(TRUNCATED_MID_FRAME).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        let error = single_terminal_error(&events);
+        assert_eq!(error.error_kind, Some(ErrorKind::Transient));
+        let message = error.error_message.as_deref().unwrap_or_default();
+        assert!(message.contains("reason=partial_frame"), "{message}");
+        assert!(error.content.iter().any(
+            |b| matches!(b, llm_router::types::content::ContentBlock::Text { text } if text == "Hello")
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn empty_stream_ends_as_one_error_not_an_empty_done() {
+        let url =
+            stub("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n")
+                .await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        let error = single_terminal_error(&events);
+        let message = error.error_message.as_deref().unwrap_or_default();
+        assert!(message.contains("reason=empty"), "{message}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn final_block_without_blank_line_still_completes() {
+        let url = stub(FINAL_BLOCK_WITHOUT_BLANK_LINE).await;
+        let events = drain(spawn_upstream(reqwest::Client::new(), args(url))).await;
+        assert_eq!(events.iter().filter(|e| e.is_terminal()).count(), 1);
+        match events.last() {
+            Some(AssistantMessageEvent::Done { message }) => {
+                assert_eq!(message.native_stop_reason.as_deref(), Some("end_turn"));
+            }
+            other => panic!("want done, got {other:?}"),
         }
     }
 

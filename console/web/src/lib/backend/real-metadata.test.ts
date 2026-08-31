@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   buildTurnMetadata,
   FALLBACK_FUNCTION_POLICY,
+  toHarnessSendError,
   toProviderOptions,
   toThinkingLevel,
 } from './real'
@@ -29,6 +30,13 @@ describe('fallback function policy', () => {
   it('does not expose workspace picker functions to the agent', () => {
     expect(FALLBACK_FUNCTION_POLICY.deny).toContain('shell::workspace::*')
   })
+
+  it('allows configuration updates without exposing registration', () => {
+    expect(FALLBACK_FUNCTION_POLICY.deny).toContain('configuration::register')
+    expect(FALLBACK_FUNCTION_POLICY.deny).not.toContain('configuration::*')
+    expect(FALLBACK_FUNCTION_POLICY.deny).not.toContain('configuration::get')
+    expect(FALLBACK_FUNCTION_POLICY.deny).not.toContain('configuration::set')
+  })
 })
 
 describe('model reasoning effort forwarding', () => {
@@ -49,5 +57,20 @@ describe('model reasoning effort forwarding', () => {
     expect(toProviderOptions('openai-codex', 'high')).toEqual({
       'openai-codex': { reasoning_effort: 'high' },
     })
+  })
+})
+
+describe('harness send error formatting', () => {
+  it('keeps the useful message from a structured SDK error', () => {
+    const error = toHarnessSendError({
+      code: 'invocation_failed',
+      message:
+        'handler error: {"code":"enqueue_error","message":"serialization error: unknown field namespace"}',
+    })
+
+    expect(error.message).toBe(
+      'enqueue_error: serialization error: unknown field namespace',
+    )
+    expect(error.message).not.toContain('[object Object]')
   })
 })

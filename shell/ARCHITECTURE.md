@@ -12,7 +12,7 @@ curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 cargo build --release --bin iii-shell
 
 # 3. Wire the binary where the engine looks (registered worker name = `shell`,
-#    per iii.worker.yaml — fall back to ~/.iii/workers/iii-shell if your
+#    per worker-compose.yaml — fall back to ~/.iii/workers/iii-shell if your
 #    engine resolves by binary name).
 mkdir -p ~/.iii/workers
 ln -sfn $(pwd)/target/release/iii-shell ~/.iii/workers/shell
@@ -23,7 +23,24 @@ ln -sfn $(pwd)/target/release/iii-shell ~/.iii/workers/shell
 iii -c ./config.yaml
 ```
 
-`iii worker add shell` does not currently pull `iii-sandbox` along — run `iii worker add iii-sandbox` separately before using `shell::exec { target: sandbox }` or any `shell::fs::*` sandbox-target path. Plain host-targeted `shell::exec` works without it.
+`iii trigger compose::add worker=shell` does not currently pull `iii-sandbox` along — run `iii trigger compose::add worker=iii-sandbox` separately before using `shell::exec { target: sandbox }` or any `shell::fs::*` sandbox-target path. Plain host-targeted `shell::exec` works without it.
+
+## Injected console UI (`ui/`, `src/ui.rs`)
+
+The worker ships UI into any running console (SOP:
+`workers/docs/sops/injectable-console-ui.md`): the shell explorer page
+(`#/ext/shell` — files/git/search sidebar beside the console's shared Monaco
+editor and `FileDiff`) and the `shell::*` function-trigger renderers (moved
+out of the console SPA; the console's `first-party/shell` family is gone).
+The explorer acts through the worker's own functions: `coder::tree/read-file/
+create-file/search` and `shell::exec` (git, argv form, `cwd`-scoped).
+
+Building the worker therefore needs Node + pnpm on PATH: `build.rs` runs
+`pnpm install && pnpm build` in `ui/` when `ui/dist/` is missing or stale and
+`include_str!`s the outputs (`SKIP_UI_BUILD=1` uses existing `ui/dist/`
+as-is). Dev loop: `cd ui && pnpm watch` plus `III_SHELL_UI_WATCH=1` on the
+worker — open console tabs hot-swap the assets. UI parser/format tests:
+`cd ui && pnpm test`.
 
 ## CLI flags
 

@@ -1,0 +1,37 @@
+{
+  "name": "cursor",
+  "version": "0.1.1-experimental",
+  "private": true,
+  "description": "Cursor as a login-backed LLM Router provider and coding-agent worker through CLI ACP, with optional sdk.v1 Bridge sessions.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.18.2",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "build:bundle": "node scripts/build-bundle.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "test": "vitest run",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts"
+  },
+  "bin": {
+    "cursor-worker": "./dist/index.js"
+  },
+  "dependencies": {
+    "iii-sdk": "0.22.1-alpha.25",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.10",
+    "@types/node": "^22.10.0",
+    "esbuild": "^0.25.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

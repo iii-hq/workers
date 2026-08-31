@@ -1,0 +1,12 @@
+version: 1
+
+rules:
+  - '!provider::cursor::stream'
+  - '!provider::cursor::abort'
+  - '!provider::cursor::refresh_models'
+  - '!provider::cursor::on_router_ready'
+  - '!cursor::on-config-change'
+  - cursor::status
+  - cursor::sessions::list
+  - cursor::auth::status
+  - cursor::models::list

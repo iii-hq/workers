@@ -95,6 +95,8 @@ pub async fn start(iii: Arc<IIIClient>, config: CronConfig) -> anyhow::Result<Bo
             .trigger_request_format::<CronTriggerSpec>(),
     );
 
+    crate::ui::register(&iii);
+
     Ok(BootHandle {
         scheduler: scheduler_cell,
         config: Arc::new(tokio::sync::RwLock::new(config.normalized())),

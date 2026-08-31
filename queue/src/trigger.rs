@@ -68,7 +68,9 @@ pub trait Invoker: Send + Sync + 'static {
         function_id: &str,
         payload: Value,
         _timeout_ms: u64,
+        namespace: &str,
     ) -> Result<Option<Value>, String> {
+        let _ = namespace;
         self.call(function_id, payload).await
     }
 
@@ -96,7 +98,12 @@ pub trait Invoker: Send + Sync + 'static {
     /// optimistic default. The real iii-backed invoker overrides this so a
     /// durable job restored before its worker boots is held instead of
     /// burning delivery retries on a transient `FUNCTION_NOT_FOUND` error.
-    async fn function_available(&self, _function_id: &str) -> Result<bool, String> {
+    async fn function_available(
+        &self,
+        _function_id: &str,
+        namespace: &str,
+    ) -> Result<bool, String> {
+        let _ = namespace;
         Ok(true)
     }
 
@@ -134,14 +141,18 @@ impl Invoker for IiiInvoker {
         function_id: &str,
         payload: Value,
         timeout_ms: u64,
+        namespace: &str,
     ) -> Result<Option<Value>, String> {
         self.iii
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload,
-                action: None,
-                timeout_ms: Some(timeout_ms),
-            })
+            .trigger(
+                TriggerRequest {
+                    function_id: function_id.to_string(),
+                    payload,
+                    action: None,
+                    timeout_ms: Some(timeout_ms),
+                }
+                .namespace(namespace),
+            )
             .await
             .map(Some)
             .map_err(|e| e.to_string())
@@ -167,12 +178,15 @@ impl Invoker for IiiInvoker {
         .map_err(|e| e.to_string())
     }
 
-    async fn function_available(&self, function_id: &str) -> Result<bool, String> {
+    async fn function_available(&self, function_id: &str, namespace: &str) -> Result<bool, String> {
         match self
             .iii
             .trigger(TriggerRequest {
                 function_id: "engine::functions::info".to_string(),
-                payload: json!({ "function_id": function_id }),
+                payload: json!({
+                    "function_id": function_id,
+                    "namespace": namespace,
+                }),
                 action: None,
                 timeout_ms: Some(5_000),
             })
@@ -545,6 +559,7 @@ mod tests {
             function_id: function_id.to_string(),
             config,
             metadata: None,
+            namespace: None,
         }
     }
 

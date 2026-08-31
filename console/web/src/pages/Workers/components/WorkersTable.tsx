@@ -1,7 +1,10 @@
-import { Settings, Square } from 'lucide-react'
+import { ChevronRight, Play, RotateCw, Settings, Square } from 'lucide-react'
+import { useState } from 'react'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { IconButton } from '@/components/ui/IconButton'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusDot } from '@/components/ui/StatusDot'
 import {
@@ -10,40 +13,50 @@ import {
   TooltipTrigger,
 } from '@/components/ui/Tooltip'
 import { cn } from '@/lib/utils'
-import type { WorkerManagementKind, WorkerRow } from '../types'
+import type { PendingComposeAction } from '../hooks/useWorkersLive'
+import {
+  type ComposeAction,
+  composeActions,
+  MANAGEMENT_LABEL,
+  type WorkerManagementKind,
+  type WorkerRow,
+} from '../types'
+import { WorkerSurface } from './WorkerSurface'
 
 interface WorkersTableProps {
   rows: WorkerRow[]
   isLoading?: boolean
   stoppingName?: string | null
+  pendingCompose?: PendingComposeAction | null
   onStop?: (name: string) => void
+  onComposeAction?: (action: ComposeAction, container: string) => void
   onConfigure?: (configurationId: string) => void
   className?: string
-}
-
-const MANAGEMENT_LABEL: Record<WorkerManagementKind, string> = {
-  config: 'config',
-  supervisor: 'managed',
-  standalone: 'standalone',
-  internal: 'internal',
 }
 
 const MANAGEMENT_VARIANT: Record<
   WorkerManagementKind,
   'default' | 'accent' | 'warn'
 > = {
+  compose: 'accent',
   config: 'default',
   supervisor: 'accent',
   standalone: 'warn',
   internal: 'default',
 }
 
-function statusTone(
-  status: WorkerRow['status'],
-): 'accent' | 'alert' | 'warn' | 'ink' {
-  if (status === 'connected') return 'accent'
-  if (status === 'stopped') return 'ink'
-  return 'warn'
+const STATUS_STYLE: Record<
+  WorkerRow['status'],
+  {
+    tone: 'accent' | 'alert' | 'warn' | 'ink'
+    badge: 'default' | 'warn' | 'alert'
+  }
+> = {
+  connected: { tone: 'accent', badge: 'warn' },
+  starting: { tone: 'warn', badge: 'warn' },
+  failed: { tone: 'alert', badge: 'alert' },
+  disconnected: { tone: 'warn', badge: 'warn' },
+  stopped: { tone: 'ink', badge: 'default' },
 }
 
 function formatCell(value: string | number | null | undefined): string {
@@ -51,11 +64,18 @@ function formatCell(value: string | number | null | undefined): string {
   return String(value)
 }
 
+interface ComposeConfirm {
+  action: Exclude<ComposeAction, 'start'>
+  container: string
+}
+
 export function WorkersTable({
   rows,
   isLoading,
   stoppingName,
+  pendingCompose,
   onStop,
+  onComposeAction,
   onConfigure,
   className,
 }: WorkersTableProps) {
@@ -68,10 +88,39 @@ export function WorkersTable({
       <EmptyState
         icon={Square}
         title="no workers"
-        description="no workers match the current filters. workers appear here when they connect to the engine or are installed via the supervisor."
+        description="no workers match the current filters. workers appear here when they connect to the engine, when compose declares them, or when the supervisor installs them."
       />
     )
   }
+
+  return (
+    <WorkersTableBody
+      {...{
+        rows,
+        stoppingName,
+        pendingCompose,
+        onStop,
+        onComposeAction,
+        onConfigure,
+        className,
+      }}
+    />
+  )
+}
+
+function WorkersTableBody({
+  rows,
+  stoppingName,
+  pendingCompose,
+  onStop,
+  onComposeAction,
+  onConfigure,
+  className,
+}: Omit<WorkersTableProps, 'isLoading'>) {
+  // Only connected workers have a surface to show: `engine::workers::info`
+  // answers for the live bus, not for a stopped supervisor entry.
+  const [expanded, setExpanded] = useState<string | null>(null)
+  const [confirm, setConfirm] = useState<ComposeConfirm | null>(null)
 
   return (
     <div
@@ -116,13 +165,54 @@ export function WorkersTable({
                 key={row.id}
                 row={row}
                 stopping={stoppingName === row.name}
+                pendingAction={
+                  pendingCompose?.container === row.name
+                    ? pendingCompose.action
+                    : null
+                }
+                expanded={expanded === row.name}
+                onToggle={() =>
+                  setExpanded((prev) => (prev === row.name ? null : row.name))
+                }
                 onStop={onStop}
+                onComposeAction={
+                  onComposeAction
+                    ? (action) => {
+                        if (action === 'start')
+                          onComposeAction(action, row.name)
+                        else setConfirm({ action, container: row.name })
+                      }
+                    : undefined
+                }
                 onConfigure={onConfigure}
               />
             ))}
           </tbody>
         </table>
       </div>
+      <ConfirmDialog
+        open={confirm !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirm(null)
+        }}
+        title={
+          confirm?.action === 'restart'
+            ? `Restart ${confirm.container}?`
+            : `Stop ${confirm?.container ?? ''}?`
+        }
+        description={
+          confirm?.action === 'restart'
+            ? 'Compose restarts this container in place without touching its dependency graph.'
+            : 'Compose stops this container and every container that depends on it, in reverse dependency order.'
+        }
+        confirmLabel={confirm?.action === 'restart' ? 'Restart' : 'Stop'}
+        onConfirm={() => {
+          if (confirm && onComposeAction) {
+            onComposeAction(confirm.action, confirm.container)
+          }
+          setConfirm(null)
+        }}
+      />
     </div>
   )
 }
@@ -130,16 +220,32 @@ export function WorkersTable({
 interface WorkerTableRowProps {
   row: WorkerRow
   stopping: boolean
+  pendingAction: ComposeAction | null
+  expanded: boolean
+  onToggle: () => void
   onStop?: (name: string) => void
+  onComposeAction?: (action: ComposeAction) => void
   onConfigure?: (configurationId: string) => void
+}
+
+const COMPOSE_ICON: Record<ComposeAction, typeof Play> = {
+  start: Play,
+  stop: Square,
+  restart: RotateCw,
 }
 
 function WorkerTableRow({
   row,
   stopping,
+  pendingAction,
+  expanded,
+  onToggle,
   onStop,
+  onComposeAction,
   onConfigure,
 }: WorkerTableRowProps) {
+  const expandable = row.status === 'connected'
+  const composeVerbs = composeActions(row)
   const configureButton = row.configurationId ? (
     <Button
       variant="icon"
@@ -152,9 +258,36 @@ function WorkerTableRow({
         if (row.configurationId) onConfigure?.(row.configurationId)
       }}
     >
-      <Settings className="h-3.5 w-3.5" aria-hidden />
+      <Settings className="size-4" aria-hidden />
     </Button>
   ) : null
+
+  const composeButtons =
+    composeVerbs.length > 0
+      ? composeVerbs.map((action) => {
+          const Icon = COMPOSE_ICON[action]
+          const busy = pendingAction !== null
+          return (
+            <IconButton
+              key={action}
+              variant="icon"
+              label={`${action} ${row.name}`}
+              disabled={busy || !onComposeAction}
+              onClick={() => onComposeAction?.(action)}
+            >
+              <Icon
+                className={cn(
+                  'size-4',
+                  pendingAction === action &&
+                    action === 'restart' &&
+                    'animate-spin',
+                )}
+                aria-hidden
+              />
+            </IconButton>
+          )
+        })
+      : null
 
   const stopButton = (
     <Button
@@ -168,55 +301,113 @@ function WorkerTableRow({
     </Button>
   )
 
+  const fallbackStop =
+    composeVerbs.length > 0 ? null : row.stopEnabled ||
+      !row.stopDisabledReason ? (
+      stopButton
+    ) : (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="inline-block">{stopButton}</span>
+        </TooltipTrigger>
+        <TooltipContent>{row.stopDisabledReason}</TooltipContent>
+      </Tooltip>
+    )
+
+  // A span, not a div: this nests inside the expand <button>, which only
+  // allows phrasing content.
+  const nameCell = (
+    <span className="flex items-center gap-2">
+      <StatusDot
+        tone={STATUS_STYLE[row.status].tone}
+        pulse={row.status === 'connected' || row.status === 'starting'}
+      />
+      <span className="font-mono text-[13px] text-ink lowercase">
+        {row.name}
+      </span>
+      {pendingAction ? (
+        <Badge
+          variant={STATUS_STYLE[row.status].badge}
+        >{`${pendingAction}…`}</Badge>
+      ) : row.status !== 'connected' ? (
+        <Badge variant={STATUS_STYLE[row.status].badge}>{row.status}</Badge>
+      ) : null}
+    </span>
+  )
+  const detailId = `worker-detail-${row.name}`
+
   return (
-    <tr className="border-b border-rule-2">
-      <td className="py-2.5 pr-4">
-        <div className="flex items-center gap-2">
-          <StatusDot
-            tone={statusTone(row.status)}
-            pulse={row.status === 'connected'}
-          />
-          <span className="font-mono text-[13px] text-ink lowercase">
-            {row.name}
-          </span>
-        </div>
-      </td>
-      <td className="py-2.5 pr-4 font-mono text-[13px] text-ink-faint lowercase">
-        {formatCell(row.runtime)}
-      </td>
-      <td className="py-2.5 pr-4 font-mono text-[13px] text-ink-faint tabular-nums">
-        {formatCell(row.ipAddress)}
-      </td>
-      <td className="py-2.5 pr-4 font-mono text-[13px] text-ink-faint tabular-nums">
-        {formatCell(row.version)}
-      </td>
-      <td className="py-2.5 pr-4 font-mono text-[13px] text-ink-faint tabular-nums">
-        {formatCell(row.pid)}
-      </td>
-      <td className="py-2.5 pr-4">
-        <Badge variant={MANAGEMENT_VARIANT[row.managementKind]}>
-          {MANAGEMENT_LABEL[row.managementKind]}
-        </Badge>
-      </td>
-      <td className="py-2.5 pr-4 font-mono text-[13px] text-ink-faint lowercase">
-        {formatCell(row.tag)}
-      </td>
-      <td className="py-2.5 text-right">
-        <div className="flex items-center justify-end gap-2">
-          {configureButton}
-          {row.stopEnabled || !row.stopDisabledReason ? (
-            stopButton
+    <>
+      <tr className="border-b border-rule-2">
+        <td className="py-2.5 pr-4">
+          {expandable ? (
+            <button
+              type="button"
+              onClick={onToggle}
+              aria-expanded={expanded}
+              aria-controls={detailId}
+              aria-label={`${expanded ? 'hide' : 'show'} ${row.name} functions and triggers`}
+              className="flex items-center gap-1.5 text-left hover:text-ink"
+            >
+              <ChevronRight
+                className={cn(
+                  'size-4 shrink-0 text-ink-faint transition-transform',
+                  expanded && 'rotate-90',
+                )}
+                aria-hidden
+              />
+              {nameCell}
+            </button>
           ) : (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span className="inline-block">{stopButton}</span>
-              </TooltipTrigger>
-              <TooltipContent>{row.stopDisabledReason}</TooltipContent>
-            </Tooltip>
+            <div className="pl-[18px]">{nameCell}</div>
           )}
-        </div>
-      </td>
-    </tr>
+          {row.lastError ? (
+            <p
+              className="mt-1 max-w-[32rem] whitespace-normal pl-[18px] font-mono text-[11.5px] leading-relaxed text-alert"
+              title={row.lastError}
+            >
+              {row.lastError}
+            </p>
+          ) : null}
+        </td>
+        <td className="py-2.5 pr-4 font-mono text-[13px] text-ink-faint lowercase">
+          {formatCell(row.runtime)}
+        </td>
+        <td className="py-2.5 pr-4 font-mono text-[13px] text-ink-faint tabular-nums">
+          {formatCell(row.ipAddress)}
+        </td>
+        <td className="py-2.5 pr-4 font-mono text-[13px] text-ink-faint tabular-nums">
+          {formatCell(row.version)}
+        </td>
+        <td className="py-2.5 pr-4 font-mono text-[13px] text-ink-faint tabular-nums">
+          {formatCell(row.pid)}
+        </td>
+        <td className="py-2.5 pr-4">
+          <Badge variant={MANAGEMENT_VARIANT[row.managementKind]}>
+            {MANAGEMENT_LABEL[row.managementKind]}
+          </Badge>
+        </td>
+        <td className="py-2.5 pr-4 font-mono text-[13px] text-ink-faint lowercase">
+          {formatCell(row.tag)}
+        </td>
+        <td className="py-2.5 text-right">
+          <div className="flex items-center justify-end gap-1">
+            {configureButton}
+            {composeButtons}
+            {fallbackStop}
+          </div>
+        </td>
+      </tr>
+      {expanded ? (
+        <tr className="border-b border-rule-2 bg-paper-2/40">
+          {/* The table wrapper is `whitespace-nowrap` so the columns never
+              wrap mid-row; the surface below is prose, so it opts back out. */}
+          <td id={detailId} colSpan={8} className="whitespace-normal px-6 pb-2">
+            <WorkerSurface name={row.name} />
+          </td>
+        </tr>
+      ) : null}
+    </>
   )
 }
 

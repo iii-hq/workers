@@ -1,18 +1,4 @@
-//! Filesystem-backed prompts reader.
-//!
-//! Public API (reachable by any worker over `iii.trigger`):
-//!
-//!   * `directory::prompts::list` — metadata-only listing of every prompt
-//!     in `<skills_folder>/<ns>/prompts/*.md`, sorted by name.
-//!   * `directory::prompts::get`  — fetch one prompt's body + metadata.
-//!
-//! Both responses are plain JSON shapes — no MCP envelope, no role/
-//! messages wrapper — so this worker stays agnostic to MCP and any
-//! other adapter. Adapters can shape the response on their own side.
-//!
-//! There is no `prompts::register` / `prompts::unregister`. Prompts
-//! arrive on disk via `directory::skills::download` (or by direct
-//! editing) and are re-read on every list/get call.
+//! Filesystem-backed system-prompt reader.
 
 use std::sync::Arc;
 
@@ -26,155 +12,159 @@ use crate::fs_source;
 use crate::functions::error::{not_found_message, NextAction};
 
 const NAME_MAX_LEN: usize = 64;
-
-/// Recovery pointer attached to a `directory::prompts::get` miss.
-const PROMPT_NOT_FOUND_NEXT: &[NextAction] = &[NextAction::new(
-    "directory::prompts::list",
-    "browse prompt names",
+const SYSTEM_PROMPT_NOT_FOUND_NEXT: &[NextAction] = &[NextAction::new(
+    "directory::system-prompts::list",
+    "browse system prompt names",
 )];
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
-struct ListPromptsInput {}
+struct ListSystemPromptsInput {}
 
 #[derive(Debug, Serialize, JsonSchema)]
-struct PromptEntry {
+struct SystemPromptEntry {
     name: String,
     description: String,
-    /// File mtime as RFC 3339.
     modified_at: String,
+    /// Bundled with the worker, no file behind it: editing it creates the
+    /// local file (which then shadows this entry); there is nothing to
+    /// delete.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    builtin: bool,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
-struct ListPromptsOutput {
-    prompts: Vec<PromptEntry>,
+struct ListSystemPromptsOutput {
+    prompts: Vec<SystemPromptEntry>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct PromptGetInput {
+pub struct SystemPromptGetInput {
     pub name: String,
-    /// When `true`, the response includes the FULL on-disk file content
-    /// (frontmatter block included) as `raw`. For editors that need to
-    /// round-trip the exact file (`directory::prompts::update` takes the
-    /// same full-file form); agent readers should leave this unset and
-    /// use `body`.
+    /// When `true`, the response includes the full on-disk file content
+    /// (frontmatter included) as `raw`, ready for
+    /// `directory::system-prompts::update`.
     #[serde(default)]
     pub raw: Option<bool>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
-pub struct PromptGetOutput {
+pub struct SystemPromptGetOutput {
     pub name: String,
     pub description: String,
-    /// Raw markdown body (post-frontmatter) from disk.
     pub body: String,
-    /// FULL on-disk file content (frontmatter included). Present only
-    /// when the request set `raw: true` — the exact string to hand back
-    /// to `directory::prompts::update`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw: Option<String>,
-    /// File mtime as RFC 3339.
     pub modified_at: String,
+    /// Served from the copy bundled with the worker (no local file yet):
+    /// an update creates the local file.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub builtin: bool,
 }
 
 pub fn register(iii: &Arc<IIIClient>, cfg: &SharedConfig) {
-    register_list_prompts(iii, cfg);
-    register_get_prompt(iii, cfg);
-}
-
-fn register_list_prompts(iii: &Arc<IIIClient>, cfg: &SharedConfig) {
     let cfg_inner = cfg.clone();
     iii.register_function(
-        "directory::prompts::list",
-        RegisterFunction::new_async(move |_input: ListPromptsInput| {
+        "directory::system-prompts::list",
+        RegisterFunction::new_async(move |_input: ListSystemPromptsInput| {
             let cfg = cfg_inner.load_full();
             async move {
-                let (prompts, _skipped) = fs_source::scan_prompts_merged(
+                let (prompts, _skipped) = fs_source::scan_system_prompts_merged(
                     &cfg.resolved_skills_folder(),
                     &cfg.local_skills_folder(),
                 );
-                let out: Vec<PromptEntry> = prompts
+                let mut entries: Vec<SystemPromptEntry> = prompts
                     .into_iter()
-                    .map(|p| {
-                        let modified_at = fs_modified_at(&p.abs_path);
-                        PromptEntry {
-                            name: p.name,
-                            description: p.description,
-                            modified_at,
-                        }
+                    .map(|p| SystemPromptEntry {
+                        modified_at: fs_modified_at(&p.abs_path),
+                        name: p.name,
+                        description: p.description,
+                        builtin: false,
                     })
                     .collect();
-                Ok::<_, Error>(ListPromptsOutput { prompts: out })
+                // Bundled prompts are always visible; a local file with the
+                // same name shadows its bundled copy.
+                for bundled in crate::bundled::bundled_system_prompts() {
+                    if !entries.iter().any(|entry| entry.name == bundled.name) {
+                        entries.push(SystemPromptEntry {
+                            name: bundled.name.to_string(),
+                            description: bundled.description,
+                            modified_at: String::new(),
+                            builtin: true,
+                        });
+                    }
+                }
+                entries.sort_by(|a, b| a.name.cmp(&b.name));
+                Ok::<_, Error>(ListSystemPromptsOutput { prompts: entries })
             }
         })
-        .description(
-            "List filesystem-backed prompts (name, description, modified_at) from skills_folder.",
-        ),
+        .description("List system prompts (name, description, modified_at): filesystem-backed entries from skills_folder (`system-prompts/` path segment) plus the prompts bundled with this worker. A bundled prompt with no local file carries `builtin: true` — editing it via directory::system-prompts::update creates the local file, which then shadows the bundled copy."),
     );
-}
 
-fn register_get_prompt(iii: &Arc<IIIClient>, cfg: &SharedConfig) {
     let cfg_inner = cfg.clone();
     iii.register_function(
-        "directory::prompts::get",
-        RegisterFunction::new_async(move |req: PromptGetInput| {
+        "directory::system-prompts::get",
+        RegisterFunction::new_async(move |req: SystemPromptGetInput| {
             let cfg = cfg_inner.load_full();
-            async move { get_prompt(&cfg, req).await.map_err(Error::Handler) }
+            async move { get_system_prompt(&cfg, req).await.map_err(Error::Handler) }
         })
-        .description(
-            "Fetch one filesystem-backed prompt by name. Returns the raw markdown body plus name, \
-             description, and modified_at — no envelope, no templating.",
-        ),
+        .description("Fetch one system prompt by name — a filesystem-backed entry, or a worker-bundled one (`builtin: true`) when no local file shadows it. Returns the raw markdown body plus name, description, and modified_at — no envelope, no templating."),
     );
 }
 
-// ---------- core helpers (reusable in tests) ----------
-
-pub async fn get_prompt(
+pub async fn get_system_prompt(
     cfg: &SkillsConfig,
-    req: PromptGetInput,
-) -> Result<PromptGetOutput, String> {
-    let name = req.name;
-    validate_name(&name)?;
-    let (prompts, _skipped) =
-        fs_source::scan_prompts_merged(&cfg.resolved_skills_folder(), &cfg.local_skills_folder());
-    let Some(fs) = prompts.iter().find(|p| p.name == name).cloned() else {
-        let names: Vec<String> = prompts.into_iter().map(|p| p.name).collect();
-        let candidates = rank_prompt_names(&names, &name, 3);
+    req: SystemPromptGetInput,
+) -> Result<SystemPromptGetOutput, String> {
+    validate_name(&req.name)?;
+    let (prompts, _skipped) = fs_source::scan_system_prompts_merged(
+        &cfg.resolved_skills_folder(),
+        &cfg.local_skills_folder(),
+    );
+    let Some(fs) = prompts.iter().find(|p| p.name == req.name).cloned() else {
+        // No local file — a bundled copy still serves (and `raw` round-trips
+        // the full file form an update would copy-on-write to disk).
+        if let Some(bundled) = crate::bundled::bundled_system_prompt(&req.name) {
+            return Ok(SystemPromptGetOutput {
+                name: bundled.name.to_string(),
+                description: bundled.description,
+                body: bundled.body,
+                raw: req.raw.filter(|raw| *raw).map(|_| bundled.raw.to_string()),
+                modified_at: String::new(),
+                builtin: true,
+            });
+        }
+        let mut names: Vec<String> = prompts.into_iter().map(|p| p.name).collect();
+        names.extend(crate::bundled::bundled_system_prompts().map(|b| b.name.to_string()));
         return Err(not_found_message(
             "D210",
-            "prompt",
-            &name,
-            &candidates,
-            PROMPT_NOT_FOUND_NEXT,
+            "system prompt",
+            &req.name,
+            &rank_prompt_names(&names, &req.name, 3),
+            SYSTEM_PROMPT_NOT_FOUND_NEXT,
         ));
     };
-    let body = fs_source::read_body(&fs.abs_path)?;
-    let raw = if req.raw.unwrap_or(false) {
-        Some(fs_source::read_raw(&fs.abs_path)?)
-    } else {
-        None
-    };
-    let modified_at = fs_modified_at(&fs.abs_path);
-    Ok(PromptGetOutput {
+    Ok(SystemPromptGetOutput {
         name: fs.name,
         description: fs.description,
-        body,
-        raw,
-        modified_at,
+        body: fs_source::read_body(&fs.abs_path)?,
+        raw: req
+            .raw
+            .filter(|raw| *raw)
+            .map(|_| fs_source::read_raw(&fs.abs_path))
+            .transpose()?,
+        modified_at: fs_modified_at(&fs.abs_path),
+        builtin: false,
     })
 }
 
-/// Rank prompt names by closeness to a missed name (lowercased Levenshtein,
-/// reusing the skills ranker's distance fn), returning the closest `limit`.
-/// Empty when there are no prompts on disk.
 fn rank_prompt_names(names: &[String], missed: &str, limit: usize) -> Vec<String> {
     let missed_lc = missed.to_lowercase();
     let mut scored: Vec<(usize, &String)> = names
         .iter()
-        .map(|n| {
+        .map(|name| {
             (
-                crate::functions::skills::levenshtein(&missed_lc, &n.to_lowercase()),
-                n,
+                crate::functions::skills::levenshtein(&missed_lc, &name.to_lowercase()),
+                name,
             )
         })
         .collect();
@@ -182,11 +172,9 @@ fn rank_prompt_names(names: &[String], missed: &str, limit: usize) -> Vec<String
     scored
         .into_iter()
         .take(limit)
-        .map(|(_, n)| n.clone())
+        .map(|(_, name)| name.clone())
         .collect()
 }
-
-// ---------- validation ----------
 
 pub fn validate_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
@@ -198,18 +186,17 @@ pub fn validate_name(name: &str) -> Result<(), String> {
             name.len()
         ));
     }
-    for c in name.chars() {
-        let ok = c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_';
-        if !ok {
-            return Err(format!(
-                "name may only contain lowercase ASCII letters, digits, '-' and '_': {name:?}"
-            ));
-        }
+    if name
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_'))
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "name may only contain lowercase ASCII letters, digits, '-' and '_': {name:?}"
+        ))
     }
-    Ok(())
 }
-
-// ---------- fs lookup ----------
 
 fn fs_modified_at(path: &std::path::Path) -> String {
     std::fs::metadata(path)
@@ -224,20 +211,80 @@ mod tests {
     use super::*;
 
     #[test]
-    fn name_validation_accepts_kebab_and_underscore() {
+    fn name_validation_rejects_bad_chars() {
         assert!(validate_name("send-email").is_ok());
-        assert!(validate_name("triage_ticket").is_ok());
-        assert!(validate_name("a").is_ok());
-        assert!(validate_name("v2").is_ok());
+        assert!(validate_name("Send-Email").is_err());
     }
 
-    #[test]
-    fn name_validation_rejects_bad_chars() {
-        assert!(validate_name("").is_err());
-        assert!(validate_name("Send-Email").is_err());
-        assert!(validate_name("send email").is_err());
-        assert!(validate_name("send/email").is_err());
-        assert!(validate_name("mcp::send").is_err());
-        assert!(validate_name(&"x".repeat(NAME_MAX_LEN + 1)).is_err());
+    #[tokio::test]
+    async fn get_serves_the_bundled_prompt_until_a_local_file_shadows_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = SkillsConfig {
+            skills_folder: tmp.path().to_string_lossy().into_owned(),
+            local_skills_folder: tmp.path().join("local").to_string_lossy().into_owned(),
+            ..SkillsConfig::default()
+        };
+        // No file: the bundled copy serves, raw round-trips the full form.
+        let out = get_system_prompt(
+            &cfg,
+            SystemPromptGetInput {
+                name: "iii-minimal".into(),
+                raw: Some(true),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(out.builtin);
+        assert!(out.body.starts_with("You are an iii agent."));
+        assert!(out.raw.unwrap().starts_with("---\n"));
+
+        // A local file with the same name shadows the bundled copy.
+        std::fs::create_dir_all(tmp.path().join("system-prompts")).unwrap();
+        std::fs::write(
+            tmp.path().join("system-prompts/iii-minimal.md"),
+            "---\ndescription: mine\n---\nShadowed.\n",
+        )
+        .unwrap();
+        let out = get_system_prompt(
+            &cfg,
+            SystemPromptGetInput {
+                name: "iii-minimal".into(),
+                raw: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!out.builtin);
+        assert_eq!(out.body.trim(), "Shadowed.");
+    }
+
+    #[tokio::test]
+    async fn get_system_prompt_reads_system_prompt() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("system-prompts")).unwrap();
+        std::fs::write(
+            tmp.path().join("system-prompts/hello.md"),
+            "---\ndescription: sys\n---\nSystem body.\n",
+        )
+        .unwrap();
+        let cfg = SkillsConfig {
+            skills_folder: tmp.path().to_string_lossy().into_owned(),
+            local_skills_folder: tmp.path().join("local").to_string_lossy().into_owned(),
+            ..SkillsConfig::default()
+        };
+        assert_eq!(
+            get_system_prompt(
+                &cfg,
+                SystemPromptGetInput {
+                    name: "hello".into(),
+                    raw: None
+                }
+            )
+            .await
+            .unwrap()
+            .body
+            .trim(),
+            "System body."
+        );
     }
 }

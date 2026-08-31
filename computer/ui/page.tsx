@@ -7,7 +7,8 @@
  *
  * `setup(host)` registers two contributions:
  * - src/page/ — the `#/ext/computer` page: session rail plus a screencast-fed
- *   live desktop that forwards clicks, scroll and typing as `computer::act`.
+ *   live desktop that forwards clicks, scroll and typing as `computer::act`;
+ *   drill-in flow (list ⇄ viewport) when the pane is narrow.
  * - src/function-trigger-message/ — how every `computer::*` call renders in
  *   chat and the traces span tab.
  *
@@ -21,13 +22,16 @@
 import type { Host } from '@iii-dev/console-ui'
 import { createComputerRenderer } from './src/function-trigger-message'
 import { ComputerPage } from './src/page'
+import { registerComputerPalette } from './src/page/palette'
 
 export default function setup(host: Host) {
   host.pages.register({
     id: 'computer',
     title: 'computer',
-    render: () => <ComputerPage host={host} />,
+    render: (props) => <ComputerPage host={host} {...props} />,
   })
+
+  registerComputerPalette(host)
 
   host.functionTriggers.register(createComputerRenderer(host))
 }

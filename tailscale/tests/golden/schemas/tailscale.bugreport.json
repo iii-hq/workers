@@ -1,0 +1,42 @@
+{
+  "description": "Generate a Tailscale bug report identifier that support can look up; optional note and in-depth diagnosis.",
+  "function_id": "tailscale::bugreport",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "diagnose": {
+        "default": false,
+        "description": "Run additional in-depth checks.",
+        "type": "boolean"
+      },
+      "note": {
+        "description": "Free-text note attached to the report.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "BugreportInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "output": {
+        "description": "The CLI's own output.",
+        "type": "string"
+      },
+      "report_id": {
+        "description": "Shareable bug report identifier.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "output",
+      "report_id"
+    ],
+    "title": "BugreportOutput",
+    "type": "object"
+  }
+}

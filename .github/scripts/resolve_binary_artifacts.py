@@ -6,18 +6,7 @@ import sys
 import urllib.request
 from collections.abc import Callable
 
-
-DEFAULT_TARGETS = [
-    "x86_64-apple-darwin",
-    "aarch64-apple-darwin",
-    "x86_64-pc-windows-msvc",
-    "i686-pc-windows-msvc",
-    "aarch64-pc-windows-msvc",
-    "x86_64-unknown-linux-gnu",
-    "x86_64-unknown-linux-musl",
-    "aarch64-unknown-linux-gnu",
-    "armv7-unknown-linux-gnueabihf",
-]
+import deployment_targets
 
 
 def read_checksum_url(url: str) -> str:
@@ -36,8 +25,11 @@ def build_binary_artifact_map(
 ) -> dict[str, dict[str, str]]:
     base = f"{repo_url}/releases/download/{tag}"
     binaries = {}
+    missing = []
     for target in targets:
-        ext = "zip" if "windows" in target else "tar.gz"
+        if target not in deployment_targets.TARGET_RUNNERS:
+            raise ValueError(f"unsupported release target: {target}")
+        ext = "tar.gz"
         asset_url = f"{base}/{bin_name}-{target}.{ext}"
         sha_url = f"{base}/{bin_name}-{target}.sha256"
         try:
@@ -46,7 +38,10 @@ def build_binary_artifact_map(
                 "sha256": read_checksum(sha_url),
             }
         except Exception as exc:
-            print(f"::warning::missing checksum for {target}: {exc}", file=sys.stderr)
+            missing.append(target)
+            print(f"::error::missing checksum for {target}: {exc}", file=sys.stderr)
+    if missing:
+        raise RuntimeError(f"missing binary artefacts for targets: {', '.join(missing)}")
     if not binaries:
         raise RuntimeError("no binary artefacts could be resolved")
     return binaries
@@ -57,6 +52,11 @@ def main() -> int:
     parser.add_argument("--repo-url", required=True)
     parser.add_argument("--tag", required=True)
     parser.add_argument("--bin", required=True)
+    parser.add_argument(
+        "--targets",
+        default=",".join(deployment_targets.DEFAULT_TARGETS),
+        help="Exact comma-separated Unix targets; Windows targets are rejected",
+    )
     parser.add_argument("--out", default="binaries.json")
     args = parser.parse_args()
 
@@ -64,7 +64,7 @@ def main() -> int:
         repo_url=args.repo_url,
         tag=args.tag,
         bin_name=args.bin,
-        targets=DEFAULT_TARGETS,
+        targets=deployment_targets.normalize_targets(args.targets),
         read_checksum=read_checksum_url,
     )
     pathlib.Path(args.out).write_text(json.dumps(binaries, indent=2) + "\n", encoding="utf-8")

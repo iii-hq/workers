@@ -44,7 +44,18 @@ export type HarnessSendMode = 'ask' | 'agent'
 
 /** Per-send options frozen onto the turn record. */
 export interface HarnessSendOptions {
+  /** Directory agent profile id the session runs as, resolved server-side
+   * (MOT-4485). Session-creating sends only — the harness REFUSES it on a
+   * session with a prior turn, and combined with either prompt field. */
+  agent?: string
+  /** Sticky per session: a send that omits BOTH prompt fields inherits the
+   * prior turn's resolved prompt; naming either field resolves fresh (a bare
+   * strategy is the harness's reset-to-default escape hatch). */
   system_prompt?: string
+  /** How `system_prompt` combines with the built-in identity prompt:
+   * `enrich` (harness default) appends it; `override` replaces it
+   * verbatim. Snake_case values travel on the wire as-is. */
+  system_prompt_strategy?: 'enrich' | 'override'
   mode?: HarnessSendMode
   max_turns?: number
   thinking_level?: HarnessThinkingLevel
@@ -52,6 +63,8 @@ export interface HarnessSendOptions {
   provider_options?: Record<string, unknown>
   output?: HarnessOutputContract
   functions?: HarnessFunctionPolicy
+  /** Omitted/empty means all model-invocable skills; otherwise exact IDs. */
+  skills?: string[]
   /** Tracing passthrough (session_id / message_id propagate as baggage). */
   metadata?: Record<string, unknown>
 }
@@ -70,13 +83,28 @@ export interface HarnessTextBlock {
 }
 
 /**
+ * An image content block on a structured user message — wire-identical to the
+ * harness's `ContentBlock::Image` (`harness/src/types/content.rs`), which the
+ * Anthropic and OpenAI providers map onto their own image shapes. `data` is
+ * base64 without a data-URL prefix.
+ */
+export interface HarnessImageBlock {
+  type: 'image'
+  mime: string
+  data: string
+}
+
+export type HarnessContentBlock = HarnessTextBlock | HarnessImageBlock
+
+/**
  * The structured form of `harness::send`'s `message` (MessageInput::Message
  * with `role: user`). The console uses it when a send carries `#file(...)`
- * attachment blocks; plain sends keep the string-sugar form.
+ * attachment blocks or an attached image; plain sends keep the string-sugar
+ * form.
  */
 export interface HarnessUserMessage {
   role: 'user'
-  content: HarnessTextBlock[]
+  content: HarnessContentBlock[]
   timestamp: number
 }
 
@@ -180,6 +208,29 @@ export function isTurnActive(status: HarnessTurnStatus): boolean {
 export function predictedUserEntryId(idempotencyKey: string): string {
   const safe = idempotencyKey.replace(/[^A-Za-z0-9_-]/g, '_')
   return `e_idem_${safe}`
+}
+
+/** Chat-side system-prompt selection: a resolved body + combine strategy. */
+export interface SystemPromptSelection {
+  body: string
+  strategy: 'enrich' | 'override'
+}
+
+/**
+ * Map a selection to `harness::send` option fields. Default (null) or a
+ * blank body yields NO fields — the send looks exactly like today's.
+ */
+export function toSystemPromptOptions(
+  sel: SystemPromptSelection | null | undefined,
+): Pick<HarnessSendOptions, 'system_prompt' | 'system_prompt_strategy'> {
+  if (!sel || !sel.body.trim()) return {}
+  return { system_prompt: sel.body, system_prompt_strategy: sel.strategy }
+}
+
+export function toSkillOptions(
+  skills: string[] | undefined,
+): Pick<HarnessSendOptions, 'skills'> {
+  return skills?.length ? { skills } : {}
 }
 
 /**

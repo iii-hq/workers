@@ -22,7 +22,13 @@
  * seed read from fixtures.
  */
 
-import { AlertCircle, GitBranch, RefreshCw } from 'lucide-react'
+import {
+  AlertCircle,
+  GitBranch,
+  MessageSquare,
+  RefreshCw,
+  X,
+} from 'lucide-react'
 import {
   useCallback,
   useEffect,
@@ -35,14 +41,17 @@ import { Button } from '@/components/ui/Button'
 import { Cell } from '@/components/ui/Cell'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
+import { PageHeader } from '@/components/ui/PageChrome'
 import { Pagination } from '@/components/ui/Pagination'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusPanel } from '@/components/ui/StatusPanel'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { getIiiClient } from '@/lib/iii-client'
-import { startTraceSpansStream } from '@/lib/traces-stream'
+import { requestChatMessageFocus } from '@/lib/trace-links'
+import { startTraceActivityFeed } from '@/lib/traces-activity'
 import { cn } from '@/lib/utils'
-import { fetchTraces, type StoredSpan } from './api/traces'
+import type { PageCommandsApi } from '@/types/injectable-ui'
+import { fetchTraceSpans, type StoredSpan } from './api/traces'
 import { GroupedTraceList } from './components/GroupedTraceList'
 import { SpanPanel } from './components/SpanPanel'
 import { TraceDetailSkeleton } from './components/TraceDetailSkeleton'
@@ -66,7 +75,11 @@ import { useTraceData } from './hooks/useTraceData'
 import { useTraceFilters } from './hooks/useTraceFilters'
 import { useTraceViews } from './hooks/useTraceViews'
 import { isTraceLive } from './lib/timelineSpans'
+import { type TraceChatLink, traceChatLink } from './lib/traceChatLink'
+import { collectTraceDetailSpans } from './lib/traceDetailPages'
+import { withSessionScope } from './lib/traceFilters'
 import type { RowLabelConfig } from './lib/traceListItem'
+import { buildTracePageStats, tracePageCount } from './lib/tracePagination'
 import {
   applyViewConfig,
   captureViewConfig,
@@ -75,7 +88,6 @@ import {
 } from './lib/tracesViews'
 import { traceSpanGroupKey } from './lib/traceTimelineFilters'
 import {
-  mergeDetailSpan,
   toWaterfallData,
   type VisualizationSpan,
   type WaterfallData,
@@ -83,12 +95,23 @@ import {
 
 const PAGE_SIZES = [25, 50, 100]
 
+// Sentinel a superseded trace seed throws to abandon its own page sweep.
+const superseded = new Error('trace seed superseded')
+
 export interface TracesV2Props {
   /** mount with a trace's detail already expanded (stories/deep links) */
   initialTraceId?: string
+  /** Close the hosting pane — the header's standard ✕ when present. */
+  onRequestClose?: () => void
+  /** The pane's command registrar: the page's verbs and keys. */
+  commands?: PageCommandsApi
 }
 
-export function TracesV2({ initialTraceId }: TracesV2Props) {
+export function TracesV2({
+  initialTraceId,
+  onRequestClose,
+  commands,
+}: TracesV2Props) {
   // The strip's system/pause/refresh controls were removed; both stay at
   // their defaults (streams live, internal spans hidden) until some other
   // surface grows a toggle.
@@ -104,6 +127,7 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
   }, [])
 
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null)
+  const rootRef = useRef<HTMLElement>(null)
   const [selectedSpan, setSelectedSpan] = useState<VisualizationSpan | null>(
     null,
   )
@@ -122,24 +146,52 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
   }, [selectedSpan, waterfallData])
   const [isLoadingSpans, setIsLoadingSpans] = useState(false)
   const [spansError, setSpansError] = useState<string | null>(null)
+  // Non-null while the paged seed still sweeps: the detail is painted but
+  // incomplete. Drives the header's live span counter so "still filling in"
+  // is legible after the skeleton is gone.
+  const [seedProgress, setSeedProgress] = useState<{
+    loaded: number
+    total: number
+  } | null>(null)
 
   const {
     filters: filterState,
     updateFilter,
     resetFilters,
     replaceFilters,
-    getFilterOnlyParams,
+    getApiParams,
     validationWarnings,
     clearValidationWarnings,
   } = useTraceFilters()
 
+  // ── Automatic session scope ──
+  // The trace list FOLLOWS the active chat: selecting a conversation scopes
+  // the list to its `iii.session.id`, server-side via `withSessionScope`
+  // (the identity attrs live on child spans, so the scope needs the
+  // search-all-spans wire shape). Drafts have no session server-side yet and
+  // never scope; outside the app shell (Storybook) there is no chat to
+  // follow. Dismissable per session via the chip next to the views dropdown
+  // — selecting another conversation re-scopes.
+  const conversationsCtx = useConversationsCtxOptional()
+  const activeConversation = conversationsCtx?.active ?? null
+  const [scopeDismissedFor, setScopeDismissedFor] = useState<string | null>(
+    null,
+  )
+  const sessionScope =
+    activeConversation &&
+    !activeConversation.draft &&
+    activeConversation.id !== scopeDismissedFor
+      ? activeConversation.id
+      : null
+
   const filterParams = useMemo(
-    () => getFilterOnlyParams(),
-    [getFilterOnlyParams],
+    () => withSessionScope(getApiParams(), sessionScope),
+    [getApiParams, sessionScope],
   )
 
   const {
     traceGroups,
+    totalTraceCount,
     newTraceIds,
     setNewTraceIds,
     hasOtelConfigured,
@@ -152,6 +204,10 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
     debouncedSearch,
     isPaused,
     hiddenFunctions: filterState.hiddenFunctions,
+    attributeProjection:
+      filterState.labelMode === 'attribute' && filterState.labelAttribute
+        ? [filterState.labelAttribute]
+        : undefined,
   })
 
   // ── Saved views (server-persisted via the `console` configuration entry) ──
@@ -238,8 +294,14 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
     })
   }, [traceGroups])
 
+  // Scoped to one session, grouping would collapse to a single group (and
+  // the group-by aggregate path doesn't consult the scope) — render the
+  // flat list instead. The view's row label (e.g. `iii.tag.message`) still
+  // applies, so scoped rows read as the session's turns.
   const groupByAttribute =
-    filterState.groupBy && filterState.groupBy !== 'none'
+    sessionScope === null &&
+    filterState.groupBy &&
+    filterState.groupBy !== 'none'
       ? filterState.groupBy
       : null
 
@@ -259,9 +321,8 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
   // Follow toggle (strip header): auto-open the trace of the ACTIVE chat's
   // live turn, so sending a message lands the canvas on the work as it runs.
   // Scoped to user interactions — the active conversation's top-level
-  // `harness.turn` steps; sub-agent turns never steal the view. Null outside
-  // the app shell (Storybook), which also hides the strip's toggle.
-  const conversationsCtx = useConversationsCtxOptional()
+  // `harness.turn` steps; sub-agent turns never steal the view. The strip's
+  // toggle hides outside the app shell (no conversationsCtx in Storybook).
   const { followTurns, toggleFollowTurns } = useFollowTurns()
 
   // Span-filter fallout on the LIST: a row hides while its trace has no
@@ -275,12 +336,10 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
     spanFilter,
   )
 
-  const totalPages = Math.max(
-    1,
-    Math.ceil(visibleTraceGroups.length / filterState.pageSize),
-  )
-  const start = (filterState.page - 1) * filterState.pageSize
-  const paged = visibleTraceGroups.slice(start, start + filterState.pageSize)
+  const totalPages = tracePageCount(totalTraceCount, filterState.pageSize)
+  // `traceGroups` is already one server page. The local span-visibility pass
+  // may hide rows from that page, but it must never slice/paginate again.
+  const paged = visibleTraceGroups
 
   // Liveness evaluation instant for the list rows' pulsing dot — only ticked
   // while a visible row is actually live, mirroring the strip's clock
@@ -304,26 +363,21 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
   }, [anyRowLive])
 
   useEffect(() => {
-    if (filterState.page > totalPages) updateFilter('page', totalPages)
-  }, [filterState.page, totalPages, updateFilter])
+    if (!isQueryLoading && filterState.page > totalPages) {
+      updateFilter('page', totalPages)
+    }
+  }, [filterState.page, totalPages, updateFilter, isQueryLoading])
 
   const stats = useMemo(
-    () => ({
-      totalTraces: visibleTraceGroups.length,
-      errorCount: visibleTraceGroups.filter((t) => t.status === 'error').length,
-      avgDuration:
-        visibleTraceGroups.length > 0
-          ? visibleTraceGroups.reduce((sum, t) => sum + (t.duration ?? 0), 0) /
-            visibleTraceGroups.length
-          : 0,
-    }),
-    [visibleTraceGroups],
+    () => buildTracePageStats(visibleTraceGroups, totalTraceCount),
+    [visibleTraceGroups, totalTraceCount],
   )
 
   const containerRef = useRef<HTMLDivElement>(null)
   const spanPanel = useSpanPanelResize(containerRef)
 
-  // Live detail: the selected trace's spans are seeded once (one flat read),
+  // Live detail: the selected trace's spans are seeded on explicit open,
+  // paged so a very large trace never becomes one oversized RPC response;
   // then APPENDED from the engine `trace-spans` stream and rebuilt into the
   // waterfall via `toWaterfallData`. Accumulated by `span_id` so re-delivered
   // spans dedupe. Frozen while paused.
@@ -351,65 +405,129 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
     return () => clearInterval(timer)
   }, [hasPendingSpans, selectedTraceId, isPaused, rebuildDetail])
 
+  // One seed at a time: selecting another trace supersedes the sweep in
+  // flight, which must neither clobber the new trace's spans nor surface
+  // its own late error. Progressive rendering makes this guard load-bearing
+  // — a stale sweep now touches state on every page, not just at the end.
+  const seedSeqRef = useRef(0)
   const loadTraceSpans = useCallback(
     async (traceId: string, opts?: { silent?: boolean }) => {
+      const seq = ++seedSeqRef.current
+      const stale = () => seedSeqRef.current !== seq
       const silent = opts?.silent ?? false
+      // Newest seed owns the progress chip from the start — a superseded
+      // sweep's last reading must not survive the switch.
+      setSeedProgress(null)
       if (!silent) {
         setIsLoadingSpans(true)
         setSpansError(null)
         setWaterfallData(null)
       }
       try {
-        const { spans } = await fetchTraces({
-          trace_id: traceId,
-          search_all_spans: true,
-          include_internal: false,
-          limit: 10000,
-        })
-        detailSpansRef.current = new Map(spans.map((s) => [s.span_id, s]))
+        // Pages sized by response bytes, not span count — an oversized page
+        // hangs forever instead of erroring. See lib/traceDetailPages.
+        let revealed = false
+        let lastPaint = 0
+        const detailSpans = await collectTraceDetailSpans(
+          (offset, limit) => {
+            if (stale()) throw superseded
+            return fetchTraceSpans({
+              trace_id: traceId,
+              search_all_spans: true,
+              include_internal: false,
+              sort_by: 'start_time',
+              sort_order: 'asc',
+              offset,
+              limit,
+            })
+          },
+          {
+            // Paint from the first page: a large trace fills in page by page
+            // (the shape live appends already have) instead of holding the
+            // skeleton through the whole multi-second sweep.
+            onPage: (accumulated, total) => {
+              if (stale()) return
+              detailSpansRef.current = accumulated
+              setSeedProgress({ loaded: accumulated.size, total })
+              // Rebuilding the waterfall on EVERY page saturates the main
+              // thread on fat traces (measured live: no frame painted
+              // between the first page and the sweep's end). Repaint at
+              // most ~1/600ms; the chip above still counts every page, and
+              // the final rebuild after the sweep always runs.
+              const now = Date.now()
+              if (revealed && now - lastPaint < 600) return
+              const wf = rebuildDetail(traceId)
+              if (wf) lastPaint = now
+              if (!silent && !revealed && wf) {
+                revealed = true
+                setIsLoadingSpans(false)
+              }
+            },
+          },
+        )
+        if (stale()) return
+
+        detailSpansRef.current = detailSpans
         const wf = rebuildDetail(traceId)
         if (!wf && !silent) {
           setSpansError('no span data available for this trace')
         }
       } catch (err) {
+        if (stale() || err === superseded) return
         if (!silent) {
           setSpansError(
             err instanceof Error ? err.message : 'failed to load trace',
           )
         }
       } finally {
-        if (!silent) setIsLoadingSpans(false)
+        if (!stale()) {
+          setSeedProgress(null)
+          if (!silent) setIsLoadingSpans(false)
+        }
       }
     },
     [rebuildDetail],
   )
 
-  const appendDetailSpans = useCallback(
-    (traceId: string, spans: StoredSpan[]) => {
-      if (spans.length === 0) return
-      for (const s of spans) mergeDetailSpan(detailSpansRef.current, s)
-      rebuildDetail(traceId)
-    },
-    [rebuildDetail],
-  )
-
+  // Silent refresh of the OPEN trace on each activity tick that touches it:
+  // no loading state (ticks keep landing while the trace runs), one reload in
+  // flight at a time with one trailing rerun so the final tick of a burst is
+  // never lost, and a stale response for a since-deselected trace is dropped
+  // by `loadTraceSpans` keying on the trace id it was called with.
   useEffect(() => {
     if (!selectedTraceId) return
     let stop: (() => void) | undefined
     let active = true
+    let inFlight = false
+    let rerun = false
+    const refresh = () => {
+      if (inFlight) {
+        rerun = true
+        return
+      }
+      inFlight = true
+      void loadTraceSpans(selectedTraceId, { silent: true }).finally(() => {
+        inFlight = false
+        if (rerun && active && !isPausedRef.current) {
+          rerun = false
+          refresh()
+        }
+      })
+    }
     void (async () => {
       const client = await getIiiClient()
       if (!active) return
-      stop = startTraceSpansStream(client, selectedTraceId, (spans) => {
+      stop = startTraceActivityFeed(client, (traceIds) => {
         if (!active || isPausedRef.current) return
-        appendDetailSpans(selectedTraceId, spans)
+        if (!traceIds.includes(selectedTraceId)) return
+        refresh()
       })
     })()
     return () => {
       active = false
       stop?.()
     }
-  }, [selectedTraceId, appendDetailSpans])
+  }, [selectedTraceId, loadTraceSpans])
 
   // ── Scroll anchoring across accordion swaps ──
   // Selecting a trace while another's detail is expanded ABOVE it removes a
@@ -493,6 +611,37 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
     onOpenTrace: selectTrace,
   })
 
+  // Chat linkage of the OPEN trace (session + turn), resolved from the row's
+  // merged trace tags with a span-attribute fallback for details opened
+  // without their row (timeline-strip click, deep link). The row tags come
+  // with the LIST fetch, so the link resolves — and the jump-to-chat works —
+  // while the paged detail is still loading; only the fallback path waits
+  // for spans. The buttons only render inside the app shell — outside it
+  // (Storybook) there is no conversation surface to open.
+  const chatLink = useMemo(() => {
+    if (selectedTraceId === null) return null
+    const tags = traceGroups.find(
+      (t) => t.traceId === selectedTraceId,
+    )?.traceTags
+    return traceChatLink(tags, waterfallData?.spans ?? [])
+  }, [waterfallData, traceGroups, selectedTraceId])
+
+  const openConversation = conversationsCtx?.openConversation
+  const handleOpenMessage = useMemo(() => {
+    if (!openConversation) return undefined
+    return (link: TraceChatLink) => {
+      // Focus first, open second: the store holds the request before the
+      // chat pane mounts, so a freshly placed ChatView reads it on render.
+      if (link.turnId) {
+        requestChatMessageFocus({
+          sessionId: link.sessionId,
+          turnId: link.turnId,
+        })
+      }
+      openConversation(link.sessionId)
+    }
+  }, [openConversation])
+
   // Deep-link seed: mount with a trace already expanded (used by stories).
   const initialAppliedRef = useRef(false)
   useEffect(() => {
@@ -501,17 +650,70 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
     selectTrace(initialTraceId)
   }, [initialTraceId, selectTrace])
 
-  // Esc walks back out: span panel first, then the expanded detail.
+  // Esc walks back out: span panel first, then the expanded detail. A
+  // pane-scoped command when the host offers one, so it only fires while
+  // this pane has the focus; the raw listener stays for older hosts.
+  const back = useCallback(() => {
+    if (selectedSpan) setSelectedSpan(null)
+    else selectTrace(null)
+  }, [selectedSpan, selectTrace])
   useEffect(() => {
-    if (!selectedTraceId) return
+    if (commands || !selectedTraceId) return
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
-      if (selectedSpan) setSelectedSpan(null)
-      else selectTrace(null)
+      back()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [selectedTraceId, selectedSpan, selectTrace])
+  }, [commands, selectedTraceId, back])
+  useEffect(
+    () =>
+      commands?.register([
+        {
+          id: 'search',
+          title: 'Search traces',
+          detail: 'Put the caret in the trace search',
+          keywords: ['filter', 'find'],
+          shortcut: '/',
+          run: () =>
+            rootRef.current
+              ?.querySelector<HTMLElement>('[placeholder="search traces..."]')
+              ?.focus(),
+        },
+        {
+          id: 'follow',
+          title: followTurns ? 'Stop following turns' : 'Follow turns',
+          detail: 'Jump to each new turn as it arrives',
+          keywords: ['live', 'tail', 'auto'],
+          shortcut: 'F',
+          run: toggleFollowTurns,
+        },
+        {
+          id: 'clear-filters',
+          title: 'Clear the trace filters',
+          detail: 'Back to every trace',
+          keywords: ['reset', 'filters'],
+          run: resetFilters,
+        },
+        {
+          id: 'back',
+          title: 'Close the trace detail',
+          detail: 'Span panel first, then the expanded trace',
+          keywords: ['escape', 'close', 'collapse'],
+          shortcut: 'Escape',
+          enabled: () => selectedTraceId !== null,
+          run: back,
+        },
+      ]),
+    [
+      commands,
+      followTurns,
+      toggleFollowTurns,
+      resetFilters,
+      selectedTraceId,
+      back,
+    ],
+  )
 
   // The expanded detail, rendered as an accordion item under the selected
   // row (or pinned at the top of the scroll area when that row isn't in the
@@ -519,9 +721,13 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
   // border continues the selected row's marker.
   const traceDetail =
     selectedTraceId !== null ? (
-      <div className="border-b border-rule-2 border-l-2 border-l-accent">
+      <div className="bg-panel-raised shadow-raised">
         {isLoadingSpans && (
-          <TraceDetailSkeleton onClose={() => selectTrace(null)} />
+          <TraceDetailSkeleton
+            onClose={() => selectTrace(null)}
+            chatLink={chatLink}
+            onOpenMessage={handleOpenMessage}
+          />
         )}
         {!isLoadingSpans && spansError && (
           <div className="p-4 flex flex-col gap-3">
@@ -537,7 +743,7 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
                 size="sm"
                 onClick={() => loadTraceSpans(selectedTraceId)}
               >
-                <RefreshCw className="w-3 h-3" />
+                <RefreshCw className="size-4" />
                 retry
               </Button>
               <Button
@@ -557,8 +763,11 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
               traceId={selectedTraceId}
               onClose={() => selectTrace(null)}
               onSpanClick={setSelectedSpan}
+              chatLink={chatLink}
+              onOpenMessage={handleOpenMessage}
+              loadingSpans={seedProgress}
             />
-            <div className="border-b border-rule px-4 py-2.5">
+            <div className="border-b border-rule-2 px-3 py-2">
               <ViewSwitcher
                 currentView={activeView}
                 onViewChange={setActiveView}
@@ -587,7 +796,7 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
                 />
               </div>
             )}
-            <div className="border-t border-rule">
+            <div className="border-t border-rule-2">
               <WorkerBreakdown data={waterfallData} />
             </div>
           </>
@@ -598,11 +807,40 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
   const selectedInPage =
     selectedTraceId !== null && paged.some((t) => t.traceId === selectedTraceId)
 
+  // The scope chip: names the followed conversation; ✕ shows every session
+  // again (until another conversation is selected).
+  const sessionScopeChip = sessionScope ? (
+    <span
+      className="flex items-center gap-1 rounded-xs bg-surface py-0.5 pr-0.5 pl-2 font-mono text-[11px] text-ink-faint"
+      title="the list follows the active chat — showing only this session's traces"
+    >
+      <MessageSquare className="size-4 flex-shrink-0" />
+      <span className="max-w-[140px] truncate lowercase">
+        {activeConversation?.title ?? sessionScope}
+      </span>
+      <button
+        type="button"
+        onClick={() => setScopeDismissedFor(sessionScope)}
+        aria-label="show all sessions"
+        title="show all sessions"
+        className="p-0.5 transition-colors hover:text-ink"
+      >
+        <X className="size-4" />
+      </button>
+    </span>
+  ) : null
+
   return (
     <section
+      ref={rootRef}
       aria-label="traces"
       className="flex-1 flex flex-col overflow-hidden"
     >
+      <PageHeader
+        icon={<GitBranch />}
+        title="Traces"
+        onClose={onRequestClose}
+      />
       <TimelineStrip
         spans={allSpans}
         spanFilter={spanFilter}
@@ -612,7 +850,7 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
         onToggleFollowTurns={conversationsCtx ? toggleFollowTurns : undefined}
       />
 
-      <div className="px-4 py-2.5 border-b border-rule">
+      <div className="px-3 py-2 border-b border-rule-2">
         <ErrorBoundary>
           <TraceFilters
             filters={filterState}
@@ -626,41 +864,47 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
             stats={hasOtelConfigured ? stats : undefined}
             attributeKeySuggestions={attributeKeySuggestions}
             leading={
-              viewsAvailable ? (
-                <ViewsDropdown
-                  views={views}
-                  activeViewId={activeViewId}
-                  activeModified={activeViewModified}
-                  onSelectView={handleSelectView}
-                  onSaveNew={(name) => {
-                    void saveView(name, captureViewConfig(filterState)).then(
-                      (view) => setActiveViewId(view.id),
-                    )
-                  }}
-                  onUpdateActive={() => {
-                    if (activeViewId)
-                      void updateView(
-                        activeViewId,
-                        captureViewConfig(filterState),
+              <>
+                {viewsAvailable ? (
+                  <ViewsDropdown
+                    views={views}
+                    activeViewId={activeViewId}
+                    activeModified={activeViewModified}
+                    onSelectView={handleSelectView}
+                    onSaveNew={(name) => {
+                      void saveView(name, captureViewConfig(filterState)).then(
+                        (view) => setActiveViewId(view.id),
                       )
-                  }}
-                  onRenameActive={(name) => {
-                    if (activeViewId) void renameView(activeViewId, name)
-                  }}
-                  onDeleteActive={() => {
-                    // deleteView clears the selection itself, in the same
-                    // config write.
-                    if (activeViewId) void deleteView(activeViewId)
-                  }}
-                />
-              ) : undefined
+                    }}
+                    onUpdateActive={() => {
+                      if (activeViewId)
+                        void updateView(
+                          activeViewId,
+                          captureViewConfig(filterState),
+                        )
+                    }}
+                    onRenameActive={(name) => {
+                      if (activeViewId) void renameView(activeViewId, name)
+                    }}
+                    onDeleteActive={() => {
+                      // deleteView clears the selection itself, in the same
+                      // config write.
+                      if (activeViewId) void deleteView(activeViewId)
+                    }}
+                  />
+                ) : null}
+                {sessionScopeChip}
+              </>
             }
           />
         </ErrorBoundary>
       </div>
 
       <ErrorBoundary>
-        {!hasOtelConfigured ? (
+        {/* Only the engine's definitive answer earns this message — while
+            the seed is still unanswered (null) the list area renders its
+            loading skeleton instead. */}
+        {hasOtelConfigured === false ? (
           <div className="p-9">
             <Cell title="no observability">
               this engine does not have the trace exporter registered. configure
@@ -698,7 +942,7 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
                     ).map((sk) => (
                       <div
                         key={sk}
-                        className="px-4 py-3 border-b border-rule-2"
+                        className="px-3 py-3 border-b border-rule-2"
                       >
                         <div className="flex items-center gap-2 mb-2">
                           <Skeleton className="w-1.5 h-1.5 rounded-full" />
@@ -716,8 +960,18 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
                   <div className="p-9">
                     <EmptyState
                       icon={GitBranch}
-                      title="no traces recorded"
-                      description="traces appear here when functions execute. fire a request to your engine and refresh."
+                      title={
+                        sessionScope
+                          ? 'no stored traces for this session'
+                          : 'no traces recorded'
+                      }
+                      description={
+                        sessionScope
+                          ? // The client cannot tell "never ran" from "already
+                            // expired", so the copy owns both honestly.
+                            'the list follows the active chat, and nothing is stored for this conversation — no work recorded yet, or its traces already expired. new activity appears here as it runs, or clear the session chip above to see every trace.'
+                          : 'traces appear here when functions execute. fire a request to your engine and refresh.'
+                      }
                     />
                   </div>
                 ) : (
@@ -768,11 +1022,11 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
                         )
                       })}
                     </div>
-                    <div className="flex-shrink-0 border-t border-rule px-4 py-2.5">
+                    <div className="flex-shrink-0 border-t border-rule-2 px-3 py-2">
                       <Pagination
                         currentPage={filterState.page}
                         totalPages={totalPages}
-                        totalItems={visibleTraceGroups.length}
+                        totalItems={totalTraceCount}
                         pageSize={filterState.pageSize}
                         onPageChange={(p) => updateFilter('page', p)}
                         onPageSizeChange={(s) => {
@@ -800,12 +1054,12 @@ export function TracesV2({ initialTraceId }: TracesV2Props) {
                   aria-label="resize span panel"
                   onMouseDown={spanPanel.startResize}
                   onDoubleClick={spanPanel.reset}
-                  className="w-[3px] flex-shrink-0 cursor-col-resize bg-rule hover:bg-accent active:bg-accent"
+                  className="w-[3px] flex-shrink-0 cursor-col-resize bg-transparent hover:bg-accent/60 active:bg-accent"
                 />
                 <div
                   style={{ width: spanPanel.width }}
                   className={cn(
-                    'bg-bg border-l border-rule flex-shrink-0 h-full overflow-hidden',
+                    'bg-panel-raised border-l border-rule-2 flex-shrink-0 h-full overflow-hidden',
                     spanPanel.isResizing && 'pointer-events-none select-none',
                   )}
                 >

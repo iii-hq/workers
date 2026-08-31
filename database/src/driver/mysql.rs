@@ -40,7 +40,7 @@ pub async fn query(
             .iter()
             .map(|c| ColumnMeta {
                 name: c.name_str().to_string(),
-                ty: format!("{:?}", c.column_type()),
+                ty: sql_type_name(c),
             })
             .collect();
         let raw_rows: Vec<mysql_async::Row> = result.collect().await.map_err(map_err)?;
@@ -62,6 +62,89 @@ pub async fn query(
         columns: cols,
         rows: out_rows,
     })
+}
+
+/// MySQL's binary charset. Wire metadata reuses one protocol type for a text
+/// column and its binary twin (`TEXT`/`BLOB`, `VARCHAR`/`VARBINARY`); the
+/// charset is the only thing that separates them.
+const BINARY_CHARSET: u16 = 63;
+
+/// The SQL type name for a result column, as a caller would write it.
+///
+/// The protocol hands back an internal enum, and `{:?}` on it produced
+/// `MYSQL_TYPE_VAR_STRING` — leaked into the console's grid header and into
+/// every agent reading `columns[].type`. Postgres reports `text` and SQLite
+/// reports the declared type, so MySQL was the odd one out; this restores
+/// parity. Length and precision are not on the wire, so `varchar` here where
+/// `describeTable` (which reads the catalog) says `varchar(50)`.
+fn sql_type_name(col: &mysql_async::Column) -> String {
+    use mysql_async::consts::{ColumnFlags, ColumnType::*};
+
+    let binary = col.character_set() == BINARY_CHARSET;
+    let name = match col.column_type() {
+        MYSQL_TYPE_TINY => "tinyint",
+        MYSQL_TYPE_SHORT => "smallint",
+        MYSQL_TYPE_INT24 => "mediumint",
+        MYSQL_TYPE_LONG => "int",
+        MYSQL_TYPE_LONGLONG => "bigint",
+        MYSQL_TYPE_FLOAT => "float",
+        MYSQL_TYPE_DOUBLE => "double",
+        MYSQL_TYPE_DECIMAL | MYSQL_TYPE_NEWDECIMAL => "decimal",
+        MYSQL_TYPE_BIT => "bit",
+        MYSQL_TYPE_DATE | MYSQL_TYPE_NEWDATE => "date",
+        MYSQL_TYPE_TIME | MYSQL_TYPE_TIME2 => "time",
+        MYSQL_TYPE_DATETIME | MYSQL_TYPE_DATETIME2 => "datetime",
+        MYSQL_TYPE_TIMESTAMP | MYSQL_TYPE_TIMESTAMP2 => "timestamp",
+        MYSQL_TYPE_YEAR => "year",
+        MYSQL_TYPE_JSON => "json",
+        MYSQL_TYPE_ENUM => "enum",
+        MYSQL_TYPE_SET => "set",
+        MYSQL_TYPE_GEOMETRY => "geometry",
+        MYSQL_TYPE_NULL => "null",
+        MYSQL_TYPE_TINY_BLOB => return blob_or_text(binary, "tiny"),
+        MYSQL_TYPE_MEDIUM_BLOB => return blob_or_text(binary, "medium"),
+        MYSQL_TYPE_LONG_BLOB => return blob_or_text(binary, "long"),
+        MYSQL_TYPE_BLOB => return blob_or_text(binary, ""),
+        MYSQL_TYPE_VARCHAR | MYSQL_TYPE_VAR_STRING => {
+            if binary {
+                "varbinary"
+            } else {
+                "varchar"
+            }
+        }
+        MYSQL_TYPE_STRING => {
+            if binary {
+                "binary"
+            } else {
+                "char"
+            }
+        }
+        // `MYSQL_TYPE_UNKNOWN` and anything a future server adds. Better a
+        // lowercase debug name than a wrong guess at a SQL type.
+        other => return format!("{other:?}").to_ascii_lowercase(),
+    };
+
+    if col.flags().contains(ColumnFlags::UNSIGNED_FLAG) && is_integer(col.column_type()) {
+        format!("{name} unsigned")
+    } else {
+        name.to_string()
+    }
+}
+
+fn blob_or_text(binary: bool, size: &str) -> String {
+    format!("{size}{}", if binary { "blob" } else { "text" })
+}
+
+fn is_integer(ty: mysql_async::consts::ColumnType) -> bool {
+    use mysql_async::consts::ColumnType::*;
+    matches!(
+        ty,
+        MYSQL_TYPE_TINY
+            | MYSQL_TYPE_SHORT
+            | MYSQL_TYPE_INT24
+            | MYSQL_TYPE_LONG
+            | MYSQL_TYPE_LONGLONG
+    )
 }
 
 fn bind_params(params: &[JsonParam]) -> Params {
@@ -210,7 +293,7 @@ pub async fn transaction(
                         .iter()
                         .map(|col| ColumnMeta {
                             name: col.name_str().to_string(),
-                            ty: format!("{:?}", col.column_type()),
+                            ty: sql_type_name(col),
                         })
                         .collect();
                     let raw: Result<Vec<mysql_async::Row>, _> = iter.collect().await;
@@ -337,7 +420,7 @@ pub async fn run_prepared(
         .iter()
         .map(|c| ColumnMeta {
             name: c.name_str().to_string(),
-            ty: format!("{:?}", c.column_type()),
+            ty: sql_type_name(c),
         })
         .collect();
     let raw_rows: Vec<mysql_async::Row> = iter.collect().await.map_err(map_err)?;

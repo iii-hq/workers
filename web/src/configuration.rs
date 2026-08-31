@@ -1,104 +1,109 @@
-//! Integration with the `configuration` worker: register a JSON Schema +
-//! seed at boot, read the authoritative (env-expanded) value, and bind a
+//! Integration with the builtin `configuration` worker (plumbing shared via
+//! `crates/config-client`): register the `WebConfig` schema + optional seed
+//! at boot, read the authoritative (env-expanded) value, and bind a
 //! `configuration` trigger so `configuration:updated` re-fetches and applies
-//! the change. All WebConfig fields hot-reload (no topology partition).
+//! the change. All WebConfig fields hot-reload (no topology partition);
+//! `inject_guidance` additionally binds or unbinds the
+//! `web::inject-guidance` pre-generate hook.
 
-use std::time::Duration;
+use std::sync::Arc;
 
+use iii_config_client as config_client;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::trigger::Trigger;
-use iii_sdk::{IIIClient, RegisterFunction};
-use serde_json::{json, Value};
+use iii_sdk::protocol::RegisterTriggerInput;
+use iii_sdk::IIIClient;
+use serde_json::json;
 
 use crate::config::{SharedConfig, WebConfig};
 use crate::functions::inject_guidance;
 
-pub const CONFIG_ID: &str = "web";
-const CONFIG_FN_ID: &str = "web::on-config-change";
-const CONFIG_TIMEOUT_MS: u64 = 5_000;
-const CONFIG_RETRIES: u32 = 3;
+pub const DEFAULT_CONFIG_ID: &str = "web";
+
+/// The configuration entry this worker owns.
+///
+/// `III_CONFIG_NAME` when a supervisor set it, else the built-in name. A worker
+/// that hardcodes its id turns that id into a global scarce name: two instances
+/// share one entry and take turns overwriting it, and each write wakes both.
+/// Being told which entry is its own is what lets them differ.
+pub fn config_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::var("III_CONFIG_NAME")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| DEFAULT_CONFIG_ID.to_string())
+    })
+    .as_str()
+}
+pub const CONFIG_FN_ID: &str = "web::on-config-change";
 
 #[derive(Clone)]
 pub struct SharedState {
     pub config: SharedConfig,
+    pub guidance: GuidanceState,
 }
 
-/// Best-effort trigger binding: a transient failure must not brick boot — it surfaces
-/// as a `None` handle.
-fn bind(iii: &IIIClient, trigger_type: &str, function_id: &str, config: Value) -> Option<Trigger> {
-    match iii.register_trigger(RegisterTriggerInput {
-        trigger_type: trigger_type.to_string(),
-        function_id: function_id.to_string(),
-        config,
-        metadata: None,
-    }) {
-        Ok(handle) => {
-            tracing::info!(trigger_type, function_id, "trigger binding requested");
-            Some(handle)
-        }
-        Err(e) => {
-            tracing::warn!(trigger_type, function_id, error = %e, "trigger binding failed");
-            None
-        }
-    }
-}
+/// The live pre-generate guidance binding, if any. Shared with the
+/// configuration change handler so a config flip can bind/unbind at runtime.
+pub type GuidanceState = config_client::BindingSlot;
 
-/// Register the `web::inject-guidance` pre_generate hook. One shot: if the harness is
-/// not up yet, the engine parks the binding as a pending intent and activates it when
-/// the trigger type registers (recoverable triggers, iii #1962) — and re-parks/
-/// re-activates it across harness restarts. Nothing to watch or retry.
-/// `on_error: fail_open` is MANDATORY: pre_generate defaults fail-CLOSED, which would
-/// abort generation if this hook ever errored/timed out; a missing guidance line must
-/// never block a turn.
-pub fn setup_harness_hooks(iii: &IIIClient) {
-    let _ = bind(
-        iii,
-        "harness::hook::pre-generate",
-        inject_guidance::GUIDANCE_HOOK_ID,
-        json!({ "on_error": "fail_open" }),
+/// Reconcile the live `web::inject-guidance` binding with the configured
+/// `inject_guidance` value: on → bind once; off → unregister and drop the
+/// handle. Idempotent under repeated config events, and a failed bind
+/// retries on the next event.
+///
+/// Binding is one shot: if the harness is not up yet, the engine parks the
+/// binding as a pending intent and activates it when the trigger type
+/// registers (recoverable triggers, iii #1962). `on_error: fail_open` is
+/// MANDATORY: pre_generate defaults fail-CLOSED, which would abort
+/// generation if this hook ever errored/timed out; a missing guidance line
+/// must never block a turn.
+pub fn apply_guidance(iii: &IIIClient, state: &GuidanceState, enabled: bool) {
+    state.reconcile(
+        enabled,
+        || {
+            config_client::try_bind(
+                iii,
+                RegisterTriggerInput::new(
+                    "harness::hook::pre-generate".to_string(),
+                    inject_guidance::GUIDANCE_HOOK_ID.to_string(),
+                    json!({ "on_error": "fail_open" }),
+                )
+                .with_metadata(json!({ "inject_prompt": inject_guidance::WEB_GUIDANCE })),
+            )
+        },
+        "inject_guidance on: appending web::fetch guidance to agent system prompts",
+        "inject_guidance off: web::fetch guidance stays out of agent system prompts",
     );
 }
 
-pub async fn register_config(iii: &IIIClient, seed: Option<&WebConfig>) -> Result<(), String> {
-    let mut payload = json!({
-        "id": CONFIG_ID,
-        "name": "web",
-        "description": "Timeouts, byte caps, user-agent, and loopback policy for the web::fetch worker.",
-        "schema": WebConfig::json_schema(),
-    });
-    if let Some(seed) = seed {
-        payload["initial_value"] = seed.to_json();
-    } else if should_seed_default(iii).await? {
-        payload["initial_value"] = WebConfig::default().to_json();
+fn spec() -> config_client::EntrySpec {
+    config_client::EntrySpec {
+        id: config_id(),
+        name: "web",
+        description:
+            "Timeouts, byte caps, user-agent, and loopback policy for the web::fetch worker.",
+        schema: WebConfig::json_schema(),
+        default_value: WebConfig::default().to_json(),
     }
-    trigger_with_retry(iii, "configuration::register", payload).await?;
-    Ok(())
+}
+
+/// Register the schema. A `--config` seed (like the built-in default) is
+/// installed only when nothing is stored yet — `configuration::register`
+/// REPLACES the stored value whenever `initial_value` is supplied, so an
+/// unconditional seed would clobber operator console edits on every boot.
+pub async fn register_config(iii: &IIIClient, seed: Option<&WebConfig>) -> Result<(), String> {
+    config_client::register(iii, &spec(), seed.map(WebConfig::to_json)).await
 }
 
 pub async fn fetch_config(iii: &IIIClient) -> Result<WebConfig, String> {
-    match try_get_value(iii).await? {
-        Some(v) if !v.is_null() => WebConfig::from_json(&v),
-        _ => {
+    match config_client::fetch(iii, config_id()).await? {
+        Some(v) => WebConfig::from_json(&v),
+        None => {
             tracing::info!("no configuration value found; using built-in defaults");
             Ok(WebConfig::default())
         }
-    }
-}
-
-async fn should_seed_default(iii: &IIIClient) -> Result<bool, String> {
-    match try_get_value(iii).await? {
-        None => Ok(true),
-        Some(v) if v.is_null() => Ok(true),
-        Some(_) => Ok(false),
-    }
-}
-
-async fn try_get_value(iii: &IIIClient) -> Result<Option<Value>, String> {
-    match trigger_with_retry(iii, "configuration::get", json!({ "id": CONFIG_ID })).await {
-        Ok(resp) => Ok(resp.get("value").cloned()),
-        Err(e) if e.contains("NOT_FOUND") => Ok(None),
-        Err(e) => Err(e),
     }
 }
 
@@ -106,84 +111,36 @@ pub async fn apply_config(state: &SharedState, cfg: WebConfig) {
     state.config.store(std::sync::Arc::new(cfg));
 }
 
-#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
-struct OnConfigChangeRequest {}
-
-#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
-struct OnConfigChangeResponse {
-    ok: bool,
-}
-
-pub fn register_config_trigger(iii: &IIIClient, state: SharedState) -> Result<(), Error> {
-    let st = state.clone();
+/// Register `web::on-config-change` and bind it to `configuration:updated`
+/// for the `web` entry. Every delivery does ONE re-fetch under the shared
+/// reload lock and applies it to both the config snapshot and the guidance
+/// binding (so the two can never settle from different fetches); the
+/// returned [`config_client::Reload`] lets boot run one extra pass to close
+/// the fetch→bind gap.
+pub fn register_config_trigger(
+    iii: &Arc<IIIClient>,
+    state: SharedState,
+) -> Result<config_client::Reload, Error> {
     let engine = iii.clone();
-    iii.register_function(
+    config_client::on_change(
+        iii,
+        config_id(),
         CONFIG_FN_ID,
-        RegisterFunction::new_async(move |_req: OnConfigChangeRequest| {
-            let st = st.clone();
+        "Internal: reload web settings from the authoritative configuration on change.",
+        move || {
             let engine = engine.clone();
+            let state = state.clone();
             async move {
-                on_config_change(&engine, &st).await;
-                Ok::<OnConfigChangeResponse, Error>(OnConfigChangeResponse { ok: true })
-            }
-        })
-        .description(
-            "Internal: reload web settings from the authoritative configuration on change.",
-        )
-        .metadata(json!({ "internal": true })),
-    );
-
-    iii.register_trigger(RegisterTriggerInput {
-        trigger_type: "configuration".to_string(),
-        function_id: CONFIG_FN_ID.to_string(),
-        config: json!({ "configuration_id": CONFIG_ID, "event_types": ["configuration:updated"] }),
-        metadata: None,
-    })?;
-    Ok(())
-}
-
-async fn on_config_change(iii: &IIIClient, state: &SharedState) {
-    match fetch_config(iii).await {
-        Ok(cfg) => {
-            apply_config(state, cfg).await;
-            tracing::info!("web configuration reloaded");
-        }
-        Err(e) => tracing::error!(error = %e, "config-change: keeping previous config"),
-    }
-}
-
-async fn trigger_with_retry(
-    iii: &IIIClient,
-    function_id: &str,
-    payload: Value,
-) -> Result<Value, String> {
-    let mut last_err = String::new();
-    for attempt in 1..=CONFIG_RETRIES {
-        match iii
-            .trigger(TriggerRequest {
-                function_id: function_id.to_string(),
-                payload: payload.clone(),
-                action: None,
-                timeout_ms: Some(CONFIG_TIMEOUT_MS),
-            })
-            .await
-        {
-            Ok(v) => return Ok(v),
-            Err(e) => {
-                last_err = e.to_string();
-                if attempt < CONFIG_RETRIES {
-                    tracing::warn!(
-                        function_id,
-                        attempt,
-                        error = %last_err,
-                        "configuration RPC failed; retrying"
-                    );
-                    tokio::time::sleep(Duration::from_millis(250 * u64::from(attempt))).await;
+                match fetch_config(&engine).await {
+                    Ok(cfg) => {
+                        let inject = cfg.inject_guidance;
+                        apply_config(&state, cfg).await;
+                        apply_guidance(&engine, &state.guidance, inject);
+                        tracing::info!(inject_guidance = inject, "web configuration reloaded");
+                    }
+                    Err(e) => tracing::error!(error = %e, "config-change: keeping previous config"),
                 }
             }
-        }
-    }
-    Err(format!(
-        "{function_id} failed after {CONFIG_RETRIES} attempts: {last_err}"
-    ))
+        },
+    )
 }

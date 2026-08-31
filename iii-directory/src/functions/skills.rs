@@ -4,11 +4,11 @@
 //!
 //!   * `directory::skills::list` — enriched listing of every markdown
 //!     skill under `skills_folder`, sorted by id. Each row carries
-//!     `id`, `title`, `type`, `description`, `bytes`, and `modified_at`
+//!     `id`, `title`, `type`, `function_id`, `disable_model_invocation`, `description`, `bytes`, and `modified_at`
 //!     so a consumer can render a picker / index in one round trip
 //!     without follow-up `get` calls per row.
 //!   * `directory::skills::get`  — fetch one skill by id. Returns
-//!     `{ id, title, type, function_id, body, modified_at }`. The
+//!     `{ id, title, type, function_id, disable_model_invocation, body, modified_at }`. The
 //!     teaser `description` field that `list` rows carry is omitted
 //!     here on purpose: the full `body` is already in the response,
 //!     and repeating its first paragraph wastes ~200 tokens per fetch
@@ -133,6 +133,8 @@ struct SkillEntry {
     /// agent should pass to `agent_trigger`. `null` for skills that
     /// aren't 1:1 with a single function (index/reference).
     function_id: Option<String>,
+    /// Whether model-facing indexes should omit this skill from invocation candidates.
+    disable_model_invocation: bool,
     /// First paragraph of the body, empty when the file has only
     /// headings. Also empty when the caller passed
     /// `list { include_description: false }` for a token-light row.
@@ -198,6 +200,14 @@ pub struct SkillGetOutput {
     /// is what the agent should pass to `agent_trigger`. `null` when
     /// the skill isn't 1:1 with a single function.
     pub function_id: Option<String>,
+    /// Whether model-facing indexes should omit this skill from invocation candidates.
+    pub disable_model_invocation: bool,
+    /// Absolute on-disk path of the skill file. Its parent directory is
+    /// the skill's base directory — where payload the body references by
+    /// relative path (`scripts/`, `reference/`, agent-skills convention)
+    /// lives. Only meaningful to callers sharing this worker's
+    /// filesystem (shell/file tools on the same machine).
+    pub path: String,
     /// Raw markdown body (post-frontmatter) from disk.
     ///
     /// Note: there is no `description` field. `description` is the
@@ -300,14 +310,13 @@ impl RegisteredWorkersCache {
     /// Fetch `worker::list` from the engine WITHOUT holding the lock,
     /// then store the result (or fall back to the stale set on error).
     async fn fetch_and_store(&self, iii: &IIIClient) -> Option<HashSet<String>> {
-        let result = iii
-            .trigger(TriggerRequest {
-                function_id: "worker::list".to_string(),
-                payload: json!({}),
-                action: None,
-                timeout_ms: Some(5_000),
-            })
-            .await;
+        let request = TriggerRequest {
+            function_id: "worker::list".to_string(),
+            payload: json!({}),
+            action: None,
+            timeout_ms: Some(5_000),
+        };
+        let result = iii.trigger(request.namespace("default")).await;
 
         // Re-acquire the lock and store or fall back.
         let mut lock = self.inner.lock().await;
@@ -370,8 +379,13 @@ fn parse_worker_names(val: &serde_json::Value) -> HashSet<String> {
 //     │  YES: fetch/cache        │  NO: pass through
 //     │  worker::list            │
 //     │  keep only matched ns    │
+//     │  (+ agents-ns exempt)    │
 //     └──────────┬───────────────┘
 //                ▼
+//     merge_agents_roots(…, [project agents root, ~/.agents/skills])
+//        append non-shadowed <skill>/SKILL.md
+//                 │
+//                 ▼
 //         Vec<FsSkill> (visible)
 
 /// Resolve the visible set of skills given config and engine handle.
@@ -380,38 +394,55 @@ fn parse_worker_names(val: &serde_json::Value) -> HashSet<String> {
 /// namespace segment matches a registered (installed) worker name are
 /// returned. On daemon-down or first-boot-no-cache, falls back to
 /// the unfiltered set.
+///
+/// System-installed skills from the read-only `agents_skills_folder`
+/// are appended last (shadowed by the same namespace under the global
+/// or local root) and are exempt from `filter_unregistered` — their
+/// namespaces are skills, not workers. The exemption is by namespace
+/// NAME, not path, so a manual copy of an agents skill into the global
+/// root stays visible too.
 pub async fn resolve_visible_skills(
     cfg: &SkillsConfig,
     cache: &RegisteredWorkersCache,
     iii: &IIIClient,
     fresh: bool,
 ) -> Vec<FsSkill> {
-    let (merged, _skipped) =
-        fs_source::scan_skills_merged(&cfg.resolved_skills_folder(), &cfg.local_skills_folder());
+    let global_root = cfg.resolved_skills_folder();
+    let local_root = cfg.local_skills_folder();
+    let agents_roots = cfg.resolved_agents_skills_roots();
+    let (merged, _skipped) = fs_source::scan_skills_merged(&global_root, &local_root);
 
-    if !cfg.filter_unregistered {
-        return merged;
-    }
-
-    // `fresh` callers (the index) re-fetch `worker::list` every call so a
-    // just-registered worker is never hidden by a stale registered-workers
-    // cache; cached callers (`list`/`get`) keep the TTL fast path.
-    let registered = if fresh {
-        cache.get_fresh(iii).await
+    let filtered = if !cfg.filter_unregistered {
+        merged
     } else {
-        cache.get_or_fetch(iii).await
+        // `fresh` callers (the index) re-fetch `worker::list` every call so a
+        // just-registered worker is never hidden by a stale registered-workers
+        // cache; cached callers (`list`/`get`) keep the TTL fast path.
+        let registered = if fresh {
+            cache.get_fresh(iii).await
+        } else {
+            cache.get_or_fetch(iii).await
+        };
+
+        match registered {
+            Some(registered) => {
+                let agents_ns: Vec<String> = agents_roots
+                    .iter()
+                    .flat_map(|root| fs_source::agents_namespaces(root))
+                    .collect();
+                filter_to_registered(merged, &registered, &agents_ns)
+            }
+            None => {
+                tracing::info!(
+                    "no cached registered workers and daemon unreachable; \
+                     returning unfiltered skill set"
+                );
+                merged
+            }
+        }
     };
 
-    match registered {
-        Some(registered) => filter_to_registered(merged, &registered),
-        None => {
-            tracing::info!(
-                "no cached registered workers and daemon unreachable; \
-                 returning unfiltered skill set"
-            );
-            merged
-        }
-    }
+    fs_source::merge_agents_roots(filtered, &global_root, &local_root, &agents_roots).0
 }
 
 /// The engine's own skill namespace. The iii engine is not a worker, so
@@ -433,11 +464,17 @@ pub const ENGINE_NAMESPACE: &str = "iii";
 ///    `registered` set, but its skill is always visible.
 /// 4. Its top namespace segment is in the `registered` set (i.e. it
 ///    belongs to an installed worker).
+/// 5. Its top namespace segment is in `agents_ns` — a system-installed
+///    skill namespace under `agents_skills_folder`; those are skills,
+///    not workers, so `worker::list` never contains them. Matching by
+///    NAME (not path) keeps a manual global-root copy of an agents
+///    skill visible as well.
 ///
 /// Everything else (skills from uninstalled workers) is dropped.
 pub(crate) fn filter_to_registered(
     merged: Vec<FsSkill>,
     registered: &HashSet<String>,
+    agents_ns: &[String],
 ) -> Vec<FsSkill> {
     merged
         .into_iter()
@@ -451,6 +488,8 @@ pub(crate) fn filter_to_registered(
                 || top_seg == ENGINE_NAMESPACE
                 // Belongs to a registered (installed) worker.
                 || registered.contains(top_seg)
+                // A system-installed agents skill namespace.
+                || agents_ns.iter().any(|ns| ns == top_seg)
         })
         .collect()
 }
@@ -503,7 +542,7 @@ fn register_list_skills(
             }
         })
         .description(
-            "List skills as one row PER SKILL (id, title, type, function_id, description, \
+            "List skills as one row PER SKILL (id, title, type, function_id, disable_model_invocation, description, \
              bytes, modified_at) from skills_folder — use this when you need individual \
              skill ids. A worker overview row's `id` is the bare worker name (e.g. \
              `iii-sandbox`); pass it straight to directory::skills::get. For a per-WORKER \
@@ -613,8 +652,21 @@ fn register_index_skills(
             async move {
                 let entries = resolve_visible_skills(&cfg, &cache, &iii, true).await;
                 let siblings = id_set(&entries);
+                // Agents-root skills are not workers: their `<ns>/index` ids
+                // would render as fake worker blocks and inflate
+                // `workers_count` in this token-light per-WORKER surface, so
+                // drop them here; `directory::skills::list` still serves them.
+                // Filter by PROVENANCE (abs_path under an agents root), not
+                // by namespace name — an installed worker that happens to
+                // share a name with an agents dir must keep its index block.
+                let agents_roots = cfg.resolved_agents_skills_roots();
                 let rows: Vec<SkillEntry> = entries
                     .into_iter()
+                    .filter(|fs| {
+                        !agents_roots
+                            .iter()
+                            .any(|root| fs.abs_path.starts_with(root))
+                    })
                     .map(|fs| skill_entry_from_fs(fs, &siblings))
                     .collect();
                 let body = render_index_markdown(&rows);
@@ -680,6 +732,7 @@ fn read_skill_output(
     let title = resolve_title(&fm, &body, &display);
     let kind = clean_optional(fm.kind);
     let function_id = clean_optional(fm.function_id);
+    let disable_model_invocation = fm.disable_model_invocation;
     let (_, modified_at) = fs_metadata(fs);
     let raw = if include_raw {
         Some(fs_source::read_raw(&fs.abs_path)?)
@@ -691,6 +744,8 @@ fn read_skill_output(
         title,
         kind,
         function_id,
+        disable_model_invocation,
+        path: fs.abs_path.display().to_string(),
         body,
         raw,
         modified_at,
@@ -958,6 +1013,7 @@ pub async fn get_skill(cfg: &SkillsConfig, req: SkillGetInput) -> Result<SkillGe
     let title = resolve_title(&fm, &body, &display);
     let kind = clean_optional(fm.kind);
     let function_id = clean_optional(fm.function_id);
+    let disable_model_invocation = fm.disable_model_invocation;
     let (_, modified_at) = fs_metadata(&fs);
     let raw = if include_raw {
         Some(fs_source::read_raw(&fs.abs_path)?)
@@ -969,6 +1025,8 @@ pub async fn get_skill(cfg: &SkillsConfig, req: SkillGetInput) -> Result<SkillGe
         title,
         kind,
         function_id,
+        disable_model_invocation,
+        path: fs.abs_path.display().to_string(),
         body,
         raw,
         modified_at,
@@ -1088,11 +1146,19 @@ pub fn extract_title(markdown: &str) -> Option<&str> {
 }
 
 /// Pick the best title for a skill: frontmatter `title:` (when present
-/// and non-empty after trim), then the first body `# H1`, then the
-/// bare `id` so the response field is never empty.
+/// and non-empty after trim), then frontmatter `name:` (the
+/// `~/.agents/skills` and repo-bundled SKILL.md convention), then the
+/// first body `# H1`, then the bare `id` so the response field is
+/// never empty.
 pub fn resolve_title(fm: &SkillFrontmatter, body: &str, id: &str) -> String {
     if let Some(t) = fm.title.as_deref() {
         let trimmed = t.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    if let Some(n) = fm.name.as_deref() {
+        let trimmed = n.trim();
         if !trimmed.is_empty() {
             return trimmed.to_string();
         }
@@ -1363,10 +1429,10 @@ fn rank_suggestions_in(skills: &[FsSkill], missed: &str, limit: usize) -> Vec<Su
 }
 
 /// Iterative two-row Levenshtein distance. Used by [`rank_suggestions_in`]
-/// to break ties on shared-segment count, and re-used by the prompts
+/// to break ties on shared-segment count, and re-used by the system-prompt
 /// not-found ranker. Allocates two `usize` rows of size
 /// `b.chars().count() + 1`; cost is O(|a| * |b|) which is fine for skill
-/// ids / prompt names (capped at [`ID_TOTAL_MAX_LEN`] = 1024).
+/// ids / system-prompt names (capped at [`ID_TOTAL_MAX_LEN`] = 1024).
 pub(crate) fn levenshtein(a: &str, b: &str) -> usize {
     let a_chars: Vec<char> = a.chars().collect();
     let b_chars: Vec<char> = b.chars().collect();
@@ -1406,12 +1472,13 @@ fn skill_entry_from_fs(fs: FsSkill, siblings: &std::collections::HashSet<String>
     // to the same display id. Filtering already ran against the raw on-disk
     // id (see list_skills_filtered), so stripping here is display-only.
     let display = display_id(&fs.id, siblings);
-    let (title, kind, function_id, description) =
+    let (title, kind, function_id, disable_model_invocation, description) =
         match fs_source::read_skill_with_frontmatter(&fs.abs_path) {
             Ok((fm, body)) => {
                 let title = resolve_title(&fm, &body, &display);
                 let kind = clean_optional(fm.kind);
                 let function_id = clean_optional(fm.function_id);
+                let disable_model_invocation = fm.disable_model_invocation;
                 // Prefer frontmatter description; fall back to body
                 // first-paragraph so skills with NO frontmatter
                 // description still get the body-derived text.
@@ -1422,9 +1489,15 @@ fn skill_entry_from_fs(fs: FsSkill, siblings: &std::collections::HashSet<String>
                     .filter(|s| !s.is_empty())
                     .or_else(|| extract_description(&body))
                     .unwrap_or_default();
-                (title, kind, function_id, description)
+                (
+                    title,
+                    kind,
+                    function_id,
+                    disable_model_invocation,
+                    description,
+                )
             }
-            Err(_) => (display.clone(), None, None, String::new()),
+            Err(_) => (display.clone(), None, None, false, String::new()),
         };
     SkillEntry {
         id: display,
@@ -1432,6 +1505,7 @@ fn skill_entry_from_fs(fs: FsSkill, siblings: &std::collections::HashSet<String>
         title,
         kind,
         function_id,
+        disable_model_invocation,
         description,
         bytes,
         modified_at,
@@ -1777,6 +1851,27 @@ First paragraph.
     }
 
     #[test]
+    fn resolve_title_falls_back_to_frontmatter_name() {
+        // The ~/.agents/skills convention: `name:` frontmatter, no
+        // `title:`, and a body without an H1.
+        let fm = SkillFrontmatter {
+            name: Some("impeccable".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_title(&fm, "no heading here", "impeccable/index"),
+            "impeccable"
+        );
+        // `title:` still wins over `name:` when both are present.
+        let both = SkillFrontmatter {
+            title: Some("Real title".into()),
+            name: Some("impeccable".into()),
+            ..Default::default()
+        };
+        assert_eq!(resolve_title(&both, "body", "id"), "Real title");
+    }
+
+    #[test]
     fn clean_optional_drops_blank_strings() {
         assert_eq!(clean_optional(None), None);
         assert_eq!(clean_optional(Some("".into())), None);
@@ -1889,6 +1984,66 @@ First paragraph.
         assert_eq!(out.title, "Real title");
         assert_eq!(out.kind.as_deref(), Some("how-to"));
         assert!(out.body.contains("Body H1"));
+        // `path` announces the on-disk location so payload skills
+        // (scripts/, reference/ beside the file) can self-locate.
+        assert_eq!(out.path, ns.join("doc.md").display().to_string());
+    }
+
+    #[tokio::test]
+    async fn invocation_metadata_defaults_false_and_surfaces_true_on_list_and_get() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ns = tmp.path().join("ns");
+        std::fs::create_dir_all(&ns).unwrap();
+        std::fs::write(ns.join("enabled.md"), "# Enabled\n\nBody.\n").unwrap();
+        std::fs::write(
+            ns.join("disabled.md"),
+            "---\ndisable-model-invocation: true\n---\n# Disabled\n\nBody.\n",
+        )
+        .unwrap();
+        let enabled = skill_entry_from_fs(
+            FsSkill {
+                id: "ns/enabled".into(),
+                abs_path: ns.join("enabled.md"),
+            },
+            &HashSet::new(),
+        );
+        let disabled = skill_entry_from_fs(
+            FsSkill {
+                id: "ns/disabled".into(),
+                abs_path: ns.join("disabled.md"),
+            },
+            &HashSet::new(),
+        );
+        assert!(!enabled.disable_model_invocation);
+        assert_eq!(
+            serde_json::to_value(&enabled).unwrap()["disable_model_invocation"],
+            false
+        );
+        assert!(serde_json::to_value(&enabled)
+            .unwrap()
+            .get("body")
+            .is_none());
+        assert!(disabled.disable_model_invocation);
+        assert_eq!(
+            serde_json::to_value(&disabled).unwrap()["disable_model_invocation"],
+            true
+        );
+
+        let cfg = cfg_with_skills_folder(tmp.path());
+        let out = get_skill(
+            &cfg,
+            SkillGetInput {
+                id: "ns/disabled".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(out.disable_model_invocation);
+        assert_eq!(
+            serde_json::to_value(&out).unwrap()["disable_model_invocation"],
+            true
+        );
     }
 
     #[tokio::test]
@@ -2434,6 +2589,7 @@ First paragraph.
             title: title.into(),
             kind: kind.map(String::from),
             function_id: None,
+            disable_model_invocation: false,
             description: description.into(),
             bytes: 0,
             modified_at: String::new(),
@@ -2619,6 +2775,7 @@ First paragraph.
             title: "agent-memory".into(),
             kind: Some("index".into()),
             function_id: None,
+            disable_model_invocation: false,
             description: "Memory worker overview.".into(),
             bytes: 10,
             modified_at: String::new(),
@@ -2875,7 +3032,7 @@ First paragraph.
     fn filter_keeps_root_doc_without_namespace() {
         let registered = HashSet::from(["resend".to_string()]);
         let merged = vec![fs_skill("index")];
-        let result = filter_to_registered(merged, &registered);
+        let result = filter_to_registered(merged, &registered, &[]);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, "index");
     }
@@ -2884,7 +3041,7 @@ First paragraph.
     fn filter_keeps_directory_namespace_docs() {
         let registered = HashSet::new(); // nothing registered
         let merged = vec![fs_skill("directory/engine/functions/info")];
-        let result = filter_to_registered(merged, &registered);
+        let result = filter_to_registered(merged, &registered, &[]);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, "directory/engine/functions/info");
     }
@@ -2941,10 +3098,27 @@ First paragraph.
     fn filter_keeps_engine_namespace_docs() {
         let registered = HashSet::new(); // nothing registered; `iii` is not a worker
         let merged = vec![fs_skill("iii/index"), fs_skill("iii/SKILL")];
-        let result = filter_to_registered(merged, &registered);
+        let result = filter_to_registered(merged, &registered, &[]);
         let ids: Vec<&str> = result.iter().map(|s| s.id.as_str()).collect();
         assert!(ids.contains(&"iii/index"));
         assert!(ids.contains(&"iii/SKILL"));
+    }
+
+    #[test]
+    fn filter_keeps_agents_namespace_docs() {
+        // An agents skill namespace is exempt by NAME, not path, so a
+        // manual global-root copy of an agents skill survives the filter
+        // even though `impeccable` is not an installed worker.
+        let registered = HashSet::new();
+        let agents_ns = vec!["impeccable".to_string()];
+        let merged = vec![
+            fs_skill("impeccable/index"),
+            fs_skill("impeccable/notes"),
+            fs_skill("orphan/index"),
+        ];
+        let result = filter_to_registered(merged, &registered, &agents_ns);
+        let ids: Vec<&str> = result.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["impeccable/index", "impeccable/notes"]);
     }
 
     // ── worker_overview_fallback ───────────────────────────────────────
@@ -3207,7 +3381,7 @@ First paragraph.
     fn filter_keeps_registered_worker_skills() {
         let registered = HashSet::from(["resend".to_string()]);
         let merged = vec![fs_skill("resend/index"), fs_skill("resend/emails/send")];
-        let result = filter_to_registered(merged, &registered);
+        let result = filter_to_registered(merged, &registered, &[]);
         assert_eq!(result.len(), 2);
     }
 
@@ -3220,7 +3394,7 @@ First paragraph.
             fs_skill("index"),
             fs_skill("directory/skills/list"),
         ];
-        let result = filter_to_registered(merged, &registered);
+        let result = filter_to_registered(merged, &registered, &[]);
         let ids: Vec<&str> = result.iter().map(|s| s.id.as_str()).collect();
         assert!(ids.contains(&"resend/index"));
         assert!(ids.contains(&"index"));
@@ -3232,7 +3406,7 @@ First paragraph.
     fn filter_drops_resend_when_not_registered() {
         let registered = HashSet::from(["agent-memory".to_string()]);
         let merged = vec![fs_skill("resend/index"), fs_skill("agent-memory/index")];
-        let result = filter_to_registered(merged, &registered);
+        let result = filter_to_registered(merged, &registered, &[]);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, "agent-memory/index");
     }

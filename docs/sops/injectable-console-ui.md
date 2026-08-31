@@ -1,11 +1,13 @@
 # Injectable console UI — shipping worker UI into the running console
 
-How a worker ships React pages, function-trigger renderers, configuration
-forms, and stylesheets into every open console tab **at runtime** — no console
-rebuild, no iframe, hot-reloaded on re-registration. The full design rationale
+How a worker ships React pages, function-trigger renderers, trigger-activity
+renderers, configuration forms, and stylesheets into every open console tab
+**at runtime** — no console rebuild, no iframe, hot-reloaded on
+re-registration. The full design rationale
 lives in the tech spec (`iii/tech-specs/2026-07-17-injectable-ui/`); this SOP
 is the operational guide for worker authors, grounded in the shipped
-implementation. The `state` worker is the living reference — copy it.
+implementation. The `state` worker is the broad delivery reference; the
+`cron` worker is the focused trigger-activity renderer reference.
 
 | Piece | Reference |
 |---|---|
@@ -17,6 +19,7 @@ implementation. The `state` worker is the living reference — copy it.
 | The `@iii-dev/console-ui` package (types + component manifest) | `workers/packages/console-ui/` |
 | The `iii-console-ui` crate (Rust worker-side registration) | `workers/crates/console-ui/` |
 | Worker reference implementation | `workers/state/src/ui.rs` + `workers/state/ui/` |
+| Trigger-activity renderer reference | `workers/cron/src/ui.rs` + `workers/cron/ui/` |
 
 > **Companion skill — keep it in sync.** `workers/console/SKILL.md` is a
 > standalone skill teaching this same workflow to authors *outside* this
@@ -81,16 +84,37 @@ export default function setup(host: Host) {
     render: () => <StateManagerPage host={host} />,
   })
   host.functionTriggers.register(createStateTriggerRenderer(host))
+  // When the worker owns a trigger type:
+  host.triggerRenderers?.register(createTriggerActivityRenderer())
   host.configForms.register('state', StateConfigForm)
+  host.providerConfigForms?.register('my-provider', MyProviderConfigForm)
   // optional: return a teardown fn; the loader runs it on dispose
 }
 ```
 
-`Button`, `EmptyState`, `Dialog`, `Markdown`, … are the console's own
-components, re-exported by name with typed props — at runtime they come from
-the running console's single React tree (via `/vendor/console-ui.js`), so
-importing them adds **zero bytes** to your bundle. Use them instead of
-copying base components into your worker.
+`Button`, `List`, `Card`, `Panel`, `Chip`, `Table`, `Tabs`,
+`SegmentedControl`, `Selector`, `Tooltip`, `EmptyState`, `Dialog`, `Markdown`,
+… are the console's own components, re-exported by name with typed props — at
+runtime they come from the running console's single React tree (via
+`/vendor/console-ui.js`), so importing them adds **zero bytes** to your
+bundle. `uiClasses` exposes the same stable
+list/card/panel/chip/table/field/motion recipes to injected markup. Use these
+contracts instead of copying base components into a worker.
+
+Use `TabsList variant="line"`/`TabsTrigger` or `SegmentedControl
+variant="tabs"` for peer content views. Shared line tabs use a bottom rule,
+neutral active underline, 600-weight natural-case sans labels, and semantic
+16 px icons by default. Reserve `SegmentedControl variant="radio"` for a
+persisted exclusive choice. Do not carry private boxed-tab CSS.
+
+Compose a simple responsive table as `TableViewport` → `TableFrame` →
+`Table`, with `TableHeader`, `TableBody`, `TableRow`, `TableHead`, and
+`TableCell`. The shared visual uses natural-case sans headers and horizontal
+row dividers without an outer card or border. Use comfortable density on
+pages and `density="compact"` in chat. Apply mono only to technical values
+inside cells; ordinary labels and explanatory copy remain sans. Hover belongs
+only on `TableRow interactive`, and selected rows use the neutral selection
+ramp.
 
 ### 2. The style asset (`ui/styles.css`)
 
@@ -103,13 +127,46 @@ Plain CSS, **every rule scoped under your worker's wrapper attribute**:
 
 The console mounts every injected render inside
 `<div data-iii-ui="<first path segment>" style="display:contents">`, so
-scoped rules apply to your UI and nothing else. Use the console's design
-tokens (`--color-bg`, `--color-ink`, `--color-ink-faint`, `--color-ink-ghost`,
-`--color-accent`, `--color-accent-fg`, `--color-alert`, `--color-ok`,
-`--color-warn`, `--color-panel`, `--color-paper-2`, `--color-ring`,
-`--color-rule`, `--color-rule-2`; also exported as `tokens` from
-`@iii-dev/console-ui`) — dark mode is a variable flip on `html[data-theme]`,
-so token-based styles theme for free. Never hardcode theme colors.
+scoped rules apply to your UI and nothing else. Use the canonical `tokens`
+inventory exported by `@iii-dev/console-ui`: surface and ink tokens for
+hierarchy, `--color-edge` for structure, semantic status tokens, font tokens,
+and `--motion-duration-*`/`--motion-ease-*` for transitions. Dark mode is a
+variable flip on `html[data-theme]`, so token-based styles theme for free.
+Never hardcode theme colors.
+
+For related content that needs emphasis inside an existing card, use
+`CardHighlight` or `uiClasses.cardHighlight`. It uses
+`--color-card-highlight` and is always borderless and shadowless. It is not a
+hover, selection, focus, status, or standalone-card treatment.
+
+Expandable worker cards use the public `CollapsibleCard` composition:
+
+```tsx
+import {
+  CollapsibleCard,
+  CollapsibleCardContent,
+  CollapsibleCardTrigger,
+} from '@iii-dev/console-ui'
+
+<CollapsibleCard>
+  <CollapsibleCardTrigger className="p-3">
+    Activity summary
+  </CollapsibleCardTrigger>
+  <CollapsibleCardContent>
+    <div className="border-t border-edge p-3">Activity details</div>
+  </CollapsibleCardContent>
+</CollapsibleCard>
+```
+
+The trigger owns keyboard and ARIA behavior. Content stays mounted while
+collapsed so local state survives, and the auto-height transition uses the
+Console motion tokens, including automatic reduced-motion handling. Keep
+padding inside the content child so the animated grid can fully collapse.
+
+Selection is neutral in both themes: `--color-surface-selected`, stronger
+`--color-ink`, and an optional `--color-edge`. Do not change selected names,
+tabs, chips, cards, or rows to `--color-accent`; reserve accent for a primary
+action, form focus, live activity, or semantic domain data.
 
 What must NOT be in the sheet: unscoped selectors (`:root`, `html`, `body`,
 `*`, bare element names) and `@font-face` — injected CSS is unlayered, so an
@@ -117,6 +174,22 @@ unscoped rule silently beats the console's fully-layered CSS document-wide.
 The console runs a warn-only lint on every `console:style` fetch
 (`lint_style`, `workers/console/src/ui_assets.rs`) and puts findings in the
 manifest's `warnings` array; keep it empty.
+
+Injected Tailwind utility names are not part of the Console build. Compose
+the named components and public `uiClasses` recipes, then add scoped CSS only
+for worker-specific layout and data presentation. Shared motion recipes
+already honor reduced motion. Custom transitions use the public motion tokens;
+streaming text, rapidly updating meters, and cursor-following geometry update
+without transitions. Scope custom reduced-motion overrides under the worker
+attribute and prefix keyframe names because keyframes remain global.
+
+Use `Selector` for searchable single-choice input, including grouped,
+disabled, async, loading, empty, error, validation, and declared free-form
+states. Keep `Select` for a small finite list. Use shared `Tooltip` parts or
+`IconButton` instead of local hover timers and portal geometry. A local
+selector is justified only by a materially different interaction such as
+hierarchical drill-in, multi-select, or a persistent command palette; record
+the exception in the Console UI conformance inventory.
 
 ### 3. The build (`ui/build.mjs`)
 
@@ -250,6 +323,274 @@ returns a remover for manual teardown.
 A whole console page at `#/ext/<id>`, listed in the nav while registered.
 Duplicate ids: last registration wins (a `console.warn` names both scripts).
 
+`render` receives `PageRenderProps` — a plain `() => <Page />` render stays
+valid and simply ignores them:
+
+- `panelSide`: `'left' | 'right'` — which side of the workspace tab the
+  pane hosting the page occupies (`'right'` only for the rightmost column
+  of a multi-column tab; a single-column tab is `'left'`). Pages that care
+  mirror their layout so a sidebar hugs the outer screen edge (the shell
+  explorer does).
+- `tabId`: the hosting workspace tab's stable id (tabs persist across
+  reloads) — the key for per-tab UI state (the shell explorer keys its
+  open files/expanded folders on it). Empty string outside a workspace
+  tab.
+- `onRequestClose`: close the pane hosting the page (a split drops the
+  column; a single-column tab detaches back to the attach affordance).
+  Wire it to `PageHeader`'s `onClose` — every page header carries the
+  standard ✕. Absent when the page renders outside a closable pane.
+- `panelContext`: the latest ephemeral event sent to this page through
+  `host.panels.open()`. Its monotonic `id` changes for every click, including
+  repeated identical payloads; `context` is worker-defined JSON.
+- `setDirty`: report unsaved work. Call `setDirty('main.rs')` (or `true`)
+  while the page holds something the user would lose and `setDirty(false)`
+  once it is saved or discarded; closing the pane, its workspace, or the
+  browser tab then asks first. Absent on older consoles, so call it as
+  `setDirty?.(…)`. The host clears the entry when its pane or workspace tab is removed; unmounting a background tab does not clear it.
+- `commands`: contribute commands while mounted — rows in the command
+  palette (`⌘K`) under the page's name, and keys that fire only while focus
+  is inside this pane. Register in an effect and return its remover:
+  `useEffect(() => commands?.register([...]), [commands])`. Absent on older
+  consoles; feature-detect. See [Commands](#commands-the-keyboard-reaches-every-page).
+
+#### The page chrome — MANDATORY layout for pages
+
+Every injected page composes the same five `@iii-dev/console-ui`
+components, so panes stay visually identical across workers AND the
+console's own screens (chat, traces):
+
+```tsx
+<PageShell>
+  <PageHeader
+    icon={<MyIcon />}                 // 16px glyph, faint ink
+    title="My worker"                 // sans, human-readable title
+    description="What this page is"   // natural case; truncates first
+    actions={<Button …/>}             // optional right-side controls
+    onClose={onRequestClose}          // the standard ✕
+  />
+  <PageBody side={panelSide}>         {/* mirrors for right-side panes */}
+    <PageSidebar
+      label="projects"
+      side={panelSide}
+      collapsible
+      resizable
+      storageKey="my-worker:projects"
+      defaultWidth={260}
+      minWidth={200}
+      maxWidth={420}
+      narrowBelow={700}
+      header={<>Projects</>}
+      collapsedActions={<IconButton label="New project" … />}
+    >
+      …navigation…
+    </PageSidebar>
+    <PageMain>…workspace…</PageMain>         {/* white, flexes */}
+  </PageBody>
+</PageShell>
+```
+
+The pieces own the surface hierarchy (header `--color-panel-raised` +
+hairline `--color-edge` border; sidebar `--color-sidebar`; main
+`--color-panel`) — don't repaint those tokens per worker. A page without
+a sidebar just puts its content straight into `PageBody`/`PageMain`; a
+page with custom internals (the directory page's drill-in browser) may
+own its body but MUST keep `PageShell` + `PageHeader`. The shell
+explorer (`workers/shell/ui/src/page/index.tsx`) is the reference
+composition.
+
+`PageSidebar` is implemented by the Console host and resolves through the
+shared `/vendor/console-ui.js` module, so importing its behavior adds no bytes
+to a worker bundle. Use its declarative API instead of local collapse DOM,
+pointer handlers, width clamps, `localStorage`, focus management, or motion.
+It keeps one `aside` and its children mounted while collapsed; the host owns
+the 220 ms width transition, content fade/offset, reduced-motion behavior,
+accessible toggle, pointer/keyboard resize, and best-effort persistence.
+Instances with the same `storageKey` share one preference. Pass `narrow` when
+your page's own drill-in state already knows the pane is narrow, or
+`narrowBelow` when only the sidebar chrome needs a container breakpoint. In
+the narrow presentation a sidebar with host-owned collapse state becomes a
+rail; its toggle opens the content as a drawer over the main column (scrim,
+Escape, and activating any control inside close it), so the page keeps
+rendering `PageMain` unchanged. A page that controls `collapsed` keeps the
+full-width aside and decides what shows beside it. Neither overwrites the
+saved wide preference. Drag resize and wide↔narrow changes remain instant.
+
+All human-facing chrome uses sans and authored sentence/title case; do not use
+CSS case transforms on tabs, buttons, menus, fields, or labels. Reserve mono
+for machine-readable ids, paths, values, payloads, source, terminal output,
+and tabular data. Application icons use a 16 px baseline globally;
+icon-only actions use `IconButton`, which retains an accessible label and the
+shared tooltip. Do not author application icons below 16 px.
+
+### Commands: the keyboard reaches every page
+
+The console is keyboard-first: `⌘K` finds and takes any action, every row
+shows its key, and hovering a control spells the same key. A page joins
+that through commands. There are two registration points and one rule:
+**a command exists only while its worker is connected.** Both paths ride
+the same teardown every other registration uses, so nothing extra is needed
+for that rule to hold.
+
+```ts
+interface PageCommand {
+  id: string                 // unique within the page; namespaced `<pageId>.<id>`
+  title: string              // the palette row reads "Shell: Open file…"
+  detail?: string
+  keywords?: string[]
+  shortcut?: string | { mac: string[]; other: string[] }   // 'Mod+S', 'G L'
+  firesWhileTyping?: boolean // default false: the caret in a field wins
+  enabled?: () => boolean    // asked when the palette opens and before run
+  run: () => void
+}
+```
+
+**`host.commands.register(pageId, commands)`** — setup time, worker level.
+Rows for a page that may not be open yet ("Shell: open file…"). Lives
+exactly as long as the script: removed with the page and every other
+registration when the worker's assets go. `run` usually calls
+`host.panels.open({ pageId, context })` so the page opens and acts on the
+context. Keys are **not** honoured here: the console's global keymap stays
+the console's.
+
+**Typing surfaces that are not form fields must stand down the bare keys.**
+The dispatcher already yields to a caret in an `input`, `textarea`, `select`,
+or contentEditable node. Anything else that consumes raw keystrokes — a code
+editor's gutters and widgets, a read-mode diff, a drawing surface — gives the
+dispatcher a plain element as the event target, and a bare page binding
+(a `t`, a digit) fires mid-thought. Declare the surface:
+
+```tsx
+<div className="my-editor-body" data-keybindings-standdown="">…</div>
+```
+
+Every keystroke originating inside a `data-keybindings-standdown` element
+counts as typing: bindings without `firesWhileTyping` stand down, modifier
+chords still work. Put it on the smallest container that holds the whole
+interactive surface (the editor body, the diff card), never on the page root —
+the page chrome around it should keep answering the navigation keys.
+
+**`PageRenderProps.commands.register(commands)`** — render time, page
+level. Lives while the page is mounted in a pane. Keys are honoured and
+scoped to that pane: they fire only while focus is inside it, so two panes
+of the same page never both answer. Register from an effect:
+
+```tsx
+function Page({ commands }: PageRenderProps) {
+  useEffect(
+    () =>
+      commands?.register([
+        { id: 'open', title: 'Open file…', shortcut: 'P', run: openQuickOpen },
+        { id: 'find', title: 'Search in files', shortcut: 'F', run: focusSearch },
+        { id: 'save', title: 'Save', shortcut: 'Mod+S', firesWhileTyping: true,
+          enabled: () => dirty, run: save },
+      ]),
+    [commands, dirty],
+  )
+}
+```
+
+Keys a page may take: anything the console does not already use. The
+console keeps `Mod+K` and its modifier chords (Ctrl on a Mac, Alt elsewhere:
+`Ctrl+T`, `Ctrl+W`, `Ctrl+[`/`]`, `Ctrl+{`/`}`, `Ctrl+1`-`9`, `Ctrl+\`,
+`Ctrl+,`, and the `Ctrl+G` go-to prefix), and the browser owns its own
+(`Mod+W`, `Mod+T`, `Mod+1`…); those are refused at registration with a
+`console.warn` and the row stays, without a key. Bare single letters, digits
+and chords (`Q L`) are the page's to take; the typing guard keeps them out
+of fields unless the command says `firesWhileTyping`, a
+`data-keybindings-standdown` surface swallows them entirely, and a field can
+hand specific commands back with `data-keybindings-allow="<pageId>.<id>"`.
+
+Focus follows the keyboard: opening a page from `⌘K`, a go-to chord or
+`host.panels.open` moves focus into its pane — the first `[data-autofocus]`
+element inside it, else the pane root — so the next keystroke is already
+the page's. Mark the element a page wants focused on arrival with
+`data-autofocus`. `Ctrl+{` / `Ctrl+}` (mac; `Alt+` elsewhere) step focus
+across panes.
+
+**`host.palette.registerSource(source)`** — a live source: rows computed per
+query by the worker, the way an editor's quick open lists files as you type.
+Registered at setup, so it exists only while the worker is connected.
+
+```ts
+host.palette?.registerSource({
+  id: 'tables',
+  title: 'Tables',            // the group label
+  kind: 'item',               // 'file' for real files (answers `#`), 'item' otherwise
+  prefix: '#',                // optional: a one-character mode that selects this source alone
+  minQuery: 2,                // asked without its prefix from this many characters
+  async search(query, { workingDir, conversationId, signal }) {
+    const tables = await host.iii.trigger('database::listTables', { query })
+    if (signal.aborted) return []
+    return tables.slice(0, 30).map((table) => ({
+      id: table.name,
+      title: table.name,
+      detail: table.database,
+      run: () => host.panels.open({ pageId: 'database', context: { table: table.name } }),
+    }))
+  },
+})
+```
+
+The bare palette is a navigator — no prefix searches only pages,
+workspaces, chats and workers — so a source whose kind is `item` or `file`
+is asked under its prefix or the matching filter chip, never from the bare
+query. The palette asks every source that fits, debounced, and drops an
+answer to a query it has moved past (`signal`). A source that throws
+contributes nothing; the others still answer. Rows open the page with a
+context the page already understands through `panelContext`.
+
+**`host.palette.open({ query })`** opens the palette on a query. A prefix
+lands it in that mode: `>` or `/` commands, `#` files, `@` chats. The shell's
+"Open file…" row calls `host.palette.open({ query: '#' })` and hands over.
+
+An empty query opens on the ten rows used most recently in this browser;
+several words match in any order.
+
+Definition of done for a page: its primary verbs are commands, each with a
+key where one is natural; the data a user jumps to by name is a source; the
+element the page wants focused on arrival carries `data-autofocus`; and
+nothing in the page listens for a key the console owns.
+
+### `host.panels.open({ pageId, context })`
+
+Open contextual worker content beside chat without teaching the console what
+that content means:
+
+```tsx
+function ScreenshotResult({ host, screenshotId }: Props) {
+  return (
+    <button
+      onClick={() =>
+        host.panels?.open({
+          pageId: 'browser',
+          context: { type: 'screenshot', screenshotId },
+        })
+      }
+    >
+      inspect screenshot
+    </button>
+  )
+}
+
+function BrowserPage({ panelContext }: PageRenderProps) {
+  useEffect(() => {
+    if (panelContext) showContext(panelContext.context)
+  }, [panelContext?.id])
+  // …
+}
+```
+
+The console owns placement: it reuses and activates an already-mounted page;
+otherwise it fills an empty column or inserts the page beside chat. It never
+replaces an existing pane. If the active tab is full, it creates a fresh
+chat + context split. The console stores context before mounting the page, so
+the first render receives the event that opened it.
+
+Context is JSON-only and ephemeral: it is not persisted with workspace tabs.
+Use opaque ids for large or sensitive bodies and let the page fetch the data
+from its worker on demand. Feature-detect `host.panels` when a worker bundle
+must remain compatible with older consoles.
+
 ### `host.functionTriggers.register(renderer)`
 
 Custom rendering for function-trigger messages in chat and traces:
@@ -261,7 +602,10 @@ interface FunctionTriggerRenderer {
   tryRender(message: FunctionTriggerMessage): React.ReactNode | null
   tryRenderRunning?(message: FunctionTriggerMessage): React.ReactNode | null
   tryRenderPreview?(message: FunctionTriggerMessage): React.ReactNode | null
+  tryRenderDisplay?(message: FunctionTriggerMessage): React.ReactNode | null
   FunctionIdLabel?: React.ComponentType<{ functionId: string }>
+  metadata?: { display?: boolean; displayAction?: 'expand' }
+  redactRaw?(value: unknown): unknown
 }
 ```
 
@@ -269,10 +613,147 @@ Injected renderers dispatch **before** the first-party families
 (`useFunctionTriggerRenderers`,
 `workers/console/web/src/components/function-trigger/renderer-registry.tsx`),
 so you can override built-in rendering for your worker's functions. Return
-`null` to fall through to the next renderer — match narrowly (your own
-function ids) and let errors and everything else keep the default cards.
+`null` to fall through to the next renderer. The host calls `tryRender*` only
+after that renderer's `isMatch(functionId)` returns true — match narrowly (your
+own function ids) and let errors and everything else keep the default cards.
 Renderer callbacks are fenced: a throwing `isMatch` counts as no-match, a
 throwing `tryRender` degrades to an error chip, never a broken feed.
+
+`FunctionTriggerMessage.description` is the short user-facing action supplied
+by the harness `agent_trigger` wrapper. The host shows it in the collapsed
+activity row and reveals the concrete function id when the row is expanded;
+historic messages without it retain the function-id fallback.
+
+Set `metadata: { display: true }` when a successful custom result is a
+first-class chat artifact (file-change summaries, screenshots, images). The
+host keeps that winning renderer's non-null node visible while the raw
+request/response remain collapsed. Metadata is tied to the renderer that
+actually produced the node: a focused renderer can return `null` for errors
+or unsupported output and safely fall through to a general renderer. Do not
+mark ordinary terminal/status cards for display.
+
+Use `tryRenderDisplay` when that inline artifact needs a compact receipt while
+`tryRender` supplies its complete detail body. Add
+`metadata.displayAction: 'expand'` to make a single continuous collapsible
+card: the receipt remains mounted as the header and the detail body expands
+underneath it with the host-owned transition, terminal tab, and raw JSON tab.
+In this mode the receipt must not render its own outer card or interactive
+controls because the host owns the surface, padding, and focus target. Omit
+`displayAction` when the receipt owns another action such as opening a child
+session.
+
+#### `redactRaw` — your card is not the only exit
+
+Whatever your card draws, the settled card **always** mounts a `raw json` tab
+that renders `message.input` / `message.output` verbatim, with a copy button
+per pane. If your rendering redacts a secret (a capability id, a token, a
+path), the raw tab and its clipboard hand it over anyway — one click away.
+
+`redactRaw` is how the WORKER declares what is secret and the CONSOLE applies
+it: for a message your `isMatch` claims, the card runs the request and the
+response through it **before rendering the raw panes and before building the
+text the copy button copies** (the first claiming renderer that declares it
+wins). The console stays ignorant of what your secrets look like — no worker
+pattern belongs in shared console code.
+
+- It gets an arbitrary JSON-ish value (object, array, string, number,
+  boolean, `null`, `undefined`) and returns the redacted copy. Deep-walk it:
+  ids hide in nested arrays, in log lines, in error messages, and in object
+  KEYS. `sandbox-code-runner/ui/src/lib/shared.tsx` (`redactRuntimeIdsDeep`)
+  is the reference implementation — a shape-preserving walk with cycle
+  protection.
+- Pure and total: never mutate the input, never do I/O, never throw.
+- It runs during the host card's render, so it is fenced — and fails
+  **closed**: a throw renders `[redaction failed — value withheld]` in place
+  of the value, in the pane and on the clipboard. Degrading to the raw value
+  would surrender exactly what the method exists to protect.
+- It covers the card's raw panes only. A session export dumps the transcript
+  verbatim by design; do not treat `redactRaw` as an access control — the
+  payload still crosses the wire and lands in the trace store.
+
+### `host.triggerRenderers?.register(renderer)`
+
+Customize a normalized trigger activity. This is separate from
+`host.functionTriggers`: match the inner trigger type (`cron`, `state`, or a
+worker-defined value), never the shared function `engine::register_trigger`.
+
+```ts
+interface TriggerActivityRenderer {
+  id: string
+  isMatch(triggerType: string): boolean
+  // Source section inside the generic detail view (compatibility/base hook).
+  tryRender(activity: TriggerActivityMessage): React.ReactNode | null
+  // Optional complete expanded Terminal tab.
+  tryRenderDetails?(activity: TriggerActivityMessage): React.ReactNode | null
+  // Optional compact clickable timeline content; no interactive children.
+  tryRenderDisplay?(activity: TriggerActivityMessage): React.ReactNode | null
+  // Optional raw registration/fire redaction; pure, total, cycle-safe.
+  redactRaw?(value: unknown): unknown
+}
+
+interface TriggerActivityMessage {
+  id: string
+  kind: 'registration' | 'fired' | 'retirement'
+  triggerType: string
+  config?: unknown
+  label?: string
+  action?: string // registration metadata.action: what the event means
+  delivery:
+    | { kind: 'notify' }
+    | { kind: 'call'; functionId: string }
+  lifecycle: {
+    state: 'active' | 'retired'
+    once: boolean
+    maxFires?: number
+    expiresAt?: number
+    fires: number
+  }
+  payload?: unknown
+  // See packages/console-ui/index.d.ts for the remaining optional fields.
+}
+```
+
+Register through the script host and feature-detect for older consoles:
+
+```tsx
+export default function setup(host: Host) {
+  host.triggerRenderers?.register({
+    id: 'cron/page.js#trigger-activity',
+    isMatch: (triggerType) => triggerType === 'cron',
+    tryRender: (activity) => {
+      const config = parseCronConfig(activity.config)
+      return config ? <CronSource config={config} /> : null
+    },
+  })
+}
+```
+
+Use the smallest hook that fits. `tryRender` owns only source interpretation;
+`tryRenderDetails` owns the complete readable detail; `tryRenderDisplay` owns
+the compact row content. The host retains the disclosure interaction,
+per-slot fallbacks, and Raw JSON tab after `redactRaw`. A once trigger that
+fires and is automatically retired remains one activity; never duplicate it
+with a worker-rendered unbind notice.
+
+For harness bindings, `label` names the binding while `metadata.action`
+describes the future event (for example, `new Explorer message received`).
+The action is available in binding data before the first fire and is persisted
+as `activity.action`, but registration and active-binding UI show the label.
+The default UI reveals action only on a fired row: a status mark plus action,
+falling back to label/source; clicking it opens the detail already expanded.
+Worker displays should likewise read action only when `kind === 'fired'`.
+The Raw JSON tab retains the original registration metadata for inspection.
+
+Each renderer slot dispatches in registration order and the first non-null
+node wins.
+Return `null` for a different type or an unrecognized config. A throwing
+matcher is treated as no match; render failures are error-bounded. The same
+renderer should tolerate all three `kind` values because source identity does
+not change as the binding moves through its lifecycle.
+
+See
+[`console/web/docs/custom-trigger-components.md`](../../console/web/docs/custom-trigger-components.md)
+for the complete authoring guide and test matrix.
 
 ### `host.configForms.register(configurationId, component)`
 
@@ -293,12 +774,129 @@ interface ConfigFormProps {
 The form is render-level only: dirty tracking, validation, save/reset and the
 SaveBar stay host-owned. You draw the fields and call `onChange`.
 
+### `host.providerConfigForms.register(providerId, component)`
+
+Replace the provider editor opened from the chat model picker (exact
+`llm-router` provider id; last registration wins). This is the preferred
+surface for provider-owned authentication nuances such as OAuth, a device
+flow, or importing a login from a companion app. Feature-detect it when a
+worker must support older consoles: `host.providerConfigForms?.register`.
+
+```ts
+interface ProviderConfigFormProps {
+  providerId: string
+  schema: Record<string, unknown> | null
+  value: JsonValue
+  onChange(next: JsonValue): void
+  errors?: ReadonlyMap<string, string>
+  configured?: boolean
+  available?: boolean
+  modelCount: number
+}
+```
+
+The console still owns the authoritative `llm-router.providers[providerId]`
+slice, schema validation, dirty guard, save/reset, and model refresh. The
+provider owns only the form body and may call its own login/refresh functions
+through `host.iii`. Never render a plaintext API-key field: tell operators to
+use the provider's declared environment variable instead.
+
+### `host.chat.registerSessionChip({ id, render })`
+
+A small per-session status chip in the chat header's right cluster (beside
+the export button and status dot), rendered for every open session. Your
+component receives:
+
+```ts
+interface SessionChipProps {
+  sessionId: string
+  modelId?: string        // resolved model id, when known
+  contextWindow?: number  // model context window (tokens), from the catalog
+}
+```
+
+Duplicate ids: last registration wins. The id `context` is special: while a
+`context` chip is registered, the console hides its built-in estimate-based
+context meter — a worker with real per-turn numbers owns the surface. Chips
+fetch their own data over `host.iii` (subscribe to your worker's triggers,
+hydrate with a function call on mount); the host passes identity only.
+Feature-detect on older consoles: `host.chat?.registerSessionChip`.
+
+### `host.chat` conversation helpers
+
+Newer Consoles expose two optional, non-rendering helpers on the same
+feature-detected namespace:
+
+- `host.chat?.selectConversation?.(sessionId)` switches the active
+  conversation. Call it only after an explicit operator action such as opening
+  a schedule's transcript; never steal focus on mount or during background
+  refresh.
+- `host.chat?.composerModel?.(conversationId?)` returns the live model id for
+  that conversation, including an unsaved composer draft, or `null` when none
+  is selected. Treat it as a read-only snapshot and keep a fallback for older
+  Consoles.
+
+Both methods are optional independently of `registerSessionChip`; check the
+specific method before use.
+
+- `host.chat?.compose?.({ text?, files? })` hands a draft to the active
+  conversation's composer the way a drop or a paste would: files become
+  attachments, text is appended, the caret lands in the composer. Call it
+  from an explicit action (a "Send to chat" button, a command); never on
+  mount. The browser page sends an annotated picture plus its notes this
+  way.
+
+### Annotations: pins with notes over a picture
+
+`AnnotationLayer` is the shared primitive for marking up a captured
+picture — a browser frame, a desktop frame, a screenshot in a transcript.
+The page owns the list; the layer is a pure view of it. A pin sits at
+fractions of the picture so the same set renders over the live view, the
+exported PNG and a later reload. Pins are buttons: Delete removes, arrows
+nudge, Shift+arrows nudge more. With `onNote` the selected pin opens a
+callout beside it that edits the note in place (a new pin takes the caret;
+Enter or Escape closes it), so the note is written where the pin is, not
+in a list elsewhere. A pin may carry a `label`, what it points at when the
+page can tell (the browser page resolves the element under a dropped pin
+through `browser::pick::resolve`); the callout shows it under the note and
+the chat text appends it in parentheses. Beyond pins, a mark can be a
+`rect` or an `arrow` (`kind`, `x2`/`y2`, `color`): the page passes `tool`
+and the `onAddShape` / `onResizeShape` / `onEndShape` trio and the layer
+draws the shape on drag, dropping one smaller than `MIN_SHAPE_SIZE`;
+`undoAnnotation` drops the newest mark. Exports paint every mark
+(`paintMark`) and the chat text prefixes non-pin marks (`2. box: ...`).
+A set can be saved to the `state` worker (scope `annotations`) so it
+outlives the session: the browser page's Save action persists it, a
+palette source lists saved sets by subject, and a dialog previews one over
+its stored picture with send / download / delete.
+`AnnotationList` renders the same
+notes as rows for a page that wants a list too.
+
+```tsx
+<AnnotationLayer annotations={pins} image={{ width, height }} active={annotating}
+  selectedId={selectedId} onAdd={add} onSelect={select} onMove={move}
+  onRemove={remove} onNote={note}>
+  <img src={frame.dataUrl} alt="frozen view" className="h-full w-full object-contain" />
+</AnnotationLayer>
+```
+
+Rules a page follows: freeze the picture while annotating (pins drift over
+a live frame); keep pins until they are sent or cleared; the actions (send,
+download, clear) sit in the page header next to the mode toggle, not in a
+separate pane; send through `host.chat.compose` as a stack of attachments
+the reader can flip through — the whole view with the pins painted on
+(`renderAnnotatedImage`) plus one crop per pin (`renderAnnotationCrop`,
+named by number and note) — with the numbered notes as the text; register
+`annotate`, `send-annotations`, `download-annotations` and
+`clear-annotations` as commands (`C`, `Mod+Enter`); Escape ends the mode.
+
 ### The rest of `host`
 
 | Surface | What it is |
 |---|---|
 | `host.iii` | The tab's bus client: `trigger(functionId, payload?, {timeoutMs?})`, `on(functionId, handler)` (returns un-listen), `registerTrigger({type, function_id, config})` (returns un-register), `addConnectionStateListener`, `browserId`. Injected UI *acts* by invoking its own worker's functions. |
-| shared components | The curated, pre-styled component library: `Badge`, `Button`, `Dialog`(+`Trigger/Close/Content/Title/Description`), `DropdownMenu`(+parts), `EmptyState`, `ErrorBoundary`, `Input`, `Select`, `Skeleton`, `StatusDot`, `StatusPanel`, `Tabs`(+parts), `Tooltip`(+parts), `CodeEditor`, `CodeHighlight`, `JsonHighlight`, `Markdown`, `MarkdownPreview`. Import them by name from `@iii-dev/console-ui` (typed props); `host.components` carries the same objects as an untyped record. `CodeEditor` is **Monaco** — the console's one code editor, global by contract: every editing surface uses it (see the build-footgun note above; never ship your own). For richer components, copy the pattern into your worker — small duplication across workers is the accepted cost; `@iii-dev/console-ui` is deliberately the only versioned contract. |
+| `host.panels` | Optional compatibility-gated contextual navigation: `open({ pageId, context })` places/reuses a registered page beside chat and sends it JSON context. |
+| shared UI | Typed, zero-bundle-cost components include page chrome; `List`/`ListItem`, `Card`, `CollapsibleCard`, `CardHighlight`, `Panel`, `Chip`, `IconButton`; line `Tabs` and `SegmentedControl`; `Selector` and `Select`; buttons, inputs, dialogs, menus, tooltips; status/empty/loading surfaces; Markdown/JSON; `CodeEditor`, `FileDiff`; and terminal atoms. `uiClasses` supplies stable recipes and `tokens` supplies the canonical CSS-variable inventory. Import from `@iii-dev/console-ui`; `host.components` mirrors React components as an untyped compatibility record. Promote repeated cross-worker behavior here instead of carrying private copies. Monaco, diff, ANSI parsing, selector behavior, tooltip geometry, and portal scope are single shared contracts. |
 | `host.useTheme()` | `'light' \| 'dark'`, reactive. Extensions follow the theme, never set it. |
 | `host.path` | Your script's asset path. |
 
@@ -316,6 +914,11 @@ Every injected render is wrapped in the scope element plus an
 `import()`, missing default export, or throwing `setup()` logs to the browser
 console and your contributions simply drop out until the next good version
 arrives — a broken extension never takes the console down.
+
+Shared `Dialog`, `DropdownMenu`, `Select`, `Selector`, `Tooltip`, and
+`BottomSheet` portals carry the current `data-iii-ui` scope automatically.
+Only custom domain portals mounted directly under `document.body` must stamp
+that attribute themselves.
 
 ## The dev loop (hot reload)
 
@@ -380,7 +983,7 @@ Common failures:
 | Registration rejected with a fetch error | your content function threw, returned no string `content`, or timed out (2 × 3 s budget) |
 | "Invalid hook call" in the tab | your bundle contains a second React — a missing `external` |
 | `import()` fails on a bare specifier | a dependency imports a react-family subpath outside the five shared specifiers |
-| Styles apply on your page but not in a portal you created yourself | DOM you portal to `document.body` must carry `data-iii-ui="<worker>"` on its root |
+| Styles apply on your page but not in a custom portal | Shared portalled components preserve scope; a custom `document.body` portal must carry `data-iii-ui="<worker>"` on its root |
 | Whole console restyled | your sheet has unscoped rules — check `warnings` in the manifest |
 | Asset gone after console restart | replay fetch failed (worker down at replay) — re-register, or just restart the worker |
 | Registered without errors but never loads | the worker is toggled off — check `workers[].enabled` in the manifest / `injectableUi.disabledWorkers` in the `console` configuration entry |
@@ -390,8 +993,8 @@ disables the trigger types, the `/ui` + `/vendor` routes, and the SPA loader
 (manifest answers `disabled: true`).
 
 Per-worker toggle: the Workers tab's **Console** entry renders a toggle
-board — one bordered card per UI-shipping worker (title, description, and a
-switch; active cards carry the accent border, disabled ones dim) — editing
+board — one card per UI-shipping worker (title, description, and a switch;
+enabled cards use the neutral selected recipe, disabled ones dim) — editing
 `injectableUi.disabledWorkers` in the `console` configuration entry. Saving
 applies live: the console worker subscribes to `configuration:updated` for
 its own entry and pushes `delete`/`set` to every tab. The board is itself
@@ -420,6 +1023,18 @@ its own board: the registry refuses to disable it.
 - Rendering correctness stays a browser concern — Storybook in your worker's
   UI project against the workspace-linked `@iii-dev/console-ui` types is the
   recommended harness.
+- For a trigger-activity renderer, test exact type matching, malformed-config
+  fallthrough, every activity kind, generic fallback, and that the worker
+  does not duplicate host-owned delivery or lifecycle status.
+- Exercise light and dark themes at 320–430 px, narrow split-pane, and wide
+  widths; keyboard and touch; reduced motion; loading/empty/error/success;
+  streaming or rapidly updating data; and long content. Selected rows, cards,
+  tabs, chips, and segments must remain neutral in both themes.
+- Verify content tabs use the shared line recipe, natural-case sans labels,
+  and default 16 px icons; global workspace tabs use weight 500. Verify there
+  are no application icons below 16 px or panel-wide mono chrome.
+- Record reusable-primitive coverage and justified local exceptions in
+  `workers/docs/sops/console-ui-conformance.md`.
 - The package's declarations are themselves pinned to the real console
   components by `console/web/src/lib/console-ui-conformance.test.ts`
   (type-level + name-manifest checks) — extend all three (manifest, record,
@@ -427,22 +1042,26 @@ its own board: the registry refuses to disable it.
 
 ## Status: shipped vs spec
 
-The 2026-07-21 implementation covers the spec's protocol, loader, and three
-slot kinds. Not shipped yet (don't design against them):
+The implementation covers the spec's protocol, loader, and runtime slot
+registry. The spec's composer slot (`host.composer`) shipped later as
+`host.chat.registerSessionChip` — chips render in the chat header's right
+cluster, not the composer toolbar. Not shipped yet (don't design against
+them):
 
 | Spec item | Status |
 |---|---|
-| Composer slot (`host.composer`) | not implemented — pages, function-trigger renderers, and config forms are the three v1 slots |
 | `@iii-dev/console-build` CLI + Tailwind preset | not implemented — hand-write scoped CSS (as `state` does) or scope your own Tailwind output; there is no automatic scoping pass to save you |
 | Types package | shipped as `@iii-dev/console-ui` (`packages/console-ui`) — in-repo workers consume it **workspace-linked** (out-of-repo authors install it from npm, see `workers/console/SKILL.md`); the runtime module specifier was renamed from the spec's `@iii/console` |
 | Rust worker-side registration | shipped **beyond spec** as the path-linked `iii-console-ui` crate (`crates/console-ui`) — the spec's authoring doc had each worker hand-roll the content function, triggers, and watcher |
 | Named typed component exports on the runtime module | shipped (beyond spec: the spec only had the `components` record) |
 | Manifest `worker` attribution | always `null` |
-| Per-script `Dialog` re-export with scope-stamped portals | not implemented — stamp `data-iii-ui` yourself on DOM you portal outside the wrapper |
+| Scope-preserving shared portals | shipped for `Dialog`, `DropdownMenu`, `Select`, `Selector`, `Tooltip`, and `BottomSheet`; stamp only custom domain portals |
+| Page commands and pane-scoped keys | shipped **beyond spec** as `host.commands` + `PageRenderProps.commands`; chat and shell are the first consumers |
+| Live palette sources | shipped **beyond spec** as `host.palette.registerSource` + `host.palette.open`; the shell's Files source is the reference |
 
-Naming note: the renderer slot is `host.functionTriggers` and the message
-role is `function-trigger` — the console web codebase deliberately does not
-use the older two-word term for these.
+Naming note: function messages use `host.functionTriggers` and the
+`function-trigger` role. Normalized trigger lifecycle activities use the
+separate `host.triggerRenderers` slot and `TriggerActivityMessage` contract.
 
 ## Security posture (know what you're shipping)
 

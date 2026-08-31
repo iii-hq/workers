@@ -1,17 +1,24 @@
 //! Custom trigger types this worker publishes.
 //!
-//! Two trigger types exist:
+//! Three trigger types exist:
 //!
 //! - `directory::skills::on-change`  — fires after every successful
 //!   `directory::skills::download` that wrote at least one skill
-//!   markdown file.
-//! - `directory::prompts::on-change` — fires after every successful
-//!   `directory::skills::download` that wrote at least one prompt
-//!   markdown file.
+//!   markdown file, or a `directory::skills::update`, `create`, or
+//!   `delete`. External edits under the read-only `agents_skills_folder`
+//!   also fire it via the fs watcher (doorbell only — the worker never
+//!   writes there).
+//! - `directory::system-prompts::on-change` — fires after every
+//!   successful `directory::skills::download` that wrote at least one
+//!   system prompt, a `directory::system-prompts::update`, or a
+//!   `directory::system-prompts::create` / `delete`.
+//! - `directory::agents::on-change` — fires after every successful
+//!   download or direct create, update, delete, or external edit of an
+//!   agent profile.
 //!
 //! The `mcp` worker (and any other interested subscriber) registers a
 //! trigger instance of these types via
-//! `iii.register_trigger(RegisterTriggerInput { trigger_type: "directory::skills::on-change", ... })`.
+//! `iii.register_trigger(RegisterTriggerInput::new("directory::skills::on-change", ...))`.
 //! The engine routes that registration through our
 //! [`SkillsTriggerHandler`] which stashes the subscriber in
 //! [`SubscriberSet`]. When a download lands, the `functions::download`
@@ -33,7 +40,8 @@ use iii_sdk::{IIIClient, RegisterTriggerType, TriggerAction};
 use serde_json::Value;
 
 pub const SKILLS_ON_CHANGE: &str = "directory::skills::on-change";
-pub const PROMPTS_ON_CHANGE: &str = "directory::prompts::on-change";
+pub const SYSTEM_PROMPTS_ON_CHANGE: &str = "directory::system-prompts::on-change";
+pub const AGENTS_ON_CHANGE: &str = "directory::agents::on-change";
 
 /// Thread-safe subscriber registry keyed by trigger-instance id. Cloned
 /// into both the `TriggerHandler` (which mutates on register /
@@ -66,14 +74,16 @@ impl SubscriberSet {
         map.remove(id);
     }
 
-    /// Snapshot of the current subscribers as a Vec of `function_id`s.
+    /// Snapshot of the current subscribers and their target namespaces.
     /// Returns a snapshot so the mutex isn't held across awaits.
-    pub fn function_ids(&self) -> Vec<String> {
+    pub fn targets(&self) -> Vec<(String, Option<String>)> {
         let map = self
             .inner
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        map.values().map(|c| c.function_id.clone()).collect()
+        map.values()
+            .map(|c| (c.function_id.clone(), c.namespace.clone()))
+            .collect()
     }
 }
 
@@ -83,18 +93,18 @@ impl SubscriberSet {
 /// because a slow / misbehaving subscriber must not break the write
 /// path.
 pub async fn dispatch(iii: &IIIClient, subscribers: &SubscriberSet, payload: Value) {
-    let targets = subscribers.function_ids();
-    for function_id in targets {
+    let targets = subscribers.targets();
+    for (function_id, namespace) in targets {
         let fid = function_id.clone();
         let payload_copy = payload.clone();
-        let res = iii
-            .trigger(TriggerRequest {
-                function_id: fid,
-                payload: payload_copy,
-                action: Some(TriggerAction::Void),
-                timeout_ms: None,
-            })
-            .await;
+        let request = TriggerRequest {
+            function_id: fid,
+            payload: payload_copy,
+            action: Some(TriggerAction::Void),
+            timeout_ms: None,
+        };
+        let namespace = namespace.as_deref().unwrap_or("default");
+        let res = iii.trigger(request.namespace(namespace)).await;
         if let Err(e) = res {
             tracing::warn!(
                 function_id = %function_id,
@@ -107,28 +117,55 @@ pub async fn dispatch(iii: &IIIClient, subscribers: &SubscriberSet, payload: Val
 
 pub struct RegisteredTriggerTypes {
     pub skills: SubscriberSet,
-    pub prompts: SubscriberSet,
+    pub system_prompts: SubscriberSet,
+    pub agents: SubscriberSet,
 }
 
 pub fn register_all(iii: &Arc<IIIClient>) -> RegisteredTriggerTypes {
     let skills = SubscriberSet::new();
-    let prompts = SubscriberSet::new();
-
     let _ = iii.register_trigger_type(RegisterTriggerType::new(
         SKILLS_ON_CHANGE.to_string(),
-        "Fires after every successful directory::skills::download that wrote at least one skill markdown file.".to_string(),
+        "Fires after a directory::skills::download that wrote at least one skill markdown file, \
+         or a directory::skills::update, create, or delete. Also fires with { op: \"external\" } \
+         when a watched skills root changes on disk outside this worker — including the \
+         read-only agents skills root, when that root exists at startup."
+            .to_string(),
         SkillsTriggerHandler::new(SKILLS_ON_CHANGE, skills.clone()),
     ));
     tracing::info!(trigger_type = SKILLS_ON_CHANGE, "registered trigger type");
 
+    let system_prompts = SubscriberSet::new();
     let _ = iii.register_trigger_type(RegisterTriggerType::new(
-        PROMPTS_ON_CHANGE.to_string(),
-        "Fires after every successful directory::skills::download that wrote at least one prompt markdown file.".to_string(),
-        SkillsTriggerHandler::new(PROMPTS_ON_CHANGE, prompts.clone()),
+        SYSTEM_PROMPTS_ON_CHANGE.to_string(),
+        "Fires after a directory::skills::download that wrote at least one system prompt, or a \
+         directory::system-prompts::update, create, or delete. Also fires with \
+         { op: \"external\" } when a watched system-prompts root changes on disk outside \
+         this worker."
+            .to_string(),
+        SkillsTriggerHandler::new(SYSTEM_PROMPTS_ON_CHANGE, system_prompts.clone()),
     ));
-    tracing::info!(trigger_type = PROMPTS_ON_CHANGE, "registered trigger type");
+    tracing::info!(
+        trigger_type = SYSTEM_PROMPTS_ON_CHANGE,
+        "registered trigger type"
+    );
 
-    RegisteredTriggerTypes { skills, prompts }
+    let agents = SubscriberSet::new();
+    let _ = iii.register_trigger_type(RegisterTriggerType::new(
+        AGENTS_ON_CHANGE.to_string(),
+        "Fires after a directory::skills::download that wrote at least one agent profile, \
+         or a directory::agents::update, create, or delete. Also fires with \
+         { op: \"external\" } when a watched agents file changes on disk outside this \
+         worker."
+            .to_string(),
+        SkillsTriggerHandler::new(AGENTS_ON_CHANGE, agents.clone()),
+    ));
+    tracing::info!(trigger_type = AGENTS_ON_CHANGE, "registered trigger type");
+
+    RegisteredTriggerTypes {
+        skills,
+        system_prompts,
+        agents,
+    }
 }
 
 struct SkillsTriggerHandler {
@@ -180,26 +217,32 @@ mod tests {
             function_id: function_id.to_string(),
             config: json!({}),
             metadata: None,
+            namespace: None,
         }
     }
 
     #[test]
     fn subscriber_set_insert_and_remove() {
         let set = SubscriberSet::new();
-        assert!(set.function_ids().is_empty());
-        set.insert(make_config("sub-1", "mcp::__on_skills_changed"));
+        assert!(set.targets().is_empty());
+        let mut namespaced = make_config("sub-1", "mcp::__on_skills_changed");
+        namespaced.namespace = Some("project-a".into());
+        set.insert(namespaced);
         set.insert(make_config("sub-2", "other::receiver"));
-        let mut fns = set.function_ids();
-        fns.sort();
+        let mut targets = set.targets();
+        targets.sort();
         assert_eq!(
-            fns,
+            targets,
             vec![
-                "mcp::__on_skills_changed".to_string(),
-                "other::receiver".to_string()
+                (
+                    "mcp::__on_skills_changed".to_string(),
+                    Some("project-a".to_string())
+                ),
+                ("other::receiver".to_string(), None)
             ]
         );
         set.remove("sub-1");
-        assert_eq!(set.function_ids(), vec!["other::receiver".to_string()]);
+        assert_eq!(set.targets(), vec![("other::receiver".to_string(), None)]);
     }
 
     #[test]
@@ -207,6 +250,6 @@ mod tests {
         let set = SubscriberSet::new();
         set.insert(make_config("sub-1", "a"));
         set.insert(make_config("sub-1", "b"));
-        assert_eq!(set.function_ids(), vec!["b".to_string()]);
+        assert_eq!(set.targets(), vec![("b".to_string(), None)]);
     }
 }

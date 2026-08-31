@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { StoredSpan } from '../api/traces'
 import {
   isPendingSpan,
-  mergeDetailSpan,
   toWaterfallData,
 } from './traceTransform'
 
@@ -78,25 +77,5 @@ describe('toWaterfallData with pending spans', () => {
     const wf = toWaterfallData([span()], 't-1')
     expect(wf?.spans[0]?.pending).toBe(false)
     expect(wf?.spans[0]?.duration_ms).toBe(1_000)
-  })
-})
-
-describe('mergeDetailSpan', () => {
-  it('lets finals replace pendings, and last-write-wins otherwise', () => {
-    const spans = new Map<string, StoredSpan>()
-    mergeDetailSpan(spans, pendingSpan())
-    expect(spans.get('s-1')?.pending).toBe(true)
-
-    mergeDetailSpan(spans, span())
-    expect(spans.get('s-1')?.pending).toBeUndefined()
-    expect(spans.get('s-1')?.end_time_unix_nano).toBeGreaterThan(0)
-  })
-
-  it('never regresses a final back to a stale pending frame', () => {
-    const spans = new Map<string, StoredSpan>()
-    mergeDetailSpan(spans, span())
-    mergeDetailSpan(spans, pendingSpan())
-    expect(spans.get('s-1')?.pending).toBeUndefined()
-    expect(spans.get('s-1')?.end_time_unix_nano).toBeGreaterThan(0)
   })
 })

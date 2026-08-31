@@ -107,9 +107,35 @@ async fn main() -> Result<()> {
         .map_err(anyhow::Error::msg)
         .context("binding configuration trigger")?;
 
-    tokio::signal::ctrl_c().await?;
+    wait_for_shutdown_signal().await?;
     tracing::info!("iii-state shutting down");
-    boot.shutdown().await;
+    // Disconnect BEFORE flushing. `shutdown_async` clears the SDK's `running`
+    // flag, which stops its receive loop from dispatching further
+    // invocations — so no request accepted after this point can mutate the
+    // store behind the flush and be lost. Flush and destroy touch only local
+    // state and disk, never the engine, so they are safe on a closed
+    // connection. Requests already executing when the signal lands are still
+    // a race the SDK gives us no way to await; only a full admission gate
+    // with in-flight tracking would close it.
     iii.shutdown_async().await;
+    boot.shutdown().await;
     Ok(())
+}
+
+/// Ctrl+C or SIGTERM — workers-dev stops workers with SIGTERM (then SIGKILL
+/// after ~1s), so SIGTERM must reach the shutdown flush too.
+async fn wait_for_shutdown_signal() -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut sigterm = signal(SignalKind::terminate())?;
+        tokio::select! {
+            r = tokio::signal::ctrl_c() => r,
+            _ = sigterm.recv() => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await
+    }
 }

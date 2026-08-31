@@ -5,6 +5,7 @@
 use crate::errors::classify;
 use crate::wire::names::decode_tool_name;
 use crate::{now_ms, PROVIDER_ID};
+use llm_router::provider_scaffold::sse_transport::{arguments_incomplete, StreamEndView};
 use llm_router::types::content::ContentBlock;
 use llm_router::types::events::{AssistantMessageEvent, ErrorKind, StopReason, Usage};
 use llm_router::types::messages::{AssistantMessage, AssistantRoleTag};
@@ -143,6 +144,29 @@ fn build_content(state: &PartialState) -> Vec<ContentBlock> {
         push_block_content(&mut out, state, kind, idx);
     }
     out
+}
+
+impl StreamEndView for PartialState {
+    fn saw_terminator(&self) -> bool {
+        self.saw_message_stop
+    }
+
+    fn has_content(&self) -> bool {
+        !self.text_blocks.is_empty()
+            || !self.thinking_blocks.is_empty()
+            || !self.redacted_blocks.is_empty()
+            || !self.function_calls.is_empty()
+    }
+
+    fn has_unfinished_call(&self) -> bool {
+        self.block_slots
+            .iter()
+            .any(|slot| matches!(slot, Some(BlockSlot::ToolUse(_))))
+            || self
+                .function_calls
+                .iter()
+                .any(|tc| arguments_incomplete(&tc.args_json))
+    }
 }
 
 pub fn build_partial(state: &PartialState, model: &str) -> AssistantMessage {
@@ -358,6 +382,7 @@ pub fn handle_sse_event(
                         partial: None,
                         delta: json.to_string(),
                         id: state.function_calls[idx].id.clone(),
+                        arguments_preview: None,
                     });
                 }
                 Some(BlockSlot::Thinking(idx)) if delta_type == "thinking_delta" => {
@@ -658,6 +683,24 @@ mod tests {
         let usage = build_partial(&state, "claude-test").usage.unwrap();
         assert_eq!(usage.input, Some(25));
         assert_eq!(usage.output, Some(312));
+    }
+
+    #[test]
+    fn cache_usage_fields_are_preserved_separately_from_input() {
+        let mut usage = Usage::default();
+        merge_usage(
+            &serde_json::json!({
+                "input_tokens": 7,
+                "cache_read_input_tokens": 11,
+                "cache_creation_input_tokens": 13,
+                "output_tokens": 17,
+            }),
+            &mut usage,
+        );
+        assert_eq!(usage.input, Some(7));
+        assert_eq!(usage.cache_read, Some(11));
+        assert_eq!(usage.cache_write, Some(13));
+        assert_eq!(usage.output, Some(17));
     }
 
     #[test]

@@ -56,7 +56,7 @@ function FilterSection({
           onSelect={(e) => e.preventDefault()}
           // Checked here means HIDDEN — the eye-off reads that state
           // better than a checkmark would.
-          indicator={<EyeOff aria-hidden className="h-3 w-3" />}
+          indicator={<EyeOff aria-hidden className="size-4" />}
           title={
             hiddenKeys.has(group.key)
               ? `hidden — click to show ${group.key}`
@@ -169,14 +169,14 @@ export function SpanFilterMenu({
           onPointerEnter={openNow}
           onPointerLeave={scheduleClose}
           className={cn(
-            'flex items-center gap-1 border px-1.5 py-1 font-mono text-[10px] lowercase backdrop-blur-sm transition-colors',
+            'flex items-center gap-1 rounded-sm px-1.5 py-1 font-mono text-[10px] lowercase backdrop-blur-sm transition-colors',
             filtering
-              ? 'border-accent bg-panel text-accent'
-              : 'border-rule bg-bg/90 text-ink-faint hover:text-ink',
+              ? 'bg-surface-selected text-ink'
+              : 'bg-surface-active text-ink-faint hover:text-ink',
             className,
           )}
         >
-          <Funnel className="h-3 w-3" />
+          <Funnel className="size-4" />
           {filtering && <span className="tabular-nums">{hiddenSpanCount}</span>}
         </button>
       </DropdownMenuTrigger>

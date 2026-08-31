@@ -27,7 +27,7 @@ in-process, honor `fs.host_roots` when it's configured, and return
 structured results.
 
 Sandbox forwarding (and `shell::fs::*` into a VM) requires the `iii-sandbox`
-worker; `iii worker add shell` does not pull it in. To surface `shell::*` to LLM
+worker; `iii trigger compose::add worker=shell` does not pull it in. To surface `shell::*` to LLM
 agents, pair with the `skills` worker.
 
 ## When to Use
@@ -114,6 +114,19 @@ agents, pair with the `skills` worker.
 Every `shell::fs::*` call accepts the same optional `target` as `exec`, so host
 and sandbox share one wire shape; reads and writes move bytes over SDK channels
 rather than inlining them.
+
+## Live change feed (`shell::changed`)
+
+A custom trigger type backed by a system-level directory watch. Bind it
+with `config: { path: "/some/dir" }` to stream every change under that
+directory — whoever made it: `coder::*` calls, `shell::exec` side
+effects, or an editor outside the engine. Payload:
+`{ path, kind, root, dir }` with `kind` ∈ `created | modified | deleted`,
+`path` relative to `root`, `dir` true for directories (skip those when
+opening files). Events coalesce per path in a short window
+(create + write = `created`; deletion supersedes), `.git` internals are
+filtered, and fan-out is fire-and-forget. Read content on demand via
+`coder::read-file` — the event deliberately carries none.
 
 ## Code files (`coder::*`)
 

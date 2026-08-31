@@ -20,20 +20,68 @@ type Probe<T> =
   | { status: 'denied'; reason: string }
 
 const INTERVALS = [
-  { value: '0', label: 'manual' },
-  { value: '5', label: 'every 5s' },
-  { value: '15', label: 'every 15s' },
-  { value: '60', label: 'every 60s' },
+  { value: '0', label: 'Manual' },
+  { value: '5', label: 'Every 5s' },
+  { value: '15', label: 'Every 15s' },
+  { value: '60', label: 'Every 60s' },
 ]
 
-export function HealthPanel({ host, db }: { host: Host; db: string }) {
+const DRIVER_LABELS: Readonly<Record<string, string>> = {
+  mysql: 'MySQL',
+  postgres: 'PostgreSQL',
+  postgresql: 'PostgreSQL',
+  sqlite: 'SQLite',
+}
+
+function driverLabel(driver: string) {
+  return DRIVER_LABELS[driver.toLowerCase()] ?? driver
+}
+
+function intervalKey(db: string): string {
+  return `iii-console:database:health-interval:${db}`
+}
+
+export function HealthPanel({
+  host,
+  db,
+  refreshToken,
+}: {
+  host: Host
+  db: string
+  /** Bumped by the page's refresh — the header button must reach this tab
+      too, not silently no-op on it. */
+  refreshToken?: number
+}) {
   const [nonce, setNonce] = useState(0)
-  const [every, setEvery] = useState('0')
+  // The cadence you picked survives leaving the tab (the panel itself
+  // remounts by design — it is a fresh-read view).
+  const [every, setEveryState] = useState(() => {
+    try {
+      const stored = window.localStorage.getItem(intervalKey(db))
+      return stored && INTERVALS.some((i) => i.value === stored) ? stored : '0'
+    } catch {
+      return '0'
+    }
+  })
+  const setEvery = (next: string) => {
+    setEveryState(next)
+    try {
+      window.localStorage.setItem(intervalKey(db), next)
+    } catch {
+      // the cadence is a convenience, not state
+    }
+  }
   const fetcher = useCallback(() => {
     void nonce
+    void refreshToken
     return health(host, db)
-  }, [host, db, nonce])
+  }, [host, db, nonce, refreshToken])
   const read = useDatabaseRead(true, fetcher)
+  // When the report was read, so a stale card never poses as current.
+  const [asOf, setAsOf] = useState<Date | null>(null)
+  useEffect(() => {
+    if (read.data) setAsOf(new Date())
+  }, [read.data])
 
   const refresh = useCallback(() => setNonce((n) => n + 1), [])
 
@@ -49,85 +97,134 @@ export function HealthPanel({ host, db }: { host: Host; db: string }) {
       <StatusPanel
         variant="alert"
         icon={<AlertCircle size={18} />}
-        headline="could not read connection health"
+        headline="Could not read connection health"
         detail={read.error}
       />
     )
   }
   if (!read.data) {
-    return <div className="db-msg db-pulse">· probing the connection…</div>
+    return <div className="db-msg db-pulse">Probing the connection…</div>
   }
 
   const h: HealthReport = read.data
   const pool = h.pool
-  const inUse = pool.size != null && pool.idle != null ? pool.size - pool.idle : null
+  const inUse =
+    pool.size != null && pool.idle != null ? pool.size - pool.idle : null
 
   return (
     <div className="db-health">
-      <div className="db-health-bar">
-        <span className="db-health-driver">{h.driver}</span>
-        <span className="db-health-ver">worker {h.worker_version}</span>
-        <div className="db-erd-spacer" />
-        <Select value={every} onChange={setEvery} options={INTERVALS} aria-label="refresh interval" />
-        <Button variant="ghost" size="sm" onClick={refresh} disabled={read.loading}>
-          <RefreshCw size={13} aria-hidden />
-          refresh
+      <div className="db-health-bar db-toolbar">
+        <span className="db-health-driver">{driverLabel(h.driver)}</span>
+        <span className="db-health-ver">Worker {h.worker_version}</span>
+        {asOf ? (
+          <span className="db-health-asof">
+            As of{' '}
+            {asOf.toLocaleTimeString([], {
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+            })}
+          </span>
+        ) : null}
+        <div className="db-toolbar-spacer" />
+        <Select
+          value={every}
+          onChange={setEvery}
+          options={INTERVALS}
+          aria-label="refresh interval"
+        />
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={refresh}
+          disabled={read.loading}
+        >
+          <RefreshCw size={16} aria-hidden />
+          Refresh
         </Button>
       </div>
 
-      <div className="db-health-cards">
-        <Card title="pool">
+      <div className={`db-health-cards${read.loading ? ' stale' : ''}`}>
+        <Card title="Pool">
           <dl className="db-kv">
-            <Stat label="max" value={pool.max} />
-            <Stat label="open" value={pool.size} />
-            <Stat label="idle" value={pool.idle} />
-            <Stat label="in use" value={inUse} />
-            <Stat label="waiting" value={pool.waiting} />
+            <Stat label="Max" value={pool.max} />
+            <Stat label="Open" value={pool.size} />
+            <Stat label="Idle" value={pool.idle} />
+            <Stat label="In use" value={inUse} />
+            <Stat label="Waiting" value={pool.waiting} />
           </dl>
           {pool.waiting != null && pool.waiting > 0 ? (
             <p className="db-health-note warn">
-              {pool.waiting} caller{pool.waiting === 1 ? '' : 's'} waiting for a connection.
+              {pool.waiting} caller{pool.waiting === 1 ? '' : 's'} waiting for a
+              connection.
             </p>
           ) : null}
         </Card>
 
-        <Card title="active queries">
+        <Card title="Active queries">
           <ProbeBody
             probe={h.active_queries as Probe<HealthQuery[]>}
-            empty="no queries are running."
-            render={(rows: HealthQuery[]) => (
-              <ul className="db-health-list">
-                {rows.map((q) => (
-                  <li key={q.id} className="db-health-query">
-                    <div className="db-health-query-head">
-                      <span className="db-health-id">{q.id}</span>
-                      {q.state ? <span className="db-health-state">{q.state}</span> : null}
-                      {q.duration_ms != null ? <span className="db-num">{formatMs(q.duration_ms)}</span> : null}
-                      {q.user ? <span className="db-health-user">{q.user}</span> : null}
-                    </div>
-                    <code className="db-health-sql" title={q.sql}>
-                      {q.sql}
-                    </code>
-                  </li>
-                ))}
-              </ul>
-            )}
+            empty="No queries are running."
+            render={(rows: HealthQuery[]) => {
+              // MySQL's processlist includes replication daemons that sit
+              // "running" for the server's whole uptime. Billing them as
+              // active queries reads as an alarm — show them (honest), but
+              // name them and sort them after the real work.
+              const daemons = rows.filter(isReplication)
+              const real = rows.filter((q) => !isReplication(q))
+              return (
+                <ul className="db-health-list">
+                  {[...real, ...daemons].map((q) => (
+                    <li
+                      key={q.id}
+                      className={`db-health-query${isReplication(q) ? ' daemon' : ''}`}
+                    >
+                      <div className="db-health-query-head">
+                        <span className="db-health-id">{q.id}</span>
+                        {isReplication(q) ? (
+                          <span className="db-health-daemon">Replication</span>
+                        ) : null}
+                        {q.state ? (
+                          <span className="db-health-state">{q.state}</span>
+                        ) : null}
+                        {q.duration_ms != null ? (
+                          <span className="db-num">
+                            {formatMs(q.duration_ms)}
+                          </span>
+                        ) : null}
+                        {q.user ? (
+                          <span className="db-health-user">{q.user}</span>
+                        ) : null}
+                      </div>
+                      <code className="db-health-sql" title={q.sql}>
+                        {q.sql}
+                      </code>
+                    </li>
+                  ))}
+                </ul>
+              )
+            }}
           />
         </Card>
 
-        <Card title="locks">
+        <Card title="Locks">
           <ProbeBody
             probe={h.locks as never}
-            empty="nothing is blocked."
+            empty="Nothing is blocked."
             render={(rows: HealthLock[]) => (
               <ul className="db-health-list">
                 {rows.map((l) => (
-                  <li key={`${l.blocked_id}-${l.blocking_id}`} className="db-health-lock">
+                  <li
+                    key={`${l.blocked_id}-${l.blocking_id}`}
+                    className="db-health-lock"
+                  >
                     <div className="db-health-query-head">
                       <span className="db-health-id">{l.blocked_id}</span>
-                      <span className="db-health-blocked">blocked by</span>
+                      <span className="db-health-blocked">Blocked by</span>
                       <span className="db-health-id">{l.blocking_id}</span>
-                      {l.relation ? <span className="db-health-rel">{l.relation}</span> : null}
+                      {l.relation ? (
+                        <span className="db-health-rel">{l.relation}</span>
+                      ) : null}
                     </div>
                     <code className="db-health-sql" title={l.blocked_sql}>
                       {l.blocked_sql}
@@ -139,37 +236,40 @@ export function HealthPanel({ host, db }: { host: Host; db: string }) {
           />
         </Card>
 
-        <Card title="cache">
+        <Card title="Cache">
           <ProbeBody
             probe={h.cache as never}
-            empty="no cache statistics."
+            empty="No cache statistics."
             render={(c: HealthCache) => (
               <>
-                <Bar label="hit ratio" ratio={c.hit_ratio} />
+                <Bar label="Hit ratio" ratio={c.hit_ratio} />
                 <dl className="db-kv">
-                  <Stat label="blocks hit" value={c.blocks_hit} />
-                  <Stat label="blocks read" value={c.blocks_read} />
+                  <Stat label="Blocks hit" value={c.blocks_hit} />
+                  <Stat label="Blocks read" value={c.blocks_read} />
                 </dl>
               </>
             )}
           />
         </Card>
 
-        <Card title="table sizes" wide>
+        <Card title="Table sizes" wide>
           <ProbeBody
             probe={h.table_sizes as never}
-            empty="no tables."
+            empty="No tables."
             render={(rows: HealthTableSize[]) => {
-              const largest = Math.max(...rows.map((r) => r.total_bytes ?? 0), 1)
+              const largest = Math.max(
+                ...rows.map((r) => r.total_bytes ?? 0),
+                1,
+              )
               return (
                 <table className="db-health-table">
                   <thead>
                     <tr>
-                      <th>table</th>
-                      <th className="num">rows</th>
-                      <th className="num">indexes</th>
-                      <th className="num">total</th>
-                      <th className="share">share</th>
+                      <th>Table</th>
+                      <th className="num">Rows</th>
+                      <th className="num">Indexes</th>
+                      <th className="num">Total</th>
+                      <th className="share">Share</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -183,7 +283,9 @@ export function HealthPanel({ host, db }: { host: Host; db: string }) {
                           <span className="db-track">
                             <span
                               className="db-track-fill"
-                              style={{ width: `${((r.total_bytes ?? 0) / largest) * 100}%` }}
+                              style={{
+                                width: `${((r.total_bytes ?? 0) / largest) * 100}%`,
+                              }}
                             />
                           </span>
                         </td>
@@ -207,8 +309,24 @@ type HealthQuery = {
   duration_ms?: number | null
   user?: string | null
 }
-type HealthLock = { blocked_id: string; blocked_sql: string; blocking_id: string; relation?: string | null }
-type HealthCache = { hit_ratio: number; blocks_hit: number; blocks_read: number }
+
+/** A replication/binlog daemon connection, not a query anyone ran. */
+function isReplication(q: HealthQuery): boolean {
+  return (
+    /binlog|replic/i.test(q.state ?? '') || /binlog dump/i.test(q.sql ?? '')
+  )
+}
+type HealthLock = {
+  blocked_id: string
+  blocked_sql: string
+  blocking_id: string
+  relation?: string | null
+}
+type HealthCache = {
+  hit_ratio: number
+  blocks_hit: number
+  blocks_read: number
+}
 type HealthTableSize = {
   table: string
   schema?: string | null
@@ -217,7 +335,15 @@ type HealthTableSize = {
   row_estimate?: number | null
 }
 
-function Card({ title, wide, children }: { title: string; wide?: boolean; children: React.ReactNode }) {
+function Card({
+  title,
+  wide,
+  children,
+}: {
+  title: string
+  wide?: boolean
+  children: React.ReactNode
+}) {
   return (
     <section className={`db-health-card${wide ? ' wide' : ''}`}>
       <h3>{title}</h3>
@@ -251,7 +377,13 @@ function ProbeBody<T>({
   return <>{render(probe.data)}</>
 }
 
-function Stat({ label, value }: { label: string; value: number | null | undefined }) {
+function Stat({
+  label,
+  value,
+}: {
+  label: string
+  value: number | null | undefined
+}) {
   return (
     <>
       <dt>{label}</dt>
@@ -291,5 +423,12 @@ function formatCount(n: number | null | undefined): string {
 
 function formatMs(ms: number): string {
   if (ms < 1000) return `${Math.round(ms)}ms`
-  return `${(ms / 1000).toFixed(1)}s`
+  const s = ms / 1000
+  // Roll up: "13233.0s" is a number you have to do arithmetic on; "3h 40m"
+  // is a fact.
+  if (s < 120) return `${s.toFixed(1)}s`
+  const m = Math.floor(s / 60)
+  if (m < 120) return `${m}m ${Math.round(s % 60)}s`
+  const h = Math.floor(m / 60)
+  return `${h}h ${m % 60}m`
 }

@@ -2,7 +2,7 @@
 
 [package]
 name = "devin"
-version = "0.1.4"
+version = "0.1.6"
 edition = "2021"
 publish = false
 
@@ -15,8 +15,8 @@ name = "devin"
 path = "src/lib.rs"
 
 [dependencies]
-iii-sdk = "=0.21.6"
-iii-helpers = "=0.21.6"
+iii-sdk = "=0.22.1-alpha.25"
+iii-helpers = "=0.22.1-alpha.25"
 schemars = { version = "0.8", features = ["uuid1"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "process", "time", "io-util"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

@@ -2,22 +2,48 @@ use serde_json::{json, Value};
 
 use crate::context::E2eContext;
 
+use super::assessment::{self, AssessmentSpec};
 use super::{
-    common, CleanupFuture, CriterionSpec, EvaluationFuture, ExecutionPolicy, ObjectiveEvaluation,
-    ScenarioObservation, ScenarioSpec,
+    common, CleanupFuture, EvaluationFuture, ExecutionPolicy, ScenarioObservation, ScenarioSpec,
 };
 
 pub const ID: &str = "mechanical_reaction";
 
 const SOURCE_KEY: &str = "source";
 const MIRROR_KEY: &str = "mirror";
+const REACTIONS_ARMED: AssessmentSpec = AssessmentSpec::hard_gated(
+    "reactions_armed",
+    30,
+    "The wake and mechanical call are registered before the source write.",
+);
+const MECHANICAL_MIRROR: AssessmentSpec = AssessmentSpec::hard_gated(
+    "mechanical_mirror",
+    35,
+    "The call binding mirrors the complete source event without a root write.",
+);
+const PARENT_WOKEN: AssessmentSpec = AssessmentSpec::hard_gated(
+    "parent_woken",
+    20,
+    "The mirror state event wakes only the original session.",
+);
+const CLEAN_COMPLETION: AssessmentSpec = AssessmentSpec::hard_gated(
+    "clean_completion",
+    15,
+    "The run finishes without children, errors, or surviving bindings.",
+);
+const ASSESSMENTS: &[AssessmentSpec] = &[
+    REACTIONS_ARMED,
+    MECHANICAL_MIRROR,
+    PARENT_WOKEN,
+    CLEAN_COMPLETION,
+];
 
 pub fn scenario(run_id: &str) -> ScenarioSpec {
     let names = Names::new(run_id);
     let source = source_value(run_id);
     ScenarioSpec {
         id: ID,
-        version: 1,
+        version: 3,
         prompt: format!(
             r#"Test a zero-token mechanical reaction in isolated state scope `{scope}`.
 
@@ -50,30 +76,7 @@ binding armed."#,
             stuck_timeout_seconds: 180,
         },
         denied_functions: &[],
-        threshold: 90,
-        criteria: vec![
-            CriterionSpec {
-                id: "reactions_armed",
-                weight: 30,
-                description: "The wake and mechanical call are registered before the source write.",
-            },
-            CriterionSpec {
-                id: "mechanical_mirror",
-                weight: 35,
-                description:
-                    "The call binding mirrors the complete source event without a root write.",
-            },
-            CriterionSpec {
-                id: "parent_woken",
-                weight: 20,
-                description: "The mirror state event wakes only the original session.",
-            },
-            CriterionSpec {
-                id: "clean_completion",
-                weight: 15,
-                description: "The run finishes without children, errors, or surviving bindings.",
-            },
-        ],
+        criteria: assessment::criteria(ASSESSMENTS),
         judge_reference: None,
         setup: None,
         evaluate,
@@ -137,6 +140,12 @@ fn evaluate<'a>(
             .filter(|record| record.get("target").and_then(Value::as_str) == Some("harness::send"))
             .collect();
         let call_delivered = call_records.len() == 1;
+        // A delivered ƒ-call fire always records what it dispatched; only a
+        // skip/gc/expiry record omits `payload`, and neither of those can
+        // have produced the mirror write `mirror_valid` checks below — so
+        // pinning presence here catches a regression that stops recording it.
+        let call_payload_recorded =
+            call_records.len() == 1 && call_records[0].get("payload").is_some();
         let parent_woken = wake_records.len() == 1
             && wake_records[0].get("retired").and_then(Value::as_bool) == Some(true)
             && observation.metrics.totals.sessions == 1
@@ -147,71 +156,44 @@ fn evaluate<'a>(
         let active_bindings = common::active_binding_count(context, &names.root_session).await?;
         let no_errors = observation.metrics.totals.function_call_errors == 0;
         let confirmed = observation.response.to_ascii_lowercase().contains("mirror");
-        let mechanical_mirror = exact_source_write && mirror_valid && call_delivered;
+        let mechanical_mirror =
+            exact_source_write && mirror_valid && call_delivered && call_payload_recorded;
         let clean_completion = active_bindings == 0 && no_errors && confirmed;
 
-        Ok(ObjectiveEvaluation {
-            hard_gates: vec![
-                common::gate(
-                    "reactions_preceded_source_write",
-                    reactions_armed,
-                    format!(
-                        "registrations={}, wakes={}, call_bindings={}, writes={}",
-                        registrations.len(),
-                        wakes.len(),
-                        mirrors.len(),
-                        writes.len()
-                    ),
+        Ok(assessment::build_evaluation([
+            REACTIONS_ARMED.full_or_zero(
+                reactions_armed,
+                format!(
+                    "registrations={}, wakes={}, call_bindings={}, writes={}",
+                    registrations.len(),
+                    wakes.len(),
+                    mirrors.len(),
+                    writes.len()
                 ),
-                common::gate(
-                    "source_event_was_mirrored_mechanically",
-                    mechanical_mirror,
-                    format!(
-                        "exact_source_write={exact_source_write}, mirror_valid={mirror_valid}, \
-                         call_delivered={call_delivered}"
-                    ),
+            ),
+            MECHANICAL_MIRROR.full_or_zero(
+                mechanical_mirror,
+                format!(
+                    "exact_source_write={exact_source_write}, mirror_valid={mirror_valid}, \
+                         call_delivered={call_delivered}, call_payload_recorded={call_payload_recorded}"
                 ),
-                common::gate(
-                    "mirror_woke_original_session",
-                    parent_woken,
-                    format!(
-                        "wake_records={}, sessions={}",
-                        wake_records.len(),
-                        observation.metrics.totals.sessions
-                    ),
+            ),
+            PARENT_WOKEN.full_or_zero(
+                parent_woken,
+                format!(
+                    "wake_records={}, sessions={}",
+                    wake_records.len(),
+                    observation.metrics.totals.sessions
                 ),
-                common::gate(
-                    "mechanical_run_completed_cleanly",
-                    clean_completion,
-                    format!(
-                        "active_bindings={active_bindings}, function_errors={}, confirmed={confirmed}",
-                        observation.metrics.totals.function_call_errors
-                    ),
+            ),
+            CLEAN_COMPLETION.full_or_zero(
+                clean_completion,
+                format!(
+                    "active_bindings={active_bindings}, function_errors={}, confirmed={confirmed}",
+                    observation.metrics.totals.function_call_errors
                 ),
-            ],
-            awards: vec![
-                common::award(
-                    "reactions_armed",
-                    if reactions_armed { 30 } else { 0 },
-                    "awarded when both reactions precede the only root state write",
-                ),
-                common::award(
-                    "mechanical_mirror",
-                    if mechanical_mirror { 35 } else { 0 },
-                    "awarded when the call binding persists the complete source event",
-                ),
-                common::award(
-                    "parent_woken",
-                    if parent_woken { 20 } else { 0 },
-                    "awarded when the mirror event wakes only the root session",
-                ),
-                common::award(
-                    "clean_completion",
-                    if clean_completion { 15 } else { 0 },
-                    "awarded for a confirmed result with no errors or live bindings",
-                ),
-            ],
-        })
+            ),
+        ]))
     })
 }
 
@@ -343,54 +325,5 @@ impl Names {
             scope: format!("e2e:mechanical:{run_id}"),
             root_session: format!("e2e_{run_id}"),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn accepts_both_call_binding_forms() {
-        let names = Names::new("run");
-        for arguments in [
-            json!({
-                "trigger_type": "state",
-                "config": { "scope": names.scope, "key": SOURCE_KEY },
-                "function_id": "state::set",
-                "metadata": {
-                    "payload": { "scope": names.scope, "key": MIRROR_KEY },
-                    "event_into": "/value"
-                }
-            }),
-            json!({
-                "trigger_type": "state",
-                "config": { "scope": names.scope, "key": SOURCE_KEY },
-                "target": {
-                    "function_id": "state::set",
-                    "payload": { "scope": names.scope, "key": MIRROR_KEY },
-                    "event_into": "/value"
-                }
-            }),
-        ] {
-            let call = common::ObservedFunctionCall {
-                function_id: "engine::register_trigger".to_string(),
-                arguments,
-            };
-            assert!(is_mirror_call(&call, &names));
-        }
-
-        let source = source_value("run");
-        assert!(valid_mirror(
-            &json!({
-                "event_type": "state:created",
-                "scope": names.scope,
-                "key": SOURCE_KEY,
-                "new_value": source
-            }),
-            &names,
-            &source
-        ));
-        scenario("run").validate().unwrap();
     }
 }

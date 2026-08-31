@@ -15,9 +15,9 @@ Slack as an iii worker. Two surfaces in one worker:
 
 ```bash
 # API surface only:
-iii worker add slack
+iii trigger compose::add worker=slack
 # For the bridge, also install the harness stack and console:
-iii worker add harness console
+iii trigger compose::add worker=harness worker=console
 ```
 
 ## Configure

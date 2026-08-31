@@ -26,7 +26,10 @@ export function ColumnStatsPanel({
   column: string
 }) {
   const [exact, setExact] = useState(false)
-  const fetcher = useCallback(() => columnStats(host, db, table, [column], exact), [host, db, table, column, exact])
+  const fetcher = useCallback(
+    () => columnStats(host, db, table, [column], exact),
+    [host, db, table, column, exact],
+  )
   const read = useDatabaseRead(true, fetcher)
 
   if (read.error) {
@@ -34,22 +37,24 @@ export function ColumnStatsPanel({
       <StatusPanel
         variant="alert"
         icon={<AlertCircle size={18} />}
-        headline="could not profile this column"
+        headline="Could not profile this column"
         detail={read.error}
       />
     )
   }
   if (!read.data) {
-    return <div className="db-msg db-pulse">· reading statistics…</div>
+    return <div className="db-msg db-pulse">Reading statistics…</div>
   }
 
   const stat: ColumnStat | undefined = read.data.columns[0]
   if (!stat) {
-    return <p className="db-msg">no statistics for this column.</p>
+    return <p className="db-msg">No statistics for this column.</p>
   }
 
   const total = stat.row_count ?? 0
-  const nullFrac = stat.null_fraction ?? (total > 0 && stat.null_count != null ? stat.null_count / total : null)
+  const nullFrac =
+    stat.null_fraction ??
+    (total > 0 && stat.null_count != null ? stat.null_count / total : null)
   const topMax = Math.max(...stat.top_values.map((v) => v.count), 1)
 
   return (
@@ -57,34 +62,48 @@ export function ColumnStatsPanel({
       <div className="db-stats-head">
         <span className="db-stats-col">{stat.name}</span>
         {stat.source === 'planner' ? (
-          <Badge variant="default" title="from statistics the database keeps for the planner; may be stale">
-            estimated · from planner statistics
+          <Badge
+            variant="default"
+            title="from statistics the database keeps for the planner; may be stale"
+          >
+            Estimated · From planner statistics
           </Badge>
         ) : (
-          <Badge variant="accent">measured</Badge>
+          <Badge variant="accent">Measured</Badge>
         )}
       </div>
 
       {stat.source === 'planner' ? (
-        <Button variant="ghost" size="sm" onClick={() => setExact(true)} disabled={read.loading}>
-          count exactly
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setExact(true)}
+          disabled={read.loading}
+        >
+          Count exactly
         </Button>
       ) : null}
 
       <dl className="db-kv">
-        <Row label="rows" value={fmt(stat.row_count)} />
-        <Row label="distinct" value={fmt(stat.distinct_count)} />
-        <Row label="nulls" value={fmt(stat.null_count)} />
-        <Row label="min" value={render(stat.min)} />
-        <Row label="max" value={render(stat.max)} />
-        <Row label="mean" value={stat.mean == null ? '—' : stat.mean.toFixed(3)} />
+        <Row label="Rows" value={fmt(stat.row_count)} />
+        <Row label="Distinct" value={fmt(stat.distinct_count)} />
+        <Row label="Nulls" value={fmt(stat.null_count)} />
+        <Row label="Min" value={render(stat.min)} />
+        <Row label="Max" value={render(stat.max)} />
+        <Row
+          label="Mean"
+          value={stat.mean == null ? '—' : stat.mean.toFixed(3)}
+        />
       </dl>
 
       {nullFrac != null ? (
         <div className="db-bar-row">
-          <span className="db-bar-label">null share</span>
+          <span className="db-bar-label">Null share</span>
           <span className="db-track">
-            <span className="db-track-fill" style={{ width: `${nullFrac * 100}%` }} />
+            <span
+              className="db-track-fill"
+              style={{ width: `${nullFrac * 100}%` }}
+            />
           </span>
           <span className="db-num">{(nullFrac * 100).toFixed(1)}%</span>
         </div>
@@ -92,7 +111,7 @@ export function ColumnStatsPanel({
 
       {stat.top_values.length > 0 ? (
         <>
-          <h4 className="db-stats-sub">most common</h4>
+          <h4 className="db-stats-sub">Most common</h4>
           <ul className="db-stats-top">
             {stat.top_values.map((v, i) => (
               <li key={`${i}-${String(v.value)}`}>
@@ -100,7 +119,10 @@ export function ColumnStatsPanel({
                   {render(v.value)}
                 </span>
                 <span className="db-track">
-                  <span className="db-track-fill" style={{ width: `${(v.count / topMax) * 100}%` }} />
+                  <span
+                    className="db-track-fill"
+                    style={{ width: `${(v.count / topMax) * 100}%` }}
+                  />
                 </span>
                 <span className="db-num">{v.count.toLocaleString()}</span>
               </li>

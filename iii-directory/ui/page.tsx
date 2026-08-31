@@ -5,10 +5,10 @@
  * is its own asset: ../styles.css ships over `console:style` as
  * iii-directory/styles.css.
  *
- * `setup(host)` composes the worker's three console contributions, one
+ * `setup(host)` composes the worker's four console contributions, one
  * module each:
  *
- * - src/page/             — the skills & prompts browser/editor (#/ext/directory)
+ * - src/page/             — the skills, system prompts & agents browser/editor
  * - src/configuration/    — custom form for the `iii-directory` configuration entry
  * - src/function-trigger/ — how directory::* function triggers render in chat/traces
  *
@@ -20,15 +20,37 @@ import type { Host } from '@iii-dev/console-ui'
 import { DirectoryConfigForm } from './src/configuration'
 import { createDirectoryTriggerRenderer } from './src/function-trigger'
 import { DirectoryPage } from './src/page'
+import { registerDirectoryPalette } from './src/page/palette'
+import { createSearchTriggerRenderer } from './src/search/search-card'
+
+/**
+ * The pre-generate hook's transcript annotations (`origin.directory`) stay
+ * in the durable data for traces and measurement but render nothing in
+ * chat: the null renderer SUPPRESSES the console's fallback summary row —
+ * without it every generation would print "directory · hint injected"/
+ * "directory · skipped" lines.
+ */
+function DirectoryPassLine() {
+  return null
+}
 
 export default function setup(host: Host) {
   host.pages.register({
     id: 'directory',
-    title: 'directory',
-    render: () => <DirectoryPage host={host} />,
+    title: 'Directory',
+    render: (props) => <DirectoryPage host={host} {...props} />,
   })
 
+  registerDirectoryPalette(host)
+
   host.functionTriggers.register(createDirectoryTriggerRenderer())
+  host.functionTriggers.register(createSearchTriggerRenderer())
 
   host.configForms.register('iii-directory', DirectoryConfigForm)
+
+  host.chat?.registerTranscriptRenderer?.({
+    id: 'directory',
+    render: DirectoryPassLine,
+  })
+
 }

@@ -5,8 +5,8 @@ Feature: directory::registry::workers::info (workers registry HTTP proxy)
       whose `worker` field carries name / description / version / repo /
       author / type / config / supported_targets / total_downloads /
       dependencies plus readme / functions / triggers.
-    * `GET {base}/w/{name}/skills?version=…` returns the skills + prompts
-      tree merged into the response as `skills_tree`.
+    * `GET {base}/w/{name}/skills?version=…` returns the skills tree
+      merged into the response as `skills_tree`.
   The OpenAPI uses `?version=` for both endpoints; tags (`latest`) and
   exact semvers share that wire param. The user-facing input still
   accepts `tag:` for ergonomics — the worker rewrites it to `?version=`.
@@ -56,15 +56,7 @@ Feature: directory::registry::workers::info (workers registry HTTP proxy)
       {
         "name": "resend",
         "version": "1.2.3",
-        "skills": [{ "path": "index.md", "content": "# resend" }],
-        "prompts": [
-          {
-            "name": "send-email",
-            "description": "Compose.",
-            "args_schema": { "type": "object" },
-            "content": "Compose body."
-          }
-        ]
+        "skills": [{ "path": "index.md", "content": "# resend" }]
       }
       """
     When I trigger directory::registry::workers::info with payload:
@@ -103,7 +95,7 @@ Feature: directory::registry::workers::info (workers registry HTTP proxy)
       """
     And a wiremock registry serving worker skills "resend" at version "latest" with body:
       """
-      { "name": "resend", "version": "1.2.3", "skills": [], "prompts": [] }
+      { "name": "resend", "version": "1.2.3", "skills": [] }
       """
     When I trigger directory::registry::workers::info with payload:
       """
@@ -158,7 +150,7 @@ Feature: directory::registry::workers::info (workers registry HTTP proxy)
       """
     And a wiremock registry serving worker skills "cached" at version "latest" with body:
       """
-      { "name": "cached", "version": "1.0.0", "skills": [], "prompts": [] }
+      { "name": "cached", "version": "1.0.0", "skills": [] }
       """
     When I trigger directory::registry::workers::info with payload:
       """

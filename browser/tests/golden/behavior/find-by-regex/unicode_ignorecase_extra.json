@@ -1,0 +1,21 @@
+{
+  "function": "browser::find-by-regex",
+  "case": "unicode_ignorecase_extra",
+  "request": {
+    "html": "<p>Kelvin</p>",
+    "pattern": "kelvin"
+  },
+  "ok": {
+    "count": 1,
+    "items": [
+      {
+        "tag": "p",
+        "text": "Kelvin",
+        "html": "<p>Kelvin</p>",
+        "attrs": {},
+        "css": "body > p",
+        "xpath": "//body/p"
+      }
+    ]
+  }
+}

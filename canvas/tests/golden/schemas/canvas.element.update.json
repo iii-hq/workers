@@ -1,0 +1,50 @@
+{
+  "description": "Merge properties into one element of a freeform canvas by element id (move it, recolor it, change its text). Unknown ids error and name the canvas. The open console canvas streams the change live.",
+  "function_id": "canvas::element::update",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "element_id": {
+        "description": "Element id to update (from element::add or element::list).",
+        "type": "string"
+      },
+      "id": {
+        "description": "Stable 8-character canvas id (format must be freeform).",
+        "type": "string"
+      },
+      "props": {
+        "additionalProperties": true,
+        "description": "Properties to merge into the element. `null` values remove the key.",
+        "type": "object"
+      }
+    },
+    "required": [
+      "element_id",
+      "id",
+      "props"
+    ],
+    "title": "UpdateRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "element": {
+        "description": "The element after the merge."
+      },
+      "element_id": {
+        "type": "string"
+      },
+      "id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "element",
+      "element_id",
+      "id"
+    ],
+    "title": "UpdateResponse",
+    "type": "object"
+  }
+}

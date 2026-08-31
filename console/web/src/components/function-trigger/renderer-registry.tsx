@@ -11,22 +11,22 @@
 
 import { useMemo } from 'react'
 import { CoderFunctionIdLabel, CoderToolView } from '@/components/chat/coder'
-import { EngineFunctionIdLabel, EngineToolView } from '@/components/chat/engine'
+import {
+  EngineFunctionIdLabel,
+  EngineRegisterTriggerToolView,
+  EngineToolView,
+} from '@/components/chat/engine'
 import { FpFunctionIdLabel, FpToolView } from '@/components/chat/fp'
 import {
   HarnessFunctionIdLabel,
+  HarnessSpawnToolView,
   HarnessToolView,
 } from '@/components/chat/harness'
 import { RouterFunctionIdLabel, RouterToolView } from '@/components/chat/router'
 import {
-  SandboxFunctionIdLabel,
-  SandboxToolView,
-} from '@/components/chat/sandbox'
-import {
   ScraplingFunctionIdLabel,
   ScraplingToolView,
 } from '@/components/chat/scrapling'
-import { ShellFunctionIdLabel, ShellToolView } from '@/components/chat/shell'
 import { StateFunctionIdLabel, StateToolView } from '@/components/chat/state'
 import { WebFunctionIdLabel, WebToolView } from '@/components/chat/web'
 import { WorkerFunctionIdLabel, WorkerToolView } from '@/components/chat/worker'
@@ -40,19 +40,22 @@ import type { FunctionTriggerMessage } from '@/types/chat'
 import type { FunctionTriggerRenderer } from '@/types/injectable-ui'
 
 /**
- * The first-party families (11 since directory and browser moved into their
- * workers' injected UI), in the exact order of the old `??` chains. Each
- * family's `tryRender*` already gates on its own function ids, so an entry
- * returning `null` falls through to the next.
+ * The first-party families (10 since directory, browser, shell, and sandbox
+ * moved into their workers' injected UI), in the exact order of the old `??`
+ * chains. Each family's `tryRender*` already gates on its own function ids,
+ * so an entry returning `null` falls through to the next.
  */
 export const FIRST_PARTY_RENDERERS: readonly FunctionTriggerRenderer[] = [
+  // sandbox::* rendering is no longer first-party: the sandbox-code-runner
+  // worker ships it as injected UI (sandbox-code-runner/ui/src/sandbox-family).
   {
-    id: 'first-party/sandbox',
-    isMatch: SandboxToolView.isSandboxFunction,
-    tryRender: SandboxToolView.tryRender,
-    tryRenderRunning: SandboxToolView.tryRenderRunning,
-    tryRenderPreview: SandboxToolView.tryRenderPreview,
-    FunctionIdLabel: SandboxFunctionIdLabel,
+    id: 'first-party/engine-register-trigger',
+    isMatch: EngineRegisterTriggerToolView.isRegisterTriggerFunction,
+    tryRender: EngineRegisterTriggerToolView.tryRender,
+    tryRenderRunning: EngineRegisterTriggerToolView.tryRenderRunning,
+    tryRenderDisplay: EngineRegisterTriggerToolView.tryRenderDisplay,
+    FunctionIdLabel: EngineFunctionIdLabel,
+    metadata: { display: true, displayAction: 'expand' },
   },
   {
     id: 'first-party/engine',
@@ -96,14 +99,8 @@ export const FIRST_PARTY_RENDERERS: readonly FunctionTriggerRenderer[] = [
     tryRenderPreview: ScraplingToolView.tryRenderPreview,
     FunctionIdLabel: ScraplingFunctionIdLabel,
   },
-  {
-    id: 'first-party/shell',
-    isMatch: ShellToolView.isShellFunction,
-    tryRender: ShellToolView.tryRender,
-    tryRenderRunning: ShellToolView.tryRenderRunning,
-    tryRenderPreview: ShellToolView.tryRenderPreview,
-    FunctionIdLabel: ShellFunctionIdLabel,
-  },
+  // shell::* rendering is no longer first-party: the shell worker ships
+  // it as injected UI (shell/ui/src/function-trigger).
   {
     id: 'first-party/workflow',
     isMatch: WorkflowToolView.isWorkflowFunction,
@@ -119,6 +116,15 @@ export const FIRST_PARTY_RENDERERS: readonly FunctionTriggerRenderer[] = [
     tryRenderRunning: RouterToolView.tryRenderRunning,
     tryRenderPreview: RouterToolView.tryRenderPreview,
     FunctionIdLabel: RouterFunctionIdLabel,
+  },
+  {
+    id: 'first-party/harness-spawn',
+    isMatch: HarnessSpawnToolView.isHarnessSpawnFunction,
+    tryRender: HarnessSpawnToolView.tryRender,
+    tryRenderRunning: HarnessSpawnToolView.tryRenderRunning,
+    tryRenderDisplay: HarnessSpawnToolView.tryRenderDisplay,
+    FunctionIdLabel: HarnessFunctionIdLabel,
+    metadata: { display: true },
   },
   {
     id: 'first-party/harness',
@@ -147,16 +153,39 @@ export const FIRST_PARTY_RENDERERS: readonly FunctionTriggerRenderer[] = [
 ]
 
 /**
+ * What a fenced `redactRaw` returns when the injected implementation throws.
+ *
+ * Fails CLOSED on purpose: `redactRaw` exists to keep a capability out of the
+ * raw pane and off the clipboard, so the usual "degrade to the untouched
+ * value" fallback would hand over exactly what it was declared to hide. A
+ * broken redactor costs the operator the raw view (the card, the terminal tab
+ * and the trace are all still there), never the secret.
+ */
+export const RAW_REDACTION_FAILED = '[redaction failed — value withheld]'
+
+/**
  * Fence one injected renderer: a throw inside `tryRender*` (called during
  * the host card's render, outside any boundary) degrades to a chip, and the
  * returned node mounts inside the script's scope wrapper + ErrorBoundary.
  */
 function fenceInjected(entry: RegisteredRenderer): FunctionTriggerRenderer {
   const { renderer, scope, path } = entry
+  const matches = (functionId: string): boolean => {
+    try {
+      return renderer.isMatch(functionId)
+    } catch {
+      return false
+    }
+  }
   const wrap = (
     render: (message: FunctionTriggerMessage) => React.ReactNode | null,
   ) => {
     return (message: FunctionTriggerMessage): React.ReactNode | null => {
+      // A React element is already a non-null dispatch result even when the
+      // component later renders null. Gate before calling worker code so a
+      // renderer cannot accidentally claim every function and starve the
+      // matching injected/first-party renderer behind it.
+      if (!matches(message.functionId)) return null
       let node: React.ReactNode | null = null
       try {
         node = render(message)
@@ -179,13 +208,7 @@ function fenceInjected(entry: RegisteredRenderer): FunctionTriggerRenderer {
   }
   return {
     id: renderer.id,
-    isMatch: (functionId) => {
-      try {
-        return renderer.isMatch(functionId)
-      } catch {
-        return false
-      }
-    },
+    isMatch: matches,
     tryRender: wrap((m) => renderer.tryRender(m)),
     tryRenderRunning: renderer.tryRenderRunning
       ? wrap((m) => renderer.tryRenderRunning?.(m) ?? null)
@@ -193,9 +216,30 @@ function fenceInjected(entry: RegisteredRenderer): FunctionTriggerRenderer {
     tryRenderPreview: renderer.tryRenderPreview
       ? wrap((m) => renderer.tryRenderPreview?.(m) ?? null)
       : undefined,
+    tryRenderDisplay: renderer.tryRenderDisplay
+      ? wrap((m) => renderer.tryRenderDisplay?.(m) ?? null)
+      : undefined,
     FunctionIdLabel: renderer.FunctionIdLabel,
     primaryTabLabel: renderer.primaryTabLabel,
+    metadata: renderer.metadata,
+    redactRaw: renderer.redactRaw
+      ? (value: unknown) => {
+          try {
+            return renderer.redactRaw?.(value)
+          } catch (error) {
+            console.error(`[iii-ui] redactRaw of ${renderer.id} threw`, error)
+            return RAW_REDACTION_FAILED
+          }
+        }
+      : undefined,
   }
+}
+
+/** The dispatch order for a set of injected registrations (fenced first). */
+export function functionTriggerRenderers(
+  injected: readonly RegisteredRenderer[],
+): readonly FunctionTriggerRenderer[] {
+  return [...injected.map(fenceInjected), ...FIRST_PARTY_RENDERERS]
 }
 
 /**
@@ -204,10 +248,29 @@ function fenceInjected(entry: RegisteredRenderer): FunctionTriggerRenderer {
  */
 export function useFunctionTriggerRenderers(): readonly FunctionTriggerRenderer[] {
   const injected = useExtRenderers()
-  return useMemo(
-    () => [...injected.map(fenceInjected), ...FIRST_PARTY_RENDERERS],
-    [injected],
-  )
+  return useMemo(() => functionTriggerRenderers(injected), [injected])
+}
+
+/**
+ * The redactor for one message's raw request/response: the first renderer
+ * that both declares `redactRaw` and claims `functionId`, or `undefined` when
+ * none does (the overwhelmingly common case — first-party families never
+ * declare it, so the check short-circuits before any `isMatch` call).
+ *
+ * The console deliberately knows nothing about what a worker's secrets look
+ * like; it only knows that the worker claiming these ids gets to filter what
+ * the raw pane shows and what its copy button copies.
+ */
+export function rawRedactor(
+  renderers: readonly FunctionTriggerRenderer[],
+  functionId: string,
+): ((value: unknown) => unknown) | undefined {
+  for (const renderer of renderers) {
+    if (renderer.redactRaw && renderer.isMatch(functionId)) {
+      return (value) => renderer.redactRaw?.(value)
+    }
+  }
+  return undefined
 }
 
 export function firstNonNull(
@@ -217,6 +280,28 @@ export function firstNonNull(
   for (const renderer of renderers) {
     const node = pick(renderer)
     if (node != null) return node
+  }
+  return null
+}
+
+export interface RenderedFunctionTrigger {
+  renderer: FunctionTriggerRenderer
+  node: React.ReactNode
+}
+
+/**
+ * Resolve both the first non-null node and the renderer that produced it.
+ * The owner matters for presentation metadata such as `display`; deriving
+ * that hint from a separate `isMatch` pass would let a marker renderer style
+ * another renderer's content accidentally.
+ */
+export function firstRendered(
+  renderers: readonly FunctionTriggerRenderer[],
+  pick: (renderer: FunctionTriggerRenderer) => React.ReactNode | null,
+): RenderedFunctionTrigger | null {
+  for (const renderer of renderers) {
+    const node = pick(renderer)
+    if (node != null) return { renderer, node }
   }
   return null
 }
