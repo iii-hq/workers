@@ -160,6 +160,21 @@ pub(crate) fn merge_kinds(prev: &'static str, next: &'static str) -> &'static st
     }
 }
 
+/// What a coalesced change amounts to once the window closes. `born` says the
+/// path was created inside this window; a born path that is gone again never
+/// existed for an observer (atomic-write temps arrive as create+rename or
+/// create+delete), so it emits nothing regardless of the merged kind. A
+/// pre-existing path that vanished mid-window is a real deletion.
+pub(crate) fn resolve_kind(kind: &'static str, on_disk: bool, born: bool) -> Option<&'static str> {
+    match (kind, on_disk) {
+        (_, false) if born => None,
+        ("created", false) => None,
+        ("deleted", _) => Some("deleted"),
+        (_, false) => Some("deleted"),
+        (kind, true) => Some(kind),
+    }
+}
+
 /// The subset of root-relative `paths` the watch treats as ignored. Inside a
 /// git repository git itself decides. Outside one (compose template projects
 /// are plain directories), fall back to the root `.gitignore` plus a small
@@ -169,7 +184,10 @@ pub(crate) async fn ignored_under<'a>(
     root: &Path,
     paths: impl Iterator<Item = &'a String> + Clone,
 ) -> HashSet<String> {
-    if root.join(".git").exists() {
+    // A watch root inside a repository (any ancestor owns a `.git`) is git's
+    // domain too: `git -C root check-ignore` resolves the containing
+    // repository and its parent .gitignore rules from a subdirectory.
+    if root.ancestors().any(|dir| dir.join(".git").exists()) {
         return git_ignored(root, paths).await;
     }
     let mut builder = ignore::gitignore::GitignoreBuilder::new(root);
@@ -268,6 +286,7 @@ async fn pump(
         // Coalesce the storm: kinds for one path merge across the window
         // (macOS reports a create and the write that fills it separately).
         let mut batch: HashMap<String, &'static str> = HashMap::new();
+        let mut born: HashSet<String> = HashSet::new();
         let mut fold = |event: notify::Event| {
             if is_noise_kind(&event.kind) {
                 return;
@@ -278,6 +297,9 @@ async fn pump(
                     continue;
                 }
                 if let Some(rel) = rel_to(&root, p) {
+                    if kind == "created" {
+                        born.insert(rel.clone());
+                    }
                     batch
                         .entry(rel)
                         .and_modify(|prev| *prev = merge_kinds(prev, kind))
@@ -300,14 +322,8 @@ async fn pump(
         let ignored_paths = ignored_under(&root, batch.keys()).await;
         for (path, kind) in batch.drain() {
             let on_disk = root.join(&path).exists();
-            // An atomic-write temp (created and renamed away inside one
-            // coalesce window) never existed for an observer: skip it.
-            // A tracked file that vanished mid-window is a real deletion.
-            let kind = match (kind, on_disk) {
-                ("created", false) => continue,
-                ("deleted", _) => "deleted",
-                (_, false) => "deleted",
-                (kind, true) => kind,
+            let Some(kind) = resolve_kind(kind, on_disk, born.contains(&path)) else {
+                continue;
             };
             let dir = kind != "deleted" && root.join(&path).is_dir();
             let ignored = ignored_paths.contains(&path);
@@ -427,6 +443,50 @@ pub fn register_changed_trigger(iii: &IIIClient, resolver: ResolverCell) {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn fallback_defers_to_git_from_a_subdirectory_watch() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["init", "-q"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        std::fs::write(root.join(".gitignore"), "*.log\n").unwrap();
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        let paths = [
+            "build.log".to_string(),
+            "data/keep.txt".to_string(),
+            "src/main.rs".to_string(),
+        ];
+        let ignored = super::ignored_under(&root.join("sub"), paths.iter()).await;
+        assert!(ignored.contains("build.log"));
+        assert!(!ignored.contains("data/keep.txt"));
+        assert!(!ignored.contains("src/main.rs"));
+    }
+
+    #[test]
+    fn resolve_kind_folds_transient_writes_and_real_deletions() {
+        assert_eq!(super::resolve_kind("created", false, true), None);
+        assert_eq!(super::resolve_kind("deleted", false, true), None);
+        assert_eq!(super::resolve_kind("created", false, false), None);
+        assert_eq!(
+            super::resolve_kind("deleted", false, false),
+            Some("deleted")
+        );
+        assert_eq!(
+            super::resolve_kind("modified", false, false),
+            Some("deleted")
+        );
+        assert_eq!(
+            super::resolve_kind("modified", true, false),
+            Some("modified")
+        );
+        assert_eq!(super::resolve_kind("created", true, true), Some("created"));
+    }
+
     #[tokio::test]
     async fn fallback_ignores_engine_dirs_and_root_gitignore_outside_a_repository() {
         let dir = tempfile::tempdir().unwrap();
