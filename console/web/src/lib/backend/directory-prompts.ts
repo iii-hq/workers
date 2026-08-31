@@ -5,8 +5,10 @@
  *  - `directory::skills::*` — listed by the session ID filter and offered as
  *    `/skill:<id>` slash commands (only the manual command resolves a body).
  *
- * Authoring is deliberately absent — the iii-directory UI's page owns
- * `create` / `update` / `delete`.
+ * Neither family is authored from here. Skills are authored in the
+ * iii-directory worker's own page; system prompts have no console surface at
+ * all — `directory::system-prompts::create` / `update` / `delete`, or editing
+ * `system-prompts/*.md` on disk, are the only ways in.
  */
 
 import type { IiiClient } from '@/lib/iii-client'

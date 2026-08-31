@@ -53,7 +53,7 @@
 //! clients.
 //!
 //! The worker also ships an injectable console UI (see [`ui`]): a
-//! skills and system-prompts browser/editor page, a `directory::*`
+//! skills and agent-profiles browser/editor page, a `directory::*`
 //! function-trigger renderer, and a custom configuration form.
 
 pub mod bundled;
