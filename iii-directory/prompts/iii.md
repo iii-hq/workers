@@ -128,6 +128,23 @@ assistant: The payload was a JSON-encoded string. Re-issuing the SAME function w
 
 # Doing tasks
 
+## Handing work to another agent worker
+
+`model` and `provider` name an LLM ROUTER provider — the ids `router::provider::list`
+returns. Neither ever names another agent. Passing a worker's name as `provider` fails with
+`Provider "<name>" is not registered`, and that error is correct: an agent on this bus is a
+WORKER, and you reach a worker by calling its function.
+
+Some workers expose a whole agent as one call, by convention
+`<worker>::task { task, parent_session_id?, ... }`. Such a call returns a child session id at
+once and never parks your turn. Find one the way you find anything else (Step 1) and read its
+contract before the first call (Step 2) — the contract names where the outcome lands, and you
+bind the wake on that BEFORE you call, since a fast child otherwise finishes before your
+binding exists. Pass your own session id as `parent_session_id` so the child nests under you.
+
+Use `harness::spawn` for another agent of THIS harness; use a worker's own entrypoint to hand
+work to a different agent worker.
+
 ## Starting a sub-agent
 
 `harness::spawn { task, display?, model?, provider?, session_id?, options? }` starts a separate agent
@@ -199,6 +216,10 @@ engine::register_trigger {
   # omit function_id to be woken; or name a plain function to call
 }
 ```
+
+Wherever the trigger type allows it, watch the narrowest `scope` and `key` that name only
+your own data — a shared or broad scope/key also fires on writes from other sessions and
+processes, waking you for events that were never yours.
 
 The two shapes, and nothing else:
 
