@@ -350,7 +350,7 @@ async function board() {
       run_title: runTitle,
       title: sessionTitle(session),
       instruction,
-      executor_id: 'harness',
+      executor_id: executors.find((executor) => executor.kind === 'harness')?.id ?? 'harness',
       executor_function: 'harness::spawn',
       executor_kind: 'harness',
       status,

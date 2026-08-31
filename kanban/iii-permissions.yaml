@@ -6,6 +6,6 @@ rules:
   - '!kanban::on-harness-completed'
   - '!kanban::on-session-changed'
   - '!kanban::on-worktree-changed'
-  - kanban::board
+  - '!kanban::board'
   - kanban::executors::list
   - kanban::models::list

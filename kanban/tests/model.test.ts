@@ -154,11 +154,31 @@ describe('executor discovery', () => {
       ]),
     ).toEqual([
       expect.objectContaining({
-        id: 'claude-code',
+        id: 'claude-code@agents',
         namespace: 'agents',
         stop_function: 'claude-code::stop',
       }),
     ])
+  })
+
+  it('keeps executor ids distinct when two namespaces register the same task contract', () => {
+    const rows = [
+      {
+        function_id: 'pi::task',
+        worker_name: 'pi',
+        namespace: 'agents',
+        description: 'Writes completion records to agent_tasks state.',
+      },
+      {
+        function_id: 'pi::task',
+        worker_name: 'pi',
+        namespace: 'other',
+        description: 'Writes completion records to agent_tasks state.',
+      },
+    ]
+    const ids = executorsFromCatalog(rows).map((executor) => executor.id)
+    expect(new Set(ids).size).toBe(ids.length)
+    expect(ids.sort()).toEqual(['pi@agents', 'pi@other'])
   })
 
   it('only advertises Harness controls registered in the same namespace', () => {

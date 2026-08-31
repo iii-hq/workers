@@ -307,7 +307,6 @@ rules:
   - worktree::get
   - worktree::status
   - worktree::validate
-  - kanban::board
   - kanban::executors::list
   - kanban::models::list
   # editor: the reading half. editor::diff is pure (two strings in, a patch

@@ -237,6 +237,7 @@ function NewRunDialog({
   initialRepo,
   recentDirectories,
   busy,
+  error,
   onOpenChange,
   onCreate,
 }: {
@@ -248,6 +249,7 @@ function NewRunDialog({
   initialRepo?: string | null
   recentDirectories: string[]
   busy: boolean
+  error?: string | null
   onOpenChange: (open: boolean) => void
   onCreate: (input: Record<string, unknown>) => Promise<void>
 }) {
@@ -502,6 +504,11 @@ function NewRunDialog({
               )
             })}
           </div>
+          {error ? (
+            <div className="kb-dialog-error" role="alert">
+              {error}
+            </div>
+          ) : null}
           <div className="kb-dialog-foot">
             <label className="kb-checkbox">
               <input
@@ -953,6 +960,7 @@ export function KanbanPage({ host, panelSide, onRequestClose, workingDir, conver
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [showLaunch, setShowLaunch] = useState(false)
+  const [launchError, setLaunchError] = useState<string | null>(null)
   const [launchKey, setLaunchKey] = useState(0)
   const [activeRunId, setActiveRunId] = useState<string | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -1079,17 +1087,20 @@ export function KanbanPage({ host, panelSide, onRequestClose, workingDir, conver
     async (input: Record<string, unknown>) => {
       setBusy('create')
       setFeedback(null)
+      setLaunchError(null)
       try {
         const result = await host.iii.trigger<{ run: Run; tasks: Task[] }>('kanban::runs::create', input, {
           timeoutMs: 60_000,
         })
         setShowLaunch(false)
+        setLaunchError(null)
         setLaunchKey((current) => current + 1)
         setActiveRunId(result.run.id)
         setFeedback({ kind: 'success', text: `${result.run.title}: ${result.tasks.length} tasks created` })
         await refresh(false)
       } catch (cause) {
         setFeedback({ kind: 'error', text: describe(cause) })
+        setLaunchError(describe(cause))
       } finally {
         setBusy(null)
       }
@@ -1246,7 +1257,11 @@ export function KanbanPage({ host, panelSide, onRequestClose, workingDir, conver
         initialRepo={workingDir?.trim() || activeRun?.repo_path || board?.runs.find((run) => run.repo_path)?.repo_path}
         recentDirectories={host.workspace?.recentDirectories() ?? []}
         busy={busy === 'create'}
-        onOpenChange={setShowLaunch}
+        error={launchError}
+        onOpenChange={(open) => {
+          if (!open) setLaunchError(null)
+          setShowLaunch(open)
+        }}
         onCreate={createRun}
       />
     </PageShell>

@@ -118,6 +118,7 @@
 [data-iii-ui='kanban'] .kb-draft-fields textarea { width: 100%; min-height: 3.75rem; resize: vertical; padding: 0.5rem 0.625rem; border: 1px solid var(--color-edge); border-radius: var(--radius-md, 6px); outline: none; background: var(--color-surface); color: var(--color-ink); font: 0.75rem/1.45 var(--font-sans); }
 [data-iii-ui='kanban'] .kb-draft-fields textarea:focus { border-color: var(--color-accent); box-shadow: 0 0 0 1px var(--color-accent); }
 [data-iii-ui='kanban'] .kb-draft-fields textarea::placeholder { color: var(--color-ink-faint); }
+[data-iii-ui='kanban'] .kb-dialog-error { padding: 0.5rem 0.625rem; border: 1px solid var(--color-alert); border-radius: var(--radius-md, 6px); color: var(--color-alert); font-size: 0.6875rem; }
 [data-iii-ui='kanban'] .kb-dialog-foot { justify-content: space-between; padding-top: 0.625rem; border-top: 1px solid var(--color-edge); }
 [data-iii-ui='kanban'] .kb-checkbox { color: var(--color-ink-faint); font-size: 0.6875rem; }
 [data-iii-ui='kanban'] .kb-checkbox input { accent-color: var(--color-accent); }
@@ -129,6 +130,7 @@
 }
 
 @container (max-width: 720px) {
+  [data-iii-ui='kanban'] .kb-lanes { grid-template-columns: repeat(2, minmax(0, 1fr)); min-width: 0; }
   [data-iii-ui='kanban'] .kb-topology { gap: 0.4rem; }
   [data-iii-ui='kanban'] .kb-topology > div { min-width: 6.75rem; }
   [data-iii-ui='kanban'] .kb-workbench[data-selected] .kb-board { display: none; }
@@ -142,6 +144,7 @@
 }
 
 @container (max-width: 480px) {
+  [data-iii-ui='kanban'] .kb-lanes { grid-template-columns: minmax(0, 1fr); }
   [data-iii-ui='kanban'] .kb-header-actions > button:first-child { display: none; }
   [data-iii-ui='kanban'] .kb-run-toolbar { align-items: flex-start; flex-direction: column; }
   [data-iii-ui='kanban'] .kb-run-actions { align-self: stretch; justify-content: flex-end; }

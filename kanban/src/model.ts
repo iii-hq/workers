@@ -268,7 +268,7 @@ export function executorsFromCatalog(catalog: FunctionCatalogRow[]): Executor[] 
     if (!row.description?.includes('agent_tasks')) continue
     const prefix = functionId.slice(0, -'::task'.length)
     executors.push({
-      id: prefix,
+      id: row.namespace ? `${prefix}@${row.namespace}` : prefix,
       label: executorLabel(functionId, row.worker_name ?? prefix),
       kind: 'task',
       function_id: functionId,
@@ -282,7 +282,7 @@ export function executorsFromCatalog(catalog: FunctionCatalogRow[]): Executor[] 
 
   for (const harness of catalog.filter((row) => row.function_id === 'harness::spawn')) {
     executors.push({
-      id: 'harness',
+      id: harness.namespace ? `harness@${harness.namespace}` : 'harness',
       label: 'Harness',
       kind: 'harness',
       function_id: 'harness::spawn',

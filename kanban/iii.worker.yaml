@@ -15,6 +15,6 @@ scripts:
 
 dependencies:
   console: "^1.9.11"
-  state: "^0.22.3"
-  harness: "^1.8.8"
+  state: "^0.22.2"
+  harness: "^1.8.5"
   worktree: "^0.3.4-rc.1"
