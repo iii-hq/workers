@@ -659,9 +659,17 @@ ok "installed $cli_version"
 
 log "Step 2/9: Start an empty engine and the compose daemon"
 printf 'workers: []\n' >config.yaml
+start_engine
+wait_for_engine
+start_compose
+wait_for_compose
 # The seed only names the project: `compose::add` writes every container.
 # `namespace: default` is required — harness and Console must register beside
-# the engine builtins, exactly like the flow this validates.
+# the engine builtins, exactly like the flow this validates. Written only
+# AFTER the daemon is up: since 0.23.0-rc.8 the daemon validates the compose
+# file at startup and exits on empty containers (EMPTY_CONTAINERS), while
+# `compose::add` requires the file to exist — so the seed lands between the
+# daemon boot and the first add.
 cat >"$compose_file" <<'COMPOSE'
 namespace: default
 startup_timeout: 5m
@@ -669,10 +677,6 @@ stop_timeout: 10s
 
 containers:
 COMPOSE
-start_engine
-wait_for_engine
-start_compose
-wait_for_compose
 
 log "Step 3/9: Add harness and Console from worker tag $worker_tag via compose"
 run_compose_add "harness@$worker_tag" 2>&1 | tee "$log_dir/compose-add-harness.log"
