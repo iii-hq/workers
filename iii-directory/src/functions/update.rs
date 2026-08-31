@@ -71,11 +71,20 @@ const SKILL_CREATE_CONFLICT_NEXT: &[NextAction] = &[
     NextAction::new("directory::skills::list", "browse skill ids"),
 ];
 
-/// Recovery pointer for a missed system-prompt update target.
-const SYSTEM_PROMPT_UPDATE_NOT_FOUND_NEXT: &[NextAction] = &[NextAction::new(
-    "directory::system-prompts::list",
-    "browse system prompt names",
-)];
+/// Recovery pointers for a missed system-prompt update target. `create` comes
+/// first: no console surface authors system prompts, so a caller reaching for
+/// `update` on a name that does not exist yet — the harness `default` override,
+/// typically — wants the first write, not a listing.
+const SYSTEM_PROMPT_UPDATE_NOT_FOUND_NEXT: &[NextAction] = &[
+    NextAction::new(
+        "directory::system-prompts::create",
+        "create it (this is the first write)",
+    ),
+    NextAction::new(
+        "directory::system-prompts::list",
+        "browse system prompt names",
+    ),
+];
 
 /// Recovery pointers for a system-prompt create that hit an existing name/path.
 const SYSTEM_PROMPT_CREATE_CONFLICT_NEXT: &[NextAction] = &[

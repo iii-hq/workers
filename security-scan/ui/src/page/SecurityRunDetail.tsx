@@ -509,7 +509,7 @@ export function SecurityRunDetail({
               size="sm"
               onClick={onBack}
             >
-              <ArrowLeftIcon size={14} />
+              <ArrowLeftIcon size={16} />
               history
             </Button>
           ) : null}
@@ -545,7 +545,7 @@ export function SecurityRunDetail({
             {sourceZipUrl ? (
               <Button asChild variant="ghost" size="sm">
                 <a href={sourceZipUrl} target="_blank" rel="noreferrer">
-                  <DownloadIcon size={14} />
+                  <DownloadIcon size={16} />
                   source ZIP
                 </a>
               </Button>
@@ -556,7 +556,7 @@ export function SecurityRunDetail({
                 size="sm"
                 onClick={() => downloadSanitizedReport(run)}
               >
-                <DownloadIcon size={14} />
+                <DownloadIcon size={16} />
                 report JSON
               </Button>
             ) : null}
@@ -650,7 +650,7 @@ export function SecurityRunDetail({
               disabled={retrying}
             >
               <RefreshIcon
-                size={14}
+                size={16}
                 className={retrying ? 'is-spinning' : undefined}
               />
               {retrying ? 'retrying' : 'retry run'}
@@ -731,7 +731,7 @@ export function SecurityRunDetail({
                     onClick={onRequestSuggestions}
                     disabled={suggesting}
                   >
-                    <WandIcon size={14} />
+                    <WandIcon size={16} />
                     {suggesting ? 'requesting' : 'get recommended fixes'}
                   </Button>
                 </section>

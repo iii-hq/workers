@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { AssistantMessage, UserMessage } from '@/types/chat'
-import { Message } from './Message'
+import { Message, shouldAnimateStreamingBlockBurst } from './Message'
 
 const spawnMessage: UserMessage = {
   id: 'spawn-task',
@@ -27,6 +27,52 @@ describe('AssistantMessage', () => {
 
     expect(html).toContain('>Researcher</span>')
     expect(html).toContain('· codex/gpt-5.6-sol')
+  })
+
+  it('marks only a live assistant surface for its first content reveal', () => {
+    const streaming = renderToStaticMarkup(
+      <Message message={{ ...assistantMessage, streaming: true }} />,
+    )
+    const settled = renderToStaticMarkup(<Message message={assistantMessage} />)
+
+    expect(streaming).toContain('data-assistant-stream-surface=""')
+    expect(streaming).toContain('class="assistant-stream-surface is-entering"')
+    expect(settled).toContain('data-assistant-stream-surface=""')
+    expect(settled).not.toContain('class="assistant-stream-surface')
+  })
+
+  it('keeps rich Markdown intact instead of wrapping streamed words', () => {
+    const html = renderToStaticMarkup(
+      <Message
+        message={{
+          ...assistantMessage,
+          streaming: true,
+          content: '**Ready.**\n\n- first\n- second',
+        }}
+      />,
+    )
+
+    expect(html).toContain('<strong')
+    expect(html).toContain('<ul')
+    expect(html).not.toContain('t-stream-w')
+  })
+
+  it('skips motion for large block bursts and reduced-motion users', () => {
+    expect(shouldAnimateStreamingBlockBurst(1, 120, false)).toBe(true)
+    expect(shouldAnimateStreamingBlockBurst(4, 120, false)).toBe(false)
+    expect(shouldAnimateStreamingBlockBurst(1, 481, false)).toBe(false)
+    expect(shouldAnimateStreamingBlockBurst(1, 120, true)).toBe(false)
+
+    const snapshot = renderToStaticMarkup(
+      <Message
+        message={{
+          ...assistantMessage,
+          streaming: true,
+          content: 'x'.repeat(481),
+        }}
+      />,
+    )
+    expect(snapshot).not.toContain('class="assistant-stream-surface')
   })
 })
 

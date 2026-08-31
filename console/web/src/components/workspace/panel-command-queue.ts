@@ -8,7 +8,6 @@ export type PendingPanelCommand =
       side: 'left' | 'right'
       mobileIndex?: number
     }
-  | { type: 'split'; tabId: string }
 
 /**
  * Preserve user intent in FIFO order. Repeated delivery of the same page-open

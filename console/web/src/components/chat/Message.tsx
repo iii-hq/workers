@@ -1,4 +1,5 @@
 import { Blocks, Bot, Sparkles } from 'lucide-react'
+import { useEffect, useRef } from 'react'
 import { FunctionTriggerCard } from '@/components/function-trigger/FunctionTriggerCard'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
 import type { TriggerRegistration } from '@/components/trigger-activity/model'
@@ -23,6 +24,7 @@ import { AttachmentChip, formatSize } from './AttachmentChip'
 import { CopyMessageButton } from './CopyMessageButton'
 import { MemoryChip } from './MemoryChip'
 import { ThoughtMessage } from './ThoughtMessage'
+import './streaming-message.css'
 
 interface MessageProps {
   message: MessageType
@@ -552,9 +554,10 @@ function AssistantMessage({
       </header>
       <div className="pr-1">
         {message.content ? (
-          <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
-            {message.content}
-          </Markdown>
+          <StreamingMarkdown
+            content={message.content}
+            streaming={!!message.streaming}
+          />
         ) : (
           <div className="font-mono text-[13px] italic thinking-shimmer">
             thinking…
@@ -563,5 +566,125 @@ function AssistantMessage({
         {showCaret ? <Caret className="ml-0.5" /> : null}
       </div>
     </article>
+  )
+}
+
+const STREAMING_BLOCK_BURST_LIMIT = 3
+const STREAMING_BLOCK_CHARACTER_LIMIT = 480
+
+/**
+ * Markdown can change the meaning of text that arrived earlier (for example,
+ * when a closing fence completes a code block). Animating individual words
+ * would therefore require splitting or replacing ReactMarkdown's DOM. Keep
+ * existing nodes untouched and animate only genuinely appended top-level
+ * blocks. Large snapshots stay immediate so reconnects and fast providers do
+ * not build a visual queue behind the real transcript.
+ */
+export function shouldAnimateStreamingBlockBurst(
+  blockCount: number,
+  characterCount: number,
+  reducedMotion: boolean,
+): boolean {
+  return (
+    !reducedMotion &&
+    blockCount > 0 &&
+    blockCount <= STREAMING_BLOCK_BURST_LIMIT &&
+    characterCount <= STREAMING_BLOCK_CHARACTER_LIMIT
+  )
+}
+
+function StreamingMarkdown({
+  content,
+  streaming,
+}: {
+  content: string
+  streaming: boolean
+}) {
+  const surfaceRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const surface = surfaceRef.current
+    if (!streaming || !surface || typeof MutationObserver === 'undefined') {
+      return
+    }
+
+    const markdownRoot = surface.firstElementChild
+    if (!(markdownRoot instanceof HTMLElement)) return
+
+    const observer = new MutationObserver((records) => {
+      const appendedBlockSet = new Set<HTMLElement>()
+      for (const record of records) {
+        // Text appended to an existing paragraph remains instant. Only a new
+        // semantic Markdown block receives motion, so old prose never fades or
+        // becomes temporarily unselectable again.
+        if (record.target !== markdownRoot || record.removedNodes.length > 0) {
+          continue
+        }
+        for (const node of record.addedNodes) {
+          if (node instanceof HTMLElement) appendedBlockSet.add(node)
+        }
+      }
+
+      const appendedBlocks = [...appendedBlockSet]
+      const topLevelBlocks = [...markdownRoot.children]
+      const firstAppendIndex = topLevelBlocks.findIndex((block) =>
+        appendedBlockSet.has(block as HTMLElement),
+      )
+      const isAppendedSuffix =
+        firstAppendIndex >= 0 &&
+        topLevelBlocks
+          .slice(firstAppendIndex)
+          .every((block) => appendedBlockSet.has(block as HTMLElement))
+
+      const reducedMotion = window.matchMedia?.(
+        '(prefers-reduced-motion: reduce)',
+      ).matches
+      const characterCount = appendedBlocks.reduce(
+        (count, block) => count + (block.textContent?.length ?? 0),
+        0,
+      )
+      if (
+        !isAppendedSuffix ||
+        !shouldAnimateStreamingBlockBurst(
+          appendedBlocks.length,
+          characterCount,
+          !!reducedMotion,
+        )
+      ) {
+        return
+      }
+
+      for (const block of appendedBlocks) {
+        block.classList.add('assistant-stream-appended-block')
+        const clearMotionClass = () => {
+          block.classList.remove('assistant-stream-appended-block')
+          block.removeEventListener('animationend', clearMotionClass)
+          block.removeEventListener('animationcancel', clearMotionClass)
+        }
+        block.addEventListener('animationend', clearMotionClass, { once: true })
+        block.addEventListener('animationcancel', clearMotionClass, {
+          once: true,
+        })
+      }
+    })
+
+    observer.observe(markdownRoot, { childList: true })
+    return () => observer.disconnect()
+  }, [streaming])
+
+  return (
+    <div
+      ref={surfaceRef}
+      className={
+        streaming && shouldAnimateStreamingBlockBurst(1, content.length, false)
+          ? 'assistant-stream-surface is-entering'
+          : undefined
+      }
+      data-assistant-stream-surface=""
+    >
+      <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
+        {content}
+      </Markdown>
+    </div>
   )
 }

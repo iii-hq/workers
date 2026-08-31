@@ -44,6 +44,7 @@ import {
   type WorkspaceTab,
   withActiveTabId,
   withColumnAdded,
+  withPaneMoved,
   withPaneRemoved,
   withScreenDetached,
   withTabClosed,
@@ -192,6 +193,8 @@ export interface UseWorkspaceTabsReturn {
   addColumn: (id: string, side: 'left' | 'right') => void
   /** Drop one pane by stable identity (the last one never goes). */
   removeColumn: (id: string, paneId: string) => void
+  /** Move one pane to another pane's position inside a tab. */
+  reorderPanel: (id: string, paneId: string, targetPaneId: string) => void
   /** Persist drag-to-resize column fractions (index-aligned). */
   resizeColumns: (id: string, sizes: number[]) => void
   /** Reuse an existing screen or place it beside chat without replacing panes. */
@@ -467,6 +470,19 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
     [persist],
   )
 
+  const reorderPanel = useCallback(
+    (id: string, paneId: string, targetPaneId: string) => {
+      if (paneId === targetPaneId) return
+      persist((state) => ({
+        ...state,
+        tabs: state.tabs.map((tab) =>
+          tab.id === id ? withPaneMoved(tab, paneId, targetPaneId) : tab,
+        ),
+      }))
+    },
+    [persist],
+  )
+
   const resizeColumns = useCallback(
     (id: string, sizes: number[]) => {
       persist((state) => ({
@@ -542,6 +558,7 @@ export function useWorkspaceTabs(): UseWorkspaceTabsReturn {
     detachScreen,
     addColumn,
     removeColumn,
+    reorderPanel,
     resizeColumns,
     openScreen,
     openScreenInTab,

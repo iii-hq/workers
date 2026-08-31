@@ -15,6 +15,10 @@ type Story = StoryObj<typeof meta>
 
 export const Default: Story = {}
 
+export const Inactive: Story = {
+  args: { active: false },
+}
+
 export const Narrow: Story = {
   decorators: [
     (Story) => (

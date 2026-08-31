@@ -153,6 +153,21 @@ export const ReadyWithoutProject: Story = {
   },
 }
 
+export const ReadyWithoutAgentProfiles: Story = {
+  name: 'ready (no agent profiles)',
+  render: (args) => <ConfiguredReadyStory {...args} />,
+  args: {
+    variant: 'ready',
+    workingDir: '/Users/sergio/Documents/workspaces/iii/workers',
+    defaultWorkingDir: '/Users/sergio/Documents/workspaces/iii/workers',
+    onWorkingDirChange: fn(),
+    systemPrompt: DEFAULT_SYSTEM_PROMPT_STATE,
+    onSystemPromptChange: fn(),
+    onSkillsChange: fn(),
+    agentEntries: [],
+  },
+}
+
 export const NoProvider: Story = {
   name: 'no provider configured',
   args: { variant: 'no-provider' },

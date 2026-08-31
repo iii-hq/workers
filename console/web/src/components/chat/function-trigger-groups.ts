@@ -2,6 +2,7 @@ import type {
   AssistantMessage,
   FunctionTriggerMessage,
   Message,
+  ThoughtMessage,
 } from '@/types/chat'
 
 export type MessageListRow =
@@ -57,27 +58,44 @@ function isProgressUpdate(
 /**
  * Collapse transcript-level function calls into phase-sized runs.
  *
- * Completed thoughts are transparent because their component deliberately
- * leaves the DOM after streaming; a streaming thought remains a boundary so
- * its live position is stable. An intermediate assistant message closes the
- * preceding run and becomes its user-visible summary. Terminal assistant
- * prose is never consumed, preserving the final answer as a normal message.
+ * Thoughts are presentation interstitials rather than structural boundaries:
+ * calls on either side remain in the same stable group. A visible thought stays
+ * on the side of that group where it first appeared, preserving its sibling key
+ * and screen position as streaming hands off to the next call. An intermediate
+ * assistant message closes the preceding run and becomes its user-visible
+ * summary. Terminal assistant prose is never consumed.
  */
 export function functionTriggerGroups(
   messages: readonly Message[],
+  visibleCompletedThoughtIds: ReadonlySet<string> = new Set(),
 ): MessageListRow[] {
   const rows: MessageListRow[] = []
   let calls: FunctionTriggerMessage[] = []
+  let leadingThoughts: ThoughtMessage[] = []
+  let trailingThoughts: ThoughtMessage[] = []
 
   const flushCalls = (summary?: AssistantMessage) => {
-    if (calls.length === 0) return
-    rows.push({
-      kind: 'function-trigger-group',
-      id: `function-trigger-group:${calls[0].id}`,
-      calls,
-      summary,
-    })
+    rows.push(
+      ...leadingThoughts.map(
+        (message): MessageListRow => ({ kind: 'message', message }),
+      ),
+    )
+    if (calls.length > 0) {
+      rows.push({
+        kind: 'function-trigger-group',
+        id: `function-trigger-group:${calls[0].id}`,
+        calls,
+        summary,
+      })
+    }
+    rows.push(
+      ...trailingThoughts.map(
+        (message): MessageListRow => ({ kind: 'message', message }),
+      ),
+    )
     calls = []
+    leadingThoughts = []
+    trailingThoughts = []
   }
 
   for (const [index, message] of messages.entries()) {
@@ -86,9 +104,16 @@ export function functionTriggerGroups(
       continue
     }
 
-    // ThoughtMessage renders nothing once streaming finishes. Treat those
-    // records as transparent so they cannot add visual gaps or split a batch.
-    if (message.role === 'thought' && !message.streaming) continue
+    // Keep the thought as a sibling on the side where it was first observed
+    // while streaming or exiting. Calls can join one stable group without
+    // reparenting worker renderers, and the thought instance can animate out.
+    if (message.role === 'thought') {
+      if (message.streaming || visibleCompletedThoughtIds.has(message.id)) {
+        const thoughts = calls.length === 0 ? leadingThoughts : trailingThoughts
+        thoughts.push(message)
+      }
+      continue
+    }
 
     if (
       message.role === 'assistant' &&
@@ -96,7 +121,15 @@ export function functionTriggerGroups(
       calls.length > 0 &&
       isProgressUpdate(messages, index, message)
     ) {
-      flushCalls(message)
+      if (trailingThoughts.length === 0) {
+        flushCalls(message)
+      } else {
+        // A visible thought occurred before this prose. Keep its chronological
+        // position instead of attaching the prose as a group summary, which
+        // MessageList intentionally renders directly after the activity group.
+        flushCalls()
+        rows.push({ kind: 'message', message })
+      }
       continue
     }
 

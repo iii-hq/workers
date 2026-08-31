@@ -151,7 +151,9 @@ carrying only the basic engine functions and the discovery loop (list, info,
 call). A `default` entry in the directory's system-prompt store
 (`<skills_folder>/system-prompts/default.md`, served by
 `directory::system-prompts::get`) overrides the embedded prompt for every new
-composition — edit or delete it and the next send picks that up, no restart;
+composition — write it with `directory::system-prompts::create { name:
+"default" }` the first time and `::update` after (or edit the file directly; no
+console surface authors it) and the next send picks that up, no restart;
 any store failure (directory absent, entry missing, blank body) falls back to
 the embedded prompt. What makes a child a leaf is its POLICY, not its prompt: children are
 capability-walled out of the orchestration surface (`harness::spawn`,
