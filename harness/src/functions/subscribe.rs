@@ -31,6 +31,7 @@ use serde_json::{json, Value};
 use crate::bindings::{
     Binding, BindingTarget, Causation, ConditionSpec, Lifecycle, OwnerScope, ReserveOutcome,
 };
+use crate::clients::engine::is_compose_mutation;
 use crate::clients::EngineClient;
 use crate::deps::Deps;
 use crate::error::HarnessError;
@@ -53,6 +54,9 @@ const APPROVAL_EVALUATE_ID: &str = "approval::evaluate";
 /// so it resolves the caller's subscription, enforces ownership, and unregisters
 /// the underlying engine trigger.
 pub const UNREGISTER_TRIGGER_ID: &str = "engine::unregister_trigger";
+
+const COMPOSE_OPERATION_TRIGGER: &str = "compose::operation";
+const COMPOSE_NAMESPACE_ENV: &str = "III_COMPOSE_NAMESPACE";
 
 /// Agent-facing subscription contract.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -280,8 +284,112 @@ pub async fn invoke(
         // (the `harness::state::*` accessors are denied above), so the risk
         // is denial of service, not exfiltration; deny it anyway.
         crate::state::CLAIM_NAMESPACE_ID => trigger::denied_result(function_id),
-        _ => trigger::invoke_target(engine, policy, function_id, arguments).await,
+        _ => {
+            let result = trigger::invoke_target(engine, policy, function_id, arguments).await;
+            arm_compose_operation_wake(deps, result, function_id, session_id, caller, policy).await
+        }
     }
+}
+
+async fn arm_compose_operation_wake(
+    deps: &Deps,
+    result: ResultData,
+    function_id: &str,
+    session_id: &str,
+    caller: Option<CallerModel<'_>>,
+    policy: &CompiledPolicy,
+) -> ResultData {
+    if result.is_error {
+        return result;
+    }
+    let Some(operation_id) =
+        accepted_compose_operation_id(function_id, &result.details).map(str::to_string)
+    else {
+        return result;
+    };
+
+    let mut details = result.details;
+    let response = register_compose_operation_wake(
+        deps,
+        function_id,
+        &operation_id,
+        session_id,
+        caller,
+        policy,
+    )
+    .await;
+    if let Some(object) = details.as_object_mut() {
+        match response {
+            Ok(response) => {
+                object.insert(
+                    "subscription_id".to_string(),
+                    Value::String(response.subscription_id),
+                );
+                object.insert(
+                    "notification".to_string(),
+                    Value::String("armed".to_string()),
+                );
+                if let Some(note) = response.note {
+                    object.insert("notification_note".to_string(), Value::String(note));
+                }
+            }
+            Err(error) => {
+                // The mutation is already accepted. Preserve that success so
+                // the caller can fall back to compose::operations::get.
+                object.insert(
+                    "notification_error".to_string(),
+                    Value::String(error.to_string()),
+                );
+            }
+        }
+    }
+    trigger::normalized_result(details)
+}
+
+pub(crate) async fn register_compose_operation_wake(
+    deps: &Deps,
+    function_id: &str,
+    operation_id: &str,
+    session_id: &str,
+    caller: Option<CallerModel<'_>>,
+    policy: &CompiledPolicy,
+) -> Result<SubscribeResponse, HarnessError> {
+    handle(
+        deps,
+        compose_operation_subscription(function_id, operation_id),
+        session_id,
+        caller,
+        policy,
+    )
+    .await
+}
+
+fn compose_operation_subscription(function_id: &str, operation_id: &str) -> SubscribeRequest {
+    SubscribeRequest {
+        trigger_type: COMPOSE_OPERATION_TRIGGER.to_string(),
+        config: json!({ "operation_id": operation_id }),
+        label: Some(format!("{function_id} {operation_id}")),
+        once: Some(true),
+        function_id: None,
+        metadata: Some(json!({
+            "action": format!("compose operation {operation_id} finished")
+        })),
+        target: None,
+        conditions: Vec::new(),
+        lifecycle: None,
+    }
+}
+
+pub(crate) fn accepted_compose_operation_id<'a>(
+    function_id: &str,
+    result: &'a Value,
+) -> Option<&'a str> {
+    if !is_compose_mutation(function_id) {
+        return None;
+    }
+    (result.get("state").and_then(Value::as_str) == Some("accepted"))
+        .then(|| result.get("operation_id").and_then(Value::as_str))
+        .flatten()
 }
 
 fn send_invocation_context(
@@ -699,7 +807,16 @@ async fn handle(
         standing_binding_advisory(&req, once),
         state_catchall_advisory(&req),
         armed_wake_advisory(&req, once),
-        (binding.target.function_id != crate::functions::SEND_ID).then(|| {
+        is_compose_mutation(&binding.target.function_id).then(|| {
+            format!(
+                "note: this binding dispatches `{}` asynchronously; the harness will wake this \
+                 session when its Compose operation reaches a terminal state.",
+                binding.target.function_id
+            )
+        }),
+        (binding.target.function_id != crate::functions::SEND_ID
+            && !is_compose_mutation(&binding.target.function_id))
+        .then(|| {
             format!(
                 "note: this binding dispatches `{}` — its result reaches nobody and cannot wake \
                  you. Anything that must reach this chat writes state you watch with a plain \
@@ -813,7 +930,7 @@ async fn resolve_target(
         Some(id) => {
             let id = id.to_string();
             validate_call_target(&id, policy).map_err(HarnessError::InvalidRequest)?;
-            let (payload, event_into) = match req.target.as_ref() {
+            let (mut payload, event_into) = match req.target.as_ref() {
                 Some(t) => {
                     validate_event_into(t.event_into.as_deref())?;
                     (t.payload.clone(), t.event_into.clone())
@@ -829,6 +946,11 @@ async fn resolve_target(
                     )
                 }
             };
+            if id.starts_with("compose::") {
+                let engine = deps.engine().await;
+                let (prepared, _) = engine.prepare_dispatch(&id, payload.unwrap_or(Value::Null));
+                payload = Some(prepared);
+            }
             let target = BindingTarget {
                 function_id: id,
                 payload,
@@ -1199,24 +1321,50 @@ fn is_function_absent(error: &str) -> bool {
 /// unregister closure is held in [`crate::bindings::TriggerHandles`].
 pub const SDK_TRIGGER_ID_PREFIX: &str = "sdk:";
 
-/// The channel registration for a binding's delivery trigger. `namespace` and
-/// `trigger_namespace` are deliberately left unset: the SDK stamps this
-/// worker's namespace on the target (so the fire resolves
+/// The channel registration for a binding's delivery trigger. `namespace` is
+/// left unset, so the SDK stamps this worker's namespace on the target and
+/// the fire resolves
 /// `harness::trigger::deliver` where THIS harness registered it, `default`
-/// included when un-namespaced), and an unset provider namespace resolves
-/// home-first with the engine's `default` as fallback. Hardcoding either here
-/// would break one of the two deployment shapes.
+/// included when un-namespaced. The provider also resolves home-first with
+/// `default` as fallback, except `compose::operation`: that provider lives in
+/// the supervisor-owned `III_COMPOSE_NAMESPACE`.
 fn delivery_registration_input(
     trigger_type: &str,
     config: &Value,
     binding_id: &str,
 ) -> iii_sdk::protocol::RegisterTriggerInput {
-    iii_sdk::protocol::RegisterTriggerInput::new(
+    delivery_registration_input_for_namespace(
+        trigger_type,
+        config,
+        binding_id,
+        compose_provider_namespace(trigger_type).as_deref(),
+    )
+}
+
+fn delivery_registration_input_for_namespace(
+    trigger_type: &str,
+    config: &Value,
+    binding_id: &str,
+    provider_namespace: Option<&str>,
+) -> iii_sdk::protocol::RegisterTriggerInput {
+    let input = iii_sdk::protocol::RegisterTriggerInput::new(
         trigger_type,
         crate::functions::trigger_deliver::DELIVER_ID,
         config.clone(),
     )
-    .with_metadata(json!({ "__binding": binding_id }))
+    .with_metadata(json!({ "__binding": binding_id }));
+    match provider_namespace {
+        Some(namespace) => input.in_trigger_namespace(namespace),
+        None => input,
+    }
+}
+
+fn compose_provider_namespace(trigger_type: &str) -> Option<String> {
+    (trigger_type == COMPOSE_OPERATION_TRIGGER)
+        .then(|| std::env::var(COMPOSE_NAMESPACE_ENV).ok())
+        .flatten()
+        .map(|namespace| namespace.trim().to_string())
+        .filter(|namespace| !namespace.is_empty())
 }
 
 /// Register a binding's engine trigger over the worker channel and record its
@@ -1248,8 +1396,13 @@ pub fn register_delivery_trigger(
 /// checked namespace warns.
 async fn provider_presence_note(deps: &Deps, trigger_type: &str) -> Option<String> {
     let mut namespaces: Vec<String> = Vec::new();
+    if let Some(namespace) = compose_provider_namespace(trigger_type) {
+        namespaces.push(namespace);
+    }
     if let Some(own) = deps.iii.namespace() {
-        namespaces.push(own);
+        if !namespaces.contains(&own) {
+            namespaces.push(own);
+        }
     }
     if !namespaces.iter().any(|ns| ns == "default") {
         namespaces.push("default".to_string());
@@ -1362,6 +1515,68 @@ mod tests {
         );
         assert!(input.namespace.is_none());
         assert!(input.trigger_namespace.is_none());
+    }
+
+    #[test]
+    fn compose_completion_uses_the_daemon_as_trigger_provider() {
+        let input = delivery_registration_input_for_namespace(
+            COMPOSE_OPERATION_TRIGGER,
+            &json!({ "operation_id": "op-1" }),
+            "sub_compose",
+            Some("compose-daemon"),
+        );
+
+        assert_eq!(input.namespace, None);
+        assert_eq!(input.trigger_namespace.as_deref(), Some("compose-daemon"));
+    }
+
+    #[test]
+    fn accepted_compose_mutation_exposes_its_operation_id() {
+        let result = json!({
+            "operation_id": "op-1",
+            "state": "accepted"
+        });
+
+        assert_eq!(
+            accepted_compose_operation_id("compose::add", &result),
+            Some("op-1")
+        );
+    }
+
+    #[test]
+    fn completed_compose_mutation_does_not_arm_a_wake() {
+        let result = json!({
+            "operation_id": "op-2",
+            "status": "completed"
+        });
+
+        assert_eq!(accepted_compose_operation_id("compose::add", &result), None);
+    }
+
+    #[test]
+    fn compose_read_does_not_arm_a_wake() {
+        let result = json!({
+            "operation_id": "op-3",
+            "state": "accepted"
+        });
+
+        assert_eq!(
+            accepted_compose_operation_id("compose::status", &result),
+            None
+        );
+    }
+
+    #[test]
+    fn compose_completion_subscription_is_a_one_shot_wake() {
+        let request = compose_operation_subscription("compose::add", "op-1");
+
+        assert_eq!(request.trigger_type, COMPOSE_OPERATION_TRIGGER);
+        assert_eq!(request.config, json!({ "operation_id": "op-1" }));
+        assert_eq!(request.once, Some(true));
+        assert!(
+            request.function_id.is_none(),
+            "completion must wake its owner"
+        );
     }
 
     /// `sdk:` ids belong to the handle map; with the handle gone (a record

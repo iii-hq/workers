@@ -68,8 +68,32 @@ impl EngineClient {
         function_id: &str,
         payload: Value,
     ) -> Result<Value, DispatchError> {
+        let (payload, target_namespace) = self.prepare_dispatch(function_id, payload);
+        self.dispatch_prepared(function_id, payload, target_namespace)
+            .await
+    }
+
+    /// Apply the harness-owned scope and routing policy before authorization
+    /// or dispatch. Deferred call bindings use this same boundary so they
+    /// cannot bypass Compose's file, namespace, or asynchronous mode.
+    pub(crate) fn prepare_dispatch<'a>(
+        &'a self,
+        function_id: &str,
+        payload: Value,
+    ) -> (Value, Option<&'a str>) {
         let (payload, prepared_namespace) = self.compose.prepare(function_id, payload);
-        let target_namespace = dispatch_namespace(function_id, prepared_namespace);
+        (payload, dispatch_namespace(function_id, prepared_namespace))
+    }
+
+    /// Dispatch a payload that already passed [`Self::prepare_dispatch`].
+    /// This keeps argument approval and the actual invocation on the same
+    /// normalized value.
+    pub(crate) async fn dispatch_prepared(
+        &self,
+        function_id: &str,
+        payload: Value,
+        target_namespace: Option<&str>,
+    ) -> Result<Value, DispatchError> {
         // Capture the epoch immediately before the invocation instead of
         // comparing against process-global state. A global baseline becomes
         // stale when the engine restarts while this worker is idle and would
@@ -207,9 +231,24 @@ impl ComposeScope {
             if let Some(namespace) = &self.namespace {
                 arguments.insert("namespace".to_string(), Value::String(namespace.clone()));
             }
+            if is_compose_mutation(function_id) {
+                arguments.insert("wait".to_string(), Value::Bool(false));
+            }
         }
         (payload, self.namespace.as_deref())
     }
+}
+
+pub(crate) fn is_compose_mutation(function_id: &str) -> bool {
+    matches!(
+        function_id,
+        "compose::up"
+            | "compose::down"
+            | "compose::add"
+            | "compose::remove"
+            | "compose::restart"
+            | "compose::update"
+    )
 }
 
 fn dispatch_namespace<'a>(
@@ -447,6 +486,30 @@ mod tests {
         assert_eq!(payload["worker"], "database");
         assert_eq!(payload["file"], "/srv/app/worker-compose.yaml");
         assert_eq!(payload["namespace"], "compose-daemon");
+        assert_eq!(payload["wait"], false);
+    }
+
+    #[test]
+    fn compose_mutation_overrides_an_explicit_blocking_wait() {
+        let scope = ComposeScope {
+            namespace: Some("compose-daemon".to_string()),
+            file: Some("/srv/app/worker-compose.yaml".to_string()),
+        };
+        let (payload, _) = scope.prepare("compose::restart", json!({ "wait": true }));
+
+        assert_eq!(payload["wait"], false);
+    }
+
+    #[test]
+    fn compose_reads_do_not_receive_wait() {
+        let scope = ComposeScope {
+            namespace: Some("compose-daemon".to_string()),
+            file: Some("/srv/app/worker-compose.yaml".to_string()),
+        };
+        for function_id in ["compose::status", "compose::operations::get"] {
+            let (payload, _) = scope.prepare(function_id, json!({}));
+            assert!(payload.get("wait").is_none(), "{function_id}");
+        }
     }
 
     #[test]

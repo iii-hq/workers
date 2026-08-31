@@ -475,6 +475,15 @@ async fn call_target(
         &grants,
         deps.hooks.filesystem_boundary(target),
     );
+    let compose_dispatch = if target.starts_with("compose::") {
+        let engine = deps.engine().await;
+        let (prepared, target_namespace) = engine.prepare_dispatch(target, payload);
+        payload = prepared;
+        let target_namespace = target_namespace.map(str::to_string);
+        Some((engine, target_namespace))
+    } else {
+        None
+    };
     // Argument-constrained approval rules must see the payload that will
     // actually run, after event projection and trusted filesystem stamping.
     if let Err(e) = crate::functions::subscribe::approval_allows_unattended(
@@ -492,19 +501,105 @@ async fn call_target(
     // rejected payload — is recorded as delivered and "why did nothing
     // happen?" becomes unanswerable from the timeline. The dispatch timeout
     // bounds the wait.
-    let timeout_ms = deps.cfg().await.dispatch_timeout_ms;
-    let outcome = deps
-        .iii
-        .trigger(TriggerRequest {
-            function_id: target.to_string(),
-            payload: payload.clone(),
-            action: None,
-            timeout_ms: Some(timeout_ms),
-        })
-        .await
-        .map(|_| ())
-        .map_err(|e| e.to_string());
-    (payload, outcome)
+    let outcome = match compose_dispatch {
+        Some((engine, target_namespace)) => engine
+            .dispatch_prepared(target, payload.clone(), target_namespace.as_deref())
+            .await
+            .map_err(|error| error.to_string()),
+        None => {
+            let timeout_ms = deps.cfg().await.dispatch_timeout_ms;
+            deps.iii
+                .trigger(TriggerRequest {
+                    function_id: target.to_string(),
+                    payload: payload.clone(),
+                    action: None,
+                    timeout_ms: Some(timeout_ms),
+                })
+                .await
+                .map_err(|error| error.to_string())
+        }
+    };
+    match outcome {
+        Ok(result) => {
+            arm_deferred_compose_operation_wake(deps, binding, target, &result).await;
+            (payload, Ok(()))
+        }
+        Err(error) => (payload, Err(error)),
+    }
+}
+
+async fn arm_deferred_compose_operation_wake(
+    deps: &Deps,
+    binding: &Binding,
+    function_id: &str,
+    result: &Value,
+) {
+    let Some(operation_id) =
+        crate::functions::subscribe::accepted_compose_operation_id(function_id, result)
+            .map(str::to_string)
+    else {
+        return;
+    };
+    let policy = CompiledPolicy::from(binding.capability.as_ref());
+    if let Err(error) = crate::functions::subscribe::register_compose_operation_wake(
+        deps,
+        function_id,
+        &operation_id,
+        &binding.owner.session_id,
+        None,
+        &policy,
+    )
+    .await
+    {
+        tracing::warn!(
+            binding = %binding.id,
+            operation_id,
+            error = %error,
+            "Compose operation accepted without a completion wake"
+        );
+        notify_compose_wake_failure(
+            deps,
+            binding,
+            function_id,
+            &operation_id,
+            &error.to_string(),
+        )
+        .await;
+    }
+}
+
+async fn notify_compose_wake_failure(
+    deps: &Deps,
+    binding: &Binding,
+    function_id: &str,
+    operation_id: &str,
+    error: &str,
+) {
+    let message = AgentMessage::user_text(format!(
+        "[notification] {function_id} was accepted as {operation_id}, but its completion watcher \
+         could not be registered: {error}. Check it with compose::operations::get."
+    ));
+    let entry_id = format!("e_compose_watch_{}_{}", binding.id, binding.fires);
+    if let Err(inject_error) = crate::functions::send::inject(
+        deps,
+        &binding.owner.session_id,
+        message,
+        Some(&entry_id),
+        Some(&json!({
+            "notification": true,
+            "binding": binding.id,
+            "operation_id": operation_id,
+        })),
+    )
+    .await
+    {
+        tracing::warn!(
+            binding = %binding.id,
+            operation_id,
+            error = %inject_error,
+            "Compose completion-wake failure notice could not be delivered"
+        );
+    }
 }
 
 fn notification_text(binding: &Binding, event: &Value) -> String {
