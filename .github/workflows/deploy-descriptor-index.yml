@@ -87,7 +87,7 @@ jobs:
           assert index["source_sha"] == os.environ["SOURCE_SHA"]
           assert index["compiler"]["repository"] == os.environ["GITHUB_REPOSITORY"]
           assert index["compiler"]["commit"] == os.environ["SOURCE_SHA"]
-          assert len(index["workers"]) == 69
+          assert len(index["workers"]) == 70
           assert all(entry["publish"] is True for entry in index["workers"].values())
           validator = Draft202012Validator(schema)
           for worker, entry in index["workers"].items():
