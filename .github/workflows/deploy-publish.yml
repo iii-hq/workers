@@ -32,7 +32,7 @@ env:
   TARGET_VERSION: ${{ inputs.target_version }}
   DEPLOYMENT_CHANNEL: ${{ inputs.channel }}
   EXPECTED_CURRENT_VERSION: ${{ inputs.expected_current_version }}
-  EXPECTED_NEXT_VERSION: ${{ inputs.expected_next_version }}
+  EXPECTED_MIRROR_VERSION: ${{ inputs.expected_next_version }}
   DESCRIPTOR_SHA256: ${{ inputs.descriptor_sha256 }}
   PREPARED_RUN_ID: ${{ inputs.prepared_run_id }}
 
@@ -81,9 +81,7 @@ jobs:
           python3 .github/scripts/deployment_train.py verify-prepared \
             --descriptor deploy-prepared/deployment-descriptor.json \
             --prepared deploy-prepared/prepared-artifacts.json
-          if [[ "$DEPLOYMENT_CHANNEL" == latest ]]; then
-            [[ -n "$EXPECTED_NEXT_VERSION" ]]
-          fi
+          [[ -n "$EXPECTED_MIRROR_VERSION" ]]
           python3 .github/scripts/deployment_control_contract.py validate-identity --identity "$DEPLOYMENT_IDENTITY"
           python3 .github/scripts/deployment_control_contract.py validate-dispatch --step-id "$STEP_ID" --dispatch-nonce "$DISPATCH_NONCE" --descriptor-sha256 "$DESCRIPTOR_SHA256" --plan-hash "$PLAN_HASH" --source-sha "$SOURCE_SHA" --prepared-sha "$PREPARED_SHA" --mutating
           python3 .github/scripts/deployment_control_contract.py authorize-dispatch --api-url "$RELEASE_CONTROL_API_URL" --repository '${{ github.repository }}' --step-id "$STEP_ID" --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' --workflow 'deploy-publish.yml' --event '${{ github.event_name }}' --sha '${{ github.sha }}' --deployment-batch-id "$DEPLOYMENT_BATCH_ID" --deployment-target-id "$DEPLOYMENT_TARGET_ID" --attempt-id "$ATTEMPT_ID" --dispatch-nonce "$DISPATCH_NONCE" --plan-hash "$PLAN_HASH" --worker "$WORKER" --source-sha "$SOURCE_SHA" --target-version "$TARGET_VERSION" --channel "$DEPLOYMENT_CHANNEL" --descriptor-sha256 "$DESCRIPTOR_SHA256"

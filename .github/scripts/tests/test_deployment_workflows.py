@@ -215,10 +215,9 @@ def test_publish_is_retry_safe_and_effect_states_are_probe_derived():
     assert 'value=sys.argv[1].strip()' in publish
     assert 'all(.[]; .state == "absent" or .state == "present" or .state == "unknown")' in publish
     registry = body("_deploy-registry.yml")
-    assert "registry_publication.py assign-channel" in registry
-    assert "registry_publication.py advance-next-floor" in registry
+    assert registry.count("registry_publication.py assign-channel") == 2
     assert "expected-current-version" in registry
-    assert "expected-next-version" in registry
+    assert "EXPECTED_MIRROR_VERSION" in registry
     assert "--clobber" not in publish
 
 
@@ -238,8 +237,11 @@ def test_publish_separates_immutable_version_from_explicit_channel_cas():
     assert "build_publish_payload.py" in reusable
     assert "jq 'has(\"tag\")' payload.json" in reusable
     assert "has(\\\"tag\\\")" not in reusable
+    assert "MIRROR_CHANNEL: ${{ inputs.channel == 'latest' && 'next' || 'latest' }}" in reusable
     assert '--registry-tag "$DEPLOYMENT_CHANNEL"' in reusable
+    assert '--registry-tag "$MIRROR_CHANNEL"' in reusable
     assert "Move requested channel with compare-and-swap" in reusable
+    assert "Mirror the other channel with compare-and-swap" in reusable
     assert "Move the requested OCI channel to the immutable digest" in publish
     assert '"$DEPLOYMENT_CHANNEL" == next || "$TARGET_VERSION" == *-*' in publish
     assert '"$RELEASE_CHANNEL" == next || "$TARGET_VERSION" == *-*' in body("deploy-verify.yml")
