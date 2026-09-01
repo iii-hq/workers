@@ -27,12 +27,5 @@
 workers:
   - name: iii-worker-manager
     config:
+      host: 127.0.0.1
       port: ${E2E_PORT:49234}
-
-  - name: iii-observability
-    config:
-      enabled: true
-      service_name: browser-tests
-      exporter: memory
-      logs_console_output: true
-      sampling_ratio: 1.0

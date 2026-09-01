@@ -1,18 +1,13 @@
 # iii engine configuration — passed via `iii -c config.yaml`.
 #
-# The harness TS worker is NOT registered here. It runs as a plain host
-# node process launched from run-tests.sh and connects to the engine via
-# WebSocket like any external client — sidesteps the libkrun-VM-based
-# managed-worker setup, which is overkill for a test harness.
+# Only engine-owned workers belong here. The shell worker and TypeScript
+# harness run as host processes launched by run-tests.sh.
 
 workers:
-  - name: iii-observability
+  - name: iii-worker-manager
     config:
-      enabled: true
-      service_name: iii-shell-tests
-      exporter: memory
-      logs_console_output: true
-      sampling_ratio: 1.0
+      host: 127.0.0.1
+      port: ${E2E_PORT:49134}
 
   # Real iii-sandbox so cases-exec-sandbox.ts can drive the full
   # shell -> sandbox::exec -> microVM round-trip end-to-end. Requires
@@ -29,40 +24,3 @@ workers:
       max_concurrent_sandboxes: 4
       default_cpus: 1
       default_memory_mb: 256
-
-  - name: shell
-    config:
-      max_timeout_ms: 5000
-      # host bg job hard cap in ms; 0 = unbounded (foreground uses max_timeout_ms).
-      # Set > max_timeout_ms so the bg-timeout e2e cases prove both that a bg job
-      # survives past the foreground cap and that it is killed at its own cap.
-      max_bg_timeout_ms: 6000
-      default_timeout_ms: 1500
-      max_output_bytes: 4096
-      working_dir: ./data
-      env:
-        inherit: false
-        allow: [PATH, HOME, LANG, HARNESS_TEST_VAR]
-      denylist_patterns:
-        - "rm\\s+-rf\\s+/"
-        - ":\\(\\)\\s*\\{\\s*:\\|"
-        - "harness_denylist_marker"
-      max_concurrent_jobs: 2
-      job_retention_secs: 2
-      fs:
-        # Test harness needs to write to OS tmpdirs scattered across the
-        # filesystem, so the jail is intentionally off here (no host_roots).
-        # Production operators should leave this false (default) and pin
-        # host_roots.
-        allow_unjailed: true
-        # Caps deliberately set to 1 MiB so size-cap-boundary tests
-        # in cases-fs-protocol-break.ts can trip S218 cheaply. Streaming
-        # itself is still exercised at 512 KiB in cases-fs-host.ts (~8
-        # frames at the 64 KiB chunk size).
-        max_read_bytes: 1048576
-        max_write_bytes: 1048576
-        denylist_paths:
-          - /etc/passwd
-          - /etc/shadow
-      sandbox:
-        enabled: true

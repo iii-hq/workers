@@ -1,5 +1,6 @@
-import type { FunctionRef, ISdk } from 'iii-sdk';
-import { ChannelReader } from 'iii-sdk';
+import type { IIIClient } from 'iii-sdk';
+import { ChannelReader } from 'iii-sdk/channel';
+import { createChannel } from 'iii-sdk/helpers';
 import { expect, expectEqual, type CaseContext, type TestCase } from './cases.ts';
 
 const URL = process.env.III_URL ?? 'ws://127.0.0.1:49134';
@@ -14,8 +15,8 @@ let nextResponse: any = null;
 let nextErrorMessage: string | null = null;
 let sandboxWriteDrainedBytes: Buffer | null = null;
 let sandboxReadBytesToServe: Buffer | null = null;
-let mockSdk: ISdk | null = null;
-let mockRefs: FunctionRef[] = [];
+let mockSdk: IIIClient | null = null;
+let mockRefs: Array<{ unregister(): void }> = [];
 
 export function resetMocks(): void {
   refreshSandboxMocks();
@@ -48,7 +49,7 @@ export function getCapturedCalls(): readonly CapturedCall[] {
 
 export const SANDBOX_ID = '11111111-2222-3333-4444-555555555555';
 
-export function setupSandboxMocks(iii: ISdk): void {
+export function setupSandboxMocks(iii: IIIClient): void {
   mockSdk = iii;
   refreshSandboxMocks();
 }
@@ -101,7 +102,7 @@ function refreshSandboxMocks(): void {
       throw new Error(m);
     }
     const bytes = sandboxReadBytesToServe ?? Buffer.from('');
-    const channel = await sdk.createChannel(64);
+    const channel = await createChannel(sdk, 64);
     (async () => {
       channel.writer.stream.write(bytes, (err: Error | null | undefined) => {
         if (err) {
@@ -351,7 +352,7 @@ export const FS_SANDBOX_CASES: TestCase[] = [
     name: 'fs_sandbox_write_forwards_content_ref_and_passes_bytes_through',
     async run(ctx: CaseContext) {
       resetMocks();
-      const channel = await ctx.iii.createChannel(64);
+      const channel = await createChannel(ctx.iii, 64);
       const writePromise = new Promise<void>((resolve, reject) => {
         channel.writer.stream.once('error', reject);
         channel.writer.stream.write(Buffer.from('hello sandbox'), (err) => {

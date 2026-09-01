@@ -1,4 +1,4 @@
-import { registerWorker, Logger } from 'iii-sdk';
+import { registerWorker } from 'iii-sdk';
 import { resolve } from 'node:path';
 import { Runner } from './runner.ts';
 import { setupSandboxMocks } from './cases-fs-sandbox.ts';
@@ -6,19 +6,20 @@ import { setupSandboxMocks } from './cases-fs-sandbox.ts';
 const URL = process.env.III_URL ?? 'ws://127.0.0.1:49134';
 const REPORT_PATH = resolve(process.env.HARNESS_REPORT_PATH ?? './reports/report.json');
 
-const iii = registerWorker(URL);
-const logger = new Logger();
-
+const iii = registerWorker(URL, {
+  workerName: 'shell-e2e-harness',
+  otel: { enabled: false },
+});
 process.on('unhandledRejection', (reason) => {
   const msg = (reason as { message?: string })?.message ?? String(reason);
-  logger.warn('unhandledRejection (suppressed by harness)', { reason: msg });
+  console.warn('[harness] unhandledRejection (suppressed)', { reason: msg });
 });
 
 setupSandboxMocks(iii);
 
 const runner = new Runner({ iii, reportPath: REPORT_PATH });
 
-logger.info('harness: registered, kicking off suite', { url: URL, reportPath: REPORT_PATH });
+console.log('[harness] registered, kicking off suite', { url: URL, reportPath: REPORT_PATH });
 
 (async () => {
   const useColor = process.stdout.isTTY === true;

@@ -1,0 +1,7 @@
+# The storage worker runs as a separate host process with config.yaml or
+# config.all.yaml as its seed. The manager entry only allows an isolated port.
+workers:
+  - name: iii-worker-manager
+    config:
+      host: 127.0.0.1
+      port: ${E2E_PORT:49134}

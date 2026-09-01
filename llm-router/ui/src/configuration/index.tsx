@@ -501,7 +501,7 @@ function SecretGuidance({
     <div className="llmr-cfg-warning" role="alert">
       {partial
         ? 'This partial environment reference still stores literal secret text.'
-        : 'This secret will be stored as plain text.'}{' '}
+        : 'This plain-text secret will be stored in configuration.'}{' '}
       <button type="button" className="llmr-cfg-envfix" onClick={() => onChange(`\${${environmentVariable}}`)}>
         Use {'${'}
         {environmentVariable}

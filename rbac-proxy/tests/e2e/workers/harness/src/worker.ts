@@ -57,7 +57,13 @@ async function waitForAuthFn(support: ReturnType<typeof registerWorker>): Promis
       throw new Error('support::auth was not indexed by the engine in time')
     }
 
-    down = registerWorker(PROXY_URL, { headers: { authorization: 'Bearer test-token' } })
+    down = registerWorker(PROXY_URL, {
+      workerName: 'rbac-e2e-downstream',
+      headers: { authorization: 'Bearer test-token' },
+      // The proxy intentionally exposes only the worker protocol endpoint.
+      // Telemetry continues through the trusted upstream worker connection.
+      otel: { enabled: false },
+    })
     // Let the upgrade authenticate + the upstream open before the first call.
     await sleep(800)
 

@@ -1,40 +1,24 @@
-# iii engine configuration — passed via `iii -c config.yaml`.
+# Seed configuration passed directly to the storage worker.
 #
 # The harness TS worker is NOT registered here. It runs as a plain host
 # node process launched from run-tests.sh and connects to the engine via
 # WebSocket like any external client — sidesteps the libkrun-VM-based
 # managed-worker setup, which is overkill for a test harness.
 #
-# The storage worker config is inlined under its worker entry. The
-# engine serializes this `config:` value to a temp YAML and threads
-# `--config <path>` through to the spawned binary (same delivery path
-# database uses for its e2e config).
-#
 # Triggers are registered DYNAMICALLY by the harness via the SDK
 # (`registerTrigger` in runner.ts) so the harness can route dispatches to
 # its own sink functions. We don't list triggers under the worker's
 # config below.
 
-workers:
-  - name: iii-observability
-    config:
-      enabled: true
-      service_name: storage-tests
-      exporter: memory
-      logs_console_output: true
-      sampling_ratio: 1.0
+providers:
+  local:
+    # Path is relative to the worker's CWD. run-tests.sh uses an isolated
+    # temporary project, so every run gets a clean native-local data tree.
+    data_dir: ./data/storage
+    http:
+      bind_address: 127.0.0.1:0
 
-  - name: storage
-    config:
-      providers:
-        local:
-          # Path is relative to the engine's CWD. run-tests.sh uses an isolated
-          # temporary project, so every run gets a clean native-local data tree.
-          data_dir: ./data/storage
-          http:
-            bind_address: 127.0.0.1:0
-
-      buckets:
-        scratch-local:
-          provider: local
-          bucket: scratch-local
+buckets:
+  scratch-local:
+    provider: local
+    bucket: scratch-local

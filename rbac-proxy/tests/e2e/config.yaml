@@ -14,4 +14,8 @@
 #   3. runs the harness, which registers the support fns on the engine and
 #      drives a downstream worker THROUGH the proxy port.
 
-workers: []
+workers:
+  - name: iii-worker-manager
+    config:
+      host: 127.0.0.1
+      port: ${ENGINE_PORT:49134}

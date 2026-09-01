@@ -8,6 +8,8 @@ set -uo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$ROOT_DIR/run-tests.sh"
 WORKER_BIN_TARGET="${WORKER_BIN_TARGET:-$ROOT_DIR/../../target/release/storage}"
+TEST_PORT="${E2E_PORT:-49134}"
+export E2E_PORT="$TEST_PORT"
 PASS=0
 FAIL=0
 
@@ -59,22 +61,23 @@ assert_contains "$out" "--providers" "documents --providers"
 
 # ---- port-conflict test (always run; doesn't need worker binary) ----
 
-echo "[script-tests] port 49134 in use → exit 3"
+echo "[script-tests] port $TEST_PORT in use → exit 3"
 # Bind the port in a background listener; cleanup with a trap.
 python3 -c '
 import socket
+import sys
 import time
 
 with socket.socket() as listener:
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    listener.bind(("127.0.0.1", 49134))
+    listener.bind(("127.0.0.1", int(sys.argv[1])))
     listener.listen()
     time.sleep(60)
-' &
+' "$TEST_PORT" &
 NC_PID=$!
 trap 'kill "$NC_PID" 2>/dev/null || true' EXIT
 for _ in {1..50}; do
-  (echo > /dev/tcp/127.0.0.1/49134) 2>/dev/null && break
+  (echo > "/dev/tcp/127.0.0.1/$TEST_PORT") 2>/dev/null && break
   sleep 0.1
 done
 out=$("$SCRIPT" --providers=local --no-build 2>&1) ; rc=$?
@@ -82,7 +85,7 @@ kill "$NC_PID" 2>/dev/null || true
 wait "$NC_PID" 2>/dev/null || true
 trap - EXIT
 assert_eq "$rc" "3" "exit code"
-assert_contains "$out" "port 49134 already in use" "error message"
+assert_contains "$out" "port $TEST_PORT already in use" "error message"
 
 # ---- worker-binary-required tests (skipped if binary not built) ----
 
@@ -101,13 +104,13 @@ else
   ( "$SCRIPT" --providers=local --no-build >"$sigint_log" 2>&1 ) &
   SCRIPT_PID=$!
   deadline=$(( $(date +%s) + 60 ))
-  while ! (echo > /dev/tcp/127.0.0.1/49134) 2>/dev/null && kill -0 "$SCRIPT_PID" 2>/dev/null; do
+  while ! (echo > "/dev/tcp/127.0.0.1/$TEST_PORT") 2>/dev/null && kill -0 "$SCRIPT_PID" 2>/dev/null; do
     if (( $(date +%s) > deadline )); then break; fi
     sleep 0.2
   done
   kill -INT "$SCRIPT_PID" 2>/dev/null || true
   wait "$SCRIPT_PID" 2>/dev/null || true
-  if (echo > /dev/tcp/127.0.0.1/49134) 2>/dev/null; then
+  if (echo > "/dev/tcp/127.0.0.1/$TEST_PORT") 2>/dev/null; then
     echo "  FAIL: engine port still open after SIGINT"
     FAIL=$((FAIL+1))
   else
