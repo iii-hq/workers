@@ -375,6 +375,15 @@ where:
 INTEGRATION_WORKERS := queue iii-directory session-manager context-manager state database
 INTEGRATION_PROFILE ?= release
 INTEGRATION_FLAG    := $(if $(filter release,$(INTEGRATION_PROFILE)),--release,)
+# ONE target directory for every crate the stack needs. Each worker is its own
+# cargo workspace, so per-workspace target dirs made cargo recompile the shared
+# dependency set once per worker: measured on CI's own --timings reports, 590 of
+# 1338 cpu-seconds were byte-identical duplicate units, and `ring`'s build
+# script alone ran seven times. Cargo keys artifacts by package + features +
+# profile, so pointing every build at one directory lets them reuse each
+# other's work (measured: a second worker compiles 124 units instead of 236).
+INTEGRATION_TARGET_DIR ?= $(REPO_ROOT)/target/integration-build
+INTEGRATION_BIN_DIR    := $(INTEGRATION_TARGET_DIR)/$(INTEGRATION_PROFILE)
 # CI adds --timings here; local runs still use the committed lockfiles by
 # default without producing diagnostic artifacts on every build.
 CARGO_BUILD_FLAGS ?= --locked
@@ -391,20 +400,20 @@ integration-test:
 	fi
 	@for w in $(INTEGRATION_WORKERS) harness; do \
 	  echo "building $$w ($(INTEGRATION_PROFILE))"; \
-	  cargo build $(CARGO_BUILD_FLAGS) $(INTEGRATION_FLAG) --manifest-path "$(REPO_ROOT)/$$w/Cargo.toml" || exit 1; \
+	  cargo build $(CARGO_BUILD_FLAGS) $(INTEGRATION_FLAG) --target-dir "$(INTEGRATION_TARGET_DIR)" --manifest-path "$(REPO_ROOT)/$$w/Cargo.toml" || exit 1; \
 	done
 	@echo "building harness-integration ($(INTEGRATION_PROFILE))"
-	@cargo build $(CARGO_BUILD_FLAGS) $(INTEGRATION_FLAG) --manifest-path "$(MAKEFILE_DIR)Cargo.toml" -p harness-integration
-	@"$(MAKEFILE_DIR)target/$(INTEGRATION_PROFILE)/harness-integration" \
+	@cargo build $(CARGO_BUILD_FLAGS) $(INTEGRATION_FLAG) --target-dir "$(INTEGRATION_TARGET_DIR)" --manifest-path "$(MAKEFILE_DIR)Cargo.toml" -p harness-integration
+	@"$(INTEGRATION_BIN_DIR)/harness-integration" \
 	  run \
 	  --engine-bin "$(III_BIN)" \
-	  --harness-bin "$(REPO_ROOT)/harness/target/$(INTEGRATION_PROFILE)/harness" \
-	  --worker-bin "queue=$(REPO_ROOT)/queue/target/$(INTEGRATION_PROFILE)/queue" \
-	  --worker-bin "iii-directory=$(REPO_ROOT)/iii-directory/target/$(INTEGRATION_PROFILE)/iii-directory" \
-	  --worker-bin "session-manager=$(REPO_ROOT)/session-manager/target/$(INTEGRATION_PROFILE)/session-manager" \
-	  --worker-bin "context-manager=$(REPO_ROOT)/context-manager/target/$(INTEGRATION_PROFILE)/context-manager" \
-	  --worker-bin "state=$(REPO_ROOT)/state/target/$(INTEGRATION_PROFILE)/state" \
-	  --worker-bin "database=$(REPO_ROOT)/database/target/$(INTEGRATION_PROFILE)/database" \
+	  --harness-bin "$(INTEGRATION_BIN_DIR)/harness" \
+	  --worker-bin "queue=$(INTEGRATION_BIN_DIR)/queue" \
+	  --worker-bin "iii-directory=$(INTEGRATION_BIN_DIR)/iii-directory" \
+	  --worker-bin "session-manager=$(INTEGRATION_BIN_DIR)/session-manager" \
+	  --worker-bin "context-manager=$(INTEGRATION_BIN_DIR)/context-manager" \
+	  --worker-bin "state=$(INTEGRATION_BIN_DIR)/state" \
+	  --worker-bin "database=$(INTEGRATION_BIN_DIR)/database" \
 	  --scenario "$(INTEGRATION_SCENARIO)" \
 	  --artifacts-dir "$(INTEGRATION_ARTIFACTS)"
 
@@ -420,13 +429,13 @@ integration-coverage:
 	  --profraw-dir "$(COVERAGE_PROFRAW)" \
 	  --output-dir "$(REPO_ROOT)/target/coverage/integration" \
 	  --title harness-integration \
-	  --object "$(REPO_ROOT)/queue/target/$(INTEGRATION_PROFILE)/queue" \
-	  --object "$(REPO_ROOT)/iii-directory/target/$(INTEGRATION_PROFILE)/iii-directory" \
-	  --object "$(REPO_ROOT)/session-manager/target/$(INTEGRATION_PROFILE)/session-manager" \
-	  --object "$(REPO_ROOT)/context-manager/target/$(INTEGRATION_PROFILE)/context-manager" \
-	  --object "$(REPO_ROOT)/state/target/$(INTEGRATION_PROFILE)/state" \
-	  --object "$(REPO_ROOT)/harness/target/$(INTEGRATION_PROFILE)/harness" \
-	  --object "$(REPO_ROOT)/harness/target/$(INTEGRATION_PROFILE)/harness-integration"
+	  --object "$(INTEGRATION_BIN_DIR)/queue" \
+	  --object "$(INTEGRATION_BIN_DIR)/iii-directory" \
+	  --object "$(INTEGRATION_BIN_DIR)/session-manager" \
+	  --object "$(INTEGRATION_BIN_DIR)/context-manager" \
+	  --object "$(INTEGRATION_BIN_DIR)/state" \
+	  --object "$(INTEGRATION_BIN_DIR)/harness" \
+	  --object "$(INTEGRATION_BIN_DIR)/harness-integration"
 	@echo "open $(REPO_ROOT)/target/coverage/integration/html/index.html"
 
 integration-playground:
@@ -437,21 +446,21 @@ integration-playground:
 	fi
 	@for w in $(INTEGRATION_WORKERS) harness console; do \
 	  echo "building $$w ($(INTEGRATION_PROFILE))"; \
-	  cargo build $(CARGO_BUILD_FLAGS) $(INTEGRATION_FLAG) --manifest-path "$(REPO_ROOT)/$$w/Cargo.toml" || exit 1; \
+	  cargo build $(CARGO_BUILD_FLAGS) $(INTEGRATION_FLAG) --target-dir "$(INTEGRATION_TARGET_DIR)" --manifest-path "$(REPO_ROOT)/$$w/Cargo.toml" || exit 1; \
 	done
 	@echo "building harness-integration ($(INTEGRATION_PROFILE))"
-	@cargo build $(CARGO_BUILD_FLAGS) $(INTEGRATION_FLAG) --manifest-path "$(MAKEFILE_DIR)Cargo.toml" -p harness-integration
-	@"$(MAKEFILE_DIR)target/$(INTEGRATION_PROFILE)/harness-integration" \
+	@cargo build $(CARGO_BUILD_FLAGS) $(INTEGRATION_FLAG) --target-dir "$(INTEGRATION_TARGET_DIR)" --manifest-path "$(MAKEFILE_DIR)Cargo.toml" -p harness-integration
+	@"$(INTEGRATION_BIN_DIR)/harness-integration" \
 	  playground \
 	  --engine-bin "$(III_BIN)" \
-	  --harness-bin "$(REPO_ROOT)/harness/target/$(INTEGRATION_PROFILE)/harness" \
-	  --console-bin "$(REPO_ROOT)/console/target/$(INTEGRATION_PROFILE)/console" \
-	  --worker-bin "queue=$(REPO_ROOT)/queue/target/$(INTEGRATION_PROFILE)/queue" \
-	  --worker-bin "iii-directory=$(REPO_ROOT)/iii-directory/target/$(INTEGRATION_PROFILE)/iii-directory" \
-	  --worker-bin "session-manager=$(REPO_ROOT)/session-manager/target/$(INTEGRATION_PROFILE)/session-manager" \
-	  --worker-bin "context-manager=$(REPO_ROOT)/context-manager/target/$(INTEGRATION_PROFILE)/context-manager" \
-	  --worker-bin "state=$(REPO_ROOT)/state/target/$(INTEGRATION_PROFILE)/state" \
-	  --worker-bin "database=$(REPO_ROOT)/database/target/$(INTEGRATION_PROFILE)/database" \
+	  --harness-bin "$(INTEGRATION_BIN_DIR)/harness" \
+	  --console-bin "$(INTEGRATION_BIN_DIR)/console" \
+	  --worker-bin "queue=$(INTEGRATION_BIN_DIR)/queue" \
+	  --worker-bin "iii-directory=$(INTEGRATION_BIN_DIR)/iii-directory" \
+	  --worker-bin "session-manager=$(INTEGRATION_BIN_DIR)/session-manager" \
+	  --worker-bin "context-manager=$(INTEGRATION_BIN_DIR)/context-manager" \
+	  --worker-bin "state=$(INTEGRATION_BIN_DIR)/state" \
+	  --worker-bin "database=$(INTEGRATION_BIN_DIR)/database" \
 	  --scenario "$(INTEGRATION_PLAYGROUND_SCENARIO)" \
 	  --artifacts-dir "$(INTEGRATION_PLAYGROUND_ARTIFACTS)"
 
