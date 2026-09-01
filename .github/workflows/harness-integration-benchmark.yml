@@ -1,0 +1,40 @@
+name: Harness integration benchmark
+run-name: Harness integration benchmark · ${{ inputs.runner }} · ${{ inputs.cache-mode }} · ${{ inputs.source-ref || github.sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: Runner pool to measure
+        type: choice
+        required: true
+        default: workers-ci-linux-8core
+        options:
+          - workers-ci-linux-8core
+          - ubuntu-latest
+      cache-mode:
+        description: Reuse the stable cache cohort or force an isolated cold run
+        type: choice
+        required: true
+        default: warm
+        options:
+          - warm
+          - cold
+      source-ref:
+        description: Commit SHA to compare (empty uses the selected workflow ref)
+        type: string
+        required: false
+        default: ''
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  integration:
+    uses: ./.github/workflows/_harness-integration.yml
+    with:
+      runner: ${{ inputs.runner }}
+      source_ref: ${{ inputs.source-ref }}
+      save-cache: ${{ inputs.cache-mode == 'warm' }}
+      cache-key-suffix: ${{ inputs.cache-mode == 'cold' && format('cold-{0}', github.run_id) || '' }}

@@ -68,9 +68,32 @@ def test_prs_restore_rust_caches_and_main_pushes_publish_them() -> None:
     assert ci["jobs"]["harness-integration"]["with"]["save-cache"] == expected
 
 
-def test_harness_integration_uses_the_rust_self_hosted_runner() -> None:
-    integration = workflow("_harness-integration.yml")["jobs"]["integration"]
-    assert integration["runs-on"] == ["self-hosted", "Linux", "X64", "rust"]
+def test_harness_integration_defaults_to_an_available_hosted_runner() -> None:
+    reusable = workflow("_harness-integration.yml")
+    assert reusable["on"]["workflow_call"]["inputs"]["runner"]["default"] == (
+        "ubuntu-latest"
+    )
+    assert reusable["jobs"]["integration"]["runs-on"] == "${{ inputs.runner }}"
+    assert reusable["jobs"]["integration"]["timeout-minutes"] == "90"
+
+
+def test_harness_benchmark_is_manual_and_keeps_cold_caches_isolated() -> None:
+    benchmark = workflow("harness-integration-benchmark.yml")
+    inputs = benchmark["on"]["workflow_dispatch"]["inputs"]
+    assert inputs["runner"]["options"] == [
+        "workers-ci-linux-8core",
+        "ubuntu-latest",
+    ]
+    assert inputs["cache-mode"]["options"] == ["warm", "cold"]
+
+    call = benchmark["jobs"]["integration"]
+    assert call["uses"] == "./.github/workflows/_harness-integration.yml"
+    assert call["with"]["runner"] == "${{ inputs.runner }}"
+    assert call["with"]["save-cache"] == "${{ inputs.cache-mode == 'warm' }}"
+    assert "github.run_id" in call["with"]["cache-key-suffix"]
+
+    reusable_body = (WORKFLOWS / "_harness-integration.yml").read_text()
+    assert "format('-{0}', inputs.cache-key-suffix)" in reusable_body
 
 
 def test_actionlint_knows_the_repository_runner_pool_labels() -> None:
@@ -79,11 +102,34 @@ def test_actionlint_knows_the_repository_runner_pool_labels() -> None:
     )
     assert config["self-hosted-runner"]["labels"] == [
         "general",
-        "rust",
+        "workers-ci-linux-8core",
+        "workers-release-control-linux-2core",
         "workers-release-linux-8core",
+        "workers-release-macos-aws-intel",
         "workers-release-macos-12core",
         "workers-release-macos-arm-5core",
     ]
+
+
+def test_runner_pool_contract_is_documented() -> None:
+    runner_docs = (REPOSITORY / "docs/architecture/testing-and-ci.md").read_text()
+    labels = {
+        "ubuntu-latest",
+        "workers-ci-linux-8core",
+        "workers-release-control-linux-2core",
+        "workers-release-linux-8core",
+        "windows-latest",
+        "workers-release-macos-12core",
+        "workers-release-macos-arm-5core",
+        "workers-release-macos-aws-intel",
+    }
+    for label in labels:
+        assert f"`{label}`" in runner_docs
+
+    assert "ten candidate executions" in runner_docs
+    assert "improvement over `ubuntu-latest` is at least 25%" in runner_docs
+    assert "8-core warm | 7 | 8m54 | 9m17" in runner_docs
+    assert "`ubuntu-latest` remains the default" in runner_docs
 
 
 def test_interface_smoke_bounds_each_engine_readiness_probe() -> None:
