@@ -479,7 +479,7 @@ function SettingsNavItem({
     >
       <Icon className="size-4 shrink-0" aria-hidden />
       <div className="min-w-0 flex-1">
-        <p className="truncate font-sans text-base font-medium sm:text-sm">
+        <p className="truncate font-sans text-base font-medium sm:text-sm leading-4">
           {label}
         </p>
         <p className="line-clamp-1 font-sans text-sm text-ink-ghost sm:text-[0.75rem]">

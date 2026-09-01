@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { cn } from '@/lib/utils'
 
-interface InputProps
+export interface InputProps
   extends Omit<
     React.InputHTMLAttributes<HTMLInputElement>,
     'onChange' | 'value'
@@ -25,7 +25,7 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
       value={value}
       onChange={(e) => onChange(e.currentTarget.value)}
       className={cn(
-        'h-9 w-full rounded-sm border border-transparent bg-surface px-3 font-sans text-[13px] text-ink',
+        'h-12 w-full rounded-sm border border-transparent bg-surface px-3 font-sans text-base text-ink sm:h-9 sm:text-[13px]',
         'placeholder:text-ink-ghost',
         'hover:bg-surface-hover focus:outline-none focus:border-rule-focus focus:ring-[3px] focus:ring-accent/10 transition-[border-color,box-shadow,background-color]',
         'disabled:opacity-40 disabled:pointer-events-none',

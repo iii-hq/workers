@@ -1455,6 +1455,7 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
           minWidth={180}
           maxWidth={340}
           narrowBelow={640}
+          narrowMode="drawer"
         >
           <List className="ts-side-list" aria-label="Tailscale sections">
             {sections.map((item) => {

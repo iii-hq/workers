@@ -159,3 +159,115 @@ export const SettingsRow = React.forwardRef<HTMLDivElement, SettingsRowProps>(
   },
 )
 SettingsRow.displayName = 'SettingsRow'
+
+export interface SettingsFieldControlProps {
+  id: string
+  name?: string
+  'data-field'?: string
+  'aria-invalid'?: true
+  'aria-describedby'?: string
+}
+
+export type SettingsFieldControlSize = 'fit' | 'compact' | 'default' | 'full'
+
+export interface SettingsFieldProps
+  extends Omit<SettingsRowProps, 'label' | 'description' | 'meta' | 'control'> {
+  id?: string
+  name?: string
+  /** Stable configuration path used by global-settings deep links. */
+  field?: string
+  label: React.ReactNode
+  description?: React.ReactNode
+  meta?: React.ReactNode
+  error?: React.ReactNode
+  controlSize?: SettingsFieldControlSize
+  renderControl: (props: SettingsFieldControlProps) => React.ReactNode
+}
+
+const settingsFieldWidths: Record<SettingsFieldControlSize, string> = {
+  fit: 'w-full sm:w-auto',
+  compact: 'w-full sm:w-32',
+  default: 'w-full sm:w-80',
+  full: 'w-full',
+}
+
+/**
+ * A labelled SettingsRow that owns IDs, validation associations, deep-link
+ * metadata, and standard control widths. The render prop works for Input,
+ * Select, Switch, and domain-specific controls without duplicating ARIA glue.
+ */
+export const SettingsField = React.forwardRef<
+  HTMLDivElement,
+  SettingsFieldProps
+>(
+  (
+    {
+      id,
+      name,
+      field,
+      label,
+      description,
+      meta,
+      error,
+      controlSize = 'default',
+      renderControl,
+      ...props
+    },
+    ref,
+  ) => {
+    const generatedId = React.useId()
+    const controlId = id ?? `${generatedId}-control`
+    const hasDescription = hasContent(description)
+    const hasMeta = hasContent(meta)
+    const hasError = hasContent(error)
+    const descriptionId = hasDescription
+      ? `${generatedId}-description`
+      : undefined
+    const errorId = hasError ? `${generatedId}-error` : undefined
+    const describedBy =
+      [descriptionId, errorId].filter(Boolean).join(' ') || undefined
+
+    return (
+      <SettingsRow
+        ref={ref}
+        label={<label htmlFor={controlId}>{label}</label>}
+        description={
+          hasDescription ? (
+            <span id={descriptionId}>{description}</span>
+          ) : undefined
+        }
+        meta={
+          hasMeta || hasError ? (
+            <div className="flex flex-col items-start gap-0.5">
+              {hasMeta ? meta : null}
+              {hasError ? (
+                <span id={errorId} className="text-alert" role="alert">
+                  {error}
+                </span>
+              ) : null}
+            </div>
+          ) : undefined
+        }
+        control={
+          <div
+            data-settings-field-control
+            className={cn(
+              'min-w-0 [&>*]:max-w-full [&>*]:w-full',
+              settingsFieldWidths[controlSize],
+            )}
+          >
+            {renderControl({
+              id: controlId,
+              name: name ?? field,
+              'data-field': field,
+              'aria-invalid': hasError ? true : undefined,
+              'aria-describedby': describedBy,
+            })}
+          </div>
+        }
+        {...props}
+      />
+    )
+  },
+)
+SettingsField.displayName = 'SettingsField'

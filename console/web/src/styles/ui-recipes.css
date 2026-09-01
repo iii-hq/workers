@@ -972,6 +972,24 @@ a.iii-ui-list-item,
     width: 100%;
     justify-content: flex-start;
   }
+
+  [data-settings-field-control]
+    :is(
+      input:not([type="hidden"]),
+      button,
+      select,
+      textarea,
+      [role="combobox"]
+    ) {
+    min-height: 3rem;
+    font-size: 1rem;
+  }
+
+  .iii-ui-settings-section__action :is(button, [role="button"]),
+  .iii-ui-settings-row__control :is(button, [role="button"]),
+  [data-settings-narrow-action] {
+    min-height: 3rem;
+  }
 }
 
 @media (min-width: 641px) {

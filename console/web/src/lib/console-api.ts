@@ -57,13 +57,16 @@ import {
   PageShell,
   PageSidebar,
 } from '@/components/ui/PageChrome'
+import { RawValueInput } from '@/components/ui/RawValueInput'
 import { Select } from '@/components/ui/Select'
 import { Selector } from '@/components/ui/Selector'
 import {
+  SettingsField,
   SettingsList,
   SettingsRow,
   SettingsSection,
 } from '@/components/ui/Settings'
+import { SettingsDeck } from '@/components/ui/SettingsDeck'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { StatusPanel } from '@/components/ui/StatusPanel'
@@ -156,9 +159,12 @@ export const components: ConsoleApi['components'] = {
   Panel,
   PanelBody,
   PanelHeader,
+  RawValueInput,
   Select,
   SegmentedControl,
   Selector,
+  SettingsDeck,
+  SettingsField,
   SettingsList,
   SettingsRow,
   SettingsSection,

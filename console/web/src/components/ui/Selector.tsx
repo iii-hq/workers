@@ -36,6 +36,12 @@ export interface SelectorProps<T extends string = string> {
   invalid?: boolean
   className?: string
   contentClassName?: string
+  /** ID applied to the visible trigger so a `<label htmlFor>` can target it. */
+  id?: string
+  /** Form name. The selected value is mirrored through a hidden input. */
+  name?: string
+  /** Stable configuration path applied to the visible trigger for deep-link focus. */
+  'data-field'?: string
   placeholder?: string
   searchPlaceholder?: string
   emptyMessage?: React.ReactNode
@@ -48,6 +54,7 @@ export interface SelectorProps<T extends string = string> {
   createOptionLabel?: (query: string) => React.ReactNode
   triggerIcon?: React.ReactNode
   'aria-label': string
+  'aria-invalid'?: React.AriaAttributes['aria-invalid']
   'aria-describedby'?: string
 }
 
@@ -124,6 +131,9 @@ export function Selector<T extends string>({
   invalid,
   className,
   contentClassName,
+  id,
+  name,
+  'data-field': dataField,
   placeholder = 'Select…',
   searchPlaceholder = 'Search…',
   emptyMessage = 'No options found',
@@ -135,6 +145,7 @@ export function Selector<T extends string>({
   createOptionLabel,
   triggerIcon,
   'aria-label': ariaLabel,
+  'aria-invalid': ariaInvalid,
   'aria-describedby': ariaDescribedBy,
 }: SelectorProps<T>) {
   const [internalOpen, setInternalOpen] = React.useState(false)
@@ -175,6 +186,12 @@ export function Selector<T extends string>({
   const describedBy = [ariaDescribedBy, validationMessage && validationId]
     .filter(Boolean)
     .join(' ')
+  const invalidState = ariaInvalid ?? (invalid || undefined)
+  const invalidVisual =
+    invalid ||
+    (ariaInvalid !== undefined &&
+      ariaInvalid !== false &&
+      ariaInvalid !== 'false')
 
   function setQuery(next: string) {
     if (controlledQuery === undefined) setInternalQuery(next)
@@ -286,21 +303,31 @@ export function Selector<T extends string>({
 
   return (
     <div className={cn('min-w-0', className)}>
+      {name ? (
+        <input
+          type="hidden"
+          name={name}
+          value={value ?? ''}
+          disabled={disabled}
+        />
+      ) : null}
       <PopoverPrimitive.Root open={open} onOpenChange={setOpen}>
         <PopoverPrimitive.Trigger asChild>
           <button
+            id={id}
             type="button"
+            data-field={dataField}
             disabled={disabled}
             aria-label={ariaLabel}
             aria-haspopup="listbox"
             aria-expanded={open}
             aria-controls={open ? listboxId : undefined}
-            aria-invalid={invalid || undefined}
+            aria-invalid={invalidState}
             aria-describedby={describedBy || undefined}
             className={cn(
               'iii-ui-motion-control inline-flex h-12 w-full min-w-0 items-center justify-between gap-2 rounded-sm border border-transparent bg-surface px-3 font-sans text-base text-ink hover:bg-surface-hover focus:border-rule-focus focus:outline-none disabled:pointer-events-none disabled:opacity-40 sm:h-9 sm:text-[13px]',
               open && 'border-rule-focus',
-              invalid && 'border-alert',
+              invalidVisual && 'border-alert',
             )}
           >
             {triggerIcon ? (

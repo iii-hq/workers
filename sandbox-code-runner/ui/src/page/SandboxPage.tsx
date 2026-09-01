@@ -299,6 +299,7 @@ export function SandboxPage({
           minWidth={RAIL_WIDTH_MIN}
           maxWidth={RAIL_WIDTH_MAX}
           narrowBelow={700}
+          narrowMode="drawer"
           className="cr-page-sidebar"
         >
           <FleetRail

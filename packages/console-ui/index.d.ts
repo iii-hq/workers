@@ -905,6 +905,20 @@ export interface InputProps extends Omit<React.InputHTMLAttributes<HTMLInputElem
 }
 export declare const Input: React.ComponentType<InputProps & React.RefAttributes<HTMLInputElement>>
 
+export interface RawValueInputProps extends Omit<InputProps, 'className'> {
+  /** Human label used by the explicit replacement action. */
+  label: string
+  kind: 'environment' | 'custom'
+  replacementLabel: React.ReactNode
+  onUseLiteral: () => void
+  className?: string
+  inputClassName?: string
+}
+/** Opaque/template editor that only converts to a typed literal explicitly. */
+export declare const RawValueInput: React.ComponentType<
+  RawValueInputProps & React.RefAttributes<HTMLInputElement>
+>
+
 export interface SwitchProps
   extends Omit<React.InputHTMLAttributes<HTMLInputElement>, 'children' | 'className' | 'type'> {
   /** Classes apply to the visual control; native input props stay on the checkbox. */
@@ -1000,10 +1014,12 @@ export interface PageSidebarProps extends React.HTMLAttributes<HTMLElement> {
   resizable?: boolean
   /** Host-owned persistence/synchronization key; no storage logic ships in worker bundles. */
   storageKey?: string
-  /** Responsive presentation: a rail that opens as a drawer over the main column when the host owns collapse state, the full-width aside when the page controls `collapsed`; never changes the wide preference. */
+  /** Activates the responsive presentation when the page already knows its container is narrow; never changes the saved wide preference. */
   narrow?: boolean
   /** Host-owned PageBody breakpoint for the responsive presentation. */
   narrowBelow?: number
+  /** `inline` (default) makes narrow navigation full-width for drill-in flows; `drawer` keeps a rail beside the main column and opens navigation as an overlay. */
+  narrowMode?: 'inline' | 'drawer'
 }
 /** Shared host-owned navigation column; fixed by default, optionally collapsible/resizable. */
 export declare const PageSidebar: React.ComponentType<PageSidebarProps>
@@ -1026,6 +1042,8 @@ export interface SelectOption<T extends string = string> {
   label: string
   /** Optional hover tooltip on the option row. */
   title?: string
+  /** Supporting copy shown below the label in menus and mobile sheets. */
+  description?: string
   disabled?: boolean
 }
 export interface SelectGroup<T extends string = string> {
@@ -1040,11 +1058,21 @@ export interface SelectProps<T extends string = string> {
   onChange: (next: T) => void
   disabled?: boolean
   className?: string
+  /** ID applied to the visible trigger so a `<label htmlFor>` can target it. */
+  id?: string
+  /** Form name. The controlled value is mirrored through a hidden input. */
+  name?: string
+  /** Stable configuration path applied to the visible trigger for deep-link focus. */
+  'data-field'?: string
+  appearance?: 'default' | 'inline'
+  showChevron?: boolean
   'aria-label'?: string
   'aria-busy'?: boolean
   'aria-invalid'?: React.AriaAttributes['aria-invalid']
   'aria-describedby'?: string
   placeholder?: string
+  sheetTitle?: React.ReactNode
+  sheetDescription?: React.ReactNode
   /** Render a leading option that clears the selection (calls `onClear`, not `onChange`). */
   allowEmpty?: boolean
   emptyLabel?: string
@@ -1102,6 +1130,12 @@ export interface SelectorProps<T extends string = string> {
   invalid?: boolean
   className?: string
   contentClassName?: string
+  /** ID applied to the visible trigger so a `<label htmlFor>` can target it. */
+  id?: string
+  /** Form name. The selected value is mirrored through a hidden input. */
+  name?: string
+  /** Stable configuration path applied to the visible trigger for deep-link focus. */
+  'data-field'?: string
   placeholder?: string
   searchPlaceholder?: string
   emptyMessage?: React.ReactNode
@@ -1114,9 +1148,35 @@ export interface SelectorProps<T extends string = string> {
   createOptionLabel?: (query: string) => React.ReactNode
   triggerIcon?: React.ReactNode
   'aria-label': string
+  'aria-invalid'?: React.AriaAttributes['aria-invalid']
   'aria-describedby'?: string
 }
 export declare const Selector: <T extends string = string>(props: SelectorProps<T>) => React.ReactNode
+
+export interface SettingsDeckProps
+  extends Omit<React.HTMLAttributes<HTMLDivElement>, 'children' | 'title'> {
+  /** Whether the detail level is visible. The overview is shown when false. */
+  open: boolean
+  /** Collection, summary, or empty state shown at the deck's root level. */
+  overview: React.ReactNode
+  /** Settings for the selected resource. */
+  detail: React.ReactNode
+  /** Accessible heading for the selected resource. */
+  title: React.ReactNode
+  /** Optional context shown below the detail heading. */
+  description?: React.ReactNode
+  /** Visible label for the back action. Defaults to “Back”. */
+  backLabel?: React.ReactNode
+  /** More specific screen-reader label for the back action. */
+  backAriaLabel?: string
+  onBack: () => void
+  /** Disable when the consumer owns a more specific deep-link focus target. */
+  autoFocusDetail?: boolean
+}
+/** One-level settings navigation with focus transfer and restoration. Mark a preferred surviving overview target with `data-settings-deck-fallback`. */
+export declare const SettingsDeck: React.ComponentType<
+  SettingsDeckProps & React.RefAttributes<HTMLDivElement>
+>
 
 export interface SettingsSectionProps extends Omit<React.HTMLAttributes<HTMLElement>, 'title'> {
   title?: React.ReactNode
@@ -1145,6 +1205,32 @@ export interface SettingsRowProps extends Omit<React.HTMLAttributes<HTMLDivEleme
 }
 /** A key/value settings row with a responsive trailing control/action slot. */
 export declare const SettingsRow: React.ComponentType<SettingsRowProps & React.RefAttributes<HTMLDivElement>>
+
+export interface SettingsFieldControlProps {
+  id: string
+  name?: string
+  'data-field'?: string
+  'aria-invalid'?: true
+  'aria-describedby'?: string
+}
+export type SettingsFieldControlSize = 'fit' | 'compact' | 'default' | 'full'
+export interface SettingsFieldProps
+  extends Omit<SettingsRowProps, 'label' | 'description' | 'meta' | 'control'> {
+  id?: string
+  name?: string
+  /** Stable configuration path used by global-settings deep links. */
+  field?: string
+  label: React.ReactNode
+  description?: React.ReactNode
+  meta?: React.ReactNode
+  error?: React.ReactNode
+  controlSize?: SettingsFieldControlSize
+  renderControl: (props: SettingsFieldControlProps) => React.ReactNode
+}
+/** Labelled settings row with generated IDs, validation ARIA, and standard widths. */
+export declare const SettingsField: React.ComponentType<
+  SettingsFieldProps & React.RefAttributes<HTMLDivElement>
+>
 
 export declare const Skeleton: React.ComponentType<React.HTMLAttributes<HTMLSpanElement>>
 

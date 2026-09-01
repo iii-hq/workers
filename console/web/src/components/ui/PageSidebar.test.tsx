@@ -64,9 +64,25 @@ describe('PageSidebar', () => {
     expect(html).toContain('inert=""')
   })
 
-  it('narrows a host-owned sidebar to a closed drawer rail', () => {
+  it('makes narrow navigation full-width without changing the wide preference', () => {
     const html = renderSidebar(
-      <PageSidebar label="files" collapsible narrow>
+      <PageSidebar label="files" collapsible defaultCollapsed narrow>
+        file tree
+      </PageSidebar>,
+    )
+
+    expect(html).toContain('style="width:100%"')
+    expect(html).toContain('data-narrow=""')
+    expect(html).toContain('file tree')
+    expect(html).not.toContain('data-drawer')
+    expect(html).not.toContain('data-collapsed')
+    expect(html).not.toContain('aria-label="expand files"')
+    expect(html).not.toContain('aria-label="close files"')
+  })
+
+  it('keeps the drawer presentation as an explicit narrow mode', () => {
+    const html = renderSidebar(
+      <PageSidebar label="files" narrow narrowMode="drawer">
         file tree
       </PageSidebar>,
     )
@@ -78,19 +94,5 @@ describe('PageSidebar', () => {
     expect(html).toContain('file tree')
     expect(html).toContain('aria-label="expand files"')
     expect(html).not.toContain('aria-label="close files"')
-  })
-
-  it('keeps the full-width presentation for a page that controls collapse', () => {
-    const html = renderSidebar(
-      <PageSidebar label="files" collapsible collapsed={false} narrow>
-        file tree
-      </PageSidebar>,
-    )
-
-    expect(html).toContain('style="width:100%"')
-    expect(html).toContain('file tree')
-    expect(html).not.toContain('data-collapsed')
-    expect(html).not.toContain('data-drawer')
-    expect(html).not.toContain('aria-label="expand files"')
   })
 })

@@ -2,23 +2,34 @@
  * Custom configuration form for the `database` configuration entry —
  * registered through `host.configForms` as the worker-owned editor.
  *
- * One card per configured database: connection URL with a live driver
- * badge, capture mode with driver-aware guidance, TLS (hidden for sqlite,
- * which ignores it), and the pool knobs. The form edits the working draft
- * via `onChange`; dirty tracking, save/reset, validation and the SaveBar
- * stay host-owned. Mirrors DatabaseConfig (database/src/config.rs).
+ * The overview lists query-history limits and connection resources. Opening
+ * a connection pushes a dedicated deck level with its URL, driver-aware
+ * capture, TLS, and pool settings. The form edits the working draft via
+ * `onChange`; dirty tracking, save/reset, validation and the SaveBar stay
+ * host-owned. Mirrors DatabaseConfig (database/src/config.rs).
  */
 
 import {
+  Button,
+  Chip,
   type ConfigFormProps,
   type Host,
+  Input,
   type JsonValue,
+  List,
+  ListItem,
+  Panel,
+  RawValueInput,
+  Select,
+  SettingsDeck,
+  SettingsField,
+  type SettingsFieldControlProps,
   SettingsList,
   SettingsRow,
   SettingsSection,
   Switch,
 } from '@iii-dev/console-ui'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { errText } from '../lib/errors'
 import {
   booleanLiteralForRawValue,
@@ -26,6 +37,7 @@ import {
   DEFAULT_HISTORY_MAX_ENTRIES,
   type Driver,
   databaseFocusRequest,
+  databaseHandleError,
   driverOfConfiguredUrl,
   isEnvironmentValue,
   isRawTypedValue,
@@ -36,10 +48,13 @@ import {
 } from './model'
 
 type JsonObject = { [key: string]: JsonValue }
-const CONFIG_NARROW_BELOW = 760
+
+function isObjectValue(v: JsonValue | undefined): v is JsonObject {
+  return v !== null && typeof v === 'object' && !Array.isArray(v)
+}
 
 function asObject(v: JsonValue | undefined): JsonObject {
-  return v && typeof v === 'object' && !Array.isArray(v) ? { ...v } : {}
+  return isObjectValue(v) ? { ...v } : {}
 }
 
 function asString(v: JsonValue | undefined): string {
@@ -54,40 +69,6 @@ function asNumber(v: JsonValue | undefined, fallback: number): number {
 function asBoolean(v: JsonValue | undefined, fallback: boolean): boolean {
   if (typeof v === 'boolean') return v
   return typeof v === 'string' ? booleanLiteralForRawValue(v, fallback) : fallback
-}
-
-function useContainerNarrow(threshold: number): [(node: HTMLDivElement | null) => void, boolean] {
-  const [narrow, setNarrow] = useState(false)
-  const observerRef = useRef<ResizeObserver | null>(null)
-  const ref = useCallback(
-    (node: HTMLDivElement | null) => {
-      observerRef.current?.disconnect()
-      observerRef.current = null
-      if (!node) return
-
-      const width = node.getBoundingClientRect().width
-      if (width > 0) setNarrow(width < threshold)
-      if (typeof ResizeObserver === 'undefined') return
-
-      const observer = new ResizeObserver((entries) => {
-        const next = entries[0]?.contentRect.width
-        if (typeof next === 'number' && next > 0) setNarrow(next < threshold)
-      })
-      observer.observe(node)
-      observerRef.current = observer
-    },
-    [threshold],
-  )
-
-  return [ref, narrow]
-}
-
-export function focusDatabaseDetail(root: HTMLElement | null): boolean {
-  const target = root?.querySelector<HTMLElement>('.db-cfg-detail')
-  if (!target) return false
-  target.focus({ preventScroll: true })
-  target.scrollIntoView({ block: 'start' })
-  return true
 }
 
 function pointer(parts: readonly string[]) {
@@ -151,76 +132,121 @@ type TestResult = { status: 'testing' } | { status: 'done'; ok: boolean; text: s
 function RawTypedValue({
   id,
   name,
-  dataField,
+  'data-field': dataField,
+  'aria-invalid': ariaInvalid,
+  'aria-describedby': ariaDescribedBy,
   label,
   value,
   replacementLabel,
+  onChange,
+  onUseLiteral,
+}: SettingsFieldControlProps & {
+  label: string
+  value: string
+  replacementLabel: string
+  onChange(next: string): void
+  onUseLiteral(): void
+}) {
+  const environmentBacked = isEnvironmentValue(value) || value.trim().startsWith('${')
+  return (
+    <RawValueInput
+      id={id}
+      name={name}
+      data-field={dataField}
+      aria-invalid={ariaInvalid}
+      aria-describedby={ariaDescribedBy}
+      inputClassName="db-cfg-technical"
+      type="text"
+      label={label}
+      kind={environmentBacked ? 'environment' : 'custom'}
+      value={value}
+      replacementLabel={replacementLabel}
+      onChange={onChange}
+      onUseLiteral={onUseLiteral}
+    />
+  )
+}
+
+function OpaqueSetting({
+  id,
+  field,
+  label,
+  description,
+  value,
   error,
-  errorId,
+  replacementLabel,
   onChange,
   onUseLiteral,
 }: {
   id: string
-  name?: string
-  dataField: string
+  field: string
   label: string
-  value: string
+  description: string
+  value: JsonValue
+  error?: ReactNode
   replacementLabel: string
-  error?: string
-  errorId?: string
   onChange(next: string): void
   onUseLiteral(): void
 }) {
-  const environmentBacked = isEnvironmentValue(value) || /^\$\{[^}]*$/.test(value)
-  return (
-    <div className="db-cfg-template-control" data-environment-template={environmentBacked ? 'true' : 'false'}>
-      <span className="db-cfg-template-kind">{environmentBacked ? 'Environment' : 'Custom value'}</span>
-      <input
+  if (typeof value === 'string') {
+    return (
+      <SettingsField
         id={id}
-        name={name}
-        data-field={dataField}
-        className="db-cfg-input db-cfg-template-input"
-        type="text"
-        value={value}
-        spellCheck={false}
-        autoComplete="off"
-        aria-label={`${label} raw value`}
-        aria-invalid={error ? true : undefined}
-        aria-describedby={errorId}
-        onChange={(event) => onChange(event.target.value)}
+        field={field}
+        label={label}
+        description={description}
+        error={error}
+        layout="stacked"
+        controlSize="full"
+        renderControl={(controlProps) => (
+          <RawTypedValue
+            {...controlProps}
+            label={label}
+            value={value}
+            replacementLabel={replacementLabel}
+            onChange={onChange}
+            onUseLiteral={onUseLiteral}
+          />
+        )}
       />
-      <button
-        type="button"
-        className="db-cfg-template-replace"
-        onClick={onUseLiteral}
-        aria-label={`Replace ${label} environment value with ${replacementLabel}`}
-      >
-        Use {replacementLabel}
-      </button>
-    </div>
+    )
+  }
+
+  return (
+    <SettingsField
+      id={id}
+      field={field}
+      label={label}
+      description={description}
+      error={error}
+      controlSize="fit"
+      renderControl={(controlProps) => (
+        <div className="db-cfg-opaque-action">
+          <Chip tone="warning">Custom value preserved</Chip>
+          <Button {...controlProps} type="button" variant="ghost" size="sm" onClick={onUseLiteral}>
+            Use {replacementLabel}
+          </Button>
+        </div>
+      )}
+    />
   )
 }
 
 function DatabaseNumberInput({
   id,
   name,
-  dataField,
+  'data-field': dataField,
+  'aria-invalid': ariaInvalid,
+  'aria-describedby': ariaDescribedBy,
   label,
   value,
   fallback,
-  error,
-  errorId,
-  className = 'db-cfg-input',
+  className = 'db-cfg-technical',
   onChange,
-}: {
-  id: string
-  name?: string
-  dataField: string
+}: SettingsFieldControlProps & {
   label: string
   value: JsonValue | undefined
   fallback: number
-  error?: string
-  errorId?: string
   className?: string
   onChange(raw: string): void
 }) {
@@ -230,19 +256,19 @@ function DatabaseNumberInput({
       <RawTypedValue
         id={id}
         name={name}
-        dataField={dataField}
+        data-field={dataField}
+        aria-invalid={ariaInvalid}
+        aria-describedby={ariaDescribedBy}
         label={label}
         value={value}
         replacementLabel={String(replacement)}
-        error={error}
-        errorId={errorId}
         onChange={onChange}
         onUseLiteral={() => onChange(String(replacement))}
       />
     )
   }
   return (
-    <input
+    <Input
       id={id}
       name={name}
       data-field={dataField}
@@ -250,12 +276,12 @@ function DatabaseNumberInput({
       type="number"
       min={0}
       inputMode="numeric"
-      value={typeof value === 'number' ? value : ''}
+      value={typeof value === 'number' ? String(value) : ''}
       placeholder={String(fallback)}
       aria-label={label}
-      aria-invalid={error ? true : undefined}
-      aria-describedby={errorId}
-      onChange={(event) => onChange(event.target.value)}
+      aria-invalid={ariaInvalid}
+      aria-describedby={ariaDescribedBy}
+      onChange={onChange}
     />
   )
 }
@@ -263,24 +289,19 @@ function DatabaseNumberInput({
 function DatabaseSelectInput({
   id,
   name,
-  dataField,
+  'data-field': dataField,
+  'aria-invalid': ariaInvalid,
+  'aria-describedby': ariaDescribedBy,
   label,
   value,
   fallback,
   options,
-  error,
-  errorId,
   onChange,
-}: {
-  id: string
-  name: string
-  dataField: string
+}: SettingsFieldControlProps & {
   label: string
   value: JsonValue | undefined
   fallback: string
   options: readonly { value: string; label: string }[]
-  error?: string
-  errorId?: string
   onChange(next: string): void
 }) {
   const current = typeof value === 'string' ? value : fallback
@@ -296,34 +317,31 @@ function DatabaseSelectInput({
       <RawTypedValue
         id={id}
         name={name}
-        dataField={dataField}
+        data-field={dataField}
+        aria-invalid={ariaInvalid}
+        aria-describedby={ariaDescribedBy}
         label={label}
         value={current}
         replacementLabel={replacementLabel}
-        error={error}
-        errorId={errorId}
         onChange={onChange}
         onUseLiteral={() => onChange(replacement)}
       />
     )
   }
   return (
-    <select
+    <Select
       id={id}
       name={name}
       data-field={dataField}
-      className="db-cfg-select"
+      className="db-cfg-control"
       value={current}
-      aria-invalid={error ? true : undefined}
-      aria-describedby={errorId}
-      onChange={(event) => onChange(event.target.value)}
-    >
-      {options.map((option) => (
-        <option key={option.value} value={option.value}>
-          {option.label}
-        </option>
-      ))}
-    </select>
+      options={[...options]}
+      aria-label={label}
+      aria-invalid={ariaInvalid}
+      aria-describedby={ariaDescribedBy}
+      sheetTitle={label}
+      onChange={onChange}
+    />
   )
 }
 
@@ -338,8 +356,6 @@ function HistorySettings({
 }) {
   const entriesError = fieldError(errors, ['history_max_entries'])
   const bytesError = fieldError(errors, ['history_max_bytes'])
-  const entriesErrorId = entriesError ? 'db-cfg-history-max-entries-error' : undefined
-  const bytesErrorId = bytesError ? 'db-cfg-history-max-bytes-error' : undefined
   const update = (field: 'history_max_entries' | 'history_max_bytes', raw: string) => {
     const next = { ...value }
     if (raw.trim() === '') delete next[field]
@@ -357,69 +373,99 @@ function HistorySettings({
       description="Per-database history is stored by the state worker. The first limit reached removes the oldest entries."
     >
       <SettingsList>
-        <SettingsRow
-          layout="auto"
+        <SettingsField
+          id="db-cfg-history-max-entries"
+          field="history_max_entries"
           label="Maximum entries"
           description="Set 0 to disable query history recording."
           meta={`${asNumber(value.history_max_entries, DEFAULT_HISTORY_MAX_ENTRIES).toLocaleString('en-US')} entries per database`}
-          control={
+          error={entriesError}
+          controlSize="compact"
+          renderControl={(controlProps) => (
             <DatabaseNumberInput
-              id="db-cfg-history-max-entries"
-              name="history_max_entries"
-              dataField="history_max_entries"
+              {...controlProps}
               label="Maximum query history entries"
               value={value.history_max_entries}
               fallback={DEFAULT_HISTORY_MAX_ENTRIES}
-              error={entriesError}
-              errorId={entriesErrorId}
-              className="db-cfg-input db-cfg-history-input"
+              className="db-cfg-history-input db-cfg-technical"
               onChange={(raw) => update('history_max_entries', raw)}
             />
-          }
+          )}
         />
-        <SettingsRow
-          layout="auto"
+        <SettingsField
+          id="db-cfg-history-max-bytes"
+          field="history_max_bytes"
           label="Maximum storage"
           description="Maximum JSON-serialized history size. Set 0 to disable recording."
           meta={`${asNumber(value.history_max_bytes, DEFAULT_HISTORY_MAX_BYTES).toLocaleString('en-US')} bytes per database`}
-          control={
+          error={bytesError}
+          controlSize="compact"
+          renderControl={(controlProps) => (
             <DatabaseNumberInput
-              id="db-cfg-history-max-bytes"
-              name="history_max_bytes"
-              dataField="history_max_bytes"
+              {...controlProps}
               label="Maximum query history storage in bytes"
               value={value.history_max_bytes}
               fallback={DEFAULT_HISTORY_MAX_BYTES}
-              error={bytesError}
-              errorId={bytesErrorId}
-              className="db-cfg-input db-cfg-history-input"
+              className="db-cfg-history-input db-cfg-technical"
               onChange={(raw) => update('history_max_bytes', raw)}
             />
-          }
+          )}
         />
       </SettingsList>
-      {entriesError ? (
-        <span id={entriesErrorId} className="db-cfg-warn" role="alert">
-          {entriesError}
-        </span>
-      ) : null}
-      {bytesError ? (
-        <span id={bytesErrorId} className="db-cfg-warn" role="alert">
-          {bytesError}
-        </span>
-      ) : null}
     </SettingsSection>
   )
 }
 
-export function DatabaseConfigForm(props: ConfigFormProps & { host: Host }) {
-  const value = asObject(props.value)
-  const databases = asObject(value.databases)
+type DatabaseConfigFormProps = ConfigFormProps & { host: Host }
+
+export function DatabaseConfigForm(props: DatabaseConfigFormProps) {
+  if (!isObjectValue(props.value)) {
+    const rootError = props.errors?.get('') ?? props.errors?.get('/')
+    return (
+      <div className="db-cfg">
+        <SettingsSection
+          title="Database configuration"
+          description="This worker configuration is provided as one opaque value. It remains unchanged until you edit it or explicitly replace it."
+        >
+          <SettingsList>
+            <OpaqueSetting
+              id="db-cfg-root"
+              field="configuration"
+              label="Configuration value"
+              description="Edit the template as-is, or replace it with a local SQLite connection."
+              value={props.value}
+              error={rootError}
+              replacementLabel="SQLite defaults"
+              onChange={props.onChange}
+              onUseLiteral={() =>
+                props.onChange({
+                  databases: {
+                    primary: { url: 'sqlite:./data/primary.db' },
+                  },
+                })
+              }
+            />
+          </SettingsList>
+        </SettingsSection>
+      </div>
+    )
+  }
+
+  return <StructuredDatabaseConfigForm {...props} rootValue={props.value} />
+}
+
+function StructuredDatabaseConfigForm(props: DatabaseConfigFormProps & { rootValue: JsonObject }) {
+  const value = { ...props.rootValue }
+  const databasesValue = value.databases
+  const databasesOpaque = databasesValue !== undefined && !isObjectValue(databasesValue)
+  const databases = asObject(databasesValue)
   const names = Object.keys(databases)
-  const [selectedIndex, setSelectedIndex] = useState(0)
-  const activeIndex = names.length > 0 ? Math.min(selectedIndex, names.length - 1) : -1
-  const activeName = activeIndex >= 0 ? names[activeIndex] : undefined
-  const [responsiveRootRef, narrow] = useContainerNarrow(CONFIG_NARROW_BELOW)
+  const initialFocusRequest = databaseFocusRequest(names, props.focusField)
+  const [selectedName, setSelectedName] = useState<string | null>(() => {
+    const requested = initialFocusRequest?.databaseName
+    return requested && Object.hasOwn(databases, requested) ? requested : null
+  })
+  const activeName = selectedName !== null && Object.hasOwn(databases, selectedName) ? selectedName : null
 
   // Probe outcomes are keyed by handle and dropped on any edit of that
   // handle — a stale "connected" next to a changed url would be a lie. The
@@ -427,7 +473,8 @@ export function DatabaseConfigForm(props: ConfigFormProps & { host: Host }) {
   // is in flight bumps it, and the completion for the superseded probe is
   // discarded instead of resurrecting a result for a url it never tested.
   const [testResults, setTestResults] = useState<Record<string, TestResult>>({})
-  const testTokens = useRef<Record<string, number>>({})
+  const testTokens = useRef<Record<string, number>>(Object.create(null))
+  const pendingHandleFocusRef = useRef('')
 
   const commit = (nextDatabases: JsonObject) => props.onChange({ ...value, databases: nextDatabases })
 
@@ -440,14 +487,15 @@ export function DatabaseConfigForm(props: ConfigFormProps & { host: Host }) {
     })
   }
 
-  const setDb = (name: string, next: JsonObject) => {
+  const setDb = (name: string, next: JsonValue) => {
     clearTest(name)
     commit({ ...databases, [name]: next })
   }
 
   const runTest = async (name: string) => {
     const db = asObject(databases[name])
-    const token = (testTokens.current[name] = (testTokens.current[name] ?? 0) + 1)
+    const token = (testTokens.current[name] ?? 0) + 1
+    testTokens.current[name] = token
     setTestResults((r) => ({ ...r, [name]: { status: 'testing' } }))
     let result: TestResult
     try {
@@ -480,61 +528,47 @@ export function DatabaseConfigForm(props: ConfigFormProps & { host: Host }) {
   const addDb = () => {
     let i = names.length + 1
     let name = names.length === 0 ? 'primary' : `db${i}`
-    while (databases[name] !== undefined) name = `db${++i}`
-    setSelectedIndex(names.length)
+    while (Object.hasOwn(databases, name)) name = `db${++i}`
+    setSelectedName(name)
     commit({ ...databases, [name]: { url: `sqlite:./data/${name}.db` } })
   }
 
   const renameDb = (from: string, to: string) => {
-    if (to === from || databases[to] !== undefined) return
+    if (to === from || Object.hasOwn(databases, to)) return
     clearTest(from)
     // Rebuild in place so the card doesn't jump to the end of the list.
-    const next: JsonObject = {}
-    for (const key of names) {
-      next[key === from ? to : key] = databases[key]
-    }
+    const next = Object.fromEntries(names.map((key) => [key === from ? to : key, databases[key]])) as JsonObject
+    pendingHandleFocusRef.current = to
+    setSelectedName(to)
     commit(next)
   }
 
   // The host passes the deep-link path to the custom form. Prefer the exact
   // control, then fall back to the named database card.
   const rootRef = useRef<HTMLDivElement | null>(null)
-  const setRootRef = useCallback(
-    (node: HTMLDivElement | null) => {
-      rootRef.current = node
-      responsiveRootRef(node)
-    },
-    [responsiveRootRef],
-  )
   const handledFocusKeyRef = useRef('')
-  const detailFocusFrameRef = useRef<number | null>(null)
   const focusRequest = databaseFocusRequest(names, props.focusField)
   const focusRequestKey = focusRequest?.key ?? ''
   const focusExactField = focusRequest?.exactField ?? ''
   const focusDatabaseIndex = focusRequest?.databaseIndex ?? -1
   const focusDatabaseName = focusRequest?.databaseName ?? ''
 
-  const selectDatabase = (index: number) => {
-    setSelectedIndex(index)
-    if (!narrow) return
-    if (detailFocusFrameRef.current !== null) cancelAnimationFrame(detailFocusFrameRef.current)
-    detailFocusFrameRef.current = requestAnimationFrame(() => {
-      detailFocusFrameRef.current = null
-      focusDatabaseDetail(rootRef.current)
-    })
-  }
-
-  useEffect(
-    () => () => {
-      if (detailFocusFrameRef.current !== null) cancelAnimationFrame(detailFocusFrameRef.current)
-    },
-    [],
-  )
+  useEffect(() => {
+    if (selectedName === null || Object.hasOwn(databases, selectedName)) return
+    setSelectedName(null)
+  }, [databases, selectedName])
 
   useEffect(() => {
-    if (selectedIndex < names.length || names.length === 0) return
-    setSelectedIndex(names.length - 1)
-  }, [names.length, selectedIndex])
+    const pendingName = pendingHandleFocusRef.current
+    if (!pendingName || activeName !== pendingName || !rootRef.current) return
+    pendingHandleFocusRef.current = ''
+    const frame = requestAnimationFrame(() => {
+      rootRef.current
+        ?.querySelector<HTMLElement>(`[data-field="${CSS.escape(`databases.${pendingName}.handle`)}"]`)
+        ?.focus({ preventScroll: true })
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [activeName])
 
   useEffect(() => {
     if (!focusRequestKey) {
@@ -542,23 +576,37 @@ export function DatabaseConfigForm(props: ConfigFormProps & { host: Host }) {
       return
     }
     if (handledFocusKeyRef.current === focusRequestKey || !rootRef.current) return
-    if (focusDatabaseIndex >= 0 && focusDatabaseIndex !== activeIndex) {
-      setSelectedIndex(focusDatabaseIndex)
+    if (focusDatabaseIndex >= 0 && focusDatabaseName !== activeName) {
+      setSelectedName(focusDatabaseName)
+      return
+    }
+    if (focusDatabaseIndex < 0 && !focusDatabaseName && activeName !== null) {
+      setSelectedName(null)
       return
     }
 
+    const visiblePane =
+      rootRef.current.querySelector<HTMLElement>('[data-settings-deck-pane]:not([hidden])') ?? rootRef.current
     const target =
-      rootRef.current.querySelector<HTMLElement>(`[data-field="${CSS.escape(focusExactField)}"]`) ??
+      visiblePane.querySelector<HTMLElement>(`[data-field="${CSS.escape(focusExactField)}"]`) ??
       (focusDatabaseName
-        ? rootRef.current.querySelector<HTMLElement>(`[data-field="db-${CSS.escape(focusDatabaseName)}"]`)
+        ? visiblePane.querySelector<HTMLElement>(`[data-field="db-${CSS.escape(focusDatabaseName)}"]`)
         : undefined)
+    if (!target) return
+    const focusTarget = target.matches('button, a[href], input, select, textarea, [tabindex]')
+      ? target
+      : target.querySelector<HTMLElement>('button, a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])')
+    if (!focusTarget) return
     handledFocusKeyRef.current = focusRequestKey
-    target?.focus()
-    target?.scrollIntoView({ block: 'center' })
-  }, [activeIndex, focusDatabaseIndex, focusDatabaseName, focusExactField, focusRequestKey])
+    const frame = requestAnimationFrame(() => {
+      focusTarget.focus({ preventScroll: true })
+      focusTarget.scrollIntoView({ block: 'center' })
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [activeName, focusDatabaseIndex, focusDatabaseName, focusExactField, focusRequestKey])
 
-  return (
-    <div className="db-cfg" ref={setRootRef}>
+  const overview = (
+    <div className="db-cfg-overview">
       <HistorySettings value={value} errors={props.errors} onChange={props.onChange} />
 
       <SettingsSection
@@ -566,80 +614,110 @@ export function DatabaseConfigForm(props: ConfigFormProps & { host: Host }) {
         title="Connections"
         description="Each handle identifies a connection pool used by database functions."
         action={
-          names.length > 0 ? (
-            <button type="button" className="db-cfg-add" onClick={addDb}>
+          !databasesOpaque && names.length > 0 ? (
+            <Button type="button" variant="ghost" size="sm" data-settings-deck-fallback onClick={addDb}>
               Add database
-            </button>
+            </Button>
           ) : undefined
         }
       >
-        {names.length === 0 ? (
+        {databasesOpaque ? (
+          <SettingsList>
+            <OpaqueSetting
+              id="db-cfg-databases"
+              field="databases"
+              label="Connection collection"
+              description="This configuration provides the complete database map as an opaque value. It remains unchanged until you edit it or explicitly replace it."
+              value={databasesValue}
+              error={fieldError(props.errors, ['databases'])}
+              replacementLabel="an empty collection"
+              onChange={(next) => props.onChange({ ...value, databases: next })}
+              onUseLiteral={() => props.onChange({ ...value, databases: {} })}
+            />
+          </SettingsList>
+        ) : names.length === 0 ? (
           <div className="db-cfg-empty">
             <strong>No databases configured</strong>
             <p>The worker needs at least one connection before it can start.</p>
-            <button type="button" className="db-cfg-add" onClick={addDb}>
+            <Button type="button" size="sm" data-settings-deck-fallback data-settings-narrow-action onClick={addDb}>
               Add database
-            </button>
+            </Button>
           </div>
         ) : (
-          <div className="db-cfg-master-detail">
-            <aside className="db-cfg-master" aria-label="Configured databases">
-              <SettingsList className="db-cfg-connection-list">
-                {names.map((name, index) => {
-                  const db = asObject(databases[name])
-                  const driver = driverOfConfiguredUrl(asString(db.url))
-                  const capture = asString(db.capture) || 'statements'
-                  const active = index === activeIndex
-                  return (
-                    <SettingsRow
-                      // biome-ignore lint/suspicious/noArrayIndexKey: a stable row keeps its identity while the editable handle is renamed.
-                      key={index}
-                      className={`db-cfg-connection-row${active ? ' is-active' : ''}`}
-                      layout="inline"
-                      label={
-                        <button
-                          type="button"
-                          className="db-cfg-connection-select"
-                          aria-current={active ? 'page' : undefined}
-                          onClick={() => selectDatabase(index)}
-                        >
-                          {name}
-                        </button>
-                      }
-                      description={capture === 'native' ? 'Native row capture' : 'Worker statement capture'}
-                      control={
-                        <span className={`db-cfg-driver db-cfg-driver-${driver}`}>
-                          {driver === 'unknown' && asString(db.url).includes('${')
-                            ? 'From environment'
-                            : DRIVER_LABELS[driver]}
-                        </span>
-                      }
-                    />
-                  )
-                })}
-              </SettingsList>
-            </aside>
-
-            {activeName !== undefined ? (
-              <DatabaseDetail
-                key={activeIndex}
-                name={activeName}
-                db={asObject(databases[activeName])}
-                onRename={(to) => renameDb(activeName, to)}
-                onChange={(next) => setDb(activeName, next)}
-                onRemove={() => {
-                  removeDb(activeName)
-                  setSelectedIndex(Math.min(activeIndex, names.length - 2))
-                }}
-                removable={names.length > 1}
-                test={testResults[activeName]}
-                onTest={() => runTest(activeName)}
-                errors={props.errors}
-              />
-            ) : null}
-          </div>
+          <Panel className="db-cfg-connection-panel">
+            <List className="db-cfg-connection-list" role="group" aria-label="Configured databases">
+              {names.map((name) => {
+                const databaseValue = databases[name]
+                const opaque = !isObjectValue(databaseValue)
+                const db = asObject(databaseValue)
+                const driver = driverOfConfiguredUrl(asString(db.url))
+                const capture = asString(db.capture) || 'statements'
+                const driverLabel =
+                  driver === 'unknown' && asString(db.url).includes('${') ? 'From environment' : DRIVER_LABELS[driver]
+                return (
+                  <ListItem
+                    key={name}
+                    data-field={`db-${name}`}
+                    aria-label={`Configure database ${name}`}
+                    label={name}
+                    description={
+                      opaque
+                        ? 'Custom configuration preserved'
+                        : capture === 'native'
+                          ? 'Native row capture'
+                          : 'Worker statement capture'
+                    }
+                    trailing={
+                      <span className="db-cfg-connection-meta">
+                        <Chip tone={opaque || driver === 'unknown' ? 'warning' : 'accent'}>
+                          {opaque ? 'Custom value' : driverLabel}
+                        </Chip>
+                        <span aria-hidden="true">›</span>
+                      </span>
+                    }
+                    onClick={() => setSelectedName(name)}
+                  />
+                )
+              })}
+            </List>
+          </Panel>
         )}
       </SettingsSection>
+    </div>
+  )
+
+  return (
+    <div className="db-cfg" ref={rootRef}>
+      <SettingsDeck
+        open={activeName !== null}
+        title={activeName ?? 'Database connection'}
+        description="Connection settings"
+        backLabel="Connections"
+        backAriaLabel="Back to database connections"
+        autoFocusDetail={!focusRequestKey || handledFocusKeyRef.current === focusRequestKey}
+        overview={overview}
+        detail={
+          activeName !== null ? (
+            <DatabaseDetail
+              key={activeName}
+              name={activeName}
+              names={names}
+              value={databases[activeName]}
+              onRename={(to) => renameDb(activeName, to)}
+              onChange={(next) => setDb(activeName, next)}
+              onRemove={() => {
+                setSelectedName(null)
+                removeDb(activeName)
+              }}
+              removable={names.length > 1}
+              test={Object.hasOwn(testResults, activeName) ? testResults[activeName] : undefined}
+              onTest={() => runTest(activeName)}
+              errors={props.errors}
+            />
+          ) : null
+        }
+        onBack={() => setSelectedName(null)}
+      />
 
       {props.errors && props.errors.size > 0 ? (
         <div className="db-cfg-errors">
@@ -655,17 +733,65 @@ export function DatabaseConfigForm(props: ConfigFormProps & { host: Host }) {
   )
 }
 
-function DatabaseDetail(card: {
+interface DatabaseDetailProps {
   name: string
-  db: JsonObject
+  names: readonly string[]
+  value: JsonValue
   onRename: (to: string) => void
-  onChange: (next: JsonObject) => void
+  onChange: (next: JsonValue) => void
   onRemove: () => void
   removable: boolean
   test: TestResult | undefined
   onTest: () => void
   errors: ConfigFormProps['errors']
-}) {
+}
+
+function DatabaseDetail(card: DatabaseDetailProps) {
+  if (isObjectValue(card.value)) {
+    return <StructuredDatabaseDetail {...card} db={{ ...card.value }} />
+  }
+
+  const field = `databases.${card.name}`
+  return (
+    <div className="db-cfg-detail" data-field={`db-${card.name}`}>
+      <SettingsSection
+        className="db-cfg-detail-section"
+        title="Connection payload"
+        description="This connection is provided as an opaque value and will not be coerced by the Console."
+        action={
+          card.removable ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="db-cfg-danger-action"
+              aria-label={`Remove database ${card.name}`}
+              onClick={card.onRemove}
+            >
+              Remove
+            </Button>
+          ) : undefined
+        }
+      >
+        <SettingsList>
+          <OpaqueSetting
+            id={`db-cfg-value-${card.name}`}
+            field={field}
+            label="Raw connection configuration"
+            description="Edit the template as-is, or explicitly replace it with a regular SQLite connection."
+            value={card.value}
+            error={fieldError(card.errors, ['databases', card.name])}
+            replacementLabel="SQLite defaults"
+            onChange={card.onChange}
+            onUseLiteral={() => card.onChange({ url: `sqlite:./data/${card.name}.db` })}
+          />
+        </SettingsList>
+      </SettingsSection>
+    </div>
+  )
+}
+
+function StructuredDatabaseDetail(card: DatabaseDetailProps & { db: JsonObject }) {
   const { name, db } = card
   const url = asString(db.url)
   const driver = driverOfConfiguredUrl(url)
@@ -674,18 +800,31 @@ function DatabaseDetail(card: {
   const maskUrl = shouldMaskConfiguredUrl(url)
   const captureValue = db.capture
   const capture = asString(captureValue) || 'statements'
-  const tls = asObject(db.tls)
-  const pool = asObject(db.pool)
+  const tlsValue = db.tls
+  const tlsOpaque = tlsValue !== undefined && !isObjectValue(tlsValue)
+  const tls = asObject(tlsValue)
+  const poolValue = db.pool
+  const poolOpaque = poolValue !== undefined && !isObjectValue(poolValue)
+  const pool = asObject(poolValue)
   const trustNativeRaw = isRawTypedValue(tls.trust_native) ? tls.trust_native : undefined
   const isMemorySqlite = driver === 'sqlite' && url.includes(':memory:')
   const [showUrl, setShowUrl] = useState(false)
+  const [handleDraft, setHandleDraft] = useState(name)
+  const [handleError, setHandleError] = useState<string | undefined>()
   const urlError = fieldError(card.errors, ['databases', name, 'url'])
   const captureError = fieldError(card.errors, ['databases', name, 'capture'])
+  const tlsBlockError = fieldError(card.errors, ['databases', name, 'tls'])
+  const poolBlockError = fieldError(card.errors, ['databases', name, 'pool'])
   const tlsModeError = fieldError(card.errors, ['databases', name, 'tls', 'mode'])
   const tlsCaError = fieldError(card.errors, ['databases', name, 'tls', 'ca_cert'])
   const tlsTrustError = fieldError(card.errors, ['databases', name, 'tls', 'trust_native'])
   const fieldId = (field: string) => `db-cfg-${field}-${name}`
-  const errorId = (field: string, error: string | undefined) => (error ? `${fieldId(field)}-error` : undefined)
+
+  useEffect(() => {
+    setHandleDraft(name)
+    setHandleError(undefined)
+    setShowUrl(false)
+  }, [name])
 
   const set = (mutate: (next: JsonObject) => void) => {
     const next = { ...db }
@@ -701,114 +840,143 @@ function DatabaseDetail(card: {
       else delete next[key]
     })
 
+  const commitHandle = () => {
+    const nextName = handleDraft.trim()
+    const nextError = databaseHandleError(name, card.names, nextName)
+    if (nextError) {
+      setHandleError(nextError)
+      return false
+    }
+    setHandleDraft(nextName)
+    setHandleError(undefined)
+    if (nextName !== name) card.onRename(nextName)
+    return true
+  }
+
   return (
-    <div className="db-cfg-detail" data-field={`db-${name}`} tabIndex={-1}>
+    <div className="db-cfg-detail" data-field={`db-${name}`}>
       <SettingsSection
         className="db-cfg-detail-section"
-        title={name}
+        title="Connection"
         description="Connection identity, driver, and endpoint."
         action={
           card.removable ? (
-            <button
+            <Button
               type="button"
-              className="db-cfg-remove"
+              variant="ghost"
+              size="sm"
+              className="db-cfg-danger-action"
               aria-label={`Remove database ${name}`}
               onClick={card.onRemove}
             >
               Remove
-            </button>
+            </Button>
           ) : undefined
         }
       >
         <SettingsList>
-          <SettingsRow
-            label={<label htmlFor={fieldId('handle')}>Handle</label>}
+          <SettingsField
+            id={fieldId('handle')}
+            field={`databases.${name}.handle`}
+            label="Handle"
             description="Used as the database argument in worker functions."
-            control={
-              <input
-                id={fieldId('handle')}
-                name={`databases.${name}.handle`}
-                className="db-cfg-input db-cfg-name"
-                type="text"
-                value={name}
-                spellCheck={false}
-                autoComplete="off"
-                onChange={(event) => card.onRename(event.target.value)}
-                onBlur={(event) => card.onRename(event.target.value.trim())}
-              />
-            }
+            error={handleError}
+            controlSize="full"
+            renderControl={(controlProps) => (
+              <div className="db-cfg-handle-row">
+                <Input
+                  {...controlProps}
+                  className="db-cfg-technical db-cfg-grow"
+                  type="text"
+                  value={handleDraft}
+                  spellCheck={false}
+                  autoComplete="off"
+                  onChange={(next) => {
+                    setHandleDraft(next)
+                    setHandleError(databaseHandleError(name, card.names, next))
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault()
+                      commitHandle()
+                    } else if (event.key === 'Escape') {
+                      event.preventDefault()
+                      setHandleDraft(name)
+                      setHandleError(undefined)
+                    }
+                  }}
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={handleDraft.trim() === name || handleError !== undefined}
+                  onClick={commitHandle}
+                >
+                  Rename
+                </Button>
+              </div>
+            )}
           />
           <SettingsRow
             label="Driver"
             description="Inferred from the connection URL and not stored separately."
             control={
-              <output
-                className={`db-cfg-driver db-cfg-driver-${driver}`}
-                data-field={`databases.${name}.driver`}
-                htmlFor={fieldId('url')}
-              >
+              <Chip tone={driver === 'unknown' ? 'warning' : 'accent'} data-field={`databases.${name}.driver`}>
                 {driver === 'unknown' && environmentUrl ? 'From environment' : DRIVER_LABELS[driver]}
-              </output>
+              </Chip>
             }
           />
-          <SettingsRow
+          <SettingsField
             className="db-cfg-url-setting"
             layout="stacked"
-            label={<label htmlFor={fieldId('url')}>Connection URL</label>}
+            id={fieldId('url')}
+            field={`databases.${name}.url`}
+            label="Connection URL"
             description="PostgreSQL, MySQL, and SQLite URLs are supported. Credentials stay masked for network URLs."
             meta={
-              card.test?.status === 'done' || urlError ? (
-                <>
-                  {card.test?.status === 'done' ? (
-                    <span className={card.test.ok ? 'db-cfg-test-ok' : 'db-cfg-test-fail'} role="status">
-                      {card.test.text}
-                    </span>
-                  ) : null}
-                  {urlError ? (
-                    <span id={errorId('url', urlError)} className="db-cfg-warn" role="alert">
-                      {urlError}
-                    </span>
-                  ) : null}
-                </>
+              card.test?.status === 'done' ? (
+                <span className={card.test.ok ? 'db-cfg-test-ok' : 'db-cfg-test-fail'} role="status">
+                  {card.test.text}
+                </span>
               ) : undefined
             }
-            control={
+            error={urlError}
+            controlSize="full"
+            renderControl={(controlProps) => (
               <div className="db-cfg-url-row">
-                <input
-                  id={fieldId('url')}
-                  name={`databases.${name}.url`}
-                  data-field={`databases.${name}.url`}
-                  className="db-cfg-input db-cfg-grow"
+                <Input
+                  {...controlProps}
+                  className="db-cfg-technical db-cfg-grow"
                   type={!maskUrl || showUrl ? 'text' : 'password'}
                   value={url}
                   placeholder="postgres://user:pass@host:5432/db · mysql://… · sqlite:./data/app.db"
                   autoComplete="off"
                   spellCheck={false}
-                  aria-invalid={urlError ? true : undefined}
-                  aria-describedby={errorId('url', urlError)}
-                  onChange={(event) => set((next) => (next.url = event.target.value))}
+                  onChange={(nextValue) => set((next) => (next.url = nextValue))}
                 />
                 {maskUrl ? (
-                  <button
+                  <Button
                     type="button"
-                    className="db-cfg-reveal"
+                    variant="ghost"
+                    size="sm"
                     aria-label={showUrl ? 'Hide connection URL' : 'Show connection URL'}
                     aria-pressed={showUrl}
                     onClick={() => setShowUrl((current) => !current)}
                   >
                     {showUrl ? 'Hide' : 'Show'}
-                  </button>
+                  </Button>
                 ) : null}
-                <button
+                <Button
                   type="button"
-                  className="db-cfg-test"
+                  size="sm"
                   disabled={card.test?.status === 'testing' || url.trim() === ''}
                   onClick={card.onTest}
                 >
                   {card.test?.status === 'testing' ? 'Testing…' : 'Test connection'}
-                </button>
+                </Button>
               </div>
-            }
+            )}
           />
         </SettingsList>
       </SettingsSection>
@@ -819,30 +987,22 @@ function DatabaseDetail(card: {
         description="Choose which writes can emit database::row-changed events."
       >
         <SettingsList>
-          <SettingsRow
-            label={<label htmlFor={`db-cfg-capture-${name}`}>Row-change capture</label>}
+          <SettingsField
+            id={`db-cfg-capture-${name}`}
+            field={`databases.${name}.capture`}
+            label="Row-change capture"
             description={CAPTURE_HINTS[driver]}
             meta={
-              captureError || (capture === 'native' && isMemorySqlite) ? (
-                <>
-                  {captureError ? (
-                    <span id={errorId('capture', captureError)} className="db-cfg-warn" role="alert">
-                      {captureError}
-                    </span>
-                  ) : null}
-                  {capture === 'native' && isMemorySqlite ? (
-                    <span className="db-cfg-warn" role="alert">
-                      A `:memory:` database is per-connection and cannot be captured.
-                    </span>
-                  ) : null}
-                </>
+              capture === 'native' && isMemorySqlite ? (
+                <span className="db-cfg-warn" role="alert">
+                  A `:memory:` database is per-connection and cannot be captured.
+                </span>
               ) : undefined
             }
-            control={
+            error={captureError}
+            renderControl={(controlProps) => (
               <DatabaseSelectInput
-                id={`db-cfg-capture-${name}`}
-                name={`databases.${name}.capture`}
-                dataField={`databases.${name}.capture`}
+                {...controlProps}
                 label="Row-change capture"
                 value={captureValue}
                 fallback="statements"
@@ -856,8 +1016,6 @@ function DatabaseDetail(card: {
                     label: 'Native — writes from any client',
                   },
                 ]}
-                error={captureError}
-                errorId={errorId('capture', captureError)}
                 onChange={(nextValue) =>
                   set((next) => {
                     if (nextValue === 'statements') delete next.capture
@@ -865,142 +1023,147 @@ function DatabaseDetail(card: {
                   })
                 }
               />
-            }
+            )}
           />
         </SettingsList>
       </SettingsSection>
 
-      {showTls ? (
+      {showTls || tlsOpaque ? (
         <SettingsSection
           className="db-cfg-detail-section"
           title="Transport security"
           description="TLS settings remain available for network and environment-provided connection URLs."
         >
           <SettingsList>
-            <SettingsRow
-              label={<label htmlFor={`db-cfg-tls-${name}`}>TLS mode</label>}
-              description="Control encryption and hostname verification for network connections."
-              meta={
-                tlsModeError ? (
-                  <span id={errorId('tls-mode', tlsModeError)} className="db-cfg-warn" role="alert">
-                    {tlsModeError}
-                  </span>
-                ) : undefined
-              }
-              control={
-                <DatabaseSelectInput
+            {tlsOpaque ? (
+              <OpaqueSetting
+                id={`db-cfg-tls-${name}`}
+                field={`databases.${name}.tls`}
+                label="TLS configuration"
+                description="This connection supplies the entire TLS block as an opaque value."
+                value={tlsValue}
+                error={tlsBlockError}
+                replacementLabel="TLS defaults"
+                onChange={(raw) =>
+                  set((next) => {
+                    next.tls = raw
+                  })
+                }
+                onUseLiteral={() =>
+                  set((next) => {
+                    delete next.tls
+                  })
+                }
+              />
+            ) : (
+              <>
+                <SettingsField
                   id={`db-cfg-tls-${name}`}
-                  name={`databases.${name}.tls.mode`}
-                  dataField={`databases.${name}.tls.mode`}
+                  field={`databases.${name}.tls.mode`}
                   label="TLS mode"
-                  value={tls.mode}
-                  fallback="require"
-                  options={[
-                    { value: 'disable', label: 'Disable — plaintext' },
-                    { value: 'require', label: 'Require — validate chain' },
-                    { value: 'verify-full', label: 'Verify full — validate hostname' },
-                  ]}
+                  description="Control encryption and hostname verification for network connections."
                   error={tlsModeError}
-                  errorId={errorId('tls-mode', tlsModeError)}
-                  onChange={(nextValue) =>
-                    setBlock('tls', (block) => {
-                      if (nextValue === 'require') delete block.mode
-                      else block.mode = nextValue
-                    })
-                  }
+                  renderControl={(controlProps) => (
+                    <DatabaseSelectInput
+                      {...controlProps}
+                      label="TLS mode"
+                      value={tls.mode}
+                      fallback="require"
+                      options={[
+                        { value: 'disable', label: 'Disable — plaintext' },
+                        { value: 'require', label: 'Require — validate chain' },
+                        {
+                          value: 'verify-full',
+                          label: 'Verify full — validate hostname',
+                        },
+                      ]}
+                      onChange={(nextValue) =>
+                        setBlock('tls', (block) => {
+                          if (nextValue === 'require') delete block.mode
+                          else block.mode = nextValue
+                        })
+                      }
+                    />
+                  )}
                 />
-              }
-            />
-            <SettingsRow
-              label={<label htmlFor={`db-cfg-ca-${name}`}>Extra CA bundle</label>}
-              description="Optional path to a PEM bundle for private certificate authorities."
-              meta={
-                tlsCaError ? (
-                  <span id={errorId('tls-ca', tlsCaError)} className="db-cfg-warn" role="alert">
-                    {tlsCaError}
-                  </span>
-                ) : undefined
-              }
-              control={
-                <input
+                <SettingsField
                   id={`db-cfg-ca-${name}`}
-                  name={`databases.${name}.tls.ca_cert`}
-                  data-field={`databases.${name}.tls.ca_cert`}
-                  className="db-cfg-input"
-                  type="text"
-                  value={asString(tls.ca_cert)}
-                  placeholder="/etc/ssl/private-ca.pem"
-                  spellCheck={false}
-                  autoComplete="off"
-                  aria-invalid={tlsCaError ? true : undefined}
-                  aria-describedby={errorId('tls-ca', tlsCaError)}
-                  onChange={(event) =>
-                    setBlock('tls', (block) => {
-                      if (event.target.value === '') delete block.ca_cert
-                      else block.ca_cert = event.target.value
-                    })
+                  field={`databases.${name}.tls.ca_cert`}
+                  label="Extra CA bundle"
+                  description="Optional path to a PEM bundle for private certificate authorities."
+                  error={tlsCaError}
+                  renderControl={(controlProps) => (
+                    <Input
+                      {...controlProps}
+                      className="db-cfg-technical"
+                      type="text"
+                      value={asString(tls.ca_cert)}
+                      placeholder="/etc/ssl/private-ca.pem"
+                      spellCheck={false}
+                      autoComplete="off"
+                      onChange={(nextValue) =>
+                        setBlock('tls', (block) => {
+                          if (nextValue === '') delete block.ca_cert
+                          else block.ca_cert = nextValue
+                        })
+                      }
+                    />
+                  )}
+                />
+                <SettingsField
+                  className="db-cfg-trust-row"
+                  id={`db-cfg-trust-native-${name}`}
+                  field={`databases.${name}.tls.trust_native`}
+                  label="Use the system trust store"
+                  description={
+                    driver === 'mysql'
+                      ? 'MySQL always includes its bundled public roots. This setting only changes PostgreSQL behavior.'
+                      : 'Combine native system roots with the optional CA bundle. Turn off to trust only the supplied bundle.'
+                  }
+                  error={tlsTrustError}
+                  layout={trustNativeRaw !== undefined ? 'stacked' : 'inline'}
+                  controlSize={trustNativeRaw !== undefined ? 'full' : 'fit'}
+                  renderControl={(controlProps) =>
+                    trustNativeRaw !== undefined ? (
+                      <RawTypedValue
+                        {...controlProps}
+                        label="Use the system trust store"
+                        value={trustNativeRaw}
+                        replacementLabel={booleanLiteralForRawValue(trustNativeRaw, true) ? 'on' : 'off'}
+                        onChange={(raw) =>
+                          setBlock('tls', (block) => {
+                            block.trust_native = raw
+                          })
+                        }
+                        onUseLiteral={() =>
+                          setBlock('tls', (block) => {
+                            if (booleanLiteralForRawValue(trustNativeRaw, true)) delete block.trust_native
+                            else block.trust_native = false
+                          })
+                        }
+                      />
+                    ) : (
+                      <Switch
+                        {...controlProps}
+                        aria-label="Use the system trust store"
+                        checked={asBoolean(tls.trust_native, true)}
+                        onChange={(event) =>
+                          setBlock('tls', (block) => {
+                            if (event.target.checked) delete block.trust_native
+                            else block.trust_native = false
+                          })
+                        }
+                      />
+                    )
                   }
                 />
-              }
-            />
-            <SettingsRow
-              className="db-cfg-trust-row"
-              label="Use the system trust store"
-              description={
-                driver === 'mysql'
-                  ? 'MySQL always includes its bundled public roots. This setting only changes PostgreSQL behavior.'
-                  : 'Combine native system roots with the optional CA bundle. Turn off to trust only the supplied bundle.'
-              }
-              meta={
-                tlsTrustError ? (
-                  <span id={errorId('tls-trust', tlsTrustError)} className="db-cfg-warn" role="alert">
-                    {tlsTrustError}
-                  </span>
-                ) : undefined
-              }
-              control={
-                trustNativeRaw !== undefined ? (
-                  <RawTypedValue
-                    id={`db-cfg-trust-native-${name}`}
-                    name={`databases.${name}.tls.trust_native`}
-                    dataField={`databases.${name}.tls.trust_native`}
-                    label="Use the system trust store"
-                    value={trustNativeRaw}
-                    replacementLabel={booleanLiteralForRawValue(trustNativeRaw, true) ? 'on' : 'off'}
-                    error={tlsTrustError}
-                    errorId={errorId('tls-trust', tlsTrustError)}
-                    onChange={(raw) =>
-                      setBlock('tls', (block) => {
-                        block.trust_native = raw
-                      })
-                    }
-                    onUseLiteral={() =>
-                      setBlock('tls', (block) => {
-                        if (booleanLiteralForRawValue(trustNativeRaw, true)) delete block.trust_native
-                        else block.trust_native = false
-                      })
-                    }
-                  />
-                ) : (
-                  <Switch
-                    name={`databases.${name}.tls.trust_native`}
-                    data-field={`databases.${name}.tls.trust_native`}
-                    aria-label="Use the system trust store"
-                    aria-invalid={tlsTrustError ? true : undefined}
-                    aria-describedby={errorId('tls-trust', tlsTrustError)}
-                    checked={asBoolean(tls.trust_native, true)}
-                    onChange={(event) =>
-                      setBlock('tls', (block) => {
-                        if (event.target.checked) delete block.trust_native
-                        else block.trust_native = false
-                      })
-                    }
-                  />
-                )
-              }
-            />
+              </>
+            )}
           </SettingsList>
-          {driver === 'postgres' && !asBoolean(tls.trust_native, true) && asString(tls.ca_cert).trim() === '' ? (
+          {!tlsOpaque &&
+          driver === 'postgres' &&
+          !asBoolean(tls.trust_native, true) &&
+          asString(tls.ca_cert).trim() === '' ? (
             <div className="db-cfg-notice" role="alert">
               Add a CA bundle before disabling the system trust store, or the PostgreSQL pool cannot establish trust.
             </div>
@@ -1014,46 +1177,60 @@ function DatabaseDetail(card: {
         description="Bound concurrency and how long callers wait for an available connection."
       >
         <SettingsList>
-          {POOL_FIELDS.map((field) => {
-            const error = fieldError(card.errors, ['databases', name, 'pool', field.key])
-            return (
-              <SettingsRow
-                key={field.key}
-                label={<label htmlFor={`db-cfg-${field.key}-${name}`}>{field.label}</label>}
-                description={field.description}
-                meta={
-                  error ? (
-                    <span id={errorId(`pool-${field.key}`, error)} className="db-cfg-warn" role="alert">
-                      {error}
-                    </span>
-                  ) : (
-                    `${Number(field.placeholder).toLocaleString('en-US')} by default`
-                  )
-                }
-                control={
-                  <DatabaseNumberInput
-                    id={`db-cfg-${field.key}-${name}`}
-                    name={`databases.${name}.pool.${field.key}`}
-                    dataField={`databases.${name}.pool.${field.key}`}
-                    label={field.label}
-                    value={pool[field.key]}
-                    fallback={Number(field.placeholder)}
-                    error={error}
-                    errorId={errorId(`pool-${field.key}`, error)}
-                    onChange={(raw) =>
-                      setBlock('pool', (block) => {
-                        if (raw.trim() === '') delete block[field.key]
-                        else {
-                          const parsed = Number(raw)
-                          block[field.key] = Number.isInteger(parsed) && parsed >= 0 ? parsed : raw
-                        }
-                      })
-                    }
-                  />
-                }
-              />
-            )
-          })}
+          {poolOpaque ? (
+            <OpaqueSetting
+              id={`db-cfg-pool-${name}`}
+              field={`databases.${name}.pool`}
+              label="Pool configuration"
+              description="This connection supplies the entire pool block as an opaque value."
+              value={poolValue}
+              error={poolBlockError}
+              replacementLabel="pool defaults"
+              onChange={(raw) =>
+                set((next) => {
+                  next.pool = raw
+                })
+              }
+              onUseLiteral={() =>
+                set((next) => {
+                  delete next.pool
+                })
+              }
+            />
+          ) : (
+            POOL_FIELDS.map((field) => {
+              const error = fieldError(card.errors, ['databases', name, 'pool', field.key])
+              return (
+                <SettingsField
+                  key={field.key}
+                  id={`db-cfg-${field.key}-${name}`}
+                  field={`databases.${name}.pool.${field.key}`}
+                  label={field.label}
+                  description={field.description}
+                  meta={`${Number(field.placeholder).toLocaleString('en-US')} by default`}
+                  error={error}
+                  controlSize="compact"
+                  renderControl={(controlProps) => (
+                    <DatabaseNumberInput
+                      {...controlProps}
+                      label={field.label}
+                      value={pool[field.key]}
+                      fallback={Number(field.placeholder)}
+                      onChange={(raw) =>
+                        setBlock('pool', (block) => {
+                          if (raw.trim() === '') delete block[field.key]
+                          else {
+                            const parsed = Number(raw)
+                            block[field.key] = Number.isInteger(parsed) && parsed >= 0 ? parsed : raw
+                          }
+                        })
+                      }
+                    />
+                  )}
+                />
+              )
+            })
+          )}
         </SettingsList>
       </SettingsSection>
     </div>

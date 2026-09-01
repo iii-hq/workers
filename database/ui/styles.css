@@ -2241,357 +2241,31 @@
 }
 
 /* --- configuration form (global Settings) ----------------------------- */
+/*
+ * Shared Console primitives own input, select, button, row, and deck chrome.
+ * These rules are intentionally limited to Database-specific composition,
+ * technical-value typography, and semantic feedback.
+ */
 [data-iii-ui="database"] .db-cfg {
   display: flex;
+  min-width: 0;
   flex-direction: column;
   gap: 16px;
-  min-width: 0;
   container: db-config / inline-size;
 }
 
-[data-iii-ui="database"] .db-cfg-history {
-  min-width: 0;
-}
-
-[data-iii-ui="database"] .db-cfg-history-input {
-  width: 132px;
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-[data-iii-ui="database"] .db-cfg-connections-head {
+[data-iii-ui="database"] .db-cfg-overview,
+[data-iii-ui="database"] .db-cfg-detail {
   display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-[data-iii-ui="database"] .db-cfg-connections-head > div {
   min-width: 0;
-}
-
-[data-iii-ui="database"] .db-cfg-connections-head h3,
-[data-iii-ui="database"] .db-cfg-connections-head p {
-  margin: 0;
-}
-
-[data-iii-ui="database"] .db-cfg-connections-head h3 {
-  color: var(--color-ink);
-  font-size: 14px;
-  font-weight: 600;
-}
-
-[data-iii-ui="database"] .db-cfg-connections-head p {
-  max-width: 64ch;
-  padding-top: 3px;
-  color: var(--color-ink-faint);
-  font-size: 12px;
-  line-height: 1.45;
-}
-[data-iii-ui="database"] .db-cfg-empty {
-  padding: 16px;
-  border: 1px dashed var(--color-rule);
-  border-radius: 8px;
-  color: var(--color-ink-faint);
-  font-size: 13px;
-}
-[data-iii-ui="database"] .db-cfg-card {
-  border: 1px solid var(--color-rule);
-  border-radius: 8px;
-  background: var(--color-panel);
-  padding: 12px;
-  display: flex;
   flex-direction: column;
-  gap: 10px;
-}
-[data-iii-ui="database"] .db-cfg-card:focus {
-  outline: 2px solid var(--color-ring);
-  outline-offset: 1px;
-}
-[data-iii-ui="database"] .db-cfg-card-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-[data-iii-ui="database"] .db-cfg-name {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--color-ink);
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  padding: 2px 6px;
-  width: 12ch;
-}
-[data-iii-ui="database"] .db-cfg-name:hover,
-[data-iii-ui="database"] .db-cfg-name:focus {
-  border-color: var(--color-rule);
-  background: var(--color-bg);
-}
-[data-iii-ui="database"] .db-cfg-driver {
-  font-size: 11px;
-  text-transform: none;
-  letter-spacing: normal;
-  padding: 1px 8px;
-  border-radius: 999px;
-  border: 1px solid var(--color-rule-2);
-  color: var(--color-ink-faint);
-}
-[data-iii-ui="database"] .db-cfg-driver-summary {
-  background: var(--color-bg);
-}
-[data-iii-ui="database"] .db-cfg-driver-postgres,
-[data-iii-ui="database"] .db-cfg-driver-mysql,
-[data-iii-ui="database"] .db-cfg-driver-sqlite {
-  border-color: var(--color-accent);
-  color: var(--color-accent);
-}
-[data-iii-ui="database"] .db-cfg-capture-pill {
-  font-size: 11px;
-  padding: 1px 8px;
-  border-radius: 999px;
-  border: 1px solid var(--color-ok);
-  color: var(--color-ok);
-}
-[data-iii-ui="database"] .db-cfg-spacer {
-  flex: 1;
-}
-[data-iii-ui="database"] .db-cfg-remove,
-[data-iii-ui="database"] .db-cfg-add {
-  font-size: 12px;
-  color: var(--color-ink-faint);
-  background: transparent;
-  border: 1px solid var(--color-rule);
-  border-radius: 6px;
-  padding: 3px 10px;
-  cursor: pointer;
-}
-[data-iii-ui="database"] .db-cfg-remove:hover {
-  color: var(--color-alert);
-  border-color: var(--color-alert);
-}
-[data-iii-ui="database"] .db-cfg-add {
-  align-self: flex-start;
-}
-[data-iii-ui="database"] .db-cfg-add:hover {
-  color: var(--color-accent);
-  border-color: var(--color-accent);
-}
-[data-iii-ui="database"] .db-cfg-field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-[data-iii-ui="database"] .db-cfg-field > label {
-  font-size: 11px;
-  text-transform: none;
-  letter-spacing: normal;
-  color: var(--color-ink-faint);
-}
-[data-iii-ui="database"] .db-cfg-input,
-[data-iii-ui="database"] .db-cfg-select {
-  font-size: 13px;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  color: var(--color-ink);
-  background: var(--color-bg);
-  border: 1px solid var(--color-rule);
-  border-radius: 6px;
-  padding: 6px 8px;
-  min-width: 0;
-}
-[data-iii-ui="database"] .db-cfg-template-control {
-  display: grid;
-  grid-template-columns: minmax(150px, 1fr) auto;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-[data-iii-ui="database"] .db-cfg-template-kind {
-  grid-column: 1 / -1;
-  justify-self: start;
-  padding: 2px 6px;
-  border: 1px solid var(--color-rule);
-  border-radius: 999px;
-  color: var(--color-ink-faint);
-  font-size: 10px;
-  font-weight: 500;
-  white-space: nowrap;
-}
-[data-iii-ui="database"] .db-cfg-template-input {
-  width: 100%;
-}
-[data-iii-ui="database"] .db-cfg-template-replace {
-  min-height: 30px;
-  padding: 4px 8px;
-  border: 1px solid var(--color-rule);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--color-ink-faint);
-  font-size: 11px;
-  font-weight: 500;
-  white-space: nowrap;
-  cursor: pointer;
-}
-[data-iii-ui="database"] .db-cfg-template-replace:hover {
-  border-color: var(--color-ink-ghost);
-  color: var(--color-ink);
-}
-[data-iii-ui="database"] .db-cfg-input:focus,
-[data-iii-ui="database"] .db-cfg-select:focus,
-[data-iii-ui="database"] .db-cfg-name:focus-visible {
-  outline: 2px solid var(--color-ring);
-  outline-offset: -1px;
-}
-[data-iii-ui="database"] .db-cfg-row {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-[data-iii-ui="database"] .db-cfg-trust {
-  width: 100%;
-  flex: 1 0 100%;
-  background: var(--color-bg);
+  gap: 24px;
 }
 
-[data-iii-ui="database"] .db-cfg-row > .db-cfg-warn {
-  flex: 1 0 100%;
-}
-[data-iii-ui="database"] .db-cfg-row > .db-cfg-field {
-  flex: 1 1 160px;
-}
-[data-iii-ui="database"] .db-cfg-grow {
-  flex: 2 1 240px;
-}
-[data-iii-ui="database"] .db-cfg-hint,
-[data-iii-ui="database"] .db-cfg-warn {
-  font-size: 12px;
-  color: var(--color-ink-faint);
-  line-height: 1.4;
-}
-[data-iii-ui="database"] .db-cfg-warn {
-  color: var(--color-alert);
-}
-[data-iii-ui="database"] .db-cfg-pool > summary {
-  font-size: 11px;
-  text-transform: none;
-  letter-spacing: normal;
-  color: var(--color-ink-faint);
-  cursor: pointer;
-}
-[data-iii-ui="database"] .db-cfg-pool[open] > summary {
-  margin-bottom: 8px;
-}
-[data-iii-ui="database"] .db-cfg-errors {
-  border: 1px solid var(--color-alert);
-  border-radius: 8px;
-  padding: 8px 12px;
-  font-size: 12px;
-  color: var(--color-alert);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-[data-iii-ui="database"] .db-cfg-url-row {
-  display: flex;
-  gap: 8px;
-  align-items: stretch;
-}
-[data-iii-ui="database"] .db-cfg-test,
-[data-iii-ui="database"] .db-cfg-reveal {
-  font-size: 12px;
-  white-space: nowrap;
-  color: var(--color-ink-faint);
-  background: transparent;
-  border: 1px solid var(--color-rule);
-  border-radius: 6px;
-  padding: 3px 10px;
-  cursor: pointer;
-}
-[data-iii-ui="database"] .db-cfg-test:hover:not(:disabled),
-[data-iii-ui="database"] .db-cfg-reveal:hover {
-  color: var(--color-accent);
-  border-color: var(--color-accent);
-}
-[data-iii-ui="database"] .db-cfg-test:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-[data-iii-ui="database"] .db-cfg-test-ok,
-[data-iii-ui="database"] .db-cfg-test-fail {
-  font-size: 12px;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  line-height: 1.4;
-}
-[data-iii-ui="database"] .db-cfg-test-ok {
-  color: var(--color-ok);
-}
-[data-iii-ui="database"] .db-cfg-test-fail {
-  color: var(--color-alert);
-}
-
-@container db-config (max-width: 620px) {
-  [data-iii-ui="database"] .db-cfg-connections-head {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  [data-iii-ui="database"] .db-cfg-add {
-    min-height: 44px;
-    align-self: stretch;
-    font-size: 14px;
-  }
-
-  [data-iii-ui="database"] .db-cfg-card {
-    padding: 12px 10px;
-  }
-
-  [data-iii-ui="database"] .db-cfg-card-head {
-    flex-wrap: wrap;
-  }
-
-  [data-iii-ui="database"] .db-cfg-name {
-    min-height: 44px;
-    flex: 1 1 12ch;
-    font-size: 16px;
-  }
-
-  [data-iii-ui="database"] .db-cfg-remove,
-  [data-iii-ui="database"] .db-cfg-test,
-  [data-iii-ui="database"] .db-cfg-reveal {
-    min-height: 44px;
-    font-size: 14px;
-  }
-
-  [data-iii-ui="database"] .db-cfg-url-row {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  [data-iii-ui="database"] .db-cfg-url-row .db-cfg-grow {
-    flex: 0 0 auto;
-    width: 100%;
-  }
-
-  [data-iii-ui="database"] .db-cfg-input,
-  [data-iii-ui="database"] .db-cfg-select {
-    min-height: 44px;
-    font-size: 16px;
-  }
-
-  [data-iii-ui="database"] .db-cfg-history-input {
-    width: 100%;
-    text-align: left;
-  }
-}
-
-/* Configuration master-detail layout. The shared Settings primitives own the
-   row surface, typography, dividers, and responsive label/control alignment. */
+[data-iii-ui="database"] .db-cfg-history,
 [data-iii-ui="database"] .db-cfg-connections,
-[data-iii-ui="database"] .db-cfg-master-detail,
-[data-iii-ui="database"] .db-cfg-master,
-[data-iii-ui="database"] .db-cfg-detail,
+[data-iii-ui="database"] .db-cfg-connection-panel,
+[data-iii-ui="database"] .db-cfg-connection-list,
 [data-iii-ui="database"] .db-cfg-detail-section {
   min-width: 0;
 }
@@ -2628,108 +2302,71 @@
   line-height: 1.5;
 }
 
-[data-iii-ui="database"] .db-cfg-empty .db-cfg-add {
-  align-self: center;
+[data-iii-ui="database"] .db-cfg-empty > button {
   margin-top: 8px;
-  min-height: 36px;
-  padding: 7px 14px;
-  border-color: var(--color-rule-2);
-  background: var(--color-bg);
-  color: var(--color-ink);
 }
 
-[data-iii-ui="database"] .db-cfg-add,
-[data-iii-ui="database"] .db-cfg-remove,
-[data-iii-ui="database"] .db-cfg-test,
-[data-iii-ui="database"] .db-cfg-reveal,
-[data-iii-ui="database"] .db-cfg-template-replace {
-  min-height: 32px;
+[data-iii-ui="database"] .db-cfg-connection-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
 }
 
-[data-iii-ui="database"] .db-cfg-master-detail {
-  display: grid;
-  grid-template-columns: minmax(190px, 230px) minmax(0, 1fr);
-  align-items: start;
-  gap: 24px;
+[data-iii-ui="database"] .db-cfg-technical {
+  font-family: var(--font-mono, ui-monospace, monospace);
 }
 
-[data-iii-ui="database"] .db-cfg-master {
-  position: sticky;
-  top: 0;
+[data-iii-ui="database"] .db-cfg-history-input {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
-[data-iii-ui="database"] .db-cfg-connection-list {
-  background: var(--color-sidebar, var(--color-surface));
-}
-
-[data-iii-ui="database"]
-  .db-cfg-connection-row.is-active
-  > .iii-ui-settings-row__inner {
-  background: var(--color-surface-selected);
-}
-
-[data-iii-ui="database"] .db-cfg-connection-select {
+[data-iii-ui="database"] .db-cfg-url-row {
+  display: flex;
   width: 100%;
   min-width: 0;
-  padding: 0;
-  overflow: hidden;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: pointer;
+  align-items: stretch;
+  gap: 8px;
 }
 
-[data-iii-ui="database"] .db-cfg-connection-select:focus-visible {
-  border-radius: 3px;
-  outline: 2px solid var(--color-ring);
-  outline-offset: 2px;
-}
-
-[data-iii-ui="database"] .db-cfg-detail {
+[data-iii-ui="database"] .db-cfg-handle-row,
+[data-iii-ui="database"] .db-cfg-opaque-action {
   display: flex;
-  flex-direction: column;
-  gap: 24px;
-}
-
-[data-iii-ui="database"] .db-cfg-detail:focus {
-  outline: none;
-}
-
-[data-iii-ui="database"] .db-cfg-detail:focus-visible {
-  border-radius: var(--radius-md, 8px);
-  outline: 2px solid var(--color-ring);
-  outline-offset: 4px;
-}
-
-[data-iii-ui="database"] .db-cfg-name {
-  width: min(220px, 100%);
-  padding: 6px 8px;
-  border-color: var(--color-rule);
-  background: var(--color-bg);
-  font-size: 13px;
-  font-weight: 500;
-}
-
-[data-iii-ui="database"] .db-cfg-detail .db-cfg-input,
-[data-iii-ui="database"] .db-cfg-detail .db-cfg-select {
-  width: min(340px, 100%);
-}
-
-[data-iii-ui="database"] .db-cfg-detail .db-cfg-template-control {
-  width: min(440px, 100%);
-}
-
-[data-iii-ui="database"] .db-cfg-url-setting .iii-ui-settings-row__control,
-[data-iii-ui="database"] .db-cfg-url-row {
   width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
 }
 
-[data-iii-ui="database"] .db-cfg-url-row .db-cfg-input {
-  width: auto;
+[data-iii-ui="database"] .db-cfg-opaque-action {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+[data-iii-ui="database"] .db-cfg-grow {
+  min-width: 0;
+  flex: 1 1 18rem;
+}
+
+[data-iii-ui="database"] .db-cfg-test-ok,
+[data-iii-ui="database"] .db-cfg-test-fail {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+[data-iii-ui="database"] .db-cfg-test-ok {
+  color: var(--color-ok);
+}
+
+[data-iii-ui="database"] .db-cfg-test-fail,
+[data-iii-ui="database"] .db-cfg-warn {
+  color: var(--color-alert);
+}
+
+[data-iii-ui="database"] .db-cfg-warn {
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 [data-iii-ui="database"] .db-cfg-notice {
@@ -2742,65 +2379,41 @@
   line-height: 1.5;
 }
 
-[data-iii-ui="database"] .db-cfg-remove:focus-visible,
-[data-iii-ui="database"] .db-cfg-add:focus-visible,
-[data-iii-ui="database"] .db-cfg-test:focus-visible,
-[data-iii-ui="database"] .db-cfg-reveal:focus-visible,
-[data-iii-ui="database"] .db-cfg-template-replace:focus-visible {
-  outline: 2px solid var(--color-ring);
-  outline-offset: 2px;
+[data-iii-ui="database"] .db-cfg-errors {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px;
+  border: 1px solid var(--color-alert);
+  border-radius: var(--radius-md, 8px);
+  color: var(--color-alert);
+  font-size: 12px;
 }
 
-@container db-config (max-width: 760px) {
-  [data-iii-ui="database"] .db-cfg-master-detail {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 20px;
-  }
-
-  [data-iii-ui="database"] .db-cfg-master {
-    position: static;
-  }
-
-  [data-iii-ui="database"] .db-cfg-connection-select {
-    display: flex;
-    min-height: 48px;
-    align-items: center;
-  }
+[data-iii-ui="database"] .db-cfg-danger-action {
+  color: var(--color-alert);
 }
 
 @container db-config (max-width: 620px) {
-  [data-iii-ui="database"] .db-cfg-empty strong,
-  [data-iii-ui="database"] .db-cfg-empty p,
-  [data-iii-ui="database"] .db-cfg-empty .db-cfg-add {
-    font-size: 16px;
-  }
-
-  [data-iii-ui="database"] .db-cfg-empty .db-cfg-add {
-    min-height: 48px;
-  }
-
+  [data-iii-ui="database"] .db-cfg-overview,
   [data-iii-ui="database"] .db-cfg-detail {
     gap: 20px;
   }
 
-  [data-iii-ui="database"] .db-cfg-detail .db-cfg-input,
-  [data-iii-ui="database"] .db-cfg-detail .db-cfg-select,
-  [data-iii-ui="database"] .db-cfg-detail .db-cfg-template-control,
-  [data-iii-ui="database"] .db-cfg-name {
-    width: 100%;
+  [data-iii-ui="database"] .db-cfg-history-input {
+    text-align: left;
   }
 
-  [data-iii-ui="database"] .db-cfg-template-control {
-    grid-template-columns: minmax(0, 1fr);
+  [data-iii-ui="database"] .db-cfg-url-row {
+    flex-direction: column;
   }
 
-  [data-iii-ui="database"] .db-cfg-template-kind {
-    grid-column: 1;
+  [data-iii-ui="database"] .db-cfg-handle-row {
+    align-items: stretch;
+    flex-direction: column;
   }
 
-  [data-iii-ui="database"] .db-cfg-template-replace {
-    width: 100%;
-    min-height: 48px;
-    white-space: normal;
+  [data-iii-ui="database"] .db-cfg-grow {
+    flex-basis: auto;
   }
 }

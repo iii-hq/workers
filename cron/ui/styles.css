@@ -376,11 +376,8 @@
   white-space: nowrap;
 }
 
-/* Forms: one column of shared fields, sized for reading rather than for the
-   full width of a wide pane. The inspector column already supplies the
-   padding and stacking. */
-[data-iii-ui='cron'] .cron-ui-form-panel,
-[data-iii-ui='cron'] .cron-ui-form {
+/* Manual schedule form: the inspector column supplies the padding. */
+[data-iii-ui='cron'] .cron-ui-form-panel {
   display: flex;
   min-width: 0;
   flex-direction: column;
@@ -388,9 +385,38 @@
   max-width: 560px;
 }
 
-[data-iii-ui='cron'] .cron-ui-form-caption {
-  color: var(--color-ink-ghost);
-  font-size: 11px;
+/* Configuration form: shared Settings components own surfaces, spacing and
+   responsive row composition. Local CSS only sizes Cron's value controls. */
+[data-iii-ui='cron'] .cron-ui-form {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 24px;
+  container-type: inline-size;
+  color: var(--color-ink);
+  font-family: var(--font-sans, system-ui, sans-serif);
+}
+
+[data-iii-ui='cron'] .cron-ui-config-control,
+[data-iii-ui='cron'] .cron-ui-config-select {
+  width: min(100%, 360px);
+}
+
+[data-iii-ui='cron'] .cron-ui-config-control {
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+[data-iii-ui='cron'] .cron-ui-config-error {
+  color: var(--color-alert);
+}
+
+[data-iii-ui='cron'] .cron-ui-config-opaque {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 [data-iii-ui='cron'] .cron-ui-editor-field .cron-ui-code-editor {

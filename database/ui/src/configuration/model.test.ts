@@ -4,6 +4,7 @@ import {
   booleanLiteralForRawValue,
   DATABASE_CONFIG_FIELD_PATHS,
   databaseFocusRequest,
+  databaseHandleError,
   driverOf,
   driverOfConfiguredUrl,
   isEnvironmentValue,
@@ -54,7 +55,7 @@ describe('database configuration model', () => {
     expect(shouldShowTlsForUrl('${DATABASE_URL:sqlite:./data/app.db}')).toBe(true)
   })
 
-  it('creates a stable focus request per field path and database-name set', () => {
+  it('keeps one focus request stable while the database collection changes', () => {
     const first = databaseFocusRequest(['primary', 'analytics'], ['databases', 'analytics', 'url'])
     const same = databaseFocusRequest(['primary', 'analytics'], ['databases', 'analytics', 'url'])
     const renamed = databaseFocusRequest(['primary', 'warehouse'], ['databases', 'analytics', 'url'])
@@ -66,8 +67,18 @@ describe('database configuration model', () => {
       databaseName: 'analytics',
     })
     expect(same?.key).toBe(first?.key)
-    expect(renamed?.key).not.toBe(first?.key)
+    expect(renamed?.key).toBe(first?.key)
     expect(databaseFocusRequest(['primary'], undefined)).toBeNull()
+  })
+
+  it('validates connection-handle renames atomically', () => {
+    const names = ['primary', 'analytics']
+
+    expect(databaseHandleError('primary', names, '   ')).toBe('Enter a database handle.')
+    expect(databaseHandleError('primary', names, 'analytics')).toContain('already exists')
+    expect(databaseHandleError('primary', names, ' primary ')).toBeUndefined()
+    expect(databaseHandleError('primary', names, 'warehouse')).toBeUndefined()
+    expect(databaseHandleError('primary', names, 'constructor')).toBeUndefined()
   })
 
   it('preserves typed raw values and derives explicit number, boolean, and select replacements', () => {

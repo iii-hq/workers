@@ -61,11 +61,21 @@ export function databaseFocusRequest(
   const path = focusField.map(String)
   const databaseName = path[0] === 'databases' ? path[1] : undefined
   return {
-    key: JSON.stringify([names, path]),
+    key: JSON.stringify(path),
     exactField: path.join('.'),
     databaseIndex: databaseName === undefined ? -1 : names.indexOf(databaseName),
     databaseName,
   }
+}
+
+/** Validate an atomic map-key rename without mutating the configuration. */
+export function databaseHandleError(current: string, names: readonly string[], draft: string): string | undefined {
+  const next = draft.trim()
+  if (!next) return 'Enter a database handle.'
+  if (next !== current && names.includes(next)) {
+    return `A database named “${next}” already exists.`
+  }
+  return undefined
 }
 
 /** Persisted paths in DatabaseConfig, with `{name}` for the map key. */
