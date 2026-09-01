@@ -51,9 +51,9 @@ case "$cli_channel" in
 esac
 
 case "$worker_tag" in
-  latest | next) ;;
+  latest) ;;
   *)
-    echo "III_WORKER_TAG must be 'latest' or 'next' (got: $worker_tag)" >&2
+    echo "III_WORKER_TAG must be 'latest' (got: $worker_tag)" >&2
     exit 2
     ;;
 esac
@@ -65,16 +65,22 @@ if [[ -n "$release_worker" || -n "$release_version" ]]; then
   }
 fi
 
-[[ -n "${ANTHROPIC_API_KEY:-}" ]] || {
+anthropic_api_key=${ANTHROPIC_API_KEY:-}
+openai_api_key=${OPENAI_API_KEY:-}
+[[ -n "$anthropic_api_key" ]] || {
   echo "ANTHROPIC_API_KEY is required" >&2
   exit 2
 }
-[[ -n "${OPENAI_API_KEY:-}" ]] || {
+[[ -n "$openai_api_key" ]] || {
   echo "OPENAI_API_KEY is required" >&2
   exit 2
 }
+# Keep credentials out of installer, engine, CLI, Playwright, and other child
+# processes. Only the compose daemon needs them to resolve the placeholders
+# declared specifically on llm-router.
+unset ANTHROPIC_API_KEY OPENAI_API_KEY
 
-for command_name in curl jq ffmpeg; do
+for command_name in curl jq ffmpeg python3; do
   command -v "$command_name" >/dev/null 2>&1 || {
     echo "$command_name is required" >&2
     exit 2
@@ -121,6 +127,7 @@ rm -f \
   "$artifact_dir/model-anthropic.json" \
   "$artifact_dir/model-openai.json" \
   "$artifact_dir/model-catalog.json" \
+  "$artifact_dir/provider-status.json" \
   "$artifact_dir/browser-evidence.json" \
   "$artifact_dir/terminal-status.json" \
   "$artifact_dir/first-capability-browser-evidence.json" \
@@ -350,6 +357,7 @@ wait_for_functions() {
     "session::messages",
     "context::assemble",
     "router::models::get",
+    "router::provider::list",
     "shell::exec",
     "console::status"
   ]'
@@ -374,6 +382,34 @@ wait_for_functions() {
     sleep 1
   done
   die "required functions did not register: $missing"
+}
+
+wait_for_providers() {
+  local response attempt
+  log "Waiting for Anthropic and OpenAI provider configuration (up to ${wait_seconds}s)"
+  log_command "iii trigger router::provider::list --port $engine_port --json '{}'"
+  for ((attempt = 0; attempt < wait_seconds; attempt++)); do
+    response=$("$iii_bin" trigger router::provider::list --port "$engine_port" \
+      --json '{}' 2>>"$log_dir/provider-discovery.log" || true)
+    if jq -e '.providers | type == "array"' <<<"$response" >/dev/null 2>&1; then
+      printf '%s\n' "$response" >"$artifact_dir/provider-status.json"
+    fi
+    if jq -e '
+      [
+        .providers[]?
+        | select(.id == "anthropic" or .id == "openai")
+        | select(.configured == true and .available == true)
+      ] | length == 2
+    ' <<<"$response" >/dev/null 2>&1; then
+      ok "Anthropic and OpenAI providers configured after ${attempt}s"
+      return 0
+    fi
+    if ((attempt > 0 && attempt % 15 == 0)); then
+      log "Still waiting for configured Anthropic and OpenAI providers"
+    fi
+    sleep 1
+  done
+  die "llm-router did not report configured and available Anthropic and OpenAI providers"
 }
 
 wait_for_model() {
@@ -555,7 +591,7 @@ verify_first_capability() {
 
 artifacts_contain_secret() {
   local credential
-  for credential in "$ANTHROPIC_API_KEY" "$OPENAI_API_KEY"; do
+  for credential in "$anthropic_api_key" "$openai_api_key"; do
     if LC_ALL=C grep -R -a -F -l -- "$credential" "$artifact_dir" >/dev/null 2>&1; then
       return 0
     fi
@@ -598,6 +634,23 @@ run_compose_add() {
     || die "compose::add $spec did not report ok"
 }
 
+run_compose_restart() {
+  local payload response
+  payload=$(jq -cn --arg file "$compose_file" '{file: $file}')
+  log_command "iii trigger compose::restart --port $engine_port --timeout-ms $((add_timeout_seconds * 1000)) --json '$payload'"
+  if command -v timeout >/dev/null 2>&1; then
+    response=$(timeout --signal=TERM --kill-after=15s "$((add_timeout_seconds + 30))" \
+      "$iii_bin" trigger compose::restart --port "$engine_port" \
+      --timeout-ms "$((add_timeout_seconds * 1000))" --json "$payload")
+  else
+    response=$("$iii_bin" trigger compose::restart --port "$engine_port" \
+      --timeout-ms "$((add_timeout_seconds * 1000))" --json "$payload")
+  fi
+  printf '%s\n' "$response"
+  jq -e '.status == "ok"' <<<"$response" >/dev/null 2>&1 \
+    || die "compose::restart did not report ok"
+}
+
 start_engine() {
   local command=("$iii_bin" -c "$project_dir/config.yaml" --no-update-check)
   log_command "iii -c config.yaml --no-update-check"
@@ -616,9 +669,11 @@ start_compose() {
   local command=("$iii_bin" compose --engine "ws://127.0.0.1:$engine_port" --namespace default)
   log_command "iii compose --engine ws://127.0.0.1:$engine_port --namespace default"
   if command -v setsid >/dev/null 2>&1; then
-    setsid "${command[@]}" >"$log_dir/compose.log" 2>&1 &
+    ANTHROPIC_API_KEY="$anthropic_api_key" OPENAI_API_KEY="$openai_api_key" \
+      setsid "${command[@]}" >"$log_dir/compose.log" 2>&1 &
   else
-    "${command[@]}" >"$log_dir/compose.log" 2>&1 &
+    ANTHROPIC_API_KEY="$anthropic_api_key" OPENAI_API_KEY="$openai_api_key" \
+      "${command[@]}" >"$log_dir/compose.log" 2>&1 &
   fi
   compose_pid=$!
 }
@@ -687,7 +742,9 @@ COMPOSE
 log "Step 3/9: Add harness and Console from worker tag $worker_tag via compose"
 run_compose_add "harness@$worker_tag" 2>&1 | tee "$log_dir/compose-add-harness.log"
 run_compose_add "console@$worker_tag" 2>&1 | tee "$log_dir/compose-add-console.log"
-ok "compose declared and started harness + console"
+python3 "$script_dir/configure_compose_environment.py" "$compose_file"
+run_compose_restart 2>&1 | tee "$log_dir/compose-restart-provider-env.log"
+ok "compose declared harness + console from latest and applied provider credentials to llm-router"
 
 log "Step 4/9: Apply exact release candidate override"
 if [[ -n "$release_worker" ]]; then
@@ -700,6 +757,7 @@ fi
 
 log "Step 5/9: Verify registered functions"
 wait_for_functions
+wait_for_providers
 
 log "Step 6/9: Verify Sonnet 5 and Luna availability"
 wait_for_model anthropic claude-sonnet-5 "$artifact_dir/model-anthropic.json"
@@ -731,7 +789,11 @@ for required in harness console; do
 done
 grep -Eq '^[[:space:]]+version:' "$compose_file" \
   || die "worker-compose.yaml has no pinned versions"
-ok "worker-compose.yaml declares harness + console with pinned versions"
+grep -Fq 'ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}' "$compose_file" \
+  || die "worker-compose.yaml does not pass ANTHROPIC_API_KEY to llm-router"
+grep -Fq 'OPENAI_API_KEY: ${OPENAI_API_KEY}' "$compose_file" \
+  || die "worker-compose.yaml does not pass OPENAI_API_KEY to llm-router"
+ok "worker-compose.yaml declares latest-resolved pinned versions and secret-safe provider references"
 snapshot_project
 assert_secret_safe_artifacts
 

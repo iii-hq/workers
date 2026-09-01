@@ -52,10 +52,22 @@ The default engine and Console ports (`49134` and `3113`) must be available.
 The CLI installer and Registry worker selectors are independent:
 `III_CLI_CHANNEL` chooses `latest` or `rc` for `iii` (default `rc`; the CLI's
 `next` channel is dead, and `iii compose` needs 0.23.0-rc or newer — the
-validator refuses a CLI without the `compose` command), while `III_WORKER_TAG`
-chooses the Registry tag used by `harness` and `console`. The old combined
-`III_CHANNEL` variable is rejected to prevent a silent test against the wrong
-side of the split.
+validator refuses a CLI without the `compose` command). `III_WORKER_TAG` is
+restricted to `latest`, so `harness`, `console`, and their Registry dependency
+graph always resolve from the stable channel before the generated compose file
+pins exact versions. Release-triggered validation can still replace the one
+worker under test with an explicit immutable candidate version. The old
+combined `III_CHANNEL` variable is rejected to prevent a silent test against
+the wrong side of the split.
+
+After Registry resolution, the validator declares literal
+`${ANTHROPIC_API_KEY}` and `${OPENAI_API_KEY}` references only on `llm-router`
+and restarts the compose project. The provider values remain in the process
+environment of the compose daemon and the `llm-router` it starts; the installer,
+engine, CLI calls, other workers, and Playwright do not inherit them. They are
+never written to the compose file or artifacts. A `router::provider::list`
+preflight proves both providers received usable configuration before model
+discovery and browser validation begin.
 Set `HARNESS_QUICKSTART_TRACE=1` to print only the important external commands
 (`iii trigger compose::add`, `iii trigger`, installer, engine, and compose
 daemon) and save the list as `commands.log`. Polling attempts, assignments,

@@ -22,7 +22,7 @@ def test_quickstart_workflow_exists_with_exact_dispatch_identity():
     assert set(inputs) == {"quickstart_id", "attempt", "cli_channel", "registry_tag"}
     assert all(inputs[name]["required"] for name in inputs)
     assert inputs["cli_channel"]["options"] == ["latest", "rc"]
-    assert inputs["registry_tag"]["options"] == ["latest", "next"]
+    assert inputs["registry_tag"]["options"] == ["latest"]
     # Release Control correlates runs by this exact title shape.
     assert (
         document["run-name"]
@@ -75,3 +75,13 @@ def test_quickstart_actions_are_sha_pinned_and_inputs_never_reach_shell_source()
         if run is None:
             continue
         assert "${{ inputs." not in run, "dispatch inputs must reach run: only through env:"
+
+
+def test_quickstart_enforces_latest_and_applies_provider_environment():
+    script = (ROOT / "harness" / "tests" / "quickstart" / "run-ci.sh").read_text(encoding="utf-8")
+    assert 'case "$worker_tag" in\n  latest)' in script
+    assert 'configure_compose_environment.py" "$compose_file"' in script
+    assert "run_compose_restart" in script
+    assert 'router::provider::list' in script
+    assert "unset ANTHROPIC_API_KEY OPENAI_API_KEY" in script
+    assert 'ANTHROPIC_API_KEY="$anthropic_api_key" OPENAI_API_KEY="$openai_api_key"' in script
