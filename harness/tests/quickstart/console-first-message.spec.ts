@@ -33,16 +33,13 @@ async function selectModel(
   await expect(modelPicker).toBeEnabled()
   await modelPicker.click()
 
-  const providerGroup = page.getByRole('menuitem', {
-    name: new RegExp(`^${provider}`, 'i'),
+  const modelMenu = page.getByRole('menu', { name: /^model:/i })
+  const providerGroup = modelMenu.getByRole('region', {
+    name: new RegExp(`^${provider}$`, 'i'),
   })
   await expect(providerGroup).toBeVisible()
-  if ((await providerGroup.getAttribute('aria-expanded')) !== 'true') {
-    await providerGroup.click()
-  }
-  await expect(providerGroup).toHaveAttribute('aria-expanded', 'true')
 
-  const model = page.getByRole('menuitemradio', { name: modelLabel })
+  const model = providerGroup.getByRole('button', { name: modelLabel })
   await expect(model).toHaveCount(1)
   await model.click()
 
