@@ -25,6 +25,7 @@ const harness = vi.hoisted(() => ({
     configurationId: null,
     fieldPath: [],
   } as WorkersConfigurationRoute,
+  formIds: ['browser', 'database'],
   navigateWorker: vi.fn(),
 }))
 
@@ -38,6 +39,12 @@ vi.mock('@/hooks/use-hash-route', () => ({
     harness.navigateWorker,
     vi.fn(),
   ],
+}))
+
+vi.mock('@/lib/ui-slots', () => ({
+  useExtConfigForms: () =>
+    harness.formIds.map((configurationId) => ({ configurationId })),
+  useUiAssetsStatus: () => 'ready',
 }))
 
 vi.mock('./tabs/WorkersTab/hooks', () => ({
@@ -148,16 +155,26 @@ describe('Configuration settings workspace', () => {
       configurationId: null,
       fieldPath: [],
     }
+    harness.formIds = ['browser', 'database']
     harness.navigateWorker.mockClear()
   })
 
-  it('shows General and every registered worker in the desktop sidebar', () => {
+  it('shows General and every worker with a registered UI in the desktop sidebar', () => {
     const html = renderConfiguration()
 
     expect(html).toContain('data-testid="general-settings"')
     expect(html).toContain('Browser')
     expect(html).toContain('Database')
     expect(html).toContain('aria-current="page"')
+  })
+
+  it('omits workers that do not register a settings UI', () => {
+    harness.formIds = ['browser']
+
+    const html = renderConfiguration()
+
+    expect(html).toContain('Browser')
+    expect(html).not.toContain('Database')
   })
 
   it('renders the route-selected worker with the shared editor shell', () => {
@@ -212,6 +229,7 @@ describe('Configuration settings workspace', () => {
   })
 
   it('assigns an intentional icon to every known worker configuration', () => {
+    harness.formIds = [...KNOWN_WORKER_CONFIGURATION_IDS]
     harness.entries = KNOWN_WORKER_CONFIGURATION_IDS.map((id) => ({
       id,
       name: id,

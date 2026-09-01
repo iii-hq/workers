@@ -49,6 +49,7 @@ import {
 } from '@/hooks/use-hash-route'
 import type { Theme } from '@/hooks/use-theme'
 import { configurationFormFamily } from '@/lib/configuration-family'
+import { useExtConfigForms, useUiAssetsStatus } from '@/lib/ui-slots'
 import { cn } from '@/lib/utils'
 import { isOperatorConfiguration } from './lib/configuration-catalog'
 import { ConsoleSettingsTab } from './tabs/ConsoleSettingsTab'
@@ -191,17 +192,30 @@ export function Configuration({
 }: ConfigurationProps) {
   const [route, navigateWorker] = useWorkersConfigurationRoute()
   const configurationsQuery = useConfigurationsList()
+  const configForms = useExtConfigForms()
+  const uiAssetsStatus = useUiAssetsStatus()
   useWorkerRegistryReactivity()
 
+  const configFormIds = useMemo(
+    () => new Set(configForms.map((form) => form.configurationId)),
+    [configForms],
+  )
   const entries = useMemo(
     () =>
       (configurationsQuery.data ?? [])
         .filter(isOperatorConfiguration)
+        .filter(
+          (entry) =>
+            configFormIds.has(entry.id) ||
+            configFormIds.has(configurationFormFamily(entry)),
+        )
         .sort((left, right) =>
           configurationName(left).localeCompare(configurationName(right)),
         ),
-    [configurationsQuery.data],
+    [configurationsQuery.data, configFormIds],
   )
+  const settingsLoading =
+    configurationsQuery.isLoading || uiAssetsStatus === 'loading'
   const selectedEntry = route.configurationId
     ? (entries.find((entry) => entry.id === route.configurationId) ?? null)
     : null
@@ -236,7 +250,7 @@ export function Configuration({
           route={route}
           onSelectGeneral={selectGeneral}
           onSelectWorker={selectWorker}
-          isLoading={configurationsQuery.isLoading}
+          isLoading={settingsLoading}
           isError={configurationsQuery.isError}
           errorMessage={(configurationsQuery.error as Error | null)?.message}
           narrow={narrow}
@@ -262,7 +276,7 @@ export function Configuration({
               />
               <ConsoleSettingsTab theme={theme} onThemeChange={onThemeChange} />
             </>
-          ) : configurationsQuery.isLoading ? (
+          ) : settingsLoading ? (
             <ConfigurationLoading
               onBack={narrow ? showMobileNavigation : undefined}
             />
@@ -291,7 +305,7 @@ export function Configuration({
                 name: route.configurationId,
               })}
               title="Worker settings unavailable"
-              description={`No registered configuration named “${route.configurationId}” is available. Start or enable its worker, then try again.`}
+              description={`No configurable worker named “${route.configurationId}” is available. Start or enable its worker and ensure it provides a settings UI, then try again.`}
             />
           ) : (
             <EditorEmptyState
@@ -427,7 +441,7 @@ function SettingsNavigation({
         {!isLoading && !isError && filteredEntries.length === 0 ? (
           <p className="px-2 py-4 font-sans text-base text-ink-faint sm:text-sm">
             {entries.length === 0
-              ? 'No worker configurations are registered.'
+              ? 'No workers with a settings UI are registered.'
               : `No settings match “${query.trim()}”.`}
           </p>
         ) : null}

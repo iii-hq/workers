@@ -43,6 +43,7 @@ import { TabStrip } from '@/components/workspace/TabStrip'
 import { useScreenOptions } from '@/components/workspace/use-screen-options'
 import {
   hashForExtPage,
+  hashForSettingsLanding,
   hashForView,
   useExtPageRoute,
   useHashRoute,
@@ -199,6 +200,7 @@ export function App({
   const { setDirty: setSettingsDirty, tryNavigate: trySettingsNavigation } =
     useUnsavedGuard({ guardHashNavigation: true })
   const [view, setView] = useHashRoute()
+  const narrowSettings = useMediaQuery('(max-width: 639px)')
   const extPageId = useExtPageRoute()
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   // Held here, not in `PaletteHost`: ⌘K is one way in and the phone header's
@@ -386,10 +388,14 @@ export function App({
   const requestCloseSettings = useCallback(() => {
     trySettingsNavigation(closeSettings)
   }, [closeSettings, trySettingsNavigation])
+  const openSettings = useCallback(() => {
+    const targetHash = hashForSettingsLanding(narrowSettings)
+    if (window.location.hash !== targetHash) window.location.hash = targetHash
+  }, [narrowSettings])
   const toggleSettings = useCallback(() => {
     if (view === 'configuration') requestCloseSettings()
-    else setView('configuration')
-  }, [view, setView, requestCloseSettings])
+    else openSettings()
+  }, [view, openSettings, requestCloseSettings])
   const layoutSource = workspace.layoutSource
   const lastLayoutSourceRef = useRef(layoutSource)
   useEffect(() => {
@@ -551,7 +557,7 @@ export function App({
           onOpenChange={setPaletteOpen}
           openScreen={openWorkspaceScreen}
           workspace={paletteWorkspace}
-          onOpenSettings={() => setView('configuration')}
+          onOpenSettings={openSettings}
           onOpenShortcuts={() => setShortcutsOpen(true)}
           theme={theme}
           onThemeChange={setTheme}

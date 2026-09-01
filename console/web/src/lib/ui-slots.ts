@@ -306,6 +306,15 @@ export function useExtTriggerActivityRenderers(): readonly RegisteredTriggerActi
   )
 }
 
+/** All injected worker configuration forms, in registration order. */
+export function useExtConfigForms(): readonly RegisteredConfigForm[] {
+  return useSyncExternalStore(
+    configFormsStore.subscribe,
+    configFormsStore.get,
+    () => EMPTY,
+  )
+}
+
 function dedupeSessionChips(
   chips: readonly RegisteredSessionChip[],
 ): readonly RegisteredSessionChip[] {
@@ -361,11 +370,7 @@ export function useExtConfigForm(
   configurationId: string,
   fallbackConfigurationId?: string,
 ): RegisteredConfigForm | undefined {
-  const forms = useSyncExternalStore(
-    configFormsStore.subscribe,
-    configFormsStore.get,
-    () => EMPTY,
-  )
+  const forms = useExtConfigForms()
   for (const candidate of [configurationId, fallbackConfigurationId]) {
     if (!candidate) continue
     for (let i = forms.length - 1; i >= 0; i--) {

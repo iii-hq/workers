@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   extPageFromHash,
+  hashForSettingsLanding,
   hashForWorkersConfiguration,
   normalizeExtHash,
   normalizeWorkersConfigurationHash,
@@ -16,6 +17,11 @@ describe('workers configuration hash helpers', () => {
     expect(hashForWorkersConfiguration('shell', ['fs', 'host_roots'])).toBe(
       '#/configuration/workers/shell/fs/host_roots',
     )
+  })
+
+  it('opens settings on the navigation menu only on narrow screens', () => {
+    expect(hashForSettingsLanding(true)).toBe('#/configuration/workers')
+    expect(hashForSettingsLanding(false)).toBe('#/configuration')
   })
 
   it('parses canonical workers configuration hashes', () => {

@@ -96,6 +96,13 @@ export function hashForWorkersConfigurationList(): string {
   return WORKERS_CONFIGURATION_ROOT
 }
 
+/** The settings entry route: navigation first on narrow screens, General otherwise. */
+export function hashForSettingsLanding(narrow: boolean): string {
+  return narrow
+    ? hashForWorkersConfigurationList()
+    : hashForView('configuration')
+}
+
 export function normalizeWorkersConfigurationHash(hash: string): string | null {
   if (
     hash === LEGACY_WORKERS_CONFIGURATION_ROOT ||
