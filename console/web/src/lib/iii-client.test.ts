@@ -135,6 +135,33 @@ describe('namespaced browser connection', () => {
     ])
   })
 
+  it('uses the namespace returned by the runtime endpoint', async () => {
+    const { sdk } = fakeSdk()
+    const calls: Array<{ options?: InitOptions }> = []
+    vi.stubGlobal('window', {
+      location: { href: 'http://console.test/#/chat' },
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({ namespace: 'project-a' }),
+      })),
+    )
+    __setIiiClientDepsForTests({
+      resolveWsUrl: () => 'ws://console.test/ws',
+      makeBrowserId: () => BROWSER_ID,
+      registerWorker: (_url, options) => {
+        calls.push({ options })
+        return sdk
+      },
+    })
+
+    await getIiiClient()
+
+    expect(calls).toEqual([{ options: { namespace: 'project-a' } }])
+  })
+
   it('inherits project calls and routes engine control-plane calls to default', async () => {
     const { sdk, triggers } = fakeSdk()
     const client = wrapSdk(sdk, BROWSER_ID)
@@ -152,10 +179,9 @@ describe('namespaced browser connection', () => {
     ])
   })
 
-  it('warns when runtime namespace discovery falls back to default', async () => {
+  it('refuses to connect when runtime namespace discovery fails', async () => {
     const { sdk } = fakeSdk()
     const calls: Array<{ options?: InitOptions }> = []
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     vi.stubGlobal('window', { location: { href: 'http://console.test/' } })
     vi.stubGlobal(
       'fetch',
@@ -170,11 +196,10 @@ describe('namespaced browser connection', () => {
       },
     })
 
-    await getIiiClient()
-
-    expect(calls).toEqual([{ options: undefined }])
-    expect(warn).toHaveBeenCalledWith(
-      'Runtime namespace request failed with HTTP 503; connecting to default',
+    await expect(getIiiClient()).rejects.toThrow(
+      'Runtime namespace request failed with HTTP 503; refusing to connect to default',
     )
+
+    expect(calls).toEqual([])
   })
 })

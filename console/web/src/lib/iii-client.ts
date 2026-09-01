@@ -298,26 +298,30 @@ function resolveWsUrl(): string {
  */
 async function resolveNamespace(): Promise<string | undefined> {
   if (typeof window === 'undefined' || !window.location) return undefined
+  const url = new URL('./runtime', window.location.href)
+  let response: Response
   try {
-    const url = new URL('./runtime', window.location.href)
-    const response = await fetch(url, { cache: 'no-store' })
-    if (!response.ok) {
-      console.warn(
-        `Runtime namespace request failed with HTTP ${response.status}; connecting to default`,
-      )
-      return undefined
-    }
-    const value = (await response.json()) as { namespace?: unknown }
-    return typeof value.namespace === 'string' && value.namespace.length > 0
-      ? value.namespace
-      : undefined
-  } catch (error) {
-    console.warn(
-      'Runtime namespace request failed; connecting to default',
-      error,
+    response = await fetch(url, { cache: 'no-store' })
+  } catch (cause) {
+    throw new Error(
+      'Runtime namespace request failed; refusing to connect to default',
+      { cause },
     )
-    return undefined
   }
+  if (!response.ok) {
+    throw new Error(
+      `Runtime namespace request failed with HTTP ${response.status}; refusing to connect to default`,
+    )
+  }
+  const value = (await response.json()) as { namespace?: unknown }
+  if (value.namespace === null || value.namespace === undefined)
+    return undefined
+  if (typeof value.namespace === 'string' && value.namespace.length > 0) {
+    return value.namespace
+  }
+  throw new Error(
+    'Runtime namespace response is invalid; refusing to connect to default',
+  )
 }
 
 /** Engine control-plane functions are registered only in `default`. */
