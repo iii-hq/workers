@@ -130,7 +130,8 @@ Use
 to compare `ubuntu-latest` with `workers-ci-linux-8core`:
 
 1. Select one immutable `source-ref` SHA for the entire cohort.
-2. Run ten executions on each pool: seven `warm` and three `cold`.
+2. Run ten candidate executions: seven `warm` and three `cold`. Run matched
+   standard-runner baselines with both cache states on the same source SHA.
 3. `warm` uses the production cache keys. Each `cold` run gets a unique key
    and cannot save it, so it neither restores nor pollutes the warm cache.
 4. Record queue time and execution time from the job API, cache hits from the
@@ -143,6 +144,25 @@ Initial service targets are CI queue p95 below 60 seconds, no job waiting more
 than five minutes for a runner, Harness integration execution p95 below ten
 minutes, release prepare p95 below ten minutes and publish p95 below four
 minutes.
+
+### Initial 8-core pilot (2026-09-01)
+
+The first `workers-ci-linux-8core` pilot completed three cold and seven warm
+executions successfully. Normal queue time was 2–3 seconds. The first cold
+queue is excluded because it includes the one-time runner-group access repair.
+
+| Cohort | Samples | p50 execution | p95 execution |
+|---|---:|---:|---:|
+| 8-core warm | 7 | 8m54 | 9m17 |
+| 8-core cold | 3 | 17m32 | 19m11 |
+
+A matched warm `ubuntu-latest` run took 11m11, so the 8-core warm p50 improved
+execution by about 20%, below the 25% retention threshold. The ten 8-core jobs
+consumed 121 rounded billed minutes, approximately US$2.66 at the price used
+for the pilot. Because standard runners are free for this public repository,
+`ubuntu-latest` remains the default. Keep the 8-core pool restricted and use
+it only for deliberate rebenchmarks after the Harness workload or cache keys
+change.
 
 ## Script tests
 

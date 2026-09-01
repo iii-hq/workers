@@ -126,8 +126,10 @@ def test_runner_pool_contract_is_documented() -> None:
     for label in labels:
         assert f"`{label}`" in runner_docs
 
-    assert "ten executions on each pool" in runner_docs
+    assert "ten candidate executions" in runner_docs
     assert "improvement over `ubuntu-latest` is at least 25%" in runner_docs
+    assert "8-core warm | 7 | 8m54 | 9m17" in runner_docs
+    assert "`ubuntu-latest` remains the default" in runner_docs
 
 
 def test_interface_smoke_bounds_each_engine_readiness_probe() -> None:
