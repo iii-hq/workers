@@ -10,6 +10,9 @@ use crate::probe::LIFECYCLE_FUNCTION_ID;
 use crate::scenarios::VerifyFn;
 use crate::types::trace::strip_engine_fields;
 
+const TURN_ENQUEUE_TRACE_NAME: &str = "enqueue harness::turn → harness-turn";
+const QUEUE_ENQUEUE_EXECUTE_TRACE_NAME: &str = "execute engine::queue::enqueue";
+
 /// Scenario-declared shape of a passing run.
 pub struct FloorExpectations<'a> {
     /// Each completion's lifecycle status, in trace order — parked
@@ -111,10 +114,10 @@ fn trace_failure(run: &RunEvidence, expected: &FloorExpectations) -> Option<Stri
     let trace_count = summary.trace_count == expected.traces;
     let turn_count = summary.turn_ids.len() == expected.turns();
     let complete = summary.pending_span_count == 0;
-    // A declared-failed turn must surface its failure in the traces; an
-    // all-completed run must stay clean. Cancellation aborts an in-flight
-    // router call, so those expected turns legitimately carry error spans;
-    // accept only errors bound to a turn declared cancelled.
+    // A declared-failed turn must surface its failure in the traces. A
+    // completed run may retain failed enqueue attempts only when a later
+    // sibling proves the same durable turn payload succeeded. Cancellation
+    // may additionally retain errors bound to a turn declared cancelled.
     let clean = if expected.declares_failure() {
         summary.error_count > 0
     } else if expected
@@ -122,9 +125,9 @@ fn trace_failure(run: &RunEvidence, expected: &FloorExpectations) -> Option<Stri
         .iter()
         .any(|status| status == "cancelled")
     {
-        cancelled_errors_are_bound(run, expected)
+        cancelled_or_recovered_errors_are_bound(run, expected)
     } else {
-        summary.error_count == 0
+        completed_errors_are_recovered(run)
     };
     let latest_bound = if run.tree_sessions.len() > 1 {
         run.turn_id
@@ -149,7 +152,18 @@ fn trace_failure(run: &RunEvidence, expected: &FloorExpectations) -> Option<Stri
     ))
 }
 
-fn cancelled_errors_are_bound(run: &RunEvidence, expected: &FloorExpectations) -> bool {
+fn completed_errors_are_recovered(run: &RunEvidence) -> bool {
+    let recovered = recovered_enqueue_error_spans(run);
+    run.traces
+        .spans()
+        .filter(|span| span.status.eq_ignore_ascii_case("error"))
+        .all(|span| recovered.contains(&(span.trace_id.clone(), span.span_id.clone())))
+}
+
+fn cancelled_or_recovered_errors_are_bound(
+    run: &RunEvidence,
+    expected: &FloorExpectations,
+) -> bool {
     let cancelled_turns = run
         .traces
         .summary
@@ -159,14 +173,88 @@ fn cancelled_errors_are_bound(run: &RunEvidence, expected: &FloorExpectations) -
         .filter(|(_, status)| status.as_str() == "cancelled")
         .map(|(turn_id, _)| turn_id.as_str())
         .collect::<BTreeSet<_>>();
+    let recovered = recovered_enqueue_error_spans(run);
 
     run.traces
         .spans()
         .filter(|span| span.status.eq_ignore_ascii_case("error"))
         .all(|span| {
-            span.attribute("iii.message.id")
-                .is_some_and(|turn_id| cancelled_turns.contains(turn_id))
+            recovered.contains(&(span.trace_id.clone(), span.span_id.clone()))
+                || span
+                    .attribute("iii.message.id")
+                    .is_some_and(|turn_id| cancelled_turns.contains(turn_id))
         })
+}
+
+/// Error spans from an enqueue attempt are recovered only when a later
+/// sibling retries the same durable turn payload successfully. The harness
+/// deliberately retries this operation across short queue reload/restart
+/// windows; retaining the failed attempt in observability is useful evidence,
+/// but it must not turn an otherwise completed run into a contract failure.
+fn recovered_enqueue_error_spans(run: &RunEvidence) -> BTreeSet<(String, String)> {
+    let mut recovered = BTreeSet::new();
+    for trace in &run.traces.traces {
+        collect_recovered_enqueue_errors(&trace.roots, &mut recovered);
+    }
+    recovered
+}
+
+fn collect_recovered_enqueue_errors(
+    siblings: &[crate::types::trace::TraceSpanV1],
+    recovered: &mut BTreeSet<(String, String)>,
+) {
+    for (position, attempt) in siblings.iter().enumerate() {
+        if attempt.name == TURN_ENQUEUE_TRACE_NAME && span_has_error(attempt) {
+            if let Some(identity) = enqueue_attempt_identity(attempt) {
+                let later_success = siblings[position + 1..].iter().any(|candidate| {
+                    candidate.name == TURN_ENQUEUE_TRACE_NAME
+                        && !span_has_error(candidate)
+                        && enqueue_attempt_identity(candidate).as_ref() == Some(&identity)
+                        && enqueue_execution(candidate)
+                            .is_some_and(|span| span.status.eq_ignore_ascii_case("ok"))
+                });
+                if later_success {
+                    collect_error_span_keys(attempt, recovered);
+                }
+            }
+        }
+        collect_recovered_enqueue_errors(&attempt.children, recovered);
+    }
+}
+
+fn enqueue_attempt_identity(attempt: &crate::types::trace::TraceSpanV1) -> Option<Value> {
+    let mut input = enqueue_execution(attempt)?.invocation_input()?;
+    strip_engine_fields(&mut input);
+    let input = input.as_object_mut()?;
+    for volatile in ["messageReceiptId", "traceparent", "baggage"] {
+        input.remove(volatile);
+    }
+    Some(Value::Object(input.clone()))
+}
+
+fn enqueue_execution(
+    span: &crate::types::trace::TraceSpanV1,
+) -> Option<&crate::types::trace::TraceSpanV1> {
+    if span.name == QUEUE_ENQUEUE_EXECUTE_TRACE_NAME {
+        return Some(span);
+    }
+    span.children.iter().find_map(enqueue_execution)
+}
+
+fn span_has_error(span: &crate::types::trace::TraceSpanV1) -> bool {
+    span.status.eq_ignore_ascii_case("error") || span.children.iter().any(span_has_error)
+}
+
+fn collect_error_span_keys(
+    span: &crate::types::trace::TraceSpanV1,
+    errors: &mut BTreeSet<(String, String)>,
+) {
+    if span.status.eq_ignore_ascii_case("error") {
+        errors.insert((span.trace_id.clone(), span.span_id.clone()));
+    }
+    for child in &span.children {
+        collect_error_span_keys(child, errors);
+    }
 }
 
 /// Validate `harness::turn-completed` from the lifecycle sink's trace events.
@@ -361,6 +449,95 @@ mod tests {
         }
     }
 
+    fn enqueue_attempt(id: &str, start: u64, status: &str, input: Value) -> TraceSpanV1 {
+        let execute_id = format!("{id}-execute");
+        let call_id = format!("{id}-call");
+        let execute = TraceSpanV1 {
+            trace_id: "trace-turn-1".into(),
+            span_id: execute_id,
+            parent_span_id: Some(call_id.clone()),
+            name: QUEUE_ENQUEUE_EXECUTE_TRACE_NAME.into(),
+            start_time_unix_nano: start + 2,
+            end_time_unix_nano: start + 3,
+            status: status.into(),
+            status_description: (status == "error").then(|| "queue unavailable".into()),
+            attributes: BTreeMap::new(),
+            service_name: "queue".into(),
+            events: vec![TraceEventV1 {
+                name: "iii.invocation.input".into(),
+                timestamp_unix_nano: start + 2,
+                attributes: BTreeMap::from([("iii.payload.json".into(), input.to_string())]),
+            }],
+            links: Vec::new(),
+            instrumentation_scope_name: None,
+            instrumentation_scope_version: None,
+            flags: None,
+            trace_state: None,
+            pending: false,
+            children: Vec::new(),
+        };
+        let call = TraceSpanV1 {
+            trace_id: "trace-turn-1".into(),
+            span_id: call_id,
+            parent_span_id: Some(id.into()),
+            name: "call engine::queue::enqueue".into(),
+            start_time_unix_nano: start + 1,
+            end_time_unix_nano: start + 4,
+            status: status.into(),
+            status_description: None,
+            attributes: BTreeMap::new(),
+            service_name: "iii".into(),
+            events: Vec::new(),
+            links: Vec::new(),
+            instrumentation_scope_name: None,
+            instrumentation_scope_version: None,
+            flags: None,
+            trace_state: None,
+            pending: false,
+            children: vec![execute],
+        };
+        TraceSpanV1 {
+            trace_id: "trace-turn-1".into(),
+            span_id: id.into(),
+            parent_span_id: Some("span-turn-1".into()),
+            name: TURN_ENQUEUE_TRACE_NAME.into(),
+            start_time_unix_nano: start,
+            end_time_unix_nano: start + 5,
+            status: "unset".into(),
+            status_description: None,
+            attributes: BTreeMap::from([
+                ("function_id".into(), "harness::turn".into()),
+                ("queue".into(), "harness-turn".into()),
+            ]),
+            service_name: "iii".into(),
+            events: Vec::new(),
+            links: Vec::new(),
+            instrumentation_scope_name: None,
+            instrumentation_scope_version: None,
+            flags: None,
+            trace_state: None,
+            pending: false,
+            children: vec![call],
+        }
+    }
+
+    fn enqueue_input(step: u64, receipt: &str) -> Value {
+        json!({
+            "_caller_worker_id": "harness-worker",
+            "baggage": "",
+            "data": {
+                "depth": 0,
+                "session_id": "session-1",
+                "step": step,
+                "turn_id": "turn-1"
+            },
+            "function_id": "harness::turn",
+            "messageReceiptId": receipt,
+            "queue": "harness-turn",
+            "traceparent": "trace-context"
+        })
+    }
+
     fn terminal_lifecycle(turn_id: &str, status: &str, timestamp: i64) -> Value {
         json!({
             "session_id": "session-1",
@@ -425,6 +602,31 @@ mod tests {
         error.traces.traces[0].roots[0].status = "error".into();
         error.traces = TraceEvidenceV1::new(error.traces.traces);
         assert!(floor_failure(&error).unwrap().contains("error spans: 1"));
+    }
+
+    #[test]
+    fn recovered_turn_enqueue_errors_are_accepted() {
+        let mut evidence = clean_evidence();
+        evidence.traces.traces[0].roots[0].children = vec![
+            enqueue_attempt("enqueue-failed", 10, "error", enqueue_input(0, "receipt-1")),
+            enqueue_attempt("enqueue-retry", 20, "ok", enqueue_input(0, "receipt-2")),
+        ];
+        evidence.traces = TraceEvidenceV1::new(evidence.traces.traces);
+
+        assert_eq!(evidence.traces.summary.error_count, 2);
+        assert_eq!(floor_failure(&evidence), None);
+    }
+
+    #[test]
+    fn enqueue_error_is_not_recovered_by_a_different_turn_step() {
+        let mut evidence = clean_evidence();
+        evidence.traces.traces[0].roots[0].children = vec![
+            enqueue_attempt("enqueue-failed", 10, "error", enqueue_input(0, "receipt-1")),
+            enqueue_attempt("other-enqueue", 20, "ok", enqueue_input(1, "receipt-2")),
+        ];
+        evidence.traces = TraceEvidenceV1::new(evidence.traces.traces);
+
+        assert!(floor_failure(&evidence).unwrap().contains("error spans: 2"));
     }
 
     #[test]
