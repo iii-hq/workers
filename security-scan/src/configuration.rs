@@ -33,6 +33,7 @@ pub async fn register_and_fetch(iii: &IIIClient) -> Result<WorkerConfig, Securit
         "name": "Security Scan",
         "description": "Operator repository allowlist and bounded read-only Harness analysis settings.",
         "schema": schema,
+        "metadata": { "ui_form": CONFIG_ID },
     });
     if let Some(initial_value) = initial_value {
         payload["initial_value"] = initial_value;

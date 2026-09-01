@@ -1,7 +1,7 @@
 //! Config for the fp worker, owned by the builtin `configuration` worker
 //! (registered under id `fp`). One knob: whether the `fp::pipe` guidance is
-//! injected into agent system prompts. Flip it in the console's config
-//! dialog (or via `configuration::set`) — it hot-applies, no restart.
+//! injected into agent system prompts. Flip it in the Console's global Settings modal
+//! (or via `configuration::set`) — it hot-applies, no restart.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

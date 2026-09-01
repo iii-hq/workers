@@ -53,6 +53,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&Config>) -> Result<(
         "name": "Codex",
         "description": "OpenAI Codex worker: per-turn defaults (model, sandbox mode, approval policy, reasoning effort, working directory), the agent::events / codex::events stream names, the codex CLI path, an optional API base URL, and whether to inject the iii runtime context as developer_instructions.",
         "schema": Config::json_schema(),
+        "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
     if let Some(seed) = seed {
         payload["initial_value"] = seed.to_json();

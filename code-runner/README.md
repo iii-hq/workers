@@ -138,7 +138,7 @@ slowly, not with a flag. If your code needs a third-party package, use
 ## Configuration
 
 Served by the **`configuration` worker** (entry id `code-runner`) — edit it in
-the console's Workers tab (the worker ships its own form there) or via
+the Console's global Settings modal (the worker ships its own form) or via
 `configuration::set`; the fs adapter persists it under
 `./data/configuration/code-runner.yaml`. There is no committed config file;
 `--config <path>` seeds the initial value on first boot only. Reload tier 1:

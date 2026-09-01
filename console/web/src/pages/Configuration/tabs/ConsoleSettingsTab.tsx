@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { DefaultPermissionModePicker } from '@/components/permissions/DefaultPermissionModePicker'
 import { FunctionAllowlistTree } from '@/components/permissions/FunctionAllowlistTree'
+import { Button } from '@/components/ui/Button'
 import {
   Dialog,
   DialogContent,
@@ -8,7 +9,13 @@ import {
   DialogTitle,
 } from '@/components/ui/Dialog'
 import { ModeToggle } from '@/components/ui/ModeToggle'
+import {
+  SettingsList,
+  SettingsRow,
+  SettingsSection,
+} from '@/components/ui/Settings'
 import { useFunctionsCatalog } from '@/hooks/use-functions-catalog'
+import { hashForWorkersConfiguration } from '@/hooks/use-hash-route'
 import type { Theme } from '@/hooks/use-theme'
 import { getDefaultBackend } from '@/lib/backend'
 import {
@@ -20,12 +27,11 @@ import type { PermissionMode } from '@/lib/backend/approval-settings'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { filterAllowlistCandidates } from '@/lib/permissions/allowlist-filter'
 
-// Provider credentials + settings now live in the llm-router `configuration`
-// entry, edited via the schema-driven form in the Workers modal.
-const HARNESS_CONFIG_HASH = '#/workers/configuration/llm-router'
+// Provider credentials + settings live in the llm-router configuration entry.
+const HARNESS_CONFIG_HASH = hashForWorkersConfiguration('llm-router')
 // Shell's permanent `fs.host_roots` list — do NOT build a second editor for
-// it here; deep-link to the existing schema-driven form instead.
-const SHELL_CONFIG_HASH = '#/workers/configuration/shell'
+// it here; deep-link to the worker-owned configuration interface instead.
+const SHELL_CONFIG_HASH = hashForWorkersConfiguration('shell')
 
 interface ConsoleSettingsTabProps {
   theme: Theme
@@ -34,11 +40,11 @@ interface ConsoleSettingsTabProps {
 
 /**
  * Console-level preferences: theme + provider API keys. Extracted from the
- * page shell so the Configuration page can host additional tabs (workers,
- * future surfaces) without nesting unrelated logic.
+ * modal shell so global Settings can host worker sections and future surfaces
+ * without nesting unrelated logic.
  *
  * Keyboard nav (number keys to open a provider, arrow keys to walk rows) is
- * scoped to this tab — the listener self-removes when the tab unmounts so
+ * scoped to this section — the listener self-removes when it unmounts so
  * it never fights other surfaces.
  */
 export function ConsoleSettingsTab({
@@ -138,186 +144,132 @@ export function ConsoleSettingsTab({
   const [allowlistOpen, setAllowlistOpen] = useState(false)
 
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto">
-      <div className="mx-auto max-w-3xl px-6 py-10">
-        <Section
-          title="appearance"
-          description="theme preference, stored per browser."
+    <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="mx-auto flex max-w-3xl flex-col gap-8 px-4 py-6 sm:px-6 sm:py-8">
+        <SettingsSection
+          title="Appearance"
+          description="Choose how the console looks in this browser."
         >
-          <Row
-            label="theme"
-            control={
-              <ModeToggle<Theme>
-                value={theme}
-                onChange={onThemeChange}
-                variant="radio"
-                aria-label="theme"
-                options={[
-                  { value: 'light', label: 'light' },
-                  { value: 'dark', label: 'dark' },
-                ]}
-              />
-            }
-          />
-        </Section>
-
-        {approvalGateAvailable ? (
-          <Section
-            title="permissions"
-            description="default mode and auto allowlist stored in the approval-gate configuration entry. applies to NEW conversations only."
-          >
-            <Row
-              label="default mode"
+          <SettingsList>
+            <SettingsRow
+              label="Theme"
+              description="Applied immediately and stored for this browser."
+              layout="inline"
               control={
-                <DefaultPermissionModePicker
-                  value={loaded ? defaultMode : undefined}
-                  onChange={handleModeChange}
+                <ModeToggle<Theme>
+                  value={theme}
+                  onChange={onThemeChange}
+                  variant="radio"
+                  aria-label="Theme"
+                  options={[
+                    { value: 'light', label: 'Light' },
+                    { value: 'dark', label: 'Dark' },
+                  ]}
                 />
               }
-              meta="manual prompts for everything · auto skips functions on your allowlist · full skips everything"
             />
-            {defaultMode === 'auto' ? (
-              <Row
-                label="allowlist"
+          </SettingsList>
+        </SettingsSection>
+
+        {approvalGateAvailable ? (
+          <SettingsSection
+            title="Permissions"
+            description="Set the default behavior for new conversations. Existing conversations keep their current permissions."
+          >
+            <SettingsList>
+              <SettingsRow
+                label="Default mode"
+                description="Manual asks before every function. Auto skips functions on the allowlist. Full skips all prompts."
                 control={
-                  <button
-                    type="button"
-                    onClick={() => setAllowlistOpen(true)}
-                    className="font-sans text-[12px] px-3 py-1 border border-rule text-ink hover:border-ink transition-colors"
-                  >
-                    manage
-                    {allowlist.length > 0 ? ` (${allowlist.length})` : ''}
-                  </button>
+                  <DefaultPermissionModePicker
+                    value={loaded ? defaultMode : undefined}
+                    onChange={handleModeChange}
+                  />
                 }
-                meta="functions that auto-approve while a new conversation is in auto mode. edits apply to NEW conversations only."
               />
-            ) : null}
-          </Section>
+              {defaultMode === 'auto' ? (
+                <SettingsRow
+                  label="Auto-mode allowlist"
+                  description="Functions that new conversations can run without asking."
+                  meta={
+                    allowlist.length === 0
+                      ? 'No functions selected'
+                      : `${allowlist.length} function${allowlist.length === 1 ? '' : 's'} selected`
+                  }
+                  action={
+                    <Button
+                      type="button"
+                      variant="pill"
+                      size="sm"
+                      onClick={() => setAllowlistOpen(true)}
+                    >
+                      Manage
+                    </Button>
+                  }
+                />
+              ) : null}
+            </SettingsList>
+          </SettingsSection>
         ) : null}
 
         <Dialog open={allowlistOpen} onOpenChange={setAllowlistOpen}>
-          <DialogContent className="max-w-xl max-h-[80vh] overflow-hidden flex flex-col">
-            <DialogTitle className="text-[14px]">
-              auto-mode allowlist
-            </DialogTitle>
+          <DialogContent className="flex max-h-[80vh] max-w-xl flex-col overflow-hidden">
+            <DialogTitle>Auto-mode allowlist</DialogTitle>
             <DialogDescription className="mt-1">
-              checked functions auto-approve while a new conversation is in auto
-              mode. existing conversations keep their own snapshot.
+              Selected functions run automatically in new conversations using
+              Auto mode. Existing conversations keep their current selection.
             </DialogDescription>
-            <div className="mt-4 flex-1 overflow-y-auto border border-rule-2 -mx-2 px-2 py-2 min-h-[280px]">
+            <div className="-mx-2 mt-4 min-h-[280px] flex-1 overflow-y-auto border border-rule-2 px-2 py-2">
               <FunctionAllowlistTree
                 functions={allowlistCandidates}
                 allowlist={allowlistSet}
                 onAdd={addAllow}
                 onRemove={removeAllow}
-                emptyHint="catalog hasn't loaded any functions yet."
+                emptyHint="The function catalog has not loaded yet."
               />
             </div>
             <div className="mt-4 flex justify-end">
-              <button
-                type="button"
-                onClick={() => setAllowlistOpen(false)}
-                className="font-sans text-[12px] px-3 py-1 border border-ink bg-ink text-bg hover:bg-bg hover:text-ink transition-colors"
-              >
-                done
-              </button>
+              <Button type="button" onClick={() => setAllowlistOpen(false)}>
+                Done
+              </Button>
             </div>
           </DialogContent>
         </Dialog>
 
-        <Section
-          title="providers"
-          description="api keys, endpoints, and per-provider settings."
+        <SettingsSection
+          title="Providers"
+          description="Manage model credentials, endpoints, and provider-specific settings."
         >
-          <Row
-            label="manage"
-            control={
-              <a
-                href={HARNESS_CONFIG_HASH}
-                className="font-sans text-[12px] px-3 py-1 border border-rule text-ink hover:border-ink transition-colors"
-              >
-                open provider settings
-              </a>
-            }
-            meta="credentials + settings live in the harness configuration. the form's shape grows with each provider that registers; api keys are masked."
-          />
-        </Section>
+          <SettingsList>
+            <SettingsRow
+              label="Model providers"
+              description="API keys are masked and remain in the llm-router configuration."
+              action={
+                <Button asChild variant="pill" size="sm">
+                  <a href={HARNESS_CONFIG_HASH}>Open settings</a>
+                </Button>
+              }
+            />
+          </SettingsList>
+        </SettingsSection>
 
-        <Section
-          title="filesystem access"
-          description="the agent can always use a conversation's chosen workspace. touching anything outside it prompts in the chat — allow once, for the session, or permanently."
+        <SettingsSection
+          title="Filesystem access"
+          description="A conversation can always use its workspace. Access outside it requires a temporary or permanent grant."
         >
-          <Row
-            label="filesystem access"
-            control={
-              <a
-                href={SHELL_CONFIG_HASH}
-                className="font-mono text-[12px] px-3 py-1 border border-rule text-ink hover:border-ink transition-colors"
-              >
-                edit permanent roots
-              </a>
-            }
-            meta="workspace + per-session grants are managed from the chat's filesystem access dialog. permanent roots (allowed for every conversation) live in shell configuration."
-          />
-        </Section>
+          <SettingsList>
+            <SettingsRow
+              label="Permanent roots"
+              description="Folders available to every conversation. Workspace and session grants are managed from each chat."
+              action={
+                <Button asChild variant="pill" size="sm">
+                  <a href={SHELL_CONFIG_HASH}>Edit roots</a>
+                </Button>
+              }
+            />
+          </SettingsList>
+        </SettingsSection>
       </div>
-    </div>
-  )
-}
-
-/* ---------------------------------------------------------------------- */
-/*  Section + Row primitives                                              */
-/* ---------------------------------------------------------------------- */
-
-interface SectionProps {
-  title: string
-  description?: string
-  children: React.ReactNode
-}
-
-/**
- * Settings-page section: a small heading + optional one-liner + a
- * vertically-stacked list of rows underneath, joined by a thin top rule.
- * The rule above the list visually anchors the heading to its content
- * without the heavier "h1 + border" treatment used for the page header.
- */
-function Section({ title, description, children }: SectionProps) {
-  return (
-    <section className="mt-10 first:mt-0">
-      <h2 className="font-sans text-[14px] text-ink capitalize tracking-[0.06em] mb-1">
-        {title}
-      </h2>
-      {description ? (
-        <p className="font-sans text-[12px] text-ink-faint mb-3">
-          {description}
-        </p>
-      ) : null}
-      <div className="border-t border-rule">{children}</div>
-    </section>
-  )
-}
-
-interface RowProps {
-  label: string
-  control: React.ReactNode
-  meta?: React.ReactNode
-}
-
-/**
- * Generic settings-page row: label on the left, optional meta in the
- * middle, control on the right — so every section reads as one
- * consistent settings document instead of separate idioms.
- */
-function Row({ label, control, meta }: RowProps) {
-  return (
-    <div className="flex items-center gap-4 py-3 border-b border-rule last:border-b-0">
-      <span className="font-sans text-[13px] text-ink w-24 shrink-0 truncate">
-        {label}
-      </span>
-      <span className="flex-1 min-w-0 font-sans text-[11px] text-ink-faint truncate">
-        {meta}
-      </span>
-      <span className="shrink-0">{control}</span>
     </div>
   )
 }

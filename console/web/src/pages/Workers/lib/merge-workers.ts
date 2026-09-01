@@ -1,6 +1,5 @@
 import type { WorkerSummary } from '@/components/chat/engine/parsers'
 import type { WorkerEntry } from '@/components/chat/worker/parsers'
-import type { ConfigurationSchemaView } from '@/pages/Configuration/tabs/WorkersTab/api'
 import type { ComposeContainer, RawWorkersSnapshot } from '../api/workers'
 import {
   isComposeRunning,
@@ -10,17 +9,11 @@ import {
 } from '../types'
 
 const STOP_REASON = {
-  config: 'workers declared in config.yaml are managed by the engine',
   internal: 'internal engine workers cannot be stopped from the console',
   standalone:
     'standalone workers must be stopped from the process that started them',
   notRunning: 'worker is not running',
 } as const
-
-interface ConfigurationLookup {
-  byId: Map<string, string>
-  byName: Map<string, string>
-}
 
 export interface ComposeSummary {
   namespace: string | null
@@ -33,25 +26,6 @@ export interface ComposeSummary {
 export interface WorkersView {
   rows: WorkerRow[]
   compose: ComposeSummary | null
-}
-
-function configurationLookup(
-  configurations: ConfigurationSchemaView[],
-): ConfigurationLookup {
-  const byId = new Map<string, string>()
-  const byName = new Map<string, string>()
-  for (const c of configurations) {
-    byId.set(c.id, c.id)
-    if (c.name) byName.set(c.name, c.id)
-  }
-  return { byId, byName }
-}
-
-function resolveConfigurationId(
-  name: string,
-  lookup: ConfigurationLookup,
-): string | null {
-  return lookup.byId.get(name) ?? lookup.byName.get(name) ?? null
 }
 
 function supervisorMap(entries: WorkerEntry[]): Map<string, WorkerEntry> {
@@ -74,13 +48,11 @@ function composeMap(
 
 function deriveManagementKind(
   internal: boolean,
-  configurationId: string | null,
   supervisor?: WorkerEntry,
   compose?: ComposeContainer,
 ): WorkerManagementKind {
   if (internal) return 'internal'
   if (compose) return 'compose'
-  if (configurationId) return 'config'
   if (supervisor) return 'supervisor'
   return 'standalone'
 }
@@ -113,9 +85,6 @@ function deriveStopState(
   if (kind === 'supervisor' && status === 'connected' && supervisor?.running) {
     return { stopEnabled: true, stopDisabledReason: null }
   }
-  if (kind === 'config') {
-    return { stopEnabled: false, stopDisabledReason: STOP_REASON.config }
-  }
   if (kind === 'internal') {
     return { stopEnabled: false, stopDisabledReason: STOP_REASON.internal }
   }
@@ -141,7 +110,6 @@ function composePid(compose: ComposeContainer | undefined): number | null {
 
 function engineRowToWorkerRow(
   summary: WorkerSummary,
-  configurations: ConfigurationLookup,
   supervisors: Map<string, WorkerEntry>,
   composes: Map<string, ComposeContainer>,
   infoByName: Map<
@@ -154,13 +122,7 @@ function engineRowToWorkerRow(
   const internal = info?.internal ?? false
   const supervisor = supervisors.get(name)
   const compose = composes.get(name)
-  const configurationId = resolveConfigurationId(name, configurations)
-  const managementKind = deriveManagementKind(
-    internal,
-    configurationId,
-    supervisor,
-    compose,
-  )
+  const managementKind = deriveManagementKind(internal, supervisor, compose)
   const status = deriveConnectionStatus(summary.status, supervisor, compose)
   const stop = deriveStopState(managementKind, status, supervisor)
 
@@ -174,18 +136,13 @@ function engineRowToWorkerRow(
     tag: info?.tag ?? summary.tag ?? null,
     managementKind,
     status,
-    configurationId,
     ...stop,
     ...composeFields(compose),
   }
 }
 
-function syntheticSupervisorRow(
-  entry: WorkerEntry,
-  configurations: ConfigurationLookup,
-): WorkerRow {
-  const configurationId = resolveConfigurationId(entry.name, configurations)
-  const managementKind = configurationId ? 'config' : 'supervisor'
+function syntheticSupervisorRow(entry: WorkerEntry): WorkerRow {
+  const managementKind = 'supervisor'
   const status: WorkerConnectionStatus = entry.running ? 'connected' : 'stopped'
   const stop = deriveStopState(managementKind, status, entry)
 
@@ -199,16 +156,12 @@ function syntheticSupervisorRow(
     tag: null,
     managementKind,
     status,
-    configurationId,
     ...stop,
     ...composeFields(undefined),
   }
 }
 
-function syntheticComposeRow(
-  container: ComposeContainer,
-  configurations: ConfigurationLookup,
-): WorkerRow {
+function syntheticComposeRow(container: ComposeContainer): WorkerRow {
   const name = container.container
   const status = deriveConnectionStatus(undefined, undefined, container)
 
@@ -222,7 +175,6 @@ function syntheticComposeRow(
     tag: null,
     managementKind: 'compose',
     status,
-    configurationId: resolveConfigurationId(name, configurations),
     stopEnabled: false,
     stopDisabledReason: null,
     ...composeFields(container),
@@ -243,9 +195,8 @@ export function summarizeCompose(
   }
 }
 
-/** Merge engine catalogue, supervisor list, compose status, and configuration registry into table rows. */
+/** Merge engine catalogue, supervisor list, and compose status into table rows. */
 export function mergeWorkers(snapshot: RawWorkersSnapshot): WorkerRow[] {
-  const configurations = configurationLookup(snapshot.configurations)
   const supervisors = supervisorMap(snapshot.supervisorWorkers)
   const composes = composeMap(snapshot.compose)
   const seen = new Set<string>()
@@ -257,7 +208,6 @@ export function mergeWorkers(snapshot: RawWorkersSnapshot): WorkerRow[] {
     rows.push(
       engineRowToWorkerRow(
         engineWorker,
-        configurations,
         supervisors,
         composes,
         snapshot.infoByName,
@@ -267,13 +217,13 @@ export function mergeWorkers(snapshot: RawWorkersSnapshot): WorkerRow[] {
 
   for (const [name, container] of composes) {
     if (seen.has(name)) continue
-    rows.push(syntheticComposeRow(container, configurations))
+    rows.push(syntheticComposeRow(container))
     seen.add(name)
   }
 
   for (const [name, entry] of supervisors) {
     if (seen.has(name)) continue
-    rows.push(syntheticSupervisorRow(entry, configurations))
+    rows.push(syntheticSupervisorRow(entry))
     seen.add(name)
   }
 

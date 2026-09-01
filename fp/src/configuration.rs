@@ -20,6 +20,7 @@ pub const CONFIG_FN_ID: &str = "fp::on-config-change";
 fn spec() -> config_client::EntrySpec {
     config_client::EntrySpec {
         id: CONFIG_ID,
+        form_id: CONFIG_ID,
         name: "fp",
         description: "fp worker settings — whether fp::pipe usage guidance is injected into agent system prompts (on by default).",
         schema: FpConfig::json_schema(),

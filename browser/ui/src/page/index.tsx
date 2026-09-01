@@ -29,7 +29,6 @@ import {
   PageShell,
   PageSidebar,
 } from '@iii-dev/console-ui'
-import type { ComponentType } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   errorMessage,
@@ -60,13 +59,6 @@ export function BrowserPage({
   panelContext,
   commands,
 }: { host: Host } & Partial<PageRenderProps>) {
-  const [configOpen, setConfigOpen] = useState(false)
-  const ConfigurationDialog = host.components.WorkerConfigurationDialog as
-    | ComponentType<{
-        configurationId: string | null
-        onClose: () => void
-      }>
-    | undefined
   const { sessions, loading, error, live, refresh } = useBrowserSessionsLive(
     host,
     true,
@@ -403,15 +395,6 @@ export function BrowserPage({
         actions={
           <div className="br-ui-header-actions">
             <LivePill live={live} />
-            {ConfigurationDialog ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setConfigOpen(true)}
-              >
-                Configure
-              </Button>
-            ) : null}
           </div>
         }
         onClose={onRequestClose}
@@ -550,12 +533,6 @@ export function BrowserPage({
           )
         ) : null}
       </div>
-      {ConfigurationDialog ? (
-        <ConfigurationDialog
-          configurationId={configOpen ? 'browser' : null}
-          onClose={() => setConfigOpen(false)}
-        />
-      ) : null}
       <SavedSetsDialog
         host={host}
         open={savedSets.open}

@@ -4,13 +4,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 host_home=$HOME
 
-# Central configuration (v0.4.0+): the engine launches the shell worker with
-# --config <temp.yaml> derived from the `shell` config block in config.yaml.
-# The shell worker registers that as the SEED with the built-in `configuration`
-# worker (configuration::register) and then reads it back (configuration::get).
-# The engine's file-backed configuration worker persists entries under its
-# current directory, so the launcher runs it from a throwaway project and
-# passes it a copy of config.yaml. The checkout is never used as runtime state.
+# The engine and shell worker run as separate host processes. The worker gets a
+# seed YAML through --config, registers it with the built-in configuration
+# worker, and then reads the authoritative value back. Both processes run from
+# a throwaway project so the checkout is never used as runtime state.
 
 # Path overrides (defaults assume the harness lives at shell/tests/e2e/ inside
 # the workers repo and the iii engine is on $PATH or at $HOME/.local/bin/iii —
@@ -26,6 +23,7 @@ worker_bin_link_override=${WORKER_BIN_LINK:-}
 
 TS=$(date +%Y%m%d-%H%M%S)
 SENTINEL_TIMEOUT="${HARNESS_TIMEOUT:-90}"
+export E2E_PORT="${E2E_PORT:-49134}"
 
 KEEP=0
 NO_BUILD=0
@@ -55,6 +53,7 @@ Env overrides:
                       sandbox::create cold-pulls the python image. Try
                       HARNESS_TIMEOUT=300 if you see "did not emit sentinel
                       within 90s" on initial runs.
+  E2E_PORT            Engine WebSocket port (default: 49134).
 EOF
       exit 0
       ;;
@@ -64,19 +63,24 @@ done
 
 if [[ "$SUITE" == jailed ]]; then
   CONFIG_FILE=config-jailed.yaml
+  WORKER_CONFIG_FILE=shell-jailed.yaml
   REPORT_PATH="$ROOT_DIR/reports/report-jailed.json"
   ENGINE_LOG="$ROOT_DIR/reports/engine-jailed-$TS.log"
+  WORKER_LOG="$ROOT_DIR/reports/shell-jailed-$TS.log"
   HARNESS_LOG="$ROOT_DIR/reports/harness-jailed-$TS.log"
   jail_root_override=${JAIL_ROOT:-}
 else
   CONFIG_FILE=config.yaml
+  WORKER_CONFIG_FILE=shell.yaml
   REPORT_PATH="$ROOT_DIR/reports/report.json"
   ENGINE_LOG="$ROOT_DIR/reports/engine-$TS.log"
+  WORKER_LOG="$ROOT_DIR/reports/shell-$TS.log"
   HARNESS_LOG="$ROOT_DIR/reports/harness-$TS.log"
 fi
 
 RUN_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/shell-e2e.XXXXXX")
 ENGINE_CONFIG="$RUN_ROOT/config.yaml"
+WORKER_CONFIG="$RUN_ROOT/shell.yaml"
 export HOME="$RUN_ROOT/home"
 export XDG_CONFIG_HOME="$HOME/.config"
 export CARGO_HOME=${CARGO_HOME:-"$host_home/.cargo"}
@@ -87,6 +91,7 @@ if [[ "$SUITE" == jailed ]]; then
 fi
 
 ENGINE_PID=""
+WORKER_PID=""
 HARNESS_PID=""
 # shellcheck disable=SC2317 # Invoked by EXIT/INT/TERM traps.
 cleanup() {
@@ -95,6 +100,10 @@ cleanup() {
   if [[ -n "$HARNESS_PID" ]] && kill -0 "$HARNESS_PID" 2>/dev/null; then
     kill "$HARNESS_PID" 2>/dev/null || true
     wait "$HARNESS_PID" 2>/dev/null || true
+  fi
+  if [[ "$KEEP" -eq 0 ]] && [[ -n "$WORKER_PID" ]] && kill -0 "$WORKER_PID" 2>/dev/null; then
+    kill "$WORKER_PID" 2>/dev/null || true
+    wait "$WORKER_PID" 2>/dev/null || true
   fi
   if [[ "$KEEP" -eq 0 ]] && [[ -n "$ENGINE_PID" ]] && kill -0 "$ENGINE_PID" 2>/dev/null; then
     kill -- "-$ENGINE_PID" 2>/dev/null || kill "$ENGINE_PID" 2>/dev/null || true
@@ -110,8 +119,8 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-if (echo > /dev/tcp/127.0.0.1/49134) 2>/dev/null; then
-  echo "[run-tests] FATAL: port 49134 is already in use; stop the existing engine first" >&2
+if (echo > "/dev/tcp/127.0.0.1/$E2E_PORT") 2>/dev/null; then
+  echo "[run-tests] FATAL: port $E2E_PORT is already in use; stop the existing engine first" >&2
   exit 3
 fi
 
@@ -157,11 +166,14 @@ unset ANTHROPIC_API_KEY OPENAI_API_KEY ZAI_API_KEY
 # 6. Start the engine
 echo "[run-tests] starting iii engine"
 : > "$ENGINE_LOG"
+: > "$WORKER_LOG"
 : > "$HARNESS_LOG"
 cp "$ROOT_DIR/$CONFIG_FILE" "$ENGINE_CONFIG"
+cp "$ROOT_DIR/$WORKER_CONFIG_FILE" "$WORKER_CONFIG"
 if [[ "$SUITE" == jailed ]]; then
   escaped_jail_root=${JAIL_ROOT//|/\\|}
-  sed -i "s|/private/tmp/iii-shell-jailed-root|$escaped_jail_root|g" "$ENGINE_CONFIG"
+  sed -i.bak "s|/private/tmp/iii-shell-jailed-root|$escaped_jail_root|g" "$WORKER_CONFIG"
+  rm -f "$WORKER_CONFIG.bak"
 fi
 
 if command -v setsid >/dev/null 2>&1; then
@@ -172,10 +184,10 @@ fi
 ENGINE_PID=$!
 echo "[run-tests] engine pid=$ENGINE_PID"
 
-# 7. Wait for the engine to accept TCP on its WebSocket port (49134).
+# 7. Wait for the engine to accept TCP on its WebSocket port.
 deadline=$(( $(date +%s) + 30 ))
 while :; do
-  if (echo > /dev/tcp/127.0.0.1/49134) 2>/dev/null; then
+  if (echo > "/dev/tcp/127.0.0.1/$E2E_PORT") 2>/dev/null; then
     break
   fi
   if ! kill -0 "$ENGINE_PID" 2>/dev/null; then
@@ -184,7 +196,7 @@ while :; do
     exit 1
   fi
   if (( $(date +%s) > deadline )); then
-    echo "[run-tests] FATAL: engine did not bind port 49134 within 30s; tail of engine log:" >&2
+    echo "[run-tests] FATAL: engine did not bind port $E2E_PORT within 30s; tail of engine log:" >&2
     tail -40 "$ENGINE_LOG" >&2
     exit 1
   fi
@@ -192,18 +204,47 @@ while :; do
 done
 echo "[run-tests] engine listening"
 
+# 8. Start the shell worker as a host process. Project workers are no longer
+# accepted in config.yaml by iii 0.23.
+echo "[run-tests] starting shell worker"
+(cd "$RUN_ROOT" && III_NAMESPACE=shell-e2e "$WORKER_BIN_TARGET" \
+  --url "ws://127.0.0.1:$E2E_PORT" --config "$WORKER_CONFIG") \
+  >"$WORKER_LOG" 2>&1 &
+WORKER_PID=$!
+echo "[run-tests] shell worker pid=$WORKER_PID"
+
+deadline=$(( $(date +%s) + 30 ))
+while :; do
+  if "$III_BIN" trigger --port "$E2E_PORT" engine::functions::info function_id=shell::exec >/dev/null 2>&1; then
+    break
+  fi
+  if ! kill -0 "$WORKER_PID" 2>/dev/null; then
+    echo "[run-tests] FATAL: shell worker exited before becoming ready; tail of worker log:" >&2
+    tail -40 "$WORKER_LOG" >&2
+    exit 1
+  fi
+  if (( $(date +%s) > deadline )); then
+    echo "[run-tests] FATAL: shell worker did not register within 30s; tail of worker log:" >&2
+    tail -40 "$WORKER_LOG" >&2
+    exit 1
+  fi
+  sleep 0.5
+done
+echo "[run-tests] shell worker ready"
+
 # The jailed lane also exercises the live BDD contract before its focused
 # harness regression cases.
 if [[ "$SUITE" == jailed ]]; then
   (cd "$WORKER_SRC" && \
-    env III_ENGINE_WS_URL=ws://127.0.0.1:49134 \
+    env III_ENGINE_WS_URL="ws://127.0.0.1:$E2E_PORT" \
     cargo test --locked --test bdd -- --tags @live)
 fi
 
-# 8. Launch the harness as a host node process
+# 9. Launch the harness as a host node process
 echo "[run-tests] starting harness"
 HARNESS_ENV=(
-  "III_URL=ws://127.0.0.1:49134"
+  "III_URL=ws://127.0.0.1:$E2E_PORT"
+  "III_NAMESPACE=shell-e2e"
   "HARNESS_REPORT_PATH=$REPORT_PATH"
   "HARNESS_TEST_VAR=$HARNESS_TEST_VAR"
   "HARNESS_NOT_ALLOWED=$HARNESS_NOT_ALLOWED"
@@ -215,7 +256,7 @@ HARNESS_ENV=(
 HARNESS_PID=$!
 echo "[run-tests] harness pid=$HARNESS_PID"
 
-# 9. Wait for sentinel line
+# 10. Wait for sentinel line
 sentinel=""
 deadline=$(( $(date +%s) + SENTINEL_TIMEOUT ))
 while (( $(date +%s) < deadline )); do

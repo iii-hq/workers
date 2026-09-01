@@ -41,6 +41,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
                         (mermaid text or an excalidraw scene) and the cap on how many records \
                         one canvas::list response returns.",
         "schema": WorkerConfig::json_schema(),
+        "metadata": { "ui_form": CONFIG_ID },
     });
     if let Some(seed) = seed {
         payload["initial_value"] = seed.to_json();

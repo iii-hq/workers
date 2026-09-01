@@ -459,8 +459,8 @@ async fn render_pages(
 fn describe_navigate_failure(err: &str) -> String {
     if err.contains("scheme") && err.contains("file") {
         return "the browser worker refuses `file://` URLs, so a local PDF cannot be rendered. Add \
-                `file` to its allowed schemes: console workers tab, browser settings, Behavior, \
-                Allowed URL schemes (or `allowed_schemes` in its configuration). It hot-applies."
+                `file` to its allowed schemes: Console global Settings, Browser, Behavior, Allowed \
+                URL schemes (or `allowed_schemes` in its configuration). It hot-applies."
             .to_string();
     }
     describe_bus_failure("browser::navigate", err)

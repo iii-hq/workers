@@ -123,6 +123,7 @@ def register_config(iii: Any) -> None:
             "agent system prompts (on by default)."
         ),
         "schema": CONFIG_SCHEMA,
+        "metadata": {"ui_form": CONFIG_ID},
     }
     if _try_get_value(iii) is None:
         payload["initial_value"] = dict(DEFAULTS)

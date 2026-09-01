@@ -2,7 +2,7 @@
 //! `fp::pipe` / transform usage guidance to the agent's system prompt,
 //! ONLY while this worker is connected AND the `fp` configuration's
 //! `inject_guidance` is on (the default; see src/configuration.rs — the
-//! console config dialog is the flip surface, and flips hot-apply by
+//! The Console's global Settings modal is the flip surface, and flips hot-apply by
 //! binding/unbinding the trigger, no restart). Binding order does not
 //! matter: the engine parks a binding whose trigger
 //! type is not registered yet as a pending intent and activates it when the

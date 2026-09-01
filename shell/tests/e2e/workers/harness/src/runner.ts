@@ -1,6 +1,6 @@
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
-import type { ISdk } from 'iii-sdk';
+import type { IIIClient } from 'iii-sdk';
 import { FUNCTION_CASES, type CaseContext, type TestCase } from './cases.ts';
 import { SAFETY_CASES } from './cases-safety.ts';
 import { JOB_CASES } from './cases-jobs.ts';
@@ -31,7 +31,7 @@ interface CaseResult {
 }
 
 export interface RunnerOptions {
-  iii: ISdk;
+  iii: IIIClient;
   reportPath: string;
 }
 

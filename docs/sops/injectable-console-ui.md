@@ -81,6 +81,7 @@ export default function setup(host: Host) {
   host.pages.register({
     id: 'state-manager',            // page URL: #/ext/state-manager
     title: 'state',                 // nav label
+    configurationId: 'state',       // host adds the standard settings action
     render: () => <StateManagerPage host={host} />,
   })
   host.functionTriggers.register(createStateTriggerRenderer(host))
@@ -379,6 +380,7 @@ console's own screens (chat, traces):
       minWidth={200}
       maxWidth={420}
       narrowBelow={700}
+      narrowMode="drawer"            // only when main stays visible behind nav
       header={<>Projects</>}
       collapsedActions={<IconButton label="New project" … />}
     >
@@ -398,6 +400,15 @@ own its body but MUST keep `PageShell` + `PageHeader`. The shell
 explorer (`workers/shell/ui/src/page/index.tsx`) is the reference
 composition.
 
+When a page's worker has configuration, set `configurationId` on its
+`host.pages.register` entry. The Console then adds the standard settings icon
+to `PageHeader` and opens that worker inside the global Settings modal. Do not
+add a second settings icon, mount a worker-local configuration dialog, or
+navigate to the old Workers-screen editor. Pages without a configuration
+entry omit the property. Treat `configurationId` as the stable form-family id,
+not an instance name: a worker registered as `browser-team-a` still declares
+`configurationId: 'browser'`.
+
 `PageSidebar` is implemented by the Console host and resolves through the
 shared `/vendor/console-ui.js` module, so importing its behavior adds no bytes
 to a worker bundle. Use its declarative API instead of local collapse DOM,
@@ -406,14 +417,26 @@ It keeps one `aside` and its children mounted while collapsed; the host owns
 the 220 ms width transition, content fade/offset, reduced-motion behavior,
 accessible toggle, pointer/keyboard resize, and best-effort persistence.
 Instances with the same `storageKey` share one preference. Pass `narrow` when
-your page's own drill-in state already knows the pane is narrow, or
-`narrowBelow` when only the sidebar chrome needs a container breakpoint. In
-the narrow presentation a sidebar with host-owned collapse state becomes a
-rail; its toggle opens the content as a drawer over the main column (scrim,
-Escape, and activating any control inside close it), so the page keeps
-rendering `PageMain` unchanged. A page that controls `collapsed` keeps the
-full-width aside and decides what shows beside it. Neither overwrites the
-saved wide preference. Drag resize and wide↔narrow changes remain instant.
+the page's drill-in state already knows the pane is narrow, or `narrowBelow`
+when the shared sidebar may observe its `PageBody` parent. Narrow navigation is
+`narrowMode="inline"` by default: the sidebar becomes a full-width navigation
+screen, hides collapse/resize affordances, and temporarily ignores the saved
+wide collapsed preference. This is the required mode for primary catalog,
+list/detail, and hierarchy navigation such as functions, triggers, database,
+directory, and state (`scopes → keys → value`). The page owns only the domain
+route—what level is active and what Back does—not private sidebar mechanics.
+Compose each navigation level with `List`, optional `ListGroup` /
+`ListGroupLabel`, and `ListItem` (`selected`, `leading`, `label`,
+`description`, `trailing`). Those shared rows provide the full-width card
+target, neutral selection, keyboard traversal, focus treatment, and mobile
+touch height; do not fork worker-specific row/button chrome.
+
+Use `narrowMode="drawer"` only when navigation is secondary and `PageMain`
+must remain mounted and unchanged behind it, such as a short section switcher.
+That opt-in keeps a rail whose toggle opens an overlay with scrim and Escape
+handling. Do not use the drawer to flatten a tree or replace a mobile
+list/detail flow. Neither narrow mode overwrites the saved wide preference;
+drag resize and wide↔narrow changes remain instant.
 
 All human-facing chrome uses sans and authored sentence/title case; do not use
 CSS case transforms on tabs, buttons, menus, fields, or labels. Reserve mono
@@ -757,8 +780,13 @@ for the complete authoring guide and test matrix.
 
 ### `host.configForms.register(configurationId, component)`
 
-Replace the schema-generated form for one configuration entry on the Workers
-tab (exact id match; last registration wins). Your component receives:
+Provide the settings interface for one stable configuration family in the
+global Settings modal (exact id match first; last registration wins). Workers
+whose runtime entry can be renamed with `III_CONFIG_NAME` register
+`metadata: { ui_form: '<default-id>' }` with `configuration::register`; the
+Console then reuses this family form for that runtime id. The Console does not
+generate a fallback form from JSON Schema: every configurable worker must
+register a deliberate interface. Your component receives:
 
 ```ts
 interface ConfigFormProps {
@@ -771,8 +799,169 @@ interface ConfigFormProps {
 }
 ```
 
-The form is render-level only: dirty tracking, validation, save/reset and the
-SaveBar stay host-owned. You draw the fields and call `onChange`.
+The form is render-level only: dirty tracking, schema validation, save/reset
+and the SaveBar stay host-owned. You draw deliberate fields and call
+`onChange`; the schema remains a validation contract, never a UI generator.
+Use the shared `SettingsSection`, `SettingsList`, `SettingsRow`, and `Switch`
+components for ordinary settings, with `Tabs` for useful peer sections and a
+purpose-built collection editor when operators add repeated entries. Never
+fall back to a raw JSON textarea. Forms render inside the canonical route
+`#/configuration/workers/<configurationId>` and must remain usable at narrow
+pane widths.
+
+#### Configuration UI standard
+
+Configuration forms use the Console's controls; a worker must not create a
+second visual implementation of an ordinary input, select, switch, button,
+field row, or resource drill-in. Import these pieces from
+`@iii-dev/console-ui`:
+
+- `SettingsSection` groups one subject; `SettingsList` groups related values.
+- `SettingsRow` presents read-only values and compound actions.
+- `SettingsField` is the default for editable values. It owns the label,
+  description/error IDs, `aria-invalid`, `aria-describedby`, deep-link
+  `data-field`, and the standard `fit`/`compact`/`default`/`full` control
+  widths. Use `fit` with `layout="inline"` for intrinsic controls such as a
+  `Switch`.
+- `Input`, `Select`, `Selector`, `Switch`, `Button`, and `IconButton` own
+  control appearance and interaction. `Select` and `Selector` accept `id`,
+  `name`, and `data-field`; never substitute a styled native `<select>`.
+- `RawValueInput` displays an environment template or future/opaque scalar
+  without coercing it. Conversion to a literal happens only through its
+  explicit `onUseLiteral` action. If the opaque value is not editable as a
+  string, keep it in a `SettingsField` and put the conversion button there so
+  validation remains associated through `aria-invalid`/`aria-describedby`.
+- `SettingsDeck` owns one-level collection navigation and focus transfer.
+  Use `List`/`ListItem` inside a shared `Panel` for the overview rows.
+
+The normal editable-row pattern is:
+
+```tsx
+<SettingsSection
+  title="Connection pool"
+  description="Bound concurrency for this connection."
+>
+  <SettingsList>
+    <SettingsField
+      id="pool-max"
+      field="databases.primary.pool.max"
+      label="Maximum connections"
+      description="Upper bound for open connections."
+      error={errors?.get('/databases/primary/pool/max')}
+      controlSize="compact"
+      renderControl={(controlProps) => (
+        <Input
+          {...controlProps}
+          type="number"
+          value={poolMax}
+          onChange={setPoolMax}
+        />
+      )}
+    />
+  </SettingsList>
+</SettingsSection>
+```
+
+`renderControl` must pass its received props to the interactive control. This
+is what keeps labels clickable, errors announced, and a host-provided
+`focusField` discoverable. Serialize the host path exactly as
+`focusField.map(String).join('.')` and use the same dotted value in `field`.
+Consume a focus request once, after conditional/deck content is mounted:
+
+```tsx
+const handledFocus = useRef('')
+const focusKey = focusField?.length
+  ? JSON.stringify(focusField.map(String))
+  : ''
+
+useEffect(() => {
+  if (!focusKey) {
+    handledFocus.current = ''
+    return
+  }
+  if (handledFocus.current === focusKey || !rootRef.current) return
+  const path = (JSON.parse(focusKey) as string[]).join('.')
+  const target = rootRef.current.querySelector<HTMLElement>(
+    `[data-field="${CSS.escape(path)}"]`,
+  )
+  if (!target) return
+  handledFocus.current = focusKey
+  target.focus({ preventScroll: true })
+  target.scrollIntoView({ block: 'center' })
+}, [focusKey, activeItemId])
+```
+
+Worker CSS may set layout, width, or a mono font for
+machine-readable values; it must not replace a shared control's background,
+border, radius, height, chevron, focus ring, disabled state, or typography.
+Responsive behavior is based on the configuration pane's container, not only
+the browser viewport; Back, section actions, row actions, and field controls
+retain at least a 44 px target in a narrow split pane. Mark a standalone
+empty-state action with `data-settings-narrow-action` to opt it into the same
+container-responsive target.
+
+Use a deck when a collection item has a meaningful sub-form. The overview and
+detail are mutually exclusive at every width: selecting a row pushes the
+detail over the configuration surface; Back returns to the overview and
+restores focus to the originating row. Do not keep a squeezed desktop
+master/detail layout or stack the list above the active editor on narrow panes.
+If an action can remove the originating row, mark the preferred surviving
+overview action with `data-settings-deck-fallback`; the deck focuses it when
+the original control no longer exists.
+
+```tsx
+<SettingsDeck
+  open={activeId !== null}
+  title={activeItem?.label ?? 'Connection'}
+  description="Connection settings"
+  backLabel="Connections"
+  backAriaLabel="Back to connections"
+  overview={
+    <SettingsSection
+      title="Connections"
+      action={<Button data-settings-deck-fallback>Add</Button>}
+    >
+      <Panel>
+        <List role="group" aria-label="Configured connections">
+          {items.map((item) => (
+            <ListItem
+              key={item.id}
+              data-field={`connection-${item.id}`}
+              label={item.label}
+              description={item.summary}
+              onClick={() => setActiveId(item.id)}
+            />
+          ))}
+        </List>
+      </Panel>
+    </SettingsSection>
+  }
+  detail={activeItem ? <ConnectionSettings item={activeItem} /> : null}
+  onBack={() => setActiveId(null)}
+/>
+```
+
+Keep deck selection by a stable domain key, clear it when that item disappears,
+and reset secret-reveal state when the active item changes. A deep link to a
+detail must open that item before focusing the exact control; set
+`autoFocusDetail={false}` only while the form owns that more specific focus.
+Back changes navigation only—it never resets or saves the host-owned draft.
+
+Every mutation starts from the current object and changes only its known key.
+Preserve unknown root/nested siblings, unknown enum values, adapter payloads,
+and `${ENV}` templates. Defaults may be displayed without materializing them
+into the draft. Variant changes may remove fields owned exclusively by the old
+variant, but must not discard opaque data silently. Treat an opaque top-level
+configuration exactly like an opaque nested block: show/edit the raw string or
+offer an explicit conversion; never normalize it to `{}` merely to render the
+typed form.
+
+At minimum, test: initial overview, open and Back, focus restoration, Add and
+Remove, rename/collision behavior where applicable, a `focusField` into the
+detail, wide and 320–430 px layouts, keyboard-only operation, 44 px narrow
+targets, error associations, templates/unknown values, secret masking, and
+preservation of unknown siblings. Database is the reference for a resource
+deck; Cron is the reference for a small `SettingsField` form.
 
 ### `host.providerConfigForms.register(providerId, component)`
 
@@ -992,8 +1181,8 @@ Kill switch: `injectable_ui: false` in the console worker's `config.yaml`
 disables the trigger types, the `/ui` + `/vendor` routes, and the SPA loader
 (manifest answers `disabled: true`).
 
-Per-worker toggle: the Workers tab's **Console** entry renders a toggle
-board — one card per UI-shipping worker (title, description, and a switch;
+Per-worker toggle: global Settings → **Console** renders a toggle
+board — one row per UI-shipping worker (title, description, and a switch;
 enabled cards use the neutral selected recipe, disabled ones dim) — editing
 `injectableUi.disabledWorkers` in the `console` configuration entry. Saving
 applies live: the console worker subscribes to `configuration:updated` for

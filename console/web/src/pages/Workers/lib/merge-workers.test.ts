@@ -6,7 +6,6 @@ function snapshot(partial: Partial<RawWorkersSnapshot>): RawWorkersSnapshot {
   return {
     engineWorkers: [],
     supervisorWorkers: [],
-    configurations: [],
     infoByName: new Map(),
     compose: null,
     ...partial,
@@ -14,7 +13,7 @@ function snapshot(partial: Partial<RawWorkersSnapshot>): RawWorkersSnapshot {
 }
 
 describe('mergeWorkers', () => {
-  it('classifies config-managed workers', () => {
+  it('classifies connected workers without a worker::list entry as standalone', () => {
     const rows = mergeWorkers(
       snapshot({
         engineWorkers: [
@@ -25,14 +24,6 @@ describe('mergeWorkers', () => {
             function_count: 1,
             connected_at_ms: 0,
             active_invocations: 0,
-          },
-        ],
-        configurations: [
-          {
-            id: 'harness',
-            name: 'harness',
-            description: '',
-            schema: {},
           },
         ],
         infoByName: new Map([
@@ -54,38 +45,10 @@ describe('mergeWorkers', () => {
     )
 
     expect(rows).toHaveLength(1)
-    expect(rows[0]?.managementKind).toBe('config')
-    expect(rows[0]?.configurationId).toBe('harness')
+    expect(rows[0]?.managementKind).toBe('standalone')
     expect(rows[0]?.stopEnabled).toBe(false)
+    expect(rows[0]?.stopDisabledReason).toContain('standalone')
     expect(rows[0]?.pid).toBe(100)
-  })
-
-  it('links workers to configuration ids by display name when ids differ', () => {
-    const rows = mergeWorkers(
-      snapshot({
-        engineWorkers: [
-          {
-            id: 'w-router',
-            name: 'llm-router',
-            status: 'connected',
-            function_count: 1,
-            connected_at_ms: 0,
-            active_invocations: 0,
-          },
-        ],
-        configurations: [
-          {
-            id: 'router-config',
-            name: 'llm-router',
-            description: '',
-            schema: {},
-          },
-        ],
-      }),
-    )
-
-    expect(rows[0]?.managementKind).toBe('config')
-    expect(rows[0]?.configurationId).toBe('router-config')
   })
 
   it('classifies supervisor-managed workers with stop enabled when running', () => {
@@ -130,7 +93,6 @@ describe('mergeWorkers', () => {
     )
 
     expect(rows[0]?.managementKind).toBe('supervisor')
-    expect(rows[0]?.configurationId).toBeNull()
     expect(rows[0]?.stopEnabled).toBe(true)
   })
 
@@ -167,7 +129,6 @@ describe('mergeWorkers', () => {
     )
 
     expect(rows[0]?.managementKind).toBe('standalone')
-    expect(rows[0]?.configurationId).toBeNull()
     expect(rows[0]?.stopEnabled).toBe(false)
     expect(rows[0]?.stopDisabledReason).toContain('standalone')
   })
@@ -205,7 +166,6 @@ describe('mergeWorkers', () => {
     )
 
     expect(rows[0]?.managementKind).toBe('internal')
-    expect(rows[0]?.configurationId).toBeNull()
     expect(rows[0]?.stopEnabled).toBe(false)
   })
 
@@ -226,11 +186,10 @@ describe('mergeWorkers', () => {
     expect(rows).toHaveLength(1)
     expect(rows[0]?.name).toBe('iii-http')
     expect(rows[0]?.managementKind).toBe('supervisor')
-    expect(rows[0]?.configurationId).toBeNull()
     expect(rows[0]?.runtime).toBeNull()
   })
 
-  it('adds configuration actions for supervisor-only rows with registered config', () => {
+  it('keeps supervisor-only rows supervisor-managed without an engine connection', () => {
     const rows = mergeWorkers(
       snapshot({
         supervisorWorkers: [
@@ -239,20 +198,14 @@ describe('mergeWorkers', () => {
             running: false,
           },
         ],
-        configurations: [
-          {
-            id: 'pdfkit',
-            name: 'pdfkit',
-            description: '',
-            schema: {},
-          },
-        ],
       }),
     )
 
     expect(rows[0]?.name).toBe('pdfkit')
-    expect(rows[0]?.managementKind).toBe('config')
-    expect(rows[0]?.configurationId).toBe('pdfkit')
+    expect(rows[0]?.managementKind).toBe('supervisor')
+    expect(rows[0]?.status).toBe('stopped')
+    expect(rows[0]?.stopEnabled).toBe(false)
+    expect(rows[0]?.stopDisabledReason).toBe('worker is not running')
   })
 
   it('carries optional tag from engine info or list row', () => {

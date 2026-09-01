@@ -5,6 +5,7 @@ export default function setup(host: Host) {
   host.pages.register({
     id: 'tailscale',
     title: 'Tailscale',
+    configurationId: 'tailscale',
     render: (props: PageRenderProps) => <TailscalePage host={host} {...props} />,
   })
 

@@ -23,7 +23,10 @@ import { registerWorker, type IIIClient } from 'iii-sdk'
 type Json = any
 
 export function registerSupport(engineUrl: string): IIIClient {
-  const support = registerWorker(engineUrl)
+  const support = registerWorker(engineUrl, {
+    workerName: 'rbac-e2e-support',
+    otel: { enabled: false },
+  })
 
   // RBAC auth: the proxy invokes this once per upgrade with
   // { headers, query_params, ip_address }. Reject a missing/invalid token

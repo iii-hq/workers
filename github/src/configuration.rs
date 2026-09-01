@@ -52,6 +52,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&Config>) -> Result<(
         "name": "GitHub",
         "description": "GitHub worker: the gh binary path, the GH_TOKEN credential injected into child gh processes, and the timeout / output-capture limits applied to every gh invocation.",
         "schema": Config::json_schema(),
+        "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
     if let Some(seed) = seed {
         payload["initial_value"] = seed.to_json();

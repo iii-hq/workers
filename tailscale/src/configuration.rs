@@ -18,6 +18,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
         "name": "Tailscale",
         "description": "Local Console target, CLI path, default HTTPS port, public Funnel policy, and command timeout.",
         "schema": WorkerConfig::json_schema(),
+        "metadata": { "ui_form": CONFIG_ID },
     });
 
     if let Some(seed) = seed {

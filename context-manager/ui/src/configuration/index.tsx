@@ -1,4 +1,12 @@
-import type { ConfigFormProps, JsonValue } from '@iii-dev/console-ui'
+import {
+  type ConfigFormProps,
+  Input,
+  type JsonValue,
+  SettingsList,
+  SettingsRow,
+  SettingsSection,
+  Switch,
+} from '@iii-dev/console-ui'
 import { useEffect, useRef } from 'react'
 
 type JsonObject = { [key: string]: JsonValue }
@@ -30,8 +38,7 @@ const PRUNING_FIELDS: NumericField[] = [
     key: 'protect_recent_tokens',
     label: 'Protected recent output (tokens)',
     defaultValue: 40_000,
-    description:
-      'Newest function-output tokens protected from age-based pruning.',
+    description: 'Newest function-output tokens protected from age-based pruning.',
   },
   {
     key: 'min_free_tokens',
@@ -43,8 +50,7 @@ const PRUNING_FIELDS: NumericField[] = [
     key: 'max_output_chars',
     label: 'Verbose output threshold (characters)',
     defaultValue: 2_000,
-    description:
-      'Shorter function outputs are not considered for normal pruning.',
+    description: 'Shorter function outputs are not considered for normal pruning.',
   },
   {
     key: 'max_result_tokens',
@@ -65,8 +71,7 @@ const RUNTIME_FIELDS: NumericField[] = [
     key: 'lease_ttl_secs',
     label: 'Compaction lease TTL (seconds)',
     defaultValue: 300,
-    description:
-      'How long another worker must honor an active compaction lease.',
+    description: 'How long another worker must honor an active compaction lease.',
   },
   {
     key: 'summarizer_timeout_ms',
@@ -77,43 +82,59 @@ const RUNTIME_FIELDS: NumericField[] = [
 ]
 
 function asObject(value: JsonValue | undefined): JsonObject {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? { ...value }
-    : {}
+  return value && typeof value === 'object' && !Array.isArray(value) ? { ...value } : {}
 }
 
 function asString(value: JsonValue | undefined): string {
   return typeof value === 'string' ? value : ''
 }
 
-function NumericInput(props: {
+function describedBy(...ids: Array<string | undefined>): string | undefined {
+  const value = ids.filter(Boolean).join(' ')
+  return value || undefined
+}
+
+function configurationErrorId(pointer: string): string {
+  const suffix = pointer.replace(/[^a-zA-Z0-9_-]+/g, '-') || 'root'
+  return `context-manager-cfg-error-${suffix}`
+}
+
+function errorIdFor(errors: ConfigFormProps['errors'], pointer: string): string | undefined {
+  return errors?.has(pointer) ? configurationErrorId(pointer) : undefined
+}
+
+function NumericSetting(props: {
   field: NumericField
   value: JsonValue | undefined
+  errorId?: string
   onChange(raw: string): void
 }) {
   const id = `context-manager-cfg-${props.field.key}`
-  const hintId = `${id}-hint`
+  const descriptionId = `${id}-description`
+  const defaultId = `${id}-default`
   return (
-    <div className="ctx-cfg-field">
-      <label htmlFor={id}>{props.field.label}</label>
-      <input
-        id={id}
-        data-field={props.field.key}
-        className="ctx-cfg-input"
-        type="number"
-        min={0}
-        step={1}
-        inputMode="numeric"
-        value={typeof props.value === 'number' ? props.value : ''}
-        placeholder={String(props.field.defaultValue)}
-        aria-describedby={hintId}
-        onChange={(event) => props.onChange(event.target.value)}
-      />
-      <span className="ctx-cfg-hint" id={hintId}>
-        {props.field.description} Default:{' '}
-        {props.field.defaultValue.toLocaleString()}.
-      </span>
-    </div>
+    <SettingsRow
+      data-field={props.field.key}
+      label={<label htmlFor={id}>{props.field.label}</label>}
+      description={<span id={descriptionId}>{props.field.description}</span>}
+      meta={<span id={defaultId}>Default: {props.field.defaultValue.toLocaleString()}.</span>}
+      control={
+        <Input
+          id={id}
+          className="ctx-cfg-control ctx-cfg-number"
+          type="number"
+          min={0}
+          step={1}
+          inputMode="numeric"
+          value={typeof props.value === 'number' ? String(props.value) : ''}
+          placeholder={String(props.field.defaultValue)}
+          aria-label={props.field.label}
+          aria-invalid={props.errorId ? true : undefined}
+          aria-describedby={describedBy(descriptionId, defaultId, props.errorId)}
+          onChange={props.onChange}
+        />
+      }
+    />
   )
 }
 
@@ -143,90 +164,118 @@ export function ContextManagerConfigForm(props: ConfigFormProps) {
   useEffect(() => {
     const field = props.focusField?.[0]
     if (!field || !rootRef.current) return
-    const target = rootRef.current.querySelector<HTMLElement>(
-      `[data-field="${CSS.escape(field)}"]`,
-    )
-    target?.focus()
+    const target = rootRef.current.querySelector<HTMLElement>(`[data-field="${CSS.escape(field)}"]`)
     target?.scrollIntoView({ block: 'center' })
+    const focusable = target?.matches('input, button, [tabindex]')
+      ? target
+      : target?.querySelector<HTMLElement>('input, button, [tabindex]')
+    focusable?.focus()
   }, [props.focusField])
 
   const fields = (items: NumericField[]) =>
     items.map((field) => (
-      <NumericInput
+      <NumericSetting
         key={field.key}
         field={field}
         value={value[field.key]}
+        errorId={errorIdFor(props.errors, `/${field.key}`)}
         onChange={(raw) => commitNumber(field.key, raw)}
       />
     ))
 
   return (
     <div className="ctx-cfg" ref={rootRef}>
-      <p className="ctx-cfg-intro">
-        Defaults for context assembly. Request-level options can override the
-        matching setting, and saved changes apply to the next call.
-      </p>
-
-      <section className="ctx-cfg-section" aria-labelledby="ctx-cfg-budget">
-        <h3 id="ctx-cfg-budget">Budget</h3>
-        <div className="ctx-cfg-grid">{fields(BUDGET_FIELDS)}</div>
-        <label className="ctx-cfg-check" htmlFor="context-manager-cfg-fallback">
-          <input
-            id="context-manager-cfg-fallback"
+      <SettingsSection
+        title="Context budget"
+        description="Defaults for context assembly. Request-level options can override matching settings."
+      >
+        <SettingsList>
+          {fields(BUDGET_FIELDS)}
+          <SettingsRow
             data-field="allow_fallback_limits"
-            type="checkbox"
-            checked={value.allow_fallback_limits !== false}
-            onChange={(event) =>
-              props.onChange({
-                ...value,
-                allow_fallback_limits: event.target.checked,
-              })
+            label={<label htmlFor="context-manager-cfg-fallback">Fallback model limits</label>}
+            description={
+              <span id="context-manager-cfg-fallback-description">
+                Use conservative 8,192 input and 1,024 output limits when model limits cannot be resolved.
+              </span>
+            }
+            meta={<span id="context-manager-cfg-fallback-default">Default: on.</span>}
+            control={
+              <Switch
+                id="context-manager-cfg-fallback"
+                checked={value.allow_fallback_limits !== false}
+                aria-label="Fallback model limits"
+                aria-invalid={errorIdFor(props.errors, '/allow_fallback_limits') ? true : undefined}
+                aria-describedby={describedBy(
+                  'context-manager-cfg-fallback-description',
+                  'context-manager-cfg-fallback-default',
+                  errorIdFor(props.errors, '/allow_fallback_limits'),
+                )}
+                onChange={(event) =>
+                  props.onChange({
+                    ...value,
+                    allow_fallback_limits: event.currentTarget.checked,
+                  })
+                }
+              />
             }
           />
-          <span>
-            <strong>Allow fallback model limits</strong>
-            <small>
-              Use conservative 8,192 / 1,024 limits when model limits cannot be
-              resolved. Default: enabled.
-            </small>
-          </span>
-        </label>
-      </section>
+        </SettingsList>
+      </SettingsSection>
 
-      <section className="ctx-cfg-section" aria-labelledby="ctx-cfg-pruning">
-        <h3 id="ctx-cfg-pruning">Pruning &amp; compaction</h3>
-        <div className="ctx-cfg-grid">{fields(PRUNING_FIELDS)}</div>
-      </section>
+      <SettingsSection
+        title="Pruning and compaction"
+        description="Control which function output is retained verbatim and when compaction is worthwhile."
+      >
+        <SettingsList>{fields(PRUNING_FIELDS)}</SettingsList>
+      </SettingsSection>
 
-      <section className="ctx-cfg-section" aria-labelledby="ctx-cfg-runtime">
-        <h3 id="ctx-cfg-runtime">Runtime</h3>
-        <div className="ctx-cfg-grid">{fields(RUNTIME_FIELDS)}</div>
-        <div className="ctx-cfg-field ctx-cfg-field-wide">
-          <label htmlFor="context-manager-cfg-lease-dir">Lease directory</label>
-          <input
-            id="context-manager-cfg-lease-dir"
+      <SettingsSection
+        title="Runtime"
+        description="Set compaction coordination and summarizer request limits. Changes apply to the next call."
+      >
+        <SettingsList>
+          {fields(RUNTIME_FIELDS)}
+          <SettingsRow
             data-field="lease_dir"
-            className="ctx-cfg-input"
-            type="text"
-            value={asString(value.lease_dir)}
-            placeholder="data/context-manager"
-            aria-describedby="context-manager-cfg-lease-dir-hint"
-            onChange={(event) => commitString('lease_dir', event.target.value)}
+            label={<label htmlFor="context-manager-cfg-lease-dir">Lease directory</label>}
+            description={
+              <span id="context-manager-cfg-lease-dir-description">
+                Stores compaction lease files. A leading ~/ expands to the home directory.
+              </span>
+            }
+            meta={
+              <span id="context-manager-cfg-lease-dir-default">
+                Default: data/context-manager under III_COMPOSE_DIR.
+              </span>
+            }
+            control={
+              <Input
+                id="context-manager-cfg-lease-dir"
+                className="ctx-cfg-control ctx-cfg-path"
+                type="text"
+                value={asString(value.lease_dir)}
+                placeholder="data/context-manager"
+                spellCheck={false}
+                autoComplete="off"
+                aria-label="Lease directory"
+                aria-invalid={errorIdFor(props.errors, '/lease_dir') ? true : undefined}
+                aria-describedby={describedBy(
+                  'context-manager-cfg-lease-dir-description',
+                  'context-manager-cfg-lease-dir-default',
+                  errorIdFor(props.errors, '/lease_dir'),
+                )}
+                onChange={(next) => commitString('lease_dir', next)}
+              />
+            }
           />
-          <span
-            className="ctx-cfg-hint"
-            id="context-manager-cfg-lease-dir-hint"
-          >
-            Compaction lease files live here; a leading ~/ expands to the home
-            directory. Default: data/context-manager under III_COMPOSE_DIR.
-          </span>
-        </div>
-      </section>
+        </SettingsList>
+      </SettingsSection>
 
       {props.errors && props.errors.size > 0 ? (
         <div className="ctx-cfg-errors" role="alert">
           {[...props.errors.entries()].map(([pointer, message]) => (
-            <div key={pointer || message}>
+            <div id={configurationErrorId(pointer)} key={pointer || message}>
               {pointer ? `${pointer}: ` : ''}
               {message}
             </div>

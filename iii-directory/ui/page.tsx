@@ -38,6 +38,7 @@ export default function setup(host: Host) {
   host.pages.register({
     id: 'directory',
     title: 'Directory',
+    configurationId: 'iii-directory',
     render: (props) => <DirectoryPage host={host} {...props} />,
   })
 

@@ -29,6 +29,7 @@ pub async fn register_entry(
                 "name": "LLM Router",
                 "description": "Provider credentials, routing heuristics, and stream budgets for llm-router.",
                 "schema": compose_entry_schema(provider_schemas),
+                "metadata": { "ui_form": ENTRY_ID },
             }),
             action: None,
             timeout_ms: None,
@@ -100,6 +101,7 @@ async fn migrate_provider_system_prompts(iii: &IIIClient) -> Result<(), Error> {
                 "id": ENTRY_ID,
                 "name": "LLM Router",
                 "description": "LLM Router configuration migration.",
+                "metadata": { "ui_form": ENTRY_ID },
                 "schema": {
                     "type": ["object", "null"],
                     "additionalProperties": true

@@ -25,6 +25,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&CronConfig>) -> Resu
         "name": "Cron",
         "description": "Cron scheduler settings - lock backend for multi-instance mutual exclusion (local or redis).",
         "schema": CronConfig::json_schema(),
+        "metadata": { "ui_form": CONFIG_ID },
     });
     if should_seed_initial_value(iii).await? {
         let seed = seed.cloned().unwrap_or_default().normalized();

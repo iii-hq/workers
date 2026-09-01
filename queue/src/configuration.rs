@@ -49,6 +49,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&QueueConfig>) -> Res
         "name": "Queue",
         "description": "Durable queue worker settings: transport persistence and named function queues.",
         "schema": QueueConfig::json_schema(),
+        "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
     if should_seed_initial_value(iii).await? {
         let seed = seed

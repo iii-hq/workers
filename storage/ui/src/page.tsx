@@ -10,7 +10,6 @@ import {
   type PanelContextEvent,
   StatusPanel,
 } from '@iii-dev/console-ui'
-import type { ComponentType } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { parseStoragePanelContext } from './panel-context'
 import {
@@ -870,28 +869,12 @@ export function StoragePage({
   panelContext,
   commands,
 }: { host: Host } & Partial<PageRenderProps>) {
-  const [configOpen, setConfigOpen] = useState(false)
-  const ConfigurationDialog = host.components.WorkerConfigurationDialog as
-    | ComponentType<{ configurationId: string | null; onClose: () => void }>
-    | undefined
-
   return (
     <PageShell className="storage-ui-shell">
       <PageHeader
         icon={<StorageIcon />}
         title="Storage"
         description="Buckets, folders, and objects"
-        actions={
-          ConfigurationDialog ? (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setConfigOpen(true)}
-            >
-              Configure
-            </Button>
-          ) : undefined
-        }
         onClose={onRequestClose}
       />
       <StorageExplorer
@@ -901,12 +884,6 @@ export function StoragePage({
         panelContext={panelContext}
         commands={commands}
       />
-      {ConfigurationDialog ? (
-        <ConfigurationDialog
-          configurationId={configOpen ? 'storage' : null}
-          onClose={() => setConfigOpen(false)}
-        />
-      ) : null}
     </PageShell>
   )
 }

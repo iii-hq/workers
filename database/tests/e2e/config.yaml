@@ -1,7 +1,7 @@
 # iii engine configuration — passed via `iii -c config.yaml`.
 #
-# Infrastructure workers only (observability). The `configuration`
-# worker is enabled by default in the engine.
+# Engine workers are injected automatically. Project workers are launched as
+# host processes by run-tests.sh.
 #
 # The database worker and harness are NOT registered here. run-tests.sh:
 #   1. starts this engine
@@ -9,11 +9,4 @@
 #   3. spawns the database binary as a host process
 #   4. runs the harness test suite
 
-workers:
-  - name: iii-observability
-    config:
-      enabled: true
-      service_name: database-tests
-      exporter: memory
-      logs_console_output: true
-      sampling_ratio: 1.0
+workers: []

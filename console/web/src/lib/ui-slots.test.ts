@@ -12,10 +12,12 @@ import type {
   RegisteredTriggerActivityRenderer,
 } from './ui-slots'
 import {
+  getExtConfigForm,
   getExtProviderConfigForm,
   getExtSessionChips,
   getExtTriggerActivityRenderers,
   isExtConfigFormPending,
+  registerExtConfigForm,
   registerExtProviderConfigForm,
   registerExtSessionChip,
   registerExtTriggerActivityRenderer,
@@ -62,6 +64,36 @@ describe('config form slot readiness', () => {
     expect(isExtConfigFormPending('loading', form)).toBe(false)
     expect(isExtConfigFormPending('ready', undefined)).toBe(false)
     expect(isExtConfigFormPending('unavailable', undefined)).toBe(false)
+  })
+})
+
+describe('config form family fallback', () => {
+  function form(configurationId: string, path: string): RegisteredConfigForm {
+    return {
+      configurationId,
+      path,
+      scope: path.split('/')[0],
+      layout: 'contained',
+      component: () => null,
+    }
+  }
+
+  it('uses the family form for a named instance but preserves exact overrides', () => {
+    const offFamily = registerExtConfigForm(form('browser', 'browser/page.js'))
+
+    expect(getExtConfigForm('browser-team-a', 'browser')?.path).toBe(
+      'browser/page.js',
+    )
+
+    const offExact = registerExtConfigForm(
+      form('browser-team-a', 'custom-browser/page.js'),
+    )
+    expect(getExtConfigForm('browser-team-a', 'browser')?.path).toBe(
+      'custom-browser/page.js',
+    )
+
+    offExact()
+    offFamily()
   })
 })
 

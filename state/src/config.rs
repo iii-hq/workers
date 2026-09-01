@@ -108,9 +108,8 @@ impl StateConfig {
 /// under `file_path`, flushed on the `save_interval_ms` cadence and on
 /// shutdown) or `in_memory` (volatile, process-lifetime storage, lost on
 /// shutdown — not for production).
-/// Variants are intentionally doc-free so schemars emits a flat
-/// string `enum` (a single select) rather than a per-variant `oneOf` that a
-/// schema-driven UI renders as "variant 1", "variant 2".
+/// Variants are intentionally doc-free so schemars emits the flat string
+/// `enum` consumed by validation and the worker's explicit adapter picker.
 #[derive(Serialize, Deserialize, Debug, Clone, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum KvStoreMethod {

@@ -1,8 +1,8 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { StreamChannelRef } from 'iii-sdk';
-import { ChannelReader } from 'iii-sdk';
+import { ChannelReader, type StreamChannelRef } from 'iii-sdk/channel';
+import { createChannel } from 'iii-sdk/helpers';
 import { expect, expectEqual, type CaseContext, type TestCase } from './cases.ts';
 import {
   resetMocks,
@@ -116,7 +116,7 @@ export const SANDBOX_BREAK_CASES: TestCase[] = [
     async run(ctx: CaseContext) {
       resetMocks();
       const root = newWorkdir('cap-bypass');
-      const channel = await ctx.iii.createChannel(64);
+      const channel = await createChannel(ctx.iii, 64);
       const oversize = Buffer.alloc(2 * 1024 * 1024); // 2 MiB > 1 MiB host cap
 
       const writePromise = new Promise<void>((resolve, reject) => {

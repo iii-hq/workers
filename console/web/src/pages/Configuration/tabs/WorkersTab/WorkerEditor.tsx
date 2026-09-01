@@ -1,22 +1,22 @@
 import { ArrowLeft } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Skeleton } from '@/components/ui/Skeleton'
+import { configurationFormFamily } from '@/lib/configuration-family'
 import {
   isExtConfigFormPending,
   useExtConfigForm,
   useUiAssetsStatus,
 } from '@/lib/ui-slots'
 import { cn } from '@/lib/utils'
+import { isObjectSchema } from '../../lib/schema/guard'
+import { type Path, pathToDomId } from '../../lib/schema/path'
+import { validateConfig } from '../../lib/schema/validate'
 import type { ConfigurationSchemaView, JsonValue } from './api'
 import { isDirty } from './dirty'
 import { EditorEmptyState } from './EmptyState'
 import { parseSetError } from './errors'
 import { useConfigurationValue, useSetConfiguration } from './hooks'
 import { SaveBar, type SaveStatus } from './SaveBar'
-import { isObjectSchema } from './schema-form/guard'
-import { type Path, pathToDomId } from './schema-form/path'
-import { SchemaForm } from './schema-form/SchemaForm'
-import { validateConfig } from './schema-form/validate'
 import { wt } from './typography'
 
 interface WorkerEditorProps {
@@ -31,9 +31,10 @@ interface WorkerEditorProps {
 
 /**
  * Editor shell for a worker configuration entry. Loads the raw value
- * (templates preserved), hands the schema + value to the `SchemaForm`, and
- * owns the save lifecycle (mutation + status + dirty tracking + error
- * mapping).
+ * (templates preserved), hands the schema + value to the worker-owned form,
+ * and owns the save lifecycle (mutation + status + dirty tracking + error
+ * mapping). Every entry requires a registered form; the schema validates the
+ * draft but never generates a visual fallback.
  *
  * Draft state: the editor holds the working copy locally so field edits
  * are responsive (no round-trip per keystroke). The draft is re-seeded
@@ -42,9 +43,8 @@ interface WorkerEditorProps {
  *
  * Error mapping: server-side validation errors from `configuration::set`
  * come back as strings; `parseSetError` extracts a JSON Pointer when
- * possible. We hand the pointer→message map to `SchemaForm` so the
- * leaf field renders the error inline, and always show the message in
- * the save bar so the operator never loses sight of the rejection.
+ * possible. We hand the pointer→message map to the custom form so fields can
+ * render errors inline, and always show the message in the save bar.
  *
  * Dirty flag: emitted up via `onDirtyChange` so the Configuration shell
  * can intercept tab switches and worker selection with the same
@@ -59,7 +59,11 @@ export function WorkerEditor({
   const setMutation = useSetConfiguration(entry.id)
   // Injectable-UI configForms slot: a worker-registered form replaces the
   // FORM REGION only — the save lifecycle below stays host-owned either way.
-  const formOverride = useExtConfigForm(entry.id)
+  const formFamily = configurationFormFamily(entry)
+  // An explicitly registered runtime-id form wins. Most workers register a
+  // stable family form and advertise that family through metadata.ui_form so
+  // instances renamed with III_CONFIG_NAME still receive the same UI.
+  const formOverride = useExtConfigForm(entry.id, formFamily)
   const uiAssetsStatus = useUiAssetsStatus()
   const isFormOverrideLoading = isExtConfigFormPending(
     uiAssetsStatus,
@@ -255,33 +259,10 @@ export function WorkerEditor({
                 saveDisabled={clientErrors.size > 0}
               />
             </>
-          ) : isObjectSchema(entry.schema) ? (
-            <>
-              <div className="mx-auto max-w-3xl w-full px-6 py-8">
-                <SchemaForm
-                  schema={entry.schema}
-                  value={draft}
-                  onChange={handleDraftChange}
-                  errors={displayErrors}
-                />
-                {rootError ? (
-                  <p className={cn(wt.bodySm, 'text-alert mt-4')} role="alert">
-                    {rootError}
-                  </p>
-                ) : null}
-              </div>
-              <SaveBar
-                dirty={dirty}
-                status={status}
-                onSave={handleSave}
-                onReset={handleReset}
-                saveDisabled={clientErrors.size > 0}
-              />
-            </>
           ) : (
             <EditorEmptyState
-              title="no editable configuration"
-              description="this worker registered a configuration value but no schema, so there's nothing to edit here."
+              title="Worker settings interface unavailable"
+              description="This worker has not loaded a custom configuration interface. Start or enable it, then reopen settings."
             />
           )
         ) : null}
@@ -291,9 +272,8 @@ export function WorkerEditor({
 }
 
 /**
- * The workspace's raised top bar — identity (name, dirty dot, id crumb,
- * description) plus the drill-out back button in the narrow flow. Also
- * composed by the Storybook harness, so keep it presentational.
+ * The settings pane's raised top bar — identity (name, dirty dot, id crumb,
+ * description) plus the drill-out back button in the narrow flow.
  */
 export function EditorHeader({
   entry,
@@ -305,23 +285,27 @@ export function EditorHeader({
   onBack?: () => void
 }) {
   return (
-    <header className="flex items-center gap-2 min-h-12 px-4 py-2.5 shrink-0 bg-panel-raised border-b border-edge">
+    <header className="flex min-h-14 shrink-0 items-center gap-2 border-b border-edge bg-panel-raised py-2.5 pl-4 pr-12">
       {onBack ? (
         <button
           type="button"
           onClick={onBack}
-          aria-label="back to worker list"
-          className="flex items-center justify-center size-8 -ml-1.5 shrink-0 rounded-md text-ink-faint hover:text-ink hover:bg-surface-hover transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+          aria-label="Open settings navigation"
+          className="relative -ml-1.5 flex size-10 shrink-0 items-center justify-center rounded-md text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus sm:size-8"
         >
-          <ArrowLeft className="size-4" aria-hidden />
+          <span
+            className="pointer-events-none absolute left-1/2 top-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+            aria-hidden="true"
+          />
+          <ArrowLeft className="size-4 shrink-0" aria-hidden />
         </button>
       ) : null}
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2.5 min-w-0">
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-2.5">
           <h2
             className={cn(
               wt.body,
-              'font-semibold text-ink lowercase tracking-[-0.01em] truncate',
+              'truncate font-semibold text-ink tracking-[-0.01em]',
             )}
           >
             {entry.name || entry.id}
@@ -333,9 +317,9 @@ export function EditorHeader({
               aria-hidden
             />
           ) : null}
-          <span className="font-mono text-[12px] text-ink-ghost truncate">
+          <p className="truncate font-mono text-[0.75rem] text-ink-ghost">
             {entry.id}
-          </span>
+          </p>
         </div>
         {entry.description ? (
           <p
@@ -370,39 +354,12 @@ function EditorError({ message }: { message: string }) {
   )
 }
 
-/**
- * Re-export of the empty state used when no worker is selected. The
- * Workers tab decides whether to render this or a `WorkerEditor`; keeping
- * them in the same module collocates the two right-pane states so the
- * shell stays a thin dispatcher.
- */
-export function WorkerEditorEmptySelection({
-  hasEntries,
-}: {
-  hasEntries: boolean
-}) {
-  if (!hasEntries) {
-    return (
-      <EditorEmptyState
-        title="no worker configurations registered"
-        description="configurations are registered by workers at startup. start the workers you want to configure and they'll appear here."
-      />
-    )
-  }
-  return (
-    <EditorEmptyState
-      title="select a configuration"
-      description="pick a worker on the left to view and edit its current value."
-    />
-  )
-}
-
 function fieldPathFromHash(workerId: string): Path | null {
   if (typeof window === 'undefined') return null
   const encodedWorkerId = encodeURIComponent(workerId)
   const prefixes = [
-    `#/workers/configuration/${encodedWorkerId}/`,
     `#/configuration/workers/${encodedWorkerId}/`,
+    `#/workers/configuration/${encodedWorkerId}/`,
   ]
   const prefix = prefixes.find((p) => window.location.hash.startsWith(p))
   if (!prefix) return null

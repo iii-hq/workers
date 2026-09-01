@@ -29,7 +29,7 @@ With the harness running there is nothing else to wire: chat normally and memory
 
 ## Configuration
 
-All fields hot-reload through the `configuration` worker (rendered as a form in the console); `data_dir` reopens the store on the fly. Fields: `data_dir`, `default_bank`, `inject_rules`, `inject_memories`, `recall_limit`, `recall_budget_tokens`, `extraction_enabled`, `extraction_model`, `extraction_window`, `extraction_timeout_ms`, `max_memories_per_turn`, `rule_learning_enabled`, `max_rule_chars`, `decay_half_life_days`, `embeddings_enabled`, `embedding_model`.
+All fields hot-reload through the `configuration` worker and are editable in the worker's explicit form in the Console's global Settings modal; `data_dir` reopens the store on the fly. Fields: `data_dir`, `default_bank`, `inject_rules`, `inject_memories`, `recall_limit`, `recall_budget_tokens`, `extraction_enabled`, `extraction_model`, `extraction_window`, `extraction_timeout_ms`, `max_memories_per_turn`, `rule_learning_enabled`, `max_rule_chars`, `decay_half_life_days`, `embeddings_enabled`, `embedding_model`.
 
 ## Why this shape
 

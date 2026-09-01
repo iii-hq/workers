@@ -341,7 +341,7 @@ terminal:                      # the console terminal page — a DIFFERENT host:
 ```
 
 Settings live in the `configuration` worker under the **Claude Code** entry —
-edit them on the console's Workers tab; they hot-reload, and a change to the
+edit them in the Console's global Settings modal; they hot-reload, and a change to the
 `terminal` block re-runs the workspace preparation for the next session.
 
 With `approval_gate: true` and the harness worker installed, every Claude Code tool call is checked against `policy::check_permissions` before it executes, fail-closed when the gate is unreachable, so the same YAML permission rules and console approval flow that govern native harness turns govern Claude Code.

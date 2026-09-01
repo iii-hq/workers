@@ -34,6 +34,7 @@ export async function registerPiConfig(iii: IIIClient, seed: Config): Promise<vo
       description:
         'Pi coding agent worker: per-turn defaults (model, thinking level, working directory, tool allowlist, agent config dir), the agent::events / pi::events stream names, and whether to inject the iii runtime context.',
       schema: runtimeJsonSchema(),
+      metadata: { ui_form: CONFIG_ID },
       initial_value: toRuntime(seed),
     },
     timeoutMs: TIMEOUT_MS,

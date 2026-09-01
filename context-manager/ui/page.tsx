@@ -1,7 +1,7 @@
 /**
  * Context-manager's injected console contribution. The host owns dirty
- * tracking, validation, save, and reset; this module replaces only the
- * generic configuration fields with an operator-focused layout.
+ * tracking, validation, save, and reset; this module provides the
+ * operator-focused form body.
  */
 
 import type { Host } from '@iii-dev/console-ui'

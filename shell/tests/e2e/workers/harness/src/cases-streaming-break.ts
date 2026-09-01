@@ -1,7 +1,8 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { StreamChannelRef } from 'iii-sdk';
+import type { StreamChannelRef } from 'iii-sdk/channel';
+import { createChannel } from 'iii-sdk/helpers';
 import { expect, expectEqual, type CaseContext, type TestCase } from './cases.ts';
 
 function newWorkdir(prefix: string): string {
@@ -43,7 +44,7 @@ export const STREAMING_BREAK_CASES: TestCase[] = [
     name: 'stream_write_with_wrong_access_key_rejected',
     async run(ctx: CaseContext) {
       const root = newWorkdir('bad-key');
-      const channel = await ctx.iii.createChannel(64);
+      const channel = await createChannel(ctx.iii, 64);
       const tampered: StreamChannelRef = {
         channel_id: channel.readerRef.channel_id,
         access_key: 'tampered-' + channel.readerRef.access_key,
@@ -99,7 +100,7 @@ export const STREAMING_BREAK_CASES: TestCase[] = [
       const root = newWorkdir('reuse');
       const path1 = join(root, 'first.bin');
       const path2 = join(root, 'second.bin');
-      const channel = await ctx.iii.createChannel(64);
+      const channel = await createChannel(ctx.iii, 64);
       const payload = Buffer.from('hello world');
 
       // First write — drives the channel through completion.
@@ -148,7 +149,7 @@ export const STREAMING_BREAK_CASES: TestCase[] = [
     async run(ctx: CaseContext) {
       const root = newWorkdir('closed-pre');
       const path = join(root, 'closed.bin');
-      const channel = await ctx.iii.createChannel(64);
+      const channel = await createChannel(ctx.iii, 64);
       // sendMessage('') forces WS connect before close() (SDK quirk:
       // close() is a no-op when never connected).
       channel.writer.sendMessage('');
@@ -179,7 +180,7 @@ export const STREAMING_BREAK_CASES: TestCase[] = [
     async run(ctx: CaseContext) {
       const root = newWorkdir('text-only');
       const path = join(root, 'text-only.bin');
-      const channel = await ctx.iii.createChannel(64);
+      const channel = await createChannel(ctx.iii, 64);
       channel.writer.sendMessage('this is text, not binary');
       channel.writer.sendMessage('still text');
       const trigger = ctx.call('shell::fs::write', {
@@ -202,7 +203,7 @@ export const STREAMING_BREAK_CASES: TestCase[] = [
       const root = newWorkdir('drop-read');
       const path = join(root, 'undrained.bin');
       // Write a small file via the streaming write path.
-      const channel = await ctx.iii.createChannel(64);
+      const channel = await createChannel(ctx.iii, 64);
       const payload = Buffer.from('payload-bytes');
       const wp = new Promise<void>((resolve, reject) => {
         channel.writer.stream.once('error', reject);

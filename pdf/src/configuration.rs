@@ -42,6 +42,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
                         positioned items one response returns, and how many pages classification \
                         samples before deciding whether a document holds real text.",
         "schema": WorkerConfig::json_schema(),
+        "metadata": { "ui_form": CONFIG_ID },
     });
     if let Some(seed) = seed {
         payload["initial_value"] = seed.to_json();

@@ -50,6 +50,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
         "name": "Slack",
         "description": "Slack worker: bot/user tokens, optional channel/team scoping, and RPC timeout. Configurable here or via env (${SLACK_BOT_TOKEN}).",
         "schema": WorkerConfig::json_schema(),
+        "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
     if let Some(seed) = seed {
         payload["initial_value"] = seed.to_json();

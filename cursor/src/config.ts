@@ -40,12 +40,14 @@ export const ConfigSchema = z.object({
 export type Config = z.infer<typeof ConfigSchema>;
 export type ConfigHolder = { current: Config };
 
+export const DEFAULT_CONFIG_ID = 'cursor';
+
 export function defaultConfig(): Config {
   return ConfigSchema.parse({});
 }
 
 export function configId(): string {
-  return process.env.III_CONFIG_NAME?.trim() || 'cursor';
+  return process.env.III_CONFIG_NAME?.trim() || DEFAULT_CONFIG_ID;
 }
 
 export function runtimeJsonSchema(): Record<string, unknown> {

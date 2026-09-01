@@ -39,6 +39,12 @@ interface SelectProps<T extends string> {
   onChange: (next: T) => void
   disabled?: boolean
   className?: string
+  /** ID applied to the visible trigger so a `<label htmlFor>` can target it. */
+  id?: string
+  /** Form name. The controlled value is mirrored through a hidden input. */
+  name?: string
+  /** Stable configuration path applied to the visible trigger for deep-link focus. */
+  'data-field'?: string
   /** Compact text-only trigger used in inline sentences and setup controls. */
   appearance?: 'default' | 'inline'
   /** Overrides the trigger appearance's default chevron visibility. */
@@ -47,6 +53,10 @@ interface SelectProps<T extends string> {
   'aria-label'?: string
   /** Forwarded to the trigger; used to indicate the option list is still loading. */
   'aria-busy'?: boolean
+  /** Forwarded to the trigger when the selected value failed validation. */
+  'aria-invalid'?: React.AriaAttributes['aria-invalid']
+  /** IDs of validation or supporting text associated with the trigger. */
+  'aria-describedby'?: string
   /** Optional placeholder shown when no `value` matches an option. */
   placeholder?: string
   /** Heading used by the mobile sheet or in-sheet drill-in page. */
@@ -105,6 +115,9 @@ export function Select<T extends string>({
   onChange,
   disabled,
   className,
+  id,
+  name,
+  'data-field': dataField,
   appearance = 'default',
   showChevron,
   placeholder,
@@ -220,9 +233,13 @@ export function Select<T extends string>({
     const trigger = (
       <button
         ref={triggerRef}
+        id={id}
         type="button"
+        data-field={dataField}
         aria-label={aria['aria-label']}
         aria-busy={aria['aria-busy']}
+        aria-invalid={aria['aria-invalid']}
+        aria-describedby={aria['aria-describedby']}
         aria-haspopup={embeddedInSheet ? undefined : 'dialog'}
         aria-expanded={open}
         data-state={open ? 'open' : 'closed'}
@@ -276,6 +293,14 @@ export function Select<T extends string>({
 
       return (
         <>
+          {name ? (
+            <input
+              type="hidden"
+              name={name}
+              value={value ?? ''}
+              disabled={disabled}
+            />
+          ) : null}
           {trigger}
           {pagePortal}
         </>
@@ -284,6 +309,14 @@ export function Select<T extends string>({
 
     return (
       <>
+        {name ? (
+          <input
+            type="hidden"
+            name={name}
+            value={value ?? ''}
+            disabled={disabled}
+          />
+        ) : null}
         {trigger}
         <BottomSheet open={open} onOpenChange={handleOpenChange}>
           <BottomSheetContent
@@ -301,102 +334,119 @@ export function Select<T extends string>({
   }
 
   return (
-    <SelectPrimitive.Root
-      value={rootValue}
-      onValueChange={handleValueChange}
-      open={open}
-      onOpenChange={handleOpenChange}
-      disabled={disabled}
-    >
-      <SelectPrimitive.Trigger
-        ref={triggerRef}
-        aria-label={aria['aria-label']}
-        aria-busy={aria['aria-busy']}
-        className={triggerClassName}
+    <>
+      {name ? (
+        <input
+          type="hidden"
+          name={name}
+          value={value ?? ''}
+          disabled={disabled}
+        />
+      ) : null}
+      <SelectPrimitive.Root
+        value={rootValue}
+        onValueChange={handleValueChange}
+        open={open}
+        onOpenChange={handleOpenChange}
+        disabled={disabled}
       >
-        {/*
-         * Radix's `Select.Value` strips `className`/`style` from the span it
-         * renders, so truncation has to live on a wrapper we control. The
-         * wrapper is the flex item (`flex-1 min-w-0`) and owns the ellipsis;
-         * `white-space: nowrap` inherits into Radix's inline span, keeping the
-         * label on one line so the trigger stays at its fixed height.
-         */}
-        <span className="min-w-0 flex-1 truncate text-left">
-          <SelectPrimitive.Value placeholder={placeholder}>
-            {selected?.label}
-          </SelectPrimitive.Value>
-        </span>
-        {chevronVisible ? (
-          <SelectPrimitive.Icon asChild>
-            <span aria-hidden className="shrink-0 text-ink-faint">
-              <ChevronDown size={16} strokeWidth={1} />
-            </span>
-          </SelectPrimitive.Icon>
-        ) : (
-          <span
-            className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
-            aria-hidden="true"
-          />
-        )}
-      </SelectPrimitive.Trigger>
+        <SelectPrimitive.Trigger
+          ref={triggerRef}
+          id={id}
+          data-field={dataField}
+          aria-label={aria['aria-label']}
+          aria-busy={aria['aria-busy']}
+          aria-invalid={aria['aria-invalid']}
+          aria-describedby={aria['aria-describedby']}
+          className={triggerClassName}
+        >
+          {/*
+           * Radix's `Select.Value` strips `className`/`style` from the span it
+           * renders, so truncation has to live on a wrapper we control. The
+           * wrapper is the flex item (`flex-1 min-w-0`) and owns the ellipsis;
+           * `white-space: nowrap` inherits into Radix's inline span, keeping the
+           * label on one line so the trigger stays at its fixed height.
+           */}
+          <span className="min-w-0 flex-1 truncate text-left">
+            <SelectPrimitive.Value placeholder={placeholder}>
+              {selected?.label}
+            </SelectPrimitive.Value>
+          </span>
+          {chevronVisible ? (
+            <SelectPrimitive.Icon asChild>
+              <span aria-hidden className="shrink-0 text-ink-faint">
+                <ChevronDown size={16} strokeWidth={1} />
+              </span>
+            </SelectPrimitive.Icon>
+          ) : (
+            <span
+              className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+              aria-hidden="true"
+            />
+          )}
+        </SelectPrimitive.Trigger>
 
-      <SelectPrimitive.Portal>
-        <PortalScope>
-          <SelectPrimitive.Content
-            position="popper"
-            sideOffset={4}
-            collisionPadding={8}
-            className={cn(
-              'iii-ui-motion-dropdown z-50 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-md bg-panel-raised font-sans text-base text-ink shadow-floating sm:text-[13px]',
-            )}
-          >
-            <SelectPrimitive.ScrollUpButton className="flex items-center justify-center h-5 text-ink-faint cursor-default">
-              <ChevronUp size={16} strokeWidth={1} aria-hidden="true" />
-            </SelectPrimitive.ScrollUpButton>
-            <SelectPrimitive.Viewport className="p-1 max-h-[60vh]">
-              {allowEmpty ? (
-                <SelectItem value={EMPTY_VALUE} label={emptyLabel ?? 'None'} />
-              ) : null}
-              {groups
-                ? groups.map((g) => (
-                    <SelectPrimitive.Group key={g.label}>
-                      {renderGroupHeader ? (
-                        renderGroupHeader(g)
-                      ) : (
-                        <SelectPrimitive.Label className="px-3 pt-2 pb-1 text-[12px] font-semibold text-ink-faint">
-                          {g.label}
-                        </SelectPrimitive.Label>
-                      )}
-                      {g.options.map((opt) => (
-                        <SelectItem
-                          key={opt.value}
-                          value={opt.value}
-                          label={opt.label}
-                          title={opt.title}
-                          description={opt.description}
-                          disabled={opt.disabled}
-                        />
-                      ))}
-                    </SelectPrimitive.Group>
-                  ))
-                : (options ?? []).map((opt) => (
-                    <SelectItem
-                      key={opt.value}
-                      value={opt.value}
-                      label={opt.label}
-                      title={opt.title}
-                      description={opt.description}
-                      disabled={opt.disabled}
-                    />
-                  ))}
-            </SelectPrimitive.Viewport>
-            <SelectPrimitive.ScrollDownButton className="flex items-center justify-center h-5 text-ink-faint cursor-default">
-              <ChevronDown size={16} strokeWidth={1} aria-hidden="true" />
-            </SelectPrimitive.ScrollDownButton>
-          </SelectPrimitive.Content>
-        </PortalScope>
-      </SelectPrimitive.Portal>
-    </SelectPrimitive.Root>
+        <SelectPrimitive.Portal>
+          <PortalScope>
+            <SelectPrimitive.Content
+              position="popper"
+              sideOffset={4}
+              collisionPadding={8}
+              className={cn(
+                'iii-ui-motion-dropdown z-50 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-md bg-panel-raised font-sans text-base text-ink shadow-floating sm:text-[13px]',
+              )}
+            >
+              <SelectPrimitive.ScrollUpButton className="flex items-center justify-center h-5 text-ink-faint cursor-default">
+                <ChevronUp size={16} strokeWidth={1} aria-hidden="true" />
+              </SelectPrimitive.ScrollUpButton>
+              <SelectPrimitive.Viewport className="p-1 max-h-[60vh]">
+                {allowEmpty ? (
+                  <SelectItem
+                    value={EMPTY_VALUE}
+                    label={emptyLabel ?? 'None'}
+                  />
+                ) : null}
+                {groups
+                  ? groups.map((g) => (
+                      <SelectPrimitive.Group key={g.label}>
+                        {renderGroupHeader ? (
+                          renderGroupHeader(g)
+                        ) : (
+                          <SelectPrimitive.Label className="px-3 pt-2 pb-1 text-[12px] font-semibold text-ink-faint">
+                            {g.label}
+                          </SelectPrimitive.Label>
+                        )}
+                        {g.options.map((opt) => (
+                          <SelectItem
+                            key={opt.value}
+                            value={opt.value}
+                            label={opt.label}
+                            title={opt.title}
+                            description={opt.description}
+                            disabled={opt.disabled}
+                          />
+                        ))}
+                      </SelectPrimitive.Group>
+                    ))
+                  : (options ?? []).map((opt) => (
+                      <SelectItem
+                        key={opt.value}
+                        value={opt.value}
+                        label={opt.label}
+                        title={opt.title}
+                        description={opt.description}
+                        disabled={opt.disabled}
+                      />
+                    ))}
+              </SelectPrimitive.Viewport>
+              <SelectPrimitive.ScrollDownButton className="flex items-center justify-center h-5 text-ink-faint cursor-default">
+                <ChevronDown size={16} strokeWidth={1} aria-hidden="true" />
+              </SelectPrimitive.ScrollDownButton>
+            </SelectPrimitive.Content>
+          </PortalScope>
+        </SelectPrimitive.Portal>
+      </SelectPrimitive.Root>
+    </>
   )
 }
 

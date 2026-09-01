@@ -2,16 +2,18 @@
  * The console worker's own console stylesheet, shipped as its own
  * `console:style` asset (console/styles.css). Every rule is scoped under
  * `[data-iii-ui="console"]`, the wrapper the console mounts around every
- * injected render — the injectable-UI toggle form on the Workers tab and
+ * injected render — the worker settings inside Configuration and
  * the two engine-catalogue pages (functions, triggers).
  * Styling uses the console's design tokens, so light/dark theming is free.
  */
 
 [data-iii-ui="console"] .console-ui-form {
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  font-family: var(--font-mono, ui-monospace, monospace);
+  gap: 24px;
+  min-width: 0;
+  font-family: var(--font-sans);
   color: var(--color-ink);
 }
 [data-iii-ui="console"] .console-ui-form-caption {
@@ -40,6 +42,9 @@
   width: min(100%, 180px);
   font-family: var(--font-mono, ui-monospace, monospace);
   font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="console"] .console-ui-select-control {
+  width: min(100%, 280px);
 }
 [data-iii-ui="console"] .console-ui-form-field-hint {
   font-size: 11px;
@@ -154,6 +159,8 @@
 
 [data-iii-ui="console"] .console-ui-toggle-skeleton {
   height: 58px;
+  border-radius: 8px;
+  background: var(--color-surface, rgba(0, 0, 0, 0.05));
   cursor: default;
   animation: console-ui-skeleton-pulse 1.6s ease-in-out infinite;
 }
@@ -179,6 +186,436 @@
   font-size: 12px;
   line-height: 1.5;
   color: var(--color-alert);
+}
+
+[data-iii-ui="console"] .console-ui-string-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(100%, 640px);
+}
+[data-iii-ui="console"] .console-ui-string-list-values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+[data-iii-ui="console"] .console-ui-string-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 4px 4px 4px 9px;
+  border: 1px solid var(--color-rule);
+  border-radius: 999px;
+  background: var(--color-panel);
+  color: var(--color-ink-faint);
+  font: 500 11.5px/1.2 var(--font-mono, ui-monospace, monospace);
+}
+[data-iii-ui="console"] .console-ui-string-chip > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-iii-ui="console"] .console-ui-string-chip button {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-ink-ghost);
+  cursor: pointer;
+}
+[data-iii-ui="console"] .console-ui-string-chip button:hover {
+  background: var(--color-surface-hover, rgba(0, 0, 0, 0.08));
+  color: var(--color-ink);
+}
+[data-iii-ui="console"] .console-ui-string-chip button:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 1px;
+}
+[data-iii-ui="console"] .console-ui-string-list-add {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: min(100%, 420px);
+}
+[data-iii-ui="console"] .console-ui-string-list-add > :first-child {
+  min-width: 0;
+  flex: 1;
+}
+
+@container (max-width: 420px) {
+  [data-iii-ui="console"] .console-ui-string-list-add {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
+/* ── declarative worker configuration forms ─────────────────────────── */
+
+[data-iii-ui="console"] .console-worker-config {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  min-width: 0;
+  font-family: var(--font-sans);
+  color: var(--color-ink);
+}
+[data-iii-ui="console"] .console-worker-config-intro {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+[data-iii-ui="console"] .console-worker-config-intro h2 {
+  margin: 0;
+  font: 600 18px/1.35 var(--font-sans);
+  color: var(--color-ink);
+}
+[data-iii-ui="console"] .console-worker-config-intro p {
+  max-width: 68ch;
+  margin: 0;
+  font: 400 13px/1.6 var(--font-sans);
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="console"] .console-worker-config-control {
+  width: min(100%, 340px);
+  min-width: 180px;
+}
+[data-iii-ui="console"] .console-worker-config-number {
+  width: min(100%, 180px);
+  min-width: 120px;
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="console"] .console-worker-config-select {
+  width: min(100%, 280px);
+  min-width: 180px;
+}
+[data-iii-ui="console"] .console-worker-config-template-control {
+  display: grid;
+  grid-template-columns: auto minmax(160px, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  width: min(100%, 520px);
+  min-width: 260px;
+}
+[data-iii-ui="console"] .console-worker-config-template-kind {
+  padding: 2px 6px;
+  border: 1px solid var(--color-edge);
+  border-radius: 999px;
+  color: var(--color-ink-faint);
+  font: 500 10.5px/1.4 var(--font-sans);
+  white-space: nowrap;
+}
+[data-iii-ui="console"] .console-worker-config-template-input {
+  width: 100%;
+  min-width: 0;
+  font-family: var(--font-mono);
+}
+[data-iii-ui="console"] .console-worker-config-error {
+  font: 400 11.5px/1.45 var(--font-sans);
+  color: var(--color-alert);
+}
+[data-iii-ui="console"] .console-worker-config-preserved {
+  color: var(--color-ink-ghost);
+  font: 400 11.5px/1.4 var(--font-sans);
+}
+[data-iii-ui="console"] .console-worker-config-nested {
+  padding: 12px 14px;
+  border-radius: 6px;
+  background: var(--color-surface);
+}
+[data-iii-ui="console"] .console-worker-config-composite {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+[data-iii-ui="console"] .console-worker-config-sublist,
+[data-iii-ui="console"] .console-worker-config-map-list {
+  margin: 0 12px 12px;
+  background: var(--color-panel);
+}
+[data-iii-ui="console"] .console-worker-config-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+[data-iii-ui="console"]
+  .console-worker-config-string-list-row
+  .iii-ui-settings-row__copy {
+  display: none;
+}
+[data-iii-ui="console"]
+  .console-worker-config-string-list-row
+  .iii-ui-settings-row__control {
+  width: 100%;
+  justify-content: flex-start;
+}
+[data-iii-ui="console"] .console-worker-config-string-list-input {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+}
+[data-iii-ui="console"] .console-worker-config-string-list-remove {
+  flex: 0 0 auto;
+}
+[data-iii-ui="console"] .console-worker-config-map-control {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+[data-iii-ui="console"] .console-worker-config-map-key {
+  width: min(100%, 220px);
+  min-width: 120px;
+  font-family: var(--font-mono);
+}
+[data-iii-ui="console"] .console-worker-config-map-type {
+  width: 120px;
+  min-width: 120px;
+}
+[data-iii-ui="console"] .console-worker-config-inline-map {
+  width: 100%;
+  min-width: 0;
+}
+[data-iii-ui="console"] .console-worker-config-rule-stack {
+  gap: 10px;
+}
+[data-iii-ui="console"] .console-worker-config-rule {
+  margin-inline: 12px;
+  background: var(--color-panel);
+  border: 1px solid var(--color-edge);
+}
+[data-iii-ui="console"] .console-worker-config-rule-modes {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px 16px;
+}
+[data-iii-ui="console"] .console-worker-config-rule-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--color-ink-faint);
+  font: 500 12px/1.4 var(--font-sans);
+  text-transform: capitalize;
+}
+[data-iii-ui="console"] .console-worker-config-constraint-control {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+[data-iii-ui="console"] .console-worker-config-structured-root {
+  margin: 0 12px 12px;
+  padding: 10px;
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  background: var(--color-panel);
+}
+[data-iii-ui="console"] .console-worker-config-structured-value {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+[data-iii-ui="console"] .console-worker-config-structured-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+[data-iii-ui="console"] .console-worker-config-structured-list {
+  margin: 0;
+}
+[data-iii-ui="console"]
+  .console-worker-config-structured-list
+  .console-worker-config-structured-list {
+  margin-top: 4px;
+  border-left: 1px solid var(--color-edge);
+}
+
+[data-iii-ui="console"] .console-worker-config-collection {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-radius: 6px;
+  background: var(--color-surface);
+  overflow: hidden;
+}
+[data-iii-ui="console"] .console-worker-config-collection-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px;
+}
+[data-iii-ui="console"] .console-worker-config-collection-title {
+  font: 600 13px/1.4 var(--font-sans);
+  color: var(--color-ink);
+}
+[data-iii-ui="console"] .console-worker-config-collection-description {
+  max-width: 64ch;
+  margin-top: 3px;
+  font: 400 12px/1.5 var(--font-sans);
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="console"] .console-worker-config-collection-body {
+  display: grid;
+  min-width: 0;
+  border-top: 1px solid var(--color-edge);
+}
+[data-iii-ui="console"] .console-worker-config-collection-list,
+[data-iii-ui="console"] .console-worker-config-collection-detail {
+  min-width: 0;
+}
+[data-iii-ui="console"] .console-worker-config-collection-detail {
+  background: var(--color-panel);
+}
+[data-iii-ui="console"] .console-worker-config-detail-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 44px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--color-edge);
+  font: 600 12.5px/1.4 var(--font-sans);
+}
+[data-iii-ui="console"] .console-worker-config-detail-actions > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="console"] .console-worker-config-empty {
+  padding: 18px 14px;
+  font: 400 12px/1.5 var(--font-sans);
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui="console"] .console-worker-config-map-collection {
+  gap: 12px;
+  padding: 12px 14px;
+  overflow: visible;
+  border-radius: 0;
+  background: transparent;
+}
+[data-iii-ui="console"]
+  .console-worker-config-map-collection
+  .console-worker-config-collection-body {
+  overflow: hidden;
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  background: var(--color-panel-raised);
+}
+[data-iii-ui="console"]
+  .console-worker-config-map-collection
+  .console-worker-config-collection-list
+  > .iii-ui-settings-list,
+[data-iii-ui="console"]
+  .console-worker-config-map-collection
+  .console-worker-config-collection-detail
+  > .iii-ui-settings-list {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+@container (min-width: 680px) {
+  [data-iii-ui="console"]
+    .console-worker-config-collection[data-selected="true"]
+    .console-worker-config-collection-body {
+    grid-template-columns: minmax(180px, 0.38fr) minmax(300px, 0.62fr);
+  }
+  [data-iii-ui="console"] .console-worker-config-collection-detail {
+    border-left: 1px solid var(--color-edge);
+  }
+  [data-iii-ui="console"] .console-worker-config-back {
+    display: none;
+  }
+}
+
+@container (max-width: 679px) {
+  [data-iii-ui="console"] .console-worker-config-control,
+  [data-iii-ui="console"] .console-worker-config-number,
+  [data-iii-ui="console"] .console-worker-config-select {
+    width: 100%;
+    min-width: 0;
+  }
+  [data-iii-ui="console"] .console-worker-config-template-control {
+    grid-template-columns: 1fr auto;
+    width: 100%;
+    min-width: 0;
+  }
+  [data-iii-ui="console"] .console-worker-config-template-kind {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+  [data-iii-ui="console"] .console-worker-config-map-control {
+    align-items: stretch;
+    flex-direction: column;
+    width: 100%;
+  }
+  [data-iii-ui="console"] .console-worker-config-constraint-control {
+    align-items: stretch;
+    flex-direction: column;
+    width: 100%;
+  }
+  [data-iii-ui="console"] .console-worker-config-structured-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  [data-iii-ui="console"] .console-worker-config-rule-modes {
+    justify-content: flex-start;
+  }
+  [data-iii-ui="console"] .console-worker-config-map-type,
+  [data-iii-ui="console"] .console-worker-config-map-key {
+    width: 100%;
+    min-width: 0;
+  }
+  [data-iii-ui="console"] .console-worker-config-string-list-input,
+  [data-iii-ui="console"] .console-worker-config-string-list-remove {
+    min-height: 48px;
+  }
+  [data-iii-ui="console"] .console-worker-config-string-list-remove {
+    min-width: 48px;
+  }
+  [data-iii-ui="console"] .console-worker-config-string-list-input {
+    font-size: 16px;
+  }
+  [data-iii-ui="console"]
+    .console-worker-config-collection[data-selected="false"]
+    .console-worker-config-collection-detail,
+  [data-iii-ui="console"]
+    .console-worker-config-collection[data-selected="true"]
+    .console-worker-config-collection-list {
+    display: none;
+  }
+  [data-iii-ui="console"] .console-worker-config-collection-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  [data-iii-ui="console"] .console-worker-config-collection-list [role="listitem"],
+  [data-iii-ui="console"] .console-worker-config-detail-actions {
+    min-height: 44px;
+  }
 }
 
 /* ── the engine catalogue pages (functions, triggers) ───────────────────

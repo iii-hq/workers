@@ -145,6 +145,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
         "description": "Email worker settings: the SMTP / IMAP accounts (host, port, TLS, \
                         sender, optional login) and the send / attachment / recipient limits.",
         "schema": WorkerConfig::json_schema(),
+        "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
     if let Some(seed) = seed {
         payload["initial_value"] = seed.to_json();

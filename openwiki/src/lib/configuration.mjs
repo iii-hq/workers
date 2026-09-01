@@ -58,6 +58,7 @@ export async function registerConfig(iii) {
       name: 'OpenWiki',
       description: 'OpenWiki worker: default model, page-writer concurrency, and auto-refresh cadence.',
       schema: schema(),
+      metadata: { ui_form: CONFIG_ID },
       initial_value: DEFAULTS,
     },
   });

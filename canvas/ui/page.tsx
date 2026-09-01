@@ -24,6 +24,7 @@ export default function setup(host: Host) {
   host.pages.register({
     id: 'canvas',
     title: 'canvas',
+    configurationId: 'canvas',
     render: (props) => <CanvasPage host={host} {...props} />,
   })
 

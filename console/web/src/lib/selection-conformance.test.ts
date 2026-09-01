@@ -81,7 +81,7 @@ describe('neutral selection contract', () => {
       'console/web/src/components/chat/ModelPicker.tsx',
       'console/web/src/components/chat/SessionAddonsPicker.tsx',
       'console/web/src/components/chat/MemoryChip.tsx',
-      'console/web/src/pages/Configuration/tabs/WorkersTab/WorkersList.tsx',
+      'console/web/src/pages/Configuration/index.tsx',
       'console/web/src/pages/TracesV2/components/ViewsDropdown.tsx',
       'console/web/src/pages/TracesV2/components/WaterfallChart.tsx',
       'console/web/src/pages/TracesV2/components/timeline/spanVisuals.tsx',

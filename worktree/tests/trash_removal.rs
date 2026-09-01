@@ -44,7 +44,10 @@ async fn remove_stages_into_trash_and_deletes_in_background() {
         &env.deps,
         remove::Request {
             worktree_id: created.worktree_id.clone(),
-            force: false,
+            // This case exercises trash staging, not the best-effort lsof
+            // guard. The guard has its own focused test below and can observe
+            // short-lived runner processes on shared CI hosts.
+            force: true,
             delete_branch: false,
         },
     )

@@ -24,30 +24,6 @@
 
 /* ---------------------------------------------------------------- header */
 
-[data-iii-ui="editor"] .ed-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
-  border-bottom: 1px solid var(--color-rule);
-  flex: none;
-}
-
-/* The console prefixes its section headers with a dim `$`; matching it is
-   most of what makes an injected page read as part of the same product. */
-[data-iii-ui="editor"] .ed-brand {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 16px;
-  letter-spacing: 0.08em;
-  color: var(--color-ink-faint);
-  flex: none;
-}
-
-[data-iii-ui="editor"] .ed-brand::before {
-  content: "$ ";
-  color: var(--color-accent);
-}
-
 [data-iii-ui="editor"] .ed-rootpath {
   flex: 1;
   min-width: 0;

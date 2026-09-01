@@ -47,7 +47,7 @@ The full catalogue lives in [`skills/SKILL.md`](https://github.com/iii-hq/worker
 
 ## Configuration
 
-Settings live in the `configuration` worker under the id `tailscale`; the Console's configuration panel edits them and the worker reloads without a restart. An optional `--config <file>` YAML seed is used only when the entry is first created.
+Settings live in the `configuration` worker under the id `tailscale`; edit them in the Console's global Settings modal and the worker reloads without a restart. An optional `--config <file>` YAML seed is used only when the entry is first created.
 
 ```yaml
 tailscale_binary: tailscale          # CLI name or absolute path

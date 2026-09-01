@@ -1142,6 +1142,7 @@ export function KanbanPage({ host, panelSide, onRequestClose, workingDir, conver
           resizable
           storageKey="kanban-runs-sidebar"
           narrowBelow={720}
+          narrowMode="drawer"
         >
           <RunSidebar runs={board?.runs ?? []} activeRunId={activeRun?.id ?? null} onSelect={setActiveRunId} />
         </PageSidebar>

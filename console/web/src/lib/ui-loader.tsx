@@ -20,6 +20,7 @@ import type { IiiClient } from '@/lib/iii-client'
 import { registerPageCommands } from '@/lib/page-commands'
 import { requestPaletteOpen } from '@/lib/palette/open-request'
 import { registerPaletteSource } from '@/lib/palette/providers'
+import { PaneConfigurationProvider } from '@/lib/pane-configuration'
 import { requestPanelOpen } from '@/lib/panel-context'
 import { loadRecentProjects } from '@/lib/storage'
 import { ExtensionScopeProvider } from '@/lib/ui-scope'
@@ -146,9 +147,11 @@ function makeHost(
             scope,
             path,
             render: (renderProps) => (
-              <ScopedExtension scope={scope} path={path}>
-                <Body {...renderProps} />
-              </ScopedExtension>
+              <PaneConfigurationProvider configurationId={page.configurationId}>
+                <ScopedExtension scope={scope} path={path}>
+                  <Body {...renderProps} />
+                </ScopedExtension>
+              </PaneConfigurationProvider>
             ),
           }),
         )

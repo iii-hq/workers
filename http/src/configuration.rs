@@ -100,6 +100,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&RestApiConfig>) -> R
         "name": "HTTP",
         "description": "HTTP server settings — host/port binding, CORS, request timeout, concurrency limit, and global middleware.",
         "schema": RestApiConfig::json_schema(),
+        "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
     if should_seed_initial_value(iii).await? {
         let seed = seed.cloned().unwrap_or_default().normalized();

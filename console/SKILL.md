@@ -201,6 +201,7 @@ export default function setup(host: Host) {
   host.pages.register({
     id: 'mywork-manager',           // page URL: #/ext/mywork-manager
     title: 'Mywork',                // nav label
+    configurationId: 'mywork',      // host adds the standard settings action
     render: (props) => <MyworkPage host={host} {...props} />,
   })
 
@@ -222,8 +223,9 @@ The package exports page chrome; `List`/`ListItem`, `Card`, `CollapsibleCard`, `
 `IconButton`, and semantic `Table` parts; line `Tabs` and `SegmentedControl`;
 `Selector` and `Select`; buttons, inputs, dialogs, menus and tooltips;
 status/empty/loading components; Markdown and JSON renderers; the terminal atoms (`AnsiText`,
-`TerminalStream`, `TerminalCommandLine`); `CodeEditor`, `FileDiff`, and
-`WorkerConfigurationDialog`. It also exports the stable `uiClasses` recipes
+`TerminalStream`, `TerminalCommandLine`); `CodeEditor`, `FileDiff`; and
+settings primitives (`SettingsSection`, `SettingsList`, `SettingsRow`,
+`SettingsField`, `RawValueInput`, `SettingsDeck`, `Switch`). It also exports the stable `uiClasses` recipes
 and canonical `tokens` inventory. Read `packages/console-ui/index.d.ts` for
 the authoritative names and props.
 
@@ -242,6 +244,82 @@ default; pass an explicit icon only when the default does not express the
 view, or `icon={false}` only when there is a documented space constraint.
 Use `IconButton` for icon-only actions such as Refresh or Configure so the
 16 px glyph retains an accessible name and tooltip.
+
+### Configuration forms: one shared grammar
+
+Every `host.configForms` implementation uses host-owned primitives. Do not
+paint native inputs, selects, switches, buttons, or a private collection deck
+to resemble the Console.
+
+- Structure ordinary settings as `SettingsSection` → `SettingsList` →
+  `SettingsField`/`SettingsRow`.
+- Use `SettingsField` for editable values. Pass every prop supplied by its
+  `renderControl` callback into `Input`, `Select`, `Selector`, `Switch`, or a
+  domain wrapper. It generates the clickable label, description/error ARIA,
+  `data-field`, and standard control width. Use `controlSize="fit"` with
+  `layout="inline"` for intrinsic controls such as `Switch`.
+- Use `SettingsRow` for values/actions that are not a single labelled field.
+- Use `RawValueInput` for `${ENV}` templates and unknown/future scalar values.
+  It may suggest a typed literal, but conversion happens only after the user
+  invokes `onUseLiteral`. A non-string opaque value still belongs in a
+  `SettingsField` with an explicit conversion button so field errors remain
+  associated with the control.
+- Use the shared `Select` for finite choices and `Selector` for searchable
+  choices. Both support `id`, `name`, and `data-field`; a native `<select>`
+  with worker CSS is never the fallback.
+- Worker CSS may arrange controls, constrain width, or apply mono to a
+  machine-readable value. It must not override shared control color, border,
+  radius, height, chevron, focus, disabled, or type styles.
+- Size responsive controls from the pane/container rather than the viewport.
+  Back, section/row actions, and field controls keep at least a 44 px target in
+  a narrow split pane even when the desktop window itself is wide. Put
+  `data-settings-narrow-action` on standalone empty-state actions so they use
+  the same target rule.
+
+For a collection whose item opens a meaningful sub-form, use `SettingsDeck`.
+Its `overview` should compose `Panel` + `List`/`ListItem`; its `detail` contains
+the selected item's settings. `open` selects exactly one level at every width:
+the overview and detail are never squeezed side-by-side or stacked together.
+The deck focuses the pushed heading and restores the originating row on Back.
+Keep selection by a stable domain key and set it to `null` when the item is
+removed. For a host deep link, open the requested item first, focus the exact
+`data-field`, and temporarily disable `autoFocusDetail` so the heading cannot
+steal that specific focus. Encode the host path as
+`focusField.map(String).join('.')`, use that exact dotted value in
+`SettingsField.field`, and consume each serialized request only once after its
+conditional/deck content mounts. If an item can be removed, put
+`data-settings-deck-fallback` on the surviving overview action that should
+receive focus when the originating row disappears.
+
+```tsx
+<SettingsField
+  id="redis-url"
+  field="adapter.config.redis_url"
+  label="Redis URL"
+  description="Connection used for distributed locks."
+  error={errors?.get('/adapter/config/redis_url')}
+  renderControl={(controlProps) => (
+    <Input {...controlProps} value={redisUrl} onChange={setRedisUrl} />
+  )}
+/>
+
+<SettingsDeck
+  open={activeId !== null}
+  title={activeItem?.label ?? 'Connection'}
+  backLabel="Connections"
+  overview={<ConnectionList onOpen={setActiveId} />}
+  detail={activeItem ? <ConnectionSettings item={activeItem} /> : null}
+  onBack={() => setActiveId(null)}
+/>
+```
+
+The host owns dirty tracking, validation, save, reset, and the SaveBar. Back is
+navigation only. Update config objects surgically: preserve unknown siblings,
+unknown enum/adapter payloads, and templates; display defaults without
+materializing them. An opaque root is preserved just like an opaque nested
+block and requires an explicit conversion; never coerce it to `{}` to enter
+the typed form. Database is the canonical resource-deck example and Cron is
+the canonical small settings-form example.
 
 Selection is always neutral in both themes: `--color-surface-selected`,
 `--color-ink`, and optionally `--color-edge`. Reserve `--color-accent` for a
@@ -265,16 +343,31 @@ a custom structure when the domain needs columns, a canvas, or a drill-in
 flow. Do not replace the outer shell and header.
 
 Use `PageSidebar`'s declarative `collapsible`, `resizable`, `storageKey`,
-width bounds, `side`, `narrow`, and `narrowBelow` props instead of shipping
-local collapse DOM, drag handlers, width clamps, persistence, focus logic, or
-transitions. The Console host keeps a single stable `aside`, leaves children
-mounted while collapsed, synchronizes instances sharing a storage key, and
-owns motion plus reduced-motion behavior. Pass `narrow` when the page already
-has a drill-in state; use `narrowBelow` when only shared sidebar chrome needs
-to react to its parent width. With host-owned collapse state the narrow
-presentation is a rail whose toggle opens a drawer over `PageMain`; a page
-that controls `collapsed` gets the full-width aside and owns what shows
-beside it. Neither responsive mode overwrites the saved wide preference.
+width bounds, `side`, `narrow`, `narrowBelow`, and `narrowMode` props instead
+of shipping local collapse DOM, drag handlers, width clamps, persistence,
+focus logic, or transitions. The Console host keeps a single stable `aside`,
+leaves children mounted while collapsed, synchronizes instances sharing a
+storage key, and owns motion plus reduced-motion behavior. Pass `narrow` when
+the page's drill-in state already knows the pane is narrow; use `narrowBelow`
+when the shared sidebar may observe its `PageBody` parent.
+
+`narrowMode="inline"` is the default and the required presentation for
+primary navigation. It temporarily makes the sidebar a full-width mobile
+navigation screen, hides collapse/resize affordances, and ignores (without
+overwriting) the saved wide collapsed preference. Use it for catalogs,
+list/detail pages, and hierarchies such as `scopes → keys → value`; preserve
+each level as a distinct list, advance one level when a row is activated, and
+provide a labelled Back action. The page owns that domain route, not private
+sidebar mechanics. Build each level with `List`, optional `ListGroup` /
+`ListGroupLabel`, and `ListItem`; pass its `selected`, `leading`, `label`,
+`description`, and `trailing` data instead of copying row/button CSS. The
+shared row owns full-width card targeting, neutral selection, keyboard
+traversal, focus treatment, and mobile touch height.
+
+Use `narrowMode="drawer"` only for secondary navigation that must overlay an
+unchanged, still-mounted `PageMain`, such as a short section switcher. Do not
+put a primary tree or catalog in the drawer. Neither responsive mode
+overwrites the saved wide preference.
 
 The pieces own the surface hierarchy (header on `--color-panel-raised`
 with a hairline `--color-edge` border, sidebar on `--color-sidebar`, main
@@ -283,6 +376,15 @@ Put content straight into `PageMain`. Keep `onRequestClose` wired to
 `PageHeader.onClose`. Keep header actions few and essential; at narrow widths,
 move secondary actions into a `DropdownMenu` rather than allowing the header
 to wrap or overflow.
+
+When the page's worker has a configuration entry, set `configurationId` on
+`host.pages.register`. The Console then places one consistent settings action
+in `PageHeader` and opens the worker in the global Settings modal. Do not add a
+second Configure action or mount `WorkerConfigurationDialog`; that component
+exists only as a compatibility bridge for older bundles. This is the stable
+form-family id: keep `configurationId: 'browser'` even when a runtime instance
+uses `III_CONFIG_NAME=browser-team-a`; its `configuration::register` payload
+must carry `metadata: { ui_form: 'browser' }`.
 
 ### Responsive structure: pane width, not viewport width
 
@@ -304,6 +406,12 @@ Apply these rules:
 - Prefer a drill-in sequence on narrow panes: list → detail, or scope → key
   → value. Render one primary pane at a time and provide a visible,
   labelled back control.
+- Keep `PageSidebar` in its default inline narrow mode for that sequence. Its
+  full-width presentation is shared; do not recreate mobile rails, sheets,
+  width overrides, or collapse state in worker CSS/JS.
+- Style mobile navigation as one scannable list of full-width rows/cards.
+  Activating a row advances exactly one level; do not flatten parent and child
+  collections into one selector or show a collapsed desktop rail first.
 - Remove modes that require width. For example, collapse split edit/preview
   to one mode at a time.
 - Make narrow interactive rows at least 44 px tall. Keep labels truncated or
@@ -494,7 +602,7 @@ the nav. Its `render` receives:
 |---|---|
 | `host.functionTriggers` | Custom chat/trace renderers. Match only the worker's function ids and return `null` to fall through. `message.description` is the harness's short activity label. Set renderer `metadata: { display: true }` only for successful rich artifacts that should remain visible while raw details are collapsed; the hint applies to the renderer that returned the winning node. If raw data contains secrets, implement a pure, total, cycle-safe `redactRaw`; the raw tab and copy action otherwise expose the original input/output. |
 | `host.triggerRenderers?` | Layered trigger presentation. Match the inner `triggerType`. `tryRender` supplies the source section; optional `tryRenderDetails` and `tryRenderDisplay` replace the expanded Terminal content and compact timeline content; `redactRaw` filters raw registration/fire values. Every slot falls through on `null`. Feature-detect for older consoles. |
-| `host.configForms` | Replace one configuration form. Render fields and call `onChange`; the host retains dirty tracking, validation, save, and reset. Honor `focusField`. Pass `{ layout: 'full' }` as the third `register` argument only when the form is a workbench that owns its internal scrolling; the default `contained` layout keeps the centered host column. |
+| `host.configForms` | Provide the deliberate UI for one configuration entry in global Settings. There is no schema-generated fallback: every configurable worker must register a form. Render purpose-built fields and call `onChange`; the schema validates but never generates UI, and the host retains dirty tracking, save, and reset. Use `SettingsSection`/`SettingsList`/`SettingsField`/`SettingsRow`; use `SettingsDeck` for collection drill-in and `RawValueInput` for opaque/template scalars. Never use a raw JSON textarea or restyled native controls, and honor `focusField`. Pass `{ layout: 'full' }` only when the form is a workbench that owns its internal scrolling; the default `contained` layout keeps the centered host column. |
 | `host.providerConfigForms?` | Replace the form body for one exact `llm-router` provider id inside the chat model picker. Use it for provider-owned OAuth, device flow, or companion-app login. The host retains the provider slice, schema validation, dirty guard, save/reset, and model refresh; the component receives `{ providerId, schema, value, onChange, errors, configured, available, modelCount }`. Feature-detect for older consoles. Never solicit plaintext API keys here—direct operators to the provider's declared environment variable. |
 | `host.chat?` | Optional chat integrations: session chips, turn summaries and transcript renderers, plus `selectConversation?` for explicit worker-driven navigation and `composerModel?` for the live model selection (including unsaved drafts). Feature-detect the namespace and each newer method. |
 | `host.iii` | The tab's bus client: `trigger(functionId, payload?, {timeoutMs?})`, `on(functionId, handler)` (returns un-listen), `registerTrigger({type, function_id, config})` (returns un-register), `addConnectionStateListener`, `browserId`. Injected UI *acts* by invoking its own worker's functions. |
@@ -631,6 +739,10 @@ disable/disconnect fallback.
 The UI is done only when:
 
 - `PageShell` + `PageHeader` are present and the close action works;
+- every configurable page declares `configurationId`, and every configuration
+  entry has a registered, purpose-built `host.configForms` interface;
+- configuration controls come from `@iii-dev/console-ui`; collection details
+  use `SettingsDeck`, preserve unknown/template data, and restore focus on Back;
 - the narrow flow exposes every action without horizontal page overflow;
 - focus is visible, controls have names, and narrow targets are at least 44 px;
 - selected rows, cards, tabs, chips, and segments remain neutral in both themes;

@@ -43,14 +43,7 @@ import {
   Skeleton,
   StatusPanel,
 } from '@iii-dev/console-ui'
-import {
-  type ComponentType,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ALL,
   type Capabilities,
@@ -74,7 +67,6 @@ import {
   Database,
   type IconProps,
   RefreshCw,
-  Settings,
   Table2,
 } from './icons'
 import { parseDatabasePanelContext } from './panel-context'
@@ -119,13 +111,6 @@ function driverLabel(driver: string) {
 /** Container width (px) below which the page collapses to the drill-in
  * tree ⇄ panel flow. */
 const NARROW_BELOW = 850
-
-/**
- * Fallback route for consoles that predate the shared configuration dialog:
- * the workers-tab editor deep-link. It navigates away from this page — the
- * lesser experience, kept only as the degradation path.
- */
-const CONFIG_HASH = '#/workers/configuration/database'
 
 /** One step of following a foreign key. */
 interface Hop {
@@ -201,19 +186,6 @@ export function DatabasePage({
   const [mode, setMode] = useState<PanelMode>('data')
   const [seedSql, setSeedSql] = useState<string | undefined>(undefined)
   const [bump, setBump] = useState(0)
-  // Configuration opens HERE, in the console's own editor dialog — schema
-  // fetch, custom-form resolution, dirty guard and save are all host-owned,
-  // shared with the workers tab rather than duplicated. Read off
-  // `host.components` at runtime, never imported: a console predating the
-  // export degrades to navigation instead of failing the module load.
-  const [configOpen, setConfigOpen] = useState(false)
-  const HostConfigDialog = host.components.WorkerConfigurationDialog as
-    | ComponentType<{ configurationId: string | null; onClose: () => void }>
-    | undefined
-  const openConfiguration = () => {
-    if (HostConfigDialog) setConfigOpen(true)
-    else window.location.hash = CONFIG_HASH
-  }
   const [caps, setCaps] = useState<Capabilities>(ALL)
   // Where following foreign keys has taken you. The last entry supplies the
   // filter the current table opens with.
@@ -488,25 +460,10 @@ export function DatabasePage({
             <IconButton label="Refresh database" onClick={refresh}>
               <RefreshCw size={16} aria-hidden />
             </IconButton>
-            <IconButton label="Configure database" onClick={openConfiguration}>
-              <Settings size={16} aria-hidden />
-            </IconButton>
           </>
         }
         onClose={onRequestClose}
       />
-
-      {HostConfigDialog ? (
-        <HostConfigDialog
-          configurationId={configOpen ? 'database' : null}
-          onClose={() => {
-            setConfigOpen(false)
-            // A save may have happened in there: the worker hot-reloads its
-            // pools, and this page re-reads what it derived from them.
-            refresh()
-          }}
-        />
-      ) : null}
 
       {dbsRead.error ? (
         <div className="db-ui-state">
@@ -527,10 +484,6 @@ export function DatabasePage({
             icon={DatabaseIcon}
             title="No databases configured"
             description="Databases are defined in the worker's configuration (databases: { name: { url } }) and appear here as soon as one connects."
-            action={{
-              label: 'Open configuration',
-              onClick: openConfiguration,
-            }}
           />
         </div>
       ) : (

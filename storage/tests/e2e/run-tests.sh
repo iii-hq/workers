@@ -23,8 +23,10 @@ worker_bin_link_override=${WORKER_BIN_LINK:-}
 REPORT_PATH="$ROOT_DIR/reports/report.json"
 TS=$(date +%Y%m%d-%H%M%S)
 ENGINE_LOG="$ROOT_DIR/reports/engine-$TS.log"
+WORKER_LOG="$ROOT_DIR/reports/storage-$TS.log"
 HARNESS_LOG="$ROOT_DIR/reports/harness-$TS.log"
 SENTINEL_TIMEOUT="${HARNESS_TIMEOUT:-180}"
+export E2E_PORT="${E2E_PORT:-49134}"
 
 KEEP=0
 NO_BUILD=0
@@ -64,6 +66,7 @@ Env overrides:
   WORKER_BIN_TARGET        Path to the built worker binary.
   WORKER_BIN_LINK          Symlink the engine reads.
   HARNESS_TIMEOUT          Seconds to wait for the harness sentinel (default: 180).
+  E2E_PORT                Engine WebSocket port (default: 49134).
 Script-self-tests:
   ./script-tests/run.sh        Run bash tests of run-tests.sh itself.
                                Independent from the harness; CI runs both.
@@ -99,6 +102,7 @@ for p in "${PROVIDER_LIST[@]}"; do
 done
 
 ENGINE_PID=""
+WORKER_PID=""
 HARNESS_PID=""
 COMPOSE_STARTED=0
 RUN_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/storage-e2e.XXXXXX")
@@ -118,6 +122,10 @@ cleanup() {
   if [[ -n "$HARNESS_PID" ]] && kill -0 "$HARNESS_PID" 2>/dev/null; then
     kill "$HARNESS_PID" 2>/dev/null || true
     wait "$HARNESS_PID" 2>/dev/null || true
+  fi
+  if [[ -n "$WORKER_PID" ]] && kill -0 "$WORKER_PID" 2>/dev/null; then
+    kill "$WORKER_PID" 2>/dev/null || true
+    wait "$WORKER_PID" 2>/dev/null || true
   fi
   if [[ -n "$ENGINE_PID" ]] && kill -0 "$ENGINE_PID" 2>/dev/null; then
     kill -- "-$ENGINE_PID" 2>/dev/null || kill "$ENGINE_PID" 2>/dev/null || true
@@ -155,7 +163,7 @@ require_free_port() {
   fi
 }
 
-require_free_port 49134 "iii engine websocket"
+require_free_port "$E2E_PORT" "iii engine websocket"
 
 if [[ "$NEEDS_DOCKER" -eq 1 ]]; then
   if ! command -v docker >/dev/null 2>&1; then
@@ -261,16 +269,19 @@ if [[ ! -d "$ROOT_DIR/workers/harness/node_modules" ]]; then
   (cd "$ROOT_DIR/workers/harness" && npm install --silent)
 fi
 
-# 6. Start the engine (default config: ./config.yaml)
+# 6. Prepare the engine and worker configs.
 : > "$ENGINE_LOG"
+: > "$WORKER_LOG"
 : > "$HARNESS_LOG"
 
-ENGINE_CONFIG_SOURCE="$ROOT_DIR/config.yaml"
+WORKER_CONFIG_SOURCE="$ROOT_DIR/config.yaml"
 if [[ "$NEEDS_DOCKER" -eq 1 ]]; then
-  ENGINE_CONFIG_SOURCE="$ROOT_DIR/config.all.yaml"
+  WORKER_CONFIG_SOURCE="$ROOT_DIR/config.all.yaml"
 fi
-ENGINE_CONFIG="$RUN_ROOT/config.yaml"
-cp "$ENGINE_CONFIG_SOURCE" "$ENGINE_CONFIG"
+ENGINE_CONFIG="$RUN_ROOT/engine-config.yaml"
+WORKER_CONFIG="$RUN_ROOT/storage.yaml"
+cp "$ROOT_DIR/engine-config.yaml" "$ENGINE_CONFIG"
+cp "$WORKER_CONFIG_SOURCE" "$WORKER_CONFIG"
 
 # When the s3 provider is in scope, the storage worker spawns an SQS poller
 # (storage/src/main.rs:296-308) that uses the AWS SDK default credential
@@ -307,12 +318,12 @@ fi
 ENGINE_PID=$!
 echo "[run-tests] engine pid=$ENGINE_PID"
 
-# 7. Wait for the engine to accept TCP on its WebSocket port (49134).
+# 7. Wait for the engine to accept TCP on its WebSocket port.
 # Probing the port directly instead of grepping for an engine log line
 # decouples this script from the engine's logging format.
 deadline=$(( $(date +%s) + 30 ))
 while :; do
-  if (echo > /dev/tcp/127.0.0.1/49134) 2>/dev/null; then
+  if (echo > "/dev/tcp/127.0.0.1/$E2E_PORT") 2>/dev/null; then
     break
   fi
   if ! kill -0 "$ENGINE_PID" 2>/dev/null; then
@@ -321,7 +332,7 @@ while :; do
     exit 1
   fi
   if (( $(date +%s) > deadline )); then
-    echo "[run-tests] FATAL: engine did not bind port 49134 within 30s; tail of engine log:" >&2
+    echo "[run-tests] FATAL: engine did not bind port $E2E_PORT within 30s; tail of engine log:" >&2
     tail -40 "$ENGINE_LOG" >&2
     exit 1
   fi
@@ -329,13 +340,40 @@ while :; do
 done
 echo "[run-tests] engine listening"
 
-# 8. Launch the harness as a host node process
+# 8. Start storage as a host process. iii 0.23 rejects project workers in the
+# engine config, while --config remains the supported first-registration seed.
+echo "[run-tests] starting storage worker"
+(cd "$RUN_ROOT" && "$WORKER_BIN_TARGET" --url "ws://127.0.0.1:$E2E_PORT" --config "$WORKER_CONFIG") \
+  >"$WORKER_LOG" 2>&1 &
+WORKER_PID=$!
+echo "[run-tests] storage worker pid=$WORKER_PID"
+
+deadline=$(( $(date +%s) + 30 ))
+while :; do
+  if "$III_BIN" trigger --port "$E2E_PORT" engine::functions::info function_id=storage::listBuckets >/dev/null 2>&1; then
+    break
+  fi
+  if ! kill -0 "$WORKER_PID" 2>/dev/null; then
+    echo "[run-tests] FATAL: storage worker exited before becoming ready; tail of worker log:" >&2
+    tail -40 "$WORKER_LOG" >&2
+    exit 1
+  fi
+  if (( $(date +%s) > deadline )); then
+    echo "[run-tests] FATAL: storage worker did not register within 30s; tail of worker log:" >&2
+    tail -40 "$WORKER_LOG" >&2
+    exit 1
+  fi
+  sleep 0.5
+done
+echo "[run-tests] storage worker ready"
+
+# 9. Launch the harness as a host node process
 echo "[run-tests] starting harness"
 HARNESS_ENV=()
 if [[ -n "$FILTER" ]]; then
   HARNESS_ENV+=("HARNESS_FILTER=$FILTER")
 fi
-HARNESS_ENV+=("III_URL=ws://127.0.0.1:49134")
+HARNESS_ENV+=("III_URL=ws://127.0.0.1:$E2E_PORT")
 HARNESS_ENV+=("HARNESS_REPORT_PATH=$REPORT_PATH")
 HARNESS_ENV+=("HARNESS_PROVIDERS=$PROVIDERS")
 # Forward HARNESS_TRIGGER_PROVIDERS — either from --trigger-providers= flag
@@ -351,7 +389,7 @@ fi
 HARNESS_PID=$!
 echo "[run-tests] harness pid=$HARNESS_PID"
 
-# 9. Wait for sentinel line
+# 10. Wait for sentinel line
 sentinel=""
 deadline=$(( $(date +%s) + SENTINEL_TIMEOUT ))
 while (( $(date +%s) < deadline )); do
@@ -386,7 +424,7 @@ if [[ -z "$sentinel" ]]; then
   exit 2
 fi
 
-# 10. Print summary
+# 11. Print summary
 echo
 echo "======================================================================="
 echo "$sentinel"
