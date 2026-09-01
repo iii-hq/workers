@@ -18,11 +18,22 @@ on:
         type: string
         required: false
         default: ''
+      runner:
+        description: GitHub Actions runner label selected by the trusted caller
+        type: string
+        required: false
+        default: ubuntu-latest
+      cache-key-suffix:
+        description: Cache cohort used to isolate comparable warm and cold runs
+        type: string
+        required: false
+        default: ''
 
 jobs:
   integration:
     name: harness integration
-    runs-on: [self-hosted, Linux, X64, rust]
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -109,7 +120,7 @@ jobs:
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: target/integration-engine-src/${{ steps.lock.outputs.binary }}
-          key: integration-engine-bin-rust-1.97.1-${{ runner.os }}-${{ runner.arch }}-${{ steps.lock.outputs.revision }}-${{ hashFiles('harness/tests/integration/engine.lock') }}-${{ hashFiles('target/integration-engine-src/Cargo.lock') }}
+          key: integration-engine-bin-rust-1.97.1-${{ runner.os }}-${{ runner.arch }}-${{ steps.lock.outputs.revision }}-${{ hashFiles('harness/tests/integration/engine.lock') }}-${{ hashFiles('target/integration-engine-src/Cargo.lock') }}${{ inputs.cache-key-suffix && format('-{0}', inputs.cache-key-suffix) || '' }}
 
       - name: Build pinned engine
         if: steps.engine-cache.outputs.cache-hit != 'true'
@@ -138,7 +149,7 @@ jobs:
         with:
           # Instrumented builds have different fingerprints; keep them on their
           # own key so coverage runs never poison the normal cache.
-          shared-key: ${{ inputs.coverage && 'harness-integration-coverage' || 'harness-integration' }}
+          shared-key: ${{ inputs.coverage && 'harness-integration-coverage' || 'harness-integration' }}${{ inputs.cache-key-suffix && format('-{0}', inputs.cache-key-suffix) || '' }}
           save-if: ${{ inputs.save-cache || inputs.coverage }}
           # Every release build the stack needs now lands in one shared
           # target dir (see harness/Makefile INTEGRATION_TARGET_DIR); the
@@ -269,15 +280,22 @@ jobs:
         if: always()
         env:
           ENGINE_HIT: ${{ steps.engine-cache.outputs.cache-hit }}
+          STACK_HIT: ${{ steps.stack-cache.outputs.cache-hit }}
           SAVE_CACHE: ${{ inputs.save-cache }}
+          RUNNER_LABEL: ${{ inputs.runner }}
+          CACHE_COHORT: ${{ inputs.cache-key-suffix || 'stable' }}
         run: |
           {
-            echo "### Integration build caches"
+            echo "### Harness integration execution"
+            echo
+            echo "| Runner label | Runner name | Cache cohort |"
+            echo "| --- | --- | --- |"
+            echo "| $RUNNER_LABEL | $RUNNER_NAME | $CACHE_COHORT |"
             echo
             echo "| Cache | Hit | Save enabled |"
             echo "| --- | --- | --- |"
             echo "| pinned engine | ${ENGINE_HIT:-false} | $SAVE_CACHE |"
-            echo "| integration Rust | see rust-cache log | $SAVE_CACHE |"
+            echo "| integration Rust | ${STACK_HIT:-false} | $SAVE_CACHE |"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Rust build timings

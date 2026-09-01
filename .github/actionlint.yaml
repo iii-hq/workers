@@ -1,7 +1,9 @@
 self-hosted-runner:
   labels:
     - general
-    - rust
+    - workers-ci-linux-8core
+    - workers-release-control-linux-2core
     - workers-release-linux-8core
+    - workers-release-macos-aws-intel
     - workers-release-macos-12core
     - workers-release-macos-arm-5core

@@ -97,6 +97,53 @@ Some workers have harness-level e2e beyond unit tests:
 Add a dedicated workflow when integration with the full harness stack is
 release-blocking and too slow for the per-PR matrix.
 
+## Runner pools
+
+Runner labels identify one infrastructure pool. Do not reuse a label across
+GitHub-hosted and self-hosted machines: routing must remain deterministic for
+cost, isolation and performance measurements.
+
+| Label | Infrastructure | Capacity | Current use |
+|---|---|---:|---|
+| `ubuntu-latest` | Standard GitHub-hosted Linux | GitHub-managed | PR checks, normal E2E and the default Harness integration |
+| `workers-ci-linux-8core` | Larger GitHub-hosted Linux | 2 concurrent | Manual Harness integration benchmark only |
+| `workers-release-control-linux-2core` | Larger GitHub-hosted Linux | 8 concurrent | Reserved for a later migration of release control jobs; no workflow selects it yet |
+| `workers-release-linux-8core` | Larger GitHub-hosted Linux | 8 concurrent | Linux release builds and, until migrated, release control jobs |
+| `windows-latest` | Standard GitHub-hosted Windows | GitHub-managed | Windows release builds |
+| `workers-release-macos-12core` | Larger GitHub-hosted Intel macOS | 3 concurrent | Intel macOS release builds |
+| `workers-release-macos-arm-5core` | Larger GitHub-hosted Apple Silicon | 3 concurrent | ARM macOS release builds |
+| `workers-release-macos-aws-intel` | Self-hosted Intel macOS on AWS | 3 registered | Explicit contingency capacity; no workflow selects it by default |
+
+The `workers-ci-linux-8core` group is restricted to the Harness integration
+and benchmark workflows. Release pools stay in the release-only runner group
+and must not be granted to pull-request workflows. The legacy `rust`
+self-hosted label is not part of the Workers routing contract.
+
+### Harness integration recovery and benchmark
+
+[`_harness-integration.yml`](../../.github/workflows/_harness-integration.yml)
+defaults to `ubuntu-latest`; callers must opt into any other pool. This keeps
+pull requests running when optional capacity is unavailable.
+
+Use
+[`harness-integration-benchmark.yml`](../../.github/workflows/harness-integration-benchmark.yml)
+to compare `ubuntu-latest` with `workers-ci-linux-8core`:
+
+1. Select one immutable `source-ref` SHA for the entire cohort.
+2. Run ten executions on each pool: seven `warm` and three `cold`.
+3. `warm` uses the production cache keys. Each `cold` run gets a unique key
+   and cannot save it, so it neither restores nor pollutes the warm cache.
+4. Record queue time and execution time from the job API, cache hits from the
+   job summary, and billed minutes for the larger runner.
+5. Keep the 8-core pool only when execution p95 is below 10 minutes and the
+   improvement over `ubuntu-latest` is at least 25%. Otherwise retain
+   `ubuntu-latest` as the permanent default.
+
+Initial service targets are CI queue p95 below 60 seconds, no job waiting more
+than five minutes for a runner, Harness integration execution p95 below ten
+minutes, release prepare p95 below ten minutes and publish p95 below four
+minutes.
+
 ## Script tests
 
 `.github/scripts/tests/` — pytest for release/discovery/workflow helpers. Runs
