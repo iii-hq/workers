@@ -119,21 +119,6 @@ jobs:
             --worker "$WORKER" --version "$TARGET_VERSION" \
             --payload payload.json --out registry-version-receipt.json
 
-      - name: Preserve next at or ahead of latest
-        if: inputs.channel == 'latest'
-        env:
-          WORKERS_REGISTRY_API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
-          WORKER: ${{ inputs.worker }}
-          TARGET_VERSION: ${{ inputs.target_version }}
-          EXPECTED_NEXT_VERSION: ${{ inputs.expected_next_version }}
-        run: |
-          set -euo pipefail
-          python3 .github/scripts/registry_publication.py advance-next-floor \
-            --api-url https://api.workers.iii.dev \
-            --worker "$WORKER" --version "$TARGET_VERSION" \
-            --expected-next-version "$EXPECTED_NEXT_VERSION" \
-            --out registry-next-receipt.json
-
       - name: Move requested channel with compare-and-swap
         env:
           WORKERS_REGISTRY_API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
@@ -150,13 +135,29 @@ jobs:
             --expected-current-version "$EXPECTED_CURRENT_VERSION" \
             --out registry-channel-receipt.json
 
+      - name: Mirror the other channel with compare-and-swap
+        env:
+          WORKERS_REGISTRY_API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
+          WORKER: ${{ inputs.worker }}
+          TARGET_VERSION: ${{ inputs.target_version }}
+          MIRROR_CHANNEL: ${{ inputs.channel == 'latest' && 'next' || 'latest' }}
+          EXPECTED_MIRROR_VERSION: ${{ inputs.expected_next_version }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/registry_publication.py assign-channel \
+            --api-url https://api.workers.iii.dev \
+            --worker "$WORKER" --version "$TARGET_VERSION" \
+            --registry-tag "$MIRROR_CHANNEL" \
+            --expected-current-version "$EXPECTED_MIRROR_VERSION" \
+            --out registry-mirror-channel-receipt.json
+
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: registry-publication-${{ inputs.worker }}-${{ inputs.target_version }}-${{ inputs.channel }}
           path: |
             payload.json
             registry-version-receipt.json
-            registry-next-receipt.json
             registry-channel-receipt.json
+            registry-mirror-channel-receipt.json
           if-no-files-found: warn
           retention-days: 30
