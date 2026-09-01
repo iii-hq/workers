@@ -12,7 +12,7 @@
 //! adapter:
 //!   name: fs
 //!   config:
-//!     data_dir: /project/data/session-manager
+//!     data_dir: data/session-manager
 //! ```
 //!
 //! or
@@ -267,7 +267,7 @@ mod tests {
         let StorageAdapter::Fs(fs) = cfg.resolve_adapter() else {
             panic!("expected fs adapter");
         };
-        assert_eq!(fs.data_dir, default_data_dir());
+        assert_eq!(fs.data_dir, "data/session-manager");
     }
 
     #[test]
