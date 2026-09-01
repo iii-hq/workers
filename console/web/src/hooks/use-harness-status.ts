@@ -6,7 +6,7 @@ import { useWorkerLifecycle } from './use-worker-lifecycle'
 
 /**
  * Watches the engine for the `harness` worker and drives an in-app install of
- * it via `worker::add`, surfacing live progress.
+ * it via `compose::add`, surfacing live progress.
  *
  * Two signals feed `present`:
  *   1. An initial `engine::workers::list` read on mount.
@@ -15,12 +15,12 @@ import { useWorkerLifecycle } from './use-worker-lifecycle'
  *      `iii trigger compose::add worker=harness` run in the operator's own terminal (this is the
  *      educational, "you can do this in the CLI too" angle).
  *
- * `install()` triggers `worker::add` for the registry `harness` source. It
+ * `install()` triggers `compose::add` for the registry `harness` worker. It
  * resolves with a terminal outcome, but the per-stage progress
  * (started -> downloading -> downloaded -> done) only arrives through the
  * `worker` trigger, so we render that as a small console. When the trigger type
  * isn't published (or no events arrive) we still resolve cleanly off the
- * `worker::add` result and a presence re-check — a graceful, progress-less
+ * `compose::add` result and a presence re-check — a graceful, progress-less
  * fallback.
  */
 
@@ -54,7 +54,7 @@ export interface HarnessStatus {
   stages: InstallStage[]
   /** Last install error message, or null. */
   error: string | null
-  /** Kick off `worker::add` for the harness registry source. */
+  /** Add the harness registry worker to the active Compose project. */
   install: () => void
   /** Clear the error and retry the add. */
   retry: () => void
@@ -124,6 +124,15 @@ async function checkHarnessPresent(client: IiiClient): Promise<boolean> {
   )
   const workers = Array.isArray(res?.workers) ? res.workers : []
   return workers.some((w) => w?.name === HARNESS_WORKER_NAME)
+}
+
+/** Add harness to the active Compose project and wait for reconciliation. */
+export async function addHarnessToCompose(
+  client: Pick<IiiClient, 'trigger'>,
+): Promise<void> {
+  await client.trigger('compose::add', {
+    workers: [HARNESS_WORKER_NAME],
+  })
 }
 
 /**
@@ -209,10 +218,7 @@ export function useHarnessStatus(enabled: boolean): HarnessStatus {
     void (async () => {
       const client = await getIiiClient()
       try {
-        await client.trigger('worker::add', {
-          source: { kind: 'registry', name: HARNESS_WORKER_NAME },
-          wait: true,
-        })
+        await addHarnessToCompose(client)
         // Terminal success. Trigger events may have already flipped these, but
         // setting them again is harmless and covers the no-events fallback.
         setPresent(true)

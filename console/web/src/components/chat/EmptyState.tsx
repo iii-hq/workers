@@ -35,7 +35,7 @@ import './EmptyState.css'
  *   - `ready`          — harness present + a model available (the hero copy)
  *   - `no-provider`    — harness present, no model configured -> configure CTA
  *   - `no-harness`     — harness worker missing -> install CTA + cli hint
- *   - `installing`     — `worker::add` in flight -> live console
+ *   - `installing`     — `compose::add` in flight -> live console
  *   - `install-failed` — add failed -> console + retry
  *
  * `MessageList` derives the variant from `ConversationsContext` (harness
