@@ -1,0 +1,9 @@
+packages:
+  - .
+  - ui
+  - ../packages/agent-terminal-ui
+  - ../packages/console-ui
+  - ../packages/terminal-font
+
+onlyBuiltDependencies:
+  - esbuild
