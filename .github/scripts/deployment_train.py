@@ -32,6 +32,27 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def canonical_value(value: object) -> object:
+    """Normalize JSON numbers to the representation used by JSON.stringify."""
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, list):
+        return [canonical_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: canonical_value(item) for key, item in value.items()}
+    return value
+
+
+def canonical_bytes(value: object) -> bytes:
+    return json.dumps(
+        canonical_value(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+
+
 def verify_descriptor(descriptor: object) -> dict[str, object]:
     if not isinstance(descriptor, dict):
         raise SystemExit("deployment descriptor must be an object")
@@ -49,9 +70,7 @@ def verify_descriptor(descriptor: object) -> dict[str, object]:
     if descriptor["contract"] != "deployment-descriptor":
         raise SystemExit("deployment descriptor contract mismatch")
     digest_subject = {key: value for key, value in descriptor.items() if key != "descriptor_sha256"}
-    digest = hashlib.sha256(
-        json.dumps(digest_subject, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    ).hexdigest()
+    digest = hashlib.sha256(canonical_bytes(digest_subject)).hexdigest()
     if descriptor["descriptor_sha256"] != digest:
         raise SystemExit("deployment descriptor digest is invalid")
     for field in ("source", "artifact", "runtime", "registry_projection"):

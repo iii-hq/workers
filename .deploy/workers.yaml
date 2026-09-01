@@ -184,7 +184,6 @@ workers:
       install_command:
       - pnpm
       - install
-      - --ignore-workspace
       - --frozen-lockfile
       build_command:
       - pnpm

@@ -104,6 +104,24 @@ def test_release_toolchains_and_bundle_locks_are_explicit():
     assert bundles == 15
 
 
+def test_claude_code_release_installs_its_shared_ui_workspace():
+    document = yaml.safe_load(CATALOG.read_text(encoding="utf-8"))
+    artifact = document["workers"]["claude-code"]["artifact"]
+    workspace = yaml.safe_load(
+        (ROOT / "claude-code" / "pnpm-workspace.yaml").read_text(encoding="utf-8")
+    )
+
+    assert artifact["workspace_root"] == "claude-code"
+    assert artifact["install_command"] == ["pnpm", "install", "--frozen-lockfile"]
+    assert set(workspace["packages"]) == {
+        ".",
+        "ui",
+        "../packages/agent-terminal-ui",
+        "../packages/console-ui",
+        "../packages/terminal-font",
+    }
+
+
 def test_scrapling_release_bundle_vendors_dependencies():
     document = yaml.safe_load(CATALOG.read_text(encoding="utf-8"))
     scrapling = document["workers"]["scrapling"]

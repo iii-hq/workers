@@ -36,7 +36,6 @@ env:
   CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
   SCCACHE_BUCKET: ${{ vars.SCCACHE_BUCKET }}
   SCCACHE_REGION: ${{ vars.SCCACHE_REGION }}
-  RUSTC_WRAPPER: sccache
 
 jobs:
   build:
@@ -131,6 +130,7 @@ jobs:
 
       - name: Authorize cache access with GitHub OIDC
         if: inputs.kind == 'rust-binary'
+        continue-on-error: true
         uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
         with:
           role-to-assume: ${{ vars.SCCACHE_ROLE_ARN }}
@@ -138,6 +138,7 @@ jobs:
 
       - name: Install sccache
         if: inputs.kind == 'rust-binary'
+        continue-on-error: true
         uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
 
       - name: Cache Rust build
@@ -146,6 +147,20 @@ jobs:
         with:
           shared-key: release-${{ inputs.worker }}-${{ steps.metadata.outputs.toolchain_version }}-${{ inputs.target }}
           workspaces: ${{ inputs.worker }} -> target
+
+      - name: Probe optional sccache backend
+        if: inputs.kind == 'rust-binary'
+        id: sccache
+        env:
+          SCCACHE_S3_KEY_PREFIX: sccache/${{ steps.metadata.outputs.toolchain_version }}/${{ inputs.target }}
+        run: |
+          if sccache rustc -vV >/dev/null 2>&1; then
+            echo 'wrapper=sccache' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          sccache --stop-server >/dev/null 2>&1 || true
+          echo 'wrapper=' >> "$GITHUB_OUTPUT"
+          echo '::warning::sccache backend unavailable; compiling without the remote cache'
 
       - name: Install descriptor-pinned pnpm
         if: inputs.kind == 'javascript-bundle' && steps.metadata.outputs.package_manager_name == 'pnpm'
@@ -216,6 +231,7 @@ jobs:
       - name: Build immutable artifact
         env:
           BUILD_UNIT: ${{ inputs.unit }}
+          RUSTC_WRAPPER: ${{ steps.sccache.outputs.wrapper }}
           SOURCE_DATE_EPOCH: '0'
           SCCACHE_S3_KEY_PREFIX: sccache/${{ steps.metadata.outputs.toolchain_version }}/${{ inputs.target }}
         run: |
@@ -227,9 +243,15 @@ jobs:
 
       - name: Record sccache metrics
         if: always() && inputs.kind == 'rust-binary'
+        env:
+          SCCACHE_WRAPPER: ${{ steps.sccache.outputs.wrapper }}
         run: |
           mkdir -p release-output
-          sccache --show-stats | tee release-output/sccache-stats.txt
+          if [[ "$SCCACHE_WRAPPER" != sccache ]]; then
+            echo 'sccache disabled after backend probe failure' | tee release-output/sccache-stats.txt
+          elif ! sccache --show-stats | tee release-output/sccache-stats.txt; then
+            echo 'sccache metrics unavailable' > release-output/sccache-stats.txt
+          fi
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:

@@ -28,9 +28,7 @@ from _test_helpers import GIT_HERMETIC_ENV
 
 def seal_descriptor(value: dict) -> dict:
     value.pop("descriptor_sha256", None)
-    value["descriptor_sha256"] = hashlib.sha256(
-        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    value["descriptor_sha256"] = hashlib.sha256(deployment_train.canonical_bytes(value)).hexdigest()
     return value
 
 
@@ -70,6 +68,17 @@ def descriptor(worker: str, source_sha: str, package_manifest_version: str) -> d
             "readme": "",
         },
     })
+
+
+def test_verify_descriptor_accepts_json_stringify_integral_float_digest() -> None:
+    selected = descriptor("security-scan", "a" * 40, "0.1.3")
+    selected["registry_projection"]["config"] = {
+        "defaults": {"max_cost_usd": 2.0, "ratio": 0.5},
+    }
+    selected = seal_descriptor(selected)
+
+    assert deployment_train.verify_descriptor(selected) == selected
+    assert b'"max_cost_usd":2' in deployment_train.canonical_bytes(selected)
 
 
 def rust_descriptor(worker: str, source_sha: str, targets: list[str]) -> dict:

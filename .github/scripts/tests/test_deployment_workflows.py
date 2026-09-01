@@ -178,6 +178,21 @@ def test_release_build_validates_rust_targets_and_oci_platforms():
     assert '(.target // .platform // "none") == $target' in text
 
 
+def test_release_build_falls_back_when_optional_sccache_is_unavailable():
+    workflow = yaml.safe_load(body("_deploy-build.yml"))
+    steps = workflow["jobs"]["build"]["steps"]
+    by_name = {step.get("name"): step for step in steps}
+
+    assert by_name["Authorize cache access with GitHub OIDC"]["continue-on-error"] is True
+    assert by_name["Install sccache"]["continue-on-error"] is True
+    assert "sccache rustc -vV" in by_name["Probe optional sccache backend"]["run"]
+    assert "wrapper=" in by_name["Probe optional sccache backend"]["run"]
+    assert by_name["Build immutable artifact"]["env"]["RUSTC_WRAPPER"] == (
+        "${{ steps.sccache.outputs.wrapper }}"
+    )
+    assert "RUSTC_WRAPPER" not in workflow["env"]
+
+
 def test_prepare_uploads_inventory_without_booting_the_worker():
     text = body("deploy-prepare.yml")
     workflow = yaml.safe_load(text)
