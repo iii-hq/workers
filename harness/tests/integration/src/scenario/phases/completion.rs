@@ -246,12 +246,7 @@ impl ScenarioRunner<'_> {
             })?;
         services
             .client()
-            .call_with_deadline(
-                &action.function_id,
-                payload,
-                deadline,
-                DEFAULT_CALL_TIMEOUT_MS,
-            )
+            .call_until_deadline(&action.function_id, payload, deadline)
             .await
             .map_err(|error| {
                 RunError::runner(RunPhase::Await, "fire probe action", anyhow::anyhow!(error))

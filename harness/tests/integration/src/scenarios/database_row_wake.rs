@@ -59,6 +59,9 @@ pub(super) fn scenario() -> ScenarioFixture {
             .allow_id(REGISTER)
             .allow_function(&record),
     )
+    // This path serializes two turns around a durable SQLite transaction.
+    // Keep it bounded, but leave enough budget for a cold filesystem write.
+    .scenario_timeout_ms(60_000)
     .terminal_turn_statuses(["completed", "completed"])
     // One transaction: DDL + the INSERT. The row event flushes post-commit,
     // fires the binding, and wakes the idle session.
@@ -201,6 +204,7 @@ mod tests {
         let fixture = scenario();
         fixture.validate().unwrap();
         assert_eq!(fixture.expected_terminal_turns, 2);
+        assert_eq!(fixture.scenario.deadlines.scenario_ms, 60_000);
         assert_eq!(fixture.probe_actions.len(), 1);
         assert_eq!(fixture.probe_actions[0].after_turns, 1);
     }
