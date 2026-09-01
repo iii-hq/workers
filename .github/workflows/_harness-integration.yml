@@ -128,7 +128,7 @@ jobs:
         run: cargo build --locked --release --timings -p ${{ steps.lock.outputs.package }}
 
       - name: Save pinned engine binary
-        if: inputs.save-cache && steps.engine-cache.outputs.cache-hit != 'true'
+        if: (inputs.save-cache || inputs.runner == 'workers-ci-linux-8core') && steps.engine-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: target/integration-engine-src/${{ steps.lock.outputs.binary }}
@@ -150,7 +150,7 @@ jobs:
           # Instrumented builds have different fingerprints; keep them on their
           # own key so coverage runs never poison the normal cache.
           shared-key: ${{ inputs.coverage && 'harness-integration-coverage' || 'harness-integration' }}${{ inputs.cache-key-suffix && format('-{0}', inputs.cache-key-suffix) || '' }}
-          save-if: ${{ inputs.save-cache || inputs.coverage }}
+          save-if: ${{ inputs.save-cache || inputs.coverage || inputs.runner == 'workers-ci-linux-8core' }}
           # Every release build the stack needs now lands in one shared
           # target dir (see harness/Makefile INTEGRATION_TARGET_DIR); the
           # per-workspace entries below stay so the cache key keeps hashing

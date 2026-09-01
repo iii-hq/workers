@@ -817,7 +817,7 @@ jobs:
     uses: ./.github/workflows/_harness-integration.yml
     with:
       runner: workers-ci-linux-8core
-      cache-key-suffix: ${{ github.run_attempt <= 3 && format('pilot-cold-{0}-{1}', github.run_id, github.run_attempt) || '' }}
+      source_ref: ${{ github.event.pull_request.base.sha }}
       save-cache: ${{ github.event_name == 'push' }}
 
   # ──────────────────────────────────────────────────────────────
