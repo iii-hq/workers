@@ -133,18 +133,17 @@ def test_deployment_train_never_reads_public_worker_manifests():
         assert "iii.worker.yaml" not in path.read_text(encoding="utf-8"), path
 
 
-def test_descriptor_index_independently_verifies_approved_compiler_bytes():
+def test_descriptor_index_is_automatic_and_bound_to_the_exact_main_commit():
     text = body("deploy-descriptor-index.yml")
-    assert "Verify approved compiler bytes" in text
-    assert (
-        "APPROVED_COMPILER_DIGEST: "
-        "a01e716bee39d98afe46dd57bdc26b6b21f15a9341313f20dceed2fe87bd5084"
-    ) in text
-    assert 'digest.update(b"iii-workers-deployment-compiler\\0")' in text
-    assert 'Path(".github/scripts/deployment_compiler.py").read_bytes()' in text
-    assert 'digest.update(b"\\0deployment-descriptor-schema\\0")' in text
-    assert 'Path(".github/contracts/deployment-descriptor.schema.json").read_bytes()' in text
-    assert "unapproved deployment compiler bytes" in text
+    workflow = yaml.safe_load(text)
+    assert workflow[True] == {"push": {"branches": ["main"]}}
+    assert "workflow_dispatch" not in text
+    assert "APPROVED_COMPILER_DIGEST" not in text
+    assert "Verify approved compiler bytes" not in text
+    assert "ref: ${{ github.sha }}" in text
+    assert "--source-sha '${{ github.sha }}'" in text
+    assert "--compiler-commit" not in text
+    assert "name: deployment-descriptor-index-${{ github.sha }}" in text
 
 
 def test_release_prepare_fans_one_job_per_compiled_build_unit():

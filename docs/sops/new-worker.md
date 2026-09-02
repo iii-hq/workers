@@ -48,7 +48,6 @@ python3 .github/scripts/validate_worker.py \
 python3 .github/scripts/deployment_compiler.py compile-index \
   --source-sha "$(git rev-parse HEAD)" \
   --compiler-repository iii-hq/workers \
-  --compiler-commit "$(git rev-parse HEAD)" \
   --output-dir /tmp/deployment-descriptor-index
 ```
 
