@@ -154,6 +154,22 @@ the wake the dead trigger missed. The accepted shape:
 }
 ```
 
+### Compose operation completion watches
+
+For a caller that needs the result of one `compose::add` operation, generate an
+operation ID before starting the operation and use that same ID in both places.
+Register the `compose-operation` binding before invoking `compose::add`, with
+`config.operation_id` set to the exact ID and `config.terminal_only: true`.
+The terminal-only option prevents the binding from being consumed by an earlier
+progress event. Avoid `operation_id: null` for per-operation workflows: null is
+a wildcard subscription that receives terminal events for every Compose
+operation in the daemon.
+
+The caller should still read `compose::operation` immediately after registration
+or invocation to cover an operation that completed before the trigger became
+active. A terminal event has `terminal: true` for both successful and failed
+operations.
+
 Backward-compatible shorthands, all still accepted:
 
 | Shorthand | Means |
