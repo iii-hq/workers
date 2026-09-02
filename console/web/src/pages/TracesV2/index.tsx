@@ -24,6 +24,7 @@
 
 import {
   AlertCircle,
+  ArrowUp,
   GitBranch,
   MessageSquare,
   RefreshCw,
@@ -67,7 +68,10 @@ import { WorkerBreakdown } from './components/WorkerBreakdown'
 import { useAllSpans } from './hooks/useAllSpans'
 import { useFollowLiveTurn } from './hooks/useFollowLiveTurn'
 import { useFollowTurns } from './hooks/useFollowTurns'
-import { useSpanFilteredTraceRows } from './hooks/useSpanFilteredTraceRows'
+import {
+  showsWithoutProbe,
+  useSpanFilteredTraceRows,
+} from './hooks/useSpanFilteredTraceRows'
 import { useSpanFilterSelection } from './hooks/useSpanFilterSelection'
 import { useSpanPanelResize } from './hooks/useSpanPanelResize'
 import { useTraceActivity } from './hooks/useTraceActivity'
@@ -196,7 +200,8 @@ export function TracesV2({
     setNewTraceIds,
     hasOtelConfigured,
     isQueryLoading,
-    isHoveredRef,
+    holdRef,
+    heldTraces,
     flushPendingTraces,
   } = useTraceData({
     filterParams,
@@ -601,14 +606,72 @@ export function TracesV2({
     [selectTrace],
   )
 
+  // ── Hold live changes while the user is reading ──
+  // A live newest-first list that inserts rows the moment they arrive is
+  // unreadable under load: everything below the insertion point moves. So
+  // structural changes (rows entering or leaving, order) are HELD while the
+  // user is evidently reading — pointer over the rows, scrolled away from
+  // the top, on a later page, or a detail expanded — and a pill at the top
+  // counts what is waiting. Rows on screen keep updating in place. The hold
+  // releases (and the held answer lands) when every reason clears: pointer
+  // out, back at the top, back on page 1, detail closed.
+  const listHoverRef = useRef(false)
+  const [listScrolledAway, setListScrolledAway] = useState(false)
+  const listHeldByState =
+    listScrolledAway || filterState.page !== 1 || selectedTraceId !== null
+  const listHeldByStateRef = useRef(listHeldByState)
+  listHeldByStateRef.current = listHeldByState
+  const syncListHold = useCallback(() => {
+    const held = listHoverRef.current || listHeldByStateRef.current
+    holdRef.current = held
+    if (!held) flushPendingTraces()
+  }, [holdRef, flushPendingTraces])
+  useEffect(() => {
+    holdRef.current = listHoverRef.current || listHeldByState
+    if (!holdRef.current) flushPendingTraces()
+  }, [holdRef, listHeldByState, flushPendingTraces])
+  const handleListScroll = useCallback((event: React.UIEvent<HTMLElement>) => {
+    const away = event.currentTarget.scrollTop > 0
+    setListScrolledAway((prev) => (prev === away ? prev : away))
+  }, [])
+  // What the pill promises: held rows not on screen that will actually
+  // show once landed — a hidden-rooted bookkeeping trace that the span
+  // filter would drop must not be counted as "new".
+  const heldNewCount = useMemo(() => {
+    if (heldTraces.length === 0) return 0
+    const shown = new Set(traceGroups.map((t) => t.traceId))
+    let count = 0
+    for (const trace of heldTraces) {
+      if (!shown.has(trace.traceId) && showsWithoutProbe(trace, spanFilter)) {
+        count++
+      }
+    }
+    return count
+  }, [heldTraces, traceGroups, spanFilter])
+  // The pill: back to the top of page 1 with everything that arrived.
+  const showHeldTraces = useCallback(() => {
+    if (filterState.page !== 1) updateFilter('page', 1)
+    listScrollRef.current?.scrollTo({ top: 0 })
+    flushPendingTraces()
+  }, [filterState.page, updateFilter, flushPendingTraces])
+
   // The follow toggle's engine: opens the newest live turn trace of the
   // active conversation (once per trace — closing it mid-turn is respected).
+  // Following lands the held rows first, so the opened trace's detail
+  // renders under its own row instead of pinned above a stale list.
+  const openFollowedTrace = useCallback(
+    (traceId: string | null) => {
+      flushPendingTraces()
+      selectTrace(traceId)
+    },
+    [flushPendingTraces, selectTrace],
+  )
   useFollowLiveTurn({
     enabled: followTurns && !isPaused,
     activeSessionId: conversationsCtx?.activeId ?? null,
     spans: allSpans,
     selectedTraceId,
-    onOpenTrace: selectTrace,
+    onOpenTrace: openFollowedTrace,
   })
 
   // Chat linkage of the OPEN trace (session + turn), resolved from the row's
@@ -976,51 +1039,85 @@ export function TracesV2({
                   </div>
                 ) : (
                   <div className="flex-1 flex flex-col overflow-hidden">
+                    {/* The hover hold wraps the pill too: moving the pointer
+                        onto the pill must not release the hold and pull the
+                        pill away from under the click. */}
                     {/* biome-ignore lint/a11y/noStaticElementInteractions: hover detection for pause/resume of live updates */}
                     <div
-                      className="flex-1 overflow-y-auto"
-                      ref={listScrollRef}
+                      className="relative flex-1 min-h-0 flex flex-col"
                       onMouseEnter={() => {
-                        isHoveredRef.current = true
+                        listHoverRef.current = true
+                        syncListHold()
                       }}
                       onMouseLeave={() => {
-                        isHoveredRef.current = false
-                        flushPendingTraces()
+                        listHoverRef.current = false
+                        syncListHold()
                       }}
                     >
-                      {/* detail whose row is on another page (strip click,
+                      {heldNewCount > 0 ? (
+                        <Button
+                          type="button"
+                          variant="pill"
+                          size="sm"
+                          className="iii-ui-motion-overlay absolute top-3 left-1/2 z-10 h-8 -translate-x-1/2 rounded-full bg-panel-raised/80 pr-3 pl-2.5 font-medium text-[0.8125rem] shadow-raised backdrop-blur-md"
+                          onClick={showHeldTraces}
+                          aria-label={
+                            filterState.page === 1
+                              ? `show ${heldNewCount} new ${heldNewCount === 1 ? 'trace' : 'traces'}`
+                              : 'show the latest traces on page 1'
+                          }
+                          data-trace-list-held={heldNewCount}
+                        >
+                          <ArrowUp
+                            aria-hidden="true"
+                            className="stroke-current"
+                          />
+                          <span>
+                            {filterState.page === 1
+                              ? `${heldNewCount} new ${heldNewCount === 1 ? 'trace' : 'traces'}`
+                              : 'latest traces'}
+                          </span>
+                        </Button>
+                      ) : null}
+                      <div
+                        className="flex-1 overflow-y-auto"
+                        ref={listScrollRef}
+                        onScroll={handleListScroll}
+                      >
+                        {/* detail whose row is on another page (strip click,
                           deep link) pins to the top of the scroll area */}
-                      {selectedTraceId !== null &&
-                        !selectedInPage &&
-                        traceDetail}
-                      {paged.map((trace) => {
-                        const isExpanded = selectedTraceId === trace.traceId
-                        return (
-                          <div
-                            key={trace.traceId}
-                            data-trace-row-id={trace.traceId}
-                          >
-                            <TraceListRow
-                              trace={trace}
-                              isSelected={isExpanded}
-                              isNew={newTraceIds.has(trace.traceId)}
-                              isLive={liveTraceIds.has(trace.traceId)}
-                              label={rowLabel}
-                              onHideFunction={hideFunction}
-                              onSelect={() => toggleTrace(trace.traceId)}
-                              onAnimationEnd={() => {
-                                if (newTraceIds.has(trace.traceId))
-                                  setNewTraceIds((prev) => {
-                                    const next = new Set(prev)
-                                    next.delete(trace.traceId)
-                                    return next
-                                  })
-                              }}
-                            />
-                            {isExpanded && traceDetail}
-                          </div>
-                        )
-                      })}
+                        {selectedTraceId !== null &&
+                          !selectedInPage &&
+                          traceDetail}
+                        {paged.map((trace) => {
+                          const isExpanded = selectedTraceId === trace.traceId
+                          return (
+                            <div
+                              key={trace.traceId}
+                              data-trace-row-id={trace.traceId}
+                            >
+                              <TraceListRow
+                                trace={trace}
+                                isSelected={isExpanded}
+                                isNew={newTraceIds.has(trace.traceId)}
+                                isLive={liveTraceIds.has(trace.traceId)}
+                                label={rowLabel}
+                                onHideFunction={hideFunction}
+                                onSelect={() => toggleTrace(trace.traceId)}
+                                onAnimationEnd={() => {
+                                  if (newTraceIds.has(trace.traceId))
+                                    setNewTraceIds((prev) => {
+                                      const next = new Set(prev)
+                                      next.delete(trace.traceId)
+                                      return next
+                                    })
+                                }}
+                              />
+                              {isExpanded && traceDetail}
+                            </div>
+                          )
+                        })}
+                      </div>
                     </div>
                     <div className="flex-shrink-0 border-t border-rule-2 px-3 py-2">
                       <Pagination

@@ -11,6 +11,7 @@ import {
   reconcileTraceVisibility,
   rowRootFilterKeys,
   selectCompositionReads,
+  showsWithoutProbe,
 } from './useSpanFilteredTraceRows'
 import type { TraceListItem } from './useTraceData'
 
@@ -545,5 +546,26 @@ describe('pruneCompositionReads', () => {
     ])
     pruneCompositionReads(state, new Set(['listed']))
     expect([...state.keys()].sort()).toEqual(['gone-inflight', 'listed'])
+  })
+})
+
+describe('showsWithoutProbe', () => {
+  const sel = selection({ hiddenGroups: new Set(['harness::turn']) })
+
+  it('shows visible-rooted, running and failed rows right away', () => {
+    expect(showsWithoutProbe(row('t-1', 'harness::send'), sel)).toBe(true)
+    expect(
+      showsWithoutProbe(
+        row('t-2', 'harness::turn', { status: 'pending' }),
+        sel,
+      ),
+    ).toBe(true)
+    expect(
+      showsWithoutProbe(row('t-3', 'harness::turn', { status: 'error' }), sel),
+    ).toBe(true)
+  })
+
+  it('does not promise a hidden-rooted settled row', () => {
+    expect(showsWithoutProbe(row('t-4', 'harness::turn'), sel)).toBe(false)
   })
 })

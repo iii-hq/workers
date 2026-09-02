@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { getIiiClient } from '@/lib/iii-client'
 import { startTraceActivityFeed } from '@/lib/traces-activity'
 import {
@@ -31,10 +31,33 @@ export const ACTIVITY_REFETCH_MIN_INTERVAL_MS = 1_000
 const FILTERED_RESEED_COOLDOWN_MS = 10_000
 
 export function shouldDeferTraceUpdate(
-  isHovered: boolean,
+  held: boolean,
   hadPreviousRows: boolean,
 ): boolean {
-  return isHovered && hadPreviousRows
+  return held && hadPreviousRows
+}
+
+/**
+ * While the list is HELD (the user is reading it: pointer over the rows,
+ * scrolled away from the top, on a later page, or a detail expanded), a
+ * fresh answer must not move anything — no rows entering or leaving, no
+ * reordering. Rows already on screen still take their in-place updates
+ * (status, duration, late tags), because those never shift layout. Returns
+ * `rendered` itself when nothing on screen changed, so memos hold.
+ */
+export function mergeHeldUpdates(
+  rendered: TraceListItem[],
+  latest: readonly TraceListItem[],
+): TraceListItem[] {
+  const byId = new Map(latest.map((t) => [t.traceId, t]))
+  let changed = false
+  const next = rendered.map((row) => {
+    const update = byId.get(row.traceId)
+    if (!update || update === row) return row
+    changed = true
+    return update
+  })
+  return changed ? next : rendered
 }
 
 export interface TraceListItem {
@@ -83,7 +106,14 @@ export interface UseTraceDataReturn {
   hasOtelConfigured: boolean | null
   isQueryLoading: boolean
   refetch: () => void
-  isHoveredRef: React.RefObject<boolean>
+  /** While `true`, structural changes to the list (rows entering or
+   *  leaving, order) are held back; rows on screen still update in place.
+   *  The page sets it from what the user is doing (see index.tsx). */
+  holdRef: React.RefObject<boolean>
+  /** The latest answer while it is held back (empty otherwise): the page
+   *  derives the "new traces" pill from it against the rows on screen. */
+  heldTraces: readonly TraceListItem[]
+  /** Apply the held answer now: rows enter, leave and reorder. */
   flushPendingTraces: () => void
 }
 
@@ -170,8 +200,9 @@ export function useTraceData({
   const fingerprintRef = useRef<string>('')
   const prevTraceIdsRef = useRef<Set<string>>(new Set())
 
-  const isHoveredRef = useRef(false)
+  const holdRef = useRef(false)
   const pendingTracesRef = useRef<TraceListItem[] | null>(null)
+  const [heldTraces, setHeldTraces] = useState<readonly TraceListItem[]>([])
   const hiddenKey = hiddenFunctionsKey(hiddenFunctions)
 
   const {
@@ -245,6 +276,7 @@ export function useTraceData({
     fingerprintRef.current = ''
     prevTraceIdsRef.current = new Set()
     pendingTracesRef.current = null
+    setHeldTraces([])
     setNewTraceIds(new Set())
   }, [scopeKey, resultSetKey])
 
@@ -294,20 +326,26 @@ export function useTraceData({
       prevTraceIdsRef.current = currentIds
 
       // Freeze churn only when there is already a rendered list whose row
-      // positions must stay stable under the pointer. A scope/search change
-      // clears the list first; deferring that scope's first answer while the
-      // user is still hovering the search field would leave an empty screen
-      // until the pointer happened to leave the traces pane.
-      if (shouldDeferTraceUpdate(isHoveredRef.current, hadPreviousRows)) {
+      // positions must stay stable while the user reads it. A scope/search
+      // change clears the list first; deferring that scope's first answer
+      // while the user is still hovering the search field would leave an
+      // empty screen until the pointer happened to leave the traces pane.
+      // Held answers still refresh the rows on screen in place, and the
+      // pill counts what is waiting above the fold.
+      if (shouldDeferTraceUpdate(holdRef.current, hadPreviousRows)) {
         pendingTracesRef.current = traces
+        setTraceListItems((rendered) => mergeHeldUpdates(rendered, traces))
+        setHeldTraces(traces)
         return
       }
 
+      setHeldTraces([])
       setTraceListItems(traces)
       setHasOtelConfigured(true)
     } else {
       // An empty answer from a working exporter is an empty list — the
       // no-observability message is reserved for the marker above.
+      setHeldTraces([])
       setTraceListItems([])
       setHasOtelConfigured(true)
     }
@@ -423,13 +461,14 @@ export function useTraceData({
     }
   }, [qc])
 
-  const flushPendingTraces = () => {
-    if (pendingTracesRef.current) {
-      setTraceListItems(pendingTracesRef.current)
-      setHasOtelConfigured(true)
-      pendingTracesRef.current = null
-    }
-  }
+  const flushPendingTraces = useCallback(() => {
+    const pending = pendingTracesRef.current
+    if (!pending) return
+    pendingTracesRef.current = null
+    setHeldTraces([])
+    setTraceListItems(pending)
+    setHasOtelConfigured(true)
+  }, [])
 
   return {
     traceGroups,
@@ -439,7 +478,8 @@ export function useTraceData({
     hasOtelConfigured,
     isQueryLoading,
     refetch,
-    isHoveredRef,
+    holdRef,
+    heldTraces,
     flushPendingTraces,
   }
 }

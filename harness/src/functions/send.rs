@@ -319,6 +319,7 @@ async fn start_with_delivery_lock(
 
     // Normalise the incoming message and validate its role.
     let message = normalize_message(req.message)?;
+    tag_send_span_with_message(&message);
 
     // Resolve the session (ensure if id given, else create).
     let (title, metadata) = req
@@ -395,6 +396,20 @@ async fn start_with_delivery_lock(
     }
 
     Ok(outcome)
+}
+
+/// Label the send's own root span with the message preview. The turn step
+/// stamps the same `iii.tag.message` through baggage, but only once the queue
+/// delivers it — well after `execute harness::send` has closed and been
+/// listed. The Console's message-labelled trace rows read the tag from the
+/// trace's merged tags, so without this the row first appeared as
+/// `execute harness::send` and relabelled itself a second later (MOT-4621).
+/// Only the label rides here: session/message identity stays on the step
+/// (see `tag_failed_send_with_session`).
+fn tag_send_span_with_message(message: &AgentMessage) {
+    if let Some(preview) = message_preview(message) {
+        iii_helpers::observability::set_current_span_attribute("iii.tag.message", preview);
+    }
 }
 
 /// Attribute failures that happen after session creation but before the turn
@@ -1330,6 +1345,47 @@ mod tests {
                     .find(|attribute| attribute.key.as_str() == "iii.session.id")
                     .map(|attribute| attribute.value.as_str().to_string())
             })
+    }
+
+    fn send_span_message_tag(message: &AgentMessage) -> Option<String> {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_span_processor(SimpleSpanProcessor::new(exporter.clone()))
+            .build();
+        let tracer = provider.tracer("harness-send-test");
+        let span = tracer.start("execute harness::send");
+        let guard = Context::new().with_span(span).attach();
+
+        tag_send_span_with_message(message);
+
+        drop(guard);
+        exporter
+            .get_finished_spans()
+            .expect("exporter")
+            .into_iter()
+            .next()
+            .and_then(|span| {
+                span.attributes
+                    .into_iter()
+                    .find(|attribute| attribute.key.as_str() == "iii.tag.message")
+                    .map(|attribute| attribute.value.as_str().to_string())
+            })
+    }
+
+    #[test]
+    fn send_root_span_carries_the_message_preview_label() {
+        let user = normalize_message(MessageInput::Text(
+            "help me implement the traces v2 new tags please".into(),
+        ))
+        .unwrap();
+        assert_eq!(
+            send_span_message_tag(&user).as_deref(),
+            Some("help me implement the traces v"),
+        );
+
+        // Nothing to label: a blank message leaves the span untouched.
+        let blank = normalize_message(MessageInput::Text("   ".into())).unwrap();
+        assert_eq!(send_span_message_tag(&blank), None);
     }
 
     #[test]
