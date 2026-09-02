@@ -19,10 +19,7 @@ pub const DEFAULT_DB_NAME: &str = "primary";
 pub const DEFAULT_SQLITE_URL: &str = "sqlite:./data/iii.db";
 
 fn default_sqlite_url() -> String {
-    format!(
-        "sqlite:{}",
-        iii_worker_paths::project_path("data/iii.db").display()
-    )
+    DEFAULT_SQLITE_URL.to_string()
 }
 
 /// Top-level worker config registered with the `configuration` worker.
@@ -101,6 +98,16 @@ pub struct DatabaseConfig {
     #[serde(skip)]
     #[schemars(skip)]
     pub driver: DriverKind,
+}
+
+impl DatabaseConfig {
+    /// Resolves file-backed SQLite URLs when the database is opened.
+    pub(crate) fn resolved_url(&self) -> String {
+        match self.driver {
+            DriverKind::Sqlite => resolve_sqlite_url(&self.url),
+            DriverKind::Postgres | DriverKind::Mysql => self.url.clone(),
+        }
+    }
 }
 
 /// TLS settings for a single database. Applies to postgres and mysql.
@@ -327,9 +334,6 @@ impl WorkerConfig {
                     redact_url(&db.url)
                 )
             })?;
-            if matches!(db.driver, DriverKind::Sqlite) {
-                db.url = resolve_sqlite_url(&db.url);
-            }
             if db.capture == CaptureMode::Native {
                 match db.driver {
                     // Postgres captures via LISTEN/NOTIFY; server-side
@@ -514,13 +518,7 @@ mod tests {
         });
         let c = WorkerConfig::from_json(&json).unwrap();
         assert!(matches!(c.databases["primary"].driver, DriverKind::Sqlite));
-        assert_eq!(
-            c.databases["primary"].url,
-            format!(
-                "sqlite:{}",
-                iii_worker_paths::project_path("data/iii.db").display()
-            )
-        );
+        assert_eq!(c.databases["primary"].url, DEFAULT_SQLITE_URL);
     }
 
     #[test]
@@ -698,14 +696,14 @@ databases:
     }
 
     #[test]
-    fn uppercase_sqlite_scheme_resolves_project_path() {
+    fn uppercase_sqlite_scheme_resolves_project_path_at_use() {
         let c = cfg("databases:\n  primary:\n    url: SQLiTE:FiLe:./data/case.db?mode=rwc\n");
         let expected = format!(
             "SQLiTE:FiLe:{}?mode=rwc",
             iii_worker_paths::project_path("data/case.db").display()
         );
 
-        assert_eq!(c.databases["primary"].url, expected);
+        assert_eq!(c.databases["primary"].resolved_url(), expected);
     }
 
     #[test]

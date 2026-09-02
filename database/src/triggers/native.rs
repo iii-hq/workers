@@ -227,7 +227,8 @@ impl NativeListeners {
                 ))))
             }
             crate::config::DriverKind::Sqlite => {
-                let Some(path) = super::sqlite_watch::sqlite_file_path(&db.url) else {
+                let url = db.resolved_url();
+                let Some(path) = super::sqlite_watch::sqlite_file_path(&url) else {
                     // Config validation rejects `:memory:`; reaching this
                     // means drift — fail visible, not silent.
                     tracing::warn!(db = %name, "native capture needs a file-backed sqlite url");

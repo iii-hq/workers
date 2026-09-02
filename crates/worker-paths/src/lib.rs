@@ -1,8 +1,9 @@
 //! Resolves worker-owned paths against the Compose project directory.
 //!
 //! Compose-managed workers receive `III_COMPOSE_DIR`. Standalone workers use
-//! their process working directory. Absolute paths and explicit home-relative
-//! paths keep their usual meaning.
+//! their process working directory. Configuration defaults stay relative so
+//! serialized worker configuration remains portable. Absolute paths and
+//! explicit home-relative paths keep their usual meaning.
 
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
@@ -10,12 +11,11 @@ use std::path::{Component, Path, PathBuf};
 /// Environment variable that contains the canonical Compose project directory.
 pub const COMPOSE_DIR_ENV: &str = "III_COMPOSE_DIR";
 
-/// Builds a Compose-absolute default while keeping standalone manifests portable.
+/// Builds a portable default for serialized worker configuration.
+///
+/// Resolve the returned value with [`resolve_path`] before filesystem access.
 pub fn default_path(relative: impl AsRef<Path>) -> String {
-    let compose_dir = std::env::var_os(COMPOSE_DIR_ENV);
-    default_path_with(relative.as_ref(), compose_dir.as_deref())
-        .to_string_lossy()
-        .into_owned()
+    clean_path(relative.as_ref()).to_string_lossy().into_owned()
 }
 
 /// Resolves a configured path while preserving explicit absolute and `~/` paths.
@@ -79,10 +79,7 @@ fn project_path_with(
     compose_dir: Option<&OsStr>,
     current_dir: Option<&Path>,
 ) -> PathBuf {
-    let relative: PathBuf = relative
-        .components()
-        .filter(|component| !matches!(component, Component::CurDir))
-        .collect();
+    let relative = clean_path(relative);
     let root = compose_dir
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
@@ -93,18 +90,10 @@ fn project_path_with(
     }
 }
 
-fn default_path_with(relative: &Path, compose_dir: Option<&OsStr>) -> PathBuf {
-    let relative: PathBuf = relative
-        .components()
+fn clean_path(path: &Path) -> PathBuf {
+    path.components()
         .filter(|component| !matches!(component, Component::CurDir))
-        .collect();
-    let root = compose_dir
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from);
-    match root {
-        Some(root) => root.join(relative),
-        None => relative,
-    }
+        .collect()
 }
 
 #[cfg(test)]
@@ -142,23 +131,17 @@ mod tests {
     }
 
     #[test]
-    fn default_path_is_absolute_inside_compose() {
-        let resolved = default_path_with(
-            Path::new("data/session-manager"),
-            Some(OsStr::new("/workspace/project")),
-        );
+    fn default_path_stays_portable() {
+        let default = default_path("data/session-manager");
 
-        assert_eq!(
-            resolved,
-            PathBuf::from("/workspace/project/data/session-manager")
-        );
+        assert_eq!(default, "data/session-manager");
     }
 
     #[test]
-    fn default_path_stays_portable_outside_compose() {
-        let resolved = default_path_with(Path::new("data/session-manager"), None);
+    fn default_path_removes_current_directory_components() {
+        let default = default_path("./data/session-manager");
 
-        assert_eq!(resolved, PathBuf::from("data/session-manager"));
+        assert_eq!(default, "data/session-manager");
     }
 
     #[test]
