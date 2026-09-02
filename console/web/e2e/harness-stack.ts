@@ -88,6 +88,7 @@ function workerArgs(): string[] {
     ['iii-directory', 'III_DIRECTORY_BIN'],
     ['session-manager', 'SESSION_MANAGER_BIN'],
     ['context-manager', 'CONTEXT_MANAGER_BIN'],
+    ['cron', 'CRON_BIN'],
     ['state', 'STATE_BIN'],
     ['database', 'DATABASE_BIN'],
   ].flatMap(([name, env]) => ['--worker-bin', `${name}=${required(env)}`])

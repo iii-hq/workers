@@ -8,7 +8,7 @@ pub struct StackBins {
     pub engine: PathBuf,
     pub harness: PathBuf,
     pub console: Option<PathBuf>,
-    /// queue, iii-directory, session-manager, context-manager.
+    /// queue, iii-directory, session-manager, context-manager, cron, state, database.
     pub workers: BTreeMap<String, PathBuf>,
 }
 

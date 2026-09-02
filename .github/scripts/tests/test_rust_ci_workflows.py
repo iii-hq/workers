@@ -144,21 +144,19 @@ def test_interface_smoke_bounds_each_engine_readiness_probe() -> None:
     ) in run
 
 
-def test_harness_integration_caches_the_final_engine_and_skips_rebuilds() -> None:
+def test_harness_integration_downloads_latest_rc_engine_without_building_it() -> None:
     integration = workflow("_harness-integration.yml")
     steps = integration["jobs"]["integration"]["steps"]
-    restore = named_step(steps, "Restore pinned engine binary")
-    build = named_step(steps, "Build pinned engine")
-    save = named_step(steps, "Save pinned engine binary")
+    install = named_step(steps, "Install latest iii @rc")
     stack_cache = named_step(steps, "Restore integration Rust cache")
 
-    expected_path = "target/integration-engine-src/${{ steps.lock.outputs.binary }}"
-    assert restore["with"]["path"] == expected_path
-    assert "integration-engine-bin-rust-1.97.1" in restore["with"]["key"]
-    assert "hashFiles('harness/tests/integration/engine.lock')" in restore["with"]["key"]
-    assert build["if"] == "steps.engine-cache.outputs.cache-hit != 'true'"
-    assert "--locked --release --timings" in build["run"]
-    assert save["with"]["path"] == expected_path
+    assert "https://install.iii.dev/iii/main/install.sh" in install["run"]
+    assert 'sh "$installer" --rc' in install["run"]
+    assert "command -v iii" in install["run"]
+    assert "III_ENGINE_VERSION" in install["run"]
+    assert "Build pinned engine" not in {step.get("name") for step in steps}
+    assert "integration-engine-src" not in (WORKFLOWS / "_harness-integration.yml").read_text()
+    assert "cron -> target" in stack_cache["with"]["workspaces"]
     assert "database -> target" in stack_cache["with"]["workspaces"]
 
 

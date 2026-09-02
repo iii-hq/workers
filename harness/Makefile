@@ -369,10 +369,9 @@ where:
 # Harness integration tests (see harness/tests/integration/README.md)
 #
 # Builds the subject stack + the harness workspace's integration runner and runs every
-# scenario against the pinned engine binary. The
-# engine is never downloaded here: pass III_BIN (CI builds it from
-# tests/integration/engine.lock; locally see that file for the pinned source).
-INTEGRATION_WORKERS := queue iii-directory session-manager context-manager state database
+# scenario against the supplied engine binary. CI downloads the latest iii @rc;
+# locally install that channel with `make install-iii-rc` and pass III_BIN.
+INTEGRATION_WORKERS := queue iii-directory session-manager context-manager cron state database
 INTEGRATION_PROFILE ?= release
 INTEGRATION_FLAG    := $(if $(filter release,$(INTEGRATION_PROFILE)),--release,)
 # ONE target directory for every crate the stack needs. Each worker is its own
@@ -394,8 +393,8 @@ INTEGRATION_PLAYGROUND_ARTIFACTS ?= $(REPO_ROOT)/target/console-e2e
 
 integration-test:
 	@if [ -z "$(III_BIN)" ]; then \
-	  echo "III_BIN is required: path to the pinned iii engine binary."; \
-	  echo "Pinned source: harness/tests/integration/engine.lock"; \
+	  echo "III_BIN is required: path to an iii @rc engine binary."; \
+	  echo "Install it with: make -C harness install-iii-rc"; \
 	  exit 3; \
 	fi
 	@for w in $(INTEGRATION_WORKERS) harness; do \
@@ -412,6 +411,7 @@ integration-test:
 	  --worker-bin "iii-directory=$(INTEGRATION_BIN_DIR)/iii-directory" \
 	  --worker-bin "session-manager=$(INTEGRATION_BIN_DIR)/session-manager" \
 	  --worker-bin "context-manager=$(INTEGRATION_BIN_DIR)/context-manager" \
+	  --worker-bin "cron=$(INTEGRATION_BIN_DIR)/cron" \
 	  --worker-bin "state=$(INTEGRATION_BIN_DIR)/state" \
 	  --worker-bin "database=$(INTEGRATION_BIN_DIR)/database" \
 	  --scenario "$(INTEGRATION_SCENARIO)" \
@@ -433,6 +433,7 @@ integration-coverage:
 	  --object "$(INTEGRATION_BIN_DIR)/iii-directory" \
 	  --object "$(INTEGRATION_BIN_DIR)/session-manager" \
 	  --object "$(INTEGRATION_BIN_DIR)/context-manager" \
+	  --object "$(INTEGRATION_BIN_DIR)/cron" \
 	  --object "$(INTEGRATION_BIN_DIR)/state" \
 	  --object "$(INTEGRATION_BIN_DIR)/harness" \
 	  --object "$(INTEGRATION_BIN_DIR)/harness-integration"
@@ -440,8 +441,8 @@ integration-coverage:
 
 integration-playground:
 	@if [ -z "$(III_BIN)" ]; then \
-	  echo "III_BIN is required: path to the pinned iii engine binary."; \
-	  echo "Pinned source: harness/tests/integration/engine.lock"; \
+	  echo "III_BIN is required: path to an iii @rc engine binary."; \
+	  echo "Install it with: make -C harness install-iii-rc"; \
 	  exit 3; \
 	fi
 	@for w in $(INTEGRATION_WORKERS) harness console; do \
@@ -459,6 +460,7 @@ integration-playground:
 	  --worker-bin "iii-directory=$(INTEGRATION_BIN_DIR)/iii-directory" \
 	  --worker-bin "session-manager=$(INTEGRATION_BIN_DIR)/session-manager" \
 	  --worker-bin "context-manager=$(INTEGRATION_BIN_DIR)/context-manager" \
+	  --worker-bin "cron=$(INTEGRATION_BIN_DIR)/cron" \
 	  --worker-bin "state=$(INTEGRATION_BIN_DIR)/state" \
 	  --worker-bin "database=$(INTEGRATION_BIN_DIR)/database" \
 	  --scenario "$(INTEGRATION_PLAYGROUND_SCENARIO)" \
