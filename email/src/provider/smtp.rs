@@ -25,9 +25,9 @@ pub struct Attachment {
 #[derive(Debug, Deserialize, JsonSchema, Clone)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum AttachmentSource {
-    /// Inline base64 bytes. Best for LLM tool-use; bounces the full payload
-    /// through the engine. For large files prefer a sidecar upload via the
-    /// `storage` worker followed by a future stream-source variant.
+    /// Inline base64 bytes.
+    // Bounces the full payload through the engine; a stream-source variant fed
+    // by a `storage` worker upload is the intended path for large files.
     Base64(String),
 }
 

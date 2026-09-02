@@ -17,9 +17,8 @@ pub struct ExecuteBatchReq {
     /// configured database, or `primary` when several are configured.
     #[serde(default)]
     pub db: Option<String>,
-    /// Statements to run in order inside one transaction. Each entry is
-    /// either a bare SQL string or `{ "sql": "...", "params": [...] }` —
-    /// use `params` for dynamic values instead of inlining them into the SQL.
+    /// Statements to run in order inside one transaction. Put dynamic values
+    /// in `params`, not inline in the SQL.
     #[serde(deserialize_with = "lenient_statements")]
     pub statements: Vec<BatchStatement>,
     /// Optional: `read_committed` | `repeatable_read` | `serializable`.

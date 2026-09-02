@@ -29,7 +29,7 @@
             "type": "string"
           },
           {
-            "description": "Everything not yet pushed: working tree vs the branch's upstream (`@{upstream}`). Fails when the branch has no upstream configured, which is a real answer rather than an error to swallow.",
+            "description": "Everything not yet pushed: working tree vs `@{upstream}`. Fails when the branch has no upstream configured.",
             "enum": [
               "upstream"
             ],
@@ -50,7 +50,7 @@
       },
       "context_lines": {
         "default": null,
-        "description": "Unchanged lines kept around each hunk in `patch`. Defaults to 0, which keeps `hunks` exactly the lines that changed — the ranges a gutter paints. Pass 3 or so for a patch a person will read, and note that the reported ranges widen to include the context you asked for.",
+        "description": "Context lines around each hunk. Default 0 keeps `hunks` to exactly the changed lines; a non-zero value widens the reported ranges too.",
         "format": "uint32",
         "minimum": 0.0,
         "type": [
@@ -105,7 +105,7 @@
             "type": "string"
           },
           {
-            "description": "Everything not yet pushed: working tree vs the branch's upstream (`@{upstream}`). Fails when the branch has no upstream configured, which is a real answer rather than an error to swallow.",
+            "description": "Everything not yet pushed: working tree vs `@{upstream}`. Fails when the branch has no upstream configured.",
             "enum": [
               "upstream"
             ],

@@ -1,5 +1,5 @@
 {
-  "description": "Call any GitHub REST endpoint via gh api: { path: \"repos/OWNER/REPO/issues\", method?, fields?, body?, jq?, paginate?, timeout_ms? } -> { value: <parsed JSON> }. fields become -f key=value form fields (default method flips to POST); body is sent verbatim as the JSON request body. Non-2xx responses are errors carrying gh's stderr.",
+  "description": "Call any GitHub REST endpoint via gh api and return the parsed JSON. `fields` become `-f key=value` form fields and flip the default method to POST; `body` is sent verbatim as JSON. Non-2xx responses are errors carrying gh's stderr.",
   "function_id": "github::api",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -39,7 +39,7 @@
         ]
       },
       "path": {
-        "description": "Endpoint path, with concrete owner/repo values (e.g. \"rate_limit\" or \"repos/cli/cli/issues\") — placeholder expansion needs a checkout the worker does not have.",
+        "description": "Endpoint path with concrete owner/repo values, e.g. \"rate_limit\" or \"repos/cli/cli/issues\"; `{owner}` placeholders are not expanded.",
         "type": "string"
       },
       "timeout_ms": {

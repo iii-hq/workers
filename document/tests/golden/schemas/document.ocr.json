@@ -1,11 +1,11 @@
 {
-  "description": "Transcribe a document that holds no readable text: a scanned PDF, a photographed page, or a deck whose content is pictures. Renders the pages that need it and reads them with a vision model, so it costs money per page — pass `pages` (pdf::classify names them) to narrow it. Needs the browser worker for PDFs and a vision model through llm-router.",
+  "description": "Transcribe a document with no readable text (scanned PDF, photographed page, picture-only deck) by rendering its pages and reading them with a vision model. Costs money per page: pass `pages` (pdf::classify names them) to narrow it.",
   "function_id": "document::ocr",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
       "FsScope": {
-        "description": "The filesystem jail a call runs under.\n\nThe harness stamps this onto every function it dispatches, so a `path` an agent supplies has to be checked against it. Without the check these functions would read any document on the machine and hand back its text, which is a way around the scope the session was granted. Mirrors the shape the shell and pdf workers take.",
+        "description": "The filesystem jail a call runs under; `path` is checked against it.",
         "properties": {
           "grants": {
             "default": [],
@@ -38,7 +38,7 @@
       },
       "file_name": {
         "default": null,
-        "description": "Original file name for inline bytes, used only to recognise a format the content cannot name. A `.csv` needs this; nothing else does. Ignored when `path` is set, which carries its own name.",
+        "description": "Original file name for `bytes_base64`, used only to recognise a format the content cannot name (`.csv`). Ignored when `path` is set.",
         "type": [
           "string",
           "null"
@@ -53,7 +53,7 @@
             "type": "null"
           }
         ],
-        "description": "The filesystem jail this call runs under. Stamped by the harness on an agent's call; absent on an operator or console call, which is already user-initiated and not subject to the agent's scope."
+        "description": "Filesystem jail for this call. Stamped by the harness on an agent's call; absent on an operator or console call."
       },
       "max_chars": {
         "default": null,
@@ -75,7 +75,7 @@
       },
       "pages": {
         "default": null,
-        "description": "1-indexed pages to transcribe, for a PDF. Omit for every page up to the configured ceiling. This is the cost control: `pdf::classify` reports which pages are scans, and passing that list keeps a long report from being read a page at a time when only its cover is an image.",
+        "description": "1-indexed PDF pages to transcribe; omit for every page up to the configured ceiling. Pass the scan pages `pdf::classify` reports.",
         "items": {
           "format": "uint32",
           "minimum": 0.0,

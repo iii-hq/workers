@@ -1,5 +1,5 @@
 {
-  "description": "Queue a report-only security review of the full tree at an exact 40-character Git commit SHA for an operator-configured repository. Omit target_sha to analyze the entire repository at HEAD. Optional model follows the Console composer catalog id. Duplicate repository, commit, mode, and model requests return the same run id.",
+  "description": "Queue a report-only security review of an operator-configured repository at an exact 40-character commit SHA; omit target_sha to review HEAD. Duplicate repository, commit, mode and model requests return the same run id.",
   "function_id": "security-scan::request",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

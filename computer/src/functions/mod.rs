@@ -20,9 +20,8 @@ use crate::session::{Session, Sessions};
 pub const SESSIONS_START_ID: &str = "computer::sessions::start";
 pub const SESSIONS_START_DESC: &str =
     "Start a computer-use session and return its session_id. Pass `image` to boot a fresh desktop \
-     in an iii-sandbox microVM (fixed virtual display, no host setup), an `endpoint` to drive a \
-     desktop through its guest executor, or omit both to drive the local machine. Sessions are \
-     durable; stop them with computer::sessions::stop when done.";
+     in an iii-sandbox microVM, `endpoint` to drive a remote desktop's guest executor, or neither \
+     to drive the local machine. Stop it with computer::sessions::stop.";
 pub const SESSIONS_LIST_ID: &str = "computer::sessions::list";
 pub const SESSIONS_LIST_DESC: &str =
     "List live computer sessions with their endpoint, guest OS, and screen size.";
