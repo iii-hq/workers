@@ -192,7 +192,9 @@ def normalize_config(worker_dir: Path, manifest: dict[str, Any]) -> dict[str, An
     return config
 
 
-def normalize_runtime(worker: str, manifest: dict[str, Any], kind: str) -> dict[str, Any]:
+def normalize_runtime(
+    worker: str, worker_dir: Path, manifest: dict[str, Any], kind: str
+) -> dict[str, Any]:
     env = manifest.get("env") or {}
     if not isinstance(env, dict) or any(not isinstance(key, str) or not isinstance(value, str) for key, value in env.items()):
         fail(f"{worker}/iii.worker.yaml: env must map strings to strings")
@@ -207,6 +209,18 @@ def normalize_runtime(worker: str, manifest: dict[str, Any], kind: str) -> dict[
         "environment": dict(sorted(env.items())),
         "resources": resources,
     }
+    capture_config = worker_dir / "config.collect.yaml"
+    if capture_config.exists():
+        if not capture_config.is_file() or capture_config.is_symlink():
+            fail(f"{worker}/config.collect.yaml must be a regular file")
+        if kind != "rust-binary":
+            fail(f"{worker}/config.collect.yaml is only supported for binary workers")
+        result["interface_config"] = {
+            "path": "config.collect.yaml",
+            "sha256": file_sha256(capture_config),
+        }
+    else:
+        result["interface_config"] = None
     if kind == "rust-binary":
         result["exec"] = [str(manifest.get("bin") or worker)]
     elif kind in {"javascript-bundle", "python-bundle"}:
@@ -418,6 +432,9 @@ def compile_worker(root: Path, worker: str, value: Any, source_sha: str, compile
         fail(f"{public_path}: name must be {worker!r}")
     if manifest.get("manifest") != manifest_name:
         fail(f"{public_path}: manifest must match the private package_manifest")
+    interface_smoke = manifest.get("interface_smoke", True)
+    if not isinstance(interface_smoke, bool):
+        fail(f"{public_path}: interface_smoke must be a boolean when present")
     publish = value["publish"]
     if not isinstance(publish, bool):
         fail(f"workers.{worker}.publish must be a boolean")
@@ -451,7 +468,11 @@ def compile_worker(root: Path, worker: str, value: Any, source_sha: str, compile
         "compiler_digest": compiler_sha,
         "source": source,
         "artifact": artifact,
-        "runtime": normalize_runtime(worker, manifest, str(artifact["kind"])),
+        "runtime": normalize_runtime(worker, worker_dir, manifest, str(artifact["kind"])),
+        # Keep the legacy public-manifest spelling at the source boundary only.
+        # Inside the immutable deployment contract this is interface capture:
+        # registration metadata is collected, but no worker function is called.
+        "interface_capture": "required" if interface_smoke else "skipped",
         "publish": publish,
         "build_units": build_units(worker, artifact),
         "registry_projection": projection,

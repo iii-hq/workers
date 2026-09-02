@@ -234,17 +234,189 @@ jobs:
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
+          name: deployment-assembled-${{ env.DEPLOYMENT_TARGET_ID }}
+          path: deploy-prepared/
+          if-no-files-found: error
+          retention-days: 7
+
+  interface:
+    needs: [prepare, assemble]
+    runs-on: workers-release-linux-8core
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      # Use the workflow implementation selected by this run, while all worker
+      # bytes and their runtime contract come from the immutable prepared artifact.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          sparse-checkout: .github/scripts
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: deployment-assembled-${{ env.DEPLOYMENT_TARGET_ID }}
+          path: deploy-prepared
+
+      - name: Resolve descriptor-bound capture configuration
+        id: capture_source
+        run: |
+          set -euo pipefail
+          echo "required=$(jq -r '.runtime.interface_config != null' deploy-prepared/deployment-descriptor.json)" >> "$GITHUB_OUTPUT"
+          echo "path=$(jq -er '.source.path + "/config.collect.yaml"' deploy-prepared/deployment-descriptor.json)" >> "$GITHUB_OUTPUT"
+
+      # Capture-only configuration is hashed into the descriptor and read from
+      # the same immutable source SHA as the prepared artifact.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        if: steps.capture_source.outputs.required == 'true'
+        with:
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.prepared_sha }}
+          path: capture-source
+          sparse-checkout: ${{ steps.capture_source.outputs.path }}
+          sparse-checkout-cone-mode: false
+
+      - name: Stage immutable bytes for interface capture
+        id: interface
+        run: >-
+          python3 .github/scripts/deployment_interface.py stage
+          --descriptor deploy-prepared/deployment-descriptor.json
+          --prepared deploy-prepared/prepared-artifacts.json
+          --source-root capture-source
+          --out interface-work/stage.json
+          --github-output "$GITHUB_OUTPUT"
+
+      - name: Install current iii runtime
+        if: steps.interface.outputs.interface_capture == 'required'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 --retry-all-errors --retry-delay 5 \
+            https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
+          sh /tmp/install-iii.sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.iii/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$HOME/.iii/bin:$PATH"
+          iii --version
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        if: steps.interface.outputs.kind == 'javascript-bundle' && steps.interface.outputs.interface_capture == 'required'
+        with:
+          node-version: ${{ steps.interface.outputs.runtime_version }}
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        if: steps.interface.outputs.kind == 'python-bundle' && steps.interface.outputs.interface_capture == 'required'
+        with:
+          python-version: ${{ steps.interface.outputs.runtime_version }}
+
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        if: steps.interface.outputs.kind == 'python-bundle' && steps.interface.outputs.interface_capture == 'required'
+        with:
+          version: ${{ steps.interface.outputs.package_manager_version }}
+          enable-cache: false
+
+      - name: Install OCI capture tooling
+        if: steps.interface.outputs.kind == 'oci-image' && steps.interface.outputs.interface_capture == 'required'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y skopeo
+
+      - name: Collect interface registration from immutable artifact
+        env:
+          INTERFACE_CAPTURE: ${{ steps.interface.outputs.interface_capture }}
+          KIND: ${{ steps.interface.outputs.kind }}
+        run: |
+          set -euo pipefail
+          if [[ "$INTERFACE_CAPTURE" == skipped ]]; then
+            python3 .github/scripts/deployment_interface.py snapshot \
+              --descriptor deploy-prepared/deployment-descriptor.json \
+              --prepared deploy-prepared/prepared-artifacts.json \
+              --out deploy-prepared/deployment-interface.json
+            python3 .github/scripts/deployment_interface.py build-evidence \
+              --descriptor deploy-prepared/deployment-descriptor.json \
+              --prepared deploy-prepared/prepared-artifacts.json \
+              --interface deploy-prepared/deployment-interface.json \
+              --out deploy-prepared/deployment-evidence.json
+            exit 0
+          fi
+
+          engine_pid=''
+          worker_pid=''
+          container_name=''
+          image_name=''
+          cleanup() {
+            if [[ -n "$container_name" ]]; then docker rm -f "$container_name" >/dev/null 2>&1 || true; fi
+            if [[ -n "$image_name" ]]; then docker image rm "$image_name" >/dev/null 2>&1 || true; fi
+            if [[ -n "$worker_pid" ]]; then kill -- "-$worker_pid" >/dev/null 2>&1 || true; fi
+            if [[ -n "$engine_pid" ]]; then kill -- "-$engine_pid" >/dev/null 2>&1 || true; fi
+          }
+          trap cleanup EXIT
+          engine_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
+          engine_url="ws://127.0.0.1:$engine_port"
+          printf 'workers:\n  - name: iii-worker-manager\n    config:\n      host: 127.0.0.1\n      port: %s\n' "$engine_port" >interface-work/engine.yaml
+          setsid iii --config interface-work/engine.yaml --no-update-check >interface-work/engine.log 2>&1 &
+          engine_pid=$!
+          for _ in $(seq 1 60); do
+            kill -0 "$engine_pid" 2>/dev/null || { cat interface-work/engine.log; exit 1; }
+            iii trigger --port "$engine_port" 'engine::workers::list' --json '{}' >/dev/null 2>&1 && break
+            sleep 1
+          done
+          iii trigger --port "$engine_port" 'engine::workers::list' --json '{}' >interface-work/workers-baseline.json
+          iii trigger --port "$engine_port" 'engine::triggers::list' --json '{"include_internal":false}' >interface-work/triggers-baseline.json
+
+          if [[ "$KIND" == oci-image ]]; then
+            container_name="deployment-interface-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            image_name="$container_name:prepared"
+            oci_archive=$(jq -er .oci_archive interface-work/stage.json)
+            sudo skopeo copy "oci-archive:$oci_archive" "docker-daemon:$image_name"
+            docker_env=(--env "III_URL=$engine_url")
+            while IFS= read -r encoded; do
+              docker_env+=(--env "$(printf '%s' "$encoded" | base64 --decode)")
+            done < <(jq -r '.environment | to_entries[] | (.key + "=" + .value) | @base64' interface-work/stage.json)
+            docker run --rm --network host --name "$container_name" "${docker_env[@]}" "$image_name" \
+              >interface-work/worker.log 2>&1 &
+            worker_pid=$!
+          else
+            setsid python3 .github/scripts/deployment_interface.py run-worker \
+              --metadata interface-work/stage.json --engine-url "$engine_url" \
+              --log interface-work/worker.log &
+            worker_pid=$!
+          fi
+
+          export III_TRIGGER_PORT="$engine_port"
+          python3 .github/scripts/collect_worker_interface.py \
+            --worker "$WORKER" --out interface-work/worker-interface.json \
+            --wait-seconds 600 \
+            --trigger-types-baseline interface-work/triggers-baseline.json \
+            --workers-baseline interface-work/workers-baseline.json
+          python3 .github/scripts/collect_worker_interface.py \
+            --assert-non-empty --assert-typed-schemas \
+            --assert-file interface-work/worker-interface.json
+          python3 .github/scripts/deployment_interface.py snapshot \
+            --descriptor deploy-prepared/deployment-descriptor.json \
+            --prepared deploy-prepared/prepared-artifacts.json \
+            --interface interface-work/worker-interface.json \
+            --out deploy-prepared/deployment-interface.json
+          python3 .github/scripts/deployment_interface.py build-evidence \
+            --descriptor deploy-prepared/deployment-descriptor.json \
+            --prepared deploy-prepared/prepared-artifacts.json \
+            --interface deploy-prepared/deployment-interface.json \
+            --out deploy-prepared/deployment-evidence.json
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
           name: deployment-prepared-${{ env.DEPLOYMENT_TARGET_ID }}
           path: deploy-prepared/
           if-no-files-found: error
-          # Fast path for release finalization: verified rc bytes must outlive
-          # the soak window, so keep them long enough to promote without a
-          # rebuild.
+          # Prepared bytes and their captured Registry interface must outlive
+          # the candidate soak window so stable finalization reuses both.
           retention-days: 90
 
   report:
     if: always()
-    needs: [prepare, build, assemble]
+    needs: [prepare, build, assemble, interface]
     runs-on: workers-release-linux-8core
     permissions:
       actions: read
@@ -268,16 +440,17 @@ jobs:
           PREPARE_RESULT: ${{ needs.prepare.result }}
           BUILD_RESULT: ${{ needs.build.result }}
           ASSEMBLE_RESULT: ${{ needs.assemble.result }}
+          INTERFACE_RESULT: ${{ needs.interface.result }}
         run: |
           set -euo pipefail
           outcome=succeeded; error=null
-          if [[ "$PREPARE_RESULT" == cancelled || "$BUILD_RESULT" == cancelled || "$ASSEMBLE_RESULT" == cancelled ]]; then
+          if [[ "$PREPARE_RESULT" == cancelled || "$BUILD_RESULT" == cancelled || "$ASSEMBLE_RESULT" == cancelled || "$INTERFACE_RESULT" == cancelled ]]; then
             outcome=canceled; error='{"code":"prepare_canceled","category":"build","retryable":true,"message":"release preparation was canceled"}'
-          elif [[ "$PREPARE_RESULT" != success || "$BUILD_RESULT" != success || "$ASSEMBLE_RESULT" != success ]]; then
+          elif [[ "$PREPARE_RESULT" != success || "$BUILD_RESULT" != success || "$ASSEMBLE_RESULT" != success || "$INTERFACE_RESULT" != success ]]; then
             outcome=failed; error='{"code":"prepare_failed","category":"build","retryable":true,"message":"release preparation did not complete"}'
           fi
           artifacts='[]'
-          if [[ -f deploy-prepared/prepared-artifacts.json ]]; then artifacts=$(jq -c '[.artifacts[] | del(.unit)]' deploy-prepared/prepared-artifacts.json); fi
+          if [[ -f deploy-prepared/deployment-evidence.json ]]; then artifacts=$(jq -c '[.artifacts[] | del(.unit)]' deploy-prepared/deployment-evidence.json); fi
           state=absent; [[ "$outcome" == succeeded ]] && state=present
           effects=$(jq -nc --arg id "$SOURCE_SHA" --arg state "$state" '[{surface:"source-snapshot",state:$state,immutable_id:$id}]')
           python3 .github/scripts/deployment_control_contract.py write-result \

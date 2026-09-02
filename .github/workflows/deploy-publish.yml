@@ -81,6 +81,9 @@ jobs:
           python3 .github/scripts/deployment_train.py verify-prepared \
             --descriptor deploy-prepared/deployment-descriptor.json \
             --prepared deploy-prepared/prepared-artifacts.json
+          python3 .github/scripts/deployment_interface.py verify-evidence \
+            --descriptor deploy-prepared/deployment-descriptor.json \
+            --evidence deploy-prepared/deployment-evidence.json
           [[ -n "$EXPECTED_MIRROR_VERSION" ]]
           python3 .github/scripts/deployment_control_contract.py validate-identity --identity "$DEPLOYMENT_IDENTITY"
           python3 .github/scripts/deployment_control_contract.py validate-dispatch --step-id "$STEP_ID" --dispatch-nonce "$DISPATCH_NONCE" --descriptor-sha256 "$DESCRIPTOR_SHA256" --plan-hash "$PLAN_HASH" --source-sha "$SOURCE_SHA" --prepared-sha "$PREPARED_SHA" --mutating
@@ -488,7 +491,7 @@ jobs:
           fi
           artifacts='[]'
           kind=unknown
-          if [[ -f deploy-prepared/prepared-artifacts.json ]]; then artifacts=$(jq -c '[.artifacts[] | del(.unit)]' deploy-prepared/prepared-artifacts.json); fi
+          if [[ -f deploy-prepared/deployment-evidence.json ]]; then artifacts=$(jq -c '[.artifacts[] | del(.unit)]' deploy-prepared/deployment-evidence.json); fi
           if [[ -f deploy-prepared/deployment-descriptor.json ]]; then kind=$(jq -r .artifact.kind deploy-prepared/deployment-descriptor.json); fi
           normalize_state() {
             python3 -c 'import sys; value=sys.argv[1].strip(); print(value if value in {"absent", "present", "unknown"} else "unknown")' "$1"

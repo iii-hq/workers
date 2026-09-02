@@ -289,6 +289,7 @@ def build_payload(
     published_version: str,
     repo_url: str,
     interface: dict[str, Any],
+    interface_capture: str,
     artifacts: dict[str, Any],
     readme: str | None = None,
 ) -> dict[str, Any]:
@@ -299,6 +300,18 @@ def build_payload(
     }
     if not isinstance(registry_projection, dict) or set(registry_projection) != required:
         raise ValueError("registry_projection differs from the current Registry metadata contract")
+    if interface_capture not in {"required", "skipped"}:
+        raise ValueError("interface_capture must be required or skipped")
+    if not isinstance(interface, dict) or set(interface) != {"functions", "triggers"}:
+        raise ValueError("interface must contain only functions and triggers")
+    for field in ("functions", "triggers"):
+        if not isinstance(interface[field], list) or any(not isinstance(row, dict) for row in interface[field]):
+            raise ValueError(f"interface {field} must be an array of objects")
+    interface_empty = not interface["functions"] and not interface["triggers"]
+    if interface_capture == "required" and interface_empty:
+        raise ValueError("required interface capture must contain a function or trigger")
+    if interface_capture == "skipped" and not interface_empty:
+        raise ValueError("skipped interface capture must publish an empty interface")
     _lib.validate_deployment_target_version(published_version)
     deploy = registry_projection["type"]
     kind = artifacts.get("kind")
@@ -364,6 +377,7 @@ def main() -> int:
         published_version=args.published_version,
         repo_url=args.repo_url,
         interface=interface,
+        interface_capture=descriptor["interface_capture"],
         artifacts=artifacts,
         readme=readme,
     )

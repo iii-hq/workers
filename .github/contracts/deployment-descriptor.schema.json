@@ -17,6 +17,7 @@
     "source",
     "artifact",
     "runtime",
+    "interface_capture",
     "publish",
     "build_units",
     "registry_projection"
@@ -48,6 +49,7 @@
       ]
     },
     "runtime": {"type": "object"},
+    "interface_capture": {"enum": ["required", "skipped"]},
     "publish": {"type": "boolean"},
     "build_units": {
       "type": "array",

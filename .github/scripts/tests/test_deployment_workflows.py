@@ -138,7 +138,7 @@ def test_descriptor_index_independently_verifies_approved_compiler_bytes():
     assert "Verify approved compiler bytes" in text
     assert (
         "APPROVED_COMPILER_DIGEST: "
-        "8dca9bcf5f11dcf1982183b5570fd07a84c2cb87f633b1da4124a1464b35f861"
+        "a01e716bee39d98afe46dd57bdc26b6b21f15a9341313f20dceed2fe87bd5084"
     ) in text
     assert 'digest.update(b"iii-workers-deployment-compiler\\0")' in text
     assert 'Path(".github/scripts/deployment_compiler.py").read_bytes()' in text
@@ -193,25 +193,60 @@ def test_release_build_falls_back_when_optional_sccache_is_unavailable():
     assert "RUSTC_WRAPPER" not in workflow["env"]
 
 
-def test_prepare_uploads_inventory_without_booting_the_worker():
+def test_prepare_captures_interface_from_prepared_bytes():
     text = body("deploy-prepare.yml")
     workflow = yaml.safe_load(text)
-    assert "adapter" not in workflow["jobs"]
+    capture_jobs = [
+        job
+        for job in workflow["jobs"].values()
+        if "deployment_interface.py stage" in str(job)
+    ]
+    assert len(capture_jobs) == 1
+    capture_job = capture_jobs[0]
+    assert set(capture_job["needs"]) == {"prepare", "assemble"}
+    assert "deployment_interface.py stage" in text
+    assert "deployment_interface.py snapshot" in text
+    assert "deployment_interface.py build-evidence" in text
     assert "deployment-prepared-${{ env.DEPLOYMENT_TARGET_ID }}" in text
-    assert "deployment_interface.py" not in text
-    assert "collect_worker_interface.py" not in text
-    assert "install.iii.dev" not in text
+    interface_text = str(capture_job)
+    assert "inputs.source_sha" not in interface_text
+    assert "worker-compose.yaml" not in interface_text
 
 
-def test_all_post_prepare_phases_verify_prepared_bytes_and_report_them():
-    for name in set(ENTRYPOINTS) - {"deploy-prepare.yml"}:
+def test_prepare_upload_requires_interface_evidence():
+    workflow = yaml.safe_load(body("deploy-prepare.yml"))
+    uploads = [
+        step
+        for job in workflow["jobs"].values()
+        for step in job.get("steps", [])
+        if str(step.get("uses", "")).startswith("actions/upload-artifact@")
+        and str(step.get("with", {}).get("name", "")).startswith("deployment-prepared-")
+    ]
+    assert len(uploads) == 1
+    upload = uploads[0]
+    assert upload["with"]["if-no-files-found"] == "error"
+    uploaded_path = str(upload["with"]["path"])
+    assert "deployment-interface.json" in uploaded_path or uploaded_path.rstrip("/").endswith("deploy-prepared")
+
+
+def test_publish_finalize_and_verify_consume_interface_evidence():
+    for name in ("_deploy-registry.yml", "_deploy-registry-finalize.yml"):
         text = body(name)
-        assert "deployment_train.py verify-prepared" in text, name
-        assert "prepared-artifacts.json" in text, name
-        assert "deployment-evidence.json" not in text, name
-    registry = body("_deploy-registry.yml")
-    assert "deployment_train.py verify-prepared" in registry
-    assert "deployment_interface.py" not in registry
+        assert "deployment_interface.py verify-evidence" in text, name
+        assert "deployment-evidence.json" in text, name
+        assert "deployment-interface.json" in text, name
+    verify = body("deploy-verify.yml")
+    assert "deployment_interface.py verify-evidence" in verify
+    assert "deployment-evidence.json" in verify
+
+
+def test_registry_publishers_never_synthesize_an_empty_interface():
+    for name in ("_deploy-registry.yml", "_deploy-registry-finalize.yml"):
+        text = body(name)
+        assert '"functions": []' not in text, name
+        assert '"triggers": []' not in text, name
+        assert "deployment-interface.json" in text, name
+        assert "--interface-json interface.json" in text, name
 
 
 def test_publish_is_retry_safe_and_effect_states_are_probe_derived():
@@ -302,6 +337,24 @@ def test_finalize_promotes_the_rc_bytes_verbatim_with_no_supplemental_build():
     assert "assemble-stable" not in text
     assert "stable-delta" not in text
     assert "--profile" not in text
+
+
+def test_finalize_fallback_rebuilds_evidence_from_the_exact_candidate_interface():
+    workflow = yaml.safe_load(body("deploy-finalize.yml"))
+    fallback_steps = [
+        step
+        for job in workflow["jobs"].values()
+        for step in job.get("steps", [])
+        if step.get("if") == "steps.prepared.outcome != 'success'"
+        and "deployment_interface.py snapshot" in step.get("run", "")
+    ]
+    assert len(fallback_steps) == 1
+    command = fallback_steps[0]["run"]
+    assert "api.workers.iii.dev/w/$WORKER?version=$SOURCE_RC_VERSION" in command
+    assert "deployment_interface.py build-evidence" in command
+    assert "deployment_interface.py verify-evidence" in command
+    assert "deployment-interface.json" in command
+    assert "TARGET_VERSION" not in command
 
 
 def test_registry_finalize_is_atomic_and_never_moves_channels_piecewise():

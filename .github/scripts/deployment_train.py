@@ -60,7 +60,7 @@ def verify_descriptor(descriptor: object) -> dict[str, object]:
         "contract", "worker", "package_manifest_version", "source_sha", "deployment_spec_sha256",
         "public_manifest_sha256", "registry_projection_sha256", "compiler_digest",
         "descriptor_sha256", "source", "artifact", "runtime",
-        "publish", "build_units", "registry_projection",
+        "interface_capture", "publish", "build_units", "registry_projection",
     }
     if set(descriptor) != required:
         raise SystemExit(
@@ -76,6 +76,8 @@ def verify_descriptor(descriptor: object) -> dict[str, object]:
     for field in ("source", "artifact", "runtime", "registry_projection"):
         if not isinstance(descriptor[field], dict):
             raise SystemExit(f"deployment descriptor {field} must be an object")
+    if descriptor["interface_capture"] not in {"required", "skipped"}:
+        raise SystemExit("deployment descriptor interface_capture must be required or skipped")
     if not isinstance(descriptor["build_units"], list) or not descriptor["build_units"]:
         raise SystemExit("deployment descriptor build_units must be non-empty")
     return descriptor
@@ -683,7 +685,11 @@ def _verify_prepared_inventory(descriptor: dict, descriptor_path: Path, prepared
         path.name for path in prepared_path.parent.iterdir()
         if path.is_file() and not path.is_symlink()
     }
-    expected_files = names | {descriptor_path.name, prepared_path.name}
+    evidence_files = {"deployment-interface.json", "deployment-evidence.json"}
+    present_evidence = actual & evidence_files
+    if present_evidence and present_evidence != evidence_files:
+        raise SystemExit("prepared directory must contain both interface evidence files or neither")
+    expected_files = names | {descriptor_path.name, prepared_path.name} | present_evidence
     if actual != expected_files:
         raise SystemExit(
             f"prepared directory differs from inventory: missing={sorted(expected_files - actual)} "
