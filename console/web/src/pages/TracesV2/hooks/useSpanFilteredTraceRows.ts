@@ -192,6 +192,24 @@ export function rowRootFilterKeys(row: TraceListItem): SpanFilterKeys {
 }
 
 /**
+ * Whether a listed row shows without waiting on the feed or a probe: it
+ * is failed, still running, or rooted in a visible span. Everything else
+ * is a hidden-rooted settled trace that hides until proven otherwise — the
+ * "new traces" pill counts held rows with this, so it never promises rows
+ * that would not appear. Exported for tests.
+ */
+export function showsWithoutProbe(
+  row: TraceListItem,
+  selection: SpanFilterSelection,
+): boolean {
+  return (
+    row.status === 'error' ||
+    row.status === 'pending' ||
+    !isSpanBarHidden(rowRootFilterKeys(row), selection)
+  )
+}
+
+/**
  * One reconcile pass: refresh `verdicts` from the bars currently in the
  * feed, seed visible-root verdicts from the rows themselves, drop entries
  * for traces gone from both the feed and the list, and return the rows
