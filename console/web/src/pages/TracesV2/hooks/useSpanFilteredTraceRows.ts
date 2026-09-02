@@ -41,17 +41,26 @@
 // prunes the visible bars while hidden bookkeeping keeps the trace in the
 // feed — and a feed-only recompute would flip the row back to hidden.
 // Fetched verdicts land in the same cache. The cache resets when the
-// selection changes; a row stays visible while its verdict is unknown or
-// its read failed — better to show a hideable row than to hide real work
-// on a guess.
+// selection changes.
 //
-// LIVE traces get one more guard: worker spans reach the store only when
+// A row with a hidden root and NO verdict yet stays HIDDEN until a read or
+// the feed proves visible work. The other default — show while unknown —
+// made every hidden bookkeeping trace (state polls, function-change
+// fan-outs) flash into the live list and vanish a moment later when its
+// composition read landed, which under a busy engine read as rows switching
+// states all over the page (MOT-4621). The cost is a short delay before a
+// hidden-rooted trace with real work under it earns its row; the common
+// turn shape is rooted visibly and never waits.
+//
+// RUNNING traces are the exception: worker spans reach the store only when
 // they CLOSE, so a running turn's composition is structurally incomplete —
 // its first visible span may be an LLM call that takes minutes to close.
-// A negative verdict is a guess there, so a row whose trace is still live
-// (pending span in the feed, or a span end within the last few seconds)
-// stays visible regardless. Bookkeeping traces settle in well under a
-// second, so the exemption never resurfaces them.
+// A row whose trace is still running (the row's own `pending` status, or a
+// pending snapshot in the feed) stays visible regardless, and a composition
+// read that finds the trace still running records NO verdict: the read is
+// repeated once the row settles, so the eventual verdict sees the closed
+// work. Bookkeeping traces are already complete when they are listed, so
+// the exemption never resurfaces them.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { fetchTraceSpans, type StoredSpan } from '../api/traces'
@@ -66,7 +75,7 @@ import {
   spanFilterGroupKey,
   storedSpansToTimelineSpans,
 } from '../lib/timelineSpans'
-import { isPendingSpan, toMs } from '../lib/traceTransform'
+import { isPendingSpan } from '../lib/traceTransform'
 import { getWorkerName } from '../lib/traceUtils'
 import type { TraceListItem } from './useTraceData'
 
@@ -76,30 +85,22 @@ import type { TraceListItem } from './useTraceData'
 const FETCH_TRACE_CHUNK = 20
 const FETCH_SPAN_LIMIT = 10_000
 
-/** How recently a span of the trace must have ENDED for the trace to still
- *  count as live when no pending snapshot is in the feed (engines with
- *  `live_spans` off). Generous on purpose — liveness only defers hiding. */
-const LIVE_END_SLACK_MS = 10_000
-
 /**
- * Traces with work still in flight, judged from the raw feed: a pending
+ * Traces with work still in flight, judged from raw spans: a pending
  * snapshot (the engine's queue wrapper stays pending for a turn's whole
- * lifetime — see `followTurn.ts`), or a span that ended moments ago.
- * Exported for tests.
+ * lifetime — see `followTurn.ts`). A closed span is never evidence of
+ * liveness, however recent: a "just ended" window kept every hidden
+ * bookkeeping trace visible for its duration and then hid it — the flicker
+ * this module exists to avoid. Engines without live snapshots simply reveal
+ * a hidden-rooted trace once its first visible span closes. Exported for
+ * tests.
  */
-export function liveTraceIds(
+export function pendingTraceIds(
   spans: readonly StoredSpan[],
-  now: number,
 ): ReadonlySet<string> {
   const live = new Set<string>()
   for (const span of spans) {
-    if (live.has(span.trace_id)) continue
-    if (
-      isPendingSpan(span) ||
-      now - toMs(span.end_time_unix_nano) <= LIVE_END_SLACK_MS
-    ) {
-      live.add(span.trace_id)
-    }
+    if (isPendingSpan(span)) live.add(span.trace_id)
   }
   return live
 }
@@ -129,11 +130,13 @@ export function rowRootFilterKeys(row: TraceListItem): SpanFilterKeys {
  * One reconcile pass: refresh `verdicts` from the bars currently in the
  * feed, seed visible-root verdicts from the rows themselves, drop entries
  * for traces gone from both the feed and the list, and return the rows
- * that survive (unknown verdicts stay visible, and so do rows in
- * `liveTraces` — a running trace's negative verdict is a guess, its
- * visible spans may simply not have closed yet). Verdicts are monotone
- * within a selection: `true` sticks, `false` re-evaluates. Mutates
- * `verdicts` — the hook owns the map across renders. Exported for tests.
+ * that survive: a proven-visible verdict, a failed trace, or a trace still
+ * running (the row's `pending` status, or a pending snapshot in the feed
+ * via `liveTraces`) — a running trace's negative verdict is a guess, its
+ * visible spans may simply not have closed yet. Unknown verdicts hide.
+ * Verdicts are monotone within a selection: `true` sticks, `false`
+ * re-evaluates. Mutates `verdicts` — the hook owns the map across renders.
+ * Exported for tests.
  */
 export function reconcileTraceVisibility(
   verdicts: Map<string, boolean>,
@@ -175,7 +178,8 @@ export function reconcileTraceVisibility(
   const kept = rows.filter(
     (r) =>
       r.status === 'error' ||
-      verdicts.get(r.traceId) !== false ||
+      r.status === 'pending' ||
+      verdicts.get(r.traceId) === true ||
       liveTraces.has(r.traceId),
   )
   // Identity-stable when nothing is hidden, so downstream memos hold.
@@ -220,7 +224,12 @@ function verdictBars(spans: readonly StoredSpan[]): TimelineSpan[] {
  * verdicts: a visible span proves visibility, but "all hidden" might just
  * mean the visible spans were cut off. A `true` verdict already in the
  * cache is never downgraded — the read raced a feed frame that proved
- * visibility after the snapshot was taken. Exported for tests.
+ * visibility after the snapshot was taken.
+ *
+ * A trace the read finds still RUNNING (a pending snapshot among its
+ * spans) gets no negative verdict either — its visible work may not have
+ * closed yet. Those ids are returned so the caller can read them again
+ * once they settle. Exported for tests.
  */
 export function mergeFetchedVerdicts(
   verdicts: Map<string, boolean>,
@@ -228,7 +237,7 @@ export function mergeFetchedVerdicts(
   spans: readonly StoredSpan[],
   selection: SpanFilterSelection,
   spanLimit: number = FETCH_SPAN_LIMIT,
-): void {
+): ReadonlySet<string> {
   const visible = new Set<string>()
   for (const bar of verdictBars(spans)) {
     if (bar.traceId && !isSpanBarHidden(bar, selection)) {
@@ -236,12 +245,16 @@ export function mergeFetchedVerdicts(
     }
   }
   const truncated = spans.length >= spanLimit
+  const running = pendingTraceIds(spans)
+  const undecided = new Set<string>()
   for (const traceId of requested) {
     if (visible.has(traceId)) verdicts.set(traceId, true)
+    else if (running.has(traceId)) undecided.add(traceId)
     else if (!truncated && !verdicts.get(traceId)) {
       verdicts.set(traceId, false)
     }
   }
+  return undecided
 }
 
 export function useSpanFilteredTraceRows(
@@ -259,25 +272,26 @@ export function useSpanFilteredTraceRows(
   // reference means the selection changed and every cached verdict is
   // stale. `requested` remembers which traces already went through a
   // composition read (in-flight, done, or failed) so they are asked once
-  // per selection.
+  // per selection — except a trace the read found still running, which is
+  // asked once more after its row settles.
   const cacheRef = useRef<{
     selection: SpanFilterSelection
     verdicts: Map<string, boolean>
-    requested: Set<string>
+    requested: Map<string, 'settled' | 'running'>
   } | null>(null)
 
   // Bumped when a composition read lands verdicts, to re-run the memo.
   const [fetchTick, setFetchTick] = useState(0)
 
   // fetchTick isn't read in the body — it signals `cache.verdicts` grew.
-  // The liveness set is derived from the feed at reconcile time (feed
+  // The running set is derived from the feed at reconcile time (feed
   // frames arrive continuously while anything is live, so it stays fresh
   // without its own clock).
   // biome-ignore lint/correctness/useExhaustiveDependencies: see above
   const visibleRows = useMemo(() => {
     let cache = cacheRef.current
     if (!cache || cache.selection !== selection) {
-      cache = { selection, verdicts: new Map(), requested: new Set() }
+      cache = { selection, verdicts: new Map(), requested: new Map() }
       cacheRef.current = cache
     }
     return reconcileTraceVisibility(
@@ -285,7 +299,7 @@ export function useSpanFilteredTraceRows(
       bars,
       rows,
       selection,
-      liveTraceIds(feedSpans, Date.now()),
+      pendingTraceIds(feedSpans),
     )
   }, [rows, bars, feedSpans, selection, fetchTick])
 
@@ -299,14 +313,20 @@ export function useSpanFilteredTraceRows(
   useEffect(() => {
     const cache = cacheRef.current
     if (!cache || cache.selection !== selection) return
+    // Never read, or read while still running and settled since — a
+    // running row is visible on its own and is not re-read until it
+    // settles, so a long turn costs one read at its start and one at its
+    // end, not one per list refresh.
     const unknown = rows
-      .filter(
-        (r) =>
-          !cache.verdicts.has(r.traceId) && !cache.requested.has(r.traceId),
-      )
+      .filter((r) => {
+        if (cache.verdicts.has(r.traceId)) return false
+        const requested = cache.requested.get(r.traceId)
+        if (requested === undefined) return true
+        return requested === 'running' && r.status !== 'pending'
+      })
       .map((r) => r.traceId)
     if (unknown.length === 0) return
-    for (const traceId of unknown) cache.requested.add(traceId)
+    for (const traceId of unknown) cache.requested.set(traceId, 'settled')
     void (async () => {
       for (let i = 0; i < unknown.length; i += FETCH_TRACE_CHUNK) {
         const chunk = unknown.slice(i, i + FETCH_TRACE_CHUNK)
@@ -318,11 +338,19 @@ export function useSpanFilteredTraceRows(
             limit: FETCH_SPAN_LIMIT,
           })
           if (cacheRef.current !== cache) return
-          mergeFetchedVerdicts(cache.verdicts, chunk, res.spans, selection)
+          const running = mergeFetchedVerdicts(
+            cache.verdicts,
+            chunk,
+            res.spans,
+            selection,
+          )
+          for (const traceId of running) {
+            cache.requested.set(traceId, 'running')
+          }
           setFetchTick((t) => t + 1)
         } catch {
           // Traces unavailable (memory exporter off, transient error) —
-          // the rows simply stay visible.
+          // the rows stay as they are until the feed decides.
         }
       }
     })()

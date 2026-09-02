@@ -3,10 +3,31 @@ import {
   buildTraceListRequestParams,
   filterHiddenTraceRows,
   hiddenFunctionsKey,
+  mergeNewTraceIds,
   shouldDeferTraceUpdate,
   type TraceListItem,
   traceTotalForResponse,
 } from './useTraceData'
+
+describe('mergeNewTraceIds', () => {
+  it('keeps rows still flashing when the next answer adds more', () => {
+    const merged = mergeNewTraceIds(
+      new Set(['a']),
+      new Set(['b']),
+      new Set(['a', 'b', 'c']),
+    )
+    expect([...merged].sort()).toEqual(['a', 'b'])
+  })
+
+  it('drops ids that left the page so the set stays bounded', () => {
+    const merged = mergeNewTraceIds(
+      new Set(['gone', 'a']),
+      new Set(['b']),
+      new Set(['a', 'b']),
+    )
+    expect([...merged].sort()).toEqual(['a', 'b'])
+  })
+})
 
 describe('shouldDeferTraceUpdate', () => {
   it('renders the first answer of an empty scope while hovered', () => {

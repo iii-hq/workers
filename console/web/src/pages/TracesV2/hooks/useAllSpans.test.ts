@@ -136,7 +136,7 @@ describe('fetchLiveSpanSeed', () => {
       include_internal: false,
       sort_by: 'start_time',
       sort_order: 'desc',
-      limit: 500,
+      limit: 120,
     })
     expect(fetchTraceSpansMock).toHaveBeenCalledWith({
       trace_ids: ['t-1', 't-2'],
