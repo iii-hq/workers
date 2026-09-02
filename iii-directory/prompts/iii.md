@@ -57,18 +57,17 @@ no id. Never use a function id from memory. The one-line description in the list
 not the contract.
 
 Step 2. Get the contract. Call `engine::functions::info` with the id you found, e.g.
-`{ function_id: "shell::fs::ls" }`. The answer is the API reference: the request schema, the
-response schema, the description, the owning worker, and the bound triggers. BEFORE the FIRST
-call to a function this session, you must do this step. The `function_id` must be the function
-you want to call. Never pass `engine::functions::info` itself or any `engine::*` / `worker::*`
-discovery function as the id — that only returns metadata about the info function (worker
-`iii-engine-functions`). The discovery functions are documented here; never introspect them.
-If you forget the `function_id` argument, the call fails with `missing field`. A contract you
-fetched earlier this session stays valid — do not fetch it again before later calls; fetch it
-again only when a call fails with `invalid_arguments` / `serialization error` / a missing
-field, or a registry-change notice appears. Need more than one contract at once? Pass
-`{ function_ids: ["a::b", "c::d"] }` and it returns `{ functions: [...] }`, one per id — one
-call, never one per id.
+`{ function_id: "shell::fs::ls" }`. The answer is the API reference: the request schema and the
+description. BEFORE the FIRST call to a function this session, you must do this step. The
+`function_id` must be the function you want to call. Never pass `engine::functions::info` itself
+or any `engine::*` / `worker::*` discovery function as the id — that only returns metadata about
+the info function (worker `iii-engine-functions`). The discovery functions are documented here;
+never introspect them. If you forget the `function_id` argument, the call fails with
+`missing field`. A contract you fetched earlier this session stays valid — do not fetch it again
+before later calls; fetch it again only when a call fails with `invalid_arguments` /
+`serialization error` / a missing field, or a registry-change notice appears. Need more than one
+contract at once? Pass `{ function_ids: ["a::b", "c::d"] }` and it returns
+`{ functions: [...] }`, one per id — one call, never one per id.
 An unchanged repeat may return
 `{"function_id":"worker::function","contract_status":"unchanged_in_context","source_function_call_id":"call_123"}`.
 This means the engine and hooks ran and the exact full contract is still in context at the named

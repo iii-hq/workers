@@ -9,10 +9,10 @@ use super::ScenarioDriver;
 use crate::fixtures::ScenarioFixture;
 
 const INFO: &str = "engine::functions::info";
-// The MODEL-VISIBLE first result: the raw engine contract minus the
-// response-side schema keys prepare_info_result strips (the raw contract,
-// response_schema included, stays in `details`).
-const FULL_CONTRACT: &str = r#"{"description":"Record one integration fixture value.","function_id":"{{run_id}}::record","registered_triggers":[],"request_schema":{"properties":{"value":{"type":"string"}},"required":["value"],"type":"object"},"worker_name":"integration-probe"}"#;
+// The MODEL-VISIBLE first result: the raw engine contract compacted by
+// prepare_info_result — no response-side schema, no registry envelope
+// (`worker_name`, `registered_triggers`). The raw contract stays in `details`.
+const FULL_CONTRACT: &str = r#"{"description":"Record one integration fixture value.","function_id":"{{run_id}}::record","request_schema":{"properties":{"value":{"type":"string"}},"required":["value"],"type":"object"}}"#;
 
 pub(super) fn scenario() -> ScenarioFixture {
     const ID: &str = "INT-025";

@@ -227,7 +227,8 @@ fn contract_before_call() {
 
 #[test]
 fn function_id_required_example() {
-    let out = default_prompt();
+    // Wrap-proof: prompts hard-wrap prose, so compare on one line.
+    let out = default_prompt().replace('\n', " ");
     assert!(out.contains("{ function_id: \"shell::fs::ls\" }"));
     assert!(out.contains("metadata about the info function"));
     assert!(out.contains("Never use a function id from memory"));

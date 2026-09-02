@@ -31,11 +31,11 @@ alongside the harness, so this is the default discovery path; only when
 `{ prefix: "<worker>::" }` or `{ worker: "<name>" }`. Either way, the one-line
 description in a result is a hint, not the contract.
 
-Step 2. Get the contract with `engine::functions::info { function_id: "<id>" }` — the
-request schema, the response schema, the description, and the owning worker. Do this once
-before a function's FIRST call this session; the contract stays valid all session. Batch
-several with `{ function_ids: [...] }`. An `unchanged_in_context` result names the earlier
-call already holding the exact full contract; reuse it.
+Step 2. Get the contract with `engine::functions::info { function_id: "<id>" }` — the request
+schema and the description. Do this once before a function's FIRST call this session; the
+contract stays valid all session. Batch several with `{ function_ids: [...] }`. An
+`unchanged_in_context` result names the earlier call already holding the exact full contract;
+reuse it.
 
 Step 3. Call the function. Set `description` to a concise action label in the language of
 the user's message. `payload` is a JSON OBJECT, never a JSON-encoded string, and every

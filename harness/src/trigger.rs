@@ -119,9 +119,12 @@ fn unique_visible_result<'a>(
     found
 }
 
-/// Compact unchanged, successful `engine::functions::info` contracts while
-/// preserving the raw result in `details`. Returned ledger updates are applied
-/// only after the caller successfully appends the result.
+/// Prepare an `engine::functions::info` result for the model: every
+/// contract in the model-visible copy is compacted (see [`compact_contract`])
+/// and an unchanged, successful contract already in context is replaced by
+/// an `unchanged_in_context` marker. The raw result always stays in
+/// `details`. Returned ledger updates are applied only after the caller
+/// successfully appends the result.
 pub(crate) fn prepare_info_result(
     call_id: &str,
     arguments: &Value,
@@ -129,43 +132,50 @@ pub(crate) fn prepare_info_result(
     ledger: &BTreeMap<String, FunctionContractLedgerEntry>,
     hook_unchanged: bool,
 ) -> (ResultData, Vec<(String, FunctionContractLedgerEntry)>) {
-    if data.is_error || !hook_unchanged || normalize(&data.details).0 != data.content {
-        return (data.clone(), Vec::new());
-    }
+    // The ledger only trusts a pristine result: no error, untouched by hooks,
+    // and content that is the plain render of `details`. Anything else is
+    // still compacted — from whatever the model would otherwise see.
+    let pristine = !data.is_error && hook_unchanged && normalize(&data.details).0 == data.content;
+    let mut display = if pristine {
+        data.details.clone()
+    } else {
+        match content_json(&data.content) {
+            Some(value) => value,
+            None => return (data.clone(), Vec::new()),
+        }
+    };
 
     let requested_single = arguments.get("function_id").and_then(Value::as_str);
     let requested_batch = arguments.get("function_ids").and_then(Value::as_array);
-    let mut display = data.details.clone();
     let mut candidates = Vec::new();
-
-    if let (Some(requested), Some(item)) = (requested_single, display.as_object()) {
-        if valid_contract_id(&Value::Object(item.clone())) == Some(requested) {
-            candidates.push((None, requested.to_string()));
-        }
-    } else if let (Some(requested), Some(items)) = (
-        requested_batch,
-        display.get("functions").and_then(Value::as_array),
-    ) {
-        let requested_counts = counts(requested.iter().filter_map(Value::as_str));
-        let result_counts = counts(items.iter().filter_map(|item| {
-            item.get("function_id")
-                .or_else(|| item.get("id"))
-                .and_then(Value::as_str)
-        }));
-        for (index, item) in items.iter().enumerate() {
-            let Some(id) = valid_contract_id(item) else {
-                continue;
-            };
-            if requested_counts.get(id) == Some(&1) && result_counts.get(id) == Some(&1) {
-                candidates.push((Some(index), id.to_string()));
+    if pristine {
+        if let (Some(requested), Some(item)) = (requested_single, display.as_object()) {
+            if valid_contract_id(&Value::Object(item.clone())) == Some(requested) {
+                candidates.push((None, requested.to_string()));
+            }
+        } else if let (Some(requested), Some(items)) = (
+            requested_batch,
+            display.get("functions").and_then(Value::as_array),
+        ) {
+            let requested_counts = counts(requested.iter().filter_map(Value::as_str));
+            let result_counts = counts(items.iter().filter_map(|item| {
+                item.get("function_id")
+                    .or_else(|| item.get("id"))
+                    .and_then(Value::as_str)
+            }));
+            for (index, item) in items.iter().enumerate() {
+                let Some(id) = valid_contract_id(item) else {
+                    continue;
+                };
+                if requested_counts.get(id) == Some(&1) && result_counts.get(id) == Some(&1) {
+                    candidates.push((Some(index), id.to_string()));
+                }
             }
         }
-    } else {
-        return (data.clone(), Vec::new());
     }
 
     let mut full = Vec::new();
-    let mut compacted = false;
+    let mut changed = false;
     for (index, function_id) in candidates {
         let contract = match index {
             Some(index) => &data.details["functions"][index],
@@ -189,30 +199,27 @@ pub(crate) fn prepare_info_result(
                     Some(index) => display["functions"][index] = marker,
                     None => display = marker,
                 }
-                compacted = true;
+                changed = true;
             }
             Some(source) if source.source_function_call_id == call_id => {}
             _ => full.push((function_id, contract_digest)),
         }
     }
 
-    // Response-side schemas carry no calling contract — the model reads
-    // results, it never constructs them — and they are ~40% of a typical
-    // contract's bytes. Strip them from the model-visible copy only; the raw
-    // contract stays in `details`, and the ledger digest is taken over the
-    // raw contract, so unchanged-detection is unaffected.
-    let mut stripped = false;
+    // Compaction runs on the model-visible copy only, after candidate
+    // selection: `valid_contract_id` needs the raw response schema, and the
+    // ledger digest is taken over the raw contract in `details`.
     match display.get_mut("functions").and_then(Value::as_array_mut) {
         Some(items) => {
             for item in items {
-                stripped |= strip_response_schemas(item);
+                changed |= compact_contract(item);
             }
         }
-        None => stripped |= strip_response_schemas(&mut display),
+        None => changed |= compact_contract(&mut display),
     }
 
     let mut prepared = data.clone();
-    if compacted || stripped {
+    if changed {
         prepared.content = normalize(&display).0;
     }
     let Some(source_content_digest) = digest_content(&prepared.content) else {
@@ -235,17 +242,261 @@ pub(crate) fn prepare_info_result(
     (prepared, updates)
 }
 
-/// Drop the response-side schema keys from one model-visible contract item.
-/// A dedupe marker or error item has none of these — the call is a no-op.
-fn strip_response_schemas(item: &mut Value) -> bool {
+/// The model-visible result as JSON, when it is a single text block holding
+/// a JSON object (the shape every info result and hook rewrite renders to).
+fn content_json(content: &[ContentBlock]) -> Option<Value> {
+    let [ContentBlock::Text { text }] = content else {
+        return None;
+    };
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .filter(Value::is_object)
+}
+
+/// Compact one model-visible contract item in place, dropping what carries
+/// no calling contract: response-side schemas (the model reads results, it
+/// never constructs them), the registry envelope, and JSON-Schema boilerplate
+/// inside the request schema (`$schema`, `title`, `default: null`, and
+/// `definitions` referenced exactly once, which are inlined at their `$ref`).
+/// Property names, types, `required`, `enum`, real defaults and every
+/// description survive. A dedupe marker or error item has none of these keys
+/// — the call is a no-op there.
+fn compact_contract(item: &mut Value) -> bool {
     let Some(object) = item.as_object_mut() else {
         return false;
     };
-    let mut stripped = false;
-    for key in ["response_schema", "response_format"] {
-        stripped |= object.remove(key).is_some();
+    let mut changed = false;
+    for key in [
+        "response_schema",
+        "response_format",
+        "metadata",
+        "registered_triggers",
+        "worker_name",
+        "namespace",
+        "$schema",
+        "title",
+    ] {
+        changed |= object.remove(key).is_some();
     }
-    stripped
+    for key in ["request_schema", "request_format", "parameters"] {
+        if let Some(schema) = object.get_mut(key) {
+            changed |= compact_schema(schema);
+        }
+    }
+    changed
+}
+
+/// Compact one JSON Schema in place: inline single-use definitions, drop the
+/// ones nothing reaches, and strip boilerplate from every schema node.
+fn compact_schema(schema: &mut Value) -> bool {
+    let Some(object) = schema.as_object_mut() else {
+        return false;
+    };
+    let mut changed = false;
+    let definitions_key = ["definitions", "$defs"]
+        .into_iter()
+        .find(|key| object.contains_key(*key));
+    if let Some(key) = definitions_key {
+        let Some(Value::Object(mut definitions)) = object.remove(key) else {
+            return false;
+        };
+        changed = true;
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        count_refs(schema, &mut counts);
+        for body in definitions.values() {
+            count_refs(body, &mut counts);
+        }
+        let mut stack = Vec::new();
+        inline_single_refs(schema, &definitions, &counts, &mut stack);
+        for name in definitions.keys().cloned().collect::<Vec<_>>() {
+            let mut body = definitions.remove(&name).unwrap_or(Value::Null);
+            stack.push(name.clone());
+            inline_single_refs(&mut body, &definitions, &counts, &mut stack);
+            stack.pop();
+            definitions.insert(name, body);
+        }
+        // Keep only what the schema body still reaches.
+        let mut reachable = serde_json::Map::new();
+        let mut queue = Vec::new();
+        collect_refs(schema, &mut queue);
+        while let Some(name) = queue.pop() {
+            if reachable.contains_key(&name) {
+                continue;
+            }
+            if let Some(body) = definitions.get(&name) {
+                collect_refs(body, &mut queue);
+                reachable.insert(name, body.clone());
+            }
+        }
+        if !reachable.is_empty() {
+            if let Some(object) = schema.as_object_mut() {
+                object.insert(key.to_string(), Value::Object(reachable));
+            }
+        }
+    }
+    changed | strip_schema_boilerplate(schema)
+}
+
+/// `#/definitions/X` or `#/$defs/X` → `X`; anything else is not ours.
+fn definition_name(reference: &str) -> Option<&str> {
+    reference
+        .strip_prefix("#/definitions/")
+        .or_else(|| reference.strip_prefix("#/$defs/"))
+}
+
+/// The child schema nodes of one schema node. Only schema positions are
+/// visited: the keys of `properties`/`definitions` maps and data such as
+/// `enum`, `default` or `description` are never treated as schemas.
+fn schema_children(node: &Value) -> Vec<&Value> {
+    let Some(object) = node.as_object() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (key, value) in object {
+        match key.as_str() {
+            "properties" | "patternProperties" | "definitions" | "$defs" => {
+                if let Value::Object(map) = value {
+                    out.extend(map.values());
+                }
+            }
+            "items"
+            | "additionalProperties"
+            | "additionalItems"
+            | "not"
+            | "if"
+            | "then"
+            | "else"
+            | "contains"
+            | "propertyNames" => match value {
+                Value::Object(_) => out.push(value),
+                Value::Array(list) => out.extend(list.iter()),
+                _ => {}
+            },
+            "anyOf" | "oneOf" | "allOf" => {
+                if let Value::Array(list) = value {
+                    out.extend(list.iter());
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn schema_children_mut(node: &mut Value) -> Vec<&mut Value> {
+    let Some(object) = node.as_object_mut() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (key, value) in object.iter_mut() {
+        match key.as_str() {
+            "properties" | "patternProperties" | "definitions" | "$defs" => {
+                if let Value::Object(map) = value {
+                    out.extend(map.values_mut());
+                }
+            }
+            "items"
+            | "additionalProperties"
+            | "additionalItems"
+            | "not"
+            | "if"
+            | "then"
+            | "else"
+            | "contains"
+            | "propertyNames" => match value {
+                Value::Object(_) => out.push(value),
+                Value::Array(list) => out.extend(list.iter_mut()),
+                _ => {}
+            },
+            "anyOf" | "oneOf" | "allOf" => {
+                if let Value::Array(list) = value {
+                    out.extend(list.iter_mut());
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn count_refs(node: &Value, counts: &mut HashMap<String, usize>) {
+    if let Some(name) = node
+        .get("$ref")
+        .and_then(Value::as_str)
+        .and_then(definition_name)
+    {
+        *counts.entry(name.to_string()).or_default() += 1;
+    }
+    for child in schema_children(node) {
+        count_refs(child, counts);
+    }
+}
+
+fn collect_refs(node: &Value, out: &mut Vec<String>) {
+    if let Some(name) = node
+        .get("$ref")
+        .and_then(Value::as_str)
+        .and_then(definition_name)
+    {
+        out.push(name.to_string());
+    }
+    for child in schema_children(node) {
+        collect_refs(child, out);
+    }
+}
+
+/// Replace every `$ref` to a definition used exactly once with the
+/// definition body. Keys beside the `$ref` (a field description, a default)
+/// are kept on the inlined body. `stack` guards recursive definitions.
+fn inline_single_refs(
+    node: &mut Value,
+    definitions: &serde_json::Map<String, Value>,
+    counts: &HashMap<String, usize>,
+    stack: &mut Vec<String>,
+) {
+    let target = node
+        .get("$ref")
+        .and_then(Value::as_str)
+        .and_then(definition_name)
+        .map(str::to_string);
+    if let Some(name) = target {
+        if counts.get(&name) == Some(&1) && !stack.contains(&name) {
+            if let Some(body) = definitions.get(&name) {
+                let mut inlined = body.clone();
+                if let (Value::Object(target), Value::Object(site)) = (&mut inlined, &*node) {
+                    for (key, value) in site {
+                        if key != "$ref" {
+                            target.insert(key.clone(), value.clone());
+                        }
+                    }
+                }
+                *node = inlined;
+                stack.push(name);
+                inline_single_refs(node, definitions, counts, stack);
+                stack.pop();
+            }
+        }
+        return;
+    }
+    for child in schema_children_mut(node) {
+        inline_single_refs(child, definitions, counts, stack);
+    }
+}
+
+fn strip_schema_boilerplate(node: &mut Value) -> bool {
+    let mut changed = false;
+    if let Some(object) = node.as_object_mut() {
+        changed |= object.remove("$schema").is_some();
+        changed |= object.remove("title").is_some();
+        if object.get("default") == Some(&Value::Null) {
+            object.remove("default");
+            changed = true;
+        }
+    }
+    for child in schema_children_mut(node) {
+        changed |= strip_schema_boilerplate(child);
+    }
+    changed
 }
 
 fn valid_contract_id(value: &Value) -> Option<&str> {
@@ -625,17 +876,17 @@ mod tests {
     }
 
     /// The model-visible rendering of a full contract result: `details`
-    /// minus the response-side schema keys prepare_info_result strips.
+    /// with every contract compacted the way prepare_info_result does.
     fn stripped_content(details: &Value) -> Vec<ContentBlock> {
         let mut display = details.clone();
         match display.get_mut("functions").and_then(Value::as_array_mut) {
             Some(items) => {
                 for item in items {
-                    strip_response_schemas(item);
+                    compact_contract(item);
                 }
             }
             None => {
-                strip_response_schemas(&mut display);
+                compact_contract(&mut display);
             }
         }
         normalize(&display).0
@@ -847,8 +1098,12 @@ mod tests {
 
         let (hook_mutated, updates) =
             prepare_info_result("later", &args, &data, &same_call_ledger, false);
-        assert_eq!(hook_mutated, data);
-        assert!(updates.is_empty());
+        assert_eq!(hook_mutated.content, stripped_content(&data.details));
+        assert_eq!(hook_mutated.details, data.details);
+        assert!(
+            updates.is_empty(),
+            "a hook-mutated result is compacted but never sourced"
+        );
 
         let changed_details = json!({
             "function_id": "worker::function",
@@ -872,8 +1127,12 @@ mod tests {
         };
         let (prepared, updates) =
             prepare_info_result("error", &args, &error, &same_call_ledger, true);
-        assert_eq!(prepared, error);
-        assert!(updates.is_empty());
+        assert_eq!(prepared.content, stripped_content(&error.details));
+        assert_eq!(prepared.details, error.details);
+        assert!(
+            updates.is_empty(),
+            "an error result is compacted but never sourced"
+        );
     }
 
     #[test]
@@ -1289,5 +1548,245 @@ mod tests {
         let mut denied = json!({ "function_id": "fs::read", "request_schema": {} });
         post_filter_info(&mut denied, &policy);
         assert!(denied.is_null());
+    }
+    fn content_value(content: &[ContentBlock]) -> Value {
+        let [ContentBlock::Text { text }] = content else {
+            panic!("expected one text block, got {content:?}");
+        };
+        serde_json::from_str(text).unwrap()
+    }
+
+    #[test]
+    fn compact_contract_strips_envelope_and_schema_boilerplate() {
+        let mut item = serde_json::json!({
+            "function_id": "worker::function",
+            "description": "Does the thing.",
+            "namespace": "default",
+            "worker_name": "worker",
+            "registered_triggers": [],
+            "metadata": { "k": "v" },
+            "response_schema": { "type": "object" },
+            "request_schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "title": "Input",
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string", "description": "a property literally named title" },
+                    "mode": { "type": "string", "enum": ["a", "b"], "default": "a" },
+                    "opt": { "type": ["string", "null"], "default": null },
+                    "once": { "description": "site prose stays", "allOf": [{ "$ref": "#/definitions/Once" }] },
+                    "many": { "type": "array", "items": { "$ref": "#/definitions/Shared" } },
+                    "other": { "$ref": "#/definitions/Shared" }
+                },
+                "required": ["mode"],
+                "definitions": {
+                    "Once": { "title": "Once", "type": "object", "properties": { "x": { "type": "integer" } } },
+                    "Shared": { "title": "Shared", "type": "string" },
+                    "Unused": { "type": "boolean" }
+                }
+            }
+        });
+        assert!(compact_contract(&mut item));
+        let expected = serde_json::json!({
+            "function_id": "worker::function",
+            "description": "Does the thing.",
+            "request_schema": {
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string", "description": "a property literally named title" },
+                    "mode": { "type": "string", "enum": ["a", "b"], "default": "a" },
+                    "opt": { "type": ["string", "null"] },
+                    "once": { "description": "site prose stays", "allOf": [{ "type": "object", "properties": { "x": { "type": "integer" } } }] },
+                    "many": { "type": "array", "items": { "$ref": "#/definitions/Shared" } },
+                    "other": { "$ref": "#/definitions/Shared" }
+                },
+                "required": ["mode"],
+                "definitions": { "Shared": { "type": "string" } }
+            }
+        });
+        assert_eq!(item, expected);
+        compact_contract(&mut item);
+        assert_eq!(item, expected, "compaction is idempotent");
+
+        let marker = serde_json::json!({
+            "function_id": "x",
+            "contract_status": "unchanged_in_context",
+            "source_function_call_id": "c"
+        });
+        let mut untouched = marker.clone();
+        assert!(!compact_contract(&mut untouched));
+        assert_eq!(untouched, marker);
+        let mut error = serde_json::json!({ "function_id": "x", "error": "not found" });
+        assert!(!compact_contract(&mut error));
+    }
+
+    #[test]
+    fn compact_schema_keeps_recursive_definitions_and_ref_site_prose() {
+        let mut schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "tree": { "$ref": "#/definitions/Node" },
+                "leaf": { "$ref": "#/definitions/Leaf", "description": "documented at the site", "default": null }
+            },
+            "definitions": {
+                "Node": {
+                    "type": "object",
+                    "properties": { "children": { "type": "array", "items": { "$ref": "#/definitions/Node" } } }
+                },
+                "Leaf": { "type": "integer", "description": "generic body prose" }
+            }
+        });
+        compact_schema(&mut schema);
+        assert_eq!(
+            schema["properties"]["tree"],
+            serde_json::json!({ "$ref": "#/definitions/Node" })
+        );
+        assert!(schema["definitions"]["Node"].is_object());
+        assert_eq!(
+            schema["properties"]["leaf"],
+            serde_json::json!({ "type": "integer", "description": "documented at the site" })
+        );
+        assert!(schema["definitions"].get("Leaf").is_none());
+    }
+
+    #[test]
+    fn hook_mutated_and_error_info_results_are_still_compacted() {
+        let details = serde_json::json!({
+            "function_id": "worker::function",
+            "request_schema": { "$schema": "x", "type": "object" },
+            "response_schema": { "type": "object" },
+            "worker_name": "w"
+        });
+        let mut mutated = details.clone();
+        mutated["description"] = serde_json::json!("hook says hi");
+        let data = ResultData {
+            content: vec![ContentBlock::text(mutated.to_string())],
+            is_error: false,
+            details: details.clone(),
+        };
+        let arguments = serde_json::json!({ "function_id": "worker::function" });
+        let (prepared, updates) =
+            prepare_info_result("call-1", &arguments, &data, &BTreeMap::new(), false);
+        assert!(
+            updates.is_empty(),
+            "a hook-mutated result never becomes a ledger source"
+        );
+        assert_eq!(
+            content_value(&prepared.content),
+            serde_json::json!({
+                "description": "hook says hi",
+                "function_id": "worker::function",
+                "request_schema": { "type": "object" }
+            })
+        );
+        assert_eq!(prepared.details, details, "details keep the raw contract");
+
+        let details = serde_json::json!({ "functions": [
+            { "function_id": "worker::missing", "error": "not found" },
+            {
+                "function_id": "worker::function",
+                "request_schema": { "title": "T", "type": "object" },
+                "response_schema": { "type": "object" },
+                "registered_triggers": []
+            }
+        ]});
+        let data = ResultData {
+            content: vec![ContentBlock::text(details.to_string())],
+            is_error: true,
+            details: details.clone(),
+        };
+        let arguments =
+            serde_json::json!({ "function_ids": ["worker::missing", "worker::function"] });
+        let (prepared, updates) =
+            prepare_info_result("call-2", &arguments, &data, &BTreeMap::new(), true);
+        assert!(
+            updates.is_empty(),
+            "an error result never becomes a ledger source"
+        );
+        assert_eq!(
+            content_value(&prepared.content),
+            serde_json::json!({ "functions": [
+                { "function_id": "worker::missing", "error": "not found" },
+                { "function_id": "worker::function", "request_schema": { "type": "object" } }
+            ]})
+        );
+
+        let data = ResultData {
+            content: vec![ContentBlock::text("function not found")],
+            is_error: true,
+            details: serde_json::json!("function not found"),
+        };
+        let (prepared, updates) = prepare_info_result(
+            "call-3",
+            &serde_json::json!({ "function_id": "x" }),
+            &data,
+            &BTreeMap::new(),
+            true,
+        );
+        assert_eq!(prepared, data, "non-JSON content is left alone");
+        assert!(updates.is_empty());
+    }
+
+    #[test]
+    fn corpus_contracts_compact_without_changing_what_validates() {
+        // Captured from live sessions (MOT-4636): the contracts the engine
+        // delivered and the payloads models sent after reading them.
+        let corpus: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/support/function_contracts_corpus.json"
+        )))
+        .unwrap();
+        let contracts = corpus["contracts"].as_array().unwrap();
+        let calls = corpus["calls"].as_array().unwrap();
+
+        let (mut raw_bytes, mut compact_bytes) = (0usize, 0usize);
+        let mut compacted_by_id = HashMap::new();
+        for contract in contracts {
+            let id = contract["function_id"].as_str().unwrap();
+            let mut compacted = contract.clone();
+            compact_contract(&mut compacted);
+            raw_bytes += serde_json::to_vec(contract).unwrap().len();
+            compact_bytes += serde_json::to_vec(&compacted).unwrap().len();
+            for key in [
+                "$schema",
+                "title",
+                "response_schema",
+                "worker_name",
+                "registered_triggers",
+                "namespace",
+                "metadata",
+            ] {
+                assert!(compacted.get(key).is_none(), "{id}: `{key}` survived");
+            }
+            assert!(
+                JSONSchema::compile(&compacted["request_schema"]).is_ok(),
+                "{id}: compacted request schema does not compile"
+            );
+            compacted_by_id.insert(id.to_string(), compacted);
+        }
+        eprintln!("corpus contracts: {raw_bytes} -> {compact_bytes} bytes");
+        assert!(
+            compact_bytes * 100 <= raw_bytes * 75,
+            "expected >= 25% reduction, got {raw_bytes} -> {compact_bytes}"
+        );
+
+        let mut checked = 0;
+        for call in calls {
+            let function = call["function"].as_str().unwrap();
+            let Some(raw) = contracts.iter().find(|c| c["function_id"] == function) else {
+                continue;
+            };
+            let raw = JSONSchema::compile(&raw["request_schema"]).unwrap();
+            let compact =
+                JSONSchema::compile(&compacted_by_id[function]["request_schema"]).unwrap();
+            let payload = &call["payload"];
+            assert_eq!(
+                raw.is_valid(payload),
+                compact.is_valid(payload),
+                "{function}: compaction changed the validity of {payload}"
+            );
+            checked += 1;
+        }
+        assert!(checked >= 100, "only {checked} real payloads checked");
     }
 }
