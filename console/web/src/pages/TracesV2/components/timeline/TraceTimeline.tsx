@@ -548,6 +548,25 @@ export function TraceTimeline({
   // fitContent: ruler + packed lines, plus room for a classic (non-overlay)
   // horizontal scrollbar so it can't clip the bottom line
   const fitHeight = contentHeight + RULER_H + (scrollableX ? 14 : 0)
+  // On a LIVE trace the stage only grows. Every silent reload and every
+  // one-second live rebuild re-packs the lines, and a pending bar growing
+  // into a neighbour, a closed one settling, or the horizontal scrollbar
+  // coming and going moved the stage by a line (22px) or a scrollbar
+  // (14px) every second or two — with the detail open under its row
+  // (follow mode) everything below jumped along (MOT-4621). Once every
+  // span has closed the exact height applies again, so a finished trace
+  // never keeps stale room.
+  const live = detail.spans.some((s) => s.status === 'pending')
+  const stickyFitRef = useRef(0)
+  const stageHeight = useMemo(() => {
+    if (!live) {
+      stickyFitRef.current = 0
+      return fitHeight
+    }
+    const grown = Math.max(fitHeight, stickyFitRef.current)
+    stickyFitRef.current = grown
+    return grown
+  }, [live, fitHeight])
 
   const trackHover = (id: string) => (e: React.MouseEvent) => {
     if (dragRef.current?.active) return
@@ -634,7 +653,7 @@ export function TraceTimeline({
           'relative min-h-0',
           fitContent ? 'min-h-[120px] max-h-[60dvh]' : 'flex-1',
         )}
-        style={fitContent ? { height: fitHeight } : undefined}
+        style={fitContent ? { height: stageHeight } : undefined}
       >
         {/* filter menu, floating over the canvas below the ruler row:
             funnel expands on hover into the workers + span-group lists
