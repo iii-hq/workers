@@ -1,11 +1,11 @@
 name: Harness integration benchmark
-run-name: Harness integration benchmark · ${{ inputs.runner }} · ${{ inputs.cache-mode }} · ${{ inputs.source-ref || github.sha }}
+run-name: Harness integration build benchmark · ${{ inputs.runner }} · ${{ inputs.cache-mode }} · ${{ inputs.source-ref || github.sha }}
 
 on:
   workflow_dispatch:
     inputs:
       runner:
-        description: Runner pool to measure
+        description: Build runner pool to measure (execution stays on ubuntu-latest)
         type: choice
         required: true
         default: workers-ci-linux-8core

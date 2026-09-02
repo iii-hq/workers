@@ -105,8 +105,8 @@ cost, isolation and performance measurements.
 
 | Label | Infrastructure | Capacity | Current use |
 |---|---|---:|---|
-| `ubuntu-latest` | Standard GitHub-hosted Linux | GitHub-managed | PR checks, normal E2E and the default Harness integration |
-| `workers-ci-linux-8core` | Larger GitHub-hosted Linux | 2 concurrent | Manual Harness integration benchmark only |
+| `ubuntu-latest` | Standard GitHub-hosted Linux | GitHub-managed | PR checks, normal E2E, Harness validation and execution shards |
+| `workers-ci-linux-8core` | Larger GitHub-hosted Linux | 2 concurrent | Single Harness stack build and its manual benchmark |
 | `workers-release-control-linux-2core` | Larger GitHub-hosted Linux | 8 concurrent | Reserved for a later migration of release control jobs; no workflow selects it yet |
 | `workers-release-linux-8core` | Larger GitHub-hosted Linux | 8 concurrent | Linux release builds and, until migrated, release control jobs |
 | `windows-latest` | Standard GitHub-hosted Windows | GitHub-managed | Windows release builds |
@@ -122,12 +122,18 @@ self-hosted label is not part of the Workers routing contract.
 ### Harness integration recovery and benchmark
 
 [`_harness-integration.yml`](../../.github/workflows/_harness-integration.yml)
-defaults to `ubuntu-latest`; callers must opt into any other pool. This keeps
-pull requests running when optional capacity is unavailable.
+builds the complete stack once on `workers-ci-linux-8core`. The build produces
+a checksummed bundle tied to the checked-out commit and containing the freshly
+downloaded latest `iii @rc` plus every compiled stack binary. Independent
+Integration and Playwright jobs verify that bundle and run in parallel on
+`ubuntu-latest`; scenario validation also runs there while the stack builds.
+Callers can override `runner` for the build or `execution-runner` for the other
+jobs without changing this dependency graph.
 
 Use
 [`harness-integration-benchmark.yml`](../../.github/workflows/harness-integration-benchmark.yml)
-to compare `ubuntu-latest` with `workers-ci-linux-8core`:
+to compare `ubuntu-latest` with `workers-ci-linux-8core` for the single build
+job while keeping execution on the standard runner:
 
 1. Select one immutable `source-ref` SHA for the entire cohort.
 2. Run ten candidate executions: seven `warm` and three `cold`. Run matched
@@ -136,9 +142,9 @@ to compare `ubuntu-latest` with `workers-ci-linux-8core`:
    and cannot save it, so it neither restores nor pollutes the warm cache.
 4. Record queue time and execution time from the job API, cache hits from the
    job summary, and billed minutes for the larger runner.
-5. Keep the 8-core pool only when execution p95 is below 10 minutes and the
-   improvement over `ubuntu-latest` is at least 25%. Otherwise retain
-   `ubuntu-latest` as the permanent default.
+5. Keep the 8-core pool only when build p95 is below 10 minutes and the
+   improvement over `ubuntu-latest` is at least 25%. Otherwise move the build
+   back to `ubuntu-latest`; execution shards remain on that pool either way.
 
 Initial service targets are CI queue p95 below 60 seconds, no job waiting more
 than five minutes for a runner, Harness integration execution p95 below ten
@@ -157,12 +163,12 @@ queue is excluded because it includes the one-time runner-group access repair.
 | 8-core cold | 3 | 17m32 | 19m11 |
 
 A matched warm `ubuntu-latest` run took 11m11, so the 8-core warm p50 improved
-execution by about 20%, below the 25% retention threshold. The ten 8-core jobs
-consumed 121 rounded billed minutes, approximately US$2.66 at the price used
-for the pilot. Because standard runners are free for this public repository,
-`ubuntu-latest` remains the default. Keep the 8-core pool restricted and use
-it only for deliberate rebenchmarks after the Harness workload or cache keys
-change.
+the original monolithic job by about 20%, below the 25% retention threshold.
+The ten 8-core jobs consumed 121 rounded billed minutes, approximately US$2.66
+at the price used for the pilot. That result does not measure the current
+topology: the larger runner is now billed only for one shared build, while the
+two execution shards run concurrently on standard runners. Rebenchmark this
+build-only topology after changes to the Harness workload or cache keys.
 
 ## Script tests
 
