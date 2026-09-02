@@ -58,58 +58,38 @@ pub const UNREGISTER_TRIGGER_ID: &str = "engine::unregister_trigger";
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[schemars(rename = "SubscribeArgs")]
 pub struct SubscribeRequest {
-    /// The iii trigger type to listen on: `cron`, `state`, `stream`, `timer`
-    /// (one-shot deadline: `{ "in_ms": <ms> }` or `{ "at": <epoch ms> }`), or
-    /// another worker's custom trigger type (e.g. `database::row-changed`).
-    /// For an ad-hoc signal, subscribe to `state` on a key and have the
-    /// signaller call `state::set` on it (no dedicated emit needed — the
-    /// engine fans the trigger out to every subscriber).
+    /// Trigger type to listen on: `cron`, `state`, `stream`, `timer`, or
+    /// another worker's custom type (e.g. `database::row-changed`).
     pub trigger_type: String,
-    /// The trigger config, passed verbatim to the engine — e.g.
-    /// `{ "expression": "0 */5 * * * *" }` for cron, or a `state` scope/key.
+    /// Trigger config passed verbatim to the engine: cron `{ "expression" }`,
+    /// state scope/key, timer `{ "in_ms" }` or `{ "at" }` (epoch ms).
     #[serde(default)]
     pub config: Value,
     /// A short human label echoed back in the notification text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    /// Auto-unsubscribe after the first delivered fire. Defaults by SHAPE:
-    /// a WAKE (no `function_id`) is once — it parks this session until the
-    /// event; a CALL binding is STANDING — it runs per matching event until
-    /// unregistered or its lifecycle ends; `cron` is recurring; `timer` is
-    /// once. Pass `once` explicitly to override any of these.
+    /// Auto-unsubscribe after the first fire; defaults to true for a wake (no
+    /// `function_id`) and `timer`, false for a call binding and `cron`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub once: Option<bool>,
-    /// Target function called on each event. Omit for a notification message
-    /// into this session — the only shape that can reach you. Any non-harness
-    /// function your policy allows may be named; `harness::spawn` is NOT a
-    /// binding target — a binding never starts an agent. Spawn children
-    /// directly from a turn and register a wake on what they write.
+    /// Function called on each event; omit to be notified in this session
+    /// instead. `harness::spawn` is never a valid target.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub function_id: Option<String>,
-    /// Presentation metadata plus the optional call-binding template:
-    /// `{ action?, payload?, event_into? }`. `action` is a short user-facing
-    /// description of the event shown when this trigger fires (for example,
-    /// "new Explorer message received"); unlike `label`, it describes what
-    /// happened rather than naming the binding. `payload` is the fixed
-    /// argument object sent to a call target; `event_into` is a JSON pointer
-    /// naming where the fired event is injected into that payload. For a
-    /// wake, only `action` has meaning. Sub-agent fields
-    /// (task/model/session_id/options) are rejected — spawning is not
-    /// something a binding does.
+    /// Optional `{ action?, payload?, event_into? }`: user-facing event text,
+    /// the fixed call payload, and the JSON pointer where the event is
+    /// injected into it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
-    /// Explicit target, the long form of `function_id` + `metadata`:
-    /// `{ function_id, payload?, event_into? }`. The shorthands stay valid and
-    /// mean exactly this.
+    /// Long form of `function_id` + `metadata`: `{ function_id, payload?,
+    /// event_into? }`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<BindingTarget>,
-    /// Gates evaluated at fire time, in order, each an ordinary iii function
-    /// answering `{ decision: "allow" | "skip", payload?, reason? }`. The
-    /// built-in safety gates run first and are not listed here.
+    /// Fire-time gates, in order; each is an iii function answering
+    /// `{ decision: "allow" | "skip", payload?, reason? }`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditions: Vec<ConditionSpec>,
-    /// When the binding stops firing. `once` may also be given at the top
-    /// level (the shorthand every prompt uses).
+    /// When the binding stops firing; top-level `once` is the shorthand.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle: Option<LifecycleRequest>,
 }
@@ -120,19 +100,18 @@ pub struct SubscribeRequest {
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LifecycleRequest {
-    /// Auto-unsubscribe after the first delivered fire. The top-level `once`
-    /// field remains accepted as shorthand.
+    /// Auto-unsubscribe after the first fire (same as top-level `once`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub once: Option<bool>,
     /// Lifetime delivery budget; the binding retires on its Nth delivery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_fires: Option<u64>,
-    /// RELATIVE deadline: the binding stops this many milliseconds from
-    /// registration (resolved to an absolute instant server-side). The ONLY
-    /// deadline form — absolute `expires_at` was retired from this contract
-    /// after repeated stale-epoch guesses (verify-wake-fix-1/-4: models sent
-    /// months-old round numbers); `deny_unknown_fields` turns it into a
-    /// field-naming error instead of a silently dropped deadline.
+    /// Relative deadline: the binding stops this many milliseconds after
+    /// registration (the only deadline form).
+    // Absolute `expires_at` was retired after repeated stale-epoch guesses
+    // (verify-wake-fix-1/-4: models sent months-old round numbers);
+    // `deny_unknown_fields` turns it into a field-naming error instead of a
+    // silently dropped deadline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_in_ms: Option<i64>,
 }

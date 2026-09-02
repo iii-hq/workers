@@ -27,24 +27,20 @@ use crate::subscriptions::fired;
 
 pub const TRIGGERS_LIST_ID: &str = "harness::triggers::list";
 pub const TRIGGERS_LIST_DESC: &str =
-    "Read-only: the trigger bindings a session owns (durable records) — subscription id, \
-     trigger type/config, delivery target (absent = notifies the owner), label/event \
-     action, conditions, lifecycle, and fire count. In-turn agent calls may omit \
-     `session_id` (defaults to the calling session).";
+    "List the trigger bindings a session owns: subscription id, trigger type/config, \
+     target (absent = notifies the owner), label, conditions, lifecycle, and fire count. \
+     In-turn calls may omit `session_id`.";
 
 pub const TRIGGERS_UNREGISTER_ID: &str = "harness::triggers::unregister";
 pub const TRIGGERS_UNREGISTER_DESC: &str =
-    "Tear down one trigger binding by subscription id: unregister the engine trigger AND \
-     delete the durable record (an engine-side unregister alone strands the owner's armed \
-     wake). `session_id` must name the binding's owner; in-turn agent calls may omit it \
-     (defaults to the calling session). A still-armed wake torn down this way notifies \
-     its parked owner.";
+    "Tear down one trigger binding by subscription id (engine trigger and durable record); \
+     a still-armed wake notifies its parked owner. `session_id` must name the owner; \
+     in-turn calls may omit it.";
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct TriggersListRequest {
-    /// The owning session whose bindings to list. In-turn agent calls may
-    /// omit it — the harness injects the calling session. External callers
-    /// (console, CLI) must name the owner explicitly.
+    /// Owner session whose bindings to list; in-turn calls may omit it (the
+    /// calling session is injected).
     #[serde(default)]
     pub session_id: Option<String>,
 }
@@ -140,16 +136,14 @@ fn row_from(binding: &Binding) -> TriggerRow {
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct TriggersUnregisterRequest {
-    /// `id` accepted as an alias: the sibling teardown contract
-    /// (`engine::unregister_trigger`) calls this field `id`, and models carry
-    /// that name over — verify-wake-fix-1 postmortem: the first unregister of
-    /// the run failed on a raw serde "missing field" for exactly this.
+    /// The subscription to remove (`id` is accepted as an alias).
+    // The sibling `engine::unregister_trigger` calls this field `id` and models
+    // carry that name over — verify-wake-fix-1 postmortem: the first unregister
+    // of the run failed on a raw serde "missing field" for exactly this.
     #[serde(alias = "id")]
     pub subscription_id: String,
-    /// The binding's owner session — a correctness handshake, checked against
-    /// the record. In-turn agent calls may omit it (the harness injects the
-    /// calling session). The console's privileged path supplies the owner it
-    /// just listed.
+    /// The binding's owner session; in-turn calls may omit it (the calling
+    /// session is injected).
     #[serde(default)]
     pub session_id: Option<String>,
 }

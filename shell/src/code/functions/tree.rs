@@ -30,11 +30,7 @@ use crate::code::path::PathResolver;
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(example = "example_tree_input")]
 pub struct TreeInput {
-    /// Base folder for the snapshot. Relative to the primary allowed root,
-    /// or an absolute path inside any allowed root. Defaults to `.` (the
-    /// primary root itself). Call `coder::info` to see the allowed roots.
-    /// Paths outside every allowed root are rejected — use the shell
-    /// worker's `shell::fs::*` for host paths outside the jail.
+    /// Base folder for the snapshot (default `.`).
     #[serde(default = "default_path")]
     pub path: String,
     /// Maximum depth to descend; the root node is depth 0.
@@ -44,19 +40,12 @@ pub struct TreeInput {
     /// flagged `truncated` and callers should switch to `coder::list-folder`.
     #[serde(default)]
     pub per_folder_limit: Option<u32>,
-    /// Apply the worker's `default_exclude_globs` config (noise folders
-    /// like .git/node_modules/target — call `coder::info` for the active
-    /// list). Excluded directories still appear as childless nodes
-    /// flagged `truncated` with reason "default_exclude"; excluded files
-    /// are omitted and their containing directory carries the same
-    /// truncation reason. Pass `false` to list everything.
+    /// Prune directories matching default_exclude_globs (see coder::info) into
+    /// childless `truncated` stubs; false lists everything.
     #[serde(default = "default_true")]
     pub use_default_excludes: bool,
-    /// List hidden (dot-prefixed) entries. Pass `false` to omit them —
-    /// files and folders alike — at every level; omitted entries do not
-    /// count toward `per_folder_limit`, so the cap serves visible names.
-    /// The requested root itself is exempt: explicitly naming a hidden
-    /// folder still lists its contents.
+    /// List dot-prefixed entries; false omits them at every level (they then
+    /// don't count toward per_folder_limit). The requested root is exempt.
     #[serde(default = "default_true")]
     pub include_hidden: bool,
     /// Internal harness filesystem scope; omitted from published schema.

@@ -263,8 +263,9 @@ pub struct ReadArgs {
 // Registration-boundary requests — each carries `target` plus the matching
 // `*Args` fields and derives `JsonSchema` for the SDK.
 
-/// `fs_scope` is accepted at deserialization time for trusted harness metadata,
-/// but is omitted from every published `shell::fs::*` request schema.
+/// Request for `shell::fs::ls`.
+// `fs_scope` is accepted at deserialization time for trusted harness metadata,
+// but is omitted from every published `shell::fs::*` request schema.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LsRequest {
     /// host (default) or { kind: "sandbox", sandbox_id }.
@@ -553,10 +554,9 @@ impl SedRequest {
     }
 }
 
-/// Wire form of write content. A plain JSON **string** is written inline (host
-/// target only); a JSON **object** is a streaming `ContentRef` (host or sandbox,
-/// for large/streamed payloads). Untagged, so callers just pass `"content":
-/// "text"` or `"content": { channel_id, access_key, direction }`.
+/// Write content: a plain string is written inline (host target only); an
+/// object is a streaming ContentRef { channel_id, access_key, direction }.
+// Untagged, so callers just pass `"content": "text"` or the object.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum WriteContentWire {
@@ -599,21 +599,22 @@ pub struct WriteRequest {
     /// set, else absolute. Omit when using `files`.
     #[serde(default)]
     pub path: Option<String>,
-    /// Single-file content: a plain string written inline (host target only),
-    /// OR a ContentRef { channel_id, access_key, direction } for an open write
-    /// stream channel. Omit when using `files`.
+    /// Single-file content: an inline string (host only) or a ContentRef {
+    /// channel_id, access_key, direction } for an open write stream; omit with
+    /// `files`.
     #[serde(default)]
     pub content: Option<WriteContentWire>,
-    /// Octal permission string for the single-file form, e.g. "0644".
-    /// `Option` (not a defaulted `String`) so the batch-form check can tell
-    /// "caller omitted mode" from "caller sent a mode" and reject the latter
-    /// instead of silently dropping it. Defaults to "0644" in the single-file
-    /// path. Omit when using `files` (each entry carries its own `mode`).
+    /// Octal permission string for the single-file form, e.g. "0644" (the
+    /// default); omit when using `files`.
+    // `Option` (not a defaulted `String`) so the batch-form check can tell
+    // "caller omitted mode" from "caller sent a mode" and reject the latter
+    // instead of silently dropping it.
     #[serde(default)]
     pub mode: Option<String>,
-    /// Create missing parent directories (single-file form). `Option` for the
-    /// same reason as `mode` — so a top-level `parents` sent alongside `files`
-    /// is rejected, not ignored. Defaults to `false`. Omit when using `files`.
+    /// Create missing parent directories (single-file form, default false);
+    /// omit when using `files`.
+    // `Option` for the same reason as `mode` — a top-level `parents` sent
+    // alongside `files` is rejected, not ignored.
     #[serde(default)]
     pub parents: Option<bool>,
     /// Batch form: write several files in one call. When present, the

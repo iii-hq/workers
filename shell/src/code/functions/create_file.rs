@@ -41,10 +41,7 @@ impl<'de> Deserialize<'de> for CreateFileInput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CreateFileSpec {
-    /// Path relative to the primary allowed root, or an absolute path inside
-    /// any allowed root. Call `coder::info` to see the allowed roots. Paths
-    /// outside every allowed root are rejected — use the shell worker's
-    /// `shell::fs::*` for host paths outside the jail.
+    /// File to create.
     pub path: String,
     pub content: String,
     /// Octal permission bits as a string, e.g. "0644". Defaults to "0644".
@@ -57,10 +54,8 @@ pub struct CreateFileSpec {
     /// When false (the default), refuse to write if `path` already exists.
     #[serde(default)]
     pub overwrite: bool,
-    /// Optional optimistic concurrency precondition for an overwrite. Pass
-    /// the opaque `revision` returned by `coder::read-file`; if the file no
-    /// longer has that exact content, the entry fails with C221 and is not
-    /// written. Omit for backward-compatible unconditional overwrite.
+    /// Optimistic-concurrency guard for an overwrite: the `revision` from
+    /// coder::read-file; if the content changed the entry fails C221 unwritten.
     #[serde(default)]
     pub expected_revision: Option<String>,
 }

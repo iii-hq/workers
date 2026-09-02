@@ -1,5 +1,5 @@
 {
-  "description": "Search file contents and/or paths. Path search matches files AND directories (each path_match carries kind: file|dir); content search reads files only. Supports literal or regex queries with include/exclude globs; non-accessible files are excluded from both content and path results. Only the FIRST match on each line is reported (one content match per matching line). Optional context_lines_before/context_lines_after (max 10) attach surrounding lines to each content match so many edits can go straight to coder::update-file with no read in between. Noise paths matching default_exclude_globs (.git, node_modules, target, … — coder::info lists them) are skipped by default; pass use_default_excludes: false to search inside them. Files larger than max_read_bytes are silently skipped during content scanning. Results are capped by max_matches AND a response byte budget (search_response_budget_bytes); when truncated is true, refine the query or add include_globs rather than paginate. Paths are relative to the primary allowed root or absolute inside any allowed root (coder::info lists them); for host paths outside the jail use shell::fs::*.",
+  "description": "Search file contents (literal or regex) and/or paths (files and dirs); first match per line only. default_exclude_globs noise is skipped unless use_default_excludes: false. truncated: true means refine the query, not paginate. Paths: relative to the primary root or absolute inside an allowed root (see coder::info).",
   "function_id": "coder::search",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -19,7 +19,7 @@
     "properties": {
       "context_lines_after": {
         "default": null,
-        "description": "Lines of context to return AFTER each content match. Same max (10), truncation, and budget rules as `context_lines_before`; unset = 0.",
+        "description": "Lines of context after each content match; same rules as `context_lines_before`.",
         "format": "uint32",
         "minimum": 0.0,
         "type": [
@@ -29,7 +29,7 @@
       },
       "context_lines_before": {
         "default": null,
-        "description": "Lines of context to return BEFORE each content match (same file only, in file order), max 10 — larger values are rejected with C210. With context lines many edit tasks can go straight from search output to coder::update-file with no read in between. Context lines are truncated to `max_line_bytes` like the matched text and count toward the response byte budget. Unset = 0.",
+        "description": "Lines of context before each content match (max 10, C210 above); truncated to max_line_bytes and counted in the budget. Default 0.",
         "format": "uint32",
         "minimum": 0.0,
         "type": [
@@ -51,7 +51,7 @@
       },
       "include_globs": {
         "default": [],
-        "description": "Glob patterns (matched against the path relative to its containing root — or, for a walk root outside every configured root, relative to the session directory `coder::info` reports as `session_root`) that paths must match to be considered. Empty = include everything.",
+        "description": "Root-relative glob patterns paths must match; empty = everything.",
         "items": {
           "type": "string"
         },
@@ -79,7 +79,7 @@
       },
       "path": {
         "default": ".",
-        "description": "Folder scoping the walk. Relative to the primary allowed root, or an absolute path inside any allowed root. Defaults to `.` (the primary root itself). Globs are matched relative to the containing root; result paths are absolute regardless of this value. Call `coder::info` to see the allowed roots. Paths outside every allowed root are rejected — use the shell worker's `shell::fs::*` for host paths outside the jail.",
+        "description": "Folder to search (default `.`); globs match relative to its root, result paths are absolute.",
         "type": "string"
       },
       "query": {
@@ -102,7 +102,7 @@
       },
       "use_default_excludes": {
         "default": true,
-        "description": "Apply the worker's `default_exclude_globs` config (noise paths like .git, node_modules, target, dist — call coder::info for the active list): the walk does not descend into matching directories and matching files are omitted from BOTH content and path results. Pass `false` to search inside them.",
+        "description": "Skip paths matching default_exclude_globs (.git, node_modules, …; see coder::info) in content and path results; false searches inside them.",
         "type": "boolean"
       }
     },

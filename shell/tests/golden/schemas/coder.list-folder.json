@@ -1,5 +1,5 @@
 {
-  "description": "Paginated single-folder listing, sorted by name. Entries carry only `name`; derive an entry's absolute path as the response's `path` + '/' + name. Non-accessible entries are still listed with a `non_accessible: true` flag. Paths are relative to the primary allowed root or absolute inside any allowed root (coder::info lists them); for host paths outside the jail use shell::fs::*.",
+  "description": "Paginated single-folder listing sorted by name. Entries carry only name; entry path = response path + '/' + name. Non-accessible entries are listed with non_accessible: true. Paths: relative to the primary root or absolute inside an allowed root (see coder::info).",
   "function_id": "coder::list-folder",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -19,7 +19,7 @@
       },
       "page_size": {
         "default": null,
-        "description": "Capped by `config.list_max_page_size`; falls back to `config.list_default_page_size` when omitted.",
+        "description": "Capped at list_max_page_size; defaults to list_default_page_size (see coder::info).",
         "format": "uint32",
         "minimum": 0.0,
         "type": [
@@ -29,7 +29,7 @@
       },
       "path": {
         "default": ".",
-        "description": "Folder to list. Relative to the primary allowed root, or an absolute path inside any allowed root. Defaults to `.` (the primary root itself). Call `coder::info` to see the allowed roots. Paths outside every allowed root are rejected — use the shell worker's `shell::fs::*` for host paths outside the jail.",
+        "description": "Folder to list (default `.`).",
         "type": "string"
       }
     },

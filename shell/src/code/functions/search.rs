@@ -35,23 +35,15 @@ pub struct SearchInput {
     /// Pattern to search for. Treated as a regex when `regex: true`,
     /// otherwise as a literal substring.
     pub query: String,
-    /// Folder scoping the walk. Relative to the primary allowed root, or an
-    /// absolute path inside any allowed root. Defaults to `.` (the primary
-    /// root itself). Globs are matched relative to the containing root;
-    /// result paths are absolute regardless of this value. Call
-    /// `coder::info` to see the allowed roots. Paths outside every allowed
-    /// root are rejected — use the shell worker's `shell::fs::*` for host
-    /// paths outside the jail.
+    /// Folder to search (default `.`); globs match relative to its root, result
+    /// paths are absolute.
     #[serde(default = "default_path")]
     pub path: String,
     #[serde(default)]
     pub regex: bool,
     #[serde(default)]
     pub ignore_case: bool,
-    /// Glob patterns (matched against the path relative to its containing
-    /// root — or, for a walk root outside every configured root, relative
-    /// to the session directory `coder::info` reports as `session_root`)
-    /// that paths must match to be considered. Empty = include everything.
+    /// Root-relative glob patterns paths must match; empty = everything.
     #[serde(default)]
     pub include_globs: Vec<String>,
     /// Glob patterns (same relative-to-root matching) that exclude paths.
@@ -64,24 +56,16 @@ pub struct SearchInput {
     /// truncated for the match snippet.
     #[serde(default)]
     pub max_line_bytes: Option<u32>,
-    /// Lines of context to return BEFORE each content match (same file
-    /// only, in file order), max 10 — larger values are rejected with
-    /// C210. With context lines many edit tasks can go straight from
-    /// search output to coder::update-file with no read in between.
-    /// Context lines are truncated to `max_line_bytes` like the matched
-    /// text and count toward the response byte budget. Unset = 0.
+    /// Lines of context before each content match (max 10, C210 above);
+    /// truncated to max_line_bytes and counted in the budget. Default 0.
     #[serde(default)]
     pub context_lines_before: Option<u32>,
-    /// Lines of context to return AFTER each content match. Same max
-    /// (10), truncation, and budget rules as `context_lines_before`;
-    /// unset = 0.
+    /// Lines of context after each content match; same rules as
+    /// `context_lines_before`.
     #[serde(default)]
     pub context_lines_after: Option<u32>,
-    /// Apply the worker's `default_exclude_globs` config (noise paths
-    /// like .git, node_modules, target, dist — call coder::info for the
-    /// active list): the walk does not descend into matching directories
-    /// and matching files are omitted from BOTH content and path
-    /// results. Pass `false` to search inside them.
+    /// Skip paths matching default_exclude_globs (.git, node_modules, …; see
+    /// coder::info) in content and path results; false searches inside them.
     #[serde(default = "default_true")]
     pub use_default_excludes: bool,
     /// Search file contents (default true).
