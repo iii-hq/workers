@@ -65,16 +65,42 @@ def test_prs_restore_rust_caches_and_main_pushes_publish_them() -> None:
     assert rust_cache["with"]["save-if"] == expected
     assert crate_cache["with"]["save-if"] == expected
     assert "github.event_name == 'pull_request'" in ci["jobs"]["interface-smoke"]["if"]
+    assert ci["jobs"]["harness-integration"]["with"]["runner"] == (
+        "${{ github.event_name == 'push' && 'workers-ci-linux-8core' || "
+        "'ubuntu-latest' }}"
+    )
     assert ci["jobs"]["harness-integration"]["with"]["save-cache"] == expected
 
 
-def test_harness_integration_defaults_to_an_available_hosted_runner() -> None:
+def test_harness_integration_builds_once_then_fans_out_on_standard_runners() -> None:
     reusable = workflow("_harness-integration.yml")
     assert reusable["on"]["workflow_call"]["inputs"]["runner"]["default"] == (
+        "workers-ci-linux-8core"
+    )
+    assert reusable["on"]["workflow_call"]["inputs"]["execution-runner"]["default"] == (
         "ubuntu-latest"
     )
-    assert reusable["jobs"]["integration"]["runs-on"] == "${{ inputs.runner }}"
-    assert reusable["jobs"]["integration"]["timeout-minutes"] == "90"
+    assert reusable["jobs"]["build"]["runs-on"] == "${{ inputs.runner }}"
+    for job_name in ("validate", "integration", "playwright", "coverage"):
+        assert reusable["jobs"][job_name]["runs-on"] == "${{ inputs.execution-runner }}"
+
+    build_steps = reusable["jobs"]["build"]["steps"]
+    assert "integration-build" in named_step(build_steps, "Build integration stack once")["run"]
+    assert named_step(build_steps, "Upload stack bundle")["with"]["if-no-files-found"] == "error"
+    for job_name in ("integration", "playwright"):
+        job = reusable["jobs"][job_name]
+        assert job["needs"] == ["validate", "build"]
+        assert named_step(job["steps"], "Download stack bundle")
+
+    integration_run = named_step(
+        reusable["jobs"]["integration"]["steps"], "Run integration scenarios"
+    )["run"]
+    assert "integration-run" in integration_run
+    assert "cargo build" not in integration_run
+
+    playwright_steps = reusable["jobs"]["playwright"]["steps"]
+    playwright_body = "\n".join(str(step.get("run", "")) for step in playwright_steps)
+    assert "cargo build" not in playwright_body
 
 
 def test_harness_benchmark_is_manual_and_keeps_cold_caches_isolated() -> None:
@@ -129,7 +155,10 @@ def test_runner_pool_contract_is_documented() -> None:
     assert "ten candidate executions" in runner_docs
     assert "improvement over `ubuntu-latest` is at least 25%" in runner_docs
     assert "8-core warm | 7 | 8m54 | 9m17" in runner_docs
-    assert "`ubuntu-latest` remains the default" in runner_docs
+    assert "builds the complete stack once" in runner_docs
+    assert "trusted `main` push uses\n`workers-ci-linux-8core`" in runner_docs
+    assert "Integration and Playwright jobs verify\nthat bundle and run in parallel" in runner_docs
+    assert "PR merge refs build the same bundle on\n`ubuntu-latest`" in runner_docs
 
 
 def test_interface_smoke_bounds_each_engine_readiness_probe() -> None:
@@ -146,7 +175,7 @@ def test_interface_smoke_bounds_each_engine_readiness_probe() -> None:
 
 def test_harness_integration_downloads_latest_rc_engine_without_building_it() -> None:
     integration = workflow("_harness-integration.yml")
-    steps = integration["jobs"]["integration"]["steps"]
+    steps = integration["jobs"]["build"]["steps"]
     install = named_step(steps, "Install latest iii @rc")
     stack_cache = named_step(steps, "Restore integration Rust cache")
 
@@ -162,7 +191,7 @@ def test_harness_integration_downloads_latest_rc_engine_without_building_it() ->
 
 def test_slow_rust_builds_upload_cargo_timing_reports() -> None:
     integration = workflow("_harness-integration.yml")
-    integration_steps = integration["jobs"]["integration"]["steps"]
+    integration_steps = integration["jobs"]["build"]["steps"]
     timing_upload = named_step(integration_steps, "Upload Rust build timings")
     assert timing_upload["if"] == "always()"
     assert "cargo-timings/*.html" in timing_upload["with"]["path"]

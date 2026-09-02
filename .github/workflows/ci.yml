@@ -816,6 +816,10 @@ jobs:
       contents: read
     uses: ./.github/workflows/_harness-integration.yml
     with:
+      # The restricted larger-runner group only admits trusted branch/tag
+      # workflow refs. PR merge refs use the same topology on a standard
+      # runner; the trusted main push builds on the 8-core pool.
+      runner: ${{ github.event_name == 'push' && 'workers-ci-linux-8core' || 'ubuntu-latest' }}
       save-cache: ${{ github.event_name == 'push' }}
 
   # ──────────────────────────────────────────────────────────────
