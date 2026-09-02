@@ -15,9 +15,8 @@ pub struct HandoffInput {
     /// What the human must do before the call continues. Shown in the
     /// in-page banner and the handoff-requested event.
     pub instructions: String,
-    /// Give up after this long and return with `via: "timeout"`. Defaults to
-    /// the config default; clamped to `max_timeout_ms`. Set generously; a
-    /// human is slow.
+    /// Give up after this many ms and return `via: "timeout"` (clamped to
+    /// `max_timeout_ms`); set generously, a human is slow.
     #[serde(default)]
     pub timeout_ms: Option<u64>,
 }

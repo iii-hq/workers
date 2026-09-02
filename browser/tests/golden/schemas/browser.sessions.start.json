@@ -15,7 +15,7 @@
         ]
       },
       "read_only": {
-        "description": "Inspection-only session: act, evaluate, execute, and styles::write are rejected while navigation, snapshots, reads, and screenshots work. Immutable for the session's lifetime.",
+        "description": "Inspection-only session for its whole lifetime: act, evaluate, execute and styles::write are rejected; navigation and reads work.",
         "default": null,
         "type": [
           "boolean",

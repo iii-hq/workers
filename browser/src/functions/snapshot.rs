@@ -6,9 +6,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SnapshotInput {
     pub session_id: String,
-    /// Return only what changed since this session's previous snapshot
-    /// instead of the full outline. Falls back to a full snapshot when
-    /// there is no baseline (first snapshot, or first after a navigation).
+    /// Return only what changed since the previous snapshot; a full outline
+    /// when there is no baseline (first snapshot or after a navigation).
     #[serde(default)]
     pub diff: Option<bool>,
 }

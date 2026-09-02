@@ -23,9 +23,8 @@ pub struct ScreencastStopInput {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct FrameInput {
     pub session_id: String,
-    /// Frame cursor from the previous read; when the newest frame still has
-    /// this seq the response omits `frame` (nothing changed, nothing to
-    /// redraw).
+    /// Frame cursor from the previous read; the response omits `frame` while
+    /// the newest frame still has this seq.
     #[serde(default)]
     pub since_frame: Option<u64>,
 }

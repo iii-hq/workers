@@ -13,7 +13,7 @@
         "type": "string"
       },
       "since_frame": {
-        "description": "Frame cursor from the previous read; when the newest frame still has this seq the response omits `frame` (nothing changed, nothing to redraw).",
+        "description": "Frame cursor from the previous read; the response omits `frame` while the newest frame still has this seq.",
         "default": null,
         "type": [
           "integer",
