@@ -93,6 +93,28 @@ fn default_auto_download() -> bool {
     true
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FunctionSearchMode {
+    #[default]
+    Lexical,
+    Shadow,
+    Hybrid,
+}
+
+fn deserialize_model_path<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    if value.as_deref().is_some_and(|path| path.trim().is_empty()) {
+        return Err(serde::de::Error::custom(
+            "function_search_model_path must not be empty",
+        ));
+    }
+    Ok(value)
+}
+
 #[derive(Deserialize, Serialize, Debug, Clone, JsonSchema)]
 pub struct SkillsConfig {
     /// Folder that backs every read (`directory::skills::list`,
@@ -206,6 +228,15 @@ pub struct SkillsConfig {
     /// section.
     #[serde(default = "default_registry_search")]
     pub registry_search: bool,
+
+    /// Installed-function search lane. Lexical is the stable default;
+    /// shadow computes semantic rankings without returning them.
+    #[serde(default)]
+    pub function_search_mode: FunctionSearchMode,
+
+    /// Existing local Potion model directory. Runtime never downloads it.
+    #[serde(default, deserialize_with = "deserialize_model_path")]
+    pub function_search_model_path: Option<String>,
 }
 
 fn default_inject_hint() -> bool {
@@ -237,6 +268,8 @@ impl Default for SkillsConfig {
             inject_hint: default_inject_hint(),
             hint_min_workers: default_hint_min_workers(),
             registry_search: default_registry_search(),
+            function_search_mode: FunctionSearchMode::default(),
+            function_search_model_path: None,
         }
     }
 }
@@ -303,10 +336,16 @@ impl SkillsConfig {
         self.registry_url.trim_end_matches('/')
     }
 
+    pub fn resolved_function_search_model_path(&self) -> Option<PathBuf> {
+        self.function_search_model_path
+            .as_deref()
+            .map(iii_worker_paths::resolve_path)
+    }
+
     /// Restart-requiring fields. A `configuration:updated` reload that
     /// changes any of these is refused (logged "restart required"):
     /// `skills_folder` / `local_skills_folder` / `agents_folder` /
-    /// `agents_skills_folder` are the on-disk read/write roots baked into
+    /// `agents_skills_folder` and `function_search_model_path` are on-disk roots baked into
     /// running tasks (and the fs-watch root set), and `auto_download` wires
     /// the `worker`-trigger subscription + boot reconcile at startup — none
     /// can be re-wired safely in place.
@@ -317,6 +356,7 @@ impl SkillsConfig {
             agents_folder: self.agents_folder.clone(),
             agents_skills_folder: self.agents_skills_folder.clone(),
             auto_download: self.auto_download,
+            function_search_model_path: self.resolved_function_search_model_path(),
         }
     }
 
@@ -375,6 +415,7 @@ pub struct Topology {
     pub agents_folder: String,
     pub agents_skills_folder: String,
     pub auto_download: bool,
+    pub function_search_model_path: Option<PathBuf>,
 }
 
 pub fn load_config(path: &str) -> Result<SkillsConfig> {
@@ -390,6 +431,8 @@ mod tests {
     #[test]
     fn defaults_from_empty_yaml() {
         let cfg: SkillsConfig = serde_yaml::from_str("{}").unwrap();
+        assert_eq!(cfg.function_search_mode, FunctionSearchMode::Lexical);
+        assert_eq!(cfg.function_search_model_path, None);
         assert_eq!(cfg.skills_folder, default_skills_folder());
         assert_eq!(cfg.local_skills_folder, default_local_skills_folder());
         assert_eq!(cfg.agents_folder, default_agents_folder());
@@ -399,6 +442,20 @@ mod tests {
         assert_eq!(cfg.registry_cache_ttl_ms, 60_000);
         assert!(cfg.filter_unregistered);
         assert!(cfg.auto_download);
+    }
+
+    #[test]
+    fn function_search_modes_parse_and_invalid_values_fail() {
+        for (name, expected) in [
+            ("lexical", FunctionSearchMode::Lexical),
+            ("shadow", FunctionSearchMode::Shadow),
+            ("hybrid", FunctionSearchMode::Hybrid),
+        ] {
+            let cfg = SkillsConfig::from_yaml(&format!("function_search_mode: {name}\n")).unwrap();
+            assert_eq!(cfg.function_search_mode, expected);
+        }
+        assert!(SkillsConfig::from_yaml("function_search_mode: remote\n").is_err());
+        assert!(SkillsConfig::from_yaml("function_search_model_path: ''\n").is_err());
     }
 
     #[test]
@@ -603,6 +660,8 @@ auto_download: false
             "registry_cache_ttl_ms",
             "filter_unregistered",
             "auto_download",
+            "function_search_mode",
+            "function_search_model_path",
         ] {
             assert!(props.contains_key(field), "schema missing {field}");
         }
@@ -647,6 +706,7 @@ auto_download: false
             download_timeout_ms: 1,
             registry_cache_ttl_ms: 2,
             filter_unregistered: !base.filter_unregistered,
+            function_search_mode: FunctionSearchMode::Hybrid,
             ..base.clone()
         };
         assert_eq!(base.topology(), tuned.topology());
@@ -675,10 +735,15 @@ auto_download: false
             auto_download: !base.auto_download,
             ..base.clone()
         };
+        let model = SkillsConfig {
+            function_search_model_path: Some("/models/potion".into()),
+            ..base.clone()
+        };
         assert_ne!(base.topology(), folder.topology());
         assert_ne!(base.topology(), local.topology());
         assert_ne!(base.topology(), agents.topology());
         assert_ne!(base.topology(), profiles.topology());
         assert_ne!(base.topology(), auto.topology());
+        assert_ne!(base.topology(), model.topology());
     }
 }

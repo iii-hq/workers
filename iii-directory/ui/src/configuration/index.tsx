@@ -8,7 +8,7 @@
  * below the form drives `configuration::set`). Mirrors SkillsConfig
  * (workers/iii-directory/src/config.rs): skills_folder,
  * local_skills_folder, agent profile/skill roots, registry_url, timeouts,
- * filtering, auto-download, search hints, and registry search.
+ * filtering, auto-download, function search, search hints, and registry search.
  */
 
 import {
@@ -16,13 +16,21 @@ import {
   type ConfigFormProps,
   Input,
   type JsonValue,
+  Select,
   SettingsList,
   SettingsRow,
   SettingsSection,
   Switch,
 } from '@iii-dev/console-ui'
 import { useEffect, useRef } from 'react'
-import { booleanWithDefault } from './model'
+import {
+  booleanWithDefault,
+  FUNCTION_SEARCH_MODE_OPTIONS,
+  type FunctionSearchMode,
+  functionSearchModeWithDefault,
+  semanticModeNeedsModel,
+  withFunctionSearchMode,
+} from './model'
 
 type JsonObject = { [key: string]: JsonValue }
 
@@ -42,6 +50,7 @@ const TOPOLOGY_FIELDS = new Set([
   'agents_folder',
   'agents_skills_folder',
   'auto_download',
+  'function_search_model_path',
 ])
 
 const INLINE_ERROR_POINTERS = new Set([
@@ -59,6 +68,8 @@ const INLINE_ERROR_POINTERS = new Set([
   '/inject_hint',
   '/hint_min_workers',
   '/registry_search',
+  '/function_search_mode',
+  '/function_search_model_path',
 ])
 
 export function DirectoryConfigForm(props: ConfigFormProps) {
@@ -85,6 +96,10 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
 
   const setBool = (field: string, checked: boolean) => {
     commit({ ...value, [field]: checked })
+  }
+
+  const setFunctionSearchMode = (mode: FunctionSearchMode) => {
+    commit(withFunctionSearchMode(value, mode))
   }
 
   // Each explicit form owns the field markup, so it also honors deep-link
@@ -227,6 +242,29 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
             hint="Subscribe to worker additions and reconcile missing skill bundles at startup."
             checked={booleanWithDefault(value.auto_download, true)}
             onChange={setBool}
+            errors={props.errors}
+          />
+        </SettingsList>
+      </SettingsSection>
+
+      <SettingsSection
+        title="Function search"
+        description="Choose how installed function contracts are ranked. Mode changes apply without restarting iii-directory."
+      >
+        <SettingsList>
+          <SearchModeField
+            value={functionSearchModeWithDefault(value.function_search_mode)}
+            modelPath={value.function_search_model_path}
+            onChange={setFunctionSearchMode}
+            errors={props.errors}
+          />
+          <TextField
+            field="function_search_model_path"
+            label="Semantic model directory"
+            placeholder="~/.cache/iii/all-MiniLM-L6-v2-…"
+            hint="Existing directory containing the local semantic model. The runtime never downloads a model, and changing this path requires a worker restart."
+            value={asString(value.function_search_model_path)}
+            onChange={setString}
             errors={props.errors}
           />
         </SettingsList>
@@ -393,6 +431,67 @@ function NumberField({
           aria-invalid={presentation.invalid || undefined}
           aria-describedby={presentation.describedBy}
           onChange={(next) => onChange(field, next)}
+        />
+      }
+    />
+  )
+}
+
+function SearchModeField({
+  value,
+  modelPath,
+  onChange,
+  errors,
+}: {
+  value: FunctionSearchMode
+  modelPath: JsonValue | undefined
+  onChange: (mode: FunctionSearchMode) => void
+  errors?: ConfigFormProps['errors']
+}) {
+  const field = 'function_search_mode'
+  const hint =
+    'Lexical returns BM25 rankings. Shadow computes semantic rankings without changing results. Hybrid fuses BM25 with the local semantic model.'
+  const presentation = fieldPresentation(field, hint, errors)
+  const needsModel = semanticModeNeedsModel(value, modelPath)
+  const noticeId = needsModel ? `${presentation.id}-model-notice` : undefined
+  const modeLabel = FUNCTION_SEARCH_MODE_OPTIONS.find((option) => option.value === value)?.label
+  const notice = needsModel ? (
+    <span className="dir-ui-config-notice" id={noticeId}>
+      <Chip tone="warning">Model required</Chip>
+      <span>
+        {modeLabel} requires a local semantic model. Set its directory below and restart iii-directory; searches use
+        lexical fallback until then.
+      </span>
+    </span>
+  ) : null
+
+  return (
+    <SettingsRow
+      data-field={field}
+      label={<FieldLabel field={field} htmlFor={presentation.id} label="Function search mode" />}
+      description={presentation.description}
+      meta={
+        presentation.meta || notice ? (
+          <>
+            {presentation.meta}
+            {notice}
+          </>
+        ) : undefined
+      }
+      control={
+        <Select<FunctionSearchMode>
+          id={presentation.id}
+          name={field}
+          data-field={field}
+          className="dir-ui-config-control dir-ui-config-select"
+          value={value}
+          options={[...FUNCTION_SEARCH_MODE_OPTIONS]}
+          aria-label="Function search mode"
+          aria-invalid={presentation.invalid || undefined}
+          aria-describedby={describedBy(presentation.describedBy, noticeId)}
+          sheetTitle="Function search mode"
+          sheetDescription="Choose the ranking lane used by directory::search_functions."
+          onChange={onChange}
         />
       }
     />

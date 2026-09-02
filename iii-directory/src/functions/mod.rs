@@ -23,6 +23,8 @@ pub mod search;
 pub mod search_index;
 #[cfg(test)]
 mod search_relevance;
+#[doc(hidden)]
+pub mod search_semantic;
 pub mod skills;
 pub mod update;
 

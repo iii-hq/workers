@@ -15,13 +15,16 @@ use iii_sdk::{IIIClient, RegisterFunction};
 use serde_json::{json, Value};
 use tokio::sync::{Mutex, RwLock};
 
-use crate::config::{SharedConfig, SkillsConfig};
+use crate::config::{FunctionSearchMode, SharedConfig, SkillsConfig};
 use crate::functions::registry::{
     self, RegistryCache, Worker, WorkerInfoInput, WorkerInfoOutput, WorkerListInput,
 };
 use crate::functions::search_index::{
     canonical_tools, compact_query, tool_fingerprint, Bm25Index, ToolSchema,
     EXCLUDED_NAMESPACE_PREFIXES, SEARCH_FN,
+};
+use crate::functions::search_semantic::{
+    weighted_rrf, SemanticSearch, MODEL_REVISION, MODEL_SHA256,
 };
 use crate::surface::search_catalog as catalog;
 
@@ -47,6 +50,12 @@ const SEARCH_FN_FLOOR: f64 = 0.5;
 /// Above this fraction of the leader a function stays even with lower term
 /// coverage — the high-score keep that protects co-relevant companions.
 const SEARCH_FN_KEEP: f64 = 0.85;
+pub(super) const SEMANTIC_WEIGHT: f64 = 0.75;
+pub(super) const SEMANTIC_MINIMUM_COSINE: f32 = 0.441_937_3;
+/// Frozen v14 production policy: fuse the complete BM25 and embedding
+/// rankings, then anchor the cross-encoder order back into retrieval.
+const PRODUCTION_RETRIEVAL_WEIGHT: f64 = 1.0;
+const PRODUCTION_RERANKER_WEIGHT: f64 = 1.25;
 /// Capability-sized searches accepted by one request.
 const MAX_SEARCH_QUERIES: usize = 6;
 /// Registry list queries per search: each capability, then informative
@@ -81,6 +90,7 @@ pub struct Deps {
     pub catalog: CatalogCell,
     pub sessions: Arc<std::sync::Mutex<SessionRegistry>>,
     pub registry_cache: RegistryCache,
+    pub semantic: SemanticSearch,
 }
 
 const SESSIONS_CAP: usize = 1024;
@@ -327,6 +337,10 @@ pub struct SearchFunctionsResponse {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub installable: Vec<InstallableWorker>,
     pub latency_ms: f64,
+    #[cfg(test)]
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub(crate) production_minilm_complete: Option<bool>,
 }
 
 /// Drop every worker whose best-ranked function scores below
@@ -388,25 +402,19 @@ fn drop_low_coverage(ranked: Vec<(String, f64, u32)>) -> Vec<(String, f64)> {
 /// Rank each capability against its own leader, taking results round-robin so
 /// every capability gets a candidate before any gets a rider. Scores from
 /// separate rankings are not comparable.
-fn rank_queries(
-    index: &Bm25Index,
-    queries: &[String],
-    budget: usize,
-    namespace_floor: Option<f64>,
-) -> Vec<String> {
-    let rank = |text: &str| {
-        let ranked = drop_low_coverage(index.rank_with_matches(text));
-        match namespace_floor {
-            Some(floor) => drop_trailing_namespaces(ranked, floor),
-            None => ranked,
-        }
-    };
-    let per_query: Vec<Vec<(String, f64)>> = queries.iter().map(|query| rank(query)).collect();
+fn lexical_rankings(index: &Bm25Index, queries: &[String]) -> Vec<Vec<(String, f64)>> {
+    queries
+        .iter()
+        .map(|query| drop_low_coverage(index.rank_with_matches(query)))
+        .collect()
+}
+
+fn round_robin_rankings(rankings: &[Vec<(String, f64)>], budget: usize) -> Vec<String> {
     let mut selected: Vec<String> = Vec::new();
     let mut round = 0;
     while selected.len() < budget {
         let mut any = false;
-        for ranking in &per_query {
+        for ranking in rankings {
             let Some((function_id, _)) = ranking.get(round) else {
                 continue;
             };
@@ -424,6 +432,254 @@ fn rank_queries(
         round += 1;
     }
     selected
+}
+
+fn rank_queries(
+    index: &Bm25Index,
+    queries: &[String],
+    budget: usize,
+    namespace_floor: Option<f64>,
+) -> Vec<String> {
+    let mut rankings = lexical_rankings(index, queries);
+    if let Some(floor) = namespace_floor {
+        rankings = rankings
+            .into_iter()
+            .map(|ranking| drop_trailing_namespaces(ranking, floor))
+            .collect();
+    }
+    round_robin_rankings(&rankings, budget)
+}
+
+fn needs_semantic(mode: FunctionSearchMode) -> bool {
+    mode != FunctionSearchMode::Lexical
+}
+
+fn rankings_for_mode(
+    mode: FunctionSearchMode,
+    lexical: &[Vec<(String, f64)>],
+    semantic: Option<Vec<Vec<(String, f64)>>>,
+    semantic_weight: f64,
+) -> Vec<Vec<(String, f64)>> {
+    if mode != FunctionSearchMode::Hybrid {
+        return lexical.to_vec();
+    }
+    let fused = match semantic {
+        Some(semantic) if semantic.len() == lexical.len() => lexical
+            .iter()
+            .zip(semantic)
+            .map(|(lexical, semantic)| {
+                if semantic.is_empty() {
+                    Vec::new()
+                } else {
+                    weighted_rrf(lexical, &semantic, semantic_weight)
+                }
+            })
+            .collect(),
+        _ => return lexical.to_vec(),
+    };
+    fused
+}
+
+fn exact_function_id(query: &str, tools: &[ToolSchema]) -> Option<String> {
+    let query = query.trim();
+    tools
+        .iter()
+        .any(|tool| tool.name == query)
+        .then(|| query.to_owned())
+}
+
+fn production_fallback_rankings(
+    tools: &[ToolSchema],
+    queries: &[String],
+    lexical: &[Vec<(String, f64)>],
+) -> Vec<Vec<(String, f64)>> {
+    let mut rankings = lexical.to_vec();
+    for (position, query) in queries.iter().take(rankings.len()).enumerate() {
+        if let Some(id) = exact_function_id(query, tools) {
+            rankings[position] = vec![(id, 0.0)];
+        }
+    }
+    rankings
+}
+
+/// Apply the frozen production ordering only when the reranker returns one
+/// finite, unique score for every member of the complete retrieval union.
+/// Invalid model output is represented by `None` so the caller can fail open
+/// to the lexical baseline.
+fn production_minilm_ordering(
+    lexical: &[(String, f64)],
+    semantic: &[(String, f64)],
+    raw_reranker: &[(String, f64)],
+) -> Option<Vec<(String, f64)>> {
+    let retrieval = weighted_rrf(lexical, semantic, PRODUCTION_RETRIEVAL_WEIGHT);
+    let retrieval_ids: HashSet<&str> = retrieval.iter().map(|(id, _)| id.as_str()).collect();
+    let mut reranker_ids = HashSet::with_capacity(raw_reranker.len());
+    if raw_reranker.len() != retrieval_ids.len()
+        || raw_reranker
+            .iter()
+            .any(|(id, score)| !score.is_finite() || !reranker_ids.insert(id.as_str()))
+        || reranker_ids != retrieval_ids
+    {
+        return None;
+    }
+    let mut reranker = raw_reranker.to_vec();
+    reranker.sort_by(|left, right| {
+        right
+            .1
+            .total_cmp(&left.1)
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    Some(weighted_rrf(
+        &retrieval,
+        &reranker,
+        PRODUCTION_RERANKER_WEIGHT,
+    ))
+}
+
+struct ProductionMinilmOutcome {
+    rankings: Vec<Vec<(String, f64)>>,
+    complete: bool,
+}
+
+async fn production_minilm_rankings(
+    semantic: &SemanticSearch,
+    catalog_fingerprint: &str,
+    tools: &[ToolSchema],
+    queries: &[String],
+    lexical: &[Vec<(String, f64)>],
+) -> Option<ProductionMinilmOutcome> {
+    if queries.len() != lexical.len() {
+        return None;
+    }
+    let mut rankings = production_fallback_rankings(tools, queries, lexical);
+    let model_positions: Vec<usize> = queries
+        .iter()
+        .enumerate()
+        .filter_map(|(position, query)| {
+            exact_function_id(query, tools)
+                .is_none()
+                .then_some(position)
+        })
+        .collect();
+    if model_positions.is_empty() {
+        return Some(ProductionMinilmOutcome {
+            rankings,
+            complete: true,
+        });
+    }
+    let model_queries: Vec<String> = model_positions
+        .iter()
+        .map(|position| queries[*position].clone())
+        .collect();
+    let semantic_ranked = semantic
+        .rank(catalog_fingerprint, &model_queries, -1.0)
+        .await
+        .ok()?;
+    if semantic_ranked.len() != model_positions.len() {
+        return None;
+    }
+    let candidate_ids: Vec<Vec<String>> = model_positions
+        .iter()
+        .zip(&semantic_ranked)
+        .map(|(position, dense)| {
+            weighted_rrf(&lexical[*position], dense, PRODUCTION_RETRIEVAL_WEIGHT)
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect()
+        })
+        .collect();
+    let reranked = semantic
+        .rerank(catalog_fingerprint, &model_queries, &candidate_ids)
+        .await
+        .ok()?;
+    if reranked.len() != model_positions.len() {
+        return None;
+    }
+    let mut complete = true;
+    for (((position, dense), raw_reranker), expected_ids) in model_positions
+        .into_iter()
+        .zip(semantic_ranked)
+        .zip(reranked)
+        .zip(candidate_ids)
+    {
+        let Some(ordered) = production_minilm_ordering(&lexical[position], &dense, &raw_reranker)
+        else {
+            complete = false;
+            continue;
+        };
+        let ordered_ids: HashSet<&str> = ordered.iter().map(|(id, _)| id.as_str()).collect();
+        if expected_ids.len() != ordered_ids.len()
+            || expected_ids
+                .iter()
+                .any(|id| !ordered_ids.contains(id.as_str()))
+        {
+            complete = false;
+            continue;
+        }
+        rankings[position] = ordered;
+    }
+    Some(ProductionMinilmOutcome { rankings, complete })
+}
+
+fn select_preordered_ids(rankings: Vec<Vec<(String, f64)>>) -> Vec<String> {
+    let rankings = rankings
+        .into_iter()
+        .map(|ranking| drop_trailing_namespaces(ranking, SEARCH_RANK_FLOOR))
+        .collect::<Vec<_>>();
+    limit_search_workers(round_robin_rankings(&rankings, MAX_SEARCH_FUNCTIONS))
+}
+
+#[cfg(test)]
+fn select_ranked_ids(
+    mode: FunctionSearchMode,
+    lexical: &[Vec<(String, f64)>],
+    semantic: Option<Vec<Vec<(String, f64)>>>,
+    semantic_weight: f64,
+) -> Vec<String> {
+    let rankings = rankings_for_mode(mode, lexical, semantic, semantic_weight)
+        .into_iter()
+        .map(|ranking| drop_trailing_namespaces(ranking, SEARCH_RANK_FLOOR))
+        .collect::<Vec<_>>();
+    limit_search_workers(round_robin_rankings(&rankings, MAX_SEARCH_FUNCTIONS))
+}
+
+pub(super) fn search_queries(capabilities: &[String]) -> Vec<String> {
+    capabilities
+        .iter()
+        .map(|capability| compact_query(capability.trim()))
+        .filter(|capability| !intrinsic_capability(capability))
+        .collect()
+}
+
+#[cfg(test)]
+pub(super) fn hybrid_ranking_for_test(
+    tools: &[ToolSchema],
+    capabilities: &[String],
+    mut raw_semantic: Vec<Vec<(String, f64)>>,
+    minimum_cosine: f32,
+    semantic_weight: f64,
+) -> Vec<String> {
+    let queries = search_queries(capabilities);
+    let corpus = canonical_tools(tools);
+    let lexical = lexical_rankings(&Bm25Index::build(&corpus), &queries);
+    for ranking in &mut raw_semantic {
+        ranking.retain(|(_, score)| *score >= f64::from(minimum_cosine));
+    }
+    let selected = select_ranked_ids(
+        FunctionSearchMode::Hybrid,
+        &lexical,
+        Some(raw_semantic),
+        semantic_weight,
+    );
+    assemble_workers(&selected, tools)
+        .into_iter()
+        .flat_map(|worker| {
+            worker
+                .functions
+                .into_iter()
+                .map(|function| function.function_id)
+        })
+        .collect()
 }
 
 /// The caller's harness session id from OTel baggage, when the dispatch
@@ -797,29 +1053,118 @@ pub async fn search_functions(
     }
     let started = Instant::now();
     let tools = deps.catalog.read().await.clone();
-    let search_queries: Vec<String> = request
-        .capabilities
-        .iter()
-        .map(|capability| compact_query(capability.trim()))
-        .filter(|capability| !intrinsic_capability(capability))
-        .collect();
+    let search_queries = search_queries(&request.capabilities);
+    let cfg = deps.config.load_full();
+    let mode = cfg.function_search_mode;
+    let lexical_started = Instant::now();
     // ponytail: index rebuilt per call (~250 slim docs, sub-ms); cache by
     // tool_fingerprint if search latency ever matters.
     let corpus = canonical_tools(&tools);
-    let mut selected = {
-        // Each capability gets its own leader and one round-robin slot before
-        // riders.
-        let index = Bm25Index::build(&corpus);
-        rank_queries(
-            &index,
+    let index = Bm25Index::build(&corpus);
+    let lexical = lexical_rankings(&index, &search_queries);
+    let fingerprint = tool_fingerprint(&tools);
+    let lexical_top_ids: Vec<&str> = lexical
+        .iter()
+        .filter_map(|ranking| ranking.first().map(|(id, _)| id.as_str()))
+        .collect();
+    tracing::debug!(
+        ?mode,
+        %fingerprint,
+        elapsed_ms = lexical_started.elapsed().as_secs_f64() * 1000.0,
+        ?lexical_top_ids,
+        "lexical lane ranked"
+    );
+    let production_minilm =
+        mode == FunctionSearchMode::Hybrid && deps.semantic.is_production_minilm();
+    let production_outcome = if production_minilm {
+        let semantic_started = Instant::now();
+        let rankings = production_minilm_rankings(
+            &deps.semantic,
+            &fingerprint,
+            &tools,
             &search_queries,
-            MAX_SEARCH_FUNCTIONS,
-            Some(SEARCH_RANK_FLOOR),
+            &lexical,
         )
+        .await;
+        tracing::debug!(
+            ?mode,
+            available = rankings.is_some(),
+            complete = rankings.as_ref().is_some_and(|outcome| outcome.complete),
+            %fingerprint,
+            repository = deps.semantic.model_repository(),
+            revision = deps.semantic.model_revision(),
+            reranker_repository = deps.semantic.reranker_repository(),
+            reranker_revision = deps.semantic.reranker_revision(),
+            elapsed_ms = semantic_started.elapsed().as_secs_f64() * 1000.0,
+            "production MiniLM retrieval and reranking completed"
+        );
+        rankings
+    } else {
+        None
+    };
+    #[cfg(test)]
+    let production_minilm_complete = production_minilm.then(|| {
+        production_outcome
+            .as_ref()
+            .is_some_and(|outcome| outcome.complete)
+    });
+    let production_rankings = production_outcome.map(|outcome| outcome.rankings);
+    let semantic = if needs_semantic(mode) && !production_minilm {
+        let semantic_started = Instant::now();
+        match deps
+            .semantic
+            .rank(&fingerprint, &search_queries, SEMANTIC_MINIMUM_COSINE)
+            .await
+        {
+            Ok(rankings) => {
+                let top_ids: Vec<&str> = rankings
+                    .iter()
+                    .filter_map(|ranking| ranking.first().map(|(id, _)| id.as_str()))
+                    .collect();
+                tracing::debug!(
+                    ?mode,
+                    available = true,
+                    %fingerprint,
+                    revision = MODEL_REVISION,
+                    model_sha256 = MODEL_SHA256,
+                    elapsed_ms = semantic_started.elapsed().as_secs_f64() * 1000.0,
+                    ?top_ids,
+                    "semantic lane ranked"
+                );
+                Some(rankings)
+            }
+            Err(error) => {
+                tracing::debug!(
+                    %error,
+                    ?mode,
+                    available = false,
+                    %fingerprint,
+                    revision = MODEL_REVISION,
+                    model_sha256 = MODEL_SHA256,
+                    elapsed_ms = semantic_started.elapsed().as_secs_f64() * 1000.0,
+                    "semantic lane fell back to lexical"
+                );
+                None
+            }
+        }
+    } else {
+        tracing::debug!(?mode, available = false, %fingerprint, "semantic lane bypassed");
+        None
+    };
+    let mut selected = match production_rankings {
+        Some(rankings) => select_preordered_ids(rankings),
+        None if production_minilm => select_preordered_ids(production_fallback_rankings(
+            &tools,
+            &search_queries,
+            &lexical,
+        )),
+        None => select_preordered_ids(production_fallback_rankings(
+            &tools,
+            &search_queries,
+            &rankings_for_mode(mode, &lexical, semantic, SEMANTIC_WEIGHT),
+        )),
     };
     let session_id = baggage_session_id();
-    let fingerprint = tool_fingerprint(&tools);
-    selected = limit_search_workers(selected);
     // Repeat queries in one session skip candidates the session already
     // received (session identity from caller baggage; absent → full
     // response, fail-open).
@@ -833,13 +1178,13 @@ pub async fn search_functions(
         selected = new;
         repeated = prior;
     }
+    tracing::debug!(?mode, %fingerprint, top_ids = ?selected, "function search selected");
     let workers = assemble_workers(&selected, &tools);
     // Installable section: every search also consults the public registry
     // for NOT-installed workers whose functions match — behind the
     // registry_search knob; every failure inside returns an empty section
     // (fail-open).
     let mut installable: Vec<InstallableWorker> = Vec::new();
-    let cfg = deps.config.load_full();
     if cfg.registry_search {
         installable =
             registry_installable(&cfg, &deps.registry_cache, &tools, &search_queries).await;
@@ -869,6 +1214,8 @@ unchanged — reuse the earlier result): {}.",
         workers,
         installable,
         latency_ms: started.elapsed().as_secs_f64() * 1000.0,
+        #[cfg(test)]
+        production_minilm_complete,
     })
 }
 
@@ -1023,25 +1370,36 @@ pub async fn fetch_catalog(iii: &IIIClient) -> Result<Vec<ToolSchema>, String> {
 }
 
 /// Swap the catalog cell when the fingerprint changed; `true` = changed.
-async fn activate_catalog(cell: &CatalogCell, tools: Vec<ToolSchema>) -> bool {
+async fn activate_catalog(
+    cell: &CatalogCell,
+    semantic: &SemanticSearch,
+    tools: Vec<ToolSchema>,
+) -> bool {
     let catalog_unchanged =
         tool_fingerprint(cell.read().await.as_ref()) == tool_fingerprint(&tools);
     if catalog_unchanged {
         return false;
     }
-    *cell.write().await = Arc::new(tools);
+    let tools = Arc::new(tools);
+    *cell.write().await = tools.clone();
+    semantic.rebuild(tools);
     true
 }
 
-pub async fn refresh_catalog(iii: &IIIClient, cell: &CatalogCell) -> Result<bool, String> {
+pub async fn refresh_catalog(
+    iii: &IIIClient,
+    cell: &CatalogCell,
+    semantic: &SemanticSearch,
+) -> Result<bool, String> {
     let iii = iii.clone();
     let cell = cell.clone();
+    let semantic = semantic.clone();
     match tokio::spawn(async move {
         let _reload = CATALOG_RELOAD.lock().await;
         let tools = fetch_catalog(&iii)
             .await
             .map_err(|_| "catalog_fetch_failed".to_string())?;
-        Ok(activate_catalog(&cell, tools).await)
+        Ok(activate_catalog(&cell, &semantic, tools).await)
     })
     .await
     {
@@ -1110,13 +1468,17 @@ pub fn register(iii: &Arc<IIIClient>, deps: &Deps) {
 
     let refresh_iii = iii.clone();
     let refresh_cell = deps.catalog.clone();
+    let refresh_semantic = deps.semantic.clone();
     iii.register_function(
         specs[2].function_id,
         RegisterFunction::new_async(move |_event: OnFunctionsChangeEvent| {
             let iii = refresh_iii.clone();
             let cell = refresh_cell.clone();
+            let semantic = refresh_semantic.clone();
             async move {
-                let changed = refresh_catalog(&iii, &cell).await.map_err(Error::Handler)?;
+                let changed = refresh_catalog(&iii, &cell, &semantic)
+                    .await
+                    .map_err(Error::Handler)?;
                 if changed {
                     let functions = cell.read().await.len();
                     tracing::info!(functions, "discovery catalog refreshed");
@@ -1144,6 +1506,7 @@ mod tests {
             catalog: Arc::new(RwLock::new(Arc::new(tools))),
             sessions: Arc::default(),
             registry_cache: RegistryCache::new(std::time::Duration::ZERO),
+            semantic: SemanticSearch::default(),
         }
     }
 
@@ -1192,6 +1555,201 @@ mod tests {
             .collect();
 
         assert_eq!(namespaces, ["alpha", "beta"]);
+    }
+
+    #[test]
+    fn semantic_mode_selection_preserves_lexical_and_fuses_only_hybrid() {
+        let lexical = vec![vec![("lex::one".into(), 2.0), ("lex::two".into(), 1.0)]];
+        let semantic = vec![vec![("sem::one".into(), 0.9), ("lex::two".into(), 0.8)]];
+
+        assert!(!needs_semantic(FunctionSearchMode::Lexical));
+        assert!(needs_semantic(FunctionSearchMode::Shadow));
+        assert!(needs_semantic(FunctionSearchMode::Hybrid));
+        assert_eq!(
+            rankings_for_mode(
+                FunctionSearchMode::Lexical,
+                &lexical,
+                Some(semantic.clone()),
+                1.0,
+            ),
+            lexical
+        );
+        assert_eq!(
+            rankings_for_mode(
+                FunctionSearchMode::Shadow,
+                &lexical,
+                Some(semantic.clone()),
+                1.0,
+            ),
+            lexical
+        );
+        assert_ne!(
+            rankings_for_mode(FunctionSearchMode::Hybrid, &lexical, Some(semantic), 1.0),
+            lexical
+        );
+        assert_eq!(
+            rankings_for_mode(FunctionSearchMode::Hybrid, &lexical, None, 1.0),
+            lexical
+        );
+        assert_eq!(
+            rankings_for_mode(
+                FunctionSearchMode::Hybrid,
+                &lexical,
+                Some(vec![vec![]]),
+                1.0
+            ),
+            vec![vec![]]
+        );
+        assert_eq!(
+            rankings_for_mode(
+                FunctionSearchMode::Shadow,
+                &lexical,
+                Some(vec![vec![]]),
+                1.0
+            ),
+            lexical
+        );
+    }
+
+    #[test]
+    fn production_minilm_ordering_anchors_the_reranker_in_full_retrieval() {
+        let lexical = vec![
+            ("mail::send".into(), 10.0),
+            ("web::fetch".into(), 9.0),
+            ("docs::read".into(), 8.0),
+        ];
+        let semantic = vec![
+            ("docs::read".into(), 0.92),
+            ("web::fetch".into(), 0.88),
+            ("calendar::list".into(), 0.81),
+        ];
+        let raw_reranker = vec![
+            ("calendar::list".into(), 5.0),
+            ("docs::read".into(), 4.0),
+            ("web::fetch".into(), 3.0),
+            ("mail::send".into(), 2.0),
+        ];
+
+        let retrieval = weighted_rrf(&lexical, &semantic, PRODUCTION_RETRIEVAL_WEIGHT);
+        let expected = weighted_rrf(&retrieval, &raw_reranker, PRODUCTION_RERANKER_WEIGHT);
+
+        assert_eq!(
+            production_minilm_ordering(&lexical, &semantic, &raw_reranker),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn production_minilm_ordering_rejects_partial_duplicate_and_non_finite_output() {
+        let lexical = vec![("mail::send".into(), 2.0), ("web::fetch".into(), 1.0)];
+        let semantic = vec![("web::fetch".into(), 0.9), ("calendar::list".into(), 0.8)];
+
+        assert_eq!(
+            production_minilm_ordering(
+                &lexical,
+                &semantic,
+                &[("mail::send".into(), 1.0), ("web::fetch".into(), 0.9)]
+            ),
+            None,
+            "the reranker must cover the entire retrieval union"
+        );
+        assert_eq!(
+            production_minilm_ordering(
+                &lexical,
+                &semantic,
+                &[
+                    ("mail::send".into(), 1.0),
+                    ("mail::send".into(), 0.9),
+                    ("web::fetch".into(), 0.8),
+                ]
+            ),
+            None
+        );
+        assert_eq!(
+            production_minilm_ordering(
+                &lexical,
+                &semantic,
+                &[
+                    ("mail::send".into(), f64::NAN),
+                    ("web::fetch".into(), 0.9),
+                    ("calendar::list".into(), 0.8),
+                ]
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn production_exact_id_bypasses_models() {
+        let tools = vec![
+            ToolSchema {
+                name: "mail::send".into(),
+                description: "Send a message".into(),
+                parameters: json!({ "type": "object" }),
+            },
+            ToolSchema {
+                name: "web::fetch".into(),
+                description: "Fetch a web page".into(),
+                parameters: json!({ "type": "object" }),
+            },
+        ];
+
+        assert_eq!(
+            exact_function_id(" mail::send ", &tools),
+            Some("mail::send".into())
+        );
+        assert_eq!(exact_function_id("send mail", &tools), None);
+    }
+
+    #[test]
+    fn production_model_failure_preserves_exact_lane_and_lexical_fallback() {
+        let tools = vec![
+            ToolSchema {
+                name: "mail::send".into(),
+                description: "Send a message".into(),
+                parameters: json!({ "type": "object" }),
+            },
+            ToolSchema {
+                name: "web::fetch".into(),
+                description: "Fetch a web page".into(),
+                parameters: json!({ "type": "object" }),
+            },
+        ];
+        let queries = vec![" mail::send ".into(), "fetch a page".into()];
+        let lexical = vec![
+            vec![("web::fetch".into(), 2.0), ("mail::send".into(), 1.0)],
+            vec![("web::fetch".into(), 2.0), ("mail::send".into(), 1.0)],
+        ];
+
+        assert_eq!(
+            production_fallback_rankings(&tools, &queries, &lexical),
+            vec![
+                vec![("mail::send".into(), 0.0)],
+                vec![("web::fetch".into(), 2.0), ("mail::send".into(), 1.0)],
+            ]
+        );
+    }
+
+    #[test]
+    fn hybrid_test_adapter_returns_public_worker_grouped_order() {
+        let tool = |name: &str| ToolSchema {
+            name: name.into(),
+            description: "Unrelated contract vocabulary.".into(),
+            parameters: json!({ "type": "object" }),
+        };
+        let tools = vec![tool("alpha::one"), tool("beta::one"), tool("alpha::two")];
+        let ranking = hybrid_ranking_for_test(
+            &tools,
+            &["zzzx qqqx".into()],
+            vec![vec![
+                ("alpha::one".into(), 0.9),
+                ("beta::one".into(), 0.8),
+                ("alpha::two".into(), 0.7),
+            ]],
+            0.0,
+            1.0,
+        );
+        assert_eq!(ranking, ["alpha::one", "alpha::two", "beta::one"]);
     }
 
     #[tokio::test]
@@ -1420,6 +1978,7 @@ mod tests {
             catalog: Arc::new(RwLock::new(Arc::new(tools))),
             sessions: Arc::default(),
             registry_cache: RegistryCache::new(std::time::Duration::ZERO),
+            semantic: SemanticSearch::default(),
         };
         let response = search_functions(
             &deps,
@@ -1532,6 +2091,7 @@ mod tests {
             }]))),
             sessions: Arc::default(),
             registry_cache: RegistryCache::new(std::time::Duration::ZERO),
+            semantic: SemanticSearch::default(),
         };
         let response = search_functions(
             &deps,

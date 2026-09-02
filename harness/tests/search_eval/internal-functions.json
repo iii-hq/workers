@@ -1,0 +1,7 @@
+{
+  "functions": [
+    {"function_id": "beta::second"},
+    {"function_id": "hooks::hidden"},
+    {"function_id": "zeta::last"}
+  ]
+}

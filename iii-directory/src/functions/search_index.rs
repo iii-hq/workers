@@ -188,21 +188,11 @@ impl Bm25Index {
             // term frequency (BM25-saturated by K1) is what lets the
             // relative function floor prune same-worker family members
             // that match only the namespace token plus a generic word.
-            let mut text = format!("{0} {0} {0} {1}", tool.name, tool.description);
+            let mut text = format!("{0} {0} {1}", tool.name, searchable_text(tool));
             if tool.name == "browser::fetch" {
                 text.push_str(
                     " default static web page webpage website RSS Atom API content scrape scraping",
                 );
-            }
-            if let Some(properties) = tool
-                .parameters
-                .get("properties")
-                .and_then(serde_json::Value::as_object)
-            {
-                for key in properties.keys() {
-                    text.push(' ');
-                    text.push_str(key);
-                }
             }
             let mut terms: HashMap<String, u32> = HashMap::new();
             for term in bm25_terms(&text) {
@@ -348,6 +338,25 @@ pub(crate) fn slim_description(description: &str) -> String {
         })
         .unwrap_or(line);
     truncate(sentence.trim_end().to_string(), INDEX_DESCRIPTION_BYTES)
+}
+
+/// Canonical text shared by lexical and semantic search: id, first
+/// description sentence, then request-property names in stable order.
+pub(crate) fn searchable_text(tool: &ToolSchema) -> String {
+    let mut text = format!("{} {}", tool.name, slim_description(&tool.description));
+    if let Some(properties) = tool
+        .parameters
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+    {
+        let mut keys: Vec<&String> = properties.keys().collect();
+        keys.sort_unstable();
+        for key in keys {
+            text.push(' ');
+            text.push_str(key);
+        }
+    }
+    text
 }
 
 fn slim_parameters(parameters: &serde_json::Value) -> serde_json::Value {

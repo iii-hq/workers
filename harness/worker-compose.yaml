@@ -124,3 +124,7 @@ containers:
       RUST_LOG: info
     scripts:
       run: cargo run --locked --bin harness
+  # added by compose::add
+  browser:
+    worker: package://api.workers.iii.dev/browser
+    version: "0.2.9"

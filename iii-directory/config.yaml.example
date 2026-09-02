@@ -12,10 +12,10 @@
 # editing `./data/configuration/iii-directory.yaml` directly.
 #
 # Tunable fields hot-reload on change (registry_url, download_timeout_ms,
-# registry_cache_ttl_ms, filter_unregistered). Topology fields require a
+# registry_cache_ttl_ms, filter_unregistered, function_search_mode). Topology fields require a
 # worker restart (skills_folder, local_skills_folder, agents_folder,
 # global_agents_folder, agents_skills_folder, global_agents_skills_folder,
-# auto_download).
+# auto_download, function_search_model_path).
 #
 # When omitted entirely, the worker seeds the built-in defaults
 # (skills_folder: skills, agents_folder: agents,
@@ -60,6 +60,14 @@ registry_url: https://api.workers.iii.dev
 download_timeout_ms: 60000
 
 # --- Function search (tunable, hot-reload) ---
+
+# Search lane: lexical is the stable default. Shadow computes the local
+# semantic lane but returns lexical results; hybrid explicitly uses fusion.
+function_search_mode: lexical
+
+# Existing local Potion model directory. Changing it requires restart.
+# Provision explicitly with scripts/provision-potion.py; runtime never downloads.
+# function_search_model_path: ./models/potion-multilingual-128M
 
 # Bind the directory::pre-generate hook so the conditional search hint can
 # be injected into agent generations. Off unbinds the hook entirely.

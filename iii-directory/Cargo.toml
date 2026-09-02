@@ -6,6 +6,12 @@ version = "1.2.5-rc.3"
 edition = "2021"
 publish = false
 
+[features]
+default = []
+# Local production retrieval and reranking. This feature deliberately has no
+# NLI, GGUF, llama.cpp, remote-model, or model-download dependency.
+minilm-production = ["dep:fastembed", "dep:ort"]
+
 [[bin]]
 name = "iii-directory"
 path = "src/main.rs"
@@ -50,6 +56,12 @@ iii-config-client = { path = "../crates/config-client" }
 opentelemetry = { version = "0.31", default-features = false }
 # Catalog fingerprint hashing for the search index.
 sha2 = "0.10"
+# Pinned local-only embedding runtime. Default features include Hub access.
+model2vec-rs = { version = "=0.2.1", default-features = false, features = ["onig", "local-only"] }
+
+[target.'cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))'.dependencies]
+fastembed = { version = "=6.0.0", optional = true, default-features = false }
+ort = { version = "=2.0.0-rc.13", optional = true, default-features = false, features = ["std", "ndarray", "api-24"] }
 
 [dev-dependencies]
 serde_json = "1"

@@ -460,6 +460,7 @@ mod tests {
             catalog: Arc::new(tokio::sync::RwLock::new(Arc::new(Vec::new()))),
             sessions: Arc::default(),
             registry_cache: RegistryCache::new(std::time::Duration::from_millis(0)),
+            semantic: crate::functions::search_semantic::SemanticSearch::default(),
         }
     }
 

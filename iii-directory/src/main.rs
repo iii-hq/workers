@@ -148,6 +148,7 @@ async fn main() -> Result<()> {
     // fields live in `cfg_handle` (swapped on reload) and the shared
     // `cache_ttl_ms` cell read by both caches.
     let boot_topology = cfg.topology();
+    let function_search_model_path = cfg.resolved_function_search_model_path();
     let auto_download = cfg.auto_download;
     let cache_ttl_ms = Arc::new(AtomicU64::new(cfg.registry_cache_ttl_ms));
     let registered_cache = make_registered_cache(cache_ttl_ms.clone());
@@ -172,7 +173,8 @@ async fn main() -> Result<()> {
     // reconcile the pre-generate hint binding with the inject_hint knob.
     let search_catalog: functions::search::CatalogCell =
         Arc::new(tokio::sync::RwLock::new(Arc::new(Vec::new())));
-    if functions::search::refresh_catalog(&iii, &search_catalog)
+    let semantic = functions::search_semantic::SemanticSearch::new(function_search_model_path);
+    if functions::search::refresh_catalog(&iii, &search_catalog, &semantic)
         .await
         .is_err()
     {
@@ -183,6 +185,7 @@ async fn main() -> Result<()> {
         catalog: search_catalog,
         sessions: Arc::default(),
         registry_cache: registry_cache.clone(),
+        semantic,
     };
     functions::search::register(&iii, &search_deps);
     functions::search::bind_best_effort(&iii);
