@@ -1,4 +1,5 @@
 ---
+type: index
 name: slack
 description: >-
   Drive Slack from iii — expose the Slack Web API as slack::* functions

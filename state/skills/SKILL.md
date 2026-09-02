@@ -1,4 +1,5 @@
 ---
+type: index
 name: state
 tags: state, key-value, storage, triggers, reactive
 description: >-

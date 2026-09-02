@@ -1,4 +1,5 @@
 ---
+type: index
 name: harness
 description: >-
   The durable agent turn loop — kick off a turn with `harness::send`, render

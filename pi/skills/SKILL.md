@@ -1,4 +1,5 @@
 ---
+type: index
 name: pi
 description: >-
   Run pi coding-agent turns over the iii bus — headless with `pi::run`, or as

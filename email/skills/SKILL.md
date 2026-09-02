@@ -1,4 +1,5 @@
 ---
+type: index
 name: email
 description: >-
   Send and read email from the iii engine — SMTP send, IMAP read, and

@@ -1,4 +1,5 @@
 ---
+type: index
 name: pubsub
 tags: pubsub, publish, subscribe, events, redis
 description: >-

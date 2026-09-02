@@ -1,4 +1,5 @@
 ---
+type: index
 name: scrapling
 description: >-
   Scrape the web over the iii bus with Scrapling — fast HTTP fetch with TLS

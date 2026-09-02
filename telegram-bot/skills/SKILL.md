@@ -1,4 +1,5 @@
 ---
+type: index
 name: telegram-bot
 description: >-
   Bridge a harness agent onto Telegram — turn inbound chat messages into

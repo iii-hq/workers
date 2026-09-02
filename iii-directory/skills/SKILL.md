@@ -1,4 +1,5 @@
 ---
+type: index
 name: iii-directory
 description: >-
   Discovery entry point for the engine — search the live function catalog,

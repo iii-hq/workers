@@ -1,4 +1,5 @@
 ---
+type: index
 name: worktree
 tags: git, worktree, parallel, land, merge, rebase
 description: >-

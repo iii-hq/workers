@@ -1,4 +1,5 @@
 ---
+type: index
 name: github
 description: >-
   Operate GitHub through the gh CLI — typed github::* functions for pull

@@ -1,4 +1,5 @@
 ---
+type: index
 name: memory
 tags: memory, banks, rules, recall, cross-session, pinning
 description: >-
