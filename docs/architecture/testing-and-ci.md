@@ -105,8 +105,8 @@ cost, isolation and performance measurements.
 
 | Label | Infrastructure | Capacity | Current use |
 |---|---|---:|---|
-| `ubuntu-latest` | Standard GitHub-hosted Linux | GitHub-managed | PR checks, normal E2E, Harness validation and execution shards |
-| `workers-ci-linux-8core` | Larger GitHub-hosted Linux | 2 concurrent | Single Harness stack build and its manual benchmark |
+| `ubuntu-latest` | Standard GitHub-hosted Linux | GitHub-managed | PR checks, normal E2E, Harness validation/execution shards and PR stack builds |
+| `workers-ci-linux-8core` | Larger GitHub-hosted Linux | 2 concurrent | Trusted `main` Harness stack build and its manual benchmark |
 | `workers-release-control-linux-2core` | Larger GitHub-hosted Linux | 8 concurrent | Reserved for a later migration of release control jobs; no workflow selects it yet |
 | `workers-release-linux-8core` | Larger GitHub-hosted Linux | 8 concurrent | Linux release builds and, until migrated, release control jobs |
 | `windows-latest` | Standard GitHub-hosted Windows | GitHub-managed | Windows release builds |
@@ -122,13 +122,16 @@ self-hosted label is not part of the Workers routing contract.
 ### Harness integration recovery and benchmark
 
 [`_harness-integration.yml`](../../.github/workflows/_harness-integration.yml)
-builds the complete stack once on `workers-ci-linux-8core`. The build produces
-a checksummed bundle tied to the checked-out commit and containing the freshly
-downloaded latest `iii @rc` plus every compiled stack binary. Independent
-Integration and Playwright jobs verify that bundle and run in parallel on
-`ubuntu-latest`; scenario validation also runs there while the stack builds.
-Callers can override `runner` for the build or `execution-runner` for the other
-jobs without changing this dependency graph.
+builds the complete stack once. The trusted `main` push uses
+`workers-ci-linux-8core`; PR merge refs build the same bundle on
+`ubuntu-latest` because the larger-runner group accepts only selected trusted
+branch/tag workflow refs. The build produces a checksummed bundle tied to the
+checked-out commit and containing the freshly downloaded latest `iii @rc` plus
+every compiled stack binary. Independent Integration and Playwright jobs verify
+that bundle and run in parallel on `ubuntu-latest`; scenario validation also
+runs there while the stack builds. Callers can override `runner` for the build
+or `execution-runner` for the other jobs without changing this dependency
+graph.
 
 Use
 [`harness-integration-benchmark.yml`](../../.github/workflows/harness-integration-benchmark.yml)

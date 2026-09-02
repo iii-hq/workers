@@ -65,6 +65,10 @@ def test_prs_restore_rust_caches_and_main_pushes_publish_them() -> None:
     assert rust_cache["with"]["save-if"] == expected
     assert crate_cache["with"]["save-if"] == expected
     assert "github.event_name == 'pull_request'" in ci["jobs"]["interface-smoke"]["if"]
+    assert ci["jobs"]["harness-integration"]["with"]["runner"] == (
+        "${{ github.event_name == 'push' && 'workers-ci-linux-8core' || "
+        "'ubuntu-latest' }}"
+    )
     assert ci["jobs"]["harness-integration"]["with"]["save-cache"] == expected
 
 
@@ -151,8 +155,10 @@ def test_runner_pool_contract_is_documented() -> None:
     assert "ten candidate executions" in runner_docs
     assert "improvement over `ubuntu-latest` is at least 25%" in runner_docs
     assert "8-core warm | 7 | 8m54 | 9m17" in runner_docs
-    assert "builds the complete stack once on `workers-ci-linux-8core`" in runner_docs
-    assert "Integration and Playwright jobs verify that bundle and run in parallel" in runner_docs
+    assert "builds the complete stack once" in runner_docs
+    assert "trusted `main` push uses\n`workers-ci-linux-8core`" in runner_docs
+    assert "Integration and Playwright jobs verify\nthat bundle and run in parallel" in runner_docs
+    assert "PR merge refs build the same bundle on `ubuntu-latest`" in runner_docs
 
 
 def test_interface_smoke_bounds_each_engine_readiness_probe() -> None:
