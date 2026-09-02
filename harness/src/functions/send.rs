@@ -23,12 +23,34 @@ use crate::types::turn::{
 };
 
 /// `message` is either a plain string (sugar for a user text message) or a
-/// full `AgentMessage`.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+/// full `AgentMessage` (`user` or `custom` role — `normalize_message` rejects
+/// the rest).
+///
+/// The advertised schema is `string` only: the structured arm stays an
+/// undocumented compatibility path for programmatic callers (the console
+/// sends `role: user` messages carrying `#file(...)` blocks). Deriving
+/// `JsonSchema` here would drag the whole transcript type tree — fourteen
+/// definitions, half of them shapes the runtime refuses — into every request
+/// schema that names this type (MOT-4640).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum MessageInput {
     Text(String),
     Message(Box<AgentMessage>),
+}
+
+impl JsonSchema for MessageInput {
+    fn schema_name() -> String {
+        "MessageInput".into()
+    }
+
+    fn is_referenceable() -> bool {
+        false
+    }
+
+    fn json_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        String::json_schema(generator)
+    }
 }
 
 impl From<String> for MessageInput {
@@ -121,8 +143,7 @@ pub struct SendRequest {
     /// Omit to create a new session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
-    /// The incoming message; a string is sugar for a user text message. The
-    /// role must be `user` or `custom`.
+    /// The incoming user message text.
     pub message: MessageInput,
     /// Required to start a NEW session unless `options.agent` supplies a
     /// model. Steering or waking an EXISTING session may omit it — the
@@ -506,7 +527,7 @@ pub struct EditQueuedRequest {
     pub session_id: String,
     /// The queued row to edit (its client-visible `entry_id`).
     pub entry_id: String,
-    /// The replacement message (string sugar or a full user/custom message).
+    /// The replacement user message text.
     pub message: MessageInput,
 }
 
@@ -1498,6 +1519,94 @@ mod tests {
     fn string_message_becomes_user_text() {
         let m = normalize_message(MessageInput::Text("hi".into())).unwrap();
         assert!(matches!(m, AgentMessage::User(_)));
+    }
+
+    /// MOT-4640: the advertised `message`/`task` schema is a plain string —
+    /// none of the transcript types leak into the request schemas — while
+    /// the runtime keeps accepting a structured `user` message.
+    #[test]
+    fn message_input_schema_is_a_string_and_hides_the_transcript_tree() {
+        fn root_schema<T: JsonSchema>() -> Value {
+            let schema = schemars::r#gen::SchemaSettings::draft07()
+                .into_generator()
+                .into_root_schema_for::<T>();
+            serde_json::to_value(schema).unwrap()
+        }
+        let send = root_schema::<SendRequest>();
+        let spawn = root_schema::<crate::functions::spawn::SpawnRequest>();
+        assert_eq!(send["properties"]["message"]["type"], "string");
+        assert_eq!(spawn["properties"]["task"]["type"], "string");
+        for (label, schema) in [("send", &send), ("spawn", &spawn)] {
+            let defs = schema["definitions"]
+                .as_object()
+                .cloned()
+                .unwrap_or_default();
+            for leaked in [
+                "MessageInput",
+                "AgentMessage",
+                "UserMessage",
+                "CustomMessage",
+                "AssistantMessage",
+                "FunctionResultMessage",
+                "ContentBlock",
+                "Usage",
+                "StopReason",
+                "ErrorKind",
+            ] {
+                assert!(
+                    !defs.contains_key(leaked),
+                    "{label} schema still defines {leaked}"
+                );
+            }
+        }
+
+        // Every real spawn payload from the MOT-4638 corpus still validates.
+        let corpus: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/support/function_contracts_corpus.json"
+        )))
+        .unwrap();
+        let compiled = jsonschema::JSONSchema::compile(&spawn).unwrap();
+        let spawns: Vec<&Value> = corpus["calls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["function"] == "harness::spawn")
+            .map(|c| &c["payload"])
+            .collect();
+        assert!(spawns.len() >= 20, "corpus lost its spawn payloads");
+        // One captured payload names an icon outside `SubagentIcon`; that
+        // rejection predates this change, so only `task` verdicts are pinned.
+        let mut valid = 0;
+        for payload in spawns {
+            match compiled.validate(payload) {
+                Ok(()) => valid += 1,
+                Err(errors) => {
+                    for error in errors {
+                        let path = error.instance_path.to_string();
+                        assert!(
+                            !path.starts_with("/task"),
+                            "task rejected: {error} in {payload}"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(valid >= 20, "only {valid} corpus spawns validate");
+
+        // Compatibility path: a structured user message (what the console
+        // sends for `#file(...)` attachments) still deserializes and normalizes.
+        let structured: MessageInput = serde_json::from_value(serde_json::json!({
+            "role": "user",
+            "content": [{"type": "text", "text": "hi"}],
+            "timestamp": 1
+        }))
+        .unwrap();
+        assert!(matches!(structured, MessageInput::Message(_)));
+        assert!(matches!(
+            normalize_message(structured).unwrap(),
+            AgentMessage::User(_)
+        ));
     }
 
     #[test]
