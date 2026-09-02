@@ -9,7 +9,7 @@
 // reuses `TraceListRow`, so selection, labelling, and hide-function all
 // behave exactly like the flat list.
 
-import { useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { ChevronRight, Layers, Loader2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
@@ -271,6 +271,9 @@ function GroupMembers({
 }: GroupMembersProps) {
   // Keyed by group identity + member-count so live growth refetches, while
   // the id list itself rides in via closure (it can be hundreds of entries).
+  // The previous rows stay on screen while the grown key loads: without
+  // that, every new trace in an expanded group unmounted its rows behind a
+  // "loading traces…" spinner and remounted them a moment later.
   const { data, isLoading } = useQuery<TraceListItem[]>({
     queryKey: [
       'traceGroupMembers',
@@ -295,6 +298,7 @@ function GroupMembers({
       rows.sort((a, b) => b.startTime - a.startTime)
       return rows
     },
+    placeholderData: keepPreviousData,
     staleTime: 1000,
   })
 

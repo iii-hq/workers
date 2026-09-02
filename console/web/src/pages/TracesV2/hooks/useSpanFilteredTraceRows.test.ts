@@ -3,10 +3,14 @@ import type { StoredSpan } from '../api/traces'
 import type { TimelineSpan } from '../components/timeline/layout'
 import type { SpanFilterSelection } from '../lib/spanFilters'
 import {
-  liveTraceIds,
+  type CompositionReadState,
+  FETCH_RETRY_MS,
   mergeFetchedVerdicts,
+  pendingTraceIds,
+  pruneCompositionReads,
   reconcileTraceVisibility,
   rowRootFilterKeys,
+  selectCompositionReads,
 } from './useSpanFilteredTraceRows'
 import type { TraceListItem } from './useTraceData'
 
@@ -116,9 +120,25 @@ describe('reconcileTraceVisibility', () => {
       ],
       sel,
     )
-    // t-2 has no coverage yet (hidden root, feed silent) → visible until a
-    // composition read decides.
-    expect(ids(kept)).toEqual(['t-2'])
+    // t-2 has no coverage yet (hidden root, feed silent) → hidden until a
+    // composition read or the feed proves visible work, so a bookkeeping
+    // trace never flashes into the list and vanishes.
+    expect(ids(kept)).toEqual([])
+  })
+
+  it('keeps a still-running row visible while its composition is unknown', () => {
+    // A live turn under a hidden dispatch root: nothing in the feed yet,
+    // no read yet — the row's own pending status is the evidence.
+    const kept = reconcileTraceVisibility(
+      new Map(),
+      [],
+      [
+        row('t-live', 'harness::turn', { status: 'pending' }),
+        row('t-done', 'harness::turn', { status: 'ok' }),
+      ],
+      selection({ hiddenGroups: new Set(['harness::turn']) }),
+    )
+    expect(ids(kept)).toEqual(['t-live'])
   })
 
   it('keeps the row while any bar of its trace survives — a hidden root is not enough', () => {
@@ -371,6 +391,63 @@ describe('mergeFetchedVerdicts', () => {
     expect(verdicts.has('t-hidden')).toBe(false)
   })
 
+  it('records no verdict for a trace still running, and reports it for a later read', () => {
+    const verdicts = new Map<string, boolean>()
+    const undecided = mergeFetchedVerdicts(
+      verdicts,
+      ['t-running', 't-settled'],
+      [
+        stored({
+          span_id: 'r1',
+          trace_id: 't-running',
+          attributes: [['function_id', 'fn']],
+        }),
+        stored({
+          span_id: 'r2',
+          trace_id: 't-running',
+          name: 'call router::generate',
+          parent_span_id: 'r1',
+          pending: true,
+          end_time_unix_nano: 0,
+          attributes: [['function_id', 'fn']],
+        }),
+        stored({
+          span_id: 's1',
+          trace_id: 't-settled',
+          attributes: [['function_id', 'fn']],
+        }),
+      ],
+      sel,
+    )
+    expect(verdicts.has('t-running')).toBe(false)
+    expect(verdicts.get('t-settled')).toBe(false)
+    expect([...undecided]).toEqual([['t-running', 'running']])
+  })
+
+  it('reports a truncated probe with no visible span as inconclusive', () => {
+    const verdicts = new Map<string, boolean>()
+    const undecided = mergeFetchedVerdicts(
+      verdicts,
+      ['t-fat'],
+      [
+        stored({
+          span_id: 'h1',
+          trace_id: 't-fat',
+          attributes: [['function_id', 'fn']],
+        }),
+        stored({
+          span_id: 'h2',
+          trace_id: 't-fat',
+          attributes: [['function_id', 'fn']],
+        }),
+      ],
+      sel,
+      2,
+    )
+    expect(verdicts.has('t-fat')).toBe(false)
+    expect(undecided.get('t-fat')).toBe('truncated')
+  })
+
   it('never downgrades a visible verdict — the read raced a newer feed frame', () => {
     const verdicts = new Map<string, boolean>([['t-1', true]])
     mergeFetchedVerdicts(
@@ -388,31 +465,85 @@ describe('mergeFetchedVerdicts', () => {
   })
 })
 
-describe('liveTraceIds', () => {
-  // Realistic epoch ms — `toMs` sniffs nano vs ms by magnitude.
-  const now = 1_700_000_000_000
-
-  it('counts a pending snapshot as live', () => {
-    const live = liveTraceIds(
-      [stored({ span_id: 's1', trace_id: 't-1', pending: true })],
-      now,
-    )
-    expect(live.has('t-1')).toBe(true)
+describe('pendingTraceIds', () => {
+  it('counts a pending snapshot as running', () => {
+    const live = pendingTraceIds([
+      stored({ span_id: 's1', trace_id: 't-1', pending: true }),
+    ])
+    expect([...live]).toEqual(['t-1'])
   })
 
-  it('counts a just-ended span as live, an old one as settled', () => {
-    const justEnded = stored({
-      span_id: 's1',
-      trace_id: 't-recent',
-      end_time_unix_nano: (now - 2_000) * 1e6,
-    })
-    const longSettled = stored({
-      span_id: 's2',
-      trace_id: 't-old',
-      end_time_unix_nano: (now - 60_000) * 1e6,
-    })
-    const live = liveTraceIds([justEnded, longSettled], now)
-    expect(live.has('t-recent')).toBe(true)
-    expect(live.has('t-old')).toBe(false)
+  it('never counts a closed span as running, however recent', () => {
+    // A "just ended" window used to keep hidden bookkeeping traces visible
+    // for its whole length and then hide them — the flicker itself.
+    const live = pendingTraceIds([
+      stored({
+        span_id: 's1',
+        trace_id: 't-1',
+        end_time_unix_nano: Date.now() * 1_000_000,
+      }),
+    ])
+    expect(live.size).toBe(0)
+  })
+})
+
+describe('selectCompositionReads', () => {
+  const now = 1_000_000
+  const reads = (entries: [string, CompositionReadState][]) =>
+    new Map<string, CompositionReadState>(entries)
+
+  it('reads unverdicted rows that have no read state, and nothing else', () => {
+    const picked = selectCompositionReads(
+      [row('t-new'), row('t-known'), row('t-inflight')],
+      new Map([['t-known', false]]),
+      reads([['t-inflight', { kind: 'inflight' }]]),
+      now,
+    )
+    expect(picked).toEqual(['t-new'])
+  })
+
+  it('re-reads a trace found running only once its row settles', () => {
+    const state = reads([['t-1', { kind: 'running' }]])
+    expect(
+      selectCompositionReads(
+        [row('t-1', 'fn', { status: 'pending' })],
+        new Map(),
+        state,
+        now,
+      ),
+    ).toEqual([])
+    expect(selectCompositionReads([row('t-1')], new Map(), state, now)).toEqual(
+      ['t-1'],
+    )
+  })
+
+  it('retries a failed or inconclusive probe only after the backoff', () => {
+    const state = reads([['t-1', { kind: 'retry', at: now }]])
+    expect(
+      selectCompositionReads([row('t-1')], new Map(), state, now + 1_000),
+    ).toEqual([])
+    expect(
+      selectCompositionReads(
+        [row('t-1')],
+        new Map(),
+        state,
+        now + FETCH_RETRY_MS,
+      ),
+    ).toEqual(['t-1'])
+  })
+})
+
+describe('pruneCompositionReads', () => {
+  it('forgets states of traces that left the list, keeping reads in flight', () => {
+    // The page-2-and-back case: verdicts are pruned when a trace leaves the
+    // list, so its read state must go too or it stays hidden on return.
+    const state = new Map<string, CompositionReadState>([
+      ['gone-settled', { kind: 'running' }],
+      ['gone-retry', { kind: 'retry', at: 1 }],
+      ['gone-inflight', { kind: 'inflight' }],
+      ['listed', { kind: 'running' }],
+    ])
+    pruneCompositionReads(state, new Set(['listed']))
+    expect([...state.keys()].sort()).toEqual(['gone-inflight', 'listed'])
   })
 })

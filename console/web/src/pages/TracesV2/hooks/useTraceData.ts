@@ -7,6 +7,7 @@ import {
   type TracesFilterParams,
   type TracesResponse,
 } from '../api/traces'
+import { createRefetchCoalescer } from '../lib/refetchCoalescer'
 import { withHiddenFunctionExclusions } from '../lib/traceFilters'
 import {
   fingerprintTraceList,
@@ -19,6 +20,11 @@ const DEFAULT_TRACE_PAGE_SIZE = 50
  *  already coalesces to ~one tick per 300ms window; this only collapses the
  *  invalidate → POST round-trips of a burst of consecutive windows. */
 const ACTIVITY_REFETCH_DEBOUNCE_MS = 250
+/** Floor between two consecutive activity-driven refetch STARTS of the list
+ *  and of the group aggregate. Under sustained activity the engine sees one
+ *  scan per surface per second at most, and the rows update at a steady
+ *  cadence instead of in bursts (see `createRefetchCoalescer`). */
+export const ACTIVITY_REFETCH_MIN_INTERVAL_MS = 1_000
 /** Minimum gap between activity-driven reseeds of a filtered/searched list.
  *  The response is compact, but child-span search still scans the engine's
  *  store; riding the short tick debounce would re-run that scan back-to-back. */
@@ -94,6 +100,23 @@ export function filterHiddenTraceRows(
   return traces.filter(
     (trace) => !(trace.functionId && hidden.includes(trace.functionId)),
   )
+}
+
+/**
+ * Rows still playing their arrival flash keep it when the next answer lands:
+ * replacing the set would cut the animation short on every refetch during a
+ * busy stretch. Ids no longer on the page are dropped so the set stays
+ * bounded even where `animationend` never fires (reduced motion).
+ */
+export function mergeNewTraceIds(
+  previous: ReadonlySet<string>,
+  fresh: ReadonlySet<string>,
+  listed: ReadonlySet<string>,
+): Set<string> {
+  const next = new Set<string>()
+  for (const id of previous) if (listed.has(id)) next.add(id)
+  for (const id of fresh) next.add(id)
+  return next
 }
 
 export function traceTotalForResponse(
@@ -264,7 +287,9 @@ export function useTraceData({
         for (const id of currentIds) {
           if (!prevTraceIdsRef.current.has(id)) freshIds.add(id)
         }
-        if (freshIds.size > 0) setNewTraceIds(freshIds)
+        if (freshIds.size > 0) {
+          setNewTraceIds((prev) => mergeNewTraceIds(prev, freshIds, currentIds))
+        }
       }
       prevTraceIdsRef.current = currentIds
 
@@ -296,6 +321,14 @@ export function useTraceData({
   // client-side append/merge to drift from the server's view. Pause /
   // tab-hidden freeze it; reconnect and tab-visible re-seed once to recover
   // anything missed while away. Subscribes once for the hook's lifetime.
+  //
+  // Ticks never CANCEL a refetch in flight: each surface runs one scan at a
+  // time, a tick that lands mid-scan queues exactly one trailing rerun, and
+  // consecutive scans keep a 1s floor. Invalidating on every tick used to
+  // cancel the in-flight fetch client-side while the engine kept executing
+  // it — under a busy session the overlapping scans pushed latency past the
+  // tick interval and the list froze until the activity paused, then jumped
+  // (MOT-4621). See `createRefetchCoalescer`.
   const qc = useQueryClient()
   const isPausedRef = useRef(isPaused)
   useEffect(() => {
@@ -317,51 +350,37 @@ export function useTraceData({
 
     const isHidden = () =>
       typeof document !== 'undefined' && document.visibilityState === 'hidden'
-    // A search_all_spans seed still performs an engine-side scan. Its reseed
-    // rides a trailing cooldown so a busy session cannot re-run it back-to-back.
-    let reseedCooldownTimer: ReturnType<typeof setTimeout> | undefined
-    let lastTracesReseed = 0
-    const reseedTraces = () => {
-      lastTracesReseed = Date.now()
-      qc.invalidateQueries({ queryKey: ['traces'] })
-    }
-    const throttledFilteredReseed = () => {
-      const wait = Math.max(
-        0,
-        lastTracesReseed + FILTERED_RESEED_COOLDOWN_MS - Date.now(),
-      )
-      if (wait === 0) {
-        reseedTraces()
-        return
-      }
-      if (reseedCooldownTimer !== undefined) return
-      reseedCooldownTimer = setTimeout(() => {
-        reseedCooldownTimer = undefined
-        reseedTraces()
-      }, wait)
-    }
-    const refetchGroups = () => {
-      qc.invalidateQueries({ queryKey: ['traceGroups'] })
-      qc.invalidateQueries({ queryKey: ['traceGroupMembers'] })
-    }
-    const refetchAll = () => {
-      reseedTraces()
-      refetchGroups()
-    }
+    const canRefetch = () => !disposed && !isPausedRef.current && !isHidden()
 
-    let refetchTimer: ReturnType<typeof setTimeout> | undefined
-    const scheduleRefetch = () => {
-      if (refetchTimer !== undefined) return
-      refetchTimer = setTimeout(() => {
-        refetchTimer = undefined
-        if (disposed || isPausedRef.current || isHidden()) return
-        if (searchAllSeedRef.current) {
-          throttledFilteredReseed()
-          refetchGroups()
-        } else {
-          refetchAll()
-        }
-      }, ACTIVITY_REFETCH_DEBOUNCE_MS)
+    // `cancelRefetch: false` keeps react-query from abandoning a fetch that is
+    // already running; the coalescer guarantees there is at most one anyway.
+    const invalidate = (queryKey: readonly unknown[]) =>
+      qc.invalidateQueries({ queryKey }, { cancelRefetch: false })
+
+    // A search_all_spans seed still performs an engine-side scan: its reseed
+    // rides a longer cooldown so a busy session cannot re-run it back-to-back.
+    const traces = createRefetchCoalescer({
+      run: () => invalidate(['traces']),
+      debounceMs: ACTIVITY_REFETCH_DEBOUNCE_MS,
+      minIntervalMs: () =>
+        searchAllSeedRef.current
+          ? FILTERED_RESEED_COOLDOWN_MS
+          : ACTIVITY_REFETCH_MIN_INTERVAL_MS,
+      shouldRun: canRefetch,
+    })
+    const groups = createRefetchCoalescer({
+      run: () =>
+        Promise.all([
+          invalidate(['traceGroups']),
+          invalidate(['traceGroupMembers']),
+        ]),
+      debounceMs: ACTIVITY_REFETCH_DEBOUNCE_MS,
+      minIntervalMs: ACTIVITY_REFETCH_MIN_INTERVAL_MS,
+      shouldRun: canRefetch,
+    })
+    const refetchAll = () => {
+      traces.request()
+      groups.request()
     }
 
     void (async () => {
@@ -370,7 +389,7 @@ export function useTraceData({
 
       const offActivity = startTraceActivityFeed(client, () => {
         if (isPausedRef.current || isHidden()) return
-        scheduleRefetch()
+        refetchAll()
       })
 
       const offConn = client.addConnectionStateListener((state) => {
@@ -393,20 +412,14 @@ export function useTraceData({
         offActivity()
         offConn()
         offVisibility?.()
-        if (refetchTimer !== undefined) {
-          clearTimeout(refetchTimer)
-          refetchTimer = undefined
-        }
-        if (reseedCooldownTimer !== undefined) {
-          clearTimeout(reseedCooldownTimer)
-          reseedCooldownTimer = undefined
-        }
       }
     })()
 
     return () => {
       disposed = true
       stop?.()
+      traces.dispose()
+      groups.dispose()
     }
   }, [qc])
 

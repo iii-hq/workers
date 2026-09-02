@@ -37,7 +37,9 @@ DEPENDENCY_RANGES = {
     "queue": "^0.21.5",
     "session-manager": "^1.0.13",
     "shell": "^0.11.9",
-    "skills": "0.x",
+    # `skills` left this table with the worker itself: its functionality was
+    # folded into iii-directory and the last consumer (mcp) dropped the
+    # dependency in #1018, so a range here would fail the consumer check.
     "state": "^0.22.2",
 }
 

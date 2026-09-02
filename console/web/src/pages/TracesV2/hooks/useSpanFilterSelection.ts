@@ -30,6 +30,7 @@ import type { ConsoleConfigValue } from '@/lib/console-config'
 import {
   EMPTY_HIDDEN_IDS,
   fetchTraceHiddenFunctionIds,
+  sameHiddenIdSet,
 } from '@/lib/trace-hidden-functions'
 import {
   EMPTY_SPAN_FILTER_PREFS,
@@ -57,11 +58,22 @@ export function useSpanFilterSelection(): SpanFilterControls {
   // Producer-default-hidden groups (`trace_hidden: true` registration
   // metadata). Registrations only change on worker deploys, so a long
   // staleTime is fine; failures resolve to the empty set (hide nothing).
+  // A refetch that finds the same ids keeps the same Set instance: the
+  // selection below — and the trace list's verdict cache, keyed on the
+  // selection's identity — hangs off it, and a fresh-but-equal Set used to
+  // reset that cache mid-session, blinking rows out and back in (MOT-4621).
   const { data: producerHidden } = useQuery<ReadonlySet<string>>({
     queryKey: TRACE_HIDDEN_FUNCTIONS_QUERY_KEY,
     queryFn: fetchTraceHiddenFunctionIds,
     staleTime: 5 * 60_000,
     retry: 1,
+    structuralSharing: (previous, next) =>
+      sameHiddenIdSet(
+        previous as ReadonlySet<string> | undefined,
+        next as ReadonlySet<string>,
+      )
+        ? previous
+        : next,
   })
   const producerHiddenRef = useRef<ReadonlySet<string>>(EMPTY_HIDDEN_IDS)
   producerHiddenRef.current = producerHidden ?? EMPTY_HIDDEN_IDS

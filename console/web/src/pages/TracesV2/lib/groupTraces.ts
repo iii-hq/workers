@@ -118,6 +118,26 @@ export function groupHeadingIsOpaque(
   return option === 'iii.session.id' || option === 'iii.message.id'
 }
 
+/**
+ * The order the grouped list renders: newest group first by `first_seen_ms`,
+ * ties broken by the grouped value. The engine sorts by `first_seen_ms`
+ * alone over a hash map, so two groups whose first spans share a
+ * millisecond — sessions spawned together, parallel agents — come back in
+ * a different order on every refetch, and the rows swapped places about
+ * once a second under activity (MOT-4621). Returns the input when it is
+ * already in order, so memos downstream hold.
+ */
+export function orderTraceGroups(
+  groups: readonly TraceGroup[],
+): readonly TraceGroup[] {
+  const sorted = [...groups].sort(
+    (a, b) => b.first_seen_ms - a.first_seen_ms || (a.value < b.value ? -1 : 1),
+  )
+  return sorted.every((group, index) => group === groups[index])
+    ? groups
+    : sorted
+}
+
 function formatDurationMs(ms: number): string {
   if (ms < 1) return '<1ms'
   if (ms < 1_000) return `${Math.round(ms)}ms`
