@@ -22,25 +22,13 @@ use crate::util;
 
 pub const PIPE_ID: &str = "fp::pipe";
 pub const PIPE_DESC: &str =
-    "Run a short worker-side pipeline in one call: each step triggers a function and its result \
-     lands in the next step's payload at `into` (default \"/value\") — large values flow \
-     worker→worker and never enter the chat. fp::* transform steps \
-     (get/pick/omit/take/drop/map/filter/split/join/uniq/size/compact/nth/getOr/flatten/\
-     sortBy/reverse/when, lodash semantics) run inline and \
-     thread the transformed value itself — the {value} wrapper they return when called \
-     directly never appears between steps. A failing fp::when guard STOPS the pipe \
-     (`short_circuited: true`), so a trailing write step runs only when its condition holds. \
-     The FIRST step receives no threaded value: start with a producing function (a fetch, a \
-     state::get) or seed a leading transform via payload.value. \
-     Example: fetch an article and persist it trimmed: \
-     through=[{function:'scrapling::fetch', payload:{url,format:'markdown'}}, \
-     {function:'fp::get', payload:{path:'/content'}}, \
-     {function:'fp::take', payload:{n:20000}}, \
-     {function:'state::set', payload:{scope,key}}]. Returns per-step sizes and a preview, not \
-     the value. shell::*/coder::* steps run under the session's harness-stamped filesystem \
-     scope; without one (no working directory, or a non-harness caller) they are refused — \
-     call them directly instead. Database write steps are refused only while `approval::gate` \
-     is registered.";
+    "Run a worker-side pipeline: each step triggers a function and its result lands in the \
+     next step's payload at `into` (default \"/value\"); fp::* steps thread the bare value and a \
+     failing fp::when stops the pipe. The FIRST step gets no threaded value. Returns per-step \
+     sizes and a preview, not the value.";
+// Worked example (fetch → get → take → state::set) lives in the crate README. shell::*/coder::*
+// steps need the harness-stamped fs_scope and database writes are refused while
+// `approval::gate` is registered — both surface as step errors.
 
 /// ponytail: remaining ceilings — no nested pipes, no trigger-control or
 /// session/approval steps, 120s per bus step, and a held (approval) release
@@ -86,15 +74,14 @@ pub struct PipeRequest {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PipeStep {
-    /// Function id to trigger (e.g. `scrapling::fetch`, `fp::get`,
-    /// `state::set`).
+    /// Function id to trigger.
     pub function: String,
     /// Base payload for the call.
     #[serde(default)]
     pub payload: Option<Value>,
-    /// JSON pointer in THIS step's payload where the previous step's value
-    /// lands (default `/value`). Object keys only (`~0`/`~1` escapes are
-    /// decoded); indexing into arrays is unsupported.
+    /// JSON pointer in this step's payload where the previous value lands (default
+    /// `/value`); object keys only, no array indexing.
+    // `~0`/`~1` escapes are decoded.
     #[serde(default)]
     pub into: Option<String>,
 }
@@ -894,6 +881,6 @@ mod tests {
         // The live trap: a model that saw {value: X} from ten direct calls
         // composed `pick {paths:["value"]}` to unwrap between steps. The
         // published description must keep saying nothing threads wrapped.
-        assert!(PIPE_DESC.contains("thread the transformed value itself"));
+        assert!(PIPE_DESC.contains("thread the bare value"));
     }
 }

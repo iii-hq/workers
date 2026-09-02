@@ -14,10 +14,8 @@ use super::Deps;
 pub struct NodeResultRequest {
     /// The `run_id` returned by `workflow::start`.
     pub run_id: String,
-    /// Node uid: the node id for a plain node, or `"{node_id}#{i}"` for a
-    /// fanned-out item. `workflow::status` lists the uids that have a result
-    /// under `node_results` (its keys ARE the uids). The canonical arg name is
-    /// `node_uid`; the shorter `uid` is accepted as an alias.
+    /// The node id, or `"{node_id}#{i}"` for a fanout item (the keys of
+    /// `workflow::status`'s `node_results`); `uid` is accepted as an alias.
     #[serde(alias = "uid")]
     pub node_uid: String,
 }

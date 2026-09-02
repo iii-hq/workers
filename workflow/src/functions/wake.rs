@@ -17,9 +17,8 @@ pub const WAKE_DESC: &str =
      Best-effort latency optimization; the cron sweep is the durable backstop. \
      Not called directly.";
 
-/// Lenient view of the `harness::turn-completed` payload — we only need the
-/// session id. The event also carries turn_id/status/result/timestamp/parent,
-/// which we ignore (no `deny_unknown_fields`).
+/// Harness `turn-completed` payload; only `session_id` is read.
+// Lenient (no `deny_unknown_fields`): turn_id/status/result/timestamp/parent are ignored.
 #[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
 pub struct WakeEvent {
     #[serde(default)]

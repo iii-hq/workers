@@ -16,10 +16,7 @@ use super::Deps;
 // Request / Response
 // ---------------------------------------------------------------------------
 
-/// Read a single snapshot of a workflow run's status. For a long-running
-/// pipeline, prefer `workflow::start` + a `notify` callback (pushed the outcome
-/// once it's terminal) over polling this in a loop — each poll costs one of your
-/// turns and a poll loop can exhaust your turn budget.
+/// Read a single snapshot of a workflow run's status.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct StatusRequest {
     /// The `run_id` returned by `workflow::start`.

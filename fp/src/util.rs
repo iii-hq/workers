@@ -9,149 +9,119 @@ use serde_json::{Map, Value};
 
 pub const GET_ID: &str = "fp::get";
 pub const GET_DESC: &str =
-    "Extract the single value at a JSON pointer (lodash _.get): { value, path: \"/content\" }. \
-     A miss names the keys that were available. Mainly useful as a fp::pipe step.";
+    "Extract the single value at a JSON pointer (lodash _.get). A miss names the keys that \
+     were available.";
 
 pub const PICK_ID: &str = "fp::pick";
 pub const PICK_DESC: &str =
-    "Subset an object by top-level keys (lodash _.pick): { value, paths: [\"a\",\"b\"] } -> \
-     {a, b}; missing keys are omitted. Mainly useful as a fp::pipe step.";
+    "Subset an object by top-level keys (lodash _.pick); missing keys are omitted.";
 
 pub const OMIT_ID: &str = "fp::omit";
-pub const OMIT_DESC: &str =
-    "Drop top-level keys from an object (lodash _.omit): { value, paths: [\"a\",\"b\"] }. \
-     Mainly useful as a fp::pipe step.";
+pub const OMIT_DESC: &str = "Drop top-level keys from an object (lodash _.omit).";
 
 pub const TAKE_ID: &str = "fp::take";
 pub const TAKE_DESC: &str =
     "Keep the first n elements of an array or the first n characters of a string (lodash \
-     _.take): { value, n }. Mainly useful as a fp::pipe step.";
+     _.take).";
 
 pub const DROP_ID: &str = "fp::drop";
 pub const DROP_DESC: &str =
     "Skip the first n elements of an array or the first n characters of a string (lodash \
-     _.drop): { value, n }. Mainly useful as a fp::pipe step.";
+     _.drop).";
 
 pub const MAP_ID: &str = "fp::map";
 pub const MAP_DESC: &str =
-    "Pluck the value at a JSON pointer from each array element (lodash _.map with a property \
-     iteratee): { value, path: \"/id\" }. Sporadic misses become null (fp::compact drops \
-     them), but a path matching NO element errors — pointers pluck stored fields, not \
-     computed properties like /length (fp::size counts). Mainly useful as a fp::pipe step.";
+    "Pluck the value at a JSON pointer from each array element (lodash _.map with a \
+     property iteratee). Sporadic misses become null (fp::compact drops them); a path \
+     matching NO element errors.";
 
 pub const FILTER_ID: &str = "fp::filter";
 pub const FILTER_DESC: &str =
     "Keep array elements whose properties equal a partial object (lodash _.filter with a \
-     matches iteratee): { value, matches: { status: \"active\" } }. matches is a partial \
-     OBJECT (never a bare string/number) and only object elements can match. Mainly useful \
-     as a fp::pipe step.";
+     matches iteratee). `matches` is a partial OBJECT, never a bare string/number; only \
+     object elements can match.";
 
 pub const SPLIT_ID: &str = "fp::split";
-pub const SPLIT_DESC: &str =
-    "Split a string into an array of strings (lodash _.split): { value, separator: \"\\n\" }. \
-     Mainly useful as a fp::pipe step.";
+pub const SPLIT_DESC: &str = "Split a string into an array of strings (lodash _.split).";
 
 pub const JOIN_ID: &str = "fp::join";
 pub const JOIN_DESC: &str =
-    "Join array elements into one string (lodash _.join): { value, separator } (separator \
-     defaults to \",\"). Mainly useful as a fp::pipe step.";
+    "Join array elements into one string (lodash _.join); separator defaults to \",\".";
 
 pub const UNIQ_ID: &str = "fp::uniq";
-pub const UNIQ_DESC: &str =
-    "Deduplicate an array, keeping first occurrences (lodash _.uniq): { value }. Mainly useful \
-     as a fp::pipe step.";
+pub const UNIQ_DESC: &str = "Deduplicate an array, keeping first occurrences (lodash _.uniq).";
 
 pub const SIZE_ID: &str = "fp::size";
 pub const SIZE_DESC: &str =
-    "Count a collection (lodash _.size): array length, string chars, or object key count: \
-     { value }. Non-collections error instead of returning 0. Mainly useful as a fp::pipe step.";
+    "Count a collection (lodash _.size): array length, string chars, or object key count. \
+     Non-collections error instead of returning 0.";
 
 pub const COMPACT_ID: &str = "fp::compact";
 pub const COMPACT_DESC: &str =
     "Remove null elements from an array (lodash _.compact, null-only: 0, false and \"\" are \
-     KEPT so plucked data survives): { value }. Pairs with fp::map, whose sporadic misses \
-     become null. Mainly useful as a fp::pipe step.";
+     KEPT). Pairs with fp::map, whose sporadic misses become null.";
 
 pub const NTH_ID: &str = "fp::nth";
 pub const NTH_DESC: &str =
-    "Element at index n; negative n counts from the end (lodash _.nth): { value, n: -1 } is \
-     the last element. Out of bounds errors naming the length. Mainly useful as a fp::pipe \
-     step.";
+    "Element at index n; negative n counts from the end (lodash _.nth). Out of bounds \
+     errors naming the length.";
 
 pub const GET_OR_ID: &str = "fp::getOr";
 pub const GET_OR_DESC: &str =
-    "Extract the value at a JSON pointer, or `default` when the path misses (lodash fp.getOr): \
-     { value, path, default }. A stored null is a hit, not a miss. Mainly useful as a fp::pipe \
-     step.";
+    "Extract the value at a JSON pointer, or `default` when the path misses (lodash \
+     fp.getOr). A stored null is a hit, not a miss.";
 
 pub const FLATTEN_ID: &str = "fp::flatten";
-pub const FLATTEN_DESC: &str =
-    "Flatten an array one level (lodash _.flatten): [1,[2],[[3]]] -> [1,2,[3]]. Mainly useful \
-     as a fp::pipe step.";
+pub const FLATTEN_DESC: &str = "Flatten an array one level (lodash _.flatten).";
 
 pub const SORT_BY_ID: &str = "fp::sortBy";
 pub const SORT_BY_DESC: &str =
-    "Sort array elements ascending by the value at a JSON pointer (lodash _.sortBy, stable): \
-     { value, path } — path \"\" sorts the elements themselves (primitives). Keys must all be \
-     numbers, strings, or booleans; an element missing the path errors. Pair with fp::reverse \
-     for descending. Mainly useful as a fp::pipe step.";
+    "Sort array elements ascending by the value at a JSON pointer (lodash _.sortBy, \
+     stable); path \"\" sorts the elements themselves. Keys must all be numbers, strings, \
+     or booleans. Pair with fp::reverse for descending.";
 
 pub const REVERSE_ID: &str = "fp::reverse";
-pub const REVERSE_DESC: &str =
-    "Reverse an array (lodash _.reverse, immutable like lodash/fp): { value }. Mainly useful \
-     as a fp::pipe step.";
+pub const REVERSE_DESC: &str = "Reverse an array (lodash _.reverse, immutable like lodash/fp).";
 
 pub const SUM_ID: &str = "fp::sum";
 pub const SUM_DESC: &str =
-    "Total an array of numbers (lodash _.sum/_.sumBy): { value }, or { value, path: \
-     \"/amount\" } to pluck the addend from each element first. An empty array totals 0; a \
-     non-numeric element errors rather than being skipped. All-integer inputs total to an \
-     integer, so the result compares cleanly in a fp::when guard. Mainly useful as a \
-     fp::pipe step.";
+    "Total an array of numbers (lodash _.sum/_.sumBy); `path` plucks the addend from each \
+     element first. An empty array totals 0; a non-numeric element errors rather than being \
+     skipped.";
 
 pub const MEAN_ID: &str = "fp::mean";
 pub const MEAN_DESC: &str =
-    "Arithmetic mean of an array of numbers (lodash _.mean/_.meanBy): { value }, or \
-     { value, path: \"/score\" }. Deviates from lodash: an EMPTY array errors instead of \
-     yielding NaN, which would thread garbage into the next step. Mainly useful as a \
-     fp::pipe step.";
+    "Arithmetic mean of an array of numbers (lodash _.mean/_.meanBy); `path` plucks from \
+     each element first. Deviates from lodash: an EMPTY array errors instead of yielding \
+     NaN.";
 
 pub const MIN_ID: &str = "fp::min";
 pub const MIN_DESC: &str =
-    "Smallest number in an array (lodash _.min/_.minBy): { value }, or { value, path: \
-     \"/amount\" }. Deviates from lodash _.minBy: returns the NUMBER, not the element \
-     holding it, so a fp::when guard can compare it directly. An empty array errors. Mainly \
-     useful as a fp::pipe step.";
+    "Smallest number in an array (lodash _.min/_.minBy); `path` plucks from each element \
+     first. Returns the NUMBER, not the element holding it. An empty array errors.";
 
 pub const MAX_ID: &str = "fp::max";
 pub const MAX_DESC: &str =
-    "Largest number in an array (lodash _.max/_.maxBy): { value }, or { value, path: \
-     \"/amount\" }. Deviates from lodash _.maxBy: returns the NUMBER, not the element \
-     holding it, so a fp::when guard can compare it directly. An empty array errors. Mainly \
-     useful as a fp::pipe step.";
+    "Largest number in an array (lodash _.max/_.maxBy); `path` plucks from each element \
+     first. Returns the NUMBER, not the element holding it. An empty array errors.";
 
 pub const GROUP_BY_ID: &str = "fp::groupBy";
 pub const GROUP_BY_DESC: &str =
-    "Bucket array elements by a plucked key (lodash _.groupBy): { value, path: \"/writer\" } \
-     -> { \"<key>\": [element, ...] } (`\"\"` groups by the element itself). Keys must be a \
-     string, number, or boolean; a null or container key errors rather than collapsing \
-     distinct groups into one bucket. Mainly useful as a fp::pipe step.";
+    "Bucket array elements by a plucked key (lodash _.groupBy) into { \"<key>\": [element, \
+     ...] }; path \"\" groups by the element itself. Keys must be a string, number, or \
+     boolean; null or container keys error.";
 
 pub const COUNT_BY_ID: &str = "fp::countBy";
 pub const COUNT_BY_DESC: &str =
-    "Count array elements per plucked key (lodash _.countBy): { value, path: \"/writer\" } \
-     -> { \"<key>\": <count> } (`\"\"` counts by the element itself). Same key rules as \
-     fp::groupBy. Pair with fp::groupBy + fp::sum for a per-key total. Mainly useful as a \
-     fp::pipe step.";
+    "Count array elements per plucked key (lodash _.countBy) into { \"<key>\": <count> }; \
+     path \"\" counts by the element itself. Same key rules as fp::groupBy.";
 
 pub const WHEN_ID: &str = "fp::when";
 pub const WHEN_DESC: &str =
-    "Guard: test the value at a JSON pointer ({ value, path?, op, to? }; ops ==, !=, >, >=, <, \
-     <=, exists, not_empty; path defaults to the whole value; a pointer miss FAILS the guard, \
-     it never errors). Direct calls return { passed, value }. As a fp::pipe step, a passing \
-     guard threads the ORIGINAL value onward unchanged and a failing one STOPS the pipe \
-     (`short_circuited: true`), so a trailing write step (e.g. state::set) runs only when the \
-     condition holds.";
+    "Guard: test the value at a JSON pointer (`path` defaults to the whole value; a pointer \
+     miss FAILS, never errors) and return { passed, value }. As a fp::pipe step a passing \
+     guard threads the ORIGINAL value onward and a failing one STOPS the pipe \
+     (`short_circuited: true`).";
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetRequest {
@@ -197,9 +167,9 @@ pub struct DropRequest {
 pub struct MapRequest {
     /// Input value (a pipe lands the previous step's value here).
     pub value: Value,
-    /// JSON pointer plucked from each element (e.g. `/id`). Sporadic misses
-    /// become null; a path matching NO element is an error (stored fields
-    /// only — no computed properties like `/length`).
+    /// JSON pointer plucked from each element (e.g. `/id`); sporadic misses become
+    /// null, a path matching no element errors.
+    // Stored fields only — no computed properties like `/length` (fp::size counts).
     pub path: String,
 }
 
@@ -270,8 +240,7 @@ pub struct SortByRequest {
 pub struct GroupByRequest {
     /// Input value (a pipe lands the previous step's value here).
     pub value: Value,
-    /// JSON pointer plucked from each element as the bucket key
-    /// (`""` = the element itself).
+    /// JSON pointer plucked from each element as the bucket key (`""` = the element itself).
     pub path: String,
 }
 
@@ -280,8 +249,7 @@ pub struct GroupByRequest {
 pub struct ReduceRequest {
     /// Input value (a pipe lands the previous step's value here).
     pub value: Value,
-    /// Optional JSON pointer plucked from each element before reducing, so
-    /// `[{amount: 3}, …]` reduces without a separate fp::map step.
+    /// JSON pointer plucked from each element before reducing (the lodash `…By` form).
     #[serde(default)]
     pub path: Option<String>,
 }
@@ -319,10 +287,9 @@ pub struct WhenRequest {
     /// JSON pointer selecting what to test (default: the whole value).
     #[serde(default)]
     pub path: Option<String>,
-    /// One of "==", "!=", ">", ">=", "<", "<=", "exists", "not_empty".
+    /// Comparison to run.
     pub op: WhenOp,
-    /// Right-hand side for the comparison ops; meaningless (and rejected) for
-    /// exists / not_empty.
+    /// Right-hand side for the comparison ops; rejected for exists / not_empty.
     #[serde(default)]
     pub to: Option<Value>,
 }

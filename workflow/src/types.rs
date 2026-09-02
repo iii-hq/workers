@@ -38,34 +38,22 @@ pub enum NodeState {
 // Workflow definition types
 // ---------------------------------------------------------------------------
 
-/// A declarative multi-agent DAG. Nodes are sub-agents, `depends_on` are the
-/// edges, `fanout` runs a node once per item of an upstream array (with a
-/// `depends_on` join acting as the barrier), and `output` picks which node's
-/// result the run returns. Each node runs as its own harness session, so a run
-/// is durable and crash-resumable. Submit via `workflow::start`, which returns
-/// a run_id immediately; supply `notify` to be pushed the outcome when the run
-/// finishes, or poll `workflow::status`.
+/// Declarative multi-agent DAG, durable and crash-resumable: nodes are sub-agent
+/// sessions, `depends_on` the edges, `output` the returned node.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowDef {
-    /// Schema version. Defaults to `1` (the only supported version) when omitted,
-    /// so callers never need to send it.
+    /// Schema version; only `1` is supported.
     #[serde(default = "default_def_version")]
     pub version: u32,
-    /// Nodes keyed by node id. A node id must not contain `#`, `.`, or `/` (reserved
-    /// for fanout-item / over-path parsing and result-key composition). The graph
-    /// formed by every node's `depends_on` must be acyclic.
+    /// Nodes keyed by node id; an id must not contain `#`, `.`, or `/`, and the
+    /// `depends_on` graph must be acyclic.
+    // `#` / `.` / `/` are reserved for fanout-item / over-path parsing and result-key composition.
     pub nodes: BTreeMap<String, NodeDef>,
     /// Which node's result the whole run returns.
     pub output: OutputRef,
-    /// Default dispatch policy for every node that omits its own
-    /// `agent.functions` — the run-wide reach inherited by un-narrowed nodes.
-    /// Same shape as `agent.functions` (a bare allow-list array, a single
-    /// string, or a `{ allow, deny }` object). Omit and un-narrowed nodes get
-    /// `["*"]` (everything), so by default a node can do anything the main agent
-    /// could. Set this to mirror a narrower main-agent policy run-wide (e.g.
-    /// `{ "allow": ["*"], "deny": ["approval::*","configuration::*"] }`), then
-    /// narrow individual nodes further with their own `agent.functions`.
+    /// Dispatch policy inherited by every node that omits `agent.functions` (same
+    /// shape); when unset those nodes get `["*"]`, everything.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_functions: Option<Value>,
 }
@@ -78,9 +66,9 @@ fn default_def_version() -> u32 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OutputRef {
-    /// `"node:<id>"` (a bare `<id>` is also accepted) of an existing node. If
-    /// that node is a fanout group, the run's result is the array of its
-    /// children's results, in order.
+    /// `"node:<id>"` of an existing node; for a fanout group the result is the
+    /// array of its children's results, in order.
+    // A bare `<id>` is also accepted.
     pub from: String,
 }
 
@@ -91,12 +79,11 @@ pub struct OutputRef {
 pub struct NodeDef {
     pub agent: AgentSpec,
     pub input: InputSpec,
-    /// Prerequisite node ids. This node fires only once ALL of them are Done —
-    /// this is the barrier / join. Empty means it can start immediately.
+    /// Prerequisite node ids; the node fires only once all of them are Done (the
+    /// barrier / join).
     #[serde(default)]
     pub depends_on: Vec<String>,
-    /// When set, this node fans out: one child agent runs per item of the
-    /// referenced array. Omit for a normal single-run node.
+    /// Fan out: one child agent runs per item of the referenced array.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fanout: Option<FanoutSpec>,
 }
@@ -105,62 +92,41 @@ pub struct NodeDef {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentSpec {
-    /// Model id, e.g. `"claude-sonnet-4-6"`. Required and non-empty. MUST be a
-    /// model registered on this engine — discover the valid ids with
-    /// `router::models::list`; an unregistered id is rejected up front by
-    /// `workflow::start`. Do not guess model ids from memory.
+    /// Model id registered on this engine (discover them with `router::models::list`);
+    /// an unregistered id is rejected at start.
     pub model: String,
-    /// Optional provider override (e.g. `"anthropic"`); defaults to the routed
-    /// provider for the model.
+    /// Provider override; defaults to the routed provider for the model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    /// Optional system prompt; appended to the child's built-in identity prompt.
+    /// System prompt appended to the child's built-in identity prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
-    /// Allow-list of function ids the child may call, e.g. `["web::fetch"]`. A
-    /// bare array is the shorthand and is wrapped into the harness
-    /// `{ "allow": [...] }` policy; a single string and a full FunctionPolicy
-    /// object (`{ "allow": [...], "deny": [...] }`) are also accepted.
-    /// INHERITS BY DEFAULT: omit this and the node inherits the run's default
-    /// reach — the def-level `default_functions`, or `["*"]` (everything) when
-    /// that is also unset. So a node can call anything the main agent could
-    /// without listing it. Set this to NARROW one node (e.g. `["web::fetch"]`),
-    /// or to an empty allow-list (`{ "allow": [] }`) to lock the node down to
-    /// nothing. Use the narrow form for least-privilege nodes; omit for the
-    /// common case.
+    /// Child dispatch policy: an allow-list array, a single string, or
+    /// `{ "allow": [...], "deny": [...] }`; omit to inherit `default_functions`.
+    // A bare array is wrapped into the harness `{ "allow": [...] }` FunctionPolicy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub functions: Option<Value>,
-    /// Output contract passed to the harness. MUST be `{ "type": "json",
-    /// "schema": { ... } }` on any node that another node reads via
-    /// `input.from = "node:<id>"` or fans out over (a consumed node has to emit
-    /// JSON). The `schema` MUST declare every field a downstream node reaches —
-    /// each `fanout.over` path and each dotted `input.from` path. If some node
-    /// has `fanout.over = "node:X.items"`, node X's schema must declare `items`
-    /// as an array; an undeclared field tends not to be emitted and the fanout
-    /// fails at runtime. The `schema` must be a real JSON Schema with a top-level
-    /// `type` (e.g. `"object"`); an empty `{}` is rejected at `workflow::start`.
-    /// The final `output` node may be plain text — omit this, or set
-    /// `{ "type": "text" }`.
+    /// Output contract; any node another node reads or fans out over must be
+    /// `{"type":"json","schema":{...}}` declaring every field read downstream.
+    // `schema` must be a real JSON Schema with a top-level `type`; an empty `{}` is
+    // rejected at `workflow::start`. An undeclared field tends not to be emitted, so a
+    // fanout over it fails at runtime. Omit (or `{ "type": "text" }`) for a text node.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<Value>,
 }
 
-/// Where a node's input value comes from. Either a single source, or — for a
-/// join/synthesis node that must read MORE THAN ONE dependency — an array of
-/// `"node:<id>"` references that are gathered into one keyed object.
+/// Where a node's input comes from: one source, or an array of `"node:<id>"` refs
+/// gathered into one object keyed by node id.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum InputFrom {
-    /// A single source:
-    /// - `"run_input"` / `"workflow.input"` — the run's top-level `input`.
-    /// - `"node:<id>"` — that dependency's JSON result.
-    /// - `"fanout_item"` — on a fanout child, its single array element.
+    /// `"run_input"` (the run's top-level input), `"node:<id>"` (that dependency's
+    /// result), or `"fanout_item"` (this fanout child's array element).
+    // `"workflow.input"` is accepted as an alias of `"run_input"`.
     One(String),
-    /// Several `"node:<id>"` sources joined into one object: each entry becomes a
-    /// field keyed by its node id (e.g. `["node:write","node:reviews"]` →
-    /// `{ "write": <write result>, "reviews": <reviews result> }`). A fanout dep
-    /// resolves to its array of child results. Every entry MUST be a `"node:<id>"`
-    /// reference and MUST appear in the node's `depends_on`.
+    /// Several `"node:<id>"` sources, each also listed in `depends_on`, joined into
+    /// one object keyed by node id.
+    // A fanout dep resolves to its array of child results.
     Many(Vec<String>),
 }
 
@@ -189,11 +155,10 @@ impl From<&str> for InputFrom {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct InputSpec {
-    /// Source of the input value — a single source or, for a join node, an array
-    /// of `"node:<id>"` references gathered into a keyed object. See `InputFrom`.
+    /// Source of the input value: a single source or, for a join node, an array of
+    /// `"node:<id>"` refs.
     pub from: InputFrom,
-    /// Optional text prepended to the (JSON-serialized) input as the opening
-    /// message — use it to instruct the agent what to do with the input.
+    /// Text prepended to the JSON-serialized input as the node's opening message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template: Option<String>,
 }
@@ -202,64 +167,50 @@ pub struct InputSpec {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FanoutSpec {
-    /// `"node:<dep_id>.<path.to.array>"` — points at an array inside a
-    /// dependency's JSON result (the dep must declare JSON output). The fanout
-    /// path must name a field the dependency's `agent.output` schema actually
-    /// declares and emits, otherwise the run fails at expansion time with a
-    /// message naming what the dep DID produce. One child runs per element, each
-    /// reading its element via `input.from = "fanout_item"`. The group's result
-    /// is the array of child results, in order.
+    /// `"node:<dep>.<path>"` to an array the dependency's `agent.output` schema declares;
+    /// one child runs per element, reading it as `"fanout_item"`.
+    // An undeclared path fails at expansion time naming what the dep DID produce.
+    // The group's result is the array of child results, in order.
     pub over: String,
 }
 
-/// Caller-supplied completion callback. When a run reaches a terminal state the
-/// worker triggers `function_id` once with `{run_id, status, result,
-/// result_error}` so the caller is pushed the outcome instead of polling
-/// `workflow::status`. Delivery is durable (enqueued) and at-least-once — the
-/// handler must dedup on `run_id`.
+/// Completion callback: `function_id` is triggered once on terminal state with
+/// `{run_id, status, result, result_error}`; at-least-once, dedup on `run_id`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NotifySpec {
     /// Function id to trigger on terminal state, e.g. `"myworker::wf-done"`.
     pub function_id: String,
-    /// Queue for durable delivery; defaults to `"default"` when omitted.
+    /// Queue for durable delivery; defaults to `"default"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue: Option<String>,
 }
 
-/// Deliver the run outcome into a session as a new message on terminal state
-/// (via `harness::send`), so the calling agent never has to poll
-/// `workflow::status`. An AGENT caller sends `reply_to: {}` (optionally a
-/// `template`) and leaves the rest unset: the worker's pre_trigger hook
-/// auto-stamps the caller's real `session_id` / `model` / `provider`, OVERWRITING
-/// anything supplied — so an agent cannot direct a run's result into another
-/// session. A trusted worker caller (not going through the agent turn loop) may
-/// set these explicitly.
-///
-/// After calling `workflow::start` with `reply_to`, END YOUR TURN — do NOT claim
-/// the result was delivered and do NOT produce or guess a result this turn. The
-/// outcome arrives as a SEPARATE message when the run finishes.
+/// Push the outcome into the caller's session as a message; agents send `{}`
+/// (optionally `template`) — the rest is auto-stamped from the caller's turn.
+// Delivered via `harness::send`. The `workflow::stamp-reply` pre_trigger hook OVERWRITES
+// any supplied session_id/model/provider, so an agent cannot direct a result into another
+// session; a trusted worker caller (outside the agent turn loop) may set them explicitly.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReplySpec {
-    /// Target session. Auto-stamped from the caller's turn by the pre_trigger hook.
+    /// Target session; auto-stamped from the caller's turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
-    /// Model for the reply turn — `harness::send` requires one and does NOT
-    /// inherit the session's model. Auto-stamped from the caller's turn.
+    /// Model for the reply turn; auto-stamped from the caller's turn.
+    // `harness::send` requires one and does NOT inherit the session's model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// Optional provider override, auto-stamped from the caller's turn.
+    /// Provider override; auto-stamped from the caller's turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    /// Optional text prepended to the formatted outcome.
+    /// Text prepended to the formatted outcome.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template: Option<String>,
-    /// Caller turn's dispatch policy, auto-stamped by the pre_trigger hook so the
-    /// reply can WAKE an idle caller with its original reach (`run: true`) instead
-    /// of a deny-all turn. Absent → delivery falls back to a passive transcript
-    /// append (`run: false`). A `FunctionPolicy` object (`{allow, deny}`); carried
-    /// as a `Value` since the worker only passes it through to `harness::send`.
+    /// Caller turn's dispatch policy (`{allow, deny}`), auto-stamped so the reply can
+    /// wake an idle caller with its original reach.
+    // Present → `harness::send` with `run: true`; absent → passive transcript append
+    // (`run: false`). Carried as a `Value`: the worker only passes it through.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub functions: Option<Value>,
 }
@@ -354,14 +305,14 @@ mod tests {
             "run_input", // InputSpec.from sources
             "fanout_item",
             "node:<id>",
-            "allow-list",                        // AgentSpec.functions shorthand
-            "barrier",                           // depends_on join semantics
-            "crash-resumable",                   // WorkflowDef top-level behavior
-            "must not contain",                  // node-id constraint
-            "consumed node has to emit json",    // AgentSpec.output JSON-output rule
-            "router::models::list",              // AgentSpec.model discovery hint
-            "fanout path must name a field",     // FanoutSpec.over: dep schema must declare+emit it
-            "real json schema with a top-level", // AgentSpec.output: no empty {} schema
+            "allow-list",                            // AgentSpec.functions shorthand
+            "barrier",                               // depends_on join semantics
+            "crash-resumable",                       // WorkflowDef top-level behavior
+            "must not contain",                      // node-id constraint
+            "fans out over must be",                 // AgentSpec.output JSON-output rule
+            "router::models::list",                  // AgentSpec.model discovery hint
+            "one child runs per element",            // FanoutSpec.over expansion semantics
+            "declaring every field read downstream", // AgentSpec.output: schema must declare consumed fields
         ] {
             assert!(
                 blob.contains(needle),
