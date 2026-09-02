@@ -79,23 +79,31 @@ import { isPendingSpan } from '../lib/traceTransform'
 import { getWorkerName } from '../lib/traceUtils'
 import type { TraceListItem } from './useTraceData'
 
-/** Traces per composition read — small enough that `FETCH_SPAN_LIMIT`
- *  practically never truncates (bookkeeping traces run a handful of spans;
- *  turn traces a few hundred). */
-const FETCH_TRACE_CHUNK = 20
-const FETCH_SPAN_LIMIT = 10_000
-/** Backoff before a failed composition read is attempted again. */
+/**
+ * Spans per composition PROBE — one trace per read. A probe is complete for
+ * the traces this path exists to judge (bookkeeping runs a handful of
+ * spans) and a bounded slice of a fat one, which can only prove visibility.
+ * The old shape — twenty traces per read, ten thousand spans — served a
+ * turn's ~75KB spans as a multi-MB response that outgrew the transport's
+ * ~16MiB delivery cap under load and never arrived, and with unknown
+ * verdicts hiding, a read that never arrives is a row that never shows.
+ */
+const FETCH_SPAN_LIMIT = 80
+/** Probes in flight at once — many rows can need one after a page change. */
+const FETCH_CONCURRENCY = 4
+/** Backoff before a failed or inconclusive probe is attempted again. */
 export const FETCH_RETRY_MS = 10_000
 
 /**
- * Why a listed row without a verdict is not being read right now: its read
- * is in flight; its last read found the trace still running (read again
- * once the row settles); or its last read failed (retry after the backoff).
+ * Why a listed row without a verdict is not being read right now: its probe
+ * is in flight; its last probe found the trace still running (probe again
+ * once the row settles); or its last probe failed or was inconclusive — a
+ * truncated slice with no visible span — and waits out a backoff.
  */
 export type CompositionReadState =
   | { kind: 'inflight' }
   | { kind: 'running' }
-  | { kind: 'failed'; at: number }
+  | { kind: 'retry'; at: number }
 
 /**
  * The listed rows whose composition must be read now: no verdict, and no
@@ -116,7 +124,7 @@ export function selectCompositionReads(
     if (
       state === undefined ||
       (state.kind === 'running' && row.status !== 'pending') ||
-      (state.kind === 'failed' && now - state.at >= FETCH_RETRY_MS)
+      (state.kind === 'retry' && now - state.at >= FETCH_RETRY_MS)
     ) {
       out.push(row.traceId)
     }
@@ -273,20 +281,23 @@ function verdictBars(spans: readonly StoredSpan[]): TimelineSpan[] {
   return builtins.size === 0 ? bars : bars.filter((b) => !builtins.has(b.id))
 }
 
+/** Why a probed trace is still undecided after its probe. */
+export type UndecidedReason = 'running' | 'truncated'
+
 /**
- * Fold one composition read into the verdicts: every requested trace's
+ * Fold one composition probe into the verdicts: every requested trace's
  * verdict is "any of its bars survives the filter" — a trace the store no
  * longer has spans for counts as hidden (its detail would be empty). A
  * truncated response (span count at the limit) only trusts POSITIVE
  * verdicts: a visible span proves visibility, but "all hidden" might just
  * mean the visible spans were cut off. A `true` verdict already in the
- * cache is never downgraded — the read raced a feed frame that proved
+ * cache is never downgraded — the probe raced a feed frame that proved
  * visibility after the snapshot was taken.
  *
- * A trace the read finds still RUNNING (a pending snapshot among its
+ * A trace the probe finds still RUNNING (a pending snapshot among its
  * spans) gets no negative verdict either — its visible work may not have
- * closed yet. Those ids are returned so the caller can read them again
- * once they settle. Exported for tests.
+ * closed yet. Every trace left undecided is returned with the reason, so
+ * the caller can probe again at the right time. Exported for tests.
  */
 export function mergeFetchedVerdicts(
   verdicts: Map<string, boolean>,
@@ -294,7 +305,7 @@ export function mergeFetchedVerdicts(
   spans: readonly StoredSpan[],
   selection: SpanFilterSelection,
   spanLimit: number = FETCH_SPAN_LIMIT,
-): ReadonlySet<string> {
+): ReadonlyMap<string, UndecidedReason> {
   const visible = new Set<string>()
   for (const bar of verdictBars(spans)) {
     if (bar.traceId && !isSpanBarHidden(bar, selection)) {
@@ -303,13 +314,12 @@ export function mergeFetchedVerdicts(
   }
   const truncated = spans.length >= spanLimit
   const running = pendingTraceIds(spans)
-  const undecided = new Set<string>()
+  const undecided = new Map<string, UndecidedReason>()
   for (const traceId of requested) {
     if (visible.has(traceId)) verdicts.set(traceId, true)
-    else if (running.has(traceId)) undecided.add(traceId)
-    else if (!truncated && !verdicts.get(traceId)) {
-      verdicts.set(traceId, false)
-    }
+    else if (running.has(traceId)) undecided.set(traceId, 'running')
+    else if (truncated) undecided.set(traceId, 'truncated')
+    else if (!verdicts.get(traceId)) verdicts.set(traceId, false)
   }
   return undecided
 }
@@ -358,14 +368,15 @@ export function useSpanFilteredTraceRows(
     )
   }, [rows, bars, feedSpans, selection, fetchTick])
 
-  // Composition reads for the rows neither source could judge: hidden
+  // Composition probes for the rows neither source could judge: hidden
   // root, no feed coverage. Runs after the memo above, so feed verdicts
   // are already in the cache. Deliberately NO cancellation on dep churn —
-  // live row appends must not orphan an in-flight read (its traces would
+  // live row appends must not orphan an in-flight probe (its trace would
   // stay in flight but never verdicted); a stale SELECTION is detected by
-  // cache identity instead. A failed read leaves its rows hidden until the
-  // feed decides or the read is retried after `FETCH_RETRY_MS` — the timer
-  // re-arms this effect so the retry does not wait for the next row change.
+  // cache identity instead. A failed or inconclusive probe leaves its row
+  // hidden until the feed decides or the probe is retried after
+  // `FETCH_RETRY_MS` — the timer re-arms this effect so the retry does not
+  // wait for the next row change.
   const [retryTick, setRetryTick] = useState(0)
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(
@@ -375,7 +386,7 @@ export function useSpanFilteredTraceRows(
     [],
   )
   // retryTick isn't read in the body — it re-runs the selection after a
-  // failed read's backoff.
+  // retry backoff.
   // biome-ignore lint/correctness/useExhaustiveDependencies: see above
   useEffect(() => {
     const cache = cacheRef.current
@@ -390,47 +401,63 @@ export function useSpanFilteredTraceRows(
     if (unknown.length === 0) return
     for (const traceId of unknown)
       cache.reads.set(traceId, { kind: 'inflight' })
-    void (async () => {
-      for (let i = 0; i < unknown.length; i += FETCH_TRACE_CHUNK) {
-        const chunk = unknown.slice(i, i + FETCH_TRACE_CHUNK)
-        try {
-          const res = await fetchTraceSpans({
-            trace_ids: chunk,
-            search_all_spans: true,
-            include_internal: true,
-            limit: FETCH_SPAN_LIMIT,
-          })
-          if (cacheRef.current !== cache) return
-          const running = mergeFetchedVerdicts(
-            cache.verdicts,
-            chunk,
-            res.spans,
-            selection,
-          )
-          for (const traceId of chunk) {
-            if (running.has(traceId)) {
-              cache.reads.set(traceId, { kind: 'running' })
-            } else {
-              cache.reads.delete(traceId)
-            }
-          }
-          setFetchTick((t) => t + 1)
-        } catch {
-          // Traces unavailable (memory exporter off, transient error) —
-          // the rows stay hidden until the feed decides or the retry lands.
-          if (cacheRef.current !== cache) return
-          const at = Date.now()
-          for (const traceId of chunk)
-            cache.reads.set(traceId, { kind: 'failed', at })
-          if (retryTimerRef.current === null) {
-            retryTimerRef.current = setTimeout(() => {
-              retryTimerRef.current = null
-              setRetryTick((t) => t + 1)
-            }, FETCH_RETRY_MS)
-          }
+    const scheduleRetry = () => {
+      if (retryTimerRef.current !== null) return
+      retryTimerRef.current = setTimeout(() => {
+        retryTimerRef.current = null
+        setRetryTick((t) => t + 1)
+      }, FETCH_RETRY_MS)
+    }
+    const probe = async (traceId: string) => {
+      try {
+        const res = await fetchTraceSpans({
+          trace_id: traceId,
+          search_all_spans: true,
+          include_internal: true,
+          sort_by: 'start_time',
+          sort_order: 'asc',
+          limit: FETCH_SPAN_LIMIT,
+        })
+        if (cacheRef.current !== cache) return
+        const undecided = mergeFetchedVerdicts(
+          cache.verdicts,
+          [traceId],
+          res.spans,
+          selection,
+        )
+        const reason = undecided.get(traceId)
+        if (reason === 'running') {
+          cache.reads.set(traceId, { kind: 'running' })
+        } else if (reason === 'truncated') {
+          cache.reads.set(traceId, { kind: 'retry', at: Date.now() })
+          scheduleRetry()
+        } else {
+          cache.reads.delete(traceId)
         }
+        setFetchTick((t) => t + 1)
+      } catch {
+        // Traces unavailable (memory exporter off, transient error) —
+        // the row stays hidden until the feed decides or the retry lands.
+        if (cacheRef.current !== cache) return
+        cache.reads.set(traceId, { kind: 'retry', at: Date.now() })
+        scheduleRetry()
       }
-    })()
+    }
+    // A small pool: probes are cheap and indexed by trace id, but a page
+    // change can leave dozens of rows to judge at once.
+    let next = 0
+    const worker = async () => {
+      while (next < unknown.length) {
+        const traceId = unknown[next++]
+        await probe(traceId)
+      }
+    }
+    void Promise.all(
+      Array.from(
+        { length: Math.min(FETCH_CONCURRENCY, unknown.length) },
+        worker,
+      ),
+    )
   }, [rows, selection, retryTick])
 
   return visibleRows

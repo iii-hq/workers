@@ -421,7 +421,31 @@ describe('mergeFetchedVerdicts', () => {
     )
     expect(verdicts.has('t-running')).toBe(false)
     expect(verdicts.get('t-settled')).toBe(false)
-    expect([...undecided]).toEqual(['t-running'])
+    expect([...undecided]).toEqual([['t-running', 'running']])
+  })
+
+  it('reports a truncated probe with no visible span as inconclusive', () => {
+    const verdicts = new Map<string, boolean>()
+    const undecided = mergeFetchedVerdicts(
+      verdicts,
+      ['t-fat'],
+      [
+        stored({
+          span_id: 'h1',
+          trace_id: 't-fat',
+          attributes: [['function_id', 'fn']],
+        }),
+        stored({
+          span_id: 'h2',
+          trace_id: 't-fat',
+          attributes: [['function_id', 'fn']],
+        }),
+      ],
+      sel,
+      2,
+    )
+    expect(verdicts.has('t-fat')).toBe(false)
+    expect(undecided.get('t-fat')).toBe('truncated')
   })
 
   it('never downgrades a visible verdict — the read raced a newer feed frame', () => {
@@ -493,8 +517,8 @@ describe('selectCompositionReads', () => {
     )
   })
 
-  it('retries a failed read only after the backoff', () => {
-    const state = reads([['t-1', { kind: 'failed', at: now }]])
+  it('retries a failed or inconclusive probe only after the backoff', () => {
+    const state = reads([['t-1', { kind: 'retry', at: now }]])
     expect(
       selectCompositionReads([row('t-1')], new Map(), state, now + 1_000),
     ).toEqual([])
@@ -515,7 +539,7 @@ describe('pruneCompositionReads', () => {
     // list, so its read state must go too or it stays hidden on return.
     const state = new Map<string, CompositionReadState>([
       ['gone-settled', { kind: 'running' }],
-      ['gone-failed', { kind: 'failed', at: 1 }],
+      ['gone-retry', { kind: 'retry', at: 1 }],
       ['gone-inflight', { kind: 'inflight' }],
       ['listed', { kind: 'running' }],
     ])
