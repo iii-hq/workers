@@ -64,10 +64,8 @@ pub(crate) fn stack_info(bins: &StackBins, layout: &RunLayout, port: u16) -> any
         "run_root": layout.root.to_string_lossy(),
         "binaries": Value::Object(binaries),
         "provenance": {
-            "engine_lock": include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/engine.lock"
-            )).trim()
+            "engine_channel": "rc",
+            "engine_version": std::env::var("III_ENGINE_VERSION").ok()
         },
         "env_allowlist": ENV_ALLOWLIST,
         "start_order": WORKER_START_ORDER,

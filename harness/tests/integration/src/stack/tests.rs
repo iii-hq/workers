@@ -45,6 +45,18 @@ fn directory_seed_separates_agent_and_skill_roots() {
 }
 
 #[test]
+fn engine_config_uses_rc_compatible_builtin_workers() {
+    let artifacts = tempfile::tempdir().unwrap();
+    let layout = RunLayout::allocate(artifacts.path(), "run-001").unwrap();
+    let yaml = config::render_engine_yaml(&layout, 3210);
+
+    assert!(yaml.contains("name: iii-stream"));
+    assert!(!yaml.contains("name: iii-cron"));
+    assert!(!yaml.contains("name: iii-observability"));
+    assert!(config::WORKER_START_ORDER.contains(&"cron"));
+}
+
+#[test]
 fn layout_rejects_path_traversal_components() {
     let artifacts = tempfile::tempdir().unwrap();
     for unsafe_id in ["", ".", "..", "../escape", "nested/run", "/tmp/escape"] {
@@ -78,6 +90,7 @@ fn manifest_is_canonical_and_uses_layout_paths() {
     let value = manifest::stack_info(&bins, &layout, 3210).unwrap();
     assert_eq!(committed, crate::canonical::canonical_json_pretty(&value));
     assert_eq!(value["profile"], "harness-core-v1");
+    assert_eq!(value["provenance"]["engine_channel"], "rc");
     assert_eq!(
         value["components"]["controlled_services"],
         serde_json::json!(["scripted-router", "integration-probe"])

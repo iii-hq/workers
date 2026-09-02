@@ -31,7 +31,7 @@ enum Command {
 
 #[derive(Debug, Args)]
 struct StackBinArgs {
-    /// Path to the pinned iii engine binary. Falls back to $III_BIN.
+    /// Path to the iii engine binary. Falls back to $III_BIN.
     #[arg(long, env = "III_BIN")]
     engine_bin: Option<PathBuf>,
 
@@ -277,7 +277,7 @@ fn resolve_stack_bins(args: &StackBinArgs) -> anyhow::Result<StackBins> {
     let engine = args
         .engine_bin
         .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("--engine-bin (or III_BIN) is required; see engine.lock"))?;
+        .ok_or_else(|| anyhow::anyhow!("--engine-bin (or III_BIN) is required"))?;
     let harness = args
         .harness_bin
         .as_deref()

@@ -1,6 +1,6 @@
 //! Bounded boot-time discovery for the function surface required by a turn.
 //!
-//! The pinned engine's `engine::functions-available` event has no catch-up
+//! The engine's `engine::functions-available` event has no catch-up
 //! snapshot, so it cannot safely establish initial readiness. This barrier
 //! reads the authoritative registry only during Arm; completion and trace
 //! stabilization remain event-driven.
