@@ -220,10 +220,9 @@ pub fn register(iii: &Arc<IIIClient>) {
             async move { propose(&client, request).await }
         })
         .description(
-            "Propose changing the current Harness session's working directory after creating or \
-             cloning a project elsewhere. The path is validated, then Console asks the user to \
-             confirm before the chat and paired Shell switch together. Call this when the user \
-             explicitly asked to continue in the new directory; never use it merely to inspect a file.",
+            "Propose switching the current session's working directory to a project created or \
+             cloned elsewhere; the console asks the user to confirm. Only when the user asked to \
+             continue there, never just to inspect a file.",
         ),
     );
 

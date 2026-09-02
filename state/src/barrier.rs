@@ -79,10 +79,10 @@ pub struct BarrierConfig {
     pub id: String,
     /// A count, or the exact set of arrival keys.
     pub expect: Expect,
-    /// JSON pointer into the event for the arrival key (default `/key`, the
-    /// state event's own key). A missing pointer is an error, not a silent
-    /// unnamed arrival: two arrivals that both resolve to nothing would
-    /// collapse into one and the barrier would never complete.
+    /// JSON pointer into the event for the arrival key (default `/key`); a
+    /// pointer that resolves to nothing is an error.
+    // Not a silent unnamed arrival: two arrivals that both resolve to nothing
+    // would collapse into one and the barrier would never complete.
     #[serde(default)]
     pub key_from: Option<String>,
     /// JSON pointer into the event for the value to accumulate (default: the

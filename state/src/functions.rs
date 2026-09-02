@@ -421,9 +421,8 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
             })
             .description(
                 "Atomically set a value only if it currently equals `expected` (omit `expected` \
-                 to mean 'only if absent'). Returns { swapped, current } — on a miss, `current` \
-                 is what is actually there, so a caller can recompute and retry. The primitive \
-                 for counters, claims and any read-modify-write that two callers might race.",
+                 to mean 'only if absent'). Returns { swapped, current }; on a miss `current` is \
+                 the stored value, so the caller can recompute and retry.",
             ),
         );
     }
@@ -454,10 +453,9 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                 }
             })
             .description(
-                "Fan-in gate: record one arrival against a barrier and answer the typed \
-                 condition decision — `skip` until the expected set has arrived, then `allow` \
-                 EXACTLY ONCE carrying every arrival's payload. Use as a binding condition so a \
-                 coordinator wakes once when N producers finish instead of once per producer.",
+                "Fan-in gate for a binding condition: record one arrival and answer `skip` until \
+                 the expected set has arrived, then `allow` exactly once carrying every \
+                 arrival's payload.",
             ),
         );
     }
@@ -766,11 +764,10 @@ fn register_claim_namespace(iii: &Arc<IIIClient>, ctx: &Arc<StateCtx>) {
             }
         })
         .description(
-            "Reserve a PRIVATE state namespace for the calling worker: its scopes become \
-             invisible to public state::* and to trigger fan-out, and internal accessors \
-             `<functions_prefix>::state::{get, list, compare-and-set}` are registered. A worker \
-             may only claim the namespace matching its own worker name (engine-stamped caller \
-             identity). Idempotent; claims survive a state restart.",
+            "Reserve a private state namespace for the calling worker (its own worker name \
+             only): its scopes leave public state::* and trigger fan-out, and \
+             `<prefix>::state::{get, list, compare-and-set}` accessors are registered. \
+             Idempotent.",
         ),
     );
 }
