@@ -136,16 +136,23 @@ def enrich_functions_with_schemas(
     return functions
 
 
-def _fetch_trigger_detail(trigger_id: str) -> dict[str, object] | None:
+def _fetch_trigger_detail(
+    trigger_id: str, namespace: str | None = None
+) -> dict[str, object] | None:
     """`engine::triggers::info` for one trigger type, or None on any failure.
 
-    `engine::triggers::list` returns a `TriggerTypeSummary` (id + worker_name +
-    description only); only `::info` returns the `TriggerTypeDetail` carrying the
-    typed `configuration_schema`/`request_schema`/`response_schema`. Best-effort:
-    a failed lookup leaves the row schema-less, which publishes the empty
-    ("unknown") schema."""
+    `engine::triggers::list` returns a `TriggerTypeSummary` (id + namespace +
+    worker_name + description only); only `::info` returns the
+    `TriggerTypeDetail` carrying the typed `configuration_schema`/
+    `request_schema`/`response_schema`. The namespace must be passed in the
+    payload because `::info` otherwise looks in `default`. Best-effort: a failed
+    lookup leaves the row schema-less, which publishes the empty ("unknown")
+    schema."""
+    payload: dict[str, object] = {"id": trigger_id}
+    if namespace:
+        payload["namespace"] = namespace
     try:
-        return run_iii("engine::triggers::info", {"id": trigger_id})
+        return run_iii("engine::triggers::info", payload)
     except (
         subprocess.CalledProcessError,
         subprocess.TimeoutExpired,
@@ -171,12 +178,17 @@ def enrich_trigger_types_with_schemas(
     Without this enrichment every collected trigger schema normalizes to the
     empty `{}` that surfaces as 'unknown' in the registry. Mirrors
     `enrich_functions_with_schemas` for the trigger-type surface."""
-    rows_by_id = {t.get("id"): t for t in trigger_types if isinstance(t, dict)}
-    for trigger_id in target_trigger_ids:
-        row = rows_by_id.get(trigger_id)
-        if row is None:
+    target_ids = set(target_trigger_ids)
+    for row in trigger_types:
+        if not isinstance(row, dict):
             continue
-        detail = fetch_detail(trigger_id)
+        trigger_id = row.get("id")
+        if not isinstance(trigger_id, str) or trigger_id not in target_ids:
+            continue
+        namespace = row.get("namespace")
+        detail = fetch_detail(
+            trigger_id, namespace if isinstance(namespace, str) else None
+        )
         if not isinstance(detail, dict):
             continue
         for key in (
