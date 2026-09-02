@@ -94,7 +94,10 @@ function defaultDeps(): Deps {
  */
 export function getIiiClient(): Promise<IiiClient> {
   if (!_clientPromise) {
-    _clientPromise = bootstrap(_deps)
+    _clientPromise = bootstrap(_deps).catch((error: unknown) => {
+      _clientPromise = null
+      throw error
+    })
   }
   return _clientPromise
 }

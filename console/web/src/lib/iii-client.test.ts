@@ -202,4 +202,29 @@ describe('namespaced browser connection', () => {
 
     expect(calls).toEqual([])
   })
+
+  it('retries bootstrap after runtime namespace discovery recovers', async () => {
+    const { sdk } = fakeSdk()
+    const calls: Array<{ options?: InitOptions }> = []
+    let namespaceAttempts = 0
+    __setIiiClientDepsForTests({
+      resolveWsUrl: () => 'ws://console.test/ws',
+      resolveNamespace: async () => {
+        namespaceAttempts += 1
+        if (namespaceAttempts === 1) throw new Error('runtime unavailable')
+        return 'project-a'
+      },
+      makeBrowserId: () => BROWSER_ID,
+      registerWorker: (_url, options) => {
+        calls.push({ options })
+        return sdk
+      },
+    })
+
+    await expect(getIiiClient()).rejects.toThrow('runtime unavailable')
+    await getIiiClient()
+
+    expect(namespaceAttempts).toBe(2)
+    expect(calls).toEqual([{ options: { namespace: 'project-a' } }])
+  })
 })
