@@ -84,6 +84,63 @@ import type { TraceListItem } from './useTraceData'
  *  turn traces a few hundred). */
 const FETCH_TRACE_CHUNK = 20
 const FETCH_SPAN_LIMIT = 10_000
+/** Backoff before a failed composition read is attempted again. */
+export const FETCH_RETRY_MS = 10_000
+
+/**
+ * Why a listed row without a verdict is not being read right now: its read
+ * is in flight; its last read found the trace still running (read again
+ * once the row settles); or its last read failed (retry after the backoff).
+ */
+export type CompositionReadState =
+  | { kind: 'inflight' }
+  | { kind: 'running' }
+  | { kind: 'failed'; at: number }
+
+/**
+ * The listed rows whose composition must be read now: no verdict, and no
+ * read state that says to wait. A row a previous read found running is
+ * read again only once it has settled, so a long turn costs one read at its
+ * start and one at its end, not one per list refresh. Exported for tests.
+ */
+export function selectCompositionReads(
+  rows: readonly TraceListItem[],
+  verdicts: ReadonlyMap<string, boolean>,
+  reads: ReadonlyMap<string, CompositionReadState>,
+  now: number,
+): string[] {
+  const out: string[] = []
+  for (const row of rows) {
+    if (verdicts.has(row.traceId)) continue
+    const state = reads.get(row.traceId)
+    if (
+      state === undefined ||
+      (state.kind === 'running' && row.status !== 'pending') ||
+      (state.kind === 'failed' && now - state.at >= FETCH_RETRY_MS)
+    ) {
+      out.push(row.traceId)
+    }
+  }
+  return out
+}
+
+/**
+ * Forget read states for traces no longer listed, in-flight reads aside.
+ * Verdicts are pruned the same way when a trace leaves both the list and
+ * the feed (`reconcileTraceVisibility`), so a trace that pages back in is
+ * read again — without this, a state left behind from its earlier visit
+ * would keep it hidden for good. Mutates `reads`. Exported for tests.
+ */
+export function pruneCompositionReads(
+  reads: Map<string, CompositionReadState>,
+  listed: ReadonlySet<string>,
+): void {
+  for (const [traceId, state] of [...reads]) {
+    if (!listed.has(traceId) && state.kind !== 'inflight') {
+      reads.delete(traceId)
+    }
+  }
+}
 
 /**
  * Traces with work still in flight, judged from raw spans: a pending
@@ -270,14 +327,12 @@ export function useSpanFilteredTraceRows(
   // Verdict cache, keyed by selection IDENTITY: `useSpanFilterSelection`
   // memoizes its controls object on the effective selection, so a new
   // reference means the selection changed and every cached verdict is
-  // stale. `requested` remembers which traces already went through a
-  // composition read (in-flight, done, or failed) so they are asked once
-  // per selection — except a trace the read found still running, which is
-  // asked once more after its row settles.
+  // stale. `reads` remembers why a still-unverdicted trace is not being
+  // read right now (see `CompositionReadState`).
   const cacheRef = useRef<{
     selection: SpanFilterSelection
     verdicts: Map<string, boolean>
-    requested: Map<string, 'settled' | 'running'>
+    reads: Map<string, CompositionReadState>
   } | null>(null)
 
   // Bumped when a composition read lands verdicts, to re-run the memo.
@@ -291,7 +346,7 @@ export function useSpanFilteredTraceRows(
   const visibleRows = useMemo(() => {
     let cache = cacheRef.current
     if (!cache || cache.selection !== selection) {
-      cache = { selection, verdicts: new Map(), requested: new Map() }
+      cache = { selection, verdicts: new Map(), reads: new Map() }
       cacheRef.current = cache
     }
     return reconcileTraceVisibility(
@@ -307,26 +362,34 @@ export function useSpanFilteredTraceRows(
   // root, no feed coverage. Runs after the memo above, so feed verdicts
   // are already in the cache. Deliberately NO cancellation on dep churn —
   // live row appends must not orphan an in-flight read (its traces would
-  // stay `requested` but never verdicted); a stale SELECTION is detected
-  // by cache identity instead. Failed reads leave their traces visible
-  // and unretried until the selection changes.
+  // stay in flight but never verdicted); a stale SELECTION is detected by
+  // cache identity instead. A failed read leaves its rows hidden until the
+  // feed decides or the read is retried after `FETCH_RETRY_MS` — the timer
+  // re-arms this effect so the retry does not wait for the next row change.
+  const [retryTick, setRetryTick] = useState(0)
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(
+    () => () => {
+      if (retryTimerRef.current !== null) clearTimeout(retryTimerRef.current)
+    },
+    [],
+  )
+  // retryTick isn't read in the body — it re-runs the selection after a
+  // failed read's backoff.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: see above
   useEffect(() => {
     const cache = cacheRef.current
     if (!cache || cache.selection !== selection) return
-    // Never read, or read while still running and settled since — a
-    // running row is visible on its own and is not re-read until it
-    // settles, so a long turn costs one read at its start and one at its
-    // end, not one per list refresh.
-    const unknown = rows
-      .filter((r) => {
-        if (cache.verdicts.has(r.traceId)) return false
-        const requested = cache.requested.get(r.traceId)
-        if (requested === undefined) return true
-        return requested === 'running' && r.status !== 'pending'
-      })
-      .map((r) => r.traceId)
+    pruneCompositionReads(cache.reads, new Set(rows.map((r) => r.traceId)))
+    const unknown = selectCompositionReads(
+      rows,
+      cache.verdicts,
+      cache.reads,
+      Date.now(),
+    )
     if (unknown.length === 0) return
-    for (const traceId of unknown) cache.requested.set(traceId, 'settled')
+    for (const traceId of unknown)
+      cache.reads.set(traceId, { kind: 'inflight' })
     void (async () => {
       for (let i = 0; i < unknown.length; i += FETCH_TRACE_CHUNK) {
         const chunk = unknown.slice(i, i + FETCH_TRACE_CHUNK)
@@ -344,17 +407,31 @@ export function useSpanFilteredTraceRows(
             res.spans,
             selection,
           )
-          for (const traceId of running) {
-            cache.requested.set(traceId, 'running')
+          for (const traceId of chunk) {
+            if (running.has(traceId)) {
+              cache.reads.set(traceId, { kind: 'running' })
+            } else {
+              cache.reads.delete(traceId)
+            }
           }
           setFetchTick((t) => t + 1)
         } catch {
           // Traces unavailable (memory exporter off, transient error) —
-          // the rows stay as they are until the feed decides.
+          // the rows stay hidden until the feed decides or the retry lands.
+          if (cacheRef.current !== cache) return
+          const at = Date.now()
+          for (const traceId of chunk)
+            cache.reads.set(traceId, { kind: 'failed', at })
+          if (retryTimerRef.current === null) {
+            retryTimerRef.current = setTimeout(() => {
+              retryTimerRef.current = null
+              setRetryTick((t) => t + 1)
+            }, FETCH_RETRY_MS)
+          }
         }
       }
     })()
-  }, [rows, selection])
+  }, [rows, selection, retryTick])
 
   return visibleRows
 }

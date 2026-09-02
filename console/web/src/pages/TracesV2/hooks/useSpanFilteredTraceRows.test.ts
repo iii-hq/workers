@@ -3,10 +3,14 @@ import type { StoredSpan } from '../api/traces'
 import type { TimelineSpan } from '../components/timeline/layout'
 import type { SpanFilterSelection } from '../lib/spanFilters'
 import {
+  type CompositionReadState,
+  FETCH_RETRY_MS,
   mergeFetchedVerdicts,
   pendingTraceIds,
+  pruneCompositionReads,
   reconcileTraceVisibility,
   rowRootFilterKeys,
+  selectCompositionReads,
 } from './useSpanFilteredTraceRows'
 import type { TraceListItem } from './useTraceData'
 
@@ -456,5 +460,66 @@ describe('pendingTraceIds', () => {
       }),
     ])
     expect(live.size).toBe(0)
+  })
+})
+
+describe('selectCompositionReads', () => {
+  const now = 1_000_000
+  const reads = (entries: [string, CompositionReadState][]) =>
+    new Map<string, CompositionReadState>(entries)
+
+  it('reads unverdicted rows that have no read state, and nothing else', () => {
+    const picked = selectCompositionReads(
+      [row('t-new'), row('t-known'), row('t-inflight')],
+      new Map([['t-known', false]]),
+      reads([['t-inflight', { kind: 'inflight' }]]),
+      now,
+    )
+    expect(picked).toEqual(['t-new'])
+  })
+
+  it('re-reads a trace found running only once its row settles', () => {
+    const state = reads([['t-1', { kind: 'running' }]])
+    expect(
+      selectCompositionReads(
+        [row('t-1', 'fn', { status: 'pending' })],
+        new Map(),
+        state,
+        now,
+      ),
+    ).toEqual([])
+    expect(selectCompositionReads([row('t-1')], new Map(), state, now)).toEqual(
+      ['t-1'],
+    )
+  })
+
+  it('retries a failed read only after the backoff', () => {
+    const state = reads([['t-1', { kind: 'failed', at: now }]])
+    expect(
+      selectCompositionReads([row('t-1')], new Map(), state, now + 1_000),
+    ).toEqual([])
+    expect(
+      selectCompositionReads(
+        [row('t-1')],
+        new Map(),
+        state,
+        now + FETCH_RETRY_MS,
+      ),
+    ).toEqual(['t-1'])
+  })
+})
+
+describe('pruneCompositionReads', () => {
+  it('forgets states of traces that left the list, keeping reads in flight', () => {
+    // The page-2-and-back case: verdicts are pruned when a trace leaves the
+    // list, so its read state must go too or it stays hidden on return.
+    const state = new Map<string, CompositionReadState>([
+      ['gone-settled', { kind: 'running' }],
+      ['gone-failed', { kind: 'failed', at: 1 }],
+      ['gone-inflight', { kind: 'inflight' }],
+      ['listed', { kind: 'running' }],
+    ])
+    pruneCompositionReads(state, new Set(['listed']))
+    expect([...state.keys()].sort()).toEqual(['gone-inflight', 'listed'])
   })
 })
