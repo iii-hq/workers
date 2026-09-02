@@ -101,10 +101,9 @@ the step — only a DIRECT call offers the access-grant prompt.
 Trigger-control, session/approval, credential/config, LLM-routing, and
 turn-control steps are excluded — call those directly."#;
 
-/// The slice of the `pre_generate` hook envelope we read (lenient: ignores
-/// every other field the harness sends). The harness nests the live
-/// generation context under `generate` (see harness
-/// `HookRunner::run_pre_generate`).
+/// The `pre_generate` hook envelope slice we read; the generation context is nested
+/// under `generate`.
+// Lenient: every other envelope field is ignored. See harness `HookRunner::run_pre_generate`.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct PreGenerateEvent {
     #[serde(default)]

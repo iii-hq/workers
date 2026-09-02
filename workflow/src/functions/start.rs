@@ -30,35 +30,26 @@ const MAX_WORKFLOW_DEPTH: usize = 8;
 
 #[derive(Debug, Clone, JsonSchema)]
 pub struct StartRequest {
-    /// The workflow DAG to run. See `WorkflowDef`. (`workflow` is accepted as an
-    /// alias for the wrapper key.)
+    /// The workflow DAG to run (`workflow` is accepted as an alias key).
     pub definition: WorkflowDef,
-    /// Top-level input made available to nodes whose `input.from` is
-    /// `"run_input"` / `"workflow.input"`. Any JSON value.
+    /// Any JSON value; read by nodes whose `input.from` is `"run_input"`.
     #[serde(default)]
     pub input: Value,
-    /// Optional dedupe key: a repeated key returns the original `run_id` instead
-    /// of launching a duplicate run.
+    /// Dedupe key; a repeated key returns the original `run_id` instead of launching
+    /// a duplicate run.
     #[serde(default)]
     pub idempotency_key: Option<String>,
-    /// Optional completion callback: a function the worker triggers once when the
-    /// run reaches a terminal state, so the caller is pushed the outcome instead
-    /// of polling `workflow::status`.
+    /// Completion callback triggered once when the run reaches a terminal state,
+    /// instead of polling `workflow::status`.
     #[serde(default)]
     pub notify: Option<crate::types::NotifySpec>,
-    /// Optional: deliver the run outcome into a session as a new message on
-    /// terminal state (via `harness::send`), so an agent caller never polls
-    /// `workflow::status`. Send `reply_to: {}` and the worker auto-stamps your
-    /// session/model; add a `template` to prefix the message. See `ReplySpec`.
-    ///
-    /// After calling with `reply_to` (or `notify`), END YOUR TURN — do NOT claim
-    /// the result was delivered or produce one this turn; it arrives as a separate
-    /// message when the run finishes.
+    /// Deliver the outcome into your session as a new message: send `{}` (optionally
+    /// `template`), then end your turn — it arrives when the run finishes.
     #[serde(default)]
     pub reply_to: Option<crate::types::ReplySpec>,
-    /// The orchestrator session, stamped by the `workflow::stamp-reply`
-    /// pre_trigger hook from the caller's turn (never trusted from the agent).
-    /// Recorded on the run so node sessions can nest under it in the console.
+    /// Orchestrator session, stamped by the `workflow::stamp-reply` hook from the
+    /// caller's turn; never trusted from the agent.
+    // Recorded on the run so node sessions can nest under it in the console.
     #[serde(default)]
     pub caller_session_id: Option<String>,
 }
