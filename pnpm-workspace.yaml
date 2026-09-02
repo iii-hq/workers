@@ -50,6 +50,6 @@ allowBuilds:
 
 minimumReleaseAgeExclude:
   - '@pierre/trees@1.0.0-beta.6'
-  - '@iii-dev/helpers@0.22.1-alpha.25'
-  - 'iii-browser-sdk@0.22.1-alpha.25'
-  - 'iii-sdk@0.22.1-alpha.25'
+  - '@iii-dev/helpers@0.23.0'
+  - 'iii-browser-sdk@0.23.0'
+  - 'iii-sdk@0.23.0'

@@ -6,15 +6,19 @@
 //! between [`axum::extract::ws::Message`] and
 //! [`tokio_tungstenite::tungstenite::Message`].
 //!
-//! The proxy is intentionally dumb — no buffering, no auth — with TWO
+//! The proxy is intentionally dumb — no buffering, no auth — with THREE
 //! exceptions on the browser→engine leg:
 //!
-//! 1. `registerfunction` messages get `metadata.internal = true` stamped
+//! 1. The browser worker registration gets the Console worker's namespace
+//!    stamped on (see [`enforce_worker_namespace`]). This is authoritative at
+//!    the proxy boundary, so stale/cached bundles cannot reconnect in
+//!    `default` while the Console worker runs in a project namespace.
+//! 2. `registerfunction` messages get `metadata.internal = true` stamped
 //!    on (see [`stamp_internal_registration`]). Everything a console page
 //!    registers is a live-update delivery target for that page, never a
 //!    discoverable API, and stamping here (not just in the SPA) means
 //!    stale/cached bundles can't pollute `engine::functions::list` either.
-//! 2. `registertriggertype` frames are dropped (see
+//! 3. `registertriggertype` frames are dropped (see
 //!    [`is_trigger_type_registration`]). Trigger-type ownership is
 //!    last-writer-wins engine-wide — a hostile page could re-register
 //!    `console:script` and intercept every UI-asset registration. The SPA
@@ -31,6 +35,13 @@ use futures_util::stream::StreamExt;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame as TungCloseFrame, WebSocketConfig};
 use tokio_tungstenite::tungstenite::Message as TungMessage;
 
+/// Connection settings required by the `/ws` proxy.
+#[derive(Clone)]
+pub struct ProxyConfig {
+    pub engine_url: Arc<String>,
+    pub namespace: Option<String>,
+}
+
 /// Axum handler. Splits the upgraded socket into a sender + receiver
 /// and spawns a single `handle_ws` future for the lifetime of the
 /// connection.
@@ -44,7 +55,7 @@ use tokio_tungstenite::tungstenite::Message as TungMessage;
 pub async fn ws_proxy(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
-    State(engine_url): State<Arc<String>>,
+    State(config): State<ProxyConfig>,
 ) -> Response {
     if !browser_origin_allowed(&headers) {
         tracing::warn!("rejected cross-origin browser WebSocket upgrade");
@@ -52,7 +63,7 @@ pub async fn ws_proxy(
     }
     ws.max_message_size(usize::MAX)
         .max_frame_size(usize::MAX)
-        .on_upgrade(move |socket| handle_ws(socket, engine_url))
+        .on_upgrade(move |socket| handle_ws(socket, config))
 }
 
 /// Browsers always send `Origin` on a WebSocket handshake. Require its
@@ -96,14 +107,14 @@ fn origin_matches_host(origin: &str, host: &str) -> bool {
     origin_host.eq_ignore_ascii_case(request_host) && origin_port == request_port
 }
 
-async fn handle_ws(client: WebSocket, engine_url: Arc<String>) {
+async fn handle_ws(client: WebSocket, config: ProxyConfig) {
     let engine_ws_config = WebSocketConfig {
         max_message_size: None,
         max_frame_size: None,
         ..Default::default()
     };
     let (engine, _resp) = match tokio_tungstenite::connect_async_with_config(
-        engine_url.as_str(),
+        config.engine_url.as_str(),
         Some(engine_ws_config),
         false,
     )
@@ -113,7 +124,7 @@ async fn handle_ws(client: WebSocket, engine_url: Arc<String>) {
         Err(e) => {
             tracing::warn!(
                 error = %e,
-                engine_url = %engine_url,
+                engine_url = %config.engine_url,
                 "failed to dial iii engine WebSocket; closing browser WS"
             );
             // Best-effort close; ignore the result. axum will drop the
@@ -151,6 +162,7 @@ async fn handle_ws(client: WebSocket, engine_url: Arc<String>) {
                         );
                         continue;
                     }
+                    let t = enforce_worker_namespace(&t, config.namespace.as_deref()).unwrap_or(t);
                     match stamp_internal_registration(&t) {
                         Some(stamped) => AxumMessage::Text(stamped),
                         None => AxumMessage::Text(t),
@@ -198,6 +210,40 @@ async fn handle_ws(client: WebSocket, engine_url: Arc<String>) {
         _ = client_to_engine => {}
         _ = engine_to_client => {}
     }
+}
+
+/// If `text` is the browser SDK's `engine::workers::register` invocation,
+/// return a copy whose `data.namespace` matches this Console worker.
+///
+/// `None` as the configured namespace means the engine's `default` namespace,
+/// so an explicit namespace from a stale bundle is removed. A `None` return
+/// means the original frame should pass through unchanged.
+pub(crate) fn enforce_worker_namespace(text: &str, namespace: Option<&str>) -> Option<String> {
+    const REGISTER_WORKER: &str = "engine::workers::register";
+
+    // Fast path: only the SDK's worker-registration invocation needs a parse.
+    if !text.contains(REGISTER_WORKER) {
+        return None;
+    }
+    let mut msg: serde_json::Value = serde_json::from_str(text).ok()?;
+    if msg.get("type").and_then(|value| value.as_str()) != Some("invokefunction")
+        || msg.get("function_id").and_then(|value| value.as_str()) != Some(REGISTER_WORKER)
+    {
+        return None;
+    }
+    let data = msg.get_mut("data")?.as_object_mut()?;
+    match namespace {
+        Some(namespace) => {
+            data.insert(
+                "namespace".into(),
+                serde_json::Value::String(namespace.to_owned()),
+            );
+        }
+        None => {
+            data.remove("namespace");
+        }
+    }
+    serde_json::to_string(&msg).ok()
 }
 
 /// `true` if `text` is a wire `registertriggertype` message — the one
@@ -371,6 +417,51 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["metadata"]["internal"], serde_json::json!(true));
         assert_eq!(v["id"], "console::harness-watch::r0::console-abc");
+    }
+
+    #[test]
+    fn worker_registration_gets_the_console_namespace() {
+        let wire = r#"{"type":"invokefunction","function_id":"engine::workers::register","data":{"runtime":"browser","name":"console-old"},"action":{"type":"void"}}"#;
+        let out = enforce_worker_namespace(wire, Some("project-a")).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+
+        assert_eq!(value["data"]["namespace"], "project-a");
+        assert_eq!(value["data"]["runtime"], "browser");
+    }
+
+    #[test]
+    fn worker_registration_cannot_override_the_console_namespace() {
+        let wire = r#"{"type":"invokefunction","function_id":"engine::workers::register","data":{"runtime":"browser","namespace":"default"}}"#;
+        let out = enforce_worker_namespace(wire, Some("project-a")).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+
+        assert_eq!(value["data"]["namespace"], "project-a");
+    }
+
+    #[test]
+    fn default_console_removes_a_stale_explicit_namespace() {
+        let wire = r#"{"type":"invokefunction","function_id":"engine::workers::register","data":{"runtime":"browser","namespace":"project-a"}}"#;
+        let out = enforce_worker_namespace(wire, None).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+
+        assert!(value["data"].get("namespace").is_none());
+    }
+
+    #[test]
+    fn namespace_enforcement_ignores_other_messages_and_bad_input() {
+        assert!(enforce_worker_namespace(
+            r#"{"type":"invokefunction","function_id":"session::messages","data":{"text":"engine::workers::register"}}"#,
+            Some("project-a")
+        )
+        .is_none());
+        assert!(
+            enforce_worker_namespace("engine::workers::register{", Some("project-a")).is_none()
+        );
+        assert!(enforce_worker_namespace(
+            r#"{"type":"invokefunction","function_id":"engine::workers::register","data":"weird"}"#,
+            Some("project-a")
+        )
+        .is_none());
     }
 
     #[test]

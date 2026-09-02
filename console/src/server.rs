@@ -86,10 +86,13 @@ impl AppState {
     }
 }
 
-/// The `/ws` proxy only needs the engine URL.
-impl FromRef<AppState> for Arc<String> {
+/// Connection settings extracted by the `/ws` proxy.
+impl FromRef<AppState> for proxy::ProxyConfig {
     fn from_ref(state: &AppState) -> Self {
-        state.engine_url.clone()
+        Self {
+            engine_url: state.engine_url.clone(),
+            namespace: state.namespace.clone(),
+        }
     }
 }
 
