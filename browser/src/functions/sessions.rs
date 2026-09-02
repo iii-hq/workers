@@ -14,9 +14,8 @@ pub struct StartInput {
     /// `headless` default.
     #[serde(default)]
     pub headful: Option<bool>,
-    /// Inspection-only session: act, evaluate, execute, and styles::write
-    /// are rejected while navigation, snapshots, reads, and screenshots
-    /// work. Immutable for the session's lifetime.
+    /// Inspection-only session for its whole lifetime: act, evaluate, execute
+    /// and styles::write are rejected; navigation and reads work.
     #[serde(default)]
     pub read_only: Option<bool>,
 }

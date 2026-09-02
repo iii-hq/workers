@@ -1,6 +1,6 @@
 {
   "function_id": "browser::sessions::attach",
-  "description": "Attach a session to an already-running browser over CDP (start Chrome with --remote-debugging-port). Opens a fresh tab the session owns, or adopts an existing user tab by URL substring and releases it untouched on stop. Reaches the real profile with its logins; disabled unless allow_attach is set in config.",
+  "description": "Attach a session to an already-running browser over CDP (Chrome started with --remote-debugging-port): opens a fresh tab the session owns, or adopts a user tab by URL substring and releases it untouched on stop. Reaches the real profile and its logins; requires allow_attach in config.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "AttachInput",
@@ -10,7 +10,7 @@
     ],
     "properties": {
       "adopt_url_substring": {
-        "description": "Adopt the existing tab whose URL contains this substring, exclusively, and release it untouched on stop. Omit to open a fresh tab the session owns and closes on stop. Must match exactly one open tab.",
+        "description": "Adopt the one open tab whose URL contains this substring (released untouched on stop); omit to open a fresh tab the session owns.",
         "default": null,
         "type": [
           "string",
@@ -18,7 +18,7 @@
         ]
       },
       "cdp_url": {
-        "description": "CDP endpoint of the running browser: `http://127.0.0.1:9222` (the worker resolves the WebSocket URL from `/json/version`) or a `ws://` debugger URL directly. Start Chrome with `--remote-debugging-port=9222` to expose one.",
+        "description": "CDP endpoint of the running browser: `http://127.0.0.1:9222` (resolved via `/json/version`) or a `ws://` debugger URL.",
         "type": "string"
       },
       "read_only": {
