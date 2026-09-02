@@ -158,7 +158,7 @@ def test_runner_pool_contract_is_documented() -> None:
     assert "builds the complete stack once" in runner_docs
     assert "trusted `main` push uses\n`workers-ci-linux-8core`" in runner_docs
     assert "Integration and Playwright jobs verify\nthat bundle and run in parallel" in runner_docs
-    assert "PR merge refs build the same bundle on `ubuntu-latest`" in runner_docs
+    assert "PR merge refs build the same bundle on\n`ubuntu-latest`" in runner_docs
 
 
 def test_interface_smoke_bounds_each_engine_readiness_probe() -> None:
