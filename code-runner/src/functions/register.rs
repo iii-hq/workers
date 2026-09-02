@@ -5,33 +5,27 @@ use crate::lang::Lang;
 
 #[derive(Deserialize, JsonSchema)]
 pub struct RegisterRequest {
-    /// e.g. `my-app::greet`. The segment before the first `::` is the
-    /// namespace. Each language keeps its own persistent runtime per
-    /// namespace, created by its first registration — a namespace can hold
-    /// node and python ids side by side.
+    /// Bus id, e.g. `my-app::greet`; the segment before the first `::` is the namespace,
+    /// which holds one persistent runtime per lang.
     pub function_id: String,
-    /// Source that DEFINES `handler(payload)` in `lang`.
-    ///
-    /// Node publishes itself, by calling `iii.registerFunction`. Python's
-    /// source just defines the name — the host publishes it — and anything
-    /// else the source defines stays available to every later invocation,
-    /// because the namespace runs on one pinned interpreter.
+    /// Source that defines `handler(payload)` in `lang`: `export function handler(payload)
+    /// {…}` (node) or `def handler(payload): …` (python).
+    // Node publishes itself via `iii.registerFunction`; python's source just
+    // defines the name and the host publishes it. Anything else the source
+    // defines persists across invocations: the namespace runs on one pinned
+    // interpreter.
     pub source: String,
     /// What `engine::functions::info` shows a caller — write one.
     #[serde(default)]
     pub description: Option<String>,
-    /// Optional JSON Schema for the payload the registered function expects —
-    /// `engine::functions::info` then shows it in place of "any". Must be a
-    /// JSON object that actually constrains something (`type`, `properties`,
-    /// `$ref`, …); at most 16 KiB serialized.
+    /// Optional JSON Schema object (≤ 16 KiB, must constrain: `type`/`properties`/`$ref`)
+    /// for the payload; shown by `engine::functions::info`, not enforced.
     #[serde(default)]
     pub request_format: Option<serde_json::Value>,
-    /// Optional JSON Schema for the value the handler returns; same rules as
-    /// `request_format`.
+    /// Optional JSON Schema for the handler's return value; same rules as `request_format`.
     #[serde(default)]
     pub response_format: Option<serde_json::Value>,
-    /// Which engine backs this namespace. Required here, unlike on `run`: a
-    /// registration has no runtime to infer it from.
+    /// Language of the namespace runtime this handler runs in.
     pub lang: Lang,
 }
 

@@ -15,7 +15,7 @@
         "type": "object"
       }
     },
-    "description": "The slice of the `pre_generate` hook envelope we read (lenient: ignores every other field the harness sends). The harness nests the live generation context under `generate`.",
+    "description": "The slice of the `pre_generate` hook envelope this hook reads; other fields are ignored.",
     "properties": {
       "generate": {
         "$ref": "#/definitions/GenerateContext"
