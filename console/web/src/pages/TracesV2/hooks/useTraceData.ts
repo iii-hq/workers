@@ -17,18 +17,25 @@ import {
 const DEFAULT_TRACE_PAGE_SIZE = 50
 
 /** Client-side debounce over activity ticks before refetching. The engine
- *  already coalesces to ~one tick per 300ms window; this only collapses the
- *  invalidate → POST round-trips of a burst of consecutive windows. */
-const ACTIVITY_REFETCH_DEBOUNCE_MS = 250
+ *  already coalesces to ~one tick per 300ms window and the coalescer below
+ *  keeps one refetch in flight, so this only needs to fold ticks that land
+ *  within the same frame or two — every millisecond here is on the path
+ *  between a turn starting and its row showing. */
+const ACTIVITY_REFETCH_DEBOUNCE_MS = 100
 /** Floor between two consecutive activity-driven refetch STARTS of the list
- *  and of the group aggregate. Under sustained activity the engine sees one
+ *  and of the group aggregate — every list shape, the session-scoped and
+ *  text-searched ones included. Under sustained activity the engine sees one
  *  scan per surface per second at most, and the rows update at a steady
- *  cadence instead of in bursts (see `createRefetchCoalescer`). */
+ *  cadence instead of in bursts (see `createRefetchCoalescer`).
+ *
+ *  The scoped/searched seeds used to ride a 10s cooldown instead: that
+ *  protected a full-span sweep (parallel multi-MB windows) that no longer
+ *  exists — `engine::traces::list` answers those shapes with compact
+ *  summaries in ~0.5s (measured), and the coalescer already keeps one scan
+ *  in flight. With a chat open, the list is ALWAYS session-scoped, so the
+ *  cooldown was the whole reason a turn's trace took up to ten seconds to
+ *  show while the engine had it within 100ms of the send (MOT-4621). */
 export const ACTIVITY_REFETCH_MIN_INTERVAL_MS = 1_000
-/** Minimum gap between activity-driven reseeds of a filtered/searched list.
- *  The response is compact, but child-span search still scans the engine's
- *  store; riding the short tick debounce would re-run that scan back-to-back. */
-const FILTERED_RESEED_COOLDOWN_MS = 10_000
 
 export function shouldDeferTraceUpdate(
   held: boolean,
@@ -372,16 +379,6 @@ export function useTraceData({
   useEffect(() => {
     isPausedRef.current = isPaused
   }, [isPaused])
-  // Whether the CURRENT seed is the expensive search_all_spans sweep —
-  // read through a ref inside the once-per-lifetime subscription below.
-  const isSearchAllSeed =
-    filterParams.search_all_spans === true ||
-    Boolean(debouncedSearch && !filterParams.name)
-  const searchAllSeedRef = useRef(isSearchAllSeed)
-  useEffect(() => {
-    searchAllSeedRef.current = isSearchAllSeed
-  }, [isSearchAllSeed])
-
   useEffect(() => {
     let stop: (() => void) | undefined
     let disposed = false
@@ -395,15 +392,10 @@ export function useTraceData({
     const invalidate = (queryKey: readonly unknown[]) =>
       qc.invalidateQueries({ queryKey }, { cancelRefetch: false })
 
-    // A search_all_spans seed still performs an engine-side scan: its reseed
-    // rides a longer cooldown so a busy session cannot re-run it back-to-back.
     const traces = createRefetchCoalescer({
       run: () => invalidate(['traces']),
       debounceMs: ACTIVITY_REFETCH_DEBOUNCE_MS,
-      minIntervalMs: () =>
-        searchAllSeedRef.current
-          ? FILTERED_RESEED_COOLDOWN_MS
-          : ACTIVITY_REFETCH_MIN_INTERVAL_MS,
+      minIntervalMs: ACTIVITY_REFETCH_MIN_INTERVAL_MS,
       shouldRun: canRefetch,
     })
     const groups = createRefetchCoalescer({
