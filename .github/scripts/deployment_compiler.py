@@ -459,6 +459,7 @@ def compile_worker(root: Path, worker: str, value: Any, source_sha: str, compile
     }
     descriptor: dict[str, Any] = {
         "contract": "deployment-descriptor",
+        "contract_version": 1,
         "worker": worker,
         "package_manifest_version": package_manifest_version,
         "source_sha": source_sha,
@@ -492,8 +493,6 @@ def compile_index(args: argparse.Namespace) -> int:
     schema = args.schema.resolve()
     if not SHA_RE.fullmatch(args.source_sha):
         fail("source_sha must be a full lowercase commit SHA")
-    if not SHA_RE.fullmatch(args.compiler_commit):
-        fail("compiler_commit must be a full lowercase commit SHA")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.compiler_repository):
         fail("compiler_repository must be an owner/name pair")
     document = read_yaml(deployment_spec)
@@ -525,10 +524,11 @@ def compile_index(args: argparse.Namespace) -> int:
         }
     index = {
         "contract": "deployment-descriptor-index",
+        "contract_version": 1,
         "source_sha": args.source_sha,
         "compiler": {
             "repository": args.compiler_repository,
-            "commit": args.compiler_commit,
+            "commit": args.source_sha,
             "digest": digest,
         },
         "workers": entries,
@@ -557,7 +557,6 @@ def parser() -> argparse.ArgumentParser:
     compile_command.add_argument("--deployment-spec", type=Path, default=Path(".deploy/workers.yaml"))
     compile_command.add_argument("--source-sha", required=True)
     compile_command.add_argument("--compiler-repository", required=True)
-    compile_command.add_argument("--compiler-commit", required=True)
     compile_command.add_argument("--schema", type=Path, default=schema)
     compile_command.add_argument("--output-dir", type=Path, required=True)
     compile_command.set_defaults(handler=compile_index)

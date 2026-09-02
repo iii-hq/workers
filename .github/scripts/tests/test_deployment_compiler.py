@@ -62,6 +62,8 @@ def test_descriptor_schema_requires_explicit_interface_capture_policy():
     )
 
     assert "interface_capture" in schema["required"]
+    assert "contract_version" in schema["required"]
+    assert schema["properties"]["contract_version"] == {"const": 1}
     assert schema["properties"]["interface_capture"] == {
         "enum": ["required", "skipped"]
     }
