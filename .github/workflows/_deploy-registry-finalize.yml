@@ -45,6 +45,13 @@ jobs:
           python3 .github/scripts/deployment_train.py verify-prepared \
             --descriptor deploy-prepared/deployment-descriptor.json \
             --prepared deploy-prepared/prepared-artifacts.json
+          python3 .github/scripts/deployment_interface.py verify-evidence \
+            --descriptor deploy-prepared/deployment-descriptor.json \
+            --evidence deploy-prepared/deployment-evidence.json
+          python3 .github/scripts/deployment_interface.py export-interface \
+            --descriptor deploy-prepared/deployment-descriptor.json \
+            --snapshot deploy-prepared/deployment-interface.json \
+            --out interface.json
           python3 - <<'PY'
           import json
           import os
@@ -87,7 +94,6 @@ jobs:
               artifact_payload = {"kind": kind, "image_tag": image_tag}
           else:
               raise SystemExit(f"unsupported artifact kind {kind}")
-          Path("interface.json").write_text(json.dumps({"functions": [], "triggers": []}, sort_keys=True) + "\n")
           Path("registry-artifacts.json").write_text(json.dumps(artifact_payload, sort_keys=True) + "\n")
           PY
           python3 .github/scripts/build_publish_payload.py \

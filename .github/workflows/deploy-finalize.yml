@@ -76,6 +76,9 @@ jobs:
           python3 .github/scripts/deployment_train.py verify-prepared \
             --descriptor deploy-prepared/deployment-descriptor.json \
             --prepared deploy-prepared/prepared-artifacts.json
+          python3 .github/scripts/deployment_interface.py verify-evidence \
+            --descriptor deploy-prepared/deployment-descriptor.json \
+            --evidence deploy-prepared/deployment-evidence.json
 
       - name: Reconstruct prepared rc bytes from immutable surfaces
         if: steps.prepared.outcome != 'success'
@@ -200,6 +203,31 @@ jobs:
           python3 .github/scripts/deployment_train.py verify-prepared \
             --descriptor deploy-prepared/deployment-descriptor.json \
             --prepared deploy-prepared/prepared-artifacts.json
+          if [[ "$(jq -r .interface_capture deploy-prepared/deployment-descriptor.json)" == required ]]; then
+            curl -fsS "https://api.workers.iii.dev/w/$WORKER?version=$SOURCE_RC_VERSION" > source-worker.json
+            jq -e --arg worker "$WORKER" --arg version "$SOURCE_RC_VERSION" \
+              '.worker.name == $worker and .worker.version == $version' source-worker.json >/dev/null
+            jq '.worker | {functions:(.functions // []),triggers:(.triggers // [])}' \
+              source-worker.json > source-interface.json
+            python3 .github/scripts/deployment_interface.py snapshot \
+              --descriptor deploy-prepared/deployment-descriptor.json \
+              --prepared deploy-prepared/prepared-artifacts.json \
+              --interface source-interface.json \
+              --out deploy-prepared/deployment-interface.json
+          else
+            python3 .github/scripts/deployment_interface.py snapshot \
+              --descriptor deploy-prepared/deployment-descriptor.json \
+              --prepared deploy-prepared/prepared-artifacts.json \
+              --out deploy-prepared/deployment-interface.json
+          fi
+          python3 .github/scripts/deployment_interface.py build-evidence \
+            --descriptor deploy-prepared/deployment-descriptor.json \
+            --prepared deploy-prepared/prepared-artifacts.json \
+            --interface deploy-prepared/deployment-interface.json \
+            --out deploy-prepared/deployment-evidence.json
+          python3 .github/scripts/deployment_interface.py verify-evidence \
+            --descriptor deploy-prepared/deployment-descriptor.json \
+            --evidence deploy-prepared/deployment-evidence.json
 
       - name: Authorize exact finalization dispatch
         env:
@@ -253,6 +281,9 @@ jobs:
           python3 .github/scripts/deployment_train.py verify-prepared \
             --descriptor deploy-prepared/deployment-descriptor.json \
             --prepared deploy-prepared/prepared-artifacts.json
+          python3 .github/scripts/deployment_interface.py verify-evidence \
+            --descriptor deploy-prepared/deployment-descriptor.json \
+            --evidence deploy-prepared/deployment-evidence.json
 
       - name: Resolve immutable tag
         id: identity
@@ -657,7 +688,7 @@ jobs:
           fi
           artifacts='[]'
           kind=unknown
-          if [[ -f deploy-prepared/prepared-artifacts.json ]]; then artifacts=$(jq -c '[.artifacts[] | del(.unit)]' deploy-prepared/prepared-artifacts.json); fi
+          if [[ -f deploy-prepared/deployment-evidence.json ]]; then artifacts=$(jq -c '[.artifacts[] | del(.unit)]' deploy-prepared/deployment-evidence.json); fi
           if [[ -f deploy-prepared/deployment-descriptor.json ]]; then kind=$(jq -r .artifact.kind deploy-prepared/deployment-descriptor.json); fi
           normalize_state() {
             python3 -c 'import sys; value=sys.argv[1].strip(); print(value if value in {"absent", "present", "unknown"} else "unknown")' "$1"

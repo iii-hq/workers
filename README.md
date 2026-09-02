@@ -216,8 +216,8 @@ then routes:
 The `pr-checks` job additionally enforces, per changed worker: `README.md`
 present, the private build entry and public `iii.worker.yaml` valid,
 `tests/` non-empty, and the package version not behind the PR base. It also
-requires non-empty public discovery tags on workers whose public
-`interface_smoke` PR check is enabled — see the
+requires non-empty public discovery tags on workers whose interface capture is
+enabled — see the
 [Discovery tags step](docs/sops/new-worker.md#discovery-tags-required).
 
 Full reference (discovery buckets, interface boot smoke, e2e workflows):

@@ -54,6 +54,7 @@ def descriptor(worker: str, source_sha: str, package_manifest_version: str) -> d
             "include": ["dist/index.mjs"],
         },
         "runtime": {"environment": {}, "resources": {}, "install": "", "start": "node dist/index.mjs"},
+        "interface_capture": "required",
         "publish": True,
         "build_units": [{"id": "bundle", "kind": "javascript-bundle"}],
         "registry_projection": {

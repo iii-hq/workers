@@ -67,11 +67,11 @@ in both `rust` and `interface-smoke` jobs.
   claimed minimum compiler; the repository does not infer an MSRV from the
   pinned CI version.
 
-## Interface boot smoke (Rust)
+## Interface registration checks and release capture (Rust)
 
-**Why it exists:** release publish boots the worker on a clean runner with no
-`data/` directory. A worker can compile and pass unit tests yet crash at publish
-when SQLite parent dirs or sidecars are missing (#104 / `database/v0.2.6`).
+**Why it exists:** Registry discovery is generated from the functions and
+trigger types a worker registers. A successful build cannot prove that this
+metadata is present or typed.
 
 **Flow:**
 
@@ -81,7 +81,16 @@ when SQLite parent dirs or sidecars are missing (#104 / `database/v0.2.6`).
 4. `collect_worker_interface.py` — 120 s wait, assert non-empty interface
 
 **Opt-out:** `interface_smoke: false` in `iii.worker.yaml` (for example `lsp`).
-This is a PR-only check and is not part of deployment prepare or publication.
+The release compiler records this as `interface_capture: skipped`; only that
+explicit immutable policy permits empty `functions` and `triggers` in Registry.
+
+Release prepare repeats registration collection from one immutable prepared
+artifact and binds `deployment-interface.json` to the descriptor and prepared
+inventory digests. This is publication evidence, not a deployment smoke: no
+worker function or external backend is invoked. Behavioral coverage remains in
+the dedicated E2E workflows below. When `config.collect.yaml` exists, its digest
+is part of the descriptor and prepare verifies the same-source bytes before
+using the file for capture-only startup defaults.
 
 ## Dedicated e2e workflows
 
