@@ -462,7 +462,15 @@ export function TracesV2({
               if (revealed && now - lastPaint < 600) return
               const wf = rebuildDetail(traceId)
               if (wf) lastPaint = now
-              if (!silent && !revealed && wf) {
+              // ANY paint dismisses the skeleton, a silent reload's included.
+              // Opening a trace that is still producing spans races the
+              // activity feed: its first tick starts a silent reload that
+              // supersedes this seed before the first page lands, and a
+              // silent reload used to leave `isLoadingSpans` alone — the
+              // waterfall was in state, the skeleton stayed on screen for
+              // as long as the detail stayed open (measured: 50s and
+              // counting, on a trace that had finished in 1.5s).
+              if (!revealed && wf) {
                 revealed = true
                 setIsLoadingSpans(false)
               }
@@ -473,6 +481,7 @@ export function TracesV2({
 
         detailSpansRef.current = detailSpans
         const wf = rebuildDetail(traceId)
+        if (wf) setIsLoadingSpans(false)
         if (!wf && !silent) {
           setSpansError('no span data available for this trace')
         }
