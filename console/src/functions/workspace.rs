@@ -704,13 +704,10 @@ pub fn register(iii: &Arc<IIIClient>) {
             }
         })
         .description(
-            "Show a screen to the human in the console workspace, next to the conversation. \
-             Reuses the tab that already shows it, else places it beside chat in the active \
-             tab, else opens a new tab. Every browser on this engine updates. Use \
-             `{\"screen\":\"chat\",\"session_id\":\"<id>\"}` to open a chat panel pinned \
-             to one conversation. \
-             Use `ext:shell` for the file explorer, `ext:browser` for browser sessions, \
-             `ext:editor` for the editor, `workers` for the worker catalog.",
+            "Show a screen in the console workspace next to the conversation (reusing the tab \
+             that already shows it). Screens: `ext:shell` (files), `ext:browser`, \
+             `ext:editor`, `workers`, or `{\"screen\":\"chat\",\"session_id\":\"<id>\"}` \
+             for a pinned chat.",
         ),
     );
 
