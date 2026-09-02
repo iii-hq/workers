@@ -1,13 +1,15 @@
 import { useQuery } from '@tanstack/react-query'
+import { useMemo } from 'react'
 import {
   fetchTracesGroupBy,
   type TraceGroup,
   type TracesGroupByResponse,
 } from '../api/traces'
 import type { GroupByOption } from '../lib/groupTraces'
-import { isGroupByUnavailable } from '../lib/groupTraces'
+import { isGroupByUnavailable, orderTraceGroups } from '../lib/groupTraces'
 
 const DEFAULT_GROUP_LIMIT = 100
+const EMPTY_GROUPS: readonly TraceGroup[] = []
 
 export interface UseTraceGroupsOptions {
   /** When 'none', the hook is disabled (no network calls). */
@@ -23,7 +25,7 @@ export interface UseTraceGroupsOptions {
 }
 
 export interface UseTraceGroupsReturn {
-  groups: TraceGroup[]
+  groups: readonly TraceGroup[]
   isLoading: boolean
   /**
    * Set when the engine doesn't expose `engine::traces::group_by` (older
@@ -79,8 +81,14 @@ export function useTraceGroups({
     },
   })
 
+  // Deterministic order: the engine's tie order changes call to call.
+  const groups = useMemo(
+    () => orderTraceGroups(data?.groups ?? EMPTY_GROUPS),
+    [data],
+  )
+
   return {
-    groups: data?.groups ?? [],
+    groups,
     isLoading,
     unavailable: !!error && isGroupByUnavailable(error),
     refetch,
