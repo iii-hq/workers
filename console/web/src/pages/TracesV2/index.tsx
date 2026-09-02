@@ -24,7 +24,6 @@
 
 import {
   AlertCircle,
-  ArrowUp,
   GitBranch,
   MessageSquare,
   RefreshCw,
@@ -611,10 +610,11 @@ export function TracesV2({
   // unreadable under load: everything below the insertion point moves. So
   // structural changes (rows entering or leaving, order) are HELD while the
   // user is evidently reading — pointer over the rows, scrolled away from
-  // the top, on a later page, or a detail expanded — and a pill at the top
-  // counts what is waiting. Rows on screen keep updating in place. The hold
-  // releases (and the held answer lands) when every reason clears: pointer
-  // out, back at the top, back on page 1, detail closed.
+  // the top, on a later page, or a detail expanded — and the stats block
+  // in the filter bar shows a quiet "N new" that lands them on click. Rows
+  // on screen keep updating in place. The hold releases (and the held
+  // answer lands) when every reason clears: pointer out, back at the top,
+  // back on page 1, detail closed.
   const listHoverRef = useRef(false)
   const [listScrolledAway, setListScrolledAway] = useState(false)
   const listHeldByState =
@@ -634,7 +634,7 @@ export function TracesV2({
     const away = event.currentTarget.scrollTop > 0
     setListScrolledAway((prev) => (prev === away ? prev : away))
   }, [])
-  // What the pill promises: held rows not on screen that will actually
+  // What "N new" promises: held rows not on screen that will actually
   // show once landed — a hidden-rooted bookkeeping trace that the span
   // filter would drop must not be counted as "new".
   const heldNewCount = useMemo(() => {
@@ -648,7 +648,7 @@ export function TracesV2({
     }
     return count
   }, [heldTraces, traceGroups, spanFilter])
-  // The pill: back to the top of page 1 with everything that arrived.
+  // "N new": back to the top of page 1 with everything that arrived.
   const showHeldTraces = useCallback(() => {
     if (filterState.page !== 1) updateFilter('page', 1)
     listScrollRef.current?.scrollTo({ top: 0 })
@@ -925,6 +925,15 @@ export function TracesV2({
             searchQuery={searchQuery}
             onSearchChange={handleSearchChange}
             stats={hasOtelConfigured ? stats : undefined}
+            heldNew={
+              heldNewCount > 0
+                ? {
+                    count: heldNewCount,
+                    onPage1: filterState.page === 1,
+                    onShow: showHeldTraces,
+                  }
+                : undefined
+            }
             attributeKeySuggestions={attributeKeySuggestions}
             leading={
               <>
@@ -1039,12 +1048,11 @@ export function TracesV2({
                   </div>
                 ) : (
                   <div className="flex-1 flex flex-col overflow-hidden">
-                    {/* The hover hold wraps the pill too: moving the pointer
-                        onto the pill must not release the hold and pull the
-                        pill away from under the click. */}
                     {/* biome-ignore lint/a11y/noStaticElementInteractions: hover detection for pause/resume of live updates */}
                     <div
-                      className="relative flex-1 min-h-0 flex flex-col"
+                      className="flex-1 overflow-y-auto"
+                      ref={listScrollRef}
+                      onScroll={handleListScroll}
                       onMouseEnter={() => {
                         listHoverRef.current = true
                         syncListHold()
@@ -1054,70 +1062,39 @@ export function TracesV2({
                         syncListHold()
                       }}
                     >
-                      {heldNewCount > 0 ? (
-                        <Button
-                          type="button"
-                          variant="pill"
-                          size="sm"
-                          className="iii-ui-motion-overlay absolute top-3 left-1/2 z-10 h-8 -translate-x-1/2 rounded-full bg-panel-raised/80 pr-3 pl-2.5 font-medium text-[0.8125rem] shadow-raised backdrop-blur-md"
-                          onClick={showHeldTraces}
-                          aria-label={
-                            filterState.page === 1
-                              ? `show ${heldNewCount} new ${heldNewCount === 1 ? 'trace' : 'traces'}`
-                              : 'show the latest traces on page 1'
-                          }
-                          data-trace-list-held={heldNewCount}
-                        >
-                          <ArrowUp
-                            aria-hidden="true"
-                            className="stroke-current"
-                          />
-                          <span>
-                            {filterState.page === 1
-                              ? `${heldNewCount} new ${heldNewCount === 1 ? 'trace' : 'traces'}`
-                              : 'latest traces'}
-                          </span>
-                        </Button>
-                      ) : null}
-                      <div
-                        className="flex-1 overflow-y-auto"
-                        ref={listScrollRef}
-                        onScroll={handleListScroll}
-                      >
-                        {/* detail whose row is on another page (strip click,
+                      {/* detail whose row is on another page (strip click,
                           deep link) pins to the top of the scroll area */}
-                        {selectedTraceId !== null &&
-                          !selectedInPage &&
-                          traceDetail}
-                        {paged.map((trace) => {
-                          const isExpanded = selectedTraceId === trace.traceId
-                          return (
-                            <div
-                              key={trace.traceId}
-                              data-trace-row-id={trace.traceId}
-                            >
-                              <TraceListRow
-                                trace={trace}
-                                isSelected={isExpanded}
-                                isNew={newTraceIds.has(trace.traceId)}
-                                isLive={liveTraceIds.has(trace.traceId)}
-                                label={rowLabel}
-                                onHideFunction={hideFunction}
-                                onSelect={() => toggleTrace(trace.traceId)}
-                                onAnimationEnd={() => {
-                                  if (newTraceIds.has(trace.traceId))
-                                    setNewTraceIds((prev) => {
-                                      const next = new Set(prev)
-                                      next.delete(trace.traceId)
-                                      return next
-                                    })
-                                }}
-                              />
-                              {isExpanded && traceDetail}
-                            </div>
-                          )
-                        })}
-                      </div>
+                      {selectedTraceId !== null &&
+                        !selectedInPage &&
+                        traceDetail}
+                      {paged.map((trace) => {
+                        const isExpanded = selectedTraceId === trace.traceId
+                        return (
+                          <div
+                            key={trace.traceId}
+                            data-trace-row-id={trace.traceId}
+                          >
+                            <TraceListRow
+                              trace={trace}
+                              isSelected={isExpanded}
+                              isNew={newTraceIds.has(trace.traceId)}
+                              isLive={liveTraceIds.has(trace.traceId)}
+                              label={rowLabel}
+                              onHideFunction={hideFunction}
+                              onSelect={() => toggleTrace(trace.traceId)}
+                              onAnimationEnd={() => {
+                                if (newTraceIds.has(trace.traceId))
+                                  setNewTraceIds((prev) => {
+                                    const next = new Set(prev)
+                                    next.delete(trace.traceId)
+                                    return next
+                                  })
+                              }}
+                            />
+                            {isExpanded && traceDetail}
+                          </div>
+                        )
+                      })}
                     </div>
                     <div className="flex-shrink-0 border-t border-rule-2 px-3 py-2">
                       <Pagination

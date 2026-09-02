@@ -20,6 +20,7 @@
 
 import {
   AlertTriangle,
+  ArrowUp,
   ChevronDown,
   Hash,
   Search,
@@ -58,6 +59,13 @@ export interface TraceFiltersProps {
     errorCount: number
     avgDuration: number
   }
+  /**
+   * Rows the live list is holding back while the user reads it (see
+   * index.tsx). Rendered as one more segment of the stats block — a quiet
+   * "N new" next to the counts rather than anything over the rows — that
+   * lands them on click.
+   */
+  heldNew?: HeldNewTraces
   /** Rendered first in the control row (the saved-views dropdown). */
   leading?: React.ReactNode
   /**
@@ -332,10 +340,53 @@ function SearchInput({
   )
 }
 
-export function StatsBlock({ stats }: { stats: TraceFiltersProps['stats'] }) {
+export interface HeldNewTraces {
+  /** held rows that will show once landed */
+  count: number
+  /** on a later page the segment offers the latest traces on page 1 */
+  onPage1: boolean
+  onShow: () => void
+}
+
+export function StatsBlock({
+  stats,
+  heldNew,
+}: {
+  stats: TraceFiltersProps['stats']
+  heldNew?: HeldNewTraces
+}) {
   if (!stats) return null
+  const held = heldNew && heldNew.count > 0 ? heldNew : null
   return (
     <div className="flex items-stretch rounded-md bg-surface">
+      {held ? (
+        <button
+          type="button"
+          onClick={held.onShow}
+          data-trace-list-held={held.count}
+          className="flex items-center gap-1.5 rounded-l-md px-2.5 py-1 font-mono text-[11px] text-accent lowercase transition-colors hover:bg-surface-hover"
+          title={
+            held.onPage1
+              ? `${held.count} new ${held.count === 1 ? 'trace' : 'traces'} waiting — show them at the top`
+              : 'new traces arrived — show the latest on page 1'
+          }
+          aria-label={
+            held.onPage1
+              ? `show ${held.count} new ${held.count === 1 ? 'trace' : 'traces'}`
+              : 'show the latest traces on page 1'
+          }
+        >
+          <ArrowUp className="size-4" />
+          {held.onPage1 ? (
+            <>
+              <span className="tabular-nums">{held.count}</span>
+              <span>new</span>
+            </>
+          ) : (
+            <span>latest</span>
+          )}
+        </button>
+      ) : null}
       <div
         className="flex items-center gap-1.5 px-2.5 py-1 font-mono text-[11px] text-ink-faint lowercase"
         title={`${stats.pageTraceCount} traces on this page, ${stats.totalTraces} total matching traces`}
@@ -376,6 +427,7 @@ export function TraceFilters({
   onSearchChange,
   stats,
   leading,
+  heldNew,
   attributeKeySuggestions = [],
 }: TraceFiltersProps) {
   const [tempInputs, dispatchTempInputs] = useReducer(tempInputsReducer, {
@@ -699,7 +751,7 @@ export function TraceFilters({
         </button>
 
         <div className="ml-auto">
-          <StatsBlock stats={stats} />
+          <StatsBlock stats={stats} heldNew={heldNew} />
         </div>
       </div>
 
