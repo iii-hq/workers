@@ -97,7 +97,11 @@ pub fn register(iii: &Arc<IIIClient>, cfg: &SharedConfig) {
                 Ok::<_, Error>(ListSystemPromptsOutput { prompts: entries })
             }
         })
-        .description("List system prompts (name, description, modified_at): filesystem-backed entries from skills_folder (`system-prompts/` path segment) plus the prompts bundled with this worker. A bundled prompt with no local file carries `builtin: true` — editing it via directory::system-prompts::update creates the local file, which then shadows the bundled copy."),
+        .description(
+            "List system prompts (name, description, modified_at) from \
+             skills_folder's `system-prompts/` plus the ones bundled with this worker \
+             (`builtin: true` until a local file shadows one).",
+        ),
     );
 
     let cfg_inner = cfg.clone();

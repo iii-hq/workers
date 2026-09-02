@@ -71,15 +71,12 @@ enum FetchError {
 /// page size — the client cannot override it).
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct WorkerListInput {
-    /// Optional free-text query. Forwarded to the registry as
-    /// `?search=…`; the registry ranks results by `pg_trgm` similarity
-    /// against `lower(name)` and `lower(description)`. When omitted,
-    /// results are ordered by `total_downloads DESC`.
+    /// Optional free-text query, fuzzy-matched by the registry; omitted means
+    /// ordered by downloads.
     #[serde(default)]
     pub search: Option<String>,
-    /// Opaque cursor returned by a previous call's
-    /// `pagination.next_cursor`. Pass back verbatim to fetch the next
-    /// page; omit (or pass `null`) to fetch the first page.
+    /// Cursor from a previous call's `pagination.next_cursor`; omit for the
+    /// first page.
     #[serde(default)]
     pub cursor: Option<String>,
 }
@@ -312,14 +309,9 @@ fn register_worker_list(iii: &Arc<IIIClient>, cfg: &SharedConfig, cache: Registr
             async move { worker_list(&cfg, &cache, req).await.map_err(Error::Handler) }
         })
         .description(
-            "List workers from the public registry (api.workers.iii.dev). \
-             Optional free-text `search` is matched fuzzily by the registry; \
-             omit it to browse by `total_downloads DESC`. Pagination is \
-             cursor-based with a server-authored page size — pass back \
-             `pagination.next_cursor` as `cursor` to fetch the next page. \
-             Shares the core `name` / `description` / `version` fields with \
-             the engine's `engine::workers::list`. Results are cached for \
-             `registry_cache_ttl_ms` (default 60s).",
+            "List workers from the public registry, optionally filtered by fuzzy \
+             `search` (default order: downloads). Cursor-paginated: pass back \
+             `pagination.next_cursor` as `cursor`.",
         ),
     );
 }
@@ -335,15 +327,9 @@ fn register_worker_info(iii: &Arc<IIIClient>, cfg: &SharedConfig, cache: Registr
             async move { worker_info(&cfg, &cache, req).await.map_err(Error::Handler) }
         })
         .description(
-            "Fetch full registry metadata for one worker: worker envelope \
-             (same core fields as the engine's `engine::workers::list` row \
-             shape, plus registry-only `type` / `config` / `supported_targets` / \
-             `total_downloads` / `dependencies` / `image`), readme, full \
-             API reference (functions + triggers schemas), and the tree \
-             of skill file paths fetched from the registry's \
-             /w/{slug}/skills endpoint. Pass either `version` or `tag` \
-             (defaults to tag=\"latest\"). Results are cached for \
-             `registry_cache_ttl_ms`.",
+            "Fetch one registry worker's full metadata: envelope, readme, API \
+             reference (function and trigger schemas), and skill file paths. Pass \
+             `version` or `tag` (default tag \"latest\").",
         ),
     );
 }
