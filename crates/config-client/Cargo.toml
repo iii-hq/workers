@@ -13,10 +13,10 @@ repository = "https://github.com/iii-hq/workers"
 publish = false
 
 [dependencies]
-# Range, not an exact pin — same rationale as crates/console-ui: workers on
-# this repo's SDK line carry their own exact pins (0.21.6 for most, 0.21.8
-# for the harness) and cargo must be able to unify them with this crate.
-iii-sdk = "=0.22.1-alpha.25"
+# Workers carry their own exact SDK pins. Keep this shared crate compatible
+# with both the previous prerelease and the current stable SDK line so Cargo
+# can unify it with each worker.
+iii-sdk = ">=0.22.1-alpha.25, <0.24.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Must stay on the same schemars major as iii-sdk so the derived schemas line up.

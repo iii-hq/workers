@@ -122,6 +122,22 @@ def test_claude_code_release_installs_its_shared_ui_workspace():
     }
 
 
+def test_worker_bundle_start_commands_target_packaged_entrypoints():
+    document = yaml.safe_load(CATALOG.read_text(encoding="utf-8"))
+
+    for worker_id in ("claude-code", "opencode", "opengantry", "openwiki"):
+        worker = document["workers"][worker_id]
+        manifest = yaml.safe_load(
+            (ROOT / worker["source"]["path"] / "iii.worker.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        start = manifest["scripts"]["start"]
+
+        assert start.startswith("node ./"), worker_id
+        assert start.removeprefix("node ./") in worker["artifact"]["include"], worker_id
+
+
 def test_scrapling_release_bundle_vendors_dependencies():
     document = yaml.safe_load(CATALOG.read_text(encoding="utf-8"))
     scrapling = document["workers"]["scrapling"]
