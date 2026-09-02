@@ -100,9 +100,8 @@ const SYSTEM_PROMPT_CREATE_CONFLICT_NEXT: &[NextAction] = &[
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SkillUpdateInput {
-    /// Skill id to overwrite — the same forms `directory::skills::get`
-    /// accepts (bare id, `<id>.md`, `SKILL(S).md`, `iii://<id>`). The
-    /// target file must already exist; update never creates skills.
+    /// Skill id to overwrite (same forms directory::skills::get accepts); the
+    /// file must already exist.
     pub id: String,
     /// FULL new file content, frontmatter block included — the string
     /// `directory::skills::get { raw: true }` returns, edited.
@@ -129,15 +128,11 @@ pub struct SkillUpdateOutput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SkillCreateInput {
-    /// New skill id — becomes the file path
-    /// (`<skills_folder>/<id>.md`), so it may contain `/`-separated
-    /// segments (`[a-z0-9_-]` each). Must not collide with an existing
-    /// visible skill (including system-installed agents skills) or an
-    /// on-disk file at the target path.
+    /// New skill id, used as the file path under skills_folder (`/`-separated
+    /// segments of `[a-z0-9_-]`), not already taken.
     pub id: String,
-    /// FULL file content, frontmatter block included — the same form
-    /// `directory::skills::update` takes. Frontmatter is optional for
-    /// skills; only the size cap and a non-empty body are enforced.
+    /// Full file content, frontmatter optional; only the size cap and a
+    /// non-empty body are enforced.
     pub content: String,
 }
 
@@ -175,15 +170,11 @@ pub struct SkillDeleteOutput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SystemPromptUpdateInput {
-    /// System prompt name to overwrite, as returned by
-    /// `directory::system-prompts::list`. The target file must already
-    /// exist — except for a worker-bundled prompt (`builtin: true` in the
-    /// list), where the update copy-on-writes the local file that then
-    /// shadows the bundled copy.
+    /// System prompt name to overwrite, as listed; a bundled prompt (`builtin:
+    /// true`) is copied to a local file first.
     pub name: String,
-    /// FULL new file content, frontmatter block included. The
-    /// frontmatter must keep a non-empty `description` — a system prompt
-    /// without one would be skipped by the next scan.
+    /// Full file content, frontmatter included; `description` must stay
+    /// non-empty.
     pub content: String,
 }
 
@@ -203,14 +194,11 @@ pub struct SystemPromptUpdateOutput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SystemPromptCreateInput {
-    /// New system prompt name — becomes the file stem
-    /// `<skills_folder>/system-prompts/<name>.md`. Same charset rules as
-    /// list/get names; must not collide with an existing system prompt.
+    /// New system prompt name, used as the file stem; same charset as listed
+    /// names and not already taken.
     pub name: String,
-    /// FULL file content, frontmatter block included — the same form
-    /// `directory::system-prompts::update` takes. Frontmatter must carry a
-    /// non-empty `description`; a declared `name` must match the
-    /// requested name.
+    /// Full file content, frontmatter included; `description` is required and a
+    /// declared `name` must match.
     pub content: String,
 }
 
@@ -285,15 +273,9 @@ fn register_update_skill(
             }
         })
         .description(
-            "Overwrite one EXISTING filesystem-backed skill with new full-file markdown \
-             content (frontmatter block included — pass back the `raw` field from \
-             directory::skills::get { raw: true }, edited). Accepts the same id forms as \
-             `get`. Never creates files (use directory::skills::create to author one, or \
-             directory::skills::download to materialize a bundle). Refuses read-only \
-             system-installed skills under agents_skills_folder. Content is validated \
-             against the read invariants (size cap, non-empty body after frontmatter); \
-             the write is atomic and fans out directory::skills::on-change with \
-             { op: \"update\" }.",
+            "Overwrite one existing skill with full-file markdown (pass back the \
+             `raw` from directory::skills::get { raw: true }, edited). Never creates \
+             files; refuses read-only system-installed skills.",
         )
         .metadata(json!({"tool": {"label": "Update skill"}})),
     );
@@ -339,15 +321,9 @@ fn register_create_skill(
             }
         })
         .description(
-            "Create a NEW filesystem-backed skill at <skills_folder>/<id>.md from \
-             full-file markdown content (frontmatter optional; only the size cap and a \
-             non-empty body are enforced, same as directory::skills::update). Rejects ids \
-             that already exist anywhere in the visible skill set (including \
-             system-installed agents skills), a target path that already exists on disk \
-             (even one the scanner would skip), ids in a namespace reserved by a \
-             system-installed agents skill, and — when filter_unregistered is on — ids \
-             the visibility filter would immediately hide. The write is atomic and fans \
-             out directory::skills::on-change with { op: \"create\" }. Use \
+            "Create a new skill at <skills_folder>/<id>.md from full-file markdown \
+             (frontmatter optional, non-empty body). Rejects ids or paths that \
+             already exist, including system-installed skills. Use \
              directory::skills::update to edit existing skills.",
         )
         .metadata(json!({"tool": {"label": "Create skill"}})),
@@ -385,12 +361,8 @@ fn register_delete_skill(
             }
         })
         .description(
-            "Permanently delete one EXISTING filesystem-backed skill by id. Accepts the \
-             same id forms as directory::skills::get, resolves against the same visible \
-             set as directory::skills::list, refuses read-only system-installed skills \
-             under agents_skills_folder, removes only that skill's markdown file (plus \
-             any parent directories the removal left empty), and fans out \
-             directory::skills::on-change with { op: \"delete\" }.",
+            "Delete one existing skill's markdown file by id (same id forms as \
+             directory::skills::get); refuses read-only system-installed skills.",
         )
         .metadata(json!({"tool": {"label": "Delete skill"}})),
     );
@@ -418,16 +390,10 @@ fn register_update_system_prompt(
             }
         })
         .description(
-            "Overwrite one EXISTING filesystem-backed system prompt with new full-file \
-             markdown content. Updating a worker-bundled prompt (`builtin: true` in the \
-             list) that has no local file yet copy-on-writes that file, which then \
-             shadows the bundled copy. The frontmatter must keep a non-empty `description` (and \
-             a valid `name` when it declares one) — the same rules the scanner enforces, \
-             so an update can never produce a file the next \
-             directory::system-prompts::list would skip. The write is atomic and fans \
-             out directory::system-prompts::on-change with { op: \"update\" }. Returns \
-             the system prompt's effective name after the write (frontmatter `name:` \
-             wins over the file stem).",
+            "Overwrite one existing system prompt with full-file markdown; the \
+             frontmatter must keep a non-empty `description`. Updating a bundled \
+             prompt (`builtin: true`) creates a local file that shadows it. Returns \
+             the effective name (frontmatter `name:` wins over the file stem).",
         )
         .metadata(json!({"tool": {"label": "Update system prompt"}})),
     );
@@ -455,14 +421,9 @@ fn register_create_system_prompt(
             }
         })
         .description(
-            "Create a NEW system prompt at <skills_folder>/system-prompts/<name>.md from \
-             full-file markdown content (frontmatter block included; a non-empty \
-             `description` is required, and a declared frontmatter `name` must match the \
-             requested name). Rejects names that already exist anywhere in the merged \
-             system-prompt scan, or a target path that already exists on disk (even one \
-             the scanner would skip). The write is atomic and fans out \
-             directory::system-prompts::on-change with { op: \"create\" }. Use \
-             directory::system-prompts::update to edit existing system prompts.",
+            "Create a new system prompt at <skills_folder>/system-prompts/<name>.md \
+             from full-file markdown (non-empty frontmatter `description` required; a \
+             declared `name` must match). Rejects names or paths that already exist.",
         )
         .metadata(json!({"tool": {"label": "Create system prompt"}})),
     );
