@@ -1,0 +1,7 @@
+iii: v1
+name: auth
+language: rust
+deploy: binary
+manifest: Cargo.toml
+bin: iii-auth
+description: OAuth authority worker for iii RBAC, discovery, DCR, JWKS, and token validation.
