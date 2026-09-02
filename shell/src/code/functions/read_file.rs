@@ -70,44 +70,33 @@ use super::read_window::{count_lines, lossy_utf8, number_lines, read_window, rea
 // Input types
 // ---------------------------------------------------------------------------
 
-/// A single entry in a `paths[]` batch request. Pass either a bare file
-/// path string (whole-file read, same cap as `max_read_bytes`) or an
-/// object with optional per-entry `line_from`/`line_to` window parameters
-/// (1-based, inclusive — same rules as the top-level `path` mode).
+/// One batch entry: a bare path string (whole-file read) or an object with a
+/// per-entry window, stat or numbered flag.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum ReadTarget {
-    /// Bare path string: read the whole file (within remaining batch budget
-    /// and `max_read_bytes`).
+    /// Bare path string: read the whole file.
     Path(String),
-    /// Object form: path plus optional 1-based window parameters. Omit
-    /// `line_from` to start from line 1; omit `line_to` to read to EOF.
+    /// Object form: path plus optional window and flags.
     Window {
-        /// File to read. Same jail rules as the top-level `path` field.
+        /// File to read.
         path: String,
-        /// First line of the window, 1-based inclusive (must be >= 1; 0
-        /// is rejected with C210 for this entry). Defaults to 1 when
-        /// only `line_to` is set.
+        /// First line of the window, 1-based inclusive (>= 1); defaults to 1
+        /// when only `line_to` is set.
         #[serde(default)]
         #[schemars(range(min = 1))]
         line_from: Option<u64>,
-        /// Last line of the window, 1-based inclusive. Must be >=
-        /// `line_from` (C210 for this entry otherwise). Omit to read from
-        /// `line_from` to EOF.
+        /// Last line of the window, 1-based inclusive, >= `line_from`; omit to
+        /// read to EOF.
         #[serde(default)]
         #[schemars(range(min = 1))]
         line_to: Option<u64>,
-        /// Per-entry metadata probe: same semantics as the top-level
-        /// `stat` field — size/mode/mtime always, `total_lines`/`is_utf8`
-        /// when the file fits `max_read_bytes`, content null, no batch
-        /// budget consumed. C210 when combined with this entry's
-        /// `line_from`/`line_to` or `numbered`.
+        /// Metadata probe for this entry: size/mode/mtime plus total_lines,
+        /// content null, no budget consumed; C210 with a window or `numbered`.
         #[serde(default)]
         stat: bool,
-        /// Prefix this entry's content lines with their absolute 1-based
-        /// file line numbers (`N→`) — same semantics as the top-level
-        /// `numbered` field. Prefix bytes are charged against
-        /// `batch_read_budget_bytes`.
+        /// Prefix this entry's lines with their absolute 1-based line numbers
+        /// (`N→`); prefix bytes count toward the batch budget.
         #[serde(default)]
         numbered: bool,
     },
@@ -147,92 +136,39 @@ impl ReadTarget {
     example = "example_read_file_batch"
 )]
 pub struct ReadFileInput {
-    /// Single file to read. Relative to the primary allowed root, or an
-    /// absolute path inside any allowed root. Call `coder::info` to see
-    /// the allowed roots. Paths outside every allowed root are rejected —
-    /// use the shell worker's `shell::fs::*` for host paths outside the
-    /// jail. Mutually exclusive with `paths` (XOR): pass either `path` or
-    /// `paths`, not both — C210 if both or neither is set.
+    /// Single file to read; XOR with `paths` (C210 if both or neither is set).
     #[serde(default)]
     pub path: Option<String>,
-    /// First line of the window, 1-based inclusive (must be >= 1; 0 is
-    /// rejected with C210). Setting `line_from` and/or `line_to` switches
-    /// to windowed mode: the file is streamed and only the requested
-    /// lines are returned, so files larger than `max_read_bytes` stay
-    /// readable slice by slice — the byte cap then applies to the
-    /// returned window, never the file size. Defaults to 1 when only
-    /// `line_to` is set. A window starting past EOF succeeds with empty
-    /// content and reports the file's `total_lines`. Only valid in
-    /// single-path mode (`path`); ignored when `paths` is set. Lines are
-    /// 0x0A- or EOF-terminated segments; a trailing newline does not
-    /// create a phantom line (same convention as `coder::update-file`).
+    /// First line (1-based, >= 1) of a windowed read; windows keep files over
+    /// max_read_bytes readable slice by slice. `path` mode only.
     #[serde(default)]
     #[schemars(range(min = 1))]
     pub line_from: Option<u64>,
-    /// Last line of the window, 1-based inclusive. Must be >= `line_from`
-    /// (C210 otherwise). Omit to read from `line_from` to end-of-file
-    /// (still bounded by `max_read_bytes` on the returned bytes). Only
-    /// valid in single-path mode (`path`); ignored when `paths` is set.
+    /// Last line of the window, 1-based inclusive, >= `line_from`; omit to read
+    /// from `line_from` to EOF. `path` mode only.
     #[serde(default)]
     #[schemars(range(min = 1))]
     pub line_to: Option<u64>,
-    /// Metadata probe — the cheap "how big is it" call. When true the
-    /// response carries size/mode/mtime plus `total_lines` and `is_utf8`
-    /// (both null when the file exceeds `max_read_bytes` — size/mode/mtime
-    /// still populate, so stat on a huge file SUCCEEDS); `content` is
-    /// null, `lines_returned` 0, `more_lines` false. Probe BEFORE reading
-    /// an unknown file, then fetch just the slice you need with
-    /// `line_from`/`line_to`. Mutually exclusive with `line_from`,
-    /// `line_to`, `numbered`, and `max_output_bytes` (C210 — stat returns
-    /// no content for them to act on). Batch entries take a per-entry
-    /// `stat` field instead; this top-level flag is ignored when `paths`
-    /// is set.
+    /// Metadata probe: size/mode/mtime plus total_lines/is_utf8, no content;
+    /// C210 with line_from/line_to/numbered/max_output_bytes.
     #[serde(default)]
     pub stat: bool,
-    /// When true every returned content line is prefixed `N→`, where N is
-    /// the line's ABSOLUTE 1-based number in the file — a window starting
-    /// at `line_from: 40` is numbered from 40, not 1. Numbers match
-    /// `coder::update-file`'s 1-based line ops exactly, so you can go
-    /// from a numbered read straight to a line edit. Prefix bytes count
-    /// toward all byte caps and budgets (no hidden bypass). C210 with
-    /// `stat: true` (no content to number). Batch entries take a
-    /// per-entry `numbered` field instead; this top-level flag is ignored
-    /// when `paths` is set.
+    /// Prefix each line with its absolute 1-based file line number (`N→`),
+    /// matching coder::update-file line ops; C210 with `stat`. `path` mode
+    /// only.
     #[serde(default)]
     pub numbered: bool,
-    /// Per-call override of the `max_output_bytes` config (default
-    /// 131072) that budgets single-path FULL reads, measured in returned
-    /// content bytes after UTF-8 conversion (numbered prefixes included).
-    /// Values above `max_read_bytes` are silently clamped to it. When the
-    /// full content would exceed the effective budget the call fails with
-    /// a C218 naming the file's size and `total_lines` — recover by
-    /// windowing with `line_from`/`line_to`, probing with `stat: true`,
-    /// or raising this field. Full reads only: combining it with
-    /// `line_from`/`line_to` is C210 (windows are bounded by
-    /// `max_read_bytes` instead); ignored when `paths` is set (batch mode
-    /// is governed by `batch_read_budget_bytes`).
+    /// Full-read byte budget (returned bytes, clamped to max_read_bytes); over
+    /// budget fails C218 naming size/total_lines. C210 with a window.
     #[serde(default)]
     pub max_output_bytes: Option<u64>,
-    /// Content encoding for single-path FULL reads. Default `text`
-    /// returns UTF-8 (binary bytes replaced by U+FFFD); `base64` returns
-    /// the file's exact bytes base64-encoded (standard alphabet, padded)
-    /// — for binary payloads like images that a caller needs to
-    /// reconstruct. The ENCODED length is what's charged against
-    /// `max_output_bytes`. C210 combined with `stat`,
-    /// `line_from`/`line_to`, or `numbered` (text-shaping fields);
-    /// ignored when `paths` is set.
+    /// Content encoding for full reads; `base64` returns the exact file bytes
+    /// (encoded length is budgeted). C210 with stat/window/numbered.
     #[serde(default)]
     pub encoding: ReadEncoding,
-    /// Batch of files (or windowed slices) to read in a single call.
-    /// Each entry is either a plain path string (whole-file read) or an
-    /// object `{path, line_from?, line_to?}` with per-entry window
-    /// parameters. Entries are processed in request order against a
-    /// shared `batch_read_budget_bytes` cap, measured in bytes of
-    /// returned content (after UTF-8 sanitization) — see `coder::info`
-    /// for the configured value. Results are returned in the `results`
-    /// field; top-level fields are null. Mutually exclusive with `path`
-    /// (XOR): pass either `path` or `paths`, not both — C210 if both or
-    /// neither is set.
+    /// Batch of files to read in one call (bare path strings or window
+    /// objects), processed in order against batch_read_budget_bytes; XOR with
+    /// `path`.
     #[serde(default)]
     pub paths: Option<Vec<ReadTarget>>,
     /// Internal harness filesystem scope; omitted from published schema.

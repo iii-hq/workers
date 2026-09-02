@@ -117,11 +117,11 @@ pub struct TurnStepPayload {
     /// `iii.tag.message` baggage before any state read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_preview: Option<String>,
-    /// Sub-agent depth carried from the turn record (0 = top-level), so the
-    /// step can stamp the `iii.tag.kind` baggage (`harness.turn` /
-    /// `harness.subagent`) before any state read. Defaults to 0 so stale
-    /// in-flight payloads from before this field existed still classify as
-    /// top-level turns.
+    /// Sub-agent depth carried from the turn record (0 = top-level).
+    // Lets the step stamp the `iii.tag.kind` baggage (`harness.turn` /
+    // `harness.subagent`) before any state read. Defaults to 0 so stale
+    // in-flight payloads from before this field existed still classify as
+    // top-level turns.
     #[serde(default)]
     pub depth: u32,
 }

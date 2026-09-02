@@ -5,14 +5,14 @@
     "properties": {
       "session_id": {
         "default": null,
-        "description": "The binding's owner session — a correctness handshake, checked against the record. In-turn agent calls may omit it (the harness injects the calling session). The console's privileged path supplies the owner it just listed.",
+        "description": "The binding's owner session; in-turn calls may omit it (the calling session is injected).",
         "type": [
           "string",
           "null"
         ]
       },
       "subscription_id": {
-        "description": "`id` accepted as an alias: the sibling teardown contract (`engine::unregister_trigger`) calls this field `id`, and models carry that name over — verify-wake-fix-1 postmortem: the first unregister of the run failed on a raw serde \"missing field\" for exactly this.",
+        "description": "The subscription to remove (`id` is accepted as an alias).",
         "type": "string"
       }
     },

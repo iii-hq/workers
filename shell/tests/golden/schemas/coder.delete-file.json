@@ -1,5 +1,5 @@
 {
-  "description": "Remove one or more paths. Request shape: {\"paths\": [\"...\"]}. Directories need `recursive: true`; missing paths are idempotent successes; recursive removal refuses to descend through non-accessible entries. Paths are relative to the primary allowed root or absolute inside any allowed root (coder::info lists them); for host paths outside the jail use shell::fs::*.",
+  "description": "Remove one or more paths. Directories need recursive: true; missing paths succeed; recursion refuses to descend through non-accessible entries. Paths: relative to the primary root or absolute inside an allowed root (see coder::info).",
   "function_id": "coder::delete-file",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -14,7 +14,7 @@
     ],
     "properties": {
       "paths": {
-        "description": "Paths to remove. Each entry is relative to the primary allowed root, or an absolute path inside any allowed root. Call `coder::info` to see the allowed roots. Paths outside every allowed root are rejected — use the shell worker's `shell::fs::*` for host paths outside the jail.",
+        "description": "Paths to remove.",
         "items": {
           "type": "string"
         },

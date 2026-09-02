@@ -62,24 +62,14 @@ impl From<String> for MessageInput {
 /// Per-send options frozen onto the turn record (harness.md § `harness::send`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct SendOptions {
-    /// Run the session as a directory agent profile (`directory::agents::*`
-    /// id). Session-creating sends only — the profile's resolved system
-    /// prompt (its `extends` chain composed by the directory) REPLACES the
-    /// built-in identity (only the `mode` paragraph is prepended), its skill
-    /// filter becomes the session's skill selection, its `model` is the
-    /// fallback when this send names none, and its identity sticks like the
-    /// system prompt (later sends inherit; naming an explicit prompt field
-    /// sheds it). Refused on an existing session, combined with either
-    /// prompt field, or when the profile's `extends` chain does not resolve.
+    /// Directory agent profile id (`directory::agents::*`) replacing the
+    /// built-in identity; new sessions only, refused with a prompt field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
-    /// How `system_prompt` combines with the built-in prompt: `override`
-    /// replaces it; `enrich` (default) appends to it; `disabled` omits it.
-    /// When BOTH prompt fields are omitted on an existing session, the prior
-    /// turn's resolved prompt is inherited; naming a strategy (even bare)
-    /// resolves fresh — the reset-to-default escape hatch.
+    /// How `system_prompt` combines with the built-in prompt; omitting both
+    /// prompt fields on an existing session inherits the prior prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt_strategy: Option<SystemPromptStrategy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -105,26 +95,18 @@ pub struct SendOptions {
     /// The turn's deliverable; default `{ type: "text" }`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<OutputContract>,
-    /// The fail-closed dispatch policy. Omitted on a NEW session → deny every
-    /// call; omitted when steering an EXISTING session → inherit the prior
-    /// turn's policy (a nudge must not disarm a live run). Pass
-    /// `{ allow: [] }` to strip explicitly. On a NEW `ask`-mode turn the
-    /// effective policy is capped at the configured default policy; a
-    /// steer folded into an already-running turn keeps that turn's frozen
-    /// policy until it finalises.
+    /// Fail-closed dispatch policy; omitted means deny all on a new session
+    /// and inherit on an existing one (`{ allow: [] }` strips explicitly).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub functions: Option<FunctionPolicy>,
-    /// Exact skill ids advertised to the model. On a fresh session, omitted or
-    /// empty means all. On an existing session, omitted inherits its filter and
-    /// empty resets to all. Explicit changes require no active turn. This is
-    /// index curation, not authorization.
+    /// Exact skill ids advertised to the model; omitted or empty means all on
+    /// a new session (existing: omitted inherits, empty resets).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skills: Option<Vec<String>>,
     /// Tracing passthrough.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
-    /// Per-turn override of the configured validation-retry budget (also the
-    /// bound on `harness::hook::post-turn` deny re-prompts).
+    /// Per-turn override of the validation-retry budget.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_validation_retries: Option<u32>,
 }
@@ -145,11 +127,8 @@ pub struct SendRequest {
     pub session_id: Option<String>,
     /// The incoming user message text.
     pub message: MessageInput,
-    /// Required to start a NEW session unless `options.agent` supplies a
-    /// model. Steering or waking an EXISTING session may omit it — the
-    /// session's last turn's model (and provider, unless overridden) is
-    /// inherited, the same rule the notification inject path uses. A model
-    /// declared by the selected agent profile is authoritative.
+    /// Required on a new session unless `options.agent` supplies a model;
+    /// an existing session inherits its last turn's model when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -683,10 +662,11 @@ fn latest_seed_record<'a>(
 }
 
 /// The lineage a seeded turn carries: empty for a top-level send or a
-/// notification wake, populated for a spawned child. It exists so ONE seeding
-/// path can serve every entry point — before this, the child path hand-rolled
-/// its own `TurnRecord` and `put_turn`, which skipped the CAS/merge check and
-/// clobbered a running turn whenever a spawn reused a live session id.
+/// notification wake, populated for a spawned child.
+// It exists so ONE seeding path can serve every entry point — before this,
+// the child path hand-rolled its own `TurnRecord` and `put_turn`, which
+// skipped the CAS/merge check and clobbered a running turn whenever a spawn
+// reused a live session id.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TurnLineage {
     pub depth: u32,

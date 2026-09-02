@@ -18,10 +18,8 @@ pub struct SelectedSystemPrompt {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SystemPromptRequest {
     pub session_id: String,
-    /// Return only the built-in default layer — the stored
-    /// `system-prompts/default` override when one is active, else the
-    /// embedded Harness default — without session, runtime, registry, or
-    /// hook layers. The part's `name` states which source served it.
+    /// Return only the built-in default layer, without session, runtime,
+    /// registry, or hook layers.
     #[serde(default)]
     pub default_only: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]

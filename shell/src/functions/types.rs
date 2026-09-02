@@ -84,56 +84,42 @@ fn deserialize_timeout_ms<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>
     Ok(v.as_u64())
 }
 
-/// Wire request for `shell::exec`. The schema is published to the engine's
-/// tool listing so callers see field types up front instead of guessing
-/// from the description.
+/// Wire request for `shell::exec`.
+// The schema is published to the engine's tool listing so callers see field
+// types up front instead of guessing from the description.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ExecRequest {
-    /// Program name (bare, PATH-resolved) or a path to an executable.
-    /// Must be a string — split arguments into `args`, do not pass argv as
-    /// an array here.
+    /// Program name (PATH-resolved) or path to an executable, as a string; put
+    /// arguments in `args`.
     #[serde(deserialize_with = "deserialize_command")]
     pub command: String,
-    /// Arguments passed to the program, in order. Every element must be a
-    /// string; non-string elements are rejected by index.
-    /// `None` (or `args: null` / absent) means "tokenize `command` via
-    /// shell-words"; `Some(_)` (including the empty vec) means "use args
-    /// verbatim, no shell-words." See `parse_argv` in `crate::exec::host`.
+    /// Arguments, in order (all strings). Omit/null to tokenize `command`
+    /// shell-words style; pass an array (even empty) to use it verbatim.
+    // See `parse_argv` in `crate::exec::host`.
     #[serde(default, deserialize_with = "deserialize_args")]
     pub args: Option<Vec<String>>,
-    /// Per-call timeout override, milliseconds. Capped at `cfg.max_timeout_ms`.
-    /// Negative or fractional values silently fall back to
-    /// `cfg.default_timeout_ms` (loose wire semantic, preserved on purpose).
+    /// Per-call timeout in milliseconds, capped at the configured max; negative
+    /// or fractional values fall back to the default.
+    // Caps at `cfg.max_timeout_ms`, falls back to `cfg.default_timeout_ms`
+    // (loose wire semantic, preserved on purpose).
     #[serde(default, deserialize_with = "deserialize_timeout_ms")]
     pub timeout_ms: Option<u64>,
-    /// Optional working directory for this call (host target only). Confined to
-    /// the fs jail exactly like `shell::fs::*` paths: jail-relative when
-    /// `fs.host_roots` are set (else absolute), canonicalized, and must resolve
-    /// inside a jail root and miss the denylist — a path that escapes returns
-    /// S215. Must already exist and be a directory. Omit to use the configured
-    /// `working_dir` (unchanged default). Rejected (S210) on a sandbox target.
+    /// Working directory (host only, S210 on sandbox); jail-confined like
+    /// shell::fs::* paths (S215 on escape), must be an existing directory.
     #[serde(default)]
     pub cwd: Option<String>,
     /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
     pub fs_scope: Option<FsScope>,
-    /// Optional per-call environment values (host target only). Deny-only: a
-    /// key may be set to ANY value except an exec-hijacking key (PATH, IFS,
-    /// HOME, LD_*/DYLD_*, and other loader/lookup and interpreter-startup
-    /// keys — see DANGEROUS_ENV_KEYS), which is rejected unconditionally
-    /// (`env.allow` plays no role here — that list only gates which vars get
-    /// forwarded from the worker's own environment). Supplying a dangerous
-    /// key rejects the WHOLE call (S210) naming the offending key; the env is
-    /// never silently dropped. Values override what would otherwise be
-    /// forwarded for that key. Rejected (S210) on a sandbox target.
+    /// Per-call env values (host only, S210 on sandbox); exec-hijacking keys
+    /// (PATH, IFS, HOME, LD_*/DYLD_*, …) reject the whole call S210.
+    // Deny-only: see DANGEROUS_ENV_KEYS; values override forwarded ones, and
+    // `env.allow` only gates forwarding from the worker's own environment.
     #[serde(default)]
     pub env: Option<BTreeMap<String, String>>,
-    /// Optional bytes written to the program's standard input, followed by EOF.
-    /// Use this to pipe content to a command that reads stdin (`tee`, `patch`,
-    /// `cat`, a filter) instead of wrapping it in a shell heredoc. Omit to leave
-    /// stdin closed (`/dev/null`, the default). HOST target only — rejected
-    /// (S210) on a sandbox target, like cwd/env.
+    /// Bytes written to the program's stdin, then EOF (host only, S210 on
+    /// sandbox); omit to leave stdin at /dev/null.
     #[serde(default)]
     pub stdin: Option<String>,
     /// Where to run the command. Defaults to the host worker; pass
@@ -142,46 +128,44 @@ pub struct ExecRequest {
     pub target: Target,
 }
 
-/// Wire request for `shell::exec_bg`. Same shape as [`ExecRequest`]; documented
-/// separately so the engine publishes a distinct schema per function.
+/// Wire request for `shell::exec_bg`.
+// Same shape as `ExecRequest`; documented separately so the engine publishes a
+// distinct schema per function.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ExecBgRequest {
-    /// Program name. See [`ExecRequest::command`].
+    /// Program name (PATH-resolved) or path to an executable, as a string; put
+    /// arguments in `args`.
     #[serde(deserialize_with = "deserialize_command")]
     pub command: String,
-    /// Arguments passed to the program. See [`ExecRequest::args`].
-    /// `None` (or `args: null` / absent) means "tokenize `command` via
-    /// shell-words"; `Some(_)` (including the empty vec) means "use args
-    /// verbatim, no shell-words." See `parse_argv` in `crate::exec::host`.
+    /// Arguments, in order (all strings). Omit/null to tokenize `command`
+    /// shell-words style; pass an array (even empty) to use it verbatim.
+    // See `parse_argv` in `crate::exec::host`.
     #[serde(default, deserialize_with = "deserialize_args")]
     pub args: Option<Vec<String>>,
-    /// Per-call timeout. Host-targeted background jobs IGNORE `timeout_ms`;
-    /// sandbox-targeted ones forward it through `cfg.resolve_timeout`.
+    /// Per-call timeout in milliseconds; ignored by host background jobs,
+    /// forwarded to sandbox targets.
+    // Sandbox targets go through `cfg.resolve_timeout`.
     #[serde(default, deserialize_with = "deserialize_timeout_ms")]
     pub timeout_ms: Option<u64>,
-    /// Optional working directory for this job (host target only). Same jail
-    /// confinement and rules as [`ExecRequest::cwd`]: canonicalized, must
-    /// resolve inside a jail root (S215 on escape) and be an existing
-    /// directory. Rejected (S210) on a sandbox target.
+    /// Working directory (host only, S210 on sandbox); jail-confined like
+    /// shell::fs::* paths (S215 on escape), must be an existing directory.
     #[serde(default)]
     pub cwd: Option<String>,
     /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
     pub fs_scope: Option<FsScope>,
-    /// Optional per-call environment values (host target only). Same gating as
-    /// [`ExecRequest::env`]: deny-only, rejecting only an exec-hijacking key
-    /// (PATH, IFS, HOME, LD_*/DYLD_*, and other loader/lookup and
-    /// interpreter-startup keys — see DANGEROUS_ENV_KEYS); any violation
-    /// rejects the whole call (S210). Rejected (S210) on a sandbox target.
+    /// Per-call env values (host only, S210 on sandbox); exec-hijacking keys
+    /// (PATH, IFS, HOME, LD_*/DYLD_*, …) reject the whole call S210.
+    // Deny-only: see DANGEROUS_ENV_KEYS; values override forwarded ones, and
+    // `env.allow` only gates forwarding from the worker's own environment.
     #[serde(default)]
     pub env: Option<BTreeMap<String, String>>,
-    /// Optional bytes written to the job's standard input, then EOF. See
-    /// [`ExecRequest::stdin`]. HOST target only — rejected (S210) on a sandbox
-    /// target.
+    /// Bytes written to the program's stdin, then EOF (host only, S210 on
+    /// sandbox); omit to leave stdin at /dev/null.
     #[serde(default)]
     pub stdin: Option<String>,
-    /// Where to run. See [`ExecRequest::target`].
+    /// Where to run: the host (default) or { kind: "sandbox", sandbox_id }.
     #[serde(default)]
     pub target: Target,
 }
@@ -277,13 +261,12 @@ impl From<&JobRecord> for JobSummary {
     }
 }
 
-/// `shell::list` takes no arguments; this empty struct publishes an accurate
-/// (empty-object) request schema.
-///
-/// NOTE: deliberately NOT `#[serde(deny_unknown_fields)]`. The engine injects
-/// a `_caller_worker_id` field into every call's payload, so a strict no-arg
-/// struct would reject EVERY call. The handler ignores the payload entirely
-/// (`move |_req: Value|` in main.rs) for the same reason.
+/// `shell::list` takes no arguments.
+// Empty struct publishes an accurate (empty-object) request schema.
+// Deliberately NOT `#[serde(deny_unknown_fields)]`: the engine injects a
+// `_caller_worker_id` field into every call's payload, so a strict no-arg
+// struct would reject EVERY call. The handler ignores the payload entirely
+// (`move |_req: Value|` in main.rs) for the same reason.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListRequest {}
 
@@ -293,10 +276,10 @@ pub struct ListResponse {
     pub count: usize,
 }
 
-/// `shell::config-status` takes no arguments; this empty struct publishes an
-/// accurate (empty-object) request schema, mirroring [`ListRequest`]. The
-/// response is `configuration::ReloadStatus`. Like [`ListRequest`], it is NOT
-/// `deny_unknown_fields` — the engine-injected `_caller_worker_id` would
-/// otherwise be rejected; the handler ignores the payload.
+/// `shell::config-status` takes no arguments.
+// Empty struct publishes an accurate (empty-object) request schema, mirroring
+// `ListRequest`. The response is `configuration::ReloadStatus`. NOT
+// `deny_unknown_fields` — the engine-injected `_caller_worker_id` would
+// otherwise be rejected; the handler ignores the payload.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ConfigStatusRequest {}

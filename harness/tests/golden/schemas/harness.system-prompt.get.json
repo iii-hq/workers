@@ -4,7 +4,7 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
       "Mode": {
-        "description": "Console / send operating mode — prepends a short paragraph before the shared identity prompt. `ask` is also structural: the turn's dispatch policy is capped at the configured default policy, never widened.",
+        "description": "Operating mode prepended to the identity prompt; `ask` also caps the dispatch policy at the configured default.",
         "enum": [
           "ask",
           "agent"
@@ -64,7 +64,7 @@
     "properties": {
       "default_only": {
         "default": false,
-        "description": "Return only the built-in default layer — the stored `system-prompts/default` override when one is active, else the embedded Harness default — without session, runtime, registry, or hook layers. The part's `name` states which source served it.",
+        "description": "Return only the built-in default layer, without session, runtime, registry, or hook layers.",
         "type": "boolean"
       },
       "filesystem_root": {

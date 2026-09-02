@@ -289,21 +289,11 @@ async fn main() -> Result<()> {
                 })
             })
             .description(
-                "Run a command in the foreground and return its full output. \
-                 Put the program name in `command` (string) and arguments in `args` (string[]) — \
-                 do NOT pass argv as an array in `command`. `timeout_ms` is capped at the \
-                 configured max; negative/fractional values fall back to the default. `target` \
-                 defaults to the host; pass { kind: \"sandbox\", sandbox_id } to run in a microVM. \
-                 Optional host-only `cwd` scopes this call to a directory (jail-confined exactly \
-                 like shell::fs::* paths; escaping it is S215), optional `env` (object) sets \
-                 per-call values for ANY key except PATH/IFS/HOME/LD_*/DYLD_* or other \
-                 loader/lookup and interpreter-startup keys \
-                 (those reject S210 unconditionally) — and optional host-only `stdin` (string) is written to the \
-                 program's standard input (use it for `tee`, `patch`, or any stdin filter instead \
-                 of a shell heredoc). cwd/env/stdin on a sandbox target reject S210. \
-                 Backend errors return { code, message }; common: S216 host exec error, S300 VM \
-                 boot failed, S200 in-VM failure. argv-parse and denylist rejections are \
-                 plain-string messages naming the violation.",
+                "Run a command in the foreground and return its full output. Put the program in \
+                 `command` (string) and arguments in `args` (string[]), never argv in \
+                 `command`. Host-only cwd/env/stdin reject S210 on a sandbox target. Errors \
+                 return { code, message }; common: S216 host exec error, S300 VM boot failed, \
+                 S200 in-VM failure.",
             ),
         );
     }
@@ -321,20 +311,10 @@ async fn main() -> Result<()> {
                 })
             })
             .description(
-                "Spawn a command as a background job; returns { job_id, argv } \
-                 immediately. Same payload as shell::exec (command + args, do NOT pass argv as an \
-                 array), including the optional host-only `cwd` (jail-confined; escape is S215), \
-                 `env` (any key except PATH/IFS/HOME/LD_*/DYLD_* or other loader/lookup \
-                 and interpreter-startup keys, rejected unconditionally), and `stdin` (string written to the job's stdin); \
-                 violations and cwd/env/stdin on a sandbox target reject with an S210 message. Poll \
-                 with shell::status, terminate with shell::kill, list with shell::list. \
-                 Host background jobs ignore the per-call timeout_ms and run until they exit or \
-                 shell::kill terminates them; set the operator config `max_bg_timeout_ms` (0 = \
-                 unbounded, the default) to force-kill a runaway job after that long. \
-                 Spawn-time failures (argv-parse, denylist, cwd/env gating, spawn, \
-                 concurrency cap) are plain-string messages naming the violation; once spawned, \
-                 per-job failures surface through shell::status (the job record's status/stderr), \
-                 not this call's return.",
+                "Spawn a background job; returns { job_id, argv } immediately. Same payload as \
+                 shell::exec. Host jobs ignore timeout_ms and run until exit or shell::kill; \
+                 poll with shell::status, list with shell::list. Spawn-time failures are \
+                 plain-string messages; later failures surface in shell::status, not here.",
             ),
         );
     }
@@ -406,10 +386,9 @@ async fn main() -> Result<()> {
             .response_format(schema_value::<configuration::ReloadStatus>())
             .description(
                 "Report the last configuration hot-reload outcome: last_outcome \
-                 (applied|rejected), last_error, and rejected_reloads (count since \
-                 boot). A rejected outcome or non-zero count means a stored config \
-                 was refused and shell is enforcing an older policy than the central \
-                 store. Takes no arguments.",
+                 (applied|rejected), last_error, and rejected_reloads since boot. A rejected \
+                 outcome means shell is enforcing an older policy than the central store. Takes \
+                 no arguments.",
             )
             .metadata(serde_json::json!({ "internal": true })),
         );
@@ -598,13 +577,15 @@ fn register_fs(iii: &iii_sdk::IIIClient, state: &AppState) {
         }};
     }
 
-    fs_fn!("shell::fs::ls", fs_ls, fs::LsRequest, fs::LsResponse,
-        "List directory contents. `path` is relative to the primary fs jail root (the first \
-         fs.host_roots entry) when set, otherwise absolute. `target` defaults to host; pass \
-         { kind: \"sandbox\", sandbox_id } \
-         to run in a microVM. Errors return { code, message }; common: S210 bad path, S211 not found \
-         or not accessible, S212 not a directory, S215 jail escape. For paginated or recursive \
-         listings with noise filtering, prefer coder::list-folder / coder::tree.");
+    fs_fn!(
+        "shell::fs::ls",
+        fs_ls,
+        fs::LsRequest,
+        fs::LsResponse,
+        "List directory contents. Errors return { code, message }; common: S210 bad path, \
+         S211 not found or not accessible, S212 not a directory, S215 jail escape. For \
+         paginated or recursive listings prefer coder::list-folder / coder::tree."
+    );
     fs_fn!("shell::fs::stat", fs_stat, fs::StatRequest, fs::StatResponse,
         "Stat a single path (jail-relative when fs.host_roots are set). Returns the entry's type, size, \
          mode, and mtime. Errors return { code, message }; common: S211 not found or not accessible, \
@@ -618,10 +599,10 @@ fn register_fs(iii: &iii_sdk::IIIClient, state: &AppState) {
         fs_rm,
         fs::RmRequest,
         fs::RmResponse,
-        "Remove a path. `recursive: true` is required to delete a non-empty directory. Returns \
-         { removed, path, was_present }. Errors return { code, message }; common: S211 not found or \
-         not accessible, S214 dir not empty (pass recursive), S215 jail escape. To remove several \
-         paths in one call, use coder::delete-file (batched, per-entry errors)."
+        "Remove a path. `recursive: true` is required to delete a non-empty directory. \
+         Returns { removed, path, was_present }. Errors return { code, message }; common: \
+         S211 not found or not accessible, S214 dir not empty, S215 jail escape. \
+         coder::delete-file removes several paths per call."
     );
     fs_fn!("shell::fs::chmod", fs_chmod, fs::ChmodRequest, fs::ChmodResponse,
         "Change permissions. `mode` is an octal string like \"0644\". `uid`/`gid` optionally chown. \
@@ -634,50 +615,52 @@ fn register_fs(iii: &iii_sdk::IIIClient, state: &AppState) {
         fs::MvRequest,
         fs::MvResponse,
         "Move/rename a path. `overwrite: true` allows replacing an existing dst. Returns \
-         { moved, src, dst, overwrote }. Errors return { code, message }; common: S211 src not found \
-         or not accessible, S213 dst exists, S215 jail escape. To move several paths in one call, \
-         use coder::move (batched, per-entry errors)."
+         { moved, src, dst, overwrote }. Errors return { code, message }; common: S211 \
+         src not found or not accessible, S213 dst exists, S215 jail escape. coder::move \
+         moves several paths per call."
     );
     fs_fn!(
         "shell::fs::grep",
         fs_grep,
         fs::GrepRequest,
         fs::GrepResponse,
-        "Search file contents. `pattern` is a Rust regex (RE2-like). `recursive` defaults true. \
-         `include_glob`/`exclude_glob` filter paths. Returns { matches, truncated }. Errors return \
-         { code, message }; common: S217 bad regex, S215 jail escape. For token-budgeted search with \
-         context lines and noise filtering, prefer coder::search."
+        "Search file contents. `pattern` is a Rust regex (RE2-like); \
+         `include_glob`/`exclude_glob` filter paths. Returns { matches, truncated }. \
+         Errors return { code, message }; common: S217 bad regex, S215 jail escape. \
+         coder::search adds context lines and noise filtering."
     );
-    fs_fn!("shell::fs::sed", fs_sed, fs::SedRequest, fs::SedResponse,
-        "Find-and-replace across files. `pattern` is a Rust regex by default (set regex:false for a \
-         literal). Provide either `files` (explicit list) or `path` (+ recursive). Returns \
-         { results, total_replacements }. Errors return { code, message }; common: S217 bad regex, \
-         S211 not found or not accessible, S215 jail escape. For line-oriented edits with post-apply \
-         echoes (no re-read needed), prefer coder::update-file.");
+    fs_fn!(
+        "shell::fs::sed",
+        fs_sed,
+        fs::SedRequest,
+        fs::SedResponse,
+        "Find-and-replace across files. `pattern` is a Rust regex (regex: false for a \
+         literal). Provide either `files` or `path` (+ recursive). Returns { results, \
+         total_replacements }. Errors return { code, message }; common: S217 bad regex, \
+         S211 not found, S215 jail escape."
+    );
     fs_fn!(
         "shell::fs::write",
         fs_write,
         fs::WriteRequest,
         fs::WriteResponse,
-        "Write a file. Simplest form: { path, content: \"text\" } — `content` as a plain STRING is \
-         written inline (host target only), no streaming channel needed. For large/streamed payloads \
-         or a sandbox target, pass `content` as a ContentRef { channel_id, access_key, direction } \
-         from a write stream channel you opened through the engine's streaming layer (inline strings \
-         reject S210 on a sandbox target). To write several files at once, pass `files: [{ path, \
-         content, mode?, parents? }, ...]` instead of the single-file fields (host target, inline \
-         content) — the response then carries per-file results in `files`. `mode` is octal \
-         (default \"0644\"); `parents: true` creates missing parents. Errors return { code, message }; \
-         common: S210 bad mode/payload or inline-on-sandbox, S211 not accessible, S215 jail escape, \
-         S218 payload exceeds max_write_bytes, S216 channel/IO error. For plain text files, \
-         coder::create-file (batched) avoids the streaming channel."
+        "Write a file. A string `content` is written inline (host only); large payloads \
+         or a sandbox target need a ContentRef { channel_id, access_key, direction } from \
+         a write stream channel. `files: [...]` writes several files (host, inline). \
+         Errors return { code, message }; common: S210 bad mode or inline-on-sandbox, \
+         S218 over max_write_bytes."
     );
-    fs_fn!("shell::fs::read", fs_read, fs::ReadRequest, fs::ReadResponseWire,
-        "Stream a file from a path — returns a ContentRef HANDLE (channel_id/access_key), NOT the \
-         file text. For reading TEXT files use coder::read-file instead: it returns the content \
-         inline (windowed, batched) with no channel. This function is for binary/streamed payloads; \
-         the response carries the ContentRef plus size/mode/mtime. Errors return { code, message }; \
-         common: S211 not found or not accessible, S212 path is a directory, S215 jail escape, \
-         S218 file exceeds max_read_bytes, S216 channel/IO error.");
+    fs_fn!(
+        "shell::fs::read",
+        fs_read,
+        fs::ReadRequest,
+        fs::ReadResponseWire,
+        "Stream a file: returns a ContentRef handle (channel_id/access_key) plus \
+         size/mode/mtime, NOT the text — for text use coder::read-file, which returns \
+         content inline. Errors return { code, message }; common: S211 not found or not \
+         accessible, S212 is a directory, S218 over max_read_bytes, S216 channel/IO \
+         error."
+    );
 }
 
 /// Wait for SIGINT or, on Unix, SIGTERM so `docker stop` / `kubectl delete`

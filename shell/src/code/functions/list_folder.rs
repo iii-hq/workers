@@ -16,17 +16,13 @@ use crate::code::path::PathResolver;
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(example = "example_list_folder_input")]
 pub struct ListFolderInput {
-    /// Folder to list. Relative to the primary allowed root, or an absolute
-    /// path inside any allowed root. Defaults to `.` (the primary root
-    /// itself). Call `coder::info` to see the allowed roots. Paths outside
-    /// every allowed root are rejected — use the shell worker's
-    /// `shell::fs::*` for host paths outside the jail.
+    /// Folder to list (default `.`).
     #[serde(default = "default_path")]
     pub path: String,
     #[serde(default = "default_page")]
     pub page: u32,
-    /// Capped by `config.list_max_page_size`; falls back to
-    /// `config.list_default_page_size` when omitted.
+    /// Capped at list_max_page_size; defaults to list_default_page_size (see
+    /// coder::info).
     #[serde(default)]
     pub page_size: Option<u32>,
     /// Internal harness filesystem scope; omitted from published schema.

@@ -14,21 +14,19 @@ pub struct OpenRequest {
     pub cols: u16,
     pub rows: u16,
     pub output_function_id: String,
-    /// Program to run instead of the user's login shell — an agent CLI, a
-    /// REPL, a TUI. Resolved on the worker's PATH. A caller that can open a
-    /// login shell can already run any program by typing it, so this adds
-    /// reach, not privilege; it is what lets a session BE one program with
-    /// no shell around it.
+    /// Program to run instead of the user's login shell (an agent CLI, REPL,
+    /// TUI), resolved on the worker's PATH.
+    // A caller that can open a login shell can already run any program by
+    // typing it, so this adds reach, not privilege; it is what lets a session
+    // BE one program with no shell around it.
     #[serde(default)]
     pub program: Option<String>,
     /// argv for `program`. Ignored without `program` (a login shell takes no
     /// arguments here).
     #[serde(default)]
     pub args: Option<Vec<String>>,
-    /// Extra environment for this session, on top of what the worker
-    /// forwards. Deny-only, like `shell::exec`'s per-call env: every key is
-    /// allowed except the exec-hijacking keys (`PATH`, `LD_*`, `DYLD_*`,
-    /// `BASH_ENV`, ...), which fail the call.
+    /// Extra environment on top of what the worker forwards; exec-hijacking
+    /// keys (PATH, LD_*, DYLD_*, BASH_ENV, …) fail the call.
     #[serde(default)]
     pub env: Option<BTreeMap<String, String>>,
     #[serde(rename = "_caller_worker_id", default)]
@@ -120,17 +118,15 @@ pub struct AttachResponse {
 }
 
 /// Take back a session whose reconnect token is gone.
-///
-/// The token is what proves a caller opened a session, and a browser that
-/// loses its storage loses the token while the program keeps running: an agent
-/// still working in a workspace nobody can reach. Adoption is the way back,
-/// and it is deliberately narrow — see `PtyManager::adopt`.
+// The token is what proves a caller opened a session, and a browser that loses
+// its storage loses the token while the program keeps running: an agent still
+// working in a workspace nobody can reach. Adoption is the way back, and it is
+// deliberately narrow — see `PtyManager::adopt`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AdoptRequest {
     pub session_id: String,
-    /// Where output goes next. Must belong to the same console page family as
-    /// the target it replaces, which is what keeps one page's sessions out of
-    /// another page's reach.
+    /// Where output goes next; must belong to the same console page family as
+    /// the target it replaces.
     pub output_function_id: String,
     pub cols: u16,
     pub rows: u16,

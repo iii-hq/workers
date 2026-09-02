@@ -41,14 +41,10 @@ pub const SEND_DESC: &str =
 
 pub const SPAWN_ID: &str = "harness::spawn";
 pub const SPAWN_DESC: &str =
-    "Spawn a sub-agent in a child session (direct call only — never a trigger target). \
-     Fire-and-forget: returns { child_session_id, child_turn_id } immediately; the child's \
-     outcome reaches you only through whatever destination its task names. The child is a \
-     LEAF by default (no spawn/send/trigger registration); pass options.orchestrator: true \
-     to grant the orchestration surface, still capped by the caller's own policy. The task \
-     must include literal values for every required resource selector (for example \
-     `db: \"primary\"`). Omit child `max_turns` unless its budget covers discovery, \
-     contract lookup, work, and the deliverable.";
+    "Spawn a sub-agent in a child session (never a trigger target) and return \
+     { child_session_id, child_turn_id } immediately; the child's outcome reaches you only \
+     through whatever destination its task names. Children are leaves unless \
+     options.orchestrator is true.";
 
 pub const TURN_ID: &str = "harness::turn";
 pub const TURN_DESC: &str =

@@ -67,157 +67,76 @@ pub(crate) fn files_batch_or_single<T: serde::de::DeserializeOwned>(
 // ---------------------------------------------------------------------------
 // Function ids + registration descriptions (ONE place).
 //
-// The jail-contract sentence in every description below also appears in
-// the schema field docs of each input struct. This duplication is
-// deliberate: the catalog description and the schema docs reach agents
-// through DIFFERENT surfaces — `functions::list` shows descriptions only,
-// while the schema docs surface via `functions::info`. Do not "DRY" one
-// into the other.
+// Each description carries the jail-contract clause ONCE; schema field docs
+// state only what the field is (MOT-4639: the prose IS the contract the model
+// sees via functions::info, so keep it short).
 // ---------------------------------------------------------------------------
 
 const INFO_ID: &str = "coder::info";
-const INFO_DESC: &str = "Report the coder access contract: the effective mode (jailed = \
-     paths confined to the allowed roots; unjailed = deny-only, absolute \
-     paths anywhere on the host, roots anchor relative paths only), \
-     canonical allowed roots (primary first), the session_root that \
-     relative paths actually anchor against when the session is scoped \
-     (it overrides primary_root and may sit outside every allowed root), \
-     per-file size caps, \
-     response budgets (max_output_bytes, batch_read_budget_bytes, \
-     search_response_budget_bytes), listing/search limits, the \
-     non-accessible glob patterns, and the default_exclude_globs noise \
-     filter applied by tree/search. Call this FIRST when unsure where \
-     coder may read or write, or when a path was rejected — in jailed \
-     mode, paths outside every allowed root need the shell worker's \
-     shell::fs::* instead.";
+const INFO_DESC: &str = "Report the coder access contract: mode (jailed | unjailed), allowed \
+     roots (primary first), the session_root relative paths anchor against, \
+     size caps, response budgets, listing/search limits, non-accessible \
+     globs and default_exclude_globs. Call it first when a path is \
+     rejected.";
 
 const READ_FILE_ID: &str = "coder::read-file";
-const READ_FILE_DESC: &str = "Read a file window-first: probe with stat: true (size/mtime/mode \
-     plus total_lines, no content), then fetch just the lines you need \
-     with line_from/line_to (1-based, inclusive) — windows keep files \
-     larger than max_read_bytes readable window by window, with \
-     more_lines/total_lines reporting what remains. numbered: true \
-     prefixes each line with its absolute 1-based file line number, \
-     matching coder::update-file's line ops exactly. Full reads are \
-     budgeted by max_output_bytes (default 128 KiB; per-call override \
-     clamped to max_read_bytes) — an over-budget full read fails with \
-     a C218 carrying the file's size, line count, and the window/stat \
-     recovery calls. encoding: base64 (single-path full reads only) \
-     returns the file's exact bytes base64-encoded — the binary-aware \
-     read for images and other non-text payloads. Batch mode: pass \
-     paths[] (XOR path) \
-     to read multiple files in one call — entries are processed in \
-     request order against batch_read_budget_bytes, measured in \
-     bytes of returned content (after UTF-8 sanitization); per-entry \
-     errors (C211/C218) leave other entries unaffected. Paths are relative \
-     to the primary allowed root or absolute inside any allowed root \
-     (coder::info lists them); for host paths outside the jail use \
-     shell::fs::*. Non-accessible paths return C211.";
+const READ_FILE_DESC: &str =
+    "Read a file. stat: true probes size/mtime/total_lines without content; \
+     line_from/line_to (1-based, inclusive) read a window of a file of any \
+     size; numbered: true prefixes absolute line numbers; paths[] (XOR \
+     path) batch-reads. Paths: relative to the primary root or absolute \
+     inside an allowed root (see coder::info).";
 
 const SEARCH_ID: &str = "coder::search";
-const SEARCH_DESC: &str = "Search file contents and/or paths. Path search matches files AND \
-     directories (each path_match carries kind: file|dir); content \
-     search reads files only. Supports literal or regex \
-     queries with include/exclude globs; non-accessible files are \
-     excluded from both content and path results. Only the FIRST match \
-     on each line is reported (one content match per matching line). \
-     Optional context_lines_before/context_lines_after (max 10) attach \
-     surrounding lines to each content match so many edits can go \
-     straight to coder::update-file with no read in between. Noise \
-     paths matching default_exclude_globs (.git, node_modules, target, \
-     … — coder::info lists them) are skipped by default; pass \
-     use_default_excludes: false to search inside them. Files larger \
-     than max_read_bytes are silently skipped during content scanning. \
-     Results are capped by max_matches AND a response byte budget \
-     (search_response_budget_bytes); when truncated is true, refine \
-     the query or add include_globs rather than paginate. Paths are relative \
-     to the primary allowed root or absolute inside any allowed root \
-     (coder::info lists them); for host paths outside the jail use \
-     shell::fs::*.";
+const SEARCH_DESC: &str = "Search file contents (literal or regex) and/or paths (files and dirs); \
+     first match per line only. default_exclude_globs noise is skipped \
+     unless use_default_excludes: false. truncated: true means refine the \
+     query, not paginate. Paths: relative to the primary root or absolute \
+     inside an allowed root (see coder::info).";
 
 const UPDATE_FILE_ID: &str = "coder::update-file";
-const UPDATE_FILE_DESC: &str = "Apply batched line-oriented and regex edits across one or more \
-     files. Request shape: {\"files\": [{\"path\": \"...\", \"ops\": [...]}]}. \
-     Line ops: { op: 'insert', at_line, content } | \
-     { op: 'remove', from_line, to_line } | \
-     { op: 'update_lines', from_line, to_line, content } — 1-based, \
-     inclusive, applied bottom-up. Regex op: { op: 'replace', pattern, \
-     replacement, ignore_case?, dot_matches_newline?, expect_matches? } \
-     runs on the file body after line ops. Replace large regions \
-     WITHOUT quoting them: two short anchors joined by .*? with \
-     dot_matches_newline: true — always prefer wildcards over pasting \
-     the block into the pattern. expect_matches: 1 turns a silent \
-     multi-site clobber into a safe pre-write C210; expect_matches: 0 \
-     asserts absence. In `replacement`, $1/${name} are capture \
-     references and a literal $ must be written $$ (JS/TS template \
-     literals: `Hello, $${name}!`); undefined references fail \
-     pre-write with C210. Each file commits atomically via temp + \
-     rename. On success each applied line op returns a bounded \
-     post-apply echo (±2 context lines); regex replace ops return up \
-     to 5 per-match-site echoes (first + last line of each replaced \
-     region, inner lines elided) — verify from the echoes instead of \
-     re-reading the file. Paths are relative to the primary \
-     allowed root or absolute inside any allowed root (coder::info \
-     lists them); for host paths outside the jail use shell::fs::*.";
+const UPDATE_FILE_DESC: &str =
+    "Apply batched line ops (1-based, inclusive, applied bottom-up) then \
+     regex replace ops to one or more files; each file commits atomically. \
+     To replace a large region use two short anchors joined by .*? with \
+     dot_matches_newline: true instead of quoting it. Paths: relative to \
+     the primary root or absolute inside an allowed root (see coder::info).";
 
 const CREATE_FILE_ID: &str = "coder::create-file";
-const CREATE_FILE_DESC: &str = "Create one or more files. Request shape: {\"files\": [{\"path\": \
-     \"...\", \"content\": \"...\"}]}. Per-file `overwrite` and `parents` \
-     flags; writes publish atomically. For a conflict-safe overwrite, pass \
-     the `revision` returned by coder::read-file as `expected_revision`; \
-     stale revisions return C221 without writing. Non-accessible paths \
-     return C211. Paths are relative to \
-     the primary allowed root or absolute inside any allowed root \
-     (coder::info lists them); for host paths outside the jail use \
-     shell::fs::*.";
+const CREATE_FILE_DESC: &str =
+    "Create one or more files atomically; per-file overwrite and parents \
+     flags. For a conflict-safe overwrite pass the revision from \
+     coder::read-file as expected_revision (stale revision: C221, nothing \
+     written). Paths: relative to the primary root or absolute inside an \
+     allowed root (see coder::info).";
 
 const DELETE_FILE_ID: &str = "coder::delete-file";
-const DELETE_FILE_DESC: &str = "Remove one or more paths. Request shape: {\"paths\": [\"...\"]}. \
-     Directories need `recursive: true`; \
-     missing paths are idempotent successes; recursive removal \
-     refuses to descend through non-accessible entries. Paths are \
-     relative to the primary allowed root or absolute inside any \
-     allowed root (coder::info lists them); for host paths outside \
-     the jail use shell::fs::*.";
+const DELETE_FILE_DESC: &str =
+    "Remove one or more paths. Directories need recursive: true; missing \
+     paths succeed; recursion refuses to descend through non-accessible \
+     entries. Paths: relative to the primary root or absolute inside an \
+     allowed root (see coder::info).";
 
 const LIST_FOLDER_ID: &str = "coder::list-folder";
-const LIST_FOLDER_DESC: &str = "Paginated single-folder listing, sorted by name. Entries carry \
-     only `name`; derive an entry's absolute path as the response's \
-     `path` + '/' + name. Non-accessible entries are still listed with a \
-     `non_accessible: true` flag. Paths are relative to the primary \
-     allowed root or absolute inside any allowed root (coder::info \
-     lists them); for host paths outside the jail use shell::fs::*.";
+const LIST_FOLDER_DESC: &str =
+    "Paginated single-folder listing sorted by name. Entries carry only \
+     name; entry path = response path + '/' + name. Non-accessible entries \
+     are listed with non_accessible: true. Paths: relative to the primary \
+     root or absolute inside an allowed root (see coder::info).";
 
 const TREE_ID: &str = "coder::tree";
-const TREE_DESC: &str = "Recursive directory snapshot bounded by `max_depth` and a \
-     `per_folder_limit`. Slim wire shape: nodes carry only `name` — \
-     the root node's path IS the response's top-level `path`; derive \
-     any child's path as parent path + '/' + name. Folders that hit \
-     the limit are flagged `truncated` and the caller is pointed at \
-     coder::list-folder for pagination. Noise directories matching \
-     default_exclude_globs (.git, node_modules, target, … — \
-     coder::info lists them) appear as childless `truncated` stubs; \
-     pass use_default_excludes: false to descend into them. Pass \
-     include_hidden: false to omit dot-prefixed entries (they then \
-     don't count toward per_folder_limit). A total node budget bounds \
-     every snapshot; folders past it are stubs with reason max_nodes \
-     — re-root there or paginate with coder::list-folder. Paths are \
-     relative to the primary allowed root or absolute inside any \
-     allowed root (coder::info lists them); for host paths outside \
-     the jail use shell::fs::*.";
+const TREE_DESC: &str = "Recursive directory snapshot bounded by max_depth, per_folder_limit \
+     and a node budget. Nodes carry only name (child path = parent path + \
+     '/' + name); over-limit folders are truncated stubs to paginate with \
+     coder::list-folder. Paths: relative to the primary root or absolute \
+     inside an allowed root (see coder::info).";
 
 const MOVE_FILE_ID: &str = "coder::move";
-const MOVE_FILE_DESC: &str = "Move or rename one or more paths inside the jail. Request shape: \
-     {\"files\": [{\"from\": \"...\", \"to\": \"...\"}]}. Paths are \
-     relative to the primary allowed root or absolute inside any \
-     allowed root (coder::info lists them); for host paths outside \
-     the jail use shell::fs::*. Per-entry `overwrite` and `parents` \
-     flags. Same-root moves use a per-file-atomic rename; cross-root \
-     moves use copy+delete (files only — cross-root directory moves \
-     are unsupported, move files individually). Copy+delete is \
-     rollback-safe: if source deletion fails after a successful copy \
-     the copy is removed and the error names the failure; if rollback \
-     also fails the error names both states for manual cleanup.";
+const MOVE_FILE_DESC: &str = "Move or rename one or more paths; per-entry overwrite and parents \
+     flags. Same-root moves rename atomically; cross-root moves copy+delete \
+     files only (move directory contents individually) and remove the copy \
+     if the delete fails. Paths: relative to the primary root or absolute \
+     inside an allowed root (see coder::info).";
 
 /// One function's complete agent-facing wire surface: id, registration
 /// description, and the schemars-derived request/response schemas.

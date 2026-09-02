@@ -1,5 +1,5 @@
 {
-  "description": "Apply batched line-oriented and regex edits across one or more files. Request shape: {\"files\": [{\"path\": \"...\", \"ops\": [...]}]}. Line ops: { op: 'insert', at_line, content } | { op: 'remove', from_line, to_line } | { op: 'update_lines', from_line, to_line, content } — 1-based, inclusive, applied bottom-up. Regex op: { op: 'replace', pattern, replacement, ignore_case?, dot_matches_newline?, expect_matches? } runs on the file body after line ops. Replace large regions WITHOUT quoting them: two short anchors joined by .*? with dot_matches_newline: true — always prefer wildcards over pasting the block into the pattern. expect_matches: 1 turns a silent multi-site clobber into a safe pre-write C210; expect_matches: 0 asserts absence. In `replacement`, $1/${name} are capture references and a literal $ must be written $$ (JS/TS template literals: `Hello, $${name}!`); undefined references fail pre-write with C210. Each file commits atomically via temp + rename. On success each applied line op returns a bounded post-apply echo (±2 context lines); regex replace ops return up to 5 per-match-site echoes (first + last line of each replaced region, inner lines elided) — verify from the echoes instead of re-reading the file. Paths are relative to the primary allowed root or absolute inside any allowed root (coder::info lists them); for host paths outside the jail use shell::fs::*.",
+  "description": "Apply batched line ops (1-based, inclusive, applied bottom-up) then regex replace ops to one or more files; each file commits atomically. To replace a large region use two short anchors joined by .*? with dot_matches_newline: true instead of quoting it. Paths: relative to the primary root or absolute inside an allowed root (see coder::info).",
   "function_id": "coder::update-file",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -13,7 +13,7 @@
             "type": "array"
           },
           "path": {
-            "description": "Path relative to the primary allowed root, or an absolute path inside any allowed root. Call `coder::info` to see the allowed roots. Paths outside every allowed root are rejected — use the shell worker's `shell::fs::*` for host paths outside the jail.",
+            "description": "File to edit.",
             "type": "string"
           }
         },
@@ -113,12 +113,12 @@
             "properties": {
               "dot_matches_newline": {
                 "default": false,
-                "description": "When true, `.` in `pattern` also matches `\\n`, so a short anchored pattern like `\"fn parse_config\\\\(.*?\\\\n\\\\}\"` replaces a whole multi-line region without quoting it — prefer two short anchors joined by `.*?` over pasting the block into the pattern. Without this flag (the default), `.` does not cross newlines and a multi-line pattern silently matches nothing.",
+                "description": "When true `.` also matches newline, so a short pattern like `start.*?end` spans lines; by default a multi-line pattern matches nothing.",
                 "type": "boolean"
               },
               "expect_matches": {
                 "default": null,
-                "description": "Expected number of matches for this op. When set and the actual count differs, this FILE fails with C210 and nothing is written to it (other files in the batch still apply). Set `expect_matches: 1` to make a targeted read-free edit safe — a mismatch means the pattern is anchored too loosely or matches nothing. Set `expect_matches: 0` to assert ABSENCE: the op succeeds only when nothing matches (the replacement is unused). Omit to replace all matches unconditionally.",
+                "description": "Expected match count; a mismatch fails this file with C210 and writes nothing (0 asserts absence). Omit to replace all matches.",
                 "format": "uint64",
                 "minimum": 0.0,
                 "type": [
@@ -140,7 +140,7 @@
                 "type": "string"
               },
               "replacement": {
-                "description": "Substitution text for each match. Capture references expand: `$1`/`${1}` by index (`$0` is the whole match) and `$name`/`${name}` by name. A literal `$` MUST be written `$$` — JS/TS template literals in a replacement are the classic collision: write `Hello, $${name}!` to output `Hello, ${name}!`. Unbraced references consume the longest `[0-9A-Za-z_]` run, so `$1a` means a group named \"1a\", NOT group 1 then \"a\" (use `${1}a`). A reference to a group the pattern does not define fails pre-write with C210 — nothing is written. References are validated even when the replacement goes unused (e.g. `expect_matches: 0`): the replacement must be well-formed even when unused.",
+                "description": "Substitution text; $1/${1}/$name/${name} expand captures ($0 = whole match), a literal $ is written $$ (`$${name}`). Unknown references fail C210.",
                 "type": "string"
               }
             },
