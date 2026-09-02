@@ -21,9 +21,8 @@ pub const DESC: &str = "Return the mermaid syntax reference: every supported dia
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct Request {
-    /// Only return this diagram family (`flowchart`, `sequenceDiagram`, …;
-    /// aliases like `graph`, `sequence` or `state` are accepted). Omit for
-    /// the one-line overview of every family.
+    /// Diagram family to return (`flowchart`, `sequenceDiagram`, …; aliases
+    /// like `graph` accepted); omit for the overview of every family.
     #[serde(default)]
     pub family: Option<String>,
 }

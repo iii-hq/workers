@@ -66,8 +66,8 @@ pub struct InvokeInput {
     /// Payload passed to the remote function, forwarded verbatim.
     #[serde(default)]
     pub data: Value,
-    /// Milliseconds to wait for the result. `bridge.invoke` defaults to 30s
-    /// when omitted; `bridge.invoke_async` ignores this field (fire-and-forget).
+    /// Milliseconds to wait for the result; `bridge.invoke` defaults to 30s,
+    /// `bridge.invoke_async` ignores it.
     #[serde(default)]
     pub timeout_ms: Option<u64>,
 }

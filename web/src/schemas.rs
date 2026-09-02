@@ -89,9 +89,9 @@ pub struct FetchPayload {
     /// How to return the body: "text" (default), "base64", or "json".
     #[serde(default)]
     pub response_format: Option<ResponseFormat>,
-    /// Page-reading mode: "markdown" | "text" | "html". When set, a browser
-    /// UA + format Accept header are used, HTML is transformed, and
-    /// response_format is ignored (treated as "text").
+    /// Page-reading mode; when set, HTML is transformed and `response_format`
+    /// is treated as `text`.
+    // Also switches to a browser UA and a format-specific Accept header.
     #[serde(default)]
     pub format: Option<PageFormat>,
     /// Content filter: prunes boilerplate. When set, `body` holds the filtered

@@ -23,9 +23,8 @@ const EMBED_TIMEOUT_SECS: u64 = 20;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct EmbedRequest {
-    /// Model name passed through to the server. llama-server embeds with
-    /// its loaded model regardless; the field is echoed for parity with
-    /// the other providers.
+    /// Model name echoed for parity with the other providers; llama-server
+    /// embeds with its loaded model regardless.
     #[serde(default)]
     pub model: Option<String>,
     /// Texts to embed, one vector returned per input, order preserved.

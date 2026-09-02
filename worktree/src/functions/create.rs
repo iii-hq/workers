@@ -24,9 +24,8 @@ pub struct Request {
     /// codename when `branch_naming: codename`).
     #[serde(default)]
     pub branch: Option<String>,
-    /// Create the worktree at a GitHub pull request head: fetches
-    /// `refs/pull/<n>/head` from `origin` and branches `<prefix>pr-<n>` at
-    /// it. Mutually exclusive with `base_ref` and `branch`.
+    /// Pull request to branch from (fetches `refs/pull/<n>/head` from `origin`
+    /// as `<prefix>pr-<n>`); excludes `base_ref` and `branch`.
     #[serde(default)]
     pub pr: Option<u64>,
     /// Session to auto-claim the worktree for.

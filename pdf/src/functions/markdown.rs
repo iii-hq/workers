@@ -57,9 +57,8 @@ pub struct Request {
     #[serde(default)]
     pub password: Option<String>,
 
-    /// 1-indexed pages to convert. Omit for the whole document. A page filter
-    /// is the cheap way to read a long report: take the pages you need rather
-    /// than the whole thing truncated.
+    /// 1-indexed pages to convert; omit for the whole document (a page filter
+    /// is the cheap way to read a long report).
     #[serde(default)]
     pub pages: Option<Vec<u32>>,
 
