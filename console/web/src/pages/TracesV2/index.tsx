@@ -451,6 +451,13 @@ export function TracesV2({
             // skeleton through the whole multi-second sweep.
             onPage: (accumulated, total) => {
               if (stale()) return
+              // A silent reload lands whole, at the end of its sweep.
+              // Painting its pages as they arrived replaced the open detail
+              // with the sweep's FIRST page — 50 of 155 spans, a 7s window
+              // in place of 24s — and regrew it, on every activity tick of
+              // a running turn: the whole timeline redrew at another scale
+              // about once a second (seen in screen recordings, MOT-4621).
+              if (silent) return
               detailSpansRef.current = accumulated
               setSeedProgress({ loaded: accumulated.size, total })
               // Rebuilding the waterfall on EVERY page saturates the main
@@ -657,6 +664,17 @@ export function TracesV2({
     }
     return count
   }, [heldTraces, traceGroups, spanFilter])
+  // The selected trace's own row is never held back: following opens a
+  // turn from the strip feed before its list row has landed, and holding
+  // that row left the detail pinned above a list reading "1 new" for as
+  // long as it stayed open (seen in a screen recording).
+  useEffect(() => {
+    if (selectedTraceId === null) return
+    if (traceGroups.some((t) => t.traceId === selectedTraceId)) return
+    if (heldTraces.some((t) => t.traceId === selectedTraceId)) {
+      flushPendingTraces()
+    }
+  }, [selectedTraceId, traceGroups, heldTraces, flushPendingTraces])
   // "N new": back to the top of page 1 with everything that arrived.
   const showHeldTraces = useCallback(() => {
     if (filterState.page !== 1) updateFilter('page', 1)
