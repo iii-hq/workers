@@ -25,15 +25,26 @@ pub(crate) const SEARCH_FN: &str = "directory::search_functions";
 /// agent's dispatch policy if returned). `state::claim-namespace` is a
 /// worker-lifecycle claim, not a task capability.
 pub(crate) const EXCLUDED_FUNCTION_IDS: [&str; 1] = ["state::claim-namespace"];
+/// Function-id suffixes that are internal by convention. `<worker>::on-config-change`
+/// is the configuration-reload handler every worker registers (see the
+/// `iii-config-client` crate); most workers register it by hand without the
+/// `internal: true` metadata the catalog filter keys on, so the convention is
+/// enforced here as well.
+pub(crate) const EXCLUDED_FUNCTION_SUFFIXES: [&str; 1] = ["::on-config-change"];
 
 /// Whether a function id must be kept out of every search lane: the search's
-/// own id, an excluded namespace prefix, or an explicitly excluded id.
+/// own id, an excluded namespace prefix, an explicitly excluded id, or an
+/// internal-by-convention suffix. Functions that do carry
+/// `metadata.internal: true` are dropped earlier, when the catalog is built.
 pub(crate) fn excluded_from_search(id: &str) -> bool {
     id == SEARCH_FN
         || EXCLUDED_NAMESPACE_PREFIXES
             .iter()
             .any(|prefix| id.starts_with(prefix))
         || EXCLUDED_FUNCTION_IDS.contains(&id)
+        || EXCLUDED_FUNCTION_SUFFIXES
+            .iter()
+            .any(|suffix| id.ends_with(suffix))
 }
 
 /// One catalog entry: the contract fields search runs on.

@@ -1581,8 +1581,14 @@ mod tests {
         assert!(excluded_from_search(SEARCH_FN));
         assert!(excluded_from_search("engine::functions::list"));
         assert!(excluded_from_search("state::claim-namespace"));
+        assert!(
+            excluded_from_search("state::on-config-change"),
+            "config-reload handlers are internal by convention"
+        );
+        assert!(excluded_from_search("codex::on-config-change"));
         assert!(!excluded_from_search("state::set"));
         assert!(!excluded_from_search("state::claim"));
+        assert!(!excluded_from_search("state::on-config"));
     }
 
     #[test]
