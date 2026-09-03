@@ -233,6 +233,28 @@ jobs:
       # browser-scrapling-e2e.yml's compat-certification job on every
       # browser/** PR, so the generic gate covers browser's default feature
       # set instead of duplicating the artifact plumbing here.
+      # iii-directory's `minilm-production` feature links a pinned static ONNX
+      # Runtime (ort-sys with download disabled, so nothing is fetched at build
+      # time). Provision the same archive ort-sys would use, verified by
+      # SHA-256 at both layers, so the --all-features test binary can link.
+      - name: Provision static ONNX Runtime (iii-directory)
+        if: matrix.worker == 'iii-directory'
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/onnxruntime-static-1.28.0-x86_64-unknown-linux-gnu"
+          mkdir -p "$root"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/ort.tar.lzma2" \
+            "https://cdn.pyke.io/0/pyke:ort-rs/ms@1.28.0/x86_64-unknown-linux-gnu.tar.lzma2"
+          echo "e454f710f8a49f53aa5b4ff51e3454ae1835777e431c6c35c5255ce6f205fd68  $RUNNER_TEMP/ort.tar.lzma2" | sha256sum -c -
+          # Raw LZMA2 stream, 64 MiB dictionary (what ort-sys' lzma-rust2 reader uses).
+          xz -dc --format=raw --lzma2=dict=64MiB "$RUNNER_TEMP/ort.tar.lzma2" | tar -x -C "$root"
+          echo "0bb8a9982b44df690195c2c34b75ca791c3b9f20070b8cecbd8f50c6264dd2e2  $root/libonnxruntime.a" | sha256sum -c -
+          {
+            echo "ORT_LIB_PATH=$root"
+            echo "ORT_PREFER_DYNAMIC_LINK=0"
+            echo "ORT_CXX_STDLIB=stdc++"
+          } >> "$GITHUB_ENV"
+
       - name: Run clippy
         if: matrix.worker != 'browser'
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
