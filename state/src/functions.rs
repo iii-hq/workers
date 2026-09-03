@@ -369,7 +369,9 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                     Ok(result)
                 }
             })
-            .description("Store a value under a key in a state scope"),
+            .description(
+                "Store or write a value at a key in a state scope; it persists across sessions",
+            ),
         );
     }
 

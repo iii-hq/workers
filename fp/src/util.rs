@@ -63,7 +63,7 @@ pub const COMPACT_DESC: &str =
 
 pub const NTH_ID: &str = "fp::nth";
 pub const NTH_DESC: &str =
-    "Get array element n (negative counts from the end, lodash _.nth). Out of bounds \
+    "Return array element n (negative counts from the end, lodash _.nth). Out of bounds \
      errors naming the length.";
 
 pub const GET_OR_ID: &str = "fp::getOr";
