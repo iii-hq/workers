@@ -34,7 +34,7 @@ immutable Registry projection.
 Interface capture is enabled by default. CI checks it from source, and release
 prepare captures it again from the immutable prepared artifact for Registry
 publication. Set
-`interface_smoke: false` in `iii.worker.yaml` only for a worker that cannot
+`registry_interface: false` in `iii.worker.yaml` only for a worker that cannot
 expose a collectable interface, such as a stdio-only process. This setting does
 not skip behavior tests: it compiles to `interface_capture: skipped` in the
 immutable descriptor and explicitly permits an empty Registry interface.

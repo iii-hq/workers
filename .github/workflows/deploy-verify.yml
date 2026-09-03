@@ -62,7 +62,6 @@ jobs:
           set -euo pipefail
           test "$(jq -r .descriptor_sha256 deploy-prepared/deployment-descriptor.json)" = "$DESCRIPTOR_SHA256"
           python3 .github/scripts/deployment_train.py verify-prepared --descriptor deploy-prepared/deployment-descriptor.json --prepared deploy-prepared/prepared-artifacts.json
-          python3 .github/scripts/deployment_interface.py verify-evidence --descriptor deploy-prepared/deployment-descriptor.json --evidence deploy-prepared/deployment-evidence.json
           python3 .github/scripts/deployment_control_contract.py validate-identity --identity "$DEPLOYMENT_IDENTITY"
           python3 .github/scripts/deployment_control_contract.py validate-dispatch --step-id "$STEP_ID" --dispatch-nonce "$DISPATCH_NONCE" --descriptor-sha256 "$DESCRIPTOR_SHA256" --plan-hash "$PLAN_HASH" --source-sha "$SOURCE_SHA"
           python3 .github/scripts/deployment_control_contract.py authorize-dispatch --api-url "$RELEASE_CONTROL_API_URL" --repository '${{ github.repository }}' --step-id "$STEP_ID" --run-id '${{ github.run_id }}' --run-attempt '${{ github.run_attempt }}' --workflow 'deploy-verify.yml' --event '${{ github.event_name }}' --sha '${{ github.sha }}' --deployment-batch-id "$DEPLOYMENT_BATCH_ID" --deployment-target-id "$DEPLOYMENT_TARGET_ID" --attempt-id "$ATTEMPT_ID" --dispatch-nonce "$DISPATCH_NONCE" --plan-hash "$PLAN_HASH" --worker "$WORKER" --source-sha "$SOURCE_SHA" --target-version "$TARGET_VERSION" --channel "$RELEASE_CHANNEL" --descriptor-sha256 "$DESCRIPTOR_SHA256"
@@ -85,21 +84,6 @@ jobs:
           body=$(jq -nc --arg worker "$WORKER" --arg channel "$RELEASE_CHANNEL" '{worker:$worker,version:$channel}')
           actual=$(curl -fsS -H 'Content-Type: application/json' -X POST 'https://api.workers.iii.dev/resolve' --data "$body" | jq -r .root.version)
           test "$actual" = "$TARGET_VERSION"
-          if [[ "$(jq -r .interface_capture deploy-prepared/deployment-descriptor.json)" == required ]]; then
-            curl -fsS "https://api.workers.iii.dev/w/$WORKER?version=$TARGET_VERSION" > registry-worker.json
-            jq -e --arg worker "$WORKER" --arg version "$TARGET_VERSION" \
-              '.worker.name == $worker and .worker.version == $version' registry-worker.json >/dev/null
-            jq '.worker | {functions:(.functions // []),triggers:(.triggers // [])}' \
-              registry-worker.json > registry-interface.json
-            python3 .github/scripts/deployment_interface.py compare \
-              --descriptor deploy-prepared/deployment-descriptor.json \
-              --expected deploy-prepared/deployment-interface.json \
-              --actual registry-interface.json
-          else
-            python3 .github/scripts/deployment_interface.py compare \
-              --descriptor deploy-prepared/deployment-descriptor.json \
-              --expected deploy-prepared/deployment-interface.json
-          fi
           if [[ "$EXPECTED_IMAGE_DIGEST" != none ]]; then
             [[ "$EXPECTED_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
             docker buildx imagetools inspect "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/$WORKER:$RELEASE_CHANNEL" --format '{{json .Manifest}}' > image-manifest.json

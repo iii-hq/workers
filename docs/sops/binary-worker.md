@@ -95,7 +95,7 @@ cargo test --locked --all-features
 ```
 
 CI builds changed Rust workers and checks interface registration unless
-`iii.worker.yaml` sets `interface_smoke: false`. Release prepare also boots one
+`iii.worker.yaml` sets `registry_interface: false`. Release prepare also boots one
 immutable Linux artifact in an isolated engine to capture Registry metadata.
 That capture invokes no worker function or external backend and is not a
 deployment smoke test.

@@ -486,7 +486,7 @@ def read_worker_catalog(path: Path | None = None) -> dict[str, WorkerSpec]:
             raise ValueError(f"{catalog_path}: workers.{catalog_id} must be a mapping")
         raw = dict(value)
         expected_sections = {"source", "artifact", "publish"}
-        legacy = {"language", "deploy", "manifest", "bin", "scripts", "interface_smoke"} & set(raw)
+        legacy = {"language", "deploy", "manifest", "bin", "scripts", "interface_smoke", "registry_interface"} & set(raw)
         if legacy:
             raise ValueError(f"{catalog_path}: workers.{catalog_id} uses legacy fields: {sorted(legacy)}")
         unknown_sections = set(raw) - expected_sections
@@ -562,7 +562,7 @@ def read_worker_catalog(path: Path | None = None) -> dict[str, WorkerSpec]:
             artifact=artifact,
             runtime=runtime,
             registry=registry,
-            validation={"interface": "skipped" if public.raw.get("interface_smoke") is False else "required"},
+            validation={"interface": "skipped" if public.raw.get("registry_interface") is False else "required"},
             raw=raw,
         )
     return parsed

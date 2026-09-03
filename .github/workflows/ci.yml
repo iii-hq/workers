@@ -600,12 +600,12 @@ jobs:
 
       - run: pip install --quiet pyyaml
 
-      # Some workers can't be interface-smoked: stdio servers (e.g. iii-lsp)
+      # Some workers have no static Registry interface: stdio servers (e.g. iii-lsp)
       # exit on stdin EOF while backgrounded, and pure discovery consumers
       # register no interface to collect. Their catalog validation is
       # `interface: skipped`; every downstream step is gated on this so the
       # rest of the matrix is unaffected.
-      - name: Check interface-smoke opt-out
+      - name: Check Registry interface opt-out
         id: optout
         env:
           WORKER: ${{ matrix.worker }}
@@ -614,7 +614,7 @@ jobs:
           skip=$(WORKER="$WORKER" python3 -c 'import os, sys; sys.path.insert(0, ".github/scripts"); import _lib; m = _lib.read_worker(os.environ["WORKER"]); print("true" if m.validation.get("interface") == "skipped" else "false")')
           echo "skip=$skip" >> "$GITHUB_OUTPUT"
           if [[ "$skip" == "true" ]]; then
-            echo "::notice::$WORKER opts out of the PR interface boot smoke (iii.worker.yaml interface_smoke: false)"
+            echo "::notice::$WORKER has no static Registry interface (iii.worker.yaml registry_interface: false)"
           fi
 
       - name: Rewrite SSH to HTTPS for public deps

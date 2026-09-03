@@ -80,7 +80,7 @@ metadata is present or typed.
 3. Start worker from `./target/debug/<bin>` (with `--config config.collect.yaml` when shipped)
 4. `collect_worker_interface.py` — 120 s wait, assert non-empty interface
 
-**Opt-out:** `interface_smoke: false` in `iii.worker.yaml` (for example `lsp`).
+**Opt-out:** `registry_interface: false` in `iii.worker.yaml` (for example `lsp`).
 The release compiler records this as `interface_capture: skipped`; only that
 explicit immutable policy permits empty `functions` and `triggers` in Registry.
 

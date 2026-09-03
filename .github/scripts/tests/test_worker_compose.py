@@ -21,7 +21,7 @@ def test_private_catalog_has_exact_first_party_and_fixture_counts():
 
 def test_catalog_has_only_release_build_contract_and_explicit_bundle_files():
     workers = _lib.read_worker_catalog(CATALOG)
-    legacy = {"language", "deploy", "manifest", "bin", "scripts", "interface_smoke", "name"}
+    legacy = {"language", "deploy", "manifest", "bin", "scripts", "interface_smoke", "registry_interface", "name"}
     for worker_id, worker in workers.items():
         assert set(worker.raw) == {"source", "artifact", "publish"}
         assert not legacy.intersection(worker.raw), worker_id
