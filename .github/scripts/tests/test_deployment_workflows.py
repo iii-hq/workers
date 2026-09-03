@@ -151,14 +151,16 @@ def test_bundle_caches_are_scoped_by_descriptor_lock_runtime_and_architecture():
     assert "package-manager-cache" not in reusable
 
 
-def test_macos_capacity_gate_proves_three_slots_in_both_release_pools():
+def test_macos_capacity_gate_proves_three_slots_in_the_release_pool():
+    """Only Apple Silicon is left to prove: the Intel pool was retired with
+    `x86_64-apple-darwin`, so a slot count for it would assert against a pool
+    that no longer exists."""
     workflow = yaml.safe_load(body("macos-runner-capacity.yml"))
     jobs = workflow["jobs"]
-    x64 = [job for job in jobs.values() if job.get("runs-on") == "workers-release-macos-12core"]
+    pools = {job.get("runs-on") for job in jobs.values()}
+    assert "workers-release-macos-12core" not in pools
     arm = [job for job in jobs.values() if job.get("runs-on") == "workers-release-macos-arm-5core"]
-    assert len(x64) == 3
     assert len(arm) == 3
-    assert set(jobs["prove-overlap"]["needs"]) == {"macos-slot-1", "macos-slot-2", "macos-slot-3"}
     assert set(jobs["prove-arm-overlap"]["needs"]) == {
         "macos-arm-slot-1", "macos-arm-slot-2", "macos-arm-slot-3",
     }
