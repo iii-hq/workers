@@ -58,7 +58,7 @@ export function Overview({
   const [busy, run] = useBusyAction(onNotice, onChanged)
   const offline = (models?.models ?? []).filter((m) => m.kind === 'offline_nemo_transducer')
   const accurate: ModelInfo | undefined = offline.find((m) => m.id === stt.final_model)
-  const live: ModelInfo | undefined = models?.models.find((m) => m.id === stt.model)
+  const live: ModelInfo | undefined = models?.models.find((m) => m.id === stt.live_model)
   const pct = percent(progress[stt.final_model])
   const routerStt = useRouterSpeechModels(host.iii, 'stt', stt.backend === 'router')
   const routerTts = useRouterSpeechModels(host.iii, 'tts', tts.backend === 'router')
@@ -89,13 +89,13 @@ export function Overview({
     <Fact label="Live words">
       <span className="voice-choice">
         <span className="voice-fact-line">
-          <StatusDot tone={stt.loaded ? 'accent' : 'ink'} />
-          <span>{live?.name ?? stt.model}</span>
+          <StatusDot tone={stt.live_loaded ? 'accent' : 'ink'} />
+          <span>{live?.name ?? stt.live_model}</span>
         </span>
-        {!stt.installed ? (
+        {!stt.live_installed ? (
           <Chip tone="warning">downloads on first use</Chip>
         ) : (
-          <Chip tone="success">{stt.loaded ? 'running' : 'installed'}</Chip>
+          <Chip tone="success">{stt.live_loaded ? 'running' : 'installed'}</Chip>
         )}
       </span>
       <span className="voice-sub voice-block">

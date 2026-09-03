@@ -153,6 +153,9 @@ export interface DoctorResponse {
     model: string
     installed: boolean
     loaded: boolean
+    live_model: string
+    live_installed: boolean
+    live_loaded: boolean
     load_ms?: number
     models_dir: string
     problem?: string
