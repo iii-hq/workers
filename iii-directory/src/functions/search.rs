@@ -69,11 +69,14 @@ const PRODUCTION_RERANK_GAP: f64 = 12.0;
 /// under this logit is the cross-encoder saying nothing serves the query, and
 /// the position keeps its BM25 ranking (empty for most no-match wording)
 /// instead of a page of dense lookalikes. Measured on the 79-case set with
-/// the gap in place: match 51→49, multi 7→6, no-match false positives 4→3,
-/// the "today's top news" case 11→2 functions. The two lost matches are hard
-/// paraphrases whose target scores like noise (−10.4, −11.3); no logit
+/// the gap in place: match 52→50, top-1 44→43, no-match false positives
+/// 4→3, the "today's top news" case 11→2 functions. The two lost matches are
+/// hard paraphrases whose target scores like noise (−10.4, −11.3); no logit
 /// separates them from an unserved query, so this trades them for silence.
-const PRODUCTION_RERANK_FLOOR: f64 = -9.0;
+/// −10 rather than −9: the same genuine match scored −7.9, −8.8 and −9.5
+/// across three phrasings of its target's description, so −9 abstained on
+/// wording noise; −10 ranks identically on the set and keeps that margin.
+const PRODUCTION_RERANK_FLOOR: f64 = -10.0;
 /// Fused retrieval candidates the cross-encoder scores per query. The tail
 /// keeps its retrieval order: `weighted_rrf` only adds the reranker term to
 /// ids present in its second list, so an unscored id can never outrank a
