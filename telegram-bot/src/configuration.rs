@@ -49,6 +49,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
         "name": "Telegram Worker",
         "description": "Telegram bot bridge: bot token, updates adapter (polling/webhook), verbosity, default model, and harness send options.",
         "schema": WorkerConfig::json_schema(),
+        "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
     if let Some(seed) = seed {
         payload["initial_value"] = seed.to_json();

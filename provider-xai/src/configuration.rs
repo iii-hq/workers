@@ -53,6 +53,7 @@ pub async fn register_config(iii: &IIIClient) -> Result<(), String> {
         "name": "xAI Provider",
         "description": "xAI provider behaviour: enable Agent Tools (live X / web search via the /v1/responses API) and pick which server-side tools to offer. Credentials and endpoints are managed by the llm-router configuration entry, not here.",
         "schema": WorkerConfig::json_schema(),
+        "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
     if should_seed_default(iii).await? {
         payload["initial_value"] = WorkerConfig::default().to_json();

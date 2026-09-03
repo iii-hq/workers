@@ -45,9 +45,8 @@ fn count_tokens_url(api_url: &str) -> String {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CountTokensRequest {
-    /// Model id the prompt targets. `llama-server` serves one model at a
-    /// time and counts with whichever it loaded, so this is carried for the
-    /// reply rather than to select a tokenizer.
+    /// Model id the prompt targets; echoed in the reply, since `llama-server`
+    /// counts with whichever model it has loaded.
     pub model: String,
     /// System prompt counted as the leading wire message when present.
     #[serde(default)]

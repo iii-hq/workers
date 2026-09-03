@@ -84,7 +84,7 @@ pnpm --dir security-scan/ui build
 III_SECURITY_SCAN_UI_WATCH=security-scan/ui/dist cargo run --manifest-path security-scan/Cargo.toml
 ```
 
-The page header's configure control opens the console's own worker-configuration dialog for this worker: the analysis budgets (`max_turns` and the token and cost ceilings), the operator `analysis.model`, and the repository allowlist. A console that predates that shared dialog navigates to the workers tab instead.
+The page header's standard settings control opens this worker in the Console's global Settings modal: the analysis budgets (`max_turns` and the token and cost ceilings), the operator `analysis.model`, and the repository allowlist all live there.
 
 ## Configuration
 

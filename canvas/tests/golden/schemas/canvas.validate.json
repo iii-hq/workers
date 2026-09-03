@@ -35,7 +35,7 @@
           }
         ],
         "default": null,
-        "description": "Format the source claims to be: `mermaid` or `freeform`. Omit to auto-detect — a source whose first character is `{` is treated as an excalidraw scene, anything else as mermaid text."
+        "description": "Source format, `mermaid` or `freeform`; omit to auto-detect (a source starting with `{` is an excalidraw scene, anything else mermaid)."
       },
       "source": {
         "description": "The source to validate: mermaid text, or an excalidraw scene JSON string.",

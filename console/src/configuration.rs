@@ -202,6 +202,7 @@ pub async fn register_console_config(iii: &IIIClient, seed_http_port: u16) -> Re
         "description": "Console server and UI settings — live HTTP port binding, \
                         Traces V2 saved views, and per-worker injectable-UI toggles.",
         "schema": schema(),
+        "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
     if seed {
         payload["initial_value"] = default_value(seed_http_port);

@@ -61,8 +61,8 @@ mod tests {
     #[test]
     fn embedded_page_registers_the_config_form() {
         // The configuration form is the whole point of this asset; a build
-        // that lost it silently reverts the Workers tab to the generic
-        // schema editor.
+        // that loses it leaves llm-router without its editable interface in
+        // global Settings.
         assert!(
             PAGE_JS.contains("configForms"),
             "built page.js no longer registers the configuration form"

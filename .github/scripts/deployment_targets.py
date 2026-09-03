@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 
-DEFAULT_TARGETS = [
+UNIX_TARGETS = [
     "x86_64-apple-darwin",
     "aarch64-apple-darwin",
     "x86_64-unknown-linux-gnu",
@@ -14,6 +14,17 @@ DEFAULT_TARGETS = [
     "armv7-unknown-linux-gnueabihf",
 ]
 
+WINDOWS_TARGETS = [
+    "x86_64-pc-windows-msvc",
+    "i686-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+]
+
+# Every worker that published Windows binaries before the deployment cutover
+# ships all three msvc triples, so the default matrix carries them: a worker
+# without Windows is the exception and must say so in its catalog entry.
+DEFAULT_TARGETS = [*UNIX_TARGETS, *WINDOWS_TARGETS]
+
 TARGET_RUNNERS = {
     "x86_64-apple-darwin": "macos-latest",
     "aarch64-apple-darwin": "macos-latest",
@@ -21,6 +32,9 @@ TARGET_RUNNERS = {
     "x86_64-unknown-linux-musl": "ubuntu-latest",
     "aarch64-unknown-linux-gnu": "ubuntu-22.04",
     "armv7-unknown-linux-gnueabihf": "ubuntu-22.04",
+    "x86_64-pc-windows-msvc": "windows-latest",
+    "i686-pc-windows-msvc": "windows-latest",
+    "aarch64-pc-windows-msvc": "windows-latest",
 }
 
 # The release runner group is restricted to the release workflows on main.
@@ -35,16 +49,20 @@ TARGET_LARGER_RUNNERS = {
     "x86_64-unknown-linux-musl": "workers-release-linux-8core",
     "aarch64-unknown-linux-gnu": "workers-release-linux-8core",
     "armv7-unknown-linux-gnueabihf": "workers-release-linux-8core",
+    # Windows has no self-hosted pool; GitHub-hosted capacity keeps these
+    # targets schedulable without competing for the release runners.
+    "x86_64-pc-windows-msvc": "windows-latest",
+    "i686-pc-windows-msvc": "windows-latest",
+    "aarch64-pc-windows-msvc": "windows-latest",
 }
 
 
 def normalize_targets(raw: object, *, deploy: str | None = "binary") -> list[str]:
-    """Return canonical targets, rejecting Windows and unknown triples.
+    """Return canonical targets, rejecting unknown triples.
 
-    An omitted target list means every supported Unix target for binaries. A
-    non-binary worker has no executable target matrix, but an explicit Windows
-    entry is still rejected so manifests cannot silently advertise unsupported
-    artifacts.
+    An omitted target list means every supported target for binaries, Windows
+    included. A worker that cannot ship Windows declares that explicitly in the
+    catalog rather than omitting the triples silently.
     """
     if raw is None or raw == "":
         return list(DEFAULT_TARGETS) if deploy == "binary" else []
@@ -61,33 +79,11 @@ def normalize_targets(raw: object, *, deploy: str | None = "binary") -> list[str
             raise ValueError("`targets` entries must be non-empty strings")
         target = value.strip()
         if target not in TARGET_RUNNERS:
-            if "windows" in target:
-                raise ValueError(f"Windows release target is not supported: {target}")
             raise ValueError(f"unknown release target: {target}")
         if target in requested:
             raise ValueError(f"duplicate release target: {target}")
         requested.append(target)
 
     if deploy == "binary" and not requested:
-        raise ValueError("binary workers must declare at least one Unix release target")
+        raise ValueError("binary workers must declare at least one release target")
     return [target for target in DEFAULT_TARGETS if target in requested]
-
-
-def matrix_targets(raw: object, *, deploy: str | None) -> list[dict[str, str]]:
-    targets = normalize_targets(raw, deploy=deploy)
-    if deploy != "binary":
-        return [
-            {
-                "target": "none",
-                "os": "ubuntu-latest",
-                "runner": "workers-release-linux-8core",
-            }
-        ]
-    return [
-        {
-            "target": target,
-            "os": TARGET_RUNNERS[target],
-            "runner": TARGET_LARGER_RUNNERS[target],
-        }
-        for target in targets
-    ]

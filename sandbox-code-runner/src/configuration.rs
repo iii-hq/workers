@@ -68,6 +68,7 @@ impl RunnerSharedConfig {
 fn spec() -> config_client::EntrySpec {
     config_client::EntrySpec {
         id: CONFIG_ID,
+        form_id: CONFIG_ID,
         name: "sandbox-code-runner",
         description: "sandbox-code-runner settings — whether its usage guidance is injected into agent system prompts (on by default).",
         schema: RunnerSharedConfig::json_schema(),

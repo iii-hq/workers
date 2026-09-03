@@ -166,8 +166,8 @@ pub struct SecurityScanResponseV1 {
     pub deduplicated: bool,
 }
 
-/// Payload emitted by the iii cron trigger. Its values are observability data
-/// only; the handler resolves all scan inputs from operator configuration.
+/// Payload emitted by the iii cron trigger. Values are observability data
+/// only; scan inputs come from operator configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SecurityScanScheduleEventV1 {
     pub trigger: String,

@@ -53,6 +53,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&Config>) -> Result<(
         "name": "Grok",
         "description": "xAI Grok CLI worker: per-turn defaults (model, working directory, auto-approve), the agent::events / grok::events stream names, the grok CLI path, and whether to inject the iii runtime context into the prompt.",
         "schema": Config::json_schema(),
+        "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
     if let Some(seed) = seed {
         payload["initial_value"] = seed.to_json();

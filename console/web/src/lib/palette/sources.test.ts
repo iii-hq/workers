@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
+  BARE_SEARCH_KINDS,
+  DEFAULT_KINDS,
   filterEntries,
   groupEntries,
   KIND_ORDER,
   type PaletteEntry,
   type PaletteKind,
+  parseQuery,
   scoreEntry,
 } from './sources'
 
@@ -15,6 +18,32 @@ function entry(
 ): PaletteEntry {
   return { id: `${kind}:${title}`, kind, title, run: () => {}, ...rest }
 }
+
+function parsedKinds(
+  query: string,
+  filter: PaletteKind | 'all',
+): PaletteKind[] {
+  return [...(parseQuery(query, filter).kinds ?? [])]
+}
+
+describe('parseQuery', () => {
+  it('keeps the empty All view focused on navigation', () => {
+    expect(parsedKinds('', 'all')).toEqual(DEFAULT_KINDS)
+  })
+
+  it('includes commands and actions in a typed All search', () => {
+    const parsed = parseQuery('split', 'all')
+    expect(parsed.text).toBe('split')
+    expect(parsedKinds('split', 'all')).toEqual(BARE_SEARCH_KINDS)
+    expect(parsed.kinds?.has('file')).toBe(false)
+    expect(parsed.kinds?.has('function')).toBe(false)
+  })
+
+  it('keeps explicit prefixes and filter chips narrowly scoped', () => {
+    expect(parsedKinds('> split', 'all')).toEqual(['command', 'action'])
+    expect(parsedKinds('split', 'action')).toEqual(['action'])
+  })
+})
 
 describe('scoreEntry', () => {
   it('keeps everything when there is nothing to match against', () => {

@@ -20,9 +20,8 @@ pub enum Op {
     Insert,
     Update,
     Delete,
-    /// Recognisably a write, but not one of the three above (a CTE-wrapped
-    /// statement, `MERGE`, a driver-specific form). Subscribers still hear
-    /// about it.
+    /// A write that is none of the above: a CTE-wrapped statement, `MERGE`,
+    /// a driver-specific form.
     Other,
 }
 

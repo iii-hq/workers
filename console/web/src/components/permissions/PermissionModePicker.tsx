@@ -17,7 +17,7 @@ interface PermissionModePickerProps {
  * In-chat permission mode picker. Lives next to the composer as one compact
  * dropdown and commits each change directly to the backend through `onChange`.
  * Selecting Full gates on the shared confirmation dialog. Allowlist
- * management lives on the Configuration screen, keep this control narrow.
+ * management lives in global Settings, so keep this control narrow.
  */
 export function PermissionModePicker({
   value,

@@ -1288,6 +1288,7 @@ export function ComposePage({ host, onRequestClose, panelSide, commands, panelCo
           minWidth={180}
           maxWidth={340}
           narrowBelow={640}
+          narrowMode="drawer"
         >
           <List className="cu-side-list" aria-label="Compose sections">
             {sections.map((item) => {

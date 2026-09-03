@@ -3,12 +3,6 @@ name: Deployment Descriptor Index
 on:
   push:
     branches: [main]
-  workflow_dispatch:
-    inputs:
-      source_sha:
-        description: Full Workers source commit; defaults to the workflow SHA
-        required: false
-        type: string
 
 permissions: {}
 
@@ -18,45 +12,14 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Resolve immutable source
-        id: source
-        env:
-          REQUESTED_SOURCE_SHA: ${{ inputs.source_sha }}
-        run: |
-          set -euo pipefail
-          source_sha="${REQUESTED_SOURCE_SHA:-${GITHUB_SHA}}"
-          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]
-          echo "sha=$source_sha" >> "$GITHUB_OUTPUT"
-
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
-          ref: ${{ steps.source.outputs.sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
-
-      - name: Verify approved compiler bytes
-        env:
-          APPROVED_COMPILER_DIGEST: 5f720e57d1987b9016a0c2c9b7eaff25a696509506809734d28a88ecc208c364
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import hashlib
-          import os
-          from pathlib import Path
-
-          digest = hashlib.sha256()
-          digest.update(b"iii-workers-deployment-compiler\0")
-          digest.update(Path(".github/scripts/deployment_compiler.py").read_bytes())
-          digest.update(b"\0deployment-descriptor-schema\0")
-          digest.update(Path(".github/contracts/deployment-descriptor.schema.json").read_bytes())
-          actual = digest.hexdigest()
-          expected = os.environ["APPROVED_COMPILER_DIGEST"]
-          if actual != expected:
-              raise SystemExit(f"unapproved deployment compiler bytes: expected {expected}, got {actual}")
-          PY
 
       - name: Install descriptor validators
         run: python -m pip install --disable-pip-version-check --quiet pyyaml jsonschema
@@ -64,14 +27,13 @@ jobs:
       - name: Compile all public release workers exactly once
         run: >-
           python3 .github/scripts/deployment_compiler.py compile-index
-          --source-sha '${{ steps.source.outputs.sha }}'
+          --source-sha '${{ github.sha }}'
           --compiler-repository '${{ github.repository }}'
-          --compiler-commit '${{ steps.source.outputs.sha }}'
           --output-dir deployment-descriptor-index
 
       - name: Validate descriptor schema, identities, and counts
         env:
-          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -100,7 +62,7 @@ jobs:
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: deployment-descriptor-index-${{ steps.source.outputs.sha }}
+          name: deployment-descriptor-index-${{ github.sha }}
           path: deployment-descriptor-index/
           if-no-files-found: error
           retention-days: 30

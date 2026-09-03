@@ -12,8 +12,9 @@
  * - src/function-trigger-message/ — how every `computer::*` call renders in
  *   chat and the traces span tab.
  *
- * No config form is registered: the computer worker's configuration is plain
- * scalar fields, so the console's schema-generated form is sufficient.
+ * The page declares its configuration id so the Console adds the standard
+ * settings action. Its purpose-built form ships with the Console's shared
+ * configuration-form asset.
  *
  * Registrations go through `host` so the loader disposes them on hot reload /
  * worker disconnect.
@@ -28,6 +29,7 @@ export default function setup(host: Host) {
   host.pages.register({
     id: 'computer',
     title: 'computer',
+    configurationId: 'computer',
     render: (props) => <ComputerPage host={host} {...props} />,
   })
 

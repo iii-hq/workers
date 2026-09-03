@@ -1,5 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { PageHeader } from '@/components/ui/PageChrome'
+import { TooltipProvider } from '@/components/ui/Tooltip'
 import type {
   ConfigFormProps,
   ConsoleApi,
@@ -14,6 +16,7 @@ import {
 } from './ui-loader'
 import {
   getExtConfigForm,
+  getExtPage,
   getExtProviderConfigForm,
   getExtTriggerActivityRenderers,
   getUiAssetsStatus,
@@ -50,6 +53,19 @@ function setupTriggerRenderer(label: string): UiModule {
         id: `cron-${label}`,
         isMatch: (triggerType) => triggerType === 'cron',
         tryRender: () => <p>{label}</p>,
+      })
+    },
+  }
+}
+
+function setupConfiguredPage(): UiModule {
+  return {
+    default(host) {
+      host.pages.register({
+        id: 'configured-page',
+        title: 'Configured page',
+        configurationId: 'browser',
+        render: () => <PageHeader title="Configured page" />,
       })
     },
   }
@@ -151,6 +167,32 @@ describe('injectable UI loader readiness', () => {
 
     expect(getUiAssetsStatus()).toBe('loading')
     await vi.waitFor(() => expect(getUiAssetsStatus()).toBe('unavailable'))
+
+    harness.stop()
+  })
+})
+
+describe('injectable page configuration metadata', () => {
+  it('provides the page configuration id to console-owned header chrome', async () => {
+    const harness = createHarness({
+      importModule: vi.fn(async () => setupConfiguredPage()),
+    })
+
+    harness.emit({
+      event: 'sync',
+      assets: [{ path: 'browser/page.js', kind: 'script', hash: 'one' }],
+    })
+    await vi.waitFor(() => expect(getExtPage('configured-page')).toBeDefined())
+
+    const page = getExtPage('configured-page')
+    if (!page) throw new Error('configured page was not registered')
+    const RegisteredPage = page.render
+    const markup = renderToStaticMarkup(
+      <TooltipProvider>
+        <RegisteredPage panelSide="left" tabId="tab-1" />
+      </TooltipProvider>,
+    )
+    expect(markup).toContain('aria-label="Configure worker"')
 
     harness.stop()
   })

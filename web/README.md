@@ -14,7 +14,7 @@ existing callers and the harness consumer are unaffected.
 While connected (and unless turned off) it also injects a usage section into
 the agent system prompt via the harness `pre-generate` hook
 (`web::inject-guidance`). `inject_guidance` in the `web` configuration entry
-is ON by default; turning it off (the console's config dialog, or
+is ON by default; turning it off (the Console's global Settings modal, or
 `configuration::set`) hot-applies with no restart, and the harness's
 `# Granted functions` catalog still advertises `web::fetch`. The guidance
 is presence-gated: no web worker, no prompt text. The binding is one-shot at

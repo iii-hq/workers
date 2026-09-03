@@ -32,8 +32,8 @@ tracing = "0.1"
 # The sandbox. Pinned exact like deno_core in node-core: wasmtime majors churn
 # monthly and the containment behaviour (epoch traps, limiter semantics) must
 # not move under us.
-wasmtime = "=47.0.3"
-wasmtime-wasi = "=47.0.3"
+wasmtime = "=47.0.4"
+wasmtime-wasi = "=47.0.4"
 # `OutputStream::write` takes `bytes::Bytes` and wasmtime-wasi does not
 # re-export the crate, so the trait cannot be implemented without naming it.
 bytes = "1"

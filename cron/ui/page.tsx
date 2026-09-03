@@ -9,6 +9,7 @@ export default function setup(host: Host) {
   host.pages.register({
     id: 'cron',
     title: 'cron',
+    configurationId: 'cron',
     render: (props) => <CronSchedulesPage host={host} {...props} />,
   })
   host.configForms.register('cron', CronConfigForm)

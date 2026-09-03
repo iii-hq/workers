@@ -1,0 +1,27 @@
+# Seed configuration passed directly to the shell worker.
+max_timeout_ms: 5000
+# Host background-job hard cap in ms; 0 = unbounded.
+max_bg_timeout_ms: 6000
+default_timeout_ms: 1500
+max_output_bytes: 4096
+working_dir: ./data
+env:
+  inherit: false
+  allow: [PATH, HOME, LANG, HARNESS_TEST_VAR]
+denylist_patterns:
+  - "rm\\s+-rf\\s+/"
+  - ":\\(\\)\\s*\\{\\s*:\\|"
+  - "harness_denylist_marker"
+max_concurrent_jobs: 2
+job_retention_secs: 2
+fs:
+  # The harness writes to OS temporary directories, so this lane explicitly
+  # opts out of the host-root jail.
+  allow_unjailed: true
+  max_read_bytes: 1048576
+  max_write_bytes: 1048576
+  denylist_paths:
+    - /etc/passwd
+    - /etc/shadow
+sandbox:
+  enabled: true

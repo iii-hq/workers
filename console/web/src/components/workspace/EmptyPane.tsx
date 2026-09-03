@@ -8,10 +8,13 @@ import {
   useRef,
   useState,
 } from 'react'
+import { DESKTOP_POINTER_QUERY, useMediaQuery } from '@/hooks/use-media-query'
 import { cn } from '@/lib/utils'
 import type { TabScreen } from '@/lib/workspace-tabs'
 import { filterScreenOptions } from './empty-pane-search'
 import type { ScreenOption } from './use-screen-options'
+
+const DESKTOP_PANE_SEARCH_QUERY = `(min-width: 640px) and ${DESKTOP_POINTER_QUERY}`
 
 interface EmptyPaneProps {
   screenOptions: ScreenOption[]
@@ -34,12 +37,18 @@ export function EmptyPane({
   const [query, setQuery] = useState('')
   const [activeIndex, setActiveIndex] = useState(0)
   const listId = useId()
+  const searchRef = useRef<HTMLInputElement>(null)
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([])
+  const desktopPaneSearch = useMediaQuery(DESKTOP_PANE_SEARCH_QUERY)
   const filteredOptions = useMemo(
     () => filterScreenOptions(screenOptions, query),
     [screenOptions, query],
   )
   const activeOption = filteredOptions[activeIndex] ?? null
+
+  useEffect(() => {
+    if (desktopPaneSearch) searchRef.current?.focus()
+  }, [desktopPaneSearch])
 
   useEffect(() => {
     if (activeIndex >= filteredOptions.length) {
@@ -122,8 +131,7 @@ export function EmptyPane({
           <div className="flex h-10 shrink-0 items-center gap-2 rounded-sm bg-surface px-3 focus-within:outline-2 focus-within:-outline-offset-1 focus-within:outline-rule-focus">
             <Search aria-hidden className="size-4 shrink-0 stroke-ink-ghost" />
             <input
-              // biome-ignore lint/a11y/noAutofocus: a newly created empty panel is already a page-selection flow
-              autoFocus
+              ref={searchRef}
               type="search"
               name="page-search"
               value={query}

@@ -8,8 +8,8 @@
  *   the time (e.g. spreading `{ ...obj, k: v }`), and we don't want
  *   that noise to flip the dirty bit.
  * - `null` and `undefined` and missing keys should compare equal, because
- *   the schema form coerces unset → `null` while the loaded value may
- *   omit the key entirely. A naive comparison would mark every loaded
+ *   an explicit worker form may represent an unset field as `null` while the
+ *   loaded value omits it entirely. A naive comparison would mark every loaded
  *   value as dirty the first time the operator touched any field.
  *
  * The function never throws and always terminates: it never recurses on

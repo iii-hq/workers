@@ -23,6 +23,7 @@ export function History({ side, evaluations, selectedId, loading, onSelect, onNe
       storageKey="eval:history"
       defaultWidth={280}
       narrowBelow={900}
+      narrowMode="drawer"
       className="eval-ui-history"
       header={
         <div className="eval-ui-history-head">

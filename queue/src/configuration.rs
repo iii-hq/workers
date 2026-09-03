@@ -49,6 +49,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&QueueConfig>) -> Res
         "name": "Queue",
         "description": "Durable queue worker settings: transport persistence and named function queues.",
         "schema": QueueConfig::json_schema(),
+        "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
     if should_seed_initial_value(iii).await? {
         let seed = seed
@@ -85,14 +86,47 @@ pub async fn fetch_config(iii: &IIIClient) -> Result<QueueConfig, String> {
 /// snapshot before invoking this helper.
 pub async fn persist_config(iii: &IIIClient, config: &QueueConfig) -> Result<(), String> {
     config.validate()?;
-    trigger_configuration_with_retry(
+    let payload = json!({ "id": config_id(), "value": config.to_json() });
+    let result = trigger_configuration_with_retry(
         iii,
         "configuration::set",
-        json!({ "id": config_id(), "value": config.to_json() }),
+        payload.clone(),
         CONFIG_BUS_TIMEOUT_MS,
     )
-    .await?;
-    Ok(())
+    .await;
+
+    match result {
+        Ok(_) => Ok(()),
+        Err(error) if schema_unavailable(&error) => {
+            // The configuration fs adapter can briefly remove and recreate a
+            // persisted entry while the engine rewrites seeded configuration.
+            // Re-attach the worker-owned schema before retrying the write so a
+            // queue definition cannot remain permanently unwritable after that
+            // startup race.
+            tracing::warn!(
+                config_id = config_id(),
+                "queue configuration schema disappeared; registering it again"
+            );
+            register_config(iii, Some(config))
+                .await
+                .map_err(|register_error| {
+                    format!("{error}; configuration schema recovery failed: {register_error}")
+                })?;
+            trigger_configuration_with_retry(
+                iii,
+                "configuration::set",
+                payload,
+                CONFIG_BUS_TIMEOUT_MS,
+            )
+            .await?;
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn schema_unavailable(error: &str) -> bool {
+    error.contains("SCHEMA_UNAVAILABLE")
 }
 
 pub fn register_config_trigger(
@@ -266,6 +300,7 @@ mod tests {
             _metadata: Option<serde_json::Value>,
             _condition_function_id: Option<String>,
             _queue_config: Option<crate::subscriber_config::SubscriberQueueConfig>,
+            _namespace: Option<String>,
         ) {
             self.subscribe_calls.fetch_add(1, Ordering::SeqCst);
         }
@@ -333,6 +368,7 @@ mod tests {
                 trigger_id: "t1".to_string(),
                 function_id: "backend".to_string(),
                 metadata: None,
+                namespace: None,
                 spec: SubscriberSpec {
                     queue: "demo".to_string(),
                     max_retries: None,
@@ -377,6 +413,7 @@ mod tests {
                 trigger_id: "t1".to_string(),
                 function_id: "backend".to_string(),
                 metadata: None,
+                namespace: None,
                 spec: SubscriberSpec {
                     queue: "demo".to_string(),
                     max_retries: None,
@@ -444,5 +481,15 @@ mod tests {
             ..QueueConfig::default()
         };
         assert!(swap_needed(&old, &new));
+    }
+
+    #[test]
+    fn schema_recovery_only_matches_the_missing_schema_error() {
+        assert!(schema_unavailable(
+            "remote error (SCHEMA_UNAVAILABLE): configuration 'queue' has no schema"
+        ));
+        assert!(!schema_unavailable(
+            "remote error (VALIDATION_FAILED): configuration does not match its schema"
+        ));
     }
 }

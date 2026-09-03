@@ -23,12 +23,34 @@ use crate::types::turn::{
 };
 
 /// `message` is either a plain string (sugar for a user text message) or a
-/// full `AgentMessage`.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+/// full `AgentMessage` (`user` or `custom` role — `normalize_message` rejects
+/// the rest).
+///
+/// The advertised schema is `string` only: the structured arm stays an
+/// undocumented compatibility path for programmatic callers (the console
+/// sends `role: user` messages carrying `#file(...)` blocks). Deriving
+/// `JsonSchema` here would drag the whole transcript type tree — fourteen
+/// definitions, half of them shapes the runtime refuses — into every request
+/// schema that names this type (MOT-4640).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum MessageInput {
     Text(String),
     Message(Box<AgentMessage>),
+}
+
+impl JsonSchema for MessageInput {
+    fn schema_name() -> String {
+        "MessageInput".into()
+    }
+
+    fn is_referenceable() -> bool {
+        false
+    }
+
+    fn json_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        String::json_schema(generator)
+    }
 }
 
 impl From<String> for MessageInput {
@@ -40,24 +62,14 @@ impl From<String> for MessageInput {
 /// Per-send options frozen onto the turn record (harness.md § `harness::send`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct SendOptions {
-    /// Run the session as a directory agent profile (`directory::agents::*`
-    /// id). Session-creating sends only — the profile's resolved system
-    /// prompt (its `extends` chain composed by the directory) REPLACES the
-    /// built-in identity (only the `mode` paragraph is prepended), its skill
-    /// filter becomes the session's skill selection, its `model` is the
-    /// fallback when this send names none, and its identity sticks like the
-    /// system prompt (later sends inherit; naming an explicit prompt field
-    /// sheds it). Refused on an existing session, combined with either
-    /// prompt field, or when the profile's `extends` chain does not resolve.
+    /// Directory agent profile id (`directory::agents::*`) replacing the
+    /// built-in identity; new sessions only, refused with a prompt field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
-    /// How `system_prompt` combines with the built-in prompt: `override`
-    /// replaces it; `enrich` (default) appends to it; `disabled` omits it.
-    /// When BOTH prompt fields are omitted on an existing session, the prior
-    /// turn's resolved prompt is inherited; naming a strategy (even bare)
-    /// resolves fresh — the reset-to-default escape hatch.
+    /// How `system_prompt` combines with the built-in prompt; omitting both
+    /// prompt fields on an existing session inherits the prior prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt_strategy: Option<SystemPromptStrategy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -83,26 +95,18 @@ pub struct SendOptions {
     /// The turn's deliverable; default `{ type: "text" }`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<OutputContract>,
-    /// The fail-closed dispatch policy. Omitted on a NEW session → deny every
-    /// call; omitted when steering an EXISTING session → inherit the prior
-    /// turn's policy (a nudge must not disarm a live run). Pass
-    /// `{ allow: [] }` to strip explicitly. On a NEW `ask`-mode turn the
-    /// effective policy is capped at the configured default policy; a
-    /// steer folded into an already-running turn keeps that turn's frozen
-    /// policy until it finalises.
+    /// Fail-closed dispatch policy; omitted means deny all on a new session
+    /// and inherit on an existing one (`{ allow: [] }` strips explicitly).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub functions: Option<FunctionPolicy>,
-    /// Exact skill ids advertised to the model. On a fresh session, omitted or
-    /// empty means all. On an existing session, omitted inherits its filter and
-    /// empty resets to all. Explicit changes require no active turn. This is
-    /// index curation, not authorization.
+    /// Exact skill ids advertised to the model; omitted or empty means all on
+    /// a new session (existing: omitted inherits, empty resets).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skills: Option<Vec<String>>,
     /// Tracing passthrough.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
-    /// Per-turn override of the configured validation-retry budget (also the
-    /// bound on `harness::hook::post-turn` deny re-prompts).
+    /// Per-turn override of the validation-retry budget.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_validation_retries: Option<u32>,
 }
@@ -121,14 +125,10 @@ pub struct SendRequest {
     /// Omit to create a new session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
-    /// The incoming message; a string is sugar for a user text message. The
-    /// role must be `user` or `custom`.
+    /// The incoming user message text.
     pub message: MessageInput,
-    /// Required to start a NEW session unless `options.agent` supplies a
-    /// model. Steering or waking an EXISTING session may omit it — the
-    /// session's last turn's model (and provider, unless overridden) is
-    /// inherited, the same rule the notification inject path uses. A model
-    /// declared by the selected agent profile is authoritative.
+    /// Required on a new session unless `options.agent` supplies a model;
+    /// an existing session inherits its last turn's model when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -319,6 +319,7 @@ async fn start_with_delivery_lock(
 
     // Normalise the incoming message and validate its role.
     let message = normalize_message(req.message)?;
+    tag_send_span_with_message(&message);
 
     // Resolve the session (ensure if id given, else create).
     let (title, metadata) = req
@@ -395,6 +396,20 @@ async fn start_with_delivery_lock(
     }
 
     Ok(outcome)
+}
+
+/// Label the send's own root span with the message preview. The turn step
+/// stamps the same `iii.tag.message` through baggage, but only once the queue
+/// delivers it — well after `execute harness::send` has closed and been
+/// listed. The Console's message-labelled trace rows read the tag from the
+/// trace's merged tags, so without this the row first appeared as
+/// `execute harness::send` and relabelled itself a second later (MOT-4621).
+/// Only the label rides here: session/message identity stays on the step
+/// (see `tag_failed_send_with_session`).
+fn tag_send_span_with_message(message: &AgentMessage) {
+    if let Some(preview) = message_preview(message) {
+        iii_helpers::observability::set_current_span_attribute("iii.tag.message", preview);
+    }
 }
 
 /// Attribute failures that happen after session creation but before the turn
@@ -506,7 +521,7 @@ pub struct EditQueuedRequest {
     pub session_id: String,
     /// The queued row to edit (its client-visible `entry_id`).
     pub entry_id: String,
-    /// The replacement message (string sugar or a full user/custom message).
+    /// The replacement user message text.
     pub message: MessageInput,
 }
 
@@ -647,10 +662,11 @@ fn latest_seed_record<'a>(
 }
 
 /// The lineage a seeded turn carries: empty for a top-level send or a
-/// notification wake, populated for a spawned child. It exists so ONE seeding
-/// path can serve every entry point — before this, the child path hand-rolled
-/// its own `TurnRecord` and `put_turn`, which skipped the CAS/merge check and
-/// clobbered a running turn whenever a spawn reused a live session id.
+/// notification wake, populated for a spawned child.
+// It exists so ONE seeding path can serve every entry point — before this,
+// the child path hand-rolled its own `TurnRecord` and `put_turn`, which
+// skipped the CAS/merge check and clobbered a running turn whenever a spawn
+// reused a live session id.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TurnLineage {
     pub depth: u32,
@@ -1332,6 +1348,47 @@ mod tests {
             })
     }
 
+    fn send_span_message_tag(message: &AgentMessage) -> Option<String> {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_span_processor(SimpleSpanProcessor::new(exporter.clone()))
+            .build();
+        let tracer = provider.tracer("harness-send-test");
+        let span = tracer.start("execute harness::send");
+        let guard = Context::new().with_span(span).attach();
+
+        tag_send_span_with_message(message);
+
+        drop(guard);
+        exporter
+            .get_finished_spans()
+            .expect("exporter")
+            .into_iter()
+            .next()
+            .and_then(|span| {
+                span.attributes
+                    .into_iter()
+                    .find(|attribute| attribute.key.as_str() == "iii.tag.message")
+                    .map(|attribute| attribute.value.as_str().to_string())
+            })
+    }
+
+    #[test]
+    fn send_root_span_carries_the_message_preview_label() {
+        let user = normalize_message(MessageInput::Text(
+            "help me implement the traces v2 new tags please".into(),
+        ))
+        .unwrap();
+        assert_eq!(
+            send_span_message_tag(&user).as_deref(),
+            Some("help me implement the traces v"),
+        );
+
+        // Nothing to label: a blank message leaves the span untouched.
+        let blank = normalize_message(MessageInput::Text("   ".into())).unwrap();
+        assert_eq!(send_span_message_tag(&blank), None);
+    }
+
     #[test]
     fn failed_send_is_attributed_to_its_session_without_tagging_successes() {
         assert_eq!(failed_send_session_attribute(Ok(())), None);
@@ -1498,6 +1555,94 @@ mod tests {
     fn string_message_becomes_user_text() {
         let m = normalize_message(MessageInput::Text("hi".into())).unwrap();
         assert!(matches!(m, AgentMessage::User(_)));
+    }
+
+    /// MOT-4640: the advertised `message`/`task` schema is a plain string —
+    /// none of the transcript types leak into the request schemas — while
+    /// the runtime keeps accepting a structured `user` message.
+    #[test]
+    fn message_input_schema_is_a_string_and_hides_the_transcript_tree() {
+        fn root_schema<T: JsonSchema>() -> Value {
+            let schema = schemars::r#gen::SchemaSettings::draft07()
+                .into_generator()
+                .into_root_schema_for::<T>();
+            serde_json::to_value(schema).unwrap()
+        }
+        let send = root_schema::<SendRequest>();
+        let spawn = root_schema::<crate::functions::spawn::SpawnRequest>();
+        assert_eq!(send["properties"]["message"]["type"], "string");
+        assert_eq!(spawn["properties"]["task"]["type"], "string");
+        for (label, schema) in [("send", &send), ("spawn", &spawn)] {
+            let defs = schema["definitions"]
+                .as_object()
+                .cloned()
+                .unwrap_or_default();
+            for leaked in [
+                "MessageInput",
+                "AgentMessage",
+                "UserMessage",
+                "CustomMessage",
+                "AssistantMessage",
+                "FunctionResultMessage",
+                "ContentBlock",
+                "Usage",
+                "StopReason",
+                "ErrorKind",
+            ] {
+                assert!(
+                    !defs.contains_key(leaked),
+                    "{label} schema still defines {leaked}"
+                );
+            }
+        }
+
+        // Every real spawn payload from the MOT-4638 corpus still validates.
+        let corpus: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/support/function_contracts_corpus.json"
+        )))
+        .unwrap();
+        let compiled = jsonschema::JSONSchema::compile(&spawn).unwrap();
+        let spawns: Vec<&Value> = corpus["calls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["function"] == "harness::spawn")
+            .map(|c| &c["payload"])
+            .collect();
+        assert!(spawns.len() >= 20, "corpus lost its spawn payloads");
+        // One captured payload names an icon outside `SubagentIcon`; that
+        // rejection predates this change, so only `task` verdicts are pinned.
+        let mut valid = 0;
+        for payload in spawns {
+            match compiled.validate(payload) {
+                Ok(()) => valid += 1,
+                Err(errors) => {
+                    for error in errors {
+                        let path = error.instance_path.to_string();
+                        assert!(
+                            !path.starts_with("/task"),
+                            "task rejected: {error} in {payload}"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(valid >= 20, "only {valid} corpus spawns validate");
+
+        // Compatibility path: a structured user message (what the console
+        // sends for `#file(...)` attachments) still deserializes and normalizes.
+        let structured: MessageInput = serde_json::from_value(serde_json::json!({
+            "role": "user",
+            "content": [{"type": "text", "text": "hi"}],
+            "timestamp": 1
+        }))
+        .unwrap();
+        assert!(matches!(structured, MessageInput::Message(_)));
+        assert!(matches!(
+            normalize_message(structured).unwrap(),
+            AgentMessage::User(_)
+        ));
     }
 
     #[test]

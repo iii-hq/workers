@@ -12,8 +12,6 @@ import {
 } from '@/components/chat/worker/parsers'
 import { errText } from '@/lib/errors'
 import { getIiiClient } from '@/lib/iii-client'
-import type { ConfigurationSchemaView } from '@/pages/Configuration/tabs/WorkersTab/api'
-import { listConfigurations } from '@/pages/Configuration/tabs/WorkersTab/api'
 import type { ComposeAction } from '../types'
 
 export const WORKERS_RPC = {
@@ -21,7 +19,6 @@ export const WORKERS_RPC = {
   engineInfo: 'engine::workers::info',
   supervisorList: 'worker::list',
   supervisorStop: 'worker::stop',
-  configList: 'configuration::list',
   composeStatus: 'compose::status',
   composeUp: 'compose::up',
   composeDown: 'compose::down',
@@ -90,12 +87,6 @@ export async function fetchSupervisorWorkersList(): Promise<WorkerListResponse> 
   return parsed.success ? parsed.data : { workers: [] }
 }
 
-export async function fetchConfigurationIds(): Promise<
-  ConfigurationSchemaView[]
-> {
-  return listConfigurations()
-}
-
 export async function fetchComposeStatus(): Promise<ComposeStatus | null> {
   const client = await getIiiClient()
   try {
@@ -148,7 +139,6 @@ export async function composeContainerAction(
 export interface RawWorkersSnapshot {
   engineWorkers: WorkersListResponse['workers']
   supervisorWorkers: WorkerEntry[]
-  configurations: ConfigurationSchemaView[]
   infoByName: Map<string, WorkerInfoResponse['worker']>
   compose: ComposeStatus | null
 }
@@ -177,19 +167,17 @@ export async function mapWithConcurrency<T, R>(
 }
 
 export async function fetchRawWorkersSnapshot(): Promise<RawWorkersSnapshot> {
-  // Supervisor, configuration, and compose reads are enrichment: an engine
+  // Supervisor and compose reads are enrichment: an engine
   // without worker::list (a compose-managed engine, or one booted with no
   // supervisor) must not blank the whole page - the connected fleet from
-  // engine::workers::list still renders, just without stop/config detail.
-  const [engineList, supervisorList, configurations, compose] =
-    await Promise.all([
-      fetchEngineWorkersList(),
-      fetchSupervisorWorkersList().catch(
-        (): WorkerListResponse => ({ workers: [] }),
-      ),
-      fetchConfigurationIds().catch((): ConfigurationSchemaView[] => []),
-      fetchComposeStatus(),
-    ])
+  // engine::workers::list still renders, just without supervisor actions.
+  const [engineList, supervisorList, compose] = await Promise.all([
+    fetchEngineWorkersList(),
+    fetchSupervisorWorkersList().catch(
+      (): WorkerListResponse => ({ workers: [] }),
+    ),
+    fetchComposeStatus(),
+  ])
 
   const connected = engineList.workers.filter(
     (w) => w.status.toLowerCase() === 'connected' && w.name,
@@ -211,7 +199,6 @@ export async function fetchRawWorkersSnapshot(): Promise<RawWorkersSnapshot> {
   return {
     engineWorkers: engineList.workers,
     supervisorWorkers: supervisorList.workers,
-    configurations,
     infoByName,
     compose,
   }

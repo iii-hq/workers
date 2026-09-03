@@ -15,6 +15,8 @@ ignore=(
   'https://api.workers.iii.dev/w/$WORKER/tags/latest' # workflow action endpoint, PUT only
   'https://api.workers.iii.dev/w/$WORKER/tags/next' # workflow action endpoint, PUT only
   'https://api.workers.iii.dev/w/$WORKER/api-reference' # release API endpoint, not a documentation link
+  'https://api.workers.iii.dev/w/$WORKER?version=$SOURCE_RC_VERSION' # dynamic exact-version release API endpoint
+  'https://api.workers.iii.dev/w/$WORKER?version=$TARGET_VERSION' # dynamic exact-version verification API endpoint
   'https://release-control.iii.dev/contracts/deployment-execution.schema.json' # JSON Schema identifier; published at cutover
   'https://workers.iii.dev/workers/'       # URL prefix in a test assertion, not a link
   'https://workers.iii.dev/workers/skills' # published (badge.svg 200) but registry page missing

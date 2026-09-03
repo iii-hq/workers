@@ -69,6 +69,7 @@ describe('lookup', () => {
   it('finds a definition by id', () => {
     expect(keybinding('palette.toggle').bindings).toEqual(['Mod+K'])
     expect(bindingsFor('workspace.close', 'mac')).toEqual(['Ctrl+W'])
+    expect(keybinding('panel.split').title).toBe('Split right')
   })
 
   it('resolves a per-platform binding list', () => {

@@ -1,5 +1,7 @@
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { filterSelectorGroups } from './Selector'
+import { filterSelectorGroups, Selector } from './Selector'
 
 const groups = [
   {
@@ -48,5 +50,28 @@ describe('filterSelectorGroups', () => {
       shouldFilter: false,
     })
     expect(result.flatMap((group) => group.options)).toHaveLength(3)
+  })
+
+  it('forwards reusable field identity and validation to its trigger', () => {
+    const html = renderToStaticMarkup(
+      createElement(Selector, {
+        id: 'provider',
+        name: 'provider.id',
+        'data-field': 'provider.id',
+        'aria-label': 'Provider',
+        'aria-invalid': true,
+        'aria-describedby': 'provider-error',
+        value: 'openai',
+        options: [{ value: 'openai', label: 'OpenAI' }],
+        onChange: () => {},
+      }),
+    )
+
+    expect(html).toContain('type="hidden"')
+    expect(html).toContain('name="provider.id"')
+    expect(html).toContain('id="provider"')
+    expect(html).toContain('data-field="provider.id"')
+    expect(html).toContain('aria-invalid="true"')
+    expect(html).toContain('aria-describedby="provider-error"')
   })
 })

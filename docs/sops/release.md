@@ -20,16 +20,35 @@ planning.
 
 ## Sequence
 
+Releases are rc-first: `next` only ever receives `X.Y.Z-rc.N` candidates
+(minted by the nightly window or an operator deploy), and `latest` only ever
+receives the pure `X.Y.Z` minted by a `finalize_release` operation from a
+tested candidate.
+
 1. `deploy-prepare.yml` authorizes the dispatch, verifies descriptor identity,
-   builds one job per target, and uploads the byte-unchanged descriptor,
-   prepared inventory, and artifacts with their SHA-256 and size.
+   builds one job per **candidate-profile** target, and uploads the
+   byte-unchanged descriptor, prepared inventory, and artifacts with their
+   SHA-256 and size. It then captures registered functions and triggers from
+   one immutable artifact and binds that interface evidence to the descriptor
+   and prepared inventory (retained 90 days as the finalization fast path).
 2. `deploy-publish.yml` publishes or proves GitHub assets, the exact Registry
    version and a digest-pinned OCI image when applicable, then CASes the
-   requested `next` or `latest` channel from the value captured in the plan.
-   For `latest`, it first advances `next` only when the target is ahead and
-   never moves `next` backwards. The OCI channel alias is updated by digest in
-   this same workflow.
-3. `deploy-verify.yml` verifies GitHub, Registry and optional GHCR surfaces.
+   requested channel from the value captured in the plan.
+3. `deploy-finalize.yml` executes `finalize_release` operations exclusively:
+   it re-verifies the rc bytes (from the retained artifact, or from the rc's
+   immutable GitHub Release checked against Registry hashes when the artifact
+   expired), builds only the supplemental **stable-profile** targets (Windows
+   `x86_64-pc-windows-msvc` for opted-in workers), assembles the stable
+   inventory without rebuilding anything already proved, publishes the pure
+   version to the Registry **without a channel**, and then moves `next` and
+   `latest` together through the Registry's transactional finalize primitive.
+   It shares the `deployment-<worker>` concurrency group with publish.
+4. `deploy-verify.yml` verifies GitHub, the exact Registry interface captured
+   during prepare, and optional GHCR surfaces.
+
+Interface capture is a publication-integrity step. It starts the artifact only
+to observe registration against an isolated engine; it never calls a worker
+function or external backend and is not a deployment smoke test.
 
 Every entrypoint authorizes with GitHub OIDC audience
 `release-control-workers`. It uploads

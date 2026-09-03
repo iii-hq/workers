@@ -1,10 +1,10 @@
-import type { ISdk } from 'iii-sdk';
+import type { IIIClient } from 'iii-sdk';
 
 export interface CaseContext {
   call: (functionId: string, payload: unknown) => Promise<any>;
   sleep: (ms: number) => Promise<void>;
   expectError: (fn: () => Promise<unknown>, pattern: string | RegExp) => Promise<void>;
-  iii: ISdk;
+  iii: IIIClient;
 }
 
 export interface TestCase {

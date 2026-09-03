@@ -1,8 +1,9 @@
-import { Menu, Plus, Search, SettingsIcon, SquarePen, X } from 'lucide-react'
+import { Menu, Plus, Search, SettingsIcon, SquarePen } from 'lucide-react'
 import {
   type CSSProperties,
   Fragment,
   type MutableRefObject,
+  type DragEvent as ReactDragEvent,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -24,7 +25,11 @@ import { Sheet } from '@/components/ui/Sheet'
 import { Wordmark } from '@/components/ui/Wordmark'
 import { EmptyPane } from '@/components/workspace/EmptyPane'
 import { MobileWorkspaceMenu } from '@/components/workspace/MobileWorkspaceMenu'
-import { EdgeAddZone, ResizeHandle } from '@/components/workspace/pane-controls'
+import {
+  EdgeAddZone,
+  PanelDragHandle,
+  ResizeHandle,
+} from '@/components/workspace/pane-controls'
 import {
   enqueuePanelCommand,
   type PendingPanelCommand,
@@ -38,6 +43,8 @@ import { TabStrip } from '@/components/workspace/TabStrip'
 import { useScreenOptions } from '@/components/workspace/use-screen-options'
 import {
   hashForExtPage,
+  hashForSettingsLanding,
+  hashForView,
   useExtPageRoute,
   useHashRoute,
   type View,
@@ -99,6 +106,7 @@ import {
   type WorkspaceTab,
 } from '@/lib/workspace-tabs'
 import { Configuration } from '@/pages/Configuration'
+import { useUnsavedGuard } from '@/pages/Configuration/tabs/WorkersTab/useUnsavedGuard'
 import { ExtPage } from '@/pages/Ext'
 import { TracesV2 } from '@/pages/TracesV2'
 import { Workers } from '@/pages/Workers'
@@ -180,7 +188,7 @@ function hasExplicitHash(): boolean {
 
 interface WorkspacePanelCommands {
   openScreen: (screen: TabScreen) => void
-  splitRight: () => void
+  split: (side: 'left' | 'right') => void
 }
 
 export function App({
@@ -189,7 +197,10 @@ export function App({
   injectableUiRuntime?: Promise<InjectableUiRuntime>
 }) {
   const [theme, setTheme] = useTheme()
+  const { setDirty: setSettingsDirty, tryNavigate: trySettingsNavigation } =
+    useUnsavedGuard({ guardHashNavigation: true })
   const [view, setView] = useHashRoute()
+  const narrowSettings = useMediaQuery('(max-width: 639px)')
   const extPageId = useExtPageRoute()
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   // Held here, not in `PaletteHost`: ⌘K is one way in and the phone header's
@@ -340,12 +351,12 @@ export function App({
       current === -1 ? start : (current + delta + roots.length) % roots.length
     focusPane(roots[next])
   }, [])
-  const splitWorkspacePanel = useCallback(() => {
+  const splitWorkspacePanel = useCallback((side: 'left' | 'right') => {
     const commands = panelCommandsRef.current
-    if (commands) commands.splitRight()
+    if (commands) commands.split(side)
     else {
       const current = workspaceRef.current
-      current.addColumn(current.activeTab.id, 'right')
+      current.addColumn(current.activeTab.id, side)
     }
   }, [])
   useEffect(
@@ -365,17 +376,26 @@ export function App({
     if (primary) {
       lastHashScreenRef.current = primary
       const extId = extPageIdForScreen(primary)
-      if (extId) window.location.hash = hashForExtPage(extId)
-      else setView(primary as View)
+      const targetHash = extId
+        ? hashForExtPage(extId)
+        : hashForView(primary as View)
+      window.location.replace(targetHash)
     } else {
       lastHashScreenRef.current = lastTabViewRef.current
-      setView(lastTabViewRef.current)
+      window.location.replace(hashForView(lastTabViewRef.current))
     }
-  }, [setView])
+  }, [])
+  const requestCloseSettings = useCallback(() => {
+    trySettingsNavigation(closeSettings)
+  }, [closeSettings, trySettingsNavigation])
+  const openSettings = useCallback(() => {
+    const targetHash = hashForSettingsLanding(narrowSettings)
+    if (window.location.hash !== targetHash) window.location.hash = targetHash
+  }, [narrowSettings])
   const toggleSettings = useCallback(() => {
-    if (view === 'configuration') closeSettings()
-    else setView('configuration')
-  }, [view, setView, closeSettings])
+    if (view === 'configuration') requestCloseSettings()
+    else openSettings()
+  }, [view, openSettings, requestCloseSettings])
   const layoutSource = workspace.layoutSource
   const lastLayoutSourceRef = useRef(layoutSource)
   useEffect(() => {
@@ -469,7 +489,7 @@ export function App({
     'workspace.next': () => workspaceRef.current.activateAdjacent(1),
     'workspace.previous': () => workspaceRef.current.activateAdjacent(-1),
     'workspace.close': () => requestCloseTab(workspaceRef.current.activeTabId),
-    'panel.split': splitWorkspacePanel,
+    'panel.split': () => splitWorkspacePanel('right'),
     'panel.next': () => stepPaneFocus(1),
     'panel.previous': () => stepPaneFocus(-1),
     // Out of range is a no-op rather than a wrap: pressing 7 with four
@@ -526,7 +546,9 @@ export function App({
           <ConfigurationOverlay
             theme={theme}
             onThemeChange={setTheme}
-            onClose={closeSettings}
+            onDirtyChange={setSettingsDirty}
+            tryNavigate={trySettingsNavigation}
+            onClose={requestCloseSettings}
           />
         ) : null}
         <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
@@ -535,7 +557,7 @@ export function App({
           onOpenChange={setPaletteOpen}
           openScreen={openWorkspaceScreen}
           workspace={paletteWorkspace}
-          onOpenSettings={() => setView('configuration')}
+          onOpenSettings={openSettings}
           onOpenShortcuts={() => setShortcutsOpen(true)}
           theme={theme}
           onThemeChange={setTheme}
@@ -571,6 +593,11 @@ interface PendingPanelEntry {
 interface PendingPanelRemoval {
   tabId: string
   paneId: string
+}
+
+interface PanelDragState {
+  paneId: string
+  overPaneId: string
 }
 
 const DESKTOP_PANEL_MOTION_QUERY = '(min-width: 640px)'
@@ -879,6 +906,38 @@ function WorkspacePanes({
   const commitPendingRef = useRef(false)
   const [isResizing, setIsResizing] = useState(false)
   const isResizingRef = useRef(false)
+  const [panelDrag, setPanelDrag] = useState<PanelDragState | null>(null)
+  const panelDragRef = useRef<PanelDragState | null>(null)
+  const clearPanelDrag = useCallback(() => {
+    panelDragRef.current = null
+    setPanelDrag(null)
+  }, [])
+  const startPanelDrag = useCallback(
+    (paneId: string, event: ReactDragEvent<HTMLButtonElement>) => {
+      const next = { paneId, overPaneId: paneId }
+      panelDragRef.current = next
+      setPanelDrag(next)
+      event.dataTransfer.effectAllowed = 'move'
+      event.dataTransfer.setData('text/plain', paneId)
+
+      const panel = paneRoot(paneId)
+      if (!panel) return
+      const rect = panel.getBoundingClientRect()
+      event.dataTransfer.setDragImage(
+        panel,
+        Math.max(0, Math.min(rect.width, event.clientX - rect.left)),
+        Math.max(0, Math.min(rect.height, event.clientY - rect.top)),
+      )
+    },
+    [],
+  )
+  const targetPanelDrag = useCallback((paneId: string) => {
+    const current = panelDragRef.current
+    if (!current || current.overPaneId === paneId) return
+    const next = { ...current, overPaneId: paneId }
+    panelDragRef.current = next
+    setPanelDrag(next)
+  }, [])
   const startResize = useCallback(() => {
     isResizingRef.current = true
     setIsResizing(true)
@@ -889,9 +948,10 @@ function WorkspacePanes({
   }, [])
   useEffect(() => {
     void activeTab.id
+    clearPanelDrag()
     isResizingRef.current = false
     setIsResizing(false)
-  }, [activeTab.id])
+  }, [activeTab.id, clearPanelDrag])
   const sizesKey = `${activeTab.id}:${columns}`
   const prevSizesKeyRef = useRef(sizesKey)
   if (prevSizesKeyRef.current !== sizesKey) {
@@ -987,7 +1047,8 @@ function WorkspacePanes({
         enteringPanel ||
         exitingPanelRef.current ||
         panelCommandInFlightRef.current !== null ||
-        isResizingRef.current
+        isResizingRef.current ||
+        panelDragRef.current !== null
       ) {
         const alreadyQueued = pendingPanelRemovalsRef.current.some(
           (pending) =>
@@ -1046,7 +1107,8 @@ function WorkspacePanes({
       enteringPanel ||
       exitingPanelRef.current ||
       panelCommandInFlightRef.current !== null ||
-      isResizing
+      isResizing ||
+      panelDrag !== null
     )
       return
     while (pendingPanelRemovalsRef.current.length > 0) {
@@ -1078,6 +1140,7 @@ function WorkspacePanes({
     enteringPanel,
     isResizing,
     paneIds,
+    panelDrag,
     requestPanelRemoval,
     setPanelCommandInFlight,
     workspaceSignature,
@@ -1142,7 +1205,7 @@ function WorkspacePanes({
         return true
       }
 
-      const side = command.type === 'add' ? command.side : 'right'
+      const side = command.side
       const target = current.tabs.find((tab) => tab.id === command.tabId)
       if (!target || tabColumns(target) >= MAX_COLUMNS) {
         if (
@@ -1206,6 +1269,7 @@ function WorkspacePanes({
         exitingPanelRef.current ||
         panelCommandInFlightRef.current !== null ||
         isResizingRef.current ||
+        panelDragRef.current !== null ||
         pendingPanelRemovalsRef.current.length > 0 ||
         queuedPanelCommandsRef.current.length > 0
       ) {
@@ -1233,8 +1297,8 @@ function WorkspacePanes({
     const commands: WorkspacePanelCommands = {
       openScreen: (screen) =>
         dispatchPanelCommand({ type: 'open', screen, tabId: activeTab.id }),
-      splitRight: () =>
-        dispatchPanelCommand({ type: 'split', tabId: activeTab.id }),
+      split: (side) =>
+        dispatchPanelCommand({ type: 'add', tabId: activeTab.id, side }),
     }
     commandsRef.current = commands
     return () => {
@@ -1252,6 +1316,7 @@ function WorkspacePanes({
       exitingPanelRef.current ||
       panelCommandInFlightRef.current !== null ||
       isResizing ||
+      panelDrag !== null ||
       pendingPanelRemovalsRef.current.length > 0
     )
       return
@@ -1261,12 +1326,52 @@ function WorkspacePanes({
     panelCommandRevision,
     panelMotionActive,
     isResizing,
+    panelDrag,
     startPanelCommand,
     workspaceSignature,
   ])
 
   const panelCommandQueued = queuedPanelCommandsRef.current.length > 0
   const panelRemovalQueued = pendingPanelRemovalsRef.current.length > 0
+  const panelInteractionDisabled =
+    panelMotionActive ||
+    panelWritePending ||
+    panelCommandQueued ||
+    panelRemovalQueued ||
+    isResizing
+
+  const requestPanelReorder = useCallback(
+    (paneId: string, targetPaneId: string) => {
+      if (paneId === targetPaneId) return
+      const current = workspaceRef.current
+      const tab = current.tabs.find(
+        (candidate) => candidate.id === activeTab.id,
+      )
+      const currentPaneIds = tab ? tabPaneIds(tab) : []
+      if (
+        !currentPaneIds.includes(paneId) ||
+        !currentPaneIds.includes(targetPaneId) ||
+        panelMotionActiveRef.current ||
+        exitingPanelRef.current ||
+        panelCommandInFlightRef.current !== null ||
+        isResizingRef.current ||
+        pendingPanelRemovalsRef.current.length > 0 ||
+        queuedPanelCommandsRef.current.length > 0
+      )
+        return
+      current.reorderPanel(activeTab.id, paneId, targetPaneId)
+    },
+    [activeTab.id],
+  )
+
+  const dropPanel = useCallback(
+    (targetPaneId: string) => {
+      const sourcePaneId = panelDragRef.current?.paneId
+      clearPanelDrag()
+      if (sourcePaneId) requestPanelReorder(sourcePaneId, targetPaneId)
+    },
+    [clearPanelDrag, requestPanelReorder],
+  )
 
   return (
     <section
@@ -1278,6 +1383,9 @@ function WorkspacePanes({
       {Array.from({ length: columns }, (_, column) => {
         const screen = activeTab.screens[column] ?? null
         const paneId = paneIds[column]
+        const isDragged = panelDrag?.paneId === paneId
+        const isDropTarget =
+          panelDrag?.overPaneId === paneId && panelDrag.paneId !== paneId
         const isExiting =
           exitingPanel?.tabId === activeTab.id && exitingPanel.paneId === paneId
         const isEntering =
@@ -1313,9 +1421,11 @@ function WorkspacePanes({
               } as CSSProperties
             }
             className={cn(
-              'flex min-h-0 min-w-full basis-full shrink-0 snap-center flex-col overflow-hidden [scroll-snap-stop:always]',
+              'group/panel relative flex min-h-0 min-w-full basis-full shrink-0 snap-center flex-col overflow-hidden [scroll-snap-stop:always]',
               'focus-visible:-outline-offset-2 focus-visible:outline-2 focus-visible:outline-accent',
               'sm:min-w-[17.5rem] sm:basis-0 sm:shrink sm:grow-[var(--panel-grow)]',
+              isDragged && 'opacity-60',
+              isDropTarget && 'z-10 outline-2 -outline-offset-2 outline-accent',
               isEntering &&
                 (motionDirection === 'left'
                   ? 'workspace-panel-enter-left'
@@ -1327,6 +1437,9 @@ function WorkspacePanes({
             )}
             data-workspace-panel={column}
             data-workspace-pane-id={paneId}
+            data-panel-drag-state={
+              isDragged ? 'dragging' : isDropTarget ? 'target' : undefined
+            }
             data-motion-state={
               isEntering ? 'entering' : isExiting ? 'exiting' : 'idle'
             }
@@ -1334,6 +1447,17 @@ function WorkspacePanes({
             aria-hidden={isExiting || undefined}
             aria-label={`panel ${column + 1} of ${columns}`}
             tabIndex={-1}
+            onDragOver={(event) => {
+              if (!panelDragRef.current) return
+              event.preventDefault()
+              event.dataTransfer.dropEffect = 'move'
+              targetPanelDrag(paneId)
+            }}
+            onDrop={(event) => {
+              if (!panelDragRef.current) return
+              event.preventDefault()
+              dropPanel(paneId)
+            }}
             onAnimationEnd={(event) => {
               const rootGeometryFinished =
                 event.target === event.currentTarget &&
@@ -1359,6 +1483,20 @@ function WorkspacePanes({
               }
             }}
           >
+            {columns > 1 ? (
+              <PanelDragHandle
+                index={column}
+                count={columns}
+                disabled={panelInteractionDisabled}
+                dragging={isDragged}
+                onDragStart={(event) => startPanelDrag(paneId, event)}
+                onDragEnd={clearPanelDrag}
+                onMove={(nextIndex) => {
+                  const targetPaneId = paneIds[nextIndex]
+                  if (targetPaneId) requestPanelReorder(paneId, targetPaneId)
+                }}
+              />
+            ) : null}
             <div className="workspace-panel-surface flex min-h-0 min-w-full flex-1 flex-col overflow-hidden border-y border-edge bg-panel sm:min-w-[17.5rem] sm:rounded-sm sm:border">
               {screen === null ? (
                 <EmptyPane
@@ -1394,12 +1532,7 @@ function WorkspacePanes({
               <ResizeHandle
                 key="divider"
                 value={sizes[column - 1] * 100}
-                disabled={
-                  panelMotionActive ||
-                  panelWritePending ||
-                  panelCommandQueued ||
-                  panelRemovalQueued
-                }
+                disabled={panelInteractionDisabled || panelDrag !== null}
                 motionState={
                   column === exitingDivider
                     ? 'exiting'
@@ -1423,14 +1556,14 @@ function WorkspacePanes({
 
       {columns < MAX_COLUMNS ? (
         <section
-          aria-label="swipe to create a new panel"
+          aria-label="swipe to split right"
           className="flex min-h-0 min-w-full basis-full shrink-0 snap-center items-center justify-center border-y border-dashed border-edge bg-panel/60 px-6 text-center [scroll-snap-stop:always] sm:hidden"
         >
           <div className="flex flex-col items-center gap-2 font-sans text-ink-faint">
             <span className="flex size-12 items-center justify-center rounded-sm bg-surface">
               <Plus className="size-5 shrink-0" aria-hidden />
             </span>
-            <span className="text-base">New panel</span>
+            <span className="text-base">Split right</span>
             <span className="text-base text-ink-ghost">
               Keep swiping to add it
             </span>
@@ -1442,25 +1575,13 @@ function WorkspacePanes({
         <>
           <EdgeAddZone
             side="left"
-            disabled={
-              panelMotionActive ||
-              panelWritePending ||
-              panelCommandQueued ||
-              panelRemovalQueued ||
-              isResizing
-            }
+            disabled={panelInteractionDisabled || panelDrag !== null}
             nudge={edgeNudge}
             onAdd={() => addEdgeColumn('left')}
           />
           <EdgeAddZone
             side="right"
-            disabled={
-              panelMotionActive ||
-              panelWritePending ||
-              panelCommandQueued ||
-              panelRemovalQueued ||
-              isResizing
-            }
+            disabled={panelInteractionDisabled || panelDrag !== null}
             nudge={edgeNudge}
             onAdd={() => addEdgeColumn('right')}
           />
@@ -1710,46 +1831,44 @@ function Header({
 interface ConfigurationOverlayProps {
   theme: ReturnType<typeof useTheme>[0]
   onThemeChange: (next: ReturnType<typeof useTheme>[0]) => void
+  onDirtyChange: (dirty: boolean) => void
+  tryNavigate: (action: () => void) => boolean
   onClose: () => void
 }
 
 /**
- * Console settings as a PAGE over the workspace — never a tab screen (the
- * tab model rejects it; `screenForView` maps the route to null). The
- * workspace stays mounted underneath, so closing restores the panes
- * exactly as they were. Deep-linkable via `#/configuration`; Escape or
- * the close affordance returns to the last tab-backed view.
+ * Console settings in one modal over the workspace — never a tab screen (the
+ * tab model rejects it; `screenForView` maps the route to null). The workspace
+ * stays mounted underneath, so closing restores the panes exactly as they
+ * were. Deep-linkable via `#/configuration` and its worker sub-routes.
  */
 function ConfigurationOverlay({
   theme,
   onThemeChange,
+  onDirtyChange,
+  tryNavigate,
   onClose,
 }: ConfigurationOverlayProps) {
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    document.addEventListener('keydown', onKeyDown)
-    return () => document.removeEventListener('keydown', onKeyDown)
-  }, [onClose])
-
   return (
-    <div className="fixed inset-0 z-40 flex flex-col bg-bg">
-      <div className="flex h-12 shrink-0 items-center justify-end pr-6">
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="close settings"
-          title="close settings (esc)"
-          className="font-mono text-[14px] leading-none w-8 h-8 flex items-center justify-center rounded-sm border border-transparent text-ink-faint hover:text-ink hover:bg-surface-hover transition-colors focus-visible:border-accent focus-visible:outline-none"
-        >
-          <X className="w-4 h-4" />
-        </button>
-      </div>
-      <div className="flex-1 min-h-0 flex flex-col">
-        <Configuration theme={theme} onThemeChange={onThemeChange} />
-      </div>
-    </div>
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose()
+      }}
+    >
+      <DialogContent className="flex h-[calc(100dvh-1rem)] max-h-[calc(100dvh-1rem)] w-[calc(100vw-1rem)] max-w-6xl flex-col overflow-hidden rounded-xl p-0 shadow-floating sm:h-[min(52rem,calc(100dvh-3rem))] sm:max-h-[calc(100dvh-3rem)] sm:w-[calc(100vw-3rem)]">
+        <DialogTitle className="sr-only">Settings</DialogTitle>
+        <DialogDescription className="sr-only">
+          Configure the console and registered workers.
+        </DialogDescription>
+        <Configuration
+          theme={theme}
+          onThemeChange={onThemeChange}
+          onDirtyChange={onDirtyChange}
+          tryNavigate={tryNavigate}
+        />
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -1786,40 +1905,40 @@ function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
           )
           .filter(([, entries]) => entries.length > 0)
           .map(([group, entries]) => (
-          <section key={group} className="mt-4">
-            <h3 className="text-[11px] uppercase tracking-[0.18em] text-ink-ghost">
-              {group}
-            </h3>
-            <ul className="mt-1 divide-y divide-rule-2 border-t border-b border-rule-2">
-              {entries.map((entry) => (
-                <li
-                  key={entry.id}
-                  className="flex items-center justify-between gap-6 py-2 font-mono text-[12px] text-ink"
-                >
-                  <span className="text-ink-faint">{entry.title}</span>
-                  {/* Alternatives, not one chord: without a separator `tab`
+            <section key={group} className="mt-4">
+              <h3 className="text-[11px] uppercase tracking-[0.18em] text-ink-ghost">
+                {group}
+              </h3>
+              <ul className="mt-1 divide-y divide-rule-2 border-t border-b border-rule-2">
+                {entries.map((entry) => (
+                  <li
+                    key={entry.id}
+                    className="flex items-center justify-between gap-6 py-2 font-mono text-[12px] text-ink"
+                  >
+                    <span className="text-ink-faint">{entry.title}</span>
+                    {/* Alternatives, not one chord: without a separator `tab`
                       and `shift tab` read as a single four-key press. */}
-                  <span className="flex shrink-0 items-center gap-2">
-                    {resolveBindings(entry.bindings, platform).map(
-                      (binding, index) => (
-                        <Fragment key={binding}>
-                          {index > 0 ? (
-                            <span className="text-ink-ghost">or</span>
-                          ) : null}
-                          <KeyCombo
-                            binding={binding}
-                            platform={platform}
-                            digitRange={entry.digitIndex}
-                          />
-                        </Fragment>
-                      ),
-                    )}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </section>
-        ))}
+                    <span className="flex shrink-0 items-center gap-2">
+                      {resolveBindings(entry.bindings, platform).map(
+                        (binding, index) => (
+                          <Fragment key={binding}>
+                            {index > 0 ? (
+                              <span className="text-ink-ghost">or</span>
+                            ) : null}
+                            <KeyCombo
+                              binding={binding}
+                              platform={platform}
+                              digitRange={entry.digitIndex}
+                            />
+                          </Fragment>
+                        ),
+                      )}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ))}
       </DialogContent>
     </Dialog>
   )

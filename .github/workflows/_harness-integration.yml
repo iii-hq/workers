@@ -18,72 +18,58 @@ on:
         type: string
         required: false
         default: ''
+      runner:
+        description: Runner label used for the single Harness stack build
+        type: string
+        required: false
+        default: workers-ci-linux-8core
+      execution-runner:
+        description: Runner label used by validation, Integration, Playwright and coverage
+        type: string
+        required: false
+        default: ubuntu-latest
+      cache-key-suffix:
+        description: Cache cohort used to isolate comparable warm and cold runs
+        type: string
+        required: false
+        default: ''
 
 jobs:
-  integration:
-    name: harness integration
-    runs-on: [self-hosted, Linux, X64, rust]
+  validate:
+    name: validate harness scenarios
+    runs-on: ${{ inputs.execution-runner }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
           ref: ${{ inputs.source_ref }}
 
-      - name: Read and validate engine.lock
-        id: lock
-        run: |
-          set -euo pipefail
-          lock=harness/tests/integration/engine.lock
-          read_field() {
-            local field=$1 values
-            values=$(sed -n "s/^${field} = \"\\([^\"]*\\)\"$/\\1/p" "$lock")
-            [[ $(printf '%s\n' "$values" | sed '/^$/d' | wc -l) -eq 1 ]] || {
-              echo "engine.lock: $field must appear exactly once"
-              exit 3
-            }
-            printf '%s' "$values"
-          }
-          invalid=$(sed \
-            -e '/^[[:space:]]*$/d' \
-            -e '/^[[:space:]]*#/d' \
-            -e '/^\(repository\|revision\|package\|binary\) = "[^"]*"$/d' \
-            "$lock")
-          [[ -z "$invalid" ]] || {
-            echo "engine.lock: unsupported or malformed entry"
-            printf '%s\n' "$invalid"
-            exit 3
-          }
-          repository=$(read_field repository)
-          revision=$(read_field revision)
-          package=$(read_field package)
-          binary=$(read_field binary)
-          [[ "$repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || {
-            echo "engine.lock: repository must be an owner/name slug"
-            exit 3
-          }
-          [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || { echo "engine.lock: revision must be 40-hex"; exit 3; }
-          [[ "$package" =~ ^[A-Za-z0-9_-]+$ ]] || {
-            echo "engine.lock: package contains unsupported characters"
-            exit 3
-          }
-          [[ "$binary" =~ ^target/(debug|release)/[A-Za-z0-9_.-]+$ ]] || {
-            echo "engine.lock: binary must be a target profile path"
-            exit 3
-          }
-          {
-            echo "repository=$repository"
-            echo "revision=$revision"
-            echo "package=$package"
-            echo "binary=$binary"
-          } >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # 1.97.1
+        with:
+          toolchain: 1.97.1
 
-      - name: Checkout pinned engine source
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Integration crate unit tests
+        run: cargo test --locked --manifest-path harness/Cargo.toml -p harness-integration
+
+      - name: Validate integration scenarios
+        run: make -C harness integration-validate
+
+  build:
+    name: build harness stack
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 45
+    outputs:
+      source-sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
-          repository: ${{ steps.lock.outputs.repository }}
-          ref: ${{ steps.lock.outputs.revision }}
-          path: target/integration-engine-src
+          ref: ${{ inputs.source_ref }}
+
+      - name: Record source revision
+        id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # 1.97.1
         with:
@@ -100,36 +86,27 @@ jobs:
           # This step never cached; the repository is already over its cache budget.
           node-version: 22
 
-      # The engine source is immutable at the locked revision. Cache the final
-      # executable, not its multi-gigabyte target directory, so a hit can skip
-      # Cargo entirely instead of merely making the unconditional rebuild less
-      # cold.
-      - name: Restore pinned engine binary
-        id: engine-cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: target/integration-engine-src/${{ steps.lock.outputs.binary }}
-          key: integration-engine-bin-rust-1.97.1-${{ runner.os }}-${{ runner.arch }}-${{ steps.lock.outputs.revision }}-${{ hashFiles('harness/tests/integration/engine.lock') }}-${{ hashFiles('target/integration-engine-src/Cargo.lock') }}
-
-      - name: Build pinned engine
-        if: steps.engine-cache.outputs.cache-hit != 'true'
-        working-directory: target/integration-engine-src
-        run: cargo build --locked --release --timings -p ${{ steps.lock.outputs.package }}
-
-      - name: Save pinned engine binary
-        if: inputs.save-cache && steps.engine-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: target/integration-engine-src/${{ steps.lock.outputs.binary }}
-          key: ${{ steps.engine-cache.outputs.cache-primary-key }}
-
-      - name: Record engine digest
+      - name: Install latest iii @rc
         id: engine
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          bin="$GITHUB_WORKSPACE/target/integration-engine-src/${{ steps.lock.outputs.binary }}"
-          [[ -x "$bin" ]] || { echo "engine binary missing at $bin"; exit 3; }
+          installer="$RUNNER_TEMP/install-iii.sh"
+          curl -fsSL --retry 3 --retry-all-errors --retry-delay 5 \
+            https://install.iii.dev/iii/main/install.sh -o "$installer"
+          sh "$installer" --rc
+          {
+            echo "$HOME/.local/bin"
+            echo "$HOME/.iii/bin"
+          } >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$HOME/.iii/bin:$PATH"
+          bin=$(command -v iii)
+          [[ -x "$bin" ]] || { echo "iii @rc binary is missing or not executable"; exit 3; }
+          version=$("$bin" --version)
+          printf '%s\n' "$version"
           sha256sum "$bin"
+          echo "III_ENGINE_VERSION=$version" >> "$GITHUB_ENV"
           echo "bin=$bin" >> "$GITHUB_OUTPUT"
 
       - name: Restore integration Rust cache
@@ -138,36 +115,24 @@ jobs:
         with:
           # Instrumented builds have different fingerprints; keep them on their
           # own key so coverage runs never poison the normal cache.
-          shared-key: ${{ inputs.coverage && 'harness-integration-coverage' || 'harness-integration' }}
+          shared-key: ${{ inputs.coverage && 'harness-integration-coverage' || 'harness-integration' }}${{ inputs.cache-key-suffix && format('-{0}', inputs.cache-key-suffix) || '' }}
           save-if: ${{ inputs.save-cache || inputs.coverage }}
+          cache-directories: target/integration-build
           workspaces: |
             harness -> target
             queue -> target
             session-manager -> target
             context-manager -> target
+            cron -> target
             iii-directory -> target
             state -> target
             console -> target
             database -> target
 
-      - name: Integration crate unit tests
-        run: cargo test --locked --manifest-path harness/Cargo.toml -p harness-integration
-
-      - name: Validate integration scenarios
-        run: make -C harness integration-validate
-
-      - name: Prepare coverage directories
-        if: inputs.coverage
-        run: mkdir -p target/coverage/profraw
-
-      - name: Run integration scenarios
+      - name: Build integration stack once
         env:
           RUSTFLAGS: ${{ inputs.coverage && '-Cinstrument-coverage -Cllvm-args=-runtime-counter-relocation' || '' }}
-          LLVM_PROFILE_FILE: ${{ inputs.coverage && format('{0}/target/coverage/profraw/%m_%p%c.profraw', github.workspace) || '' }}
-        run: >-
-          make -C harness integration-test
-          III_BIN="${{ steps.engine.outputs.bin }}"
-          CARGO_BUILD_FLAGS="--locked --timings"
+        run: make -C harness integration-build CARGO_BUILD_FLAGS="--locked --timings"
 
       - name: Install Console web dependencies
         working-directory: console/web
@@ -180,33 +145,97 @@ jobs:
       - name: Build Console worker
         env:
           RUSTFLAGS: ${{ inputs.coverage && '-Cinstrument-coverage -Cllvm-args=-runtime-counter-relocation' || '' }}
-          LLVM_PROFILE_FILE: ${{ inputs.coverage && format('{0}/target/coverage/profraw/%m_%p%c.profraw', github.workspace) || '' }}
-        run: cargo build --locked --release --timings --manifest-path console/Cargo.toml
+        run: >-
+          cargo build --locked --release --timings
+          --target-dir "$GITHUB_WORKSPACE/target/integration-build"
+          --manifest-path console/Cargo.toml
 
-      - name: Install Playwright Chromium
-        working-directory: console/web
-        run: pnpm exec playwright install --with-deps chromium
+      - name: Package immutable stack bundle
+        run: |
+          .github/scripts/harness_stack_bundle.sh pack \
+            --output "$GITHUB_WORKSPACE/target/harness-stack.tar.zst" \
+            --source-sha "${{ steps.source.outputs.sha }}" \
+            --engine-version "$III_ENGINE_VERSION" \
+            --engine-bin "${{ steps.engine.outputs.bin }}" \
+            --bin-dir "$GITHUB_WORKSPACE/target/integration-build/release"
 
-      - name: Typecheck Console E2E tests
-        working-directory: console/web
-        run: pnpm typecheck:e2e
+      - name: Upload stack bundle
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: harness-stack-bundle
+          path: target/harness-stack.tar.zst
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error
 
-      - name: Run Console Playwright scenarios
-        working-directory: console/web
+      - name: Write cache summary
+        if: always()
         env:
-          III_BIN: ${{ steps.engine.outputs.bin }}
-          HARNESS_INTEGRATION_BIN: ${{ github.workspace }}/harness/target/release/harness-integration
-          HARNESS_BIN: ${{ github.workspace }}/harness/target/release/harness
-          CONSOLE_BIN: ${{ github.workspace }}/console/target/release/console
-          QUEUE_BIN: ${{ github.workspace }}/queue/target/release/queue
-          III_DIRECTORY_BIN: ${{ github.workspace }}/iii-directory/target/release/iii-directory
-          SESSION_MANAGER_BIN: ${{ github.workspace }}/session-manager/target/release/session-manager
-          CONTEXT_MANAGER_BIN: ${{ github.workspace }}/context-manager/target/release/context-manager
-          STATE_BIN: ${{ github.workspace }}/state/target/release/state
-          DATABASE_BIN: ${{ github.workspace }}/database/target/release/database
-          CONSOLE_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/console-e2e
+          STACK_HIT: ${{ steps.stack-cache.outputs.cache-hit }}
+          SAVE_CACHE: ${{ inputs.save-cache }}
+          RUNNER_LABEL: ${{ inputs.runner }}
+          CACHE_COHORT: ${{ inputs.cache-key-suffix || 'stable' }}
+        run: |
+          {
+            echo "### Harness stack build"
+            echo
+            echo "| Runner label | Runner name | Cache cohort |"
+            echo "| --- | --- | --- |"
+            echo "| $RUNNER_LABEL | $RUNNER_NAME | $CACHE_COHORT |"
+            echo
+            echo "The iii engine is downloaded fresh from the latest @rc channel."
+            echo
+            echo "| Cache | Hit | Save enabled |"
+            echo "| --- | --- | --- |"
+            echo "| integration Rust | ${STACK_HIT:-false} | $SAVE_CACHE |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Rust build timings
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: harness-integration-rust-timings
+          path: target/integration-build/cargo-timings/*.html
+          retention-days: 14
+          if-no-files-found: ignore
+
+  integration:
+    name: run harness integration
+    needs: [validate, build]
+    runs-on: ${{ inputs.execution-runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ needs.build.outputs.source-sha }}
+
+      - name: Download stack bundle
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: harness-stack-bundle
+          path: target/bundle-download
+
+      - name: Verify and unpack stack bundle
+        run: |
+          .github/scripts/harness_stack_bundle.sh unpack \
+            --archive target/bundle-download/harness-stack.tar.zst \
+            --destination target/harness-stack \
+            --expected-source-sha "${{ needs.build.outputs.source-sha }}"
+          echo "STACK_BIN_DIR=$GITHUB_WORKSPACE/target/harness-stack/bin" >> "$GITHUB_ENV"
+          echo "III_ENGINE_VERSION=$(jq -er '.engine_version' target/harness-stack/manifest.json)" >> "$GITHUB_ENV"
+
+      - name: Prepare coverage directory
+        if: inputs.coverage
+        run: mkdir -p target/coverage/profraw && touch target/coverage/profraw/.keep
+
+      - name: Run integration scenarios
+        env:
           LLVM_PROFILE_FILE: ${{ inputs.coverage && format('{0}/target/coverage/profraw/%m_%p%c.profraw', github.workspace) || '' }}
-        run: pnpm test:e2e
+        run: >-
+          make -C harness integration-run
+          III_BIN="$STACK_BIN_DIR/iii"
+          INTEGRATION_BIN_DIR="$STACK_BIN_DIR"
 
       - name: Verify integration report links
         run: |
@@ -229,59 +258,15 @@ jobs:
             }
           done
 
-      - name: Generate coverage report
-        if: always() && inputs.coverage
-        run: |
-          .github/scripts/coverage_report.sh \
-            --profraw-dir target/coverage/profraw \
-            --output-dir target/coverage/integration \
-            --title harness-integration \
-            --object queue/target/release/queue \
-            --object iii-directory/target/release/iii-directory \
-            --object session-manager/target/release/session-manager \
-            --object context-manager/target/release/context-manager \
-            --object state/target/release/state \
-            --object harness/target/release/harness \
-            --object harness/target/release/harness-integration \
-            --object console/target/release/console
-
-      - name: Upload coverage report
+      - name: Upload integration coverage profiles
         if: always() && inputs.coverage
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: harness-integration-coverage
-          path: |
-            target/coverage/integration/html/
-            target/coverage/integration/summary.json
-            target/coverage/integration/report.txt
-          retention-days: 14
-          if-no-files-found: ignore
-
-      - name: Write cache summary
-        if: always()
-        env:
-          ENGINE_HIT: ${{ steps.engine-cache.outputs.cache-hit }}
-          SAVE_CACHE: ${{ inputs.save-cache }}
-        run: |
-          {
-            echo "### Integration build caches"
-            echo
-            echo "| Cache | Hit | Save enabled |"
-            echo "| --- | --- | --- |"
-            echo "| pinned engine | ${ENGINE_HIT:-false} | $SAVE_CACHE |"
-            echo "| integration Rust | see rust-cache log | $SAVE_CACHE |"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload Rust build timings
-        if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        with:
-          name: harness-integration-rust-timings
-          path: |
-            */target/cargo-timings/*.html
-            target/integration-engine-src/target/cargo-timings/*.html
-          retention-days: 14
-          if-no-files-found: ignore
+          name: harness-integration-profraw
+          path: target/coverage/profraw/
+          retention-days: 3
+          include-hidden-files: true
+          if-no-files-found: error
 
       - name: Upload compact results
         if: always()
@@ -294,14 +279,92 @@ jobs:
             target/integration/*/teardown.json
           if-no-files-found: ignore
 
-      - name: Upload full non-pass artifacts
+      - name: Upload full integration diagnostics on failure
         if: failure()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: integration-artifacts
+          name: integration-failure-diagnostics
           path: target/integration/
           retention-days: 14
           if-no-files-found: ignore
+
+  playwright:
+    name: run Console Playwright
+    needs: [validate, build]
+    runs-on: ${{ inputs.execution-runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ needs.build.outputs.source-sha }}
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+        with:
+          version: 11.13.1
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+
+      - name: Download stack bundle
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: harness-stack-bundle
+          path: target/bundle-download
+
+      - name: Verify and unpack stack bundle
+        run: |
+          .github/scripts/harness_stack_bundle.sh unpack \
+            --archive target/bundle-download/harness-stack.tar.zst \
+            --destination target/harness-stack \
+            --expected-source-sha "${{ needs.build.outputs.source-sha }}"
+          echo "STACK_BIN_DIR=$GITHUB_WORKSPACE/target/harness-stack/bin" >> "$GITHUB_ENV"
+          echo "III_ENGINE_VERSION=$(jq -er '.engine_version' target/harness-stack/manifest.json)" >> "$GITHUB_ENV"
+
+      - name: Install Console web dependencies
+        working-directory: console/web
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright Chromium
+        working-directory: console/web
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Typecheck Console E2E tests
+        working-directory: console/web
+        run: pnpm typecheck:e2e
+
+      - name: Prepare coverage directory
+        if: inputs.coverage
+        run: mkdir -p target/coverage/profraw && touch target/coverage/profraw/.keep
+
+      - name: Run Console Playwright scenarios
+        working-directory: console/web
+        env:
+          III_BIN: ${{ github.workspace }}/target/harness-stack/bin/iii
+          HARNESS_INTEGRATION_BIN: ${{ github.workspace }}/target/harness-stack/bin/harness-integration
+          HARNESS_BIN: ${{ github.workspace }}/target/harness-stack/bin/harness
+          CONSOLE_BIN: ${{ github.workspace }}/target/harness-stack/bin/console
+          QUEUE_BIN: ${{ github.workspace }}/target/harness-stack/bin/queue
+          III_DIRECTORY_BIN: ${{ github.workspace }}/target/harness-stack/bin/iii-directory
+          SESSION_MANAGER_BIN: ${{ github.workspace }}/target/harness-stack/bin/session-manager
+          CONTEXT_MANAGER_BIN: ${{ github.workspace }}/target/harness-stack/bin/context-manager
+          CRON_BIN: ${{ github.workspace }}/target/harness-stack/bin/cron
+          STATE_BIN: ${{ github.workspace }}/target/harness-stack/bin/state
+          DATABASE_BIN: ${{ github.workspace }}/target/harness-stack/bin/database
+          CONSOLE_E2E_ARTIFACTS_DIR: ${{ github.workspace }}/target/console-e2e
+          LLVM_PROFILE_FILE: ${{ inputs.coverage && format('{0}/target/coverage/profraw/%m_%p%c.profraw', github.workspace) || '' }}
+        run: pnpm test:e2e
+
+      - name: Upload Playwright coverage profiles
+        if: always() && inputs.coverage
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: harness-playwright-profraw
+          path: target/coverage/profraw/
+          retention-days: 3
+          include-hidden-files: true
+          if-no-files-found: error
 
       - name: Upload Console E2E artifacts
         if: always()
@@ -309,5 +372,70 @@ jobs:
         with:
           name: console-e2e-artifacts
           path: target/console-e2e/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  coverage:
+    name: aggregate harness coverage
+    if: always() && inputs.coverage && needs.build.result == 'success'
+    needs: [build, integration, playwright]
+    runs-on: ${{ inputs.execution-runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ needs.build.outputs.source-sha }}
+
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # 1.97.1
+        with:
+          toolchain: 1.97.1
+          components: llvm-tools
+
+      - name: Download stack bundle
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: harness-stack-bundle
+          path: target/bundle-download
+
+      - name: Verify and unpack stack bundle
+        run: |
+          .github/scripts/harness_stack_bundle.sh unpack \
+            --archive target/bundle-download/harness-stack.tar.zst \
+            --destination target/harness-stack \
+            --expected-source-sha "${{ needs.build.outputs.source-sha }}"
+
+      - name: Download coverage profiles
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: harness-*-profraw
+          path: target/coverage/profraw
+          merge-multiple: true
+
+      - name: Generate coverage report
+        run: |
+          .github/scripts/coverage_report.sh \
+            --profraw-dir target/coverage/profraw \
+            --output-dir target/coverage/integration \
+            --title harness-integration \
+            --object target/harness-stack/bin/queue \
+            --object target/harness-stack/bin/iii-directory \
+            --object target/harness-stack/bin/session-manager \
+            --object target/harness-stack/bin/context-manager \
+            --object target/harness-stack/bin/cron \
+            --object target/harness-stack/bin/state \
+            --object target/harness-stack/bin/harness \
+            --object target/harness-stack/bin/harness-integration \
+            --object target/harness-stack/bin/console
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: harness-integration-coverage
+          path: |
+            target/coverage/integration/html/
+            target/coverage/integration/summary.json
+            target/coverage/integration/report.txt
           retention-days: 14
           if-no-files-found: ignore

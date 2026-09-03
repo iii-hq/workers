@@ -5,6 +5,7 @@ import {
   type ConfigHolder,
   ConfigSchema,
   configId,
+  DEFAULT_CONFIG_ID,
   defaultConfig,
   runtimeJsonSchema,
 } from './config.js';
@@ -27,6 +28,7 @@ export async function registerCursorConfig(
     description:
       'Cursor provider and agent worker using normal Cursor CLI login for LLM Router and local ACP sessions, plus the optional sdk.v1 Bridge for explicit API-key or cloud sessions.',
     schema: runtimeJsonSchema(),
+    metadata: { ui_form: DEFAULT_CONFIG_ID },
     initial_value: initialValue,
   });
 }

@@ -14,4 +14,4 @@ description: OpenGantry governance for iii. Kernel verify and middleware gate be
 runtime:
   kind: javascript
 scripts:
-  start: node ./index.mjs
+  start: node ./dist/bundle/index.mjs

@@ -21,7 +21,12 @@ def add_catalog_worker(root: Path, worker: str) -> None:
     catalog = yaml.safe_load(path.read_text()) if path.exists() else {"workers": {}}
     catalog["workers"][worker] = {
         "source": {"path": worker, "package_manifest": "Cargo.toml"},
-        "artifact": {"kind": "rust-binary", "binary": worker, "targets": ["x86_64-unknown-linux-gnu"]},
+        "artifact": {
+            "kind": "rust-binary",
+            "binary": worker,
+            "targets": ["x86_64-unknown-linux-gnu"],
+            "windows_exception": "Windows support has not been validated for this worker",
+        },
         "publish": True,
     }
     path.write_text(yaml.safe_dump(catalog, sort_keys=False))

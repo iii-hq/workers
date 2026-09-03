@@ -58,7 +58,7 @@ npx skills add iii-hq/iii --all
 | [`database`](database/) | Rust | PostgreSQL, MySQL, and SQLite client — query, execute, transactions, prepared statements, and change feeds. |
 | [`editor`](editor/) | Rust | A shared code workspace — open buffers, file tree, unified diffs, fuzzy find and conflict-safe saves, held in `state` so an agent and a person see one editor. Files and git go through `shell`; ships a console editor page. |
 | [`vscode`](vscode/) | Node | VS Code as an iii worker — `vscode::*` runs the VS Code Server through the `code` CLI per workspace, and a Console page embeds the Workbench for the working directory. |
-| [`compose-ui`](compose-ui/) | Node | The compose daemon in the Console — a **Compose** page over `compose::*` with live container state, lifecycle actions, worker packages, and per-container log tails, plus a `compose-ui::changed` trigger type for supervisor changes. |
+| [`compose-ui`](compose-ui/) | Rust | The compose daemon in the Console — a **Compose** page over `compose::*` with live container state, lifecycle actions, worker packages, and per-container log tails, plus a `compose-ui::changed` trigger type for supervisor changes. |
 | [`kanban`](kanban/) | Node | Repository-aware multi-worker Kanban runs — launch Harness and external worker tasks under one root session, isolate them in managed Git worktrees, gate dependencies, review results, and land approved branches from the Console. |
 | [`iii-directory`](iii-directory/) | Rust | Engine introspection, workers-registry proxy, filesystem-backed skills, system prompts, and agent profiles, plus one-shot lexical function search — `directory::search_functions` returns compact candidates for the relevant functions (BM25 + coverage pruning, installed + installable-from-registry) and directs callers to batch selected ids through `engine::functions::info`; its search hint is injected at most once per turn. |
 | [`lsp`](lsp/) | Rust | Language Server for iii function ids, trigger configs, and worker discovery. Autocomplete / hover across JS/TS, Python, Rust. |
@@ -150,6 +150,38 @@ aarch64-unknown-linux-gnu
 armv7-unknown-linux-gnueabihf
 ```
 
+### Local binary matrix
+
+Build a Rust worker locally without waiting for GitHub Actions:
+
+```bash
+python3 .github/scripts/build_worker_binaries.py shell
+```
+
+On Windows, use `py .github\scripts\build_worker_binaries.py shell`. The TUI
+starts with every target available on the current host selected; use the arrow
+keys and Space to change the matrix, then Enter to build. Archives and SHA-256
+files are written to `dist/workers/<worker>/` using the same names as release
+assets.
+
+The local matrix deliberately excludes all MSVC targets. Linux targets build
+through [`cross`](https://github.com/cross-rs/cross), backed by Docker or
+Podman, on macOS, Linux, or Windows. Apple targets build with Cargo and the
+Apple SDK, so they are available only when the host is macOS. Workers with UI
+bundles also require Node.js and pnpm; their frontends are built once before
+the Rust matrix starts.
+
+Prerequisites:
+
+```bash
+cargo install cross --locked
+docker info # or: podman info
+```
+
+For automation, skip the TUI with `--all` or
+`--targets <triple>,<triple>`. Use `--plan` to inspect the resolved matrix
+without compiling.
+
 ## Registry
 
 Workers are discovered through the workers registry API at
@@ -184,8 +216,8 @@ then routes:
 The `pr-checks` job additionally enforces, per changed worker: `README.md`
 present, the private build entry and public `iii.worker.yaml` valid,
 `tests/` non-empty, and the package version not behind the PR base. It also
-requires non-empty public discovery tags on workers whose public
-`interface_smoke` PR check is enabled — see the
+requires non-empty public discovery tags on workers whose interface capture is
+enabled — see the
 [Discovery tags step](docs/sops/new-worker.md#discovery-tags-required).
 
 Full reference (discovery buckets, interface boot smoke, e2e workflows):

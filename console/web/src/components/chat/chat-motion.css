@@ -1,0 +1,234 @@
+:root {
+  --chat-row-enter: var(--motion-duration-panel, 220ms);
+  --chat-row-exit: var(--duration-quick, 150ms);
+  --chat-state-swap: var(--duration-quick, 150ms);
+  --chat-disclosure: var(--acc-expand, 250ms);
+  --chat-entry-distance: var(--distance-base, 8px);
+  --chat-text-distance: var(--distance-micro, 4px);
+  --chat-motion-ease: var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1));
+}
+
+.chat-message-stack {
+  --chat-stack-gap: 1.5rem;
+}
+
+@media (min-width: 640px) {
+  .chat-message-stack {
+    --chat-stack-gap: 2rem;
+  }
+}
+
+/* Only newly observed live rows receive data-presence=entering. Rows seeded
+   by transcript hydration start present and never replay this transition. */
+.chat-live-row {
+  min-width: 0;
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    margin-top var(--chat-row-exit) var(--chat-motion-ease),
+    margin-bottom var(--chat-row-exit) var(--chat-motion-ease),
+    opacity var(--chat-row-enter) var(--chat-motion-ease)
+    var(--chat-entry-delay, 0ms),
+    transform var(--chat-row-enter) var(--chat-motion-ease)
+    var(--chat-entry-delay, 0ms);
+}
+
+.chat-message-stack > .chat-thought-row-settling:not(:first-child) {
+  margin-top: calc(var(--chat-stack-gap) * -1);
+}
+
+.chat-message-stack
+  > .chat-thought-row:not(:first-child):has(
+    .chat-thought[data-state="streaming"]
+  ) {
+  animation: chat-thought-row-gap-enter var(--chat-row-enter)
+    var(--chat-motion-ease) both;
+}
+
+.chat-message-stack > .chat-thought-row-settling:first-child:not(:last-child) {
+  margin-bottom: calc(var(--chat-stack-gap) * -1);
+}
+
+@keyframes chat-thought-row-gap-enter {
+  from {
+    margin-top: calc(var(--chat-stack-gap) * -1);
+  }
+  to {
+    margin-top: 0;
+  }
+}
+
+.chat-live-row[data-presence="entering"] {
+  opacity: 0;
+  transform: translateY(var(--chat-entry-distance));
+}
+
+/* The disclosure exists from the first call. Its track opens when a second
+   call makes history available, so "show all" does not pop into the layout. */
+.chat-trigger-disclosure {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows var(--chat-disclosure) var(--chat-motion-ease),
+    opacity var(--chat-state-swap) var(--chat-motion-ease);
+}
+
+.chat-trigger-disclosure[data-visible="true"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.chat-trigger-disclosure-inner {
+  min-height: 0;
+  overflow: hidden;
+  padding-bottom: 0.375rem;
+}
+
+.chat-trigger-disclosure-chevron {
+  transition: transform var(--acc-chevron, 250ms) var(--chat-motion-ease);
+}
+
+.chat-trigger-disclosure-label {
+  display: inline-grid;
+  min-height: 1lh;
+}
+
+.chat-trigger-disclosure-label > span {
+  grid-area: 1 / 1;
+  opacity: 0;
+  filter: blur(var(--blur-small, 2px));
+  transform: translateY(var(--chat-text-distance));
+  transition:
+    opacity var(--chat-state-swap) var(--ease-in-out, ease-in-out),
+    filter var(--chat-state-swap) var(--ease-in-out, ease-in-out),
+    transform var(--chat-state-swap) var(--ease-in-out, ease-in-out);
+}
+
+.chat-trigger-disclosure-label > span[data-active="true"] {
+  opacity: 1;
+  filter: blur(0);
+  transform: translateY(0);
+}
+
+/* All group shells retain their React identity. Ordinary history collapses
+   into zero-height tracks, while the just-settled previous call gets a short
+   readable dwell before this transition begins. */
+.chat-activity-item {
+  display: grid;
+  grid-template-rows: 0fr;
+  margin-top: 0;
+  opacity: 0;
+  transform: translateY(calc(var(--chat-text-distance) * -1));
+  transition:
+    grid-template-rows var(--chat-disclosure) var(--chat-motion-ease),
+    margin-top var(--chat-state-swap) var(--chat-motion-ease),
+    opacity var(--chat-row-exit) var(--chat-motion-ease),
+    transform var(--chat-disclosure) var(--chat-motion-ease);
+}
+
+.chat-activity-item[data-stacked="true"] {
+  margin-top: 0.375rem;
+}
+
+.chat-activity-item[data-visible="true"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.chat-activity-item[data-archiving="true"] {
+  opacity: 0.78;
+}
+
+.chat-activity-item-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Waiting remains mounted for the active turn, preserving its elapsed clock
+   across reasoning/tool gaps. Its track crossfades with the incoming row. */
+.chat-waiting-slot {
+  display: grid;
+  grid-template-rows: 0fr;
+  margin-top: calc(var(--chat-stack-gap) * -1);
+  opacity: 0;
+  transform: translateY(calc(var(--chat-text-distance) * -1));
+  transition:
+    grid-template-rows var(--chat-row-exit) var(--chat-motion-ease),
+    margin-top var(--chat-row-exit) var(--chat-motion-ease),
+    opacity var(--chat-row-exit) var(--chat-motion-ease),
+    transform var(--chat-row-exit) var(--chat-motion-ease);
+}
+
+.chat-waiting-slot[data-active="true"] {
+  grid-template-rows: 1fr;
+  margin-top: 0;
+  opacity: 1;
+  transform: translateY(0);
+  transition-duration: var(--chat-row-enter);
+}
+
+.chat-waiting-slot-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Extension renderers decide for themselves when a turn summary exists. The
+   host-owned shell stays mounted around that nullable result, letting worker
+   summaries enter and leave without shifting the composer in a single frame. */
+.chat-turn-summary-presence {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transform: translateY(var(--chat-text-distance));
+  transition:
+    grid-template-rows var(--chat-row-enter) var(--chat-motion-ease),
+    opacity var(--chat-state-swap) var(--chat-motion-ease),
+    transform var(--chat-row-enter) var(--chat-motion-ease);
+}
+
+.chat-turn-summary-presence:has(
+  > .chat-turn-summary-presence-inner > :first-child
+) {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.chat-turn-summary-presence-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.chat-turn-summary-presence:nth-child(2) {
+  transition-delay: var(--duration-stagger, 40ms);
+}
+
+.chat-turn-summary-presence:nth-child(3) {
+  transition-delay: calc(var(--duration-stagger, 40ms) * 2);
+}
+
+.chat-turn-summary-presence:nth-child(n + 4) {
+  transition-delay: calc(var(--duration-stagger, 40ms) * 3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-thought-row {
+    animation: none;
+  }
+
+  .chat-live-row,
+  .chat-thought-row,
+  .chat-trigger-disclosure,
+  .chat-trigger-disclosure-chevron,
+  .chat-trigger-disclosure-label > span,
+  .chat-activity-item,
+  .chat-waiting-slot,
+  .chat-waiting-slot[data-active="true"],
+  .chat-turn-summary-presence {
+    transition: none;
+    transform: none;
+    filter: none;
+  }
+}

@@ -378,6 +378,7 @@ impl QueueAdapter for RabbitMQAdapter {
         metadata: Option<Value>,
         condition_function_id: Option<String>,
         queue_config: Option<SubscriberQueueConfig>,
+        namespace: Option<String>,
     ) {
         let topic = topic.to_string();
         let id = id.to_string();
@@ -458,6 +459,7 @@ impl QueueAdapter for RabbitMQAdapter {
                     id_clone,
                     function_id_clone,
                     metadata,
+                    namespace,
                     condition_function_id,
                     consumer_tag_clone,
                     queue_name_clone,

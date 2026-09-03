@@ -1,162 +1,107 @@
-/* llm-router configuration form — every rule scoped under the loader's
- * wrapper attribute; colors come from the console's design tokens so both
- * themes work with no extra rules. */
+/* LLM router configuration. All rules remain inside the injected asset scope. */
 
-[data-iii-ui='llm-router'] .llmr-cfg {
+[data-iii-ui="llm-router"] .llmr-cfg {
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  font-family: var(--font-mono, monospace);
-}
-
-[data-iii-ui='llm-router'] .llmr-cfg-caption {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--color-ink-ghost);
-}
-
-[data-iii-ui='llm-router'] .llmr-cfg-heading {
-  margin: 12px 0 0;
-  font-size: 13px;
-  font-weight: 600;
+  gap: 24px;
+  min-width: 0;
+  font-family: var(--font-sans);
   color: var(--color-ink);
 }
 
-[data-iii-ui='llm-router'] .llmr-cfg-label {
-  display: block;
-  margin-top: 6px;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--color-ink-faint);
+[data-iii-ui="llm-router"] .llmr-cfg-select {
+  width: min(100%, 280px);
 }
 
-[data-iii-ui='llm-router'] .llmr-cfg-input {
-  width: 100%;
-  padding: 6px 10px;
-  font: inherit;
-  font-size: 13px;
-  color: var(--color-ink);
-  background: var(--color-bg);
-  border: 1px solid var(--color-rule);
-  border-radius: 2px;
-}
-
-[data-iii-ui='llm-router'] .llmr-cfg-input:focus-visible {
-  outline: 2px solid var(--color-ring);
-  outline-offset: -1px;
-}
-
-[data-iii-ui='llm-router'] .llmr-cfg-card {
-  padding: 10px 12px 12px;
-  border: 1px solid var(--color-rule);
-  background: var(--color-panel);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-[data-iii-ui='llm-router'] .llmr-cfg-card-head {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--color-ink);
-}
-
-[data-iii-ui='llm-router'] .llmr-cfg-warning {
-  padding: 6px 10px;
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--color-ink);
-  background: color-mix(in srgb, var(--color-warn) 12%, transparent);
-  border-left: 2px solid var(--color-warn);
-}
-
-[data-iii-ui='llm-router'] .llmr-cfg-warning strong {
-  color: var(--color-warn);
-}
-
-[data-iii-ui='llm-router'] .llmr-cfg-envok {
-  font-size: 11px;
-  color: var(--color-ok);
-}
-
-[data-iii-ui='llm-router'] .llmr-cfg-envfix {
-  padding: 0 4px;
-  font: inherit;
-  font-size: 12px;
-  color: var(--color-accent);
-  background: var(--color-paper-2);
-  border: 1px solid var(--color-rule-2);
-  border-radius: 2px;
-  cursor: pointer;
-}
-
-[data-iii-ui='llm-router'] .llmr-cfg-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 0 12px;
-}
-
-[data-iii-ui='llm-router'] .llmr-cfg-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-[data-iii-ui='llm-router'] .llmr-cfg-heuristic {
-  margin-top: 4px;
-}
-
-[data-iii-ui='llm-router'] .llmr-cfg-arrow {
-  color: var(--color-ink-ghost);
-}
-
-[data-iii-ui='llm-router'] .llmr-cfg-remove,
-[data-iii-ui='llm-router'] .llmr-cfg-add {
-  padding: 4px 10px;
-  font: inherit;
-  font-size: 12px;
-  color: var(--color-ink-faint);
-  background: var(--color-bg);
-  border: 1px solid var(--color-rule);
-  border-radius: 2px;
-  cursor: pointer;
-}
-
-[data-iii-ui='llm-router'] .llmr-cfg-remove:hover,
-[data-iii-ui='llm-router'] .llmr-cfg-add:hover {
-  color: var(--color-ink);
-}
-
-[data-iii-ui='llm-router'] .llmr-cfg-add {
-  align-self: flex-start;
-  margin-top: 4px;
-}
-
-[data-iii-ui='llm-router'] .llmr-cfg-echo {
-  margin-top: 2px;
-  font-size: 11px;
-  color: var(--color-ink-ghost);
+[data-iii-ui="llm-router"] .llmr-cfg-number {
+  width: min(100%, 180px);
+  font-family: var(--font-mono, ui-monospace, monospace);
   font-variant-numeric: tabular-nums;
 }
 
-[data-iii-ui='llm-router'] .llmr-cfg-hint {
-  margin: 0;
-  font-size: 11px;
+[data-iii-ui="llm-router"] .llmr-cfg-provider-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+[data-iii-ui="llm-router"] .llmr-cfg-provider {
+  padding: 14px;
+  border: 1px solid var(--color-rule);
+  border-radius: 12px;
+  background: var(--color-panel);
+}
+
+[data-iii-ui="llm-router"] .llmr-cfg-heuristic {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) auto minmax(150px, 0.7fr);
+  align-items: center;
+  gap: 8px;
+  width: min(100%, 620px);
+}
+
+[data-iii-ui="llm-router"] .llmr-cfg-heuristic > span {
   color: var(--color-ink-ghost);
 }
 
-[data-iii-ui='llm-router'] .llmr-cfg-empty {
-  padding: 10px 12px;
-  font-size: 12px;
-  color: var(--color-ink-faint);
-  border: 1px dashed var(--color-rule);
+[data-iii-ui="llm-router"] .llmr-cfg-secret-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: min(100%, 360px);
 }
 
-[data-iii-ui='llm-router'] .llmr-cfg-errors {
-  padding: 6px 10px;
-  font-size: 12px;
-  color: var(--color-alert);
+[data-iii-ui="llm-router"] .llmr-cfg-warning {
+  padding: 8px 10px;
+  border-left: 2px solid var(--color-warn);
+  background: color-mix(in srgb, var(--color-warn) 12%, transparent);
+  color: var(--color-ink-faint);
+  font: 400 11.5px/1.45 var(--font-sans);
+}
+
+[data-iii-ui="llm-router"] .llmr-cfg-envok {
+  color: var(--color-ok);
+  font: 400 11.5px/1.45 var(--font-sans);
+}
+
+[data-iii-ui="llm-router"] .llmr-cfg-envfix {
+  padding: 1px 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-accent);
+  font: 500 11.5px/1.45 var(--font-mono, ui-monospace, monospace);
+  cursor: pointer;
+}
+
+[data-iii-ui="llm-router"] .llmr-cfg-envfix:hover {
+  background: var(--color-surface-hover, rgba(0, 0, 0, 0.08));
+}
+
+[data-iii-ui="llm-router"] .llmr-cfg-envfix:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 1px;
+}
+
+[data-iii-ui="llm-router"] .llmr-cfg-errors {
+  padding: 10px 12px;
   border-left: 2px solid var(--color-alert);
+  background: color-mix(in srgb, var(--color-alert) 8%, transparent);
+  color: var(--color-alert);
+  font: 400 12px/1.5 var(--font-sans);
+}
+
+@container (max-width: 520px) {
+  [data-iii-ui="llm-router"] .llmr-cfg-heuristic {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  [data-iii-ui="llm-router"] .llmr-cfg-heuristic > span {
+    display: none;
+  }
+
+  [data-iii-ui="llm-router"] .llmr-cfg-provider {
+    padding: 10px;
+  }
 }

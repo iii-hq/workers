@@ -32,6 +32,27 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def canonical_value(value: object) -> object:
+    """Normalize JSON numbers to the representation used by JSON.stringify."""
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, list):
+        return [canonical_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: canonical_value(item) for key, item in value.items()}
+    return value
+
+
+def canonical_bytes(value: object) -> bytes:
+    return json.dumps(
+        canonical_value(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+
+
 def verify_descriptor(descriptor: object) -> dict[str, object]:
     if not isinstance(descriptor, dict):
         raise SystemExit("deployment descriptor must be an object")
@@ -39,7 +60,7 @@ def verify_descriptor(descriptor: object) -> dict[str, object]:
         "contract", "worker", "package_manifest_version", "source_sha", "deployment_spec_sha256",
         "public_manifest_sha256", "registry_projection_sha256", "compiler_digest",
         "descriptor_sha256", "source", "artifact", "runtime",
-        "publish", "build_units", "registry_projection",
+        "interface_capture", "publish", "build_units", "registry_projection",
     }
     if set(descriptor) != required:
         raise SystemExit(
@@ -49,14 +70,14 @@ def verify_descriptor(descriptor: object) -> dict[str, object]:
     if descriptor["contract"] != "deployment-descriptor":
         raise SystemExit("deployment descriptor contract mismatch")
     digest_subject = {key: value for key, value in descriptor.items() if key != "descriptor_sha256"}
-    digest = hashlib.sha256(
-        json.dumps(digest_subject, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    ).hexdigest()
+    digest = hashlib.sha256(canonical_bytes(digest_subject)).hexdigest()
     if descriptor["descriptor_sha256"] != digest:
         raise SystemExit("deployment descriptor digest is invalid")
     for field in ("source", "artifact", "runtime", "registry_projection"):
         if not isinstance(descriptor[field], dict):
             raise SystemExit(f"deployment descriptor {field} must be an object")
+    if descriptor["interface_capture"] not in {"required", "skipped"}:
+        raise SystemExit("deployment descriptor interface_capture must be required or skipped")
     if not isinstance(descriptor["build_units"], list) or not descriptor["build_units"]:
         raise SystemExit("deployment descriptor build_units must be non-empty")
     return descriptor
@@ -273,6 +294,8 @@ def build_frontends(args: argparse.Namespace) -> int:
 
 def build_metadata(args: argparse.Namespace) -> int:
     descriptor = verify_descriptor(json.loads(args.descriptor.read_bytes()))
+    # The stable profile is the full unit universe: candidate units plus the
+    # supplemental (Windows) units built only at finalization.
     units = [unit for unit in descriptor["build_units"] if isinstance(unit, dict) and unit.get("id") == args.unit]
     if len(units) != 1:
         raise SystemExit(f"build unit {args.unit!r} is not declared exactly once")
@@ -428,9 +451,10 @@ def prepare(args: argparse.Namespace) -> int:
     actual = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     if actual != args.source_sha:
         raise SystemExit(f"source SHA mismatch: checkout={actual}, requested={args.source_sha}")
-    _lib.validate_deployment_target_version(args.target_version)
-    if args.channel not in {"next", "latest"}:
-        raise SystemExit("deployment channel must be next or latest")
+    try:
+        _lib.validate_channel_target_version(args.channel, args.target_version)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
 
     descriptor = verify_descriptor(json.loads(args.descriptor.read_bytes()))
     expected = {
@@ -440,6 +464,45 @@ def prepare(args: argparse.Namespace) -> int:
     }
     if any(descriptor[field] != value for field, value in expected.items()):
         raise SystemExit("selected descriptor identity differs from deployment intent")
+    print(json.dumps(descriptor, sort_keys=True))
+    return 0
+
+
+def finalize(args: argparse.Namespace) -> int:
+    """Validate a finalize_release intent against the immutable rc origin.
+
+    The stable version reuses the rc bytes, so the descriptor identity, the
+    annotated rc tag, and the release history must all prove the candidate
+    before any supplemental build or channel move happens.
+    """
+    actual = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    if actual != args.source_sha:
+        raise SystemExit(f"source SHA mismatch: checkout={actual}, requested={args.source_sha}")
+    try:
+        _lib.validate_finalization(args.candidate_version, args.stable_version)
+        _lib.validate_channel_target_version("latest", args.stable_version)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
+
+    descriptor = verify_descriptor(json.loads(args.descriptor.read_bytes()))
+    expected = {
+        "worker": args.worker,
+        "source_sha": args.source_sha,
+        "descriptor_sha256": args.descriptor_sha256,
+    }
+    if any(descriptor[field] != value for field, value in expected.items()):
+        raise SystemExit("selected descriptor identity differs from finalization intent")
+
+    # Requires a full clone (fetch-depth 0): the rc tag proves the candidate
+    # was published from this exact source, and the history gate proves the
+    # stable core is not moving backwards.
+    versions = _lib.list_tagged_versions(args.worker)
+    if args.candidate_version not in versions:
+        raise SystemExit(f"candidate tag {args.worker}/v{args.candidate_version} is not in the git history")
+    try:
+        _lib.validate_release_history(args.stable_version, versions)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
     print(json.dumps(descriptor, sort_keys=True))
     return 0
 
@@ -589,10 +652,9 @@ def assemble(args: argparse.Namespace) -> int:
     return 0
 
 
-def verify_prepared(args: argparse.Namespace) -> int:
-    """Verify the immutable prepare inventory without executing the worker."""
-    descriptor = verify_descriptor(json.loads(args.descriptor.read_bytes()))
-    prepared = json.loads(args.prepared.read_text(encoding="utf-8"))
+def _verify_prepared_inventory(descriptor: dict, descriptor_path: Path, prepared_path: Path) -> dict:
+    """Validate a prepared inventory and its directory byte-for-byte."""
+    prepared = json.loads(prepared_path.read_text(encoding="utf-8"))
     expected = {
         "contract": "prepared-artifacts",
         "worker": descriptor["worker"],
@@ -614,21 +676,32 @@ def verify_prepared(args: argparse.Namespace) -> int:
         if not isinstance(name, str) or not name or Path(name).name != name or name in names:
             raise SystemExit(f"prepared artifact name is invalid or duplicated: {name!r}")
         names.add(name)
-        path = args.prepared.parent / name
+        path = prepared_path.parent / name
         if not path.is_file() or path.is_symlink():
             raise SystemExit(f"prepared artifact is not a regular file: {path}")
         if path.stat().st_size != artifact.get("size") or sha256(path) != artifact.get("sha256"):
             raise SystemExit(f"prepared artifact bytes differ from inventory: {path}")
     actual = {
-        path.name for path in args.prepared.parent.iterdir()
+        path.name for path in prepared_path.parent.iterdir()
         if path.is_file() and not path.is_symlink()
     }
-    expected_files = names | {args.descriptor.name, args.prepared.name}
+    evidence_files = {"deployment-interface.json", "deployment-evidence.json"}
+    present_evidence = actual & evidence_files
+    if present_evidence and present_evidence != evidence_files:
+        raise SystemExit("prepared directory must contain both interface evidence files or neither")
+    expected_files = names | {descriptor_path.name, prepared_path.name} | present_evidence
     if actual != expected_files:
         raise SystemExit(
             f"prepared directory differs from inventory: missing={sorted(expected_files - actual)} "
             f"unknown={sorted(actual - expected_files)}"
         )
+    return prepared
+
+
+def verify_prepared(args: argparse.Namespace) -> int:
+    """Verify the immutable prepare inventory without executing the worker."""
+    descriptor = verify_descriptor(json.loads(args.descriptor.read_bytes()))
+    prepared = _verify_prepared_inventory(descriptor, args.descriptor, args.prepared)
     print(json.dumps(prepared, sort_keys=True))
     return 0
 
@@ -665,6 +738,14 @@ def make_parser() -> argparse.ArgumentParser:
     prepare_parser.add_argument("--channel", choices=["next", "latest"], required=True)
     prepare_parser.add_argument("--descriptor-sha256", required=True)
     prepare_parser.add_argument("--descriptor", type=Path, required=True)
+    finalize_parser = sub.add_parser("finalize")
+    finalize_parser.set_defaults(handler=finalize)
+    finalize_parser.add_argument("--worker", required=True)
+    finalize_parser.add_argument("--source-sha", required=True)
+    finalize_parser.add_argument("--candidate-version", required=True)
+    finalize_parser.add_argument("--stable-version", required=True)
+    finalize_parser.add_argument("--descriptor-sha256", required=True)
+    finalize_parser.add_argument("--descriptor", type=Path, required=True)
     matrix_parser = sub.add_parser("matrix")
     matrix_parser.set_defaults(handler=matrix)
     matrix_parser.add_argument("--descriptor", type=Path, required=True)

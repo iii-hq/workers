@@ -23,14 +23,11 @@ async function selectSonnet(page: Page) {
   await expect(modelPicker).toBeEnabled()
   await modelPicker.click()
 
-  const anthropicGroup = page.getByRole('menuitem', { name: /^anthropic/i })
+  const modelMenu = page.getByRole('menu', { name: /^model:/i })
+  const anthropicGroup = modelMenu.getByRole('region', { name: /^anthropic$/i })
   await expect(anthropicGroup).toBeVisible()
-  if ((await anthropicGroup.getAttribute('aria-expanded')) !== 'true') {
-    await anthropicGroup.click()
-  }
-  await expect(anthropicGroup).toHaveAttribute('aria-expanded', 'true')
 
-  const sonnet = page.getByRole('menuitemradio', { name: MODEL_LABEL })
+  const sonnet = anthropicGroup.getByRole('button', { name: MODEL_LABEL })
   await expect(sonnet).toHaveCount(1)
   await sonnet.click()
 

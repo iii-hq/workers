@@ -208,6 +208,7 @@ pub trait QueueAdapter: Send + Sync + 'static {
         metadata: Option<Value>,
         condition_function_id: Option<String>,
         queue_config: Option<SubscriberQueueConfig>,
+        namespace: Option<String>,
     );
 
     /// Remove a previously registered subscriber.
@@ -399,6 +400,7 @@ impl QueueAdapter for SwappableAdapter {
         metadata: Option<Value>,
         condition_function_id: Option<String>,
         queue_config: Option<SubscriberQueueConfig>,
+        namespace: Option<String>,
     ) {
         self.current()
             .await
@@ -409,6 +411,7 @@ impl QueueAdapter for SwappableAdapter {
                 metadata,
                 condition_function_id,
                 queue_config,
+                namespace,
             )
             .await;
     }
@@ -574,6 +577,7 @@ mod tests {
             _metadata: Option<Value>,
             _condition_function_id: Option<String>,
             _queue_config: Option<SubscriberQueueConfig>,
+            _namespace: Option<String>,
         ) {
         }
 

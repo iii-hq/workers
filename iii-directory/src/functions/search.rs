@@ -266,6 +266,8 @@ pub struct SearchFunctionsRequest {
     /// summarize provided text or content are ignored. Write every entry in English,
     /// translating non-English user requests while preserving proper names, URLs, and function
     /// IDs.
+    // MOT-4654: kept verbatim on purpose — this is a tuned search directive pinned
+    // phrase-by-phrase by tests/search_schemas.rs, not descriptive prose.
     #[schemars(
         with = "HashSet<String>",
         length(min = 1, max = 6),

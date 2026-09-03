@@ -63,10 +63,8 @@ export interface PageSidebarProps
    */
   storageKey?: string
   /**
-   * Responsive presentation. With host-owned collapse state the sidebar
-   * becomes a rail that opens as a drawer over the main column; a page that
-   * controls `collapsed` gets the full-width aside and owns what shows beside
-   * it. Neither overwrites the saved wide-layout preference.
+   * Activates the responsive presentation when the page already knows its
+   * container is narrow. It never overwrites the saved wide-layout preference.
    */
   narrow?: boolean
   /**
@@ -75,6 +73,12 @@ export interface PageSidebarProps
    * hook solely to coordinate the shared chrome.
    */
   narrowBelow?: number
+  /**
+   * `inline` (default) turns the sidebar into the full-width navigation pane
+   * used by list/detail and tree drill-in flows. `drawer` leaves a compact rail
+   * beside the main column and opens the navigation as an overlay.
+   */
+  narrowMode?: 'inline' | 'drawer'
 }
 
 function clampWidth(width: number, minWidth: number, maxWidth: number): number {
@@ -163,6 +167,7 @@ export function PageSidebar({
   storageKey,
   narrow = false,
   narrowBelow,
+  narrowMode = 'inline',
   className,
   style,
   ...rest
@@ -173,7 +178,8 @@ export function PageSidebar({
     header !== undefined ||
     collapsedActions !== undefined ||
     storageKey !== undefined ||
-    controlledCollapsed !== undefined
+    controlledCollapsed !== undefined ||
+    narrowMode === 'drawer'
 
   const bounds = React.useMemo(() => {
     const low = Math.min(minWidth, maxWidth)
@@ -215,7 +221,9 @@ export function PageSidebar({
 
     const update = (width: number) => {
       if (width <= 0) return
-      setContainerWidth((current) => (current === width ? current : width))
+      if (narrowMode === 'drawer') {
+        setContainerWidth((current) => (current === width ? current : width))
+      }
       if (breakpoint === null) return
       const next = width <= breakpoint
       setContainerNarrow((current) => (current === next ? current : next))
@@ -229,10 +237,13 @@ export function PageSidebar({
     })
     observer.observe(container)
     return () => observer.disconnect()
-  }, [narrow, narrowBelow])
+  }, [narrow, narrowBelow, narrowMode])
 
   const effectiveNarrow = narrow || containerNarrow
-  const hostDrawer = effectiveNarrow && controlledCollapsed === undefined
+  const hostDrawer =
+    effectiveNarrow &&
+    narrowMode === 'drawer' &&
+    controlledCollapsed === undefined
   const expandedWidth = clampWidth(
     controlledWidth ?? internalWidth,
     bounds.min,

@@ -65,12 +65,61 @@ def test_prs_restore_rust_caches_and_main_pushes_publish_them() -> None:
     assert rust_cache["with"]["save-if"] == expected
     assert crate_cache["with"]["save-if"] == expected
     assert "github.event_name == 'pull_request'" in ci["jobs"]["interface-smoke"]["if"]
+    assert ci["jobs"]["harness-integration"]["with"]["runner"] == (
+        "${{ github.event_name == 'push' && 'workers-ci-linux-8core' || "
+        "'ubuntu-latest' }}"
+    )
     assert ci["jobs"]["harness-integration"]["with"]["save-cache"] == expected
 
 
-def test_harness_integration_uses_the_rust_self_hosted_runner() -> None:
-    integration = workflow("_harness-integration.yml")["jobs"]["integration"]
-    assert integration["runs-on"] == ["self-hosted", "Linux", "X64", "rust"]
+def test_harness_integration_builds_once_then_fans_out_on_standard_runners() -> None:
+    reusable = workflow("_harness-integration.yml")
+    assert reusable["on"]["workflow_call"]["inputs"]["runner"]["default"] == (
+        "workers-ci-linux-8core"
+    )
+    assert reusable["on"]["workflow_call"]["inputs"]["execution-runner"]["default"] == (
+        "ubuntu-latest"
+    )
+    assert reusable["jobs"]["build"]["runs-on"] == "${{ inputs.runner }}"
+    for job_name in ("validate", "integration", "playwright", "coverage"):
+        assert reusable["jobs"][job_name]["runs-on"] == "${{ inputs.execution-runner }}"
+
+    build_steps = reusable["jobs"]["build"]["steps"]
+    assert "integration-build" in named_step(build_steps, "Build integration stack once")["run"]
+    assert named_step(build_steps, "Upload stack bundle")["with"]["if-no-files-found"] == "error"
+    for job_name in ("integration", "playwright"):
+        job = reusable["jobs"][job_name]
+        assert job["needs"] == ["validate", "build"]
+        assert named_step(job["steps"], "Download stack bundle")
+
+    integration_run = named_step(
+        reusable["jobs"]["integration"]["steps"], "Run integration scenarios"
+    )["run"]
+    assert "integration-run" in integration_run
+    assert "cargo build" not in integration_run
+
+    playwright_steps = reusable["jobs"]["playwright"]["steps"]
+    playwright_body = "\n".join(str(step.get("run", "")) for step in playwright_steps)
+    assert "cargo build" not in playwright_body
+
+
+def test_harness_benchmark_is_manual_and_keeps_cold_caches_isolated() -> None:
+    benchmark = workflow("harness-integration-benchmark.yml")
+    inputs = benchmark["on"]["workflow_dispatch"]["inputs"]
+    assert inputs["runner"]["options"] == [
+        "workers-ci-linux-8core",
+        "ubuntu-latest",
+    ]
+    assert inputs["cache-mode"]["options"] == ["warm", "cold"]
+
+    call = benchmark["jobs"]["integration"]
+    assert call["uses"] == "./.github/workflows/_harness-integration.yml"
+    assert call["with"]["runner"] == "${{ inputs.runner }}"
+    assert call["with"]["save-cache"] == "${{ inputs.cache-mode == 'warm' }}"
+    assert "github.run_id" in call["with"]["cache-key-suffix"]
+
+    reusable_body = (WORKFLOWS / "_harness-integration.yml").read_text()
+    assert "format('-{0}', inputs.cache-key-suffix)" in reusable_body
 
 
 def test_actionlint_knows_the_repository_runner_pool_labels() -> None:
@@ -79,11 +128,37 @@ def test_actionlint_knows_the_repository_runner_pool_labels() -> None:
     )
     assert config["self-hosted-runner"]["labels"] == [
         "general",
-        "rust",
+        "workers-ci-linux-8core",
+        "workers-release-control-linux-2core",
         "workers-release-linux-8core",
+        "workers-release-macos-aws-intel",
         "workers-release-macos-12core",
         "workers-release-macos-arm-5core",
     ]
+
+
+def test_runner_pool_contract_is_documented() -> None:
+    runner_docs = (REPOSITORY / "docs/architecture/testing-and-ci.md").read_text()
+    labels = {
+        "ubuntu-latest",
+        "workers-ci-linux-8core",
+        "workers-release-control-linux-2core",
+        "workers-release-linux-8core",
+        "windows-latest",
+        "workers-release-macos-12core",
+        "workers-release-macos-arm-5core",
+        "workers-release-macos-aws-intel",
+    }
+    for label in labels:
+        assert f"`{label}`" in runner_docs
+
+    assert "ten candidate executions" in runner_docs
+    assert "improvement over `ubuntu-latest` is at least 25%" in runner_docs
+    assert "8-core warm | 7 | 8m54 | 9m17" in runner_docs
+    assert "builds the complete stack once" in runner_docs
+    assert "trusted `main` push uses\n`workers-ci-linux-8core`" in runner_docs
+    assert "Integration and Playwright jobs verify\nthat bundle and run in parallel" in runner_docs
+    assert "PR merge refs build the same bundle on\n`ubuntu-latest`" in runner_docs
 
 
 def test_interface_smoke_bounds_each_engine_readiness_probe() -> None:
@@ -98,27 +173,25 @@ def test_interface_smoke_bounds_each_engine_readiness_probe() -> None:
     ) in run
 
 
-def test_harness_integration_caches_the_final_engine_and_skips_rebuilds() -> None:
+def test_harness_integration_downloads_latest_rc_engine_without_building_it() -> None:
     integration = workflow("_harness-integration.yml")
-    steps = integration["jobs"]["integration"]["steps"]
-    restore = named_step(steps, "Restore pinned engine binary")
-    build = named_step(steps, "Build pinned engine")
-    save = named_step(steps, "Save pinned engine binary")
+    steps = integration["jobs"]["build"]["steps"]
+    install = named_step(steps, "Install latest iii @rc")
     stack_cache = named_step(steps, "Restore integration Rust cache")
 
-    expected_path = "target/integration-engine-src/${{ steps.lock.outputs.binary }}"
-    assert restore["with"]["path"] == expected_path
-    assert "integration-engine-bin-rust-1.97.1" in restore["with"]["key"]
-    assert "hashFiles('harness/tests/integration/engine.lock')" in restore["with"]["key"]
-    assert build["if"] == "steps.engine-cache.outputs.cache-hit != 'true'"
-    assert "--locked --release --timings" in build["run"]
-    assert save["with"]["path"] == expected_path
+    assert "https://install.iii.dev/iii/main/install.sh" in install["run"]
+    assert 'sh "$installer" --rc' in install["run"]
+    assert "command -v iii" in install["run"]
+    assert "III_ENGINE_VERSION" in install["run"]
+    assert "Build pinned engine" not in {step.get("name") for step in steps}
+    assert "integration-engine-src" not in (WORKFLOWS / "_harness-integration.yml").read_text()
+    assert "cron -> target" in stack_cache["with"]["workspaces"]
     assert "database -> target" in stack_cache["with"]["workspaces"]
 
 
 def test_slow_rust_builds_upload_cargo_timing_reports() -> None:
     integration = workflow("_harness-integration.yml")
-    integration_steps = integration["jobs"]["integration"]["steps"]
+    integration_steps = integration["jobs"]["build"]["steps"]
     timing_upload = named_step(integration_steps, "Upload Rust build timings")
     assert timing_upload["if"] == "always()"
     assert "cargo-timings/*.html" in timing_upload["with"]["path"]

@@ -60,7 +60,8 @@ pub async fn build(db_name: &str, cfg: &crate::config::DatabaseConfig) -> Result
     match cfg.driver {
         DriverKind::Sqlite => {
             // Sqlite is local-file; the `tls` block has no meaning for it.
-            SqlitePool::new(&cfg.url, &cfg.pool).map(|p| Pool::Sqlite(p.with_db_name(db_name)))
+            let url = cfg.resolved_url();
+            SqlitePool::new(&url, &cfg.pool).map(|p| Pool::Sqlite(p.with_db_name(db_name)))
         }
         DriverKind::Postgres => PostgresPool::new(&cfg.url, &cfg.pool, &cfg.tls)
             .await

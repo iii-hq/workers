@@ -61,8 +61,8 @@ pub struct StampReplyEvent {
     pub provider: Option<String>,
     #[serde(default)]
     pub call: Option<StampCall>,
-    /// Caller turn's dispatch policy from the hook envelope, captured into a stamped
-    /// `reply_to` so reply delivery can wake the caller with its own reach.
+    /// Caller turn's dispatch policy, captured into the stamped `reply_to` so the
+    /// reply can wake the caller with its own reach.
     #[serde(default)]
     pub functions: Option<Value>,
 }

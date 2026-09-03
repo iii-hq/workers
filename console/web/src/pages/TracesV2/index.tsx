@@ -67,7 +67,10 @@ import { WorkerBreakdown } from './components/WorkerBreakdown'
 import { useAllSpans } from './hooks/useAllSpans'
 import { useFollowLiveTurn } from './hooks/useFollowLiveTurn'
 import { useFollowTurns } from './hooks/useFollowTurns'
-import { useSpanFilteredTraceRows } from './hooks/useSpanFilteredTraceRows'
+import {
+  showsWithoutProbe,
+  useSpanFilteredTraceRows,
+} from './hooks/useSpanFilteredTraceRows'
 import { useSpanFilterSelection } from './hooks/useSpanFilterSelection'
 import { useSpanPanelResize } from './hooks/useSpanPanelResize'
 import { useTraceActivity } from './hooks/useTraceActivity'
@@ -196,7 +199,8 @@ export function TracesV2({
     setNewTraceIds,
     hasOtelConfigured,
     isQueryLoading,
-    isHoveredRef,
+    holdRef,
+    heldTraces,
     flushPendingTraces,
   } = useTraceData({
     filterParams,
@@ -447,6 +451,13 @@ export function TracesV2({
             // skeleton through the whole multi-second sweep.
             onPage: (accumulated, total) => {
               if (stale()) return
+              // A silent reload lands whole, at the end of its sweep.
+              // Painting its pages as they arrived replaced the open detail
+              // with the sweep's FIRST page — 50 of 155 spans, a 7s window
+              // in place of 24s — and regrew it, on every activity tick of
+              // a running turn: the whole timeline redrew at another scale
+              // about once a second (seen in screen recordings, MOT-4621).
+              if (silent) return
               detailSpansRef.current = accumulated
               setSeedProgress({ loaded: accumulated.size, total })
               // Rebuilding the waterfall on EVERY page saturates the main
@@ -458,7 +469,15 @@ export function TracesV2({
               if (revealed && now - lastPaint < 600) return
               const wf = rebuildDetail(traceId)
               if (wf) lastPaint = now
-              if (!silent && !revealed && wf) {
+              // ANY paint dismisses the skeleton, a silent reload's included.
+              // Opening a trace that is still producing spans races the
+              // activity feed: its first tick starts a silent reload that
+              // supersedes this seed before the first page lands, and a
+              // silent reload used to leave `isLoadingSpans` alone — the
+              // waterfall was in state, the skeleton stayed on screen for
+              // as long as the detail stayed open (measured: 50s and
+              // counting, on a trace that had finished in 1.5s).
+              if (!revealed && wf) {
                 revealed = true
                 setIsLoadingSpans(false)
               }
@@ -469,6 +488,7 @@ export function TracesV2({
 
         detailSpansRef.current = detailSpans
         const wf = rebuildDetail(traceId)
+        if (wf) setIsLoadingSpans(false)
         if (!wf && !silent) {
           setSpansError('no span data available for this trace')
         }
@@ -601,14 +621,84 @@ export function TracesV2({
     [selectTrace],
   )
 
+  // ── Hold live changes while the user is reading ──
+  // A live newest-first list that inserts rows the moment they arrive is
+  // unreadable under load: everything below the insertion point moves. So
+  // structural changes (rows entering or leaving, order) are HELD while the
+  // user is evidently reading — pointer over the rows, scrolled away from
+  // the top, on a later page, or a detail expanded — and the stats block
+  // in the filter bar shows a quiet "N new" that lands them on click. Rows
+  // on screen keep updating in place. The hold releases (and the held
+  // answer lands) when every reason clears: pointer out, back at the top,
+  // back on page 1, detail closed.
+  const listHoverRef = useRef(false)
+  const [listScrolledAway, setListScrolledAway] = useState(false)
+  const listHeldByState =
+    listScrolledAway || filterState.page !== 1 || selectedTraceId !== null
+  const listHeldByStateRef = useRef(listHeldByState)
+  listHeldByStateRef.current = listHeldByState
+  const syncListHold = useCallback(() => {
+    const held = listHoverRef.current || listHeldByStateRef.current
+    holdRef.current = held
+    if (!held) flushPendingTraces()
+  }, [holdRef, flushPendingTraces])
+  useEffect(() => {
+    holdRef.current = listHoverRef.current || listHeldByState
+    if (!holdRef.current) flushPendingTraces()
+  }, [holdRef, listHeldByState, flushPendingTraces])
+  const handleListScroll = useCallback((event: React.UIEvent<HTMLElement>) => {
+    const away = event.currentTarget.scrollTop > 0
+    setListScrolledAway((prev) => (prev === away ? prev : away))
+  }, [])
+  // What "N new" promises: held rows not on screen that will actually
+  // show once landed — a hidden-rooted bookkeeping trace that the span
+  // filter would drop must not be counted as "new".
+  const heldNewCount = useMemo(() => {
+    if (heldTraces.length === 0) return 0
+    const shown = new Set(traceGroups.map((t) => t.traceId))
+    let count = 0
+    for (const trace of heldTraces) {
+      if (!shown.has(trace.traceId) && showsWithoutProbe(trace, spanFilter)) {
+        count++
+      }
+    }
+    return count
+  }, [heldTraces, traceGroups, spanFilter])
+  // The selected trace's own row is never held back: following opens a
+  // turn from the strip feed before its list row has landed, and holding
+  // that row left the detail pinned above a list reading "1 new" for as
+  // long as it stayed open (seen in a screen recording).
+  useEffect(() => {
+    if (selectedTraceId === null) return
+    if (traceGroups.some((t) => t.traceId === selectedTraceId)) return
+    if (heldTraces.some((t) => t.traceId === selectedTraceId)) {
+      flushPendingTraces()
+    }
+  }, [selectedTraceId, traceGroups, heldTraces, flushPendingTraces])
+  // "N new": back to the top of page 1 with everything that arrived.
+  const showHeldTraces = useCallback(() => {
+    if (filterState.page !== 1) updateFilter('page', 1)
+    listScrollRef.current?.scrollTo({ top: 0 })
+    flushPendingTraces()
+  }, [filterState.page, updateFilter, flushPendingTraces])
+
   // The follow toggle's engine: opens the newest live turn trace of the
   // active conversation (once per trace — closing it mid-turn is respected).
+  // Following lands the held rows first, so the opened trace's detail
+  // renders under its own row instead of pinned above a stale list.
+  const openFollowedTrace = useCallback(
+    (traceId: string | null) => {
+      flushPendingTraces()
+      selectTrace(traceId)
+    },
+    [flushPendingTraces, selectTrace],
+  )
   useFollowLiveTurn({
     enabled: followTurns && !isPaused,
     activeSessionId: conversationsCtx?.activeId ?? null,
     spans: allSpans,
     selectedTraceId,
-    onOpenTrace: selectTrace,
+    onOpenTrace: openFollowedTrace,
   })
 
   // Chat linkage of the OPEN trace (session + turn), resolved from the row's
@@ -862,6 +952,15 @@ export function TracesV2({
             searchQuery={searchQuery}
             onSearchChange={handleSearchChange}
             stats={hasOtelConfigured ? stats : undefined}
+            heldNew={
+              heldNewCount > 0
+                ? {
+                    count: heldNewCount,
+                    onPage1: filterState.page === 1,
+                    onShow: showHeldTraces,
+                  }
+                : undefined
+            }
             attributeKeySuggestions={attributeKeySuggestions}
             leading={
               <>
@@ -980,12 +1079,14 @@ export function TracesV2({
                     <div
                       className="flex-1 overflow-y-auto"
                       ref={listScrollRef}
+                      onScroll={handleListScroll}
                       onMouseEnter={() => {
-                        isHoveredRef.current = true
+                        listHoverRef.current = true
+                        syncListHold()
                       }}
                       onMouseLeave={() => {
-                        isHoveredRef.current = false
-                        flushPendingTraces()
+                        listHoverRef.current = false
+                        syncListHold()
                       }}
                     >
                       {/* detail whose row is on another page (strip click,

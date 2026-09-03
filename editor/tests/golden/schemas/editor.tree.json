@@ -14,7 +14,7 @@
       },
       "expand": {
         "default": [],
-        "description": "Root-relative folders to mark expanded before listing. Expansion is part of the shared workspace, so it survives a reload and both surfaces agree on it.",
+        "description": "Root-relative folders to mark expanded before listing. Expansion is shared workspace state, so it survives a reload.",
         "items": {
           "type": "string"
         },

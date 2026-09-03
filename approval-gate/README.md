@@ -159,7 +159,7 @@ nothing, deliver the original error":
 
 The whole config — runtime wiring **and** deployment approval defaults — lives
 in the single engine configuration entry **`approval-gate`** (operator-edited
-via the console's Configuration screen; reactive reload, no polling). There is
+through its explicit form in the Console's global Settings modal; reactive reload, no polling). There is
 **no committed `config.yaml`**. On first boot the worker seeds the entry with
 the built-in defaults (including `rules`) so the editor is pre-filled; existing
 stored values are never overwritten except to add a missing `rules` field.

@@ -29,6 +29,7 @@ export default function setup(host: Host) {
   host.pages.register({
     id: 'state-manager',
     title: 'state',
+    configurationId: 'state',
     render: (props) => <StateManagerPage host={host} {...props} />,
   })
 

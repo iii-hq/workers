@@ -4,9 +4,9 @@
 //!
 //! Two contributions:
 //!
-//! - a custom configuration form for the `console` entry
-//!   (`host.configForms`), replacing the schema-generated JSON editor with
-//!   the live HTTP port control and injectable-UI toggle board — one bordered
+//! - a deliberate configuration form for the `console` entry
+//!   (`host.configForms`) in global Settings, with the live HTTP port control
+//!   and injectable-UI toggle board — one bordered
 //!   card per worker (title + description + switch) flipping
 //!   `injectableUi.disabledWorkers`; both settings apply live through
 //!   [`crate::configuration::register_config_trigger`];
@@ -85,6 +85,63 @@ mod tests {
         assert!(
             CONFIG_FORM_JS.contains("http_port"),
             "built config-form.js is missing the live HTTP port field"
+        );
+    }
+
+    #[test]
+    fn embedded_form_registers_every_worker_owned_override() {
+        let ids = [
+            "a2ui",
+            "approval-gate",
+            "bridge",
+            "canvas",
+            "claude-code",
+            "codex",
+            "computer",
+            "cursor",
+            "devin",
+            "document",
+            "editor",
+            "email",
+            "fp",
+            "github",
+            "grok",
+            "harness",
+            "http",
+            "memory",
+            "memory-consolidate",
+            "opencode",
+            "openwiki",
+            "pdf",
+            "pi",
+            "provider-xai",
+            "pubsub",
+            "queue",
+            "rbac-proxy",
+            "sandbox-code-runner",
+            "scrapling",
+            "security-scan",
+            "session-manager",
+            "shell",
+            "slack",
+            "tailscale",
+            "telegram-bot",
+            "vscode",
+            "web",
+            "workflow",
+            "worktree",
+        ];
+        assert_eq!(ids.len(), 39);
+        for id in ids {
+            let registration = format!("configForms.register(\"{id}\"");
+            assert!(
+                CONFIG_FORM_JS.contains(&registration),
+                "built config-form.js is missing the `{id}` override"
+            );
+        }
+        assert!(
+            !CONFIG_FORM_JS.contains("configForms.register(\"shell-ui\""),
+            "shell-ui is internal console-tab state and must not expose a form"
         );
     }
 

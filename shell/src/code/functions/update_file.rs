@@ -56,10 +56,7 @@ impl<'de> Deserialize<'de> for UpdateFileInput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct UpdateFileSpec {
-    /// Path relative to the primary allowed root, or an absolute path inside
-    /// any allowed root. Call `coder::info` to see the allowed roots. Paths
-    /// outside every allowed root are rejected — use the shell worker's
-    /// `shell::fs::*` for host paths outside the jail.
+    /// File to edit.
     pub path: String,
     pub ops: Vec<UpdateOp>,
 }
@@ -82,37 +79,19 @@ pub enum UpdateOp {
     /// Replace all regex matches in the file body (after line ops).
     Replace {
         pattern: String,
-        /// Substitution text for each match. Capture references expand:
-        /// `$1`/`${1}` by index (`$0` is the whole match) and
-        /// `$name`/`${name}` by name. A literal `$` MUST be written `$$`
-        /// — JS/TS template literals in a replacement are the classic
-        /// collision: write `Hello, $${name}!` to output `Hello, ${name}!`.
-        /// Unbraced references consume the longest `[0-9A-Za-z_]` run,
-        /// so `$1a` means a group named "1a", NOT group 1 then "a" (use
-        /// `${1}a`). A reference to a group the pattern does not define
-        /// fails pre-write with C210 — nothing is written. References
-        /// are validated even when the replacement goes unused (e.g.
-        /// `expect_matches: 0`): the replacement must be well-formed
-        /// even when unused.
+        /// Substitution text; $1/${1}/$name/${name} expand captures ($0 = whole
+        /// match), a literal $ is written $$ (`$${name}`). Unknown references
+        /// fail C210.
         replacement: String,
         #[serde(default)]
         ignore_case: bool,
-        /// When true, `.` in `pattern` also matches `\n`, so a short
-        /// anchored pattern like `"fn parse_config\\(.*?\\n\\}"` replaces a
-        /// whole multi-line region without quoting it — prefer two short
-        /// anchors joined by `.*?` over pasting the block into the pattern.
-        /// Without this flag (the default), `.` does not cross newlines and
-        /// a multi-line pattern silently matches nothing.
+        /// When true `.` also matches newline, so a short pattern like
+        /// `start.*?end` spans lines; by default a multi-line pattern matches
+        /// nothing.
         #[serde(default)]
         dot_matches_newline: bool,
-        /// Expected number of matches for this op. When set and the actual
-        /// count differs, this FILE fails with C210 and nothing is written
-        /// to it (other files in the batch still apply). Set
-        /// `expect_matches: 1` to make a targeted read-free edit safe — a
-        /// mismatch means the pattern is anchored too loosely or matches
-        /// nothing. Set `expect_matches: 0` to assert ABSENCE: the op
-        /// succeeds only when nothing matches (the replacement is unused).
-        /// Omit to replace all matches unconditionally.
+        /// Expected match count; a mismatch fails this file with C210 and
+        /// writes nothing (0 asserts absence). Omit to replace all matches.
         #[serde(default)]
         expect_matches: Option<u64>,
     },

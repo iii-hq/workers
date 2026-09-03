@@ -27,6 +27,7 @@ export default function setup(host: Host) {
   host.pages.register({
     id: 'github',
     title: 'github',
+    configurationId: 'github',
     render: (props) => <GithubPage host={host} {...props} />,
   })
 

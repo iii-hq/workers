@@ -353,7 +353,7 @@
   padding: 0 12px 10px;
 }
 
-/* --- configuration form (Workers tab, `code-runner` entry) -------------- */
+/* --- configuration form (global Settings, `code-runner` entry) ---------- */
 /* Same field grammar as the state worker's form: mono, token colors only,
  * host owns the SaveBar below. The section badges carry the reload split —
  * green-ish accent for hot-applied, faint for restart-applied — because that

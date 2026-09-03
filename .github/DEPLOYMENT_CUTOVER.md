@@ -1,6 +1,6 @@
 # Deployment executor cutover
 
-`.deploy/workers.yaml` is the deployment catalog. The pinned compiler emits
+`.deploy/workers.yaml` is the deployment catalog. The Workers-owned compiler emits
 `deployment-descriptor` snapshots whose package-manifest version is
 informational; Release Control supplies one exact target version and channel.
 

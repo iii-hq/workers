@@ -31,11 +31,10 @@ use crate::format::{self, Format};
 use crate::source::{Body, DocumentSource};
 
 pub const ID: &str = "document::ocr";
-pub const DESC: &str = "Transcribe a document that holds no readable text: a scanned PDF, a \
-                        photographed page, or a deck whose content is pictures. Renders the pages \
-                        that need it and reads them with a vision model, so it costs money per \
-                        page — pass `pages` (pdf::classify names them) to narrow it. Needs the \
-                        browser worker for PDFs and a vision model through llm-router.";
+pub const DESC: &str = "Transcribe a document with no readable text (scanned PDF, photographed \
+                        page, picture-only deck) by rendering its pages and reading them with a \
+                        vision model. Costs money per page: pass `pages` (pdf::classify names \
+                        them) to narrow it.";
 
 /// The prompt every page is read with.
 ///
@@ -53,10 +52,8 @@ pub struct Request {
     #[serde(flatten)]
     pub source: DocumentSource,
 
-    /// 1-indexed pages to transcribe, for a PDF. Omit for every page up to the
-    /// configured ceiling. This is the cost control: `pdf::classify` reports
-    /// which pages are scans, and passing that list keeps a long report from
-    /// being read a page at a time when only its cover is an image.
+    /// 1-indexed PDF pages to transcribe; omit for every page up to the
+    /// configured ceiling. Pass the scan pages `pdf::classify` reports.
     #[serde(default)]
     pub pages: Option<Vec<u32>>,
 
@@ -459,8 +456,8 @@ async fn render_pages(
 fn describe_navigate_failure(err: &str) -> String {
     if err.contains("scheme") && err.contains("file") {
         return "the browser worker refuses `file://` URLs, so a local PDF cannot be rendered. Add \
-                `file` to its allowed schemes: console workers tab, browser settings, Behavior, \
-                Allowed URL schemes (or `allowed_schemes` in its configuration). It hot-applies."
+                `file` to its allowed schemes: Console global Settings, Browser, Behavior, Allowed \
+                URL schemes (or `allowed_schemes` in its configuration). It hot-applies."
             .to_string();
     }
     describe_bus_failure("browser::navigate", err)

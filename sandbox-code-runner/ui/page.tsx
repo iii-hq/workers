@@ -38,6 +38,7 @@ export default function setup(host: Host) {
     host.pages.register({
       id: 'sandbox',
       title: 'sandbox',
+      configurationId: 'sandbox-code-runner',
       render: (props) => <SandboxPage host={host} {...props} />,
     }),
     host.chat?.registerSessionChip(createSandboxSessionChip(host)),

@@ -45,11 +45,11 @@
             "type": "null"
           }
         ],
-        "description": "The filesystem jail this call runs under. Stamped by the harness on an agent's call; absent on an operator or console call, which is already user-initiated and not subject to the agent's scope."
+        "description": "Filesystem jail this call runs under; stamped by the harness on agent calls, absent on operator or console calls."
       },
       "max_items": {
         "default": null,
-        "description": "Items to return before truncating. Omit for the configured default; `0` returns every item, which on a dense document is a very large response.",
+        "description": "Items to return before truncating; omit for the worker default, `0` returns every item (very large on a dense document).",
         "format": "uint",
         "minimum": 0.0,
         "type": [

@@ -23,6 +23,7 @@ export async function registerVscodeConfig(iii: IIIClient, seed: Config): Promis
       description:
         'VS Code worker: the code CLI path, the per-workspace data directory, the loopback bind host, the port range, and the start and stop timeouts.',
       schema: runtimeJsonSchema(),
+      metadata: { ui_form: CONFIG_ID },
       initial_value: toRuntime(seed),
     },
     timeoutMs: TIMEOUT_MS,

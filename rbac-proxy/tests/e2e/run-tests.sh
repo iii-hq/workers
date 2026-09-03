@@ -20,6 +20,7 @@ WORKER_BIN_TARGET="${WORKER_BIN_TARGET:-$WORKER_SRC/target/release/rbac-proxy}"
 
 ENGINE_PORT="${ENGINE_PORT:-49134}"
 PROXY_PORT="${PROXY_PORT:-49271}"
+export ENGINE_PORT
 ENGINE_WS="ws://127.0.0.1:${ENGINE_PORT}"
 PROXY_WS="ws://127.0.0.1:${PROXY_PORT}"
 
@@ -90,6 +91,13 @@ mkdir -p "$ROOT_DIR/reports" "$ROOT_DIR/data"
 # resolve here, and so a backgrounded engine is a direct child (kill_tree can
 # reap it) rather than a grandchild of a `( cd … )` subshell.
 cd "$ROOT_DIR"
+
+for port in "$ENGINE_PORT" "$PROXY_PORT"; do
+  if (echo > "/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
+    echo "[run-tests] FATAL: port $port is already in use" >&2
+    exit 3
+  fi
+done
 
 # 1. Build the worker (unless --no-build).
 if [[ "$NO_BUILD" -eq 0 ]]; then

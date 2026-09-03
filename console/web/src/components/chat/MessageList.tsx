@@ -1,5 +1,6 @@
 import { ArrowDown, ChevronRight } from 'lucide-react'
 import {
+  type CSSProperties,
   type ReactNode,
   type TouchEvent,
   type UIEvent,
@@ -14,6 +15,7 @@ import {
 } from 'react'
 import { resultEnvelope } from '@/components/function-trigger/FunctionTriggerCard'
 import {
+  firstRendered,
   rawRedactor,
   useFunctionTriggerRenderers,
 } from '@/components/function-trigger/renderer-registry'
@@ -22,6 +24,7 @@ import {
   collapsedTimelineActivities,
   groupTimelineActivities,
   type TimelineActivityGroupRow,
+  timelineActivityPresentationKey,
   triggerActivityRows,
 } from '@/components/trigger-activity/grouping'
 import {
@@ -55,6 +58,7 @@ import {
   type SkillSelection,
   type SystemPromptState,
 } from './system-prompt-selection'
+import { THOUGHT_SETTLE_DURATION_MS } from './ThoughtMessage'
 import {
   nextTailScrollTop,
   TAIL_GLIDE_SETTLE_DISTANCE_PX,
@@ -63,6 +67,8 @@ import {
   tailScrollTarget,
   tailStateAfterScroll,
 } from './tail-scroll'
+import type { TurnVisualPhase } from './turn-visual-state'
+import './chat-motion.css'
 
 interface MessageListProps {
   messages: MessageType[]
@@ -80,6 +86,10 @@ interface MessageListProps {
       zai::glm-5.2" or the session's status_reason). Falls back to "thinking…"
       when absent. */
   thinkingDetail?: string
+  /** Current protocol-derived phase; presence animations never own this. */
+  turnVisualPhase?: TurnVisualPhase
+  /** User message that began the active turn; keeps elapsed time across gaps. */
+  turnKey?: string
   density?: 'route' | 'dock'
   /** Rendered at the top of the transcript scroller, above the messages, so
       it scrolls away with them instead of unmounting. When set it replaces
@@ -128,6 +138,163 @@ interface MessageListProps {
    */
   focusMessageId?: string | null
   onFocusMessageHandled?: () => void
+}
+
+const TRIGGER_RESULT_DWELL_MS = 250
+
+interface ThoughtPresenceState {
+  signature: string
+  streamingIds: ReadonlySet<string>
+  settlingIds: ReadonlySet<string>
+}
+
+/** Preserve only thoughts this mounted list observed finishing. */
+function useSettlingThoughtIds(
+  messages: readonly MessageType[],
+  reducedMotion: boolean,
+): ReadonlySet<string> {
+  const thoughts = messages.filter((message) => message.role === 'thought')
+  const signature = `${reducedMotion ? 'reduced' : 'motion'}\u0000${thoughts
+    .map((message) => `${message.id}:${message.streaming ? 'live' : 'done'}`)
+    .join('\u0000')}`
+  const currentStreamingIds = new Set(
+    thoughts
+      .filter((message) => message.streaming)
+      .map((message) => message.id),
+  )
+  const currentThoughtIds = new Set(thoughts.map((message) => message.id))
+  const [presenceState, setPresenceState] = useState<ThoughtPresenceState>(
+    () => ({
+      signature,
+      streamingIds: currentStreamingIds,
+      settlingIds: new Set(),
+    }),
+  )
+  const timersRef = useRef(new Map<string, number>())
+  let renderedPresenceState = presenceState
+
+  if (presenceState.signature !== signature) {
+    const settlingIds = reducedMotion
+      ? new Set<string>()
+      : new Set(
+          [...presenceState.settlingIds].filter(
+            (id) => currentThoughtIds.has(id) && !currentStreamingIds.has(id),
+          ),
+        )
+    if (!reducedMotion) {
+      for (const id of presenceState.streamingIds) {
+        if (currentThoughtIds.has(id) && !currentStreamingIds.has(id)) {
+          settlingIds.add(id)
+        }
+      }
+    }
+    renderedPresenceState = {
+      signature,
+      streamingIds: currentStreamingIds,
+      settlingIds,
+    }
+    // State, unlike a render-mutated ref, rolls back with an abandoned
+    // concurrent render. React restarts this component before committing.
+    setPresenceState(renderedPresenceState)
+  }
+
+  useEffect(() => {
+    if (reducedMotion) {
+      for (const timer of timersRef.current.values()) window.clearTimeout(timer)
+      timersRef.current.clear()
+      return
+    }
+
+    for (const id of renderedPresenceState.settlingIds) {
+      if (timersRef.current.has(id)) continue
+      const timer = window.setTimeout(() => {
+        timersRef.current.delete(id)
+        setPresenceState((current) => {
+          if (!current.settlingIds.has(id)) return current
+          const next = new Set(current.settlingIds)
+          next.delete(id)
+          return { ...current, settlingIds: next }
+        })
+      }, THOUGHT_SETTLE_DURATION_MS)
+      timersRef.current.set(id, timer)
+    }
+  }, [reducedMotion, renderedPresenceState.settlingIds])
+
+  useEffect(
+    () => () => {
+      for (const timer of timersRef.current.values()) window.clearTimeout(timer)
+      timersRef.current.clear()
+    },
+    [],
+  )
+
+  return renderedPresenceState.settlingIds
+}
+
+function useLiveEntryKeys(
+  keys: readonly string[],
+  transcriptHydrated: boolean,
+): ReadonlySet<string> {
+  const signature = keys.join('\u0000')
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the primitive signature is the list's semantic identity.
+  const stableKeys = useMemo(() => keys, [signature])
+  const previousKeysRef = useRef(new Set(stableKeys))
+  const wasHydratedRef = useRef(transcriptHydrated)
+  const animate = transcriptHydrated && wasHydratedRef.current
+  const liveKeys = new Set(
+    animate
+      ? stableKeys.filter((key) => !previousKeysRef.current.has(key))
+      : [],
+  )
+
+  useLayoutEffect(() => {
+    previousKeysRef.current = new Set(stableKeys)
+    wasHydratedRef.current = transcriptHydrated
+  }, [stableKeys, transcriptHydrated])
+
+  return liveKeys
+}
+
+interface LiveTimelineRowProps {
+  children: ReactNode
+  messageRow: string
+  animate: boolean
+  staggerIndex?: number
+  className?: string
+}
+
+function LiveTimelineRow({
+  children,
+  messageRow,
+  animate,
+  staggerIndex = 0,
+  className,
+}: LiveTimelineRowProps) {
+  const [present, setPresent] = useState(!animate)
+
+  useLayoutEffect(() => {
+    if (!animate) {
+      setPresent(true)
+      return
+    }
+    const frame = requestAnimationFrame(() => setPresent(true))
+    return () => cancelAnimationFrame(frame)
+  }, [animate])
+
+  return (
+    <div
+      data-message-row={messageRow}
+      data-presence={present ? 'present' : 'entering'}
+      className={cn('chat-live-row', className)}
+      style={
+        {
+          '--chat-entry-delay': `${Math.min(staggerIndex, 4) * 40}ms`,
+        } as CSSProperties
+      }
+    >
+      {children}
+    </div>
+  )
 }
 
 /**
@@ -294,6 +461,8 @@ export function MessageList({
   transcriptHydrated = true,
   isThinking,
   thinkingDetail,
+  turnVisualPhase = 'idle',
+  turnKey,
   density = 'route',
   header,
   onResolveApproval,
@@ -333,6 +502,8 @@ export function MessageList({
   const reducedMotionRef = useRef(reducedMotion)
   reducedMotionRef.current = reducedMotion
 
+  const settlingThoughtIds = useSettlingThoughtIds(messages, reducedMotion)
+
   const fcallsByAssistant = useMemo(
     () => functionTriggersByAssistant(messages),
     [messages],
@@ -340,10 +511,37 @@ export function MessageList({
   const rows = useMemo(
     () =>
       groupTimelineActivities(
-        triggerActivityRows(functionTriggerGroups(messages)),
+        triggerActivityRows(
+          functionTriggerGroups(messages, settlingThoughtIds),
+        ),
       ),
-    [messages],
+    [messages, settlingThoughtIds],
   )
+  const presentationKeys = rows.flatMap((row) => {
+    if (row.kind === 'activity-group') {
+      return [
+        ...row.items.map(timelineActivityPresentationKey),
+        ...(row.summary ? [row.summary.id] : []),
+      ]
+    }
+    if (
+      row.message.role === 'thought' &&
+      !row.message.streaming &&
+      !settlingThoughtIds.has(row.message.id)
+    ) {
+      return []
+    }
+    return [row.message.id]
+  })
+  // One identity ledger spans top-level prose, grouped summaries, calls, and
+  // trigger activities. Reclassification never makes an existing surface look
+  // newly inserted.
+  const livePresentationKeys = useLiveEntryKeys(
+    presentationKeys,
+    transcriptHydrated,
+  )
+  const [waitingMounted, setWaitingMounted] = useState(Boolean(isThinking))
+  if (isThinking && !waitingMounted) setWaitingMounted(true)
   const registrations = useMemo(
     () => resolveRegistrations(messages, triggersById),
     [messages, triggersById],
@@ -443,7 +641,8 @@ export function MessageList({
     animationFrameRef.current = requestAnimationFrame(step)
   }, [cancelTailAnimation, writeScrollTop])
 
-  const hasScrollableContent = messages.length > 0 || Boolean(header)
+  const hasScrollableContent =
+    messages.length > 0 || Boolean(header) || waitingMounted
 
   /* Opening a session lands on the latest exchange before paint. ChatView is
      keyed by conversation id, so every open gets a fresh initializing state;
@@ -673,7 +872,7 @@ export function MessageList({
     writeScrollTop,
   ])
 
-  if (messages.length === 0 && !header) {
+  if (messages.length === 0 && !header && !isThinking) {
     return (
       <EmptyState
         {...resolveEmptyState(ctx, density, onConfigureProvider, {
@@ -706,6 +905,7 @@ export function MessageList({
         ref={containerRef}
         data-message-list=""
         data-tail-scroll={tailState}
+        data-turn-phase={turnVisualPhase}
         aria-label="conversation messages"
         tabIndex={-1}
         className={cn(
@@ -718,6 +918,14 @@ export function MessageList({
           const zoom = imageZoomTarget(event.target)
           if (zoom) setZoomedImage(zoom)
         }}
+        onKeyDown={(event) => {
+          if (event.defaultPrevented) return
+          if (event.key !== 'Enter' && event.key !== ' ') return
+          const zoom = imageZoomTarget(event.target)
+          if (!zoom) return
+          event.preventDefault()
+          setZoomedImage(zoom)
+        }}
         onWheel={handleWheel}
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
@@ -726,17 +934,26 @@ export function MessageList({
       >
         <div
           ref={contentRef}
-          className="mx-auto flex max-w-[720px] flex-col gap-y-6 sm:gap-y-8"
+          className="chat-message-stack mx-auto flex max-w-[720px] flex-col gap-y-6 sm:gap-y-8"
         >
           {header}
-          {rows.map((row) => {
+          {rows.flatMap((row, rowIndex) => {
             if (row.kind === 'activity-group') {
-              return (
-                <div key={row.id} data-message-row={row.id}>
+              const activityRow = (
+                <LiveTimelineRow
+                  key={row.id}
+                  messageRow={row.id}
+                  // Activity children own their stagger; animating the whole
+                  // group too would double-transform rich worker surfaces.
+                  animate={false}
+                  staggerIndex={rowIndex}
+                >
                   <FunctionTriggerGroup
                     row={row}
                     renderers={renderers}
                     registrations={registrations}
+                    reducedMotion={reducedMotion}
+                    livePhaseChildKeys={livePresentationKeys}
                     defaultOpenCalls={defaultOpenCalls}
                     focusMessageId={focusMessageId}
                     onResolveApproval={onResolveApproval}
@@ -745,27 +962,48 @@ export function MessageList({
                     onManageFilesystemAccess={onManageFilesystemAccess}
                     workingDir={workingDir}
                     agentName={agentName}
-                    summaryCopyText={
-                      row.summary
-                        ? (() => {
-                            const calls = fcallsByAssistant.get(row.summary.id)
-                            return calls?.length
-                              ? () =>
-                                  assistantCopyText(
-                                    row.summary?.content ?? '',
-                                    calls,
-                                    redactFor,
-                                  )
-                              : row.summary.content
-                          })()
-                        : undefined
-                    }
                   />
-                </div>
+                </LiveTimelineRow>
               )
+              if (!row.summary) return [activityRow]
+
+              const summary = row.summary
+              const calls = fcallsByAssistant.get(summary.id)
+              const copyText =
+                summary.content || calls?.length
+                  ? () =>
+                      assistantCopyText(summary.content, calls ?? [], redactFor)
+                  : undefined
+              // Summaries remain direct children of the transcript stack.
+              // If late protocol data reclassifies existing prose as a phase
+              // summary, the stable key keeps its Message instance alive.
+              return [
+                activityRow,
+                <LiveTimelineRow
+                  key={summary.id}
+                  messageRow={summary.id}
+                  animate={
+                    !reducedMotion && livePresentationKeys.has(summary.id)
+                  }
+                  staggerIndex={rowIndex + 1}
+                >
+                  <Message
+                    message={summary}
+                    copyText={copyText}
+                    agentName={agentName}
+                  />
+                </LiveTimelineRow>,
+              ]
             }
 
             const m = row.message
+            if (
+              m.role === 'thought' &&
+              !m.streaming &&
+              !settlingThoughtIds.has(m.id)
+            ) {
+              return []
+            }
             // Assistant turns copy their prose plus the calls that follow them;
             // the thunk defers building that string until the copy click. Left
             // undefined when the turn has nothing to copy (no prose, no calls)
@@ -776,8 +1014,26 @@ export function MessageList({
               m.role === 'assistant' && (m.content || calls?.length)
                 ? () => assistantCopyText(m.content, calls ?? [], redactFor)
                 : undefined
-            return (
-              <div key={m.id} data-message-row={m.id}>
+            return [
+              <LiveTimelineRow
+                key={m.id}
+                messageRow={m.id}
+                animate={
+                  !reducedMotion &&
+                  livePresentationKeys.has(m.id) &&
+                  // These live surfaces own their internal reveal; wrapping
+                  // them in a second translate/fade would compound motion.
+                  m.role !== 'thought' &&
+                  !(m.role === 'assistant' && m.streaming)
+                }
+                staggerIndex={rowIndex}
+                className={cn(
+                  m.role === 'thought' && 'chat-thought-row',
+                  m.role === 'thought' &&
+                    !m.streaming &&
+                    'chat-thought-row-settling',
+                )}
+              >
                 <Message
                   message={m}
                   spawnContext={spawnContext}
@@ -791,10 +1047,25 @@ export function MessageList({
                   workingDir={workingDir}
                   registration={registrations.get(m.id)}
                 />
-              </div>
-            )
+              </LiveTimelineRow>,
+            ]
           })}
-          {isThinking ? <ModelWaitingIndicator label={thinkingDetail} /> : null}
+          {waitingMounted ? (
+            <div
+              className="chat-waiting-slot"
+              data-active={Boolean(isThinking)}
+              aria-hidden={!isThinking}
+              inert={!isThinking ? true : undefined}
+            >
+              <div className="chat-waiting-slot-inner">
+                <ModelWaitingIndicator
+                  label={thinkingDetail}
+                  active={Boolean(isThinking)}
+                  turnKey={turnKey}
+                />
+              </div>
+            </div>
+          ) : null}
         </div>
       </section>
       {tailState === 'paused' ? (
@@ -829,8 +1100,9 @@ interface FunctionTriggerGroupProps {
   row: TimelineActivityGroupRow
   renderers: ReturnType<typeof useFunctionTriggerRenderers>
   registrations: ReadonlyMap<string, TriggerRegistration>
+  reducedMotion: boolean
+  livePhaseChildKeys: ReadonlySet<string>
   defaultOpenCalls?: boolean
-  summaryCopyText?: string | (() => string)
   onResolveApproval?: MessageListProps['onResolveApproval']
   onAlwaysAllow?: MessageListProps['onAlwaysAllow']
   onResolveFilesystemAccess?: MessageListProps['onResolveFilesystemAccess']
@@ -839,6 +1111,78 @@ interface FunctionTriggerGroupProps {
   agentName?: string
   /** External landing target — a hidden matching item expands the group. */
   focusMessageId?: string | null
+}
+
+function useDwelledActivityKeys(
+  desiredKeys: ReadonlySet<string>,
+  reducedMotion: boolean,
+): ReadonlySet<string> {
+  const signature = `${reducedMotion ? 'reduced' : 'motion'}\u0000${[
+    ...desiredKeys,
+  ].join('\u0000')}`
+  const [presenceState, setPresenceState] = useState(() => ({
+    desiredKeys: new Set(desiredKeys) as ReadonlySet<string>,
+    retainedKeys: new Set(desiredKeys) as ReadonlySet<string>,
+    signature,
+  }))
+  const timersRef = useRef(new Map<string, number>())
+  let renderedPresenceState = presenceState
+
+  if (presenceState.signature !== signature) {
+    renderedPresenceState = {
+      desiredKeys: new Set(desiredKeys),
+      retainedKeys: reducedMotion
+        ? new Set(desiredKeys)
+        : new Set([...presenceState.retainedKeys, ...desiredKeys]),
+      signature,
+    }
+    setPresenceState(renderedPresenceState)
+  }
+
+  useEffect(() => {
+    if (reducedMotion) {
+      for (const timer of timersRef.current.values()) window.clearTimeout(timer)
+      timersRef.current.clear()
+      return
+    }
+
+    for (const key of renderedPresenceState.desiredKeys) {
+      const timer = timersRef.current.get(key)
+      if (timer === undefined) continue
+      window.clearTimeout(timer)
+      timersRef.current.delete(key)
+    }
+    for (const key of renderedPresenceState.retainedKeys) {
+      if (
+        renderedPresenceState.desiredKeys.has(key) ||
+        timersRef.current.has(key)
+      ) {
+        continue
+      }
+      const timer = window.setTimeout(() => {
+        timersRef.current.delete(key)
+        setPresenceState((current) => {
+          if (current.desiredKeys.has(key) || !current.retainedKeys.has(key)) {
+            return current
+          }
+          const next = new Set(current.retainedKeys)
+          next.delete(key)
+          return { ...current, retainedKeys: next }
+        })
+      }, TRIGGER_RESULT_DWELL_MS)
+      timersRef.current.set(key, timer)
+    }
+  }, [reducedMotion, renderedPresenceState])
+
+  useEffect(
+    () => () => {
+      for (const timer of timersRef.current.values()) window.clearTimeout(timer)
+      timersRef.current.clear()
+    },
+    [],
+  )
+
+  return renderedPresenceState.retainedKeys
 }
 
 /**
@@ -851,8 +1195,9 @@ function FunctionTriggerGroup({
   row,
   renderers,
   registrations,
+  reducedMotion,
+  livePhaseChildKeys,
   defaultOpenCalls,
-  summaryCopyText,
   onResolveApproval,
   onAlwaysAllow,
   onResolveFilesystemAccess,
@@ -863,12 +1208,22 @@ function FunctionTriggerGroup({
 }: FunctionTriggerGroupProps) {
   const [expanded, setExpanded] = useState(!!defaultOpenCalls)
   const contentId = useId()
-  const collapsedItems = collapsedTimelineActivities(row.items, (call) =>
-    renderers.some(
-      (renderer) =>
-        renderer.metadata?.display === true &&
-        renderer.isMatch(call.functionId),
-    ),
+  const collapsedItems = collapsedTimelineActivities(row.items, (call) => {
+    const rendered = firstRendered(renderers, (renderer) => {
+      if (!renderer.isMatch(call.functionId) || call.pendingApproval)
+        return null
+      return call.running
+        ? (renderer.tryRenderRunning ?? renderer.tryRender)(call)
+        : renderer.tryRender(call)
+    })
+    return rendered?.renderer.metadata?.display === true
+  })
+  const collapsedKeyValues = collapsedItems.map(timelineActivityPresentationKey)
+  const collapsedKeySignature = collapsedKeyValues.join('\u0000')
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the primitive signature is the set's semantic identity.
+  const collapsedKeys = useMemo(
+    () => new Set(collapsedKeyValues),
+    [collapsedKeySignature],
   )
   // External landing (trace → "go to message"): a target hidden behind the
   // collapse must have a DOM row in the same render the request resolves, so
@@ -889,8 +1244,28 @@ function FunctionTriggerGroup({
     setExpanded(true)
   }
   const hiddenCount = row.items.length - collapsedItems.length
-  const visibleItems = expanded ? row.items : collapsedItems
   const canCollapse = hiddenCount > 0
+  const presentedKeyValues = expanded
+    ? row.items.map(timelineActivityPresentationKey)
+    : collapsedKeyValues
+  const presentedKeySignature = presentedKeyValues.join('\u0000')
+  // Track expanded rows as desired presence too. When “show latest” is
+  // clicked, they then remain mounted for the closing track instead of
+  // disappearing before their 1fr → 0fr transition can paint.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the primitive signature is the set's semantic identity.
+  const presentedKeys = useMemo(
+    () => new Set(presentedKeyValues),
+    [presentedKeySignature],
+  )
+  const retainedKeys = useDwelledActivityKeys(presentedKeys, reducedMotion)
+  let visibleOrdinal = 0
+  const presentedItems = row.items.map((item, index) => {
+    const key = timelineActivityPresentationKey(item)
+    const semanticVisible = expanded || collapsedKeys.has(key)
+    const mounted = semanticVisible || retainedKeys.has(key)
+    const ordinal = semanticVisible ? visibleOrdinal++ : -1
+    return { item, index, key, semanticVisible, mounted, ordinal }
+  })
 
   return (
     <section
@@ -898,82 +1273,106 @@ function FunctionTriggerGroup({
       data-function-trigger-group=""
       data-function-trigger-count={row.items.length}
     >
-      <div className="flex flex-col gap-y-8">
-        {canCollapse ? (
-          <button
-            type="button"
-            aria-expanded={expanded}
-            aria-controls={contentId}
-            onClick={() => setExpanded((value) => !value)}
-            className="group relative flex w-fit cursor-pointer items-center gap-2 font-mono text-base text-ink-faint hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:text-[0.8125rem]"
-          >
-            <span
-              className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
-              aria-hidden="true"
-            />
-            <ChevronRight
-              aria-hidden="true"
-              className={cn(
-                'size-5 shrink-0 transition-transform duration-150 motion-reduce:transition-none sm:size-4',
-                expanded && 'rotate-90',
-              )}
-            />
-            <span className="tabular-nums">{row.items.length} triggers</span>
-            <span className="text-ink-ghost">
-              · {expanded ? 'show latest' : 'show all'}
-            </span>
-          </button>
-        ) : null}
+      <div className="flex flex-col">
+        <div
+          className="chat-trigger-disclosure"
+          data-visible={canCollapse}
+          aria-hidden={!canCollapse}
+          inert={!canCollapse ? true : undefined}
+        >
+          <div className="chat-trigger-disclosure-inner">
+            <button
+              type="button"
+              aria-expanded={expanded}
+              aria-controls={contentId}
+              onClick={() => setExpanded((value) => !value)}
+              tabIndex={canCollapse ? undefined : -1}
+              className="group relative flex w-fit cursor-pointer items-center gap-2 font-mono text-base text-ink-faint hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:text-[0.8125rem]"
+            >
+              <span
+                className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+                aria-hidden="true"
+              />
+              <ChevronRight
+                aria-hidden="true"
+                className={cn(
+                  'chat-trigger-disclosure-chevron size-5 shrink-0 sm:size-4',
+                  expanded && 'rotate-90',
+                )}
+              />
+              <span className="tabular-nums">Agent triggered {row.items.length} functions</span>
+              <span className="text-ink-ghost">·</span>
+              <span className="chat-trigger-disclosure-label">
+                <span data-active={!expanded} aria-hidden={expanded}>
+                  show all
+                </span>
+                <span data-active={expanded} aria-hidden={!expanded}>
+                  show latest
+                </span>
+              </span>
+            </button>
+          </div>
+        </div>
         <div
           id={contentId}
-          className={cn('flex flex-col gap-y-8', canCollapse && '-mt-6.5')}
+          className="flex flex-col"
           data-function-trigger-group-calls=""
         >
-          {visibleItems.map((item, index) => {
-            const message = item.message
-            const notification =
-              item.kind === 'trigger-activity' ? item.notification : undefined
-            return (
-              <div
-                key={item.id}
-                // An item that absorbed its wake notification represents two
-                // transcript entries; the row id carries both, space-separated.
-                data-message-row={
-                  notification ? `${message.id} ${notification.id}` : message.id
-                }
-                className={cn(index > 0 && '-mt-6.5')}
-              >
-                <Message
-                  message={message}
-                  agentName={agentName}
-                  triggerNotification={notification}
-                  registration={
-                    registrations.get(message.id) ??
-                    (notification
-                      ? registrations.get(notification.id)
-                      : undefined)
-                  }
-                  defaultOpenCalls={defaultOpenCalls}
-                  onResolveApproval={onResolveApproval}
-                  onAlwaysAllow={onAlwaysAllow}
-                  onResolveFilesystemAccess={onResolveFilesystemAccess}
-                  onManageFilesystemAccess={onManageFilesystemAccess}
-                  workingDir={workingDir}
-                />
-              </div>
-            )
-          })}
+          {presentedItems.map(
+            ({ item, index, key, semanticVisible, mounted, ordinal }) => {
+              const message = item.message
+              const notification =
+                item.kind === 'trigger-activity' ? item.notification : undefined
+              return (
+                <div
+                  key={key}
+                  className="chat-activity-item"
+                  data-visible={semanticVisible}
+                  data-mounted={mounted}
+                  data-stacked={ordinal > 0}
+                  data-archiving={mounted && !semanticVisible}
+                  aria-hidden={!semanticVisible}
+                  inert={!semanticVisible ? true : undefined}
+                >
+                  <div className="chat-activity-item-inner">
+                    {mounted ? (
+                      <LiveTimelineRow
+                        // An item that absorbed its wake notification represents
+                        // two transcript entries; the row carries both ids.
+                        messageRow={
+                          notification
+                            ? `${message.id} ${notification.id}`
+                            : message.id
+                        }
+                        animate={!reducedMotion && livePhaseChildKeys.has(key)}
+                        staggerIndex={index}
+                      >
+                        <Message
+                          message={message}
+                          agentName={agentName}
+                          triggerNotification={notification}
+                          registration={
+                            registrations.get(message.id) ??
+                            (notification
+                              ? registrations.get(notification.id)
+                              : undefined)
+                          }
+                          defaultOpenCalls={defaultOpenCalls}
+                          onResolveApproval={onResolveApproval}
+                          onAlwaysAllow={onAlwaysAllow}
+                          onResolveFilesystemAccess={onResolveFilesystemAccess}
+                          onManageFilesystemAccess={onManageFilesystemAccess}
+                          workingDir={workingDir}
+                        />
+                      </LiveTimelineRow>
+                    ) : null}
+                  </div>
+                </div>
+              )
+            },
+          )}
         </div>
       </div>
-      {row.summary ? (
-        <div data-message-row={row.summary.id}>
-          <Message
-            message={row.summary}
-            copyText={summaryCopyText}
-            agentName={agentName}
-          />
-        </div>
-      ) : null}
     </section>
   )
 }

@@ -45,7 +45,7 @@
             "type": "null"
           }
         ],
-        "description": "The filesystem jail this call runs under. Stamped by the harness on an agent's call; absent on an operator or console call, which is already user-initiated and not subject to the agent's scope."
+        "description": "Filesystem jail this call runs under; stamped by the harness on agent calls, absent on operator or console calls."
       },
       "password": {
         "default": null,
@@ -65,7 +65,7 @@
       },
       "sample_pages": {
         "default": null,
-        "description": "Pages sampled for the verdict, overriding the configured default. `0` scans every page, which is slower but settles a borderline mixed document.",
+        "description": "Pages sampled for the verdict, overriding the worker default; `0` scans every page (slower, settles a borderline mixed document).",
         "format": "uint",
         "minimum": 0.0,
         "type": [

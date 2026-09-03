@@ -36,23 +36,19 @@ the sidebar groups them under `UI`, `Chat`, `Workers`, `Design`, and
 `Playground`.
 
 Alongside the chat primitives (composer, messages, loading, primitives,
-typography, color) it covers the worker-configuration surfaces:
+typography, color) it covers the shared building blocks used by global
+Settings and worker-owned configuration forms:
 
-| group                | file                                                                                                    | what it shows                                                                                                          |
-|----------------------|---------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------|
-| `UI/Select`          | [`Select.stories.tsx`](src/components/ui/Select.stories.tsx)                                            | the shared `Select`: flat / grouped / disabled, plus the empty-value and ellipsis fixes.                               |
-| `Workers/SchemaForm` | [`SchemaForm.stories.tsx`](src/pages/Configuration/tabs/WorkersTab/schema-form/SchemaForm.stories.tsx)  | one live `SchemaForm` per field variation (string/env, number, enum, oneOf, nullable, array, object, dictionary, $ref, errors). |
-| `Workers/WorkersTab` | [`WorkersTab.stories.tsx`](src/pages/Configuration/tabs/WorkersTab/WorkersTab.stories.tsx)              | the full master-detail editor over mock fixtures: select / edit / dirty / reset / save, including the inline error path. |
+| group         | file                                                                     | what it shows                                                                                  |
+|---------------|--------------------------------------------------------------------------|------------------------------------------------------------------------------------------------|
+| `UI/Select`   | [`Select.stories.tsx`](src/components/ui/Select.stories.tsx)             | flat, grouped, and disabled selects, plus empty-value and ellipsis behavior.                    |
+| `UI/Switch`   | [`Switch.stories.tsx`](src/components/ui/Switch.stories.tsx)             | checked, unchecked, disabled, and controlled switches used by boolean settings.                |
+| `UI/Settings` | [`Settings.stories.tsx`](src/components/ui/Settings.stories.tsx)         | grouped sections, key/value rows, actions, notification switches, and the narrow presentation. |
 
-The mock schemas and configs live in
-[`worker-fixtures.ts`](src/stories/fixtures/worker-fixtures.ts).
-Stories that render env-template string inputs are wrapped in a `.workers-tab`
-container (the `WorkersTabDecorator` in
-[`decorators.tsx`](src/stories/decorators.tsx)) so the Lexical pill styling
-(scoped to that class in `index.css`) applies. The worker-config harness
-simulates `configuration::set` with `mockValidate` — saving `telemetry` with
-`sample_rate > 1`, or clearing the `database` url, drives the inline
-validation-error path.
+Each worker's injected `configForms` component owns its field-level stories
+and tests. The Console owns modal chrome, navigation, dirty tracking,
+schema validation, save/reset, and error presentation; it never generates a
+generic form from the schema.
 
 ### Select fixes documented here
 
@@ -61,8 +57,8 @@ validation-error path.
 
 - **Empty / unmatched values render the placeholder**, not the raw token. A
   value of `undefined` (or any id absent from the options) no longer prints
-  "undefined". `allowEmpty` adds a leading clear option that fires `onClear`;
-  the schema-form `EnumField` uses it for optional enums (clearing to `null`).
+  "undefined". `allowEmpty` adds a leading clear option that fires `onClear`
+  for optional values.
 - **Long labels ellipsis** instead of stretching the trigger and pushing the
   chevron off-screen.
 

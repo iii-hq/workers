@@ -22,7 +22,7 @@ DEPLOYMENT_TARGET_VERSION_RE = re.compile(
     r"^(?:0|[1-9][0-9]*)\."
     r"(?:0|[1-9][0-9]*)\."
     r"(?:0|[1-9][0-9]*)"
-    r"(?:-(?:experimental|alpha|beta))?$"
+    r"(?:-(?:experimental|alpha|beta|rc\.[1-9][0-9]*))?$"
 )
 RELEASE_MATURITIES = ("experimental", "alpha", "beta", "rc", "stable")
 RELEASE_SUFFIXES = ("none", "experimental", "alpha", "beta")
@@ -72,13 +72,43 @@ def parse_release_version(version: str) -> ReleaseVersion:
 
 
 def validate_deployment_target_version(version: str) -> str:
-    """Validate a new deployment target without accepting legacy numbered RCs."""
+    """Validate a new deployment target against the release version grammar."""
     if not DEPLOYMENT_TARGET_VERSION_RE.fullmatch(version):
         raise ValueError(
             "deployment target version must be MAJOR.MINOR.PATCH with an optional "
-            "-experimental, -alpha, or -beta suffix"
+            "-experimental, -alpha, -beta, or -rc.N suffix"
         )
     return version
+
+
+def validate_channel_target_version(channel: str, version: str) -> str:
+    """Enforce the channel/version-form contract of the rc-first flow.
+
+    `latest` only ever receives pure MAJOR.MINOR.PATCH versions minted by
+    release finalization. `next` accepts any in-grammar version today; the
+    suffixed-only invariant for `next` lands after the rc flip is live, so the
+    nightly window never gets stuck between executor and orchestrator deploys.
+    """
+    if channel not in {"next", "latest"}:
+        raise ValueError("deployment channel must be next or latest")
+    validate_deployment_target_version(version)
+    if channel == "latest" and "-" in version:
+        raise ValueError(f"latest deployments require a pure MAJOR.MINOR.PATCH version, got {version}")
+    return version
+
+
+def validate_finalization(candidate: str, stable: str) -> None:
+    """Require a numbered rc candidate and the pure stable of the same core."""
+    parsed_candidate = parse_release_version(candidate)
+    if parsed_candidate.maturity != "rc":
+        raise ValueError(f"finalization candidate must be an X.Y.Z-rc.N version, got {candidate}")
+    parsed_stable = parse_release_version(stable)
+    if parsed_stable.maturity != "stable":
+        raise ValueError(f"finalization stable must be a pure MAJOR.MINOR.PATCH version, got {stable}")
+    if parsed_candidate.core != parsed_stable.core:
+        raise ValueError(
+            f"finalization stable {stable} must share the candidate core {parsed_candidate.core_text}"
+        )
 
 
 def release_maturity(version: str) -> str:

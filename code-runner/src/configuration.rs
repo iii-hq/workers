@@ -38,6 +38,7 @@ pub async fn register_config(
                         (hot-reload), plus runtime-count, memory, and scratch limits (applied \
                         at worker restart).",
         "schema": CodeRunnerConfig::json_schema(),
+        "metadata": { "ui_form": CONFIG_ID },
     });
     if let Some(seed) = seed {
         payload["initial_value"] = seed.to_json();

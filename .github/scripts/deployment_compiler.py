@@ -192,7 +192,9 @@ def normalize_config(worker_dir: Path, manifest: dict[str, Any]) -> dict[str, An
     return config
 
 
-def normalize_runtime(worker: str, manifest: dict[str, Any], kind: str) -> dict[str, Any]:
+def normalize_runtime(
+    worker: str, worker_dir: Path, manifest: dict[str, Any], kind: str
+) -> dict[str, Any]:
     env = manifest.get("env") or {}
     if not isinstance(env, dict) or any(not isinstance(key, str) or not isinstance(value, str) for key, value in env.items()):
         fail(f"{worker}/iii.worker.yaml: env must map strings to strings")
@@ -207,6 +209,18 @@ def normalize_runtime(worker: str, manifest: dict[str, Any], kind: str) -> dict[
         "environment": dict(sorted(env.items())),
         "resources": resources,
     }
+    capture_config = worker_dir / "config.collect.yaml"
+    if capture_config.exists():
+        if not capture_config.is_file() or capture_config.is_symlink():
+            fail(f"{worker}/config.collect.yaml must be a regular file")
+        if kind != "rust-binary":
+            fail(f"{worker}/config.collect.yaml is only supported for binary workers")
+        result["interface_config"] = {
+            "path": "config.collect.yaml",
+            "sha256": file_sha256(capture_config),
+        }
+    else:
+        result["interface_config"] = None
     if kind == "rust-binary":
         result["exec"] = [str(manifest.get("bin") or worker)]
     elif kind in {"javascript-bundle", "python-bundle"}:
@@ -237,7 +251,7 @@ def validate_artifact(
     if kind not in ARTIFACT_KINDS:
         fail(f"workers.{worker}.artifact.kind is unsupported")
     allowed_fields = {
-        "rust-binary": {"kind", "toolchain", "binary", "targets", "frontends"},
+        "rust-binary": {"kind", "toolchain", "binary", "targets", "windows_exception", "frontends"},
         "javascript-bundle": {
             "kind", "workspace_root", "runtime", "package_manager", "lockfile",
             "install_command", "build_command", "include",
@@ -258,13 +272,30 @@ def validate_artifact(
         fail(f"{worker}: iii.worker.yaml deploy={deploy!r} conflicts with artifact.kind={kind!r}")
     if kind == "rust-binary":
         binary = artifact.get("binary")
-        targets = artifact.get("targets")
         if not isinstance(binary, str) or not binary:
             fail(f"workers.{worker}.artifact.binary is required")
         if binary != str(manifest.get("bin") or worker):
             fail(f"{worker}: public bin and private artifact.binary differ")
-        if not isinstance(targets, list) or not targets or any(not isinstance(target, str) for target in targets):
+        targets = artifact.get("targets")
+        if not isinstance(targets, list) or not targets or any(
+            not isinstance(target, str) or not target for target in targets
+        ):
             fail(f"workers.{worker}.artifact.targets must be a non-empty string array")
+        if len(set(targets)) != len(targets):
+            fail(f"workers.{worker}.artifact.targets contains duplicate targets")
+        # Every deployment builds the same matrix, so what is tested on `next`
+        # is exactly what finalization promotes to `latest`. Windows is part of
+        # that matrix; a worker that cannot ship it says so explicitly, because
+        # a silent omission is how the whole catalog lost Windows once already.
+        windows_declared = [target for target in targets if "windows" in target]
+        windows_exception = artifact.get("windows_exception")
+        if windows_declared and windows_exception is not None:
+            fail(f"workers.{worker}: declares both Windows targets and a windows_exception")
+        if not windows_declared and (not isinstance(windows_exception, str) or not windows_exception.strip()):
+            fail(
+                f"workers.{worker}: must either declare Windows targets or justify "
+                "their absence with windows_exception"
+            )
         public_targets = manifest.get("targets")
         if public_targets is not None and public_targets != targets:
             fail(f"{worker}: public targets and private artifact.targets differ")
@@ -401,6 +432,9 @@ def compile_worker(root: Path, worker: str, value: Any, source_sha: str, compile
         fail(f"{public_path}: name must be {worker!r}")
     if manifest.get("manifest") != manifest_name:
         fail(f"{public_path}: manifest must match the private package_manifest")
+    interface_smoke = manifest.get("interface_smoke", True)
+    if not isinstance(interface_smoke, bool):
+        fail(f"{public_path}: interface_smoke must be a boolean when present")
     publish = value["publish"]
     if not isinstance(publish, bool):
         fail(f"workers.{worker}.publish must be a boolean")
@@ -434,7 +468,11 @@ def compile_worker(root: Path, worker: str, value: Any, source_sha: str, compile
         "compiler_digest": compiler_sha,
         "source": source,
         "artifact": artifact,
-        "runtime": normalize_runtime(worker, manifest, str(artifact["kind"])),
+        "runtime": normalize_runtime(worker, worker_dir, manifest, str(artifact["kind"])),
+        # Keep the legacy public-manifest spelling at the source boundary only.
+        # Inside the immutable deployment contract this is interface capture:
+        # registration metadata is collected, but no worker function is called.
+        "interface_capture": "required" if interface_smoke else "skipped",
         "publish": publish,
         "build_units": build_units(worker, artifact),
         "registry_projection": projection,
@@ -454,8 +492,6 @@ def compile_index(args: argparse.Namespace) -> int:
     schema = args.schema.resolve()
     if not SHA_RE.fullmatch(args.source_sha):
         fail("source_sha must be a full lowercase commit SHA")
-    if not SHA_RE.fullmatch(args.compiler_commit):
-        fail("compiler_commit must be a full lowercase commit SHA")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.compiler_repository):
         fail("compiler_repository must be an owner/name pair")
     document = read_yaml(deployment_spec)
@@ -490,7 +526,7 @@ def compile_index(args: argparse.Namespace) -> int:
         "source_sha": args.source_sha,
         "compiler": {
             "repository": args.compiler_repository,
-            "commit": args.compiler_commit,
+            "commit": args.source_sha,
             "digest": digest,
         },
         "workers": entries,
@@ -519,7 +555,6 @@ def parser() -> argparse.ArgumentParser:
     compile_command.add_argument("--deployment-spec", type=Path, default=Path(".deploy/workers.yaml"))
     compile_command.add_argument("--source-sha", required=True)
     compile_command.add_argument("--compiler-repository", required=True)
-    compile_command.add_argument("--compiler-commit", required=True)
     compile_command.add_argument("--schema", type=Path, default=schema)
     compile_command.add_argument("--output-dir", type=Path, required=True)
     compile_command.set_defaults(handler=compile_index)

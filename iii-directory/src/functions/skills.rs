@@ -67,17 +67,10 @@ const URI_PREFIX: &str = "iii://";
 
 /// Description for the `directory::skills::get` registration.
 const GET_DESCRIPTION: &str =
-    "Fetch one filesystem-backed skill by id and return its raw markdown body plus \
-     id, title, type, function_id, and modified_at. A worker overview is addressed \
-     by the bare worker name (e.g. \"iii-sandbox\") — that is the id `list`/`index` \
-     hand back. Input is forgiving: \"iii-sandbox/index\", \"iii-sandbox/SKILL.md\", a \
-     trailing \".md\", and an iii:// prefix all resolve to the same overview; and if \
-     the exact id misses, the worker name is matched case-insensitively as a \
-     substring (\"sandbox\" finds \"iii-sandbox\"). `title` prefers frontmatter \
-     `title:` over the body H1; `type` is the frontmatter `type:`. There is no \
-     `description` field here (the body already opens with that paragraph) — use \
-     directory::skills::list for the teaser-only view. On a miss you get a \
-     `D110 not_found` message naming the closest ids and the next function to call.";
+    "Fetch one skill by id and return its raw markdown body plus id, title, \
+     type, function_id, and modified_at. A worker overview is addressed by \
+     the bare worker name; `<id>.md` and `iii://<id>` forms are accepted. On \
+     a miss, D110 names the closest ids.";
 
 /// Recovery pointers attached to every `directory::skills::*` not-found
 /// message: where the agent should look to find a valid id.
@@ -168,18 +161,13 @@ struct IndexSkillsOutput {
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct SkillGetInput {
-    /// Skill id (the same string returned by `directory::skills::list`,
-    /// e.g. `"directory/skills/list"`). Two ergonomic variants are also
-    /// accepted: the file-path form `<id>.md` (the trailing `.md` is
-    /// stripped) and the legacy `iii://{id}` URI form. Other URI
-    /// schemes are rejected. The filename `SKILLS.md` is aliased to
-    /// `index.md` to match the filesystem scanner.
+    /// Skill id as returned by directory::skills::list (e.g.
+    /// `directory/skills/list`); `<id>.md` and `iii://<id>` forms are accepted.
+    // `SKILLS.md` is aliased to `index.md` to match the filesystem scanner;
+    // other URI schemes are rejected.
     pub id: String,
-    /// When `true`, the response includes the FULL on-disk file content
-    /// (frontmatter block included) as `raw`. For editors that need to
-    /// round-trip the exact file (`directory::skills::update` takes the
-    /// same full-file form); agent readers should leave this unset and
-    /// use `body`.
+    /// When true, also return the exact on-disk file (frontmatter included) as
+    /// `raw`, ready for directory::skills::update.
     #[serde(default)]
     pub raw: Option<bool>,
 }
@@ -542,18 +530,11 @@ fn register_list_skills(
             }
         })
         .description(
-            "List skills as one row PER SKILL (id, title, type, function_id, disable_model_invocation, description, \
-             bytes, modified_at) from skills_folder — use this when you need individual \
-             skill ids. A worker overview row's `id` is the bare worker name (e.g. \
-             `iii-sandbox`); pass it straight to directory::skills::get. For a per-WORKER \
-             overview instead, call directory::skills::index. Filters: `search` \
-             (case-insens. substring vs id+title+description), `prefix` (worker-namespace \
-             prefix; matches the overview row and its sub-skills), `type` (exact \
-             frontmatter type match). Pass `include_description: false` for token-light \
-             id+title+type rows (default: descriptions included). `title` prefers \
-             frontmatter `title:` over the body H1. Each row's `function_id` is the \
-             callable bus id (e.g. `sandbox::create`) — pass THAT to agent_trigger, not \
-             the row's `id` (which is a documentation address).",
+            "List skills, one row per skill (id, title, type, function_id, \
+             description, bytes, modified_at). Filters: `search` (substring on \
+             id/title/description), `prefix` (worker namespace), `type`; \
+             `include_description: false` for lighter rows. Pass a row's \
+             `function_id`, not its `id`, to agent_trigger.",
         ),
     );
 }
@@ -678,13 +659,9 @@ fn register_index_skills(
             }
         })
         .description(
-            "Render a per-WORKER overview: one short markdown block per installed worker \
-             (each worker's root overview doc `<ns>/index`, whether or not it declares \
-             frontmatter `type: index`). Each block is a `## <worker title>` heading, the \
-             first paragraph of that worker's overview, and a `directory::skills::get` call \
-             to read the full reference. Token-light by design and intended for \
-             system-prompt injection; for individual per-SKILL rows call \
-             directory::skills::list.",
+            "Per-worker overview: one short markdown block per installed worker \
+             (title, first paragraph, and the directory::skills::get call for the \
+             full reference). For per-skill rows use directory::skills::list.",
         ),
     );
 }

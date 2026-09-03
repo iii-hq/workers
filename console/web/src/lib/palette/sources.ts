@@ -35,16 +35,22 @@ export type PaletteGroup = PaletteKind | 'recent'
  * search text.
  */
 /**
- * The bare palette is a navigator: it opens pages, workspaces and chats, and
- * jumps to a worker's view. Commands, actions, functions and files answer
- * only behind their prefix (or an explicit filter chip), so typing a page's
- * name is never buried under everything that mentions it.
+ * The empty palette is a navigator: it opens pages, workspaces and chats, and
+ * jumps to a worker's view. Once the user types, commands and actions join the
+ * search so the `All` filter behaves like its name. Functions and files remain
+ * behind their prefix or explicit filter because their inventories are large.
  */
 export const DEFAULT_KINDS: readonly PaletteKind[] = [
   'page',
   'workspace',
   'chat',
   'worker',
+]
+
+export const BARE_SEARCH_KINDS: readonly PaletteKind[] = [
+  ...DEFAULT_KINDS,
+  'command',
+  'action',
 ]
 
 export const PREFIX_MODES: Record<string, readonly PaletteKind[]> = {
@@ -69,10 +75,14 @@ export function parseQuery(
   if (mode) {
     return { prefix: first, kinds: new Set(mode), text: raw.slice(1).trim() }
   }
+  const text = raw.trim()
   return {
     prefix: null,
-    kinds: filter === 'all' ? new Set(DEFAULT_KINDS) : new Set([filter]),
-    text: raw.trim(),
+    kinds:
+      filter === 'all'
+        ? new Set(text ? BARE_SEARCH_KINDS : DEFAULT_KINDS)
+        : new Set([filter]),
+    text,
   }
 }
 

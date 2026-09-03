@@ -88,7 +88,9 @@ Use the shared contracts for repeated Console interactions:
   Console host. Workers provide navigation content and declarative limits;
   they do not ship gesture, storage, or transition implementations. Children
   remain mounted while collapsed, and instances sharing a `storageKey` stay
-  synchronized.
+  synchronized. Narrow navigation is full-width by default for list/detail
+  and hierarchy drill-in; `narrowMode="drawer"` is an explicit opt-in for
+  secondary navigation that overlays an unchanged main workspace.
 - Human-facing chrome uses sans and authored sentence/title case. Mono is only
   for machine-readable identifiers, paths, values, payloads, code, and tabular
   data. Application icons use a 16 px baseline; do not author icons below

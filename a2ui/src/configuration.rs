@@ -38,6 +38,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
         "name": "A2UI",
         "description": "A2UI composer routing, correction budget, per-session surface limits, and Console action forwarding.",
         "schema": WorkerConfig::json_schema(),
+        "metadata": { "ui_form": CONFIG_ID },
     });
     if let Some(seed) = seed {
         payload["initial_value"] = seed.to_json();

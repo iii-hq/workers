@@ -36,15 +36,8 @@ export interface ExtensionIii {
    * Subscribe a browser-local handler. Handlers are namespaced per tab
    * (`<functionId>::<browserId>`) and default `metadata.internal = true`.
    */
-  on<P = unknown>(
-    functionId: string,
-    handler: (payload: P) => void | Promise<void>,
-  ): () => void
-  registerTrigger(input: {
-    type: string
-    function_id: string
-    config: Record<string, unknown>
-  }): () => void
+  on<P = unknown>(functionId: string, handler: (payload: P) => void | Promise<void>): () => void
+  registerTrigger(input: { type: string; function_id: string; config: Record<string, unknown> }): () => void
   addConnectionStateListener(handler: (state: unknown) => void): () => void
 }
 
@@ -118,9 +111,7 @@ export interface PageRenderProps {
 
 /** A binding in the console's shortcut syntax: `Mod+S`, `Shift+Enter`, or a
     sequence of chords separated by a space, `G L`. */
-export type PageShortcut =
-  | string
-  | { mac: readonly string[]; other: readonly string[] }
+export type PageShortcut = string | { mac: readonly string[]; other: readonly string[] }
 
 /** One thing a page can do for the keyboard; the palette lists it as
     `Page: Title` with its key on the right. */
@@ -171,10 +162,7 @@ export interface PaletteSource {
   kind: 'file' | 'item'
   prefix?: string
   minQuery?: number
-  search(
-    query: string,
-    context: PaletteSearchContext,
-  ): Promise<readonly PaletteSourceRow[]>
+  search(query: string, context: PaletteSearchContext): Promise<readonly PaletteSourceRow[]>
 }
 
 export interface PaletteOpenOptions {
@@ -186,6 +174,12 @@ export interface PageRegistration {
   id: string
   /** Nav label. */
   title: string
+  /**
+   * Configuration id whose standard action the Console injects into the page
+   * header. Pages declare the relationship here instead of duplicating a
+   * configuration button.
+   */
+  configurationId?: string
   /** The page body (right pane). Receives `PageRenderProps` — a plain
       `() => <Page />` render stays valid and simply ignores them. */
   render: React.ComponentType<PageRenderProps>
@@ -286,20 +280,8 @@ export interface TriggerActivityMessage {
   payload?: unknown
   firedAt?: number
   note?: string
-  outcome?:
-    | 'delivered'
-    | 'delivery_failed'
-    | 'skipped'
-    | 'expired'
-    | 'unregistered'
-    | 'invalidated'
-  retirementReason?:
-    | 'once_consumed'
-    | 'max_fires'
-    | 'expired'
-    | 'unregistered'
-    | 'invalidated'
-    | 'exhausted'
+  outcome?: 'delivered' | 'delivery_failed' | 'skipped' | 'expired' | 'unregistered' | 'invalidated'
+  retirementReason?: 'once_consumed' | 'max_fires' | 'expired' | 'unregistered' | 'invalidated' | 'exhausted'
 }
 
 /** Worker-owned presentation hooks for one trigger type. The base `tryRender`
@@ -320,18 +302,12 @@ export interface TriggerActivityRenderer {
   redactRaw?(value: unknown): unknown
 }
 
-export type JsonValue =
-  | null
-  | boolean
-  | number
-  | string
-  | JsonValue[]
-  | { [key: string]: JsonValue }
+export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
 
 /**
- * Props for a configuration-form override (the `configForms` slot). The
- * override replaces the form region only — dirty tracking, save/reset, and
- * error mapping stay host-owned.
+ * Props for a configuration form (the `configForms` slot). Every configurable
+ * worker supplies its own interface; JSON Schema validates drafts but never
+ * generates UI. Dirty tracking, save/reset, and error mapping stay host-owned.
  */
 export interface ConfigFormProps {
   /** Configuration id, e.g. `state`. */
@@ -487,10 +463,7 @@ export interface Host {
   }
   /** Optional on consoles that predate provider-specific configuration UI. */
   providerConfigForms?: {
-    register(
-      providerId: string,
-      component: React.ComponentType<ProviderConfigFormProps>,
-    ): () => void
+    register(providerId: string, component: React.ComponentType<ProviderConfigFormProps>): () => void
   }
   /**
    * Optional: absent on consoles that predate session chips. Feature-detect
@@ -514,19 +487,14 @@ export interface Host {
      * Ask the mounted conversation to adopt a validated working directory.
      * Call this only from an explicit user action such as "Use for chat".
      */
-    requestWorkingDirectoryChange?(request: {
-      sessionId: string
-      path: string
-    }): boolean
+    requestWorkingDirectoryChange?(request: { sessionId: string; path: string }): boolean
     /** Live composer model for a conversation, including unsaved drafts. */
     composerModel?(conversationId?: string | null): string | null
   }
 }
 
 /** The ONLY required export of a script asset. */
-export type SetupFn = (
-  host: Host,
-) => void | (() => void) | Promise<void | (() => void)>
+export type SetupFn = (host: Host) => void | (() => void) | Promise<void | (() => void)>
 
 /* ── module-level api (same objects the Host carries) ───────────────── */
 
@@ -580,6 +548,23 @@ export interface UiClasses {
   readonly fieldLabel: 'iii-ui-field__label'
   readonly fieldDescription: 'iii-ui-field__description'
   readonly fieldError: 'iii-ui-field__error'
+  readonly switch: 'iii-ui-switch'
+  readonly switchInput: 'iii-ui-switch__input'
+  readonly switchThumb: 'iii-ui-switch__thumb'
+  readonly settingsSection: 'iii-ui-settings-section'
+  readonly settingsSectionHeader: 'iii-ui-settings-section__header'
+  readonly settingsSectionCopy: 'iii-ui-settings-section__copy'
+  readonly settingsSectionTitle: 'iii-ui-settings-section__title'
+  readonly settingsSectionDescription: 'iii-ui-settings-section__description'
+  readonly settingsSectionAction: 'iii-ui-settings-section__action'
+  readonly settingsList: 'iii-ui-settings-list'
+  readonly settingsRow: 'iii-ui-settings-row'
+  readonly settingsRowInner: 'iii-ui-settings-row__inner'
+  readonly settingsRowCopy: 'iii-ui-settings-row__copy'
+  readonly settingsRowLabel: 'iii-ui-settings-row__label'
+  readonly settingsRowDescription: 'iii-ui-settings-row__description'
+  readonly settingsRowMeta: 'iii-ui-settings-row__meta'
+  readonly settingsRowControl: 'iii-ui-settings-row__control'
   readonly motionControl: 'iii-ui-motion-control'
   readonly motionPanel: 'iii-ui-motion-panel'
   readonly motionOverlay: 'iii-ui-motion-overlay'
@@ -665,25 +650,20 @@ export interface BadgeProps extends React.HTMLAttributes<HTMLSpanElement> {
 /** Compact semantic status label shared by the Console and worker UIs. */
 export declare const Badge: React.ComponentType<BadgeProps>
 
-export interface ButtonProps
-  extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: 'primary' | 'ghost' | 'pill' | 'icon' | 'terminal' | 'wiggle'
   size?: 'sm' | 'md' | 'lg' | 'icon'
   /** Render as the child element (Radix Slot) instead of a `<button>`. */
   asChild?: boolean
 }
-export declare const Button: React.ComponentType<
-  ButtonProps & React.RefAttributes<HTMLButtonElement>
->
+export declare const Button: React.ComponentType<ButtonProps & React.RefAttributes<HTMLButtonElement>>
 
 export interface CardProps extends React.HTMLAttributes<HTMLDivElement> {
   /** Neutral selected treatment: surface, edge and ink; never accent. */
   selected?: boolean
   interactive?: boolean
 }
-export declare const Card: React.ComponentType<
-  CardProps & React.RefAttributes<HTMLDivElement>
->
+export declare const Card: React.ComponentType<CardProps & React.RefAttributes<HTMLDivElement>>
 export declare const CardHeader: React.ComponentType<
   React.HTMLAttributes<HTMLDivElement> & React.RefAttributes<HTMLDivElement>
 >
@@ -695,8 +675,7 @@ export declare const CardHighlight: React.ComponentType<
   React.HTMLAttributes<HTMLDivElement> & React.RefAttributes<HTMLDivElement>
 >
 
-export interface CollapsibleCardProps
-  extends React.HTMLAttributes<HTMLDivElement> {
+export interface CollapsibleCardProps extends React.HTMLAttributes<HTMLDivElement> {
   /** Controlled expanded state. */
   open?: boolean
   /** Initial expanded state when the component is uncontrolled. */
@@ -710,11 +689,8 @@ export interface CollapsibleCardProps
  * Accessible shared card disclosure with an auto-height transition. Content
  * stays mounted while collapsed, and global motion tokens honor reduced motion.
  */
-export declare const CollapsibleCard: React.ComponentType<
-  CollapsibleCardProps & React.RefAttributes<HTMLDivElement>
->
-export type CollapsibleCardTriggerProps =
-  React.ButtonHTMLAttributes<HTMLButtonElement>
+export declare const CollapsibleCard: React.ComponentType<CollapsibleCardProps & React.RefAttributes<HTMLDivElement>>
+export type CollapsibleCardTriggerProps = React.ButtonHTMLAttributes<HTMLButtonElement>
 export declare const CollapsibleCardTrigger: React.ComponentType<
   CollapsibleCardTriggerProps & React.RefAttributes<HTMLButtonElement>
 >
@@ -728,13 +704,10 @@ export interface ChipProps extends React.HTMLAttributes<HTMLSpanElement> {
   tone?: ChipTone
   selected?: boolean
 }
-export declare const Chip: React.ComponentType<
-  ChipProps & React.RefAttributes<HTMLSpanElement>
->
+export declare const Chip: React.ComponentType<ChipProps & React.RefAttributes<HTMLSpanElement>>
 
 export type TableDensity = 'comfortable' | 'compact'
-export interface TableProps
-  extends React.TableHTMLAttributes<HTMLTableElement> {
+export interface TableProps extends React.TableHTMLAttributes<HTMLTableElement> {
   density?: TableDensity
 }
 export declare const TableViewport: React.ComponentType<
@@ -743,40 +716,29 @@ export declare const TableViewport: React.ComponentType<
 export declare const TableFrame: React.ComponentType<
   React.HTMLAttributes<HTMLDivElement> & React.RefAttributes<HTMLDivElement>
 >
-export declare const Table: React.ComponentType<
-  TableProps & React.RefAttributes<HTMLTableElement>
->
+export declare const Table: React.ComponentType<TableProps & React.RefAttributes<HTMLTableElement>>
 export declare const TableHeader: React.ComponentType<
-  React.HTMLAttributes<HTMLTableSectionElement> &
-    React.RefAttributes<HTMLTableSectionElement>
+  React.HTMLAttributes<HTMLTableSectionElement> & React.RefAttributes<HTMLTableSectionElement>
 >
 export declare const TableBody: React.ComponentType<
-  React.HTMLAttributes<HTMLTableSectionElement> &
-    React.RefAttributes<HTMLTableSectionElement>
+  React.HTMLAttributes<HTMLTableSectionElement> & React.RefAttributes<HTMLTableSectionElement>
 >
 export declare const TableFooter: React.ComponentType<
-  React.HTMLAttributes<HTMLTableSectionElement> &
-    React.RefAttributes<HTMLTableSectionElement>
+  React.HTMLAttributes<HTMLTableSectionElement> & React.RefAttributes<HTMLTableSectionElement>
 >
-export interface TableRowProps
-  extends React.HTMLAttributes<HTMLTableRowElement> {
+export interface TableRowProps extends React.HTMLAttributes<HTMLTableRowElement> {
   interactive?: boolean
   selected?: boolean
 }
-export declare const TableRow: React.ComponentType<
-  TableRowProps & React.RefAttributes<HTMLTableRowElement>
->
+export declare const TableRow: React.ComponentType<TableRowProps & React.RefAttributes<HTMLTableRowElement>>
 export declare const TableHead: React.ComponentType<
-  React.ThHTMLAttributes<HTMLTableCellElement> &
-    React.RefAttributes<HTMLTableCellElement>
+  React.ThHTMLAttributes<HTMLTableCellElement> & React.RefAttributes<HTMLTableCellElement>
 >
 export declare const TableCell: React.ComponentType<
-  React.TdHTMLAttributes<HTMLTableCellElement> &
-    React.RefAttributes<HTMLTableCellElement>
+  React.TdHTMLAttributes<HTMLTableCellElement> & React.RefAttributes<HTMLTableCellElement>
 >
 export declare const TableCaption: React.ComponentType<
-  React.HTMLAttributes<HTMLTableCaptionElement> &
-    React.RefAttributes<HTMLTableCaptionElement>
+  React.HTMLAttributes<HTMLTableCaptionElement> & React.RefAttributes<HTMLTableCaptionElement>
 >
 
 export interface ImageViewerProps {
@@ -802,8 +764,7 @@ export interface ImageViewerProps {
  * decode failure, missing source and oversized data URLs without freezing.
  */
 export declare const ImageViewer: React.ComponentType<ImageViewerProps>
-export interface ImageThumbnailButtonProps
-  extends Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'title'> {
+export interface ImageThumbnailButtonProps extends Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'title'> {
   /** What opens: the viewer's caption. */
   title: string
 }
@@ -818,9 +779,7 @@ export interface IconButtonProps extends Omit<ButtonProps, 'size'> {
   tooltip?: React.ReactNode | false
   tooltipSide?: 'top' | 'right' | 'bottom' | 'left'
 }
-export declare const IconButton: React.ComponentType<
-  IconButtonProps & React.RefAttributes<HTMLButtonElement>
->
+export declare const IconButton: React.ComponentType<IconButtonProps & React.RefAttributes<HTMLButtonElement>>
 
 export interface ConfirmDialogProps {
   open: boolean
@@ -849,22 +808,15 @@ export interface DialogProps {
   children?: React.ReactNode
 }
 export declare const Dialog: React.ComponentType<DialogProps>
-export interface DialogTriggerProps
-  extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+export interface DialogTriggerProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   asChild?: boolean
 }
 export declare const DialogTrigger: React.ComponentType<DialogTriggerProps>
 export declare const DialogClose: React.ComponentType<DialogTriggerProps>
 /** Portalled, centered, with overlay and close affordance built in. */
-export declare const DialogContent: React.ComponentType<
-  React.HTMLAttributes<HTMLDivElement>
->
-export declare const DialogTitle: React.ComponentType<
-  React.HTMLAttributes<HTMLHeadingElement>
->
-export declare const DialogDescription: React.ComponentType<
-  React.HTMLAttributes<HTMLParagraphElement>
->
+export declare const DialogContent: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
+export declare const DialogTitle: React.ComponentType<React.HTMLAttributes<HTMLHeadingElement>>
+export declare const DialogDescription: React.ComponentType<React.HTMLAttributes<HTMLParagraphElement>>
 
 export interface DropdownMenuProps {
   open?: boolean
@@ -874,30 +826,23 @@ export interface DropdownMenuProps {
   children?: React.ReactNode
 }
 export declare const DropdownMenu: React.ComponentType<DropdownMenuProps>
-export interface DropdownMenuTriggerProps
-  extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+export interface DropdownMenuTriggerProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   asChild?: boolean
 }
 export declare const DropdownMenuTrigger: React.ComponentType<DropdownMenuTriggerProps>
-export interface DropdownMenuContentProps
-  extends React.HTMLAttributes<HTMLDivElement> {
+export interface DropdownMenuContentProps extends React.HTMLAttributes<HTMLDivElement> {
   side?: 'top' | 'right' | 'bottom' | 'left'
   align?: 'start' | 'center' | 'end'
   sideOffset?: number
 }
 export declare const DropdownMenuContent: React.ComponentType<DropdownMenuContentProps>
-export interface DropdownMenuItemProps
-  extends React.HTMLAttributes<HTMLDivElement> {
+export interface DropdownMenuItemProps extends React.HTMLAttributes<HTMLDivElement> {
   disabled?: boolean
   onSelect?(event: Event): void
 }
 export declare const DropdownMenuItem: React.ComponentType<DropdownMenuItemProps>
-export declare const DropdownMenuLabel: React.ComponentType<
-  React.HTMLAttributes<HTMLDivElement>
->
-export declare const DropdownMenuSeparator: React.ComponentType<
-  React.HTMLAttributes<HTMLDivElement>
->
+export declare const DropdownMenuLabel: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
+export declare const DropdownMenuSeparator: React.ComponentType<React.HTMLAttributes<HTMLDivElement>>
 
 export interface EmptyStateProps {
   icon?: React.ComponentType<{ className?: string }>
@@ -952,19 +897,35 @@ export interface FileDiffProps {
 export declare const FileDiff: React.ComponentType<FileDiffProps>
 
 /** Controlled string input (`onChange` receives the value, not the event). */
-export interface InputProps
-  extends Omit<
-    React.InputHTMLAttributes<HTMLInputElement>,
-    'onChange' | 'value'
-  > {
+export interface InputProps extends Omit<React.InputHTMLAttributes<HTMLInputElement>, 'onChange' | 'value'> {
   value: string
   onChange: (next: string) => void
   /** @deprecated Inputs preserve case by default; retained for compatibility. */
   preserveCase?: boolean
 }
-export declare const Input: React.ComponentType<
-  InputProps & React.RefAttributes<HTMLInputElement>
+export declare const Input: React.ComponentType<InputProps & React.RefAttributes<HTMLInputElement>>
+
+export interface RawValueInputProps extends Omit<InputProps, 'className'> {
+  /** Human label used by the explicit replacement action. */
+  label: string
+  kind: 'environment' | 'custom'
+  replacementLabel: React.ReactNode
+  onUseLiteral: () => void
+  className?: string
+  inputClassName?: string
+}
+/** Opaque/template editor that only converts to a typed literal explicitly. */
+export declare const RawValueInput: React.ComponentType<
+  RawValueInputProps & React.RefAttributes<HTMLInputElement>
 >
+
+export interface SwitchProps
+  extends Omit<React.InputHTMLAttributes<HTMLInputElement>, 'children' | 'className' | 'type'> {
+  /** Classes apply to the visual control; native input props stay on the checkbox. */
+  className?: string
+}
+/** Native checkbox semantics with shared switch presentation and touch target. */
+export declare const Switch: React.ComponentType<SwitchProps & React.RefAttributes<HTMLInputElement>>
 
 export declare const List: React.ComponentType<
   React.HTMLAttributes<HTMLDivElement> & React.RefAttributes<HTMLDivElement>
@@ -975,17 +936,14 @@ export declare const ListGroup: React.ComponentType<
 export declare const ListGroupLabel: React.ComponentType<
   React.HTMLAttributes<HTMLDivElement> & React.RefAttributes<HTMLDivElement>
 >
-export interface ListItemProps
-  extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+export interface ListItemProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   selected?: boolean
   leading?: React.ReactNode
   label?: React.ReactNode
   description?: React.ReactNode
   trailing?: React.ReactNode
 }
-export declare const ListItem: React.ComponentType<
-  ListItemProps & React.RefAttributes<HTMLButtonElement>
->
+export declare const ListItem: React.ComponentType<ListItemProps & React.RefAttributes<HTMLButtonElement>>
 
 /* ── page chrome: THE layout design system for injected pages ─────────
    Every worker page composes the same five pieces so panes stay visually
@@ -1056,18 +1014,18 @@ export interface PageSidebarProps extends React.HTMLAttributes<HTMLElement> {
   resizable?: boolean
   /** Host-owned persistence/synchronization key; no storage logic ships in worker bundles. */
   storageKey?: string
-  /** Responsive presentation: a rail that opens as a drawer over the main column when the host owns collapse state, the full-width aside when the page controls `collapsed`; never changes the wide preference. */
+  /** Activates the responsive presentation when the page already knows its container is narrow; never changes the saved wide preference. */
   narrow?: boolean
   /** Host-owned PageBody breakpoint for the responsive presentation. */
   narrowBelow?: number
+  /** `inline` (default) makes narrow navigation full-width for drill-in flows; `drawer` keeps a rail beside the main column and opens navigation as an overlay. */
+  narrowMode?: 'inline' | 'drawer'
 }
 /** Shared host-owned navigation column; fixed by default, optionally collapsible/resizable. */
 export declare const PageSidebar: React.ComponentType<PageSidebarProps>
 
 /** The primary workspace column: `--color-panel`, takes what's left. */
-export declare const PageMain: React.ComponentType<
-  React.HTMLAttributes<HTMLElement>
->
+export declare const PageMain: React.ComponentType<React.HTMLAttributes<HTMLElement>>
 
 export declare const Panel: React.ComponentType<
   React.HTMLAttributes<HTMLDivElement> & React.RefAttributes<HTMLDivElement>
@@ -1084,6 +1042,8 @@ export interface SelectOption<T extends string = string> {
   label: string
   /** Optional hover tooltip on the option row. */
   title?: string
+  /** Supporting copy shown below the label in menus and mobile sheets. */
+  description?: string
   disabled?: boolean
 }
 export interface SelectGroup<T extends string = string> {
@@ -1098,18 +1058,28 @@ export interface SelectProps<T extends string = string> {
   onChange: (next: T) => void
   disabled?: boolean
   className?: string
+  /** ID applied to the visible trigger so a `<label htmlFor>` can target it. */
+  id?: string
+  /** Form name. The controlled value is mirrored through a hidden input. */
+  name?: string
+  /** Stable configuration path applied to the visible trigger for deep-link focus. */
+  'data-field'?: string
+  appearance?: 'default' | 'inline'
+  showChevron?: boolean
   'aria-label'?: string
   'aria-busy'?: boolean
+  'aria-invalid'?: React.AriaAttributes['aria-invalid']
+  'aria-describedby'?: string
   placeholder?: string
+  sheetTitle?: React.ReactNode
+  sheetDescription?: React.ReactNode
   /** Render a leading option that clears the selection (calls `onClear`, not `onChange`). */
   allowEmpty?: boolean
   emptyLabel?: string
   onClear?: () => void
   renderGroupHeader?: (group: SelectGroup<T>) => React.ReactNode
 }
-export declare const Select: <T extends string = string>(
-  props: SelectProps<T>,
-) => React.ReactNode
+export declare const Select: <T extends string = string>(props: SelectProps<T>) => React.ReactNode
 
 export interface SegmentedControlOption<T extends string = string> {
   value: T
@@ -1130,9 +1100,7 @@ export interface SegmentedControlProps<T extends string = string> {
   iconOnly?: boolean
   'aria-label'?: string
 }
-export declare const SegmentedControl: <T extends string = string>(
-  props: SegmentedControlProps<T>,
-) => React.ReactNode
+export declare const SegmentedControl: <T extends string = string>(props: SegmentedControlProps<T>) => React.ReactNode
 
 export interface SelectorOption<T extends string = string> {
   value: T
@@ -1162,6 +1130,12 @@ export interface SelectorProps<T extends string = string> {
   invalid?: boolean
   className?: string
   contentClassName?: string
+  /** ID applied to the visible trigger so a `<label htmlFor>` can target it. */
+  id?: string
+  /** Form name. The selected value is mirrored through a hidden input. */
+  name?: string
+  /** Stable configuration path applied to the visible trigger for deep-link focus. */
+  'data-field'?: string
   placeholder?: string
   searchPlaceholder?: string
   emptyMessage?: React.ReactNode
@@ -1174,15 +1148,91 @@ export interface SelectorProps<T extends string = string> {
   createOptionLabel?: (query: string) => React.ReactNode
   triggerIcon?: React.ReactNode
   'aria-label': string
+  'aria-invalid'?: React.AriaAttributes['aria-invalid']
   'aria-describedby'?: string
 }
-export declare const Selector: <T extends string = string>(
-  props: SelectorProps<T>,
-) => React.ReactNode
+export declare const Selector: <T extends string = string>(props: SelectorProps<T>) => React.ReactNode
 
-export declare const Skeleton: React.ComponentType<
-  React.HTMLAttributes<HTMLSpanElement>
+export interface SettingsDeckProps
+  extends Omit<React.HTMLAttributes<HTMLDivElement>, 'children' | 'title'> {
+  /** Whether the detail level is visible. The overview is shown when false. */
+  open: boolean
+  /** Collection, summary, or empty state shown at the deck's root level. */
+  overview: React.ReactNode
+  /** Settings for the selected resource. */
+  detail: React.ReactNode
+  /** Accessible heading for the selected resource. */
+  title: React.ReactNode
+  /** Optional context shown below the detail heading. */
+  description?: React.ReactNode
+  /** Visible label for the back action. Defaults to “Back”. */
+  backLabel?: React.ReactNode
+  /** More specific screen-reader label for the back action. */
+  backAriaLabel?: string
+  onBack: () => void
+  /** Disable when the consumer owns a more specific deep-link focus target. */
+  autoFocusDetail?: boolean
+}
+/** One-level settings navigation with focus transfer and restoration. Mark a preferred surviving overview target with `data-settings-deck-fallback`. */
+export declare const SettingsDeck: React.ComponentType<
+  SettingsDeckProps & React.RefAttributes<HTMLDivElement>
 >
+
+export interface SettingsSectionProps extends Omit<React.HTMLAttributes<HTMLElement>, 'title'> {
+  title?: React.ReactNode
+  description?: React.ReactNode
+  action?: React.ReactNode
+}
+/** A titled settings group with an optional section-level action. */
+export declare const SettingsSection: React.ComponentType<SettingsSectionProps & React.RefAttributes<HTMLElement>>
+
+/** A bordered group of related settings rows. */
+export declare const SettingsList: React.ComponentType<
+  React.HTMLAttributes<HTMLDivElement> & React.RefAttributes<HTMLDivElement>
+>
+
+export type SettingsRowLayout = 'auto' | 'inline' | 'stacked'
+export interface SettingsRowProps extends Omit<React.HTMLAttributes<HTMLDivElement>, 'children'> {
+  label: React.ReactNode
+  description?: React.ReactNode
+  meta?: React.ReactNode
+  /** Primary interactive or value control on the trailing edge. */
+  control?: React.ReactNode
+  /** Optional secondary action, composed after `control`. */
+  action?: React.ReactNode
+  /** `auto` stacks the trailing slot in narrow containers. */
+  layout?: SettingsRowLayout
+}
+/** A key/value settings row with a responsive trailing control/action slot. */
+export declare const SettingsRow: React.ComponentType<SettingsRowProps & React.RefAttributes<HTMLDivElement>>
+
+export interface SettingsFieldControlProps {
+  id: string
+  name?: string
+  'data-field'?: string
+  'aria-invalid'?: true
+  'aria-describedby'?: string
+}
+export type SettingsFieldControlSize = 'fit' | 'compact' | 'default' | 'full'
+export interface SettingsFieldProps
+  extends Omit<SettingsRowProps, 'label' | 'description' | 'meta' | 'control'> {
+  id?: string
+  name?: string
+  /** Stable configuration path used by global-settings deep links. */
+  field?: string
+  label: React.ReactNode
+  description?: React.ReactNode
+  meta?: React.ReactNode
+  error?: React.ReactNode
+  controlSize?: SettingsFieldControlSize
+  renderControl: (props: SettingsFieldControlProps) => React.ReactNode
+}
+/** Labelled settings row with generated IDs, validation ARIA, and standard widths. */
+export declare const SettingsField: React.ComponentType<
+  SettingsFieldProps & React.RefAttributes<HTMLDivElement>
+>
+
+export declare const Skeleton: React.ComponentType<React.HTMLAttributes<HTMLSpanElement>>
 
 export interface StatusDotProps extends React.HTMLAttributes<HTMLSpanElement> {
   tone?: 'accent' | 'alert' | 'warn' | 'ink'
@@ -1199,8 +1249,7 @@ export interface StatusPanelProps {
 }
 export declare const StatusPanel: React.ComponentType<StatusPanelProps>
 
-export interface TabsProps
-  extends Omit<React.HTMLAttributes<HTMLDivElement>, 'dir'> {
+export interface TabsProps extends Omit<React.HTMLAttributes<HTMLDivElement>, 'dir'> {
   value?: string
   defaultValue?: string
   onValueChange?(value: string): void
@@ -1212,8 +1261,7 @@ export interface TabsListProps extends React.HTMLAttributes<HTMLDivElement> {
   variant?: 'line'
 }
 export declare const TabsList: React.ComponentType<TabsListProps>
-export interface TabsTriggerProps
-  extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+export interface TabsTriggerProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   value: string
   /** Defaults to a semantic 16px icon inferred from `value`; `false` hides it. */
   icon?: React.ReactNode | false
@@ -1276,13 +1324,11 @@ export interface TooltipProps {
   children?: React.ReactNode
 }
 export declare const Tooltip: React.ComponentType<TooltipProps>
-export interface TooltipTriggerProps
-  extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+export interface TooltipTriggerProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   asChild?: boolean
 }
 export declare const TooltipTrigger: React.ComponentType<TooltipTriggerProps>
-export interface TooltipContentProps
-  extends React.HTMLAttributes<HTMLDivElement> {
+export interface TooltipContentProps extends React.HTMLAttributes<HTMLDivElement> {
   side?: 'top' | 'right' | 'bottom' | 'left'
   align?: 'start' | 'center' | 'end'
   sideOffset?: number
@@ -1326,9 +1372,7 @@ export interface CodeEditorProps {
     both themes. Grows with content — put it inside an `overflow-auto` pane.
     Never bundle `monaco-editor` (or any other editor) into a worker asset;
     import this instead. */
-export declare const CodeEditor: React.ComponentType<
-  CodeEditorProps & React.RefAttributes<CodeEditorHandle>
->
+export declare const CodeEditor: React.ComponentType<CodeEditorProps & React.RefAttributes<CodeEditorHandle>>
 
 export interface CodeHighlightProps {
   code: string
@@ -1394,16 +1438,13 @@ export interface ModelPickerProps {
 export declare const ModelPicker: React.ComponentType<ModelPickerProps>
 
 export interface WorkerConfigurationDialogProps {
-  /** Which worker's configuration to edit; `null` renders the dialog closed. */
+  /** Which worker to open in global Settings; `null` does nothing. */
   configurationId: string | null
   onClose: () => void
 }
 /**
- * The console's worker-configuration editor in a dialog — schema fetch,
- * custom `configForms` resolution, dirty guard, save/reset and error
- * mapping all host-owned. Lets a worker page offer "configure" without
- * navigating to the workers tab. Prefer reading it off `host.components`
- * at runtime rather than importing the name: a console predating this
- * export then degrades to navigation instead of failing the module load.
+ * Compatibility bridge for older worker bundles. It forwards to the global
+ * Settings modal and renders no local dialog. New pages should declare
+ * `configurationId` in `host.pages.register` instead.
  */
 export declare const WorkerConfigurationDialog: React.ComponentType<WorkerConfigurationDialogProps>

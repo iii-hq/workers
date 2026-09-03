@@ -1,6 +1,7 @@
 import argparse
 import hashlib
 import json
+import subprocess
 import tarfile
 import zipfile
 from pathlib import Path
@@ -12,7 +13,9 @@ from deployment_train import (
     build,
     build_frontends,
     build_oci_layout,
+    finalize,
     frontend_metadata,
+    matrix,
     normalized_tar,
     normalized_zip,
     prepare,
@@ -20,12 +23,12 @@ from deployment_train import (
     verify_prepared,
 )
 
+from _test_helpers import GIT_HERMETIC_ENV
+
 
 def seal_descriptor(value: dict) -> dict:
     value.pop("descriptor_sha256", None)
-    value["descriptor_sha256"] = hashlib.sha256(
-        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    value["descriptor_sha256"] = hashlib.sha256(deployment_train.canonical_bytes(value)).hexdigest()
     return value
 
 
@@ -51,6 +54,7 @@ def descriptor(worker: str, source_sha: str, package_manifest_version: str) -> d
             "include": ["dist/index.mjs"],
         },
         "runtime": {"environment": {}, "resources": {}, "install": "", "start": "node dist/index.mjs"},
+        "interface_capture": "required",
         "publish": True,
         "build_units": [{"id": "bundle", "kind": "javascript-bundle"}],
         "registry_projection": {
@@ -65,6 +69,35 @@ def descriptor(worker: str, source_sha: str, package_manifest_version: str) -> d
             "readme": "",
         },
     })
+
+
+def test_verify_descriptor_accepts_json_stringify_integral_float_digest() -> None:
+    selected = descriptor("security-scan", "a" * 40, "0.1.3")
+    selected["registry_projection"]["config"] = {
+        "defaults": {"max_cost_usd": 2.0, "ratio": 0.5},
+    }
+    selected = seal_descriptor(selected)
+
+    assert deployment_train.verify_descriptor(selected) == selected
+    assert b'"max_cost_usd":2' in deployment_train.canonical_bytes(selected)
+
+
+def rust_descriptor(worker: str, source_sha: str, targets: list[str]) -> dict:
+    selected = descriptor(worker, source_sha, "1.0.0-rc.1")
+    selected["source"] = {"path": worker, "package_manifest": "Cargo.toml"}
+    selected["artifact"] = {
+        "kind": "rust-binary",
+        "binary": worker,
+        "targets": targets,
+        "toolchain": {"name": "rust", "version": "1.97.1"},
+    }
+    selected["runtime"] = {"environment": {}, "resources": {}, "exec": [worker]}
+    selected["registry_projection"]["type"] = "binary"
+    selected["build_units"] = [
+        {"id": f"{worker}-{target}", "kind": "rust-binary", "target": target}
+        for target in targets
+    ]
+    return seal_descriptor(selected)
 
 
 def test_prepare_accepts_exact_target_independent_of_manifest_metadata(
@@ -88,6 +121,53 @@ def test_prepare_accepts_exact_target_independent_of_manifest_metadata(
         descriptor_sha256=selected["descriptor_sha256"],
         descriptor=descriptor_path,
     )) == 0
+
+
+def test_prepare_accepts_numbered_rc_target_on_next(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_sha = "a" * 40
+    selected = descriptor("smoke", source_sha, "0.1.0")
+    descriptor_path = tmp_path / "deployment-descriptor.json"
+    descriptor_path.write_text(json.dumps(selected), encoding="utf-8")
+    monkeypatch.setattr(
+        deployment_train.subprocess,
+        "check_output",
+        lambda *_args, **_kwargs: source_sha + "\n",
+    )
+
+    assert prepare(argparse.Namespace(
+        worker="smoke",
+        source_sha=source_sha,
+        target_version="2.0.0-rc.1",
+        channel="next",
+        descriptor_sha256=selected["descriptor_sha256"],
+        descriptor=descriptor_path,
+    )) == 0
+
+
+def test_prepare_rejects_suffixed_target_on_latest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_sha = "a" * 40
+    selected = descriptor("smoke", source_sha, "0.1.0")
+    descriptor_path = tmp_path / "deployment-descriptor.json"
+    descriptor_path.write_text(json.dumps(selected), encoding="utf-8")
+    monkeypatch.setattr(
+        deployment_train.subprocess,
+        "check_output",
+        lambda *_args, **_kwargs: source_sha + "\n",
+    )
+
+    with pytest.raises(SystemExit, match="pure MAJOR.MINOR.PATCH"):
+        prepare(argparse.Namespace(
+            worker="smoke",
+            source_sha=source_sha,
+            target_version="1.2.3-beta",
+            channel="latest",
+            descriptor_sha256=selected["descriptor_sha256"],
+            descriptor=descriptor_path,
+        ))
 
 
 def test_verify_prepared_checks_inventory_without_executing_worker(tmp_path: Path) -> None:
@@ -218,18 +298,7 @@ def test_rust_build_uses_deterministic_target_native_archive(
     binary.parent.mkdir(parents=True)
     binary.write_bytes(b"immutable executable\n")
     binary.chmod(0o755)
-    selected = descriptor("smoke", source_sha, "1.0.0-rc.1")
-    selected["source"] = {"path": "smoke", "package_manifest": "Cargo.toml"}
-    selected["artifact"] = {
-        "kind": "rust-binary",
-        "binary": "smoke",
-        "targets": [target],
-        "toolchain": {"name": "rust", "version": "1.97.1"},
-    }
-    selected["runtime"] = {"environment": {}, "resources": {}, "exec": ["smoke"]}
-    selected["registry_projection"]["type"] = "binary"
-    selected["build_units"] = [{"id": f"rust-{target}", "kind": "rust-binary", "target": target}]
-    seal_descriptor(selected)
+    selected = rust_descriptor("smoke", source_sha, [target])
     descriptor_path = tmp_path / "deployment-descriptor.json"
     descriptor_path.write_text(json.dumps(selected), encoding="utf-8")
     monkeypatch.chdir(tmp_path)
@@ -240,7 +309,7 @@ def test_rust_build_uses_deterministic_target_native_archive(
     outputs = []
     for output_name in ("first", "second"):
         output = tmp_path / output_name
-        build(argparse.Namespace(descriptor=descriptor_path, unit=f"rust-{target}", out=output))
+        build(argparse.Namespace(descriptor=descriptor_path, unit=f"smoke-{target}", out=output))
         outputs.append(output)
 
     first_archive = outputs[0] / archive_name
@@ -395,3 +464,149 @@ def test_descriptor_frontends_install_once_and_build_each_explicit_output(tmp_pa
     assert [command for command, _cwd in calls].count(("pnpm", "run", "build")) == 2
     assert (output_dir / "one/ui/dist/index.js").is_file()
     assert (output_dir / "two/ui/dist/index.js").is_file()
+
+
+def test_matrix_is_exactly_the_descriptor_build_units_windows_included(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Every deployment builds Windows, so the msvc triples ride the same matrix
+    # as the unix targets and land on GitHub-hosted Windows capacity.
+    selected = rust_descriptor("smoke", "a" * 40, [
+        "x86_64-unknown-linux-gnu",
+        "x86_64-pc-windows-msvc",
+        "i686-pc-windows-msvc",
+        "aarch64-pc-windows-msvc",
+    ])
+    descriptor_path = tmp_path / "deployment-descriptor.json"
+    descriptor_path.write_text(json.dumps(selected), encoding="utf-8")
+
+    assert matrix(argparse.Namespace(descriptor=descriptor_path)) == 0
+
+    assert json.loads(capsys.readouterr().out) == {"include": [
+        {
+            "unit": "smoke-x86_64-unknown-linux-gnu",
+            "kind": "rust-binary",
+            "target": "x86_64-unknown-linux-gnu",
+            "runner": "workers-release-linux-8core",
+        },
+        {
+            "unit": "smoke-x86_64-pc-windows-msvc",
+            "kind": "rust-binary",
+            "target": "x86_64-pc-windows-msvc",
+            "runner": "windows-latest",
+        },
+        {
+            "unit": "smoke-i686-pc-windows-msvc",
+            "kind": "rust-binary",
+            "target": "i686-pc-windows-msvc",
+            "runner": "windows-latest",
+        },
+        {
+            "unit": "smoke-aarch64-pc-windows-msvc",
+            "kind": "rust-binary",
+            "target": "aarch64-pc-windows-msvc",
+            "runner": "windows-latest",
+        },
+    ]}
+
+
+def test_matrix_of_a_bundle_is_its_single_untargeted_unit(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    selected = descriptor("smoke", "a" * 40, "0.1.0")
+    descriptor_path = tmp_path / "deployment-descriptor.json"
+    descriptor_path.write_text(json.dumps(selected), encoding="utf-8")
+
+    assert matrix(argparse.Namespace(descriptor=descriptor_path)) == 0
+
+    assert json.loads(capsys.readouterr().out) == {"include": [{
+        "unit": "bundle",
+        "kind": "javascript-bundle",
+        "target": "none",
+        "runner": "workers-release-linux-8core",
+    }]}
+
+
+def _init_release_repo(tmp_path: Path, tags: list[str]) -> str:
+    """Initialises a tmp git repo with one commit plus annotated release tags
+    and returns the HEAD SHA, following the conftest tmp_git_repo_with_tag
+    pattern (the worker/tag names differ per finalize scenario)."""
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True, env=GIT_HERMETIC_ENV)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True, env=GIT_HERMETIC_ENV)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True, env=GIT_HERMETIC_ENV)
+    (tmp_path / "README.md").write_text("hello\n")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True, env=GIT_HERMETIC_ENV)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True, env=GIT_HERMETIC_ENV)
+    for tag in tags:
+        subprocess.run(
+            ["git", "tag", "-a", tag, "-m", f"Release {tag}"],
+            cwd=tmp_path, check=True, env=GIT_HERMETIC_ENV,
+        )
+    return subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True, env=GIT_HERMETIC_ENV
+    ).strip()
+
+
+def test_finalize_accepts_tagged_candidate_with_matching_stable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_sha = _init_release_repo(tmp_path, ["smoke/v1.7.0-rc.2"])
+    selected = rust_descriptor(
+        "smoke", source_sha, ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+    )
+    descriptor_path = tmp_path / "deployment-descriptor.json"
+    descriptor_path.write_text(json.dumps(selected), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    assert finalize(argparse.Namespace(
+        worker="smoke",
+        source_sha=source_sha,
+        candidate_version="1.7.0-rc.2",
+        stable_version="1.7.0",
+        descriptor_sha256=selected["descriptor_sha256"],
+        descriptor=descriptor_path,
+    )) == 0
+
+
+def test_finalize_rejects_candidate_without_rc_tag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_sha = _init_release_repo(tmp_path, [])
+    selected = rust_descriptor(
+        "smoke", source_sha, ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+    )
+    descriptor_path = tmp_path / "deployment-descriptor.json"
+    descriptor_path.write_text(json.dumps(selected), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(SystemExit, match="is not in the git history"):
+        finalize(argparse.Namespace(
+            worker="smoke",
+            source_sha=source_sha,
+            candidate_version="1.7.0-rc.2",
+            stable_version="1.7.0",
+            descriptor_sha256=selected["descriptor_sha256"],
+            descriptor=descriptor_path,
+        ))
+
+
+def test_finalize_rejects_stable_behind_existing_tagged_core(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_sha = _init_release_repo(tmp_path, ["smoke/v1.7.0-rc.2", "smoke/v2.0.0"])
+    selected = rust_descriptor(
+        "smoke", source_sha, ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+    )
+    descriptor_path = tmp_path / "deployment-descriptor.json"
+    descriptor_path.write_text(json.dumps(selected), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(SystemExit, match="is behind existing"):
+        finalize(argparse.Namespace(
+            worker="smoke",
+            source_sha=source_sha,
+            candidate_version="1.7.0-rc.2",
+            stable_version="1.7.0",
+            descriptor_sha256=selected["descriptor_sha256"],
+            descriptor=descriptor_path,
+        ))

@@ -1,26 +1,33 @@
 import { describe, expect, it } from 'vitest'
 import {
   extPageFromHash,
+  hashForSettingsLanding,
   hashForWorkersConfiguration,
   normalizeExtHash,
   normalizeWorkersConfigurationHash,
+  routeFromHash,
   workersConfigurationRouteFromHash,
 } from './use-hash-route'
 
 describe('workers configuration hash helpers', () => {
   it('builds canonical workers configuration hashes', () => {
     expect(hashForWorkersConfiguration('llm-router')).toBe(
-      '#/workers/configuration/llm-router',
+      '#/configuration/workers/llm-router',
     )
     expect(hashForWorkersConfiguration('shell', ['fs', 'host_roots'])).toBe(
-      '#/workers/configuration/shell/fs/host_roots',
+      '#/configuration/workers/shell/fs/host_roots',
     )
+  })
+
+  it('opens settings on the navigation menu only on narrow screens', () => {
+    expect(hashForSettingsLanding(true)).toBe('#/configuration/workers')
+    expect(hashForSettingsLanding(false)).toBe('#/configuration')
   })
 
   it('parses canonical workers configuration hashes', () => {
     expect(
       workersConfigurationRouteFromHash(
-        '#/workers/configuration/shell/fs/host_roots',
+        '#/configuration/workers/shell/fs/host_roots',
       ),
     ).toEqual({
       open: true,
@@ -31,14 +38,14 @@ describe('workers configuration hash helpers', () => {
 
   it('parses the bare configuration root as open with no selection', () => {
     expect(
-      workersConfigurationRouteFromHash('#/workers/configuration'),
+      workersConfigurationRouteFromHash('#/configuration/workers'),
     ).toEqual({
       open: true,
       configurationId: null,
       fieldPath: [],
     })
     expect(
-      workersConfigurationRouteFromHash('#/workers/configuration/'),
+      workersConfigurationRouteFromHash('#/configuration/workers/'),
     ).toEqual({
       open: true,
       configurationId: null,
@@ -46,10 +53,10 @@ describe('workers configuration hash helpers', () => {
     })
   })
 
-  it('parses legacy configuration worker hashes for compatibility', () => {
+  it('parses legacy workers configuration hashes for compatibility', () => {
     expect(
       workersConfigurationRouteFromHash(
-        '#/configuration/workers/llm-router/providers/openai',
+        '#/workers/configuration/llm-router/providers/openai',
       ),
     ).toEqual({
       open: true,
@@ -59,16 +66,19 @@ describe('workers configuration hash helpers', () => {
   })
 
   it('normalizes legacy worker configuration hashes', () => {
-    expect(normalizeWorkersConfigurationHash('#/configuration/workers')).toBe(
-      '#/workers',
+    expect(normalizeWorkersConfigurationHash('#/workers/configuration')).toBe(
+      '#/configuration/workers',
+    )
+    expect(normalizeWorkersConfigurationHash('#/workers/configuration/')).toBe(
+      '#/configuration/workers',
     )
     expect(
       normalizeWorkersConfigurationHash(
-        '#/configuration/workers/shell/fs/host_roots',
+        '#/workers/configuration/shell/fs/host_roots',
       ),
-    ).toBe('#/workers/configuration/shell/fs/host_roots')
+    ).toBe('#/configuration/workers/shell/fs/host_roots')
     expect(
-      normalizeWorkersConfigurationHash('#/workers/configuration/shell'),
+      normalizeWorkersConfigurationHash('#/configuration/workers/shell'),
     ).toBeNull()
   })
 
@@ -78,6 +88,16 @@ describe('workers configuration hash helpers', () => {
       configurationId: null,
       fieldPath: [],
     })
+  })
+
+  it('routes canonical and legacy configuration hashes to settings', () => {
+    expect(routeFromHash('#/configuration/workers/browser')).toBe(
+      'configuration',
+    )
+    expect(routeFromHash('#/workers/configuration/browser')).toBe(
+      'configuration',
+    )
+    expect(routeFromHash('#/workers')).toBe('workers')
   })
 })
 

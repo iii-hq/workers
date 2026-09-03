@@ -6,7 +6,8 @@
 //! YAML frontmatter (see `docs/architecture/agent-profile-storage.md`).
 //!
 //! Profiles compose: `extends: <id>` makes a profile's resolved system
-//! prompt its parent's resolved prompt followed by its own body, with
+//! prompt its parent's resolved prompt followed by its own body (a blank
+//! body contributes nothing), with
 //! `skills` / `model` / `reasoning_effort` falling back up the chain when
 //! omitted (display fields never inherit). The chain is resolved here, on
 //! every read, so the harness always receives a finished prompt. The base
@@ -114,9 +115,8 @@ pub struct ListAgentsOutput {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AgentGetInput {
     pub id: String,
-    /// When `true`, the response includes the FULL on-disk file content
-    /// (frontmatter block included) as `raw` — the exact string to hand
-    /// back to `directory::agents::update`.
+    /// When true, also return the exact on-disk file (frontmatter included) as
+    /// `raw`, ready for directory::agents::update.
     #[serde(default)]
     pub raw: Option<bool>,
 }
@@ -128,8 +128,11 @@ pub struct AgentGetOutput {
     pub description: String,
     pub logo: Option<String>,
     /// The RESOLVED identity: every ancestor's body root-first, then this
-    /// file's body, frontmatter stripped, joined by a blank line. A profile
-    /// without `extends` serves its own body verbatim.
+    /// file's body, frontmatter stripped, joined by a blank line; blank
+    /// bodies are skipped, so a profile with no prompt of its own serves
+    /// its parent chain unchanged and a prompt-less profile without
+    /// `extends` serves `""`. A profile that has a body and no `extends`
+    /// serves that body verbatim.
     pub system_prompt: String,
     /// The skill filter, resolved through `extends` (the nearest profile
     /// with a non-empty filter). Empty = every skill.
@@ -172,15 +175,11 @@ pub struct AgentGetOutput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AgentCreateInput {
-    /// New agent profile id — becomes the file stem
-    /// (`<agents_folder>/<id>.md`). Lowercase ASCII, digits,
-    /// `-` and `_` only. Must not collide with an existing agent profile or an
-    /// on-disk file at the target path.
+    /// New profile id, used as the file stem; lowercase ASCII, digits, `-` and
+    /// `_` only, and not already taken.
     pub id: String,
-    /// FULL file content, frontmatter block included. Frontmatter must
-    /// carry a non-empty `name`; the body is the system prompt and must
-    /// be non-empty. An `extends:` that does not resolve is reported by
-    /// `list`/`get` as `inheritance_error`, never a write error.
+    /// Full file content, frontmatter included; `name` is required, the body is
+    /// the system prompt and may be empty.
     pub content: String,
 }
 
@@ -241,15 +240,10 @@ fn register_list(iii: &Arc<IIIClient>, cfg: &SharedConfig) {
             async move { Ok::<_, Error>(list_agents(&cfg)) }
         })
         .description(
-            "List agent profiles (id, display name, description, emoji logo, icon, color, \
-             model, reasoning_effort, skill_count, extends, modified_at) from the configured \
-             agents folder plus the profiles bundled with this worker (`builtin: true` until a \
-             local file shadows one — `iii` is the base identity most profiles extend). An \
-             agent profile is a reusable session identity: its file body is the system \
-             prompt. model / reasoning_effort / skill_count are resolved through `extends` \
-             (a profile inherits what it omits from its parent chain); skill_count null = \
-             sessions using the profile can use every skill. A row whose `extends` chain \
-             does not resolve carries `inheritance_error`.",
+            "List agent profiles (id, name, description, logo, icon, color, model, \
+             reasoning_effort, skill_count, extends, modified_at) from the agents \
+             folder plus the bundled ones (`builtin: true`). Inherited fields resolve \
+             through `extends`; skill_count null means every skill.",
         ),
     );
 }
@@ -270,16 +264,10 @@ fn register_get(iii: &Arc<IIIClient>, cfg: &SharedConfig, cache: &Arc<Registered
             }
         })
         .description(
-            "Fetch one agent profile by id. Returns the RESOLVED system prompt (each \
-             ancestor's body root-first, then this file's body), display name, \
-             description, emoji logo, the skill filter resolved \
-             through `extends` plus unknown_skills (filter entries matching no visible \
-             skill — warnings, the profile still loads), model, reasoning_effort, icon, \
-             color, extends, builtin, and modified_at. `inheritance_error` is set when the \
-             `extends` chain names an unknown profile, loops, or is deeper than 8 levels: \
-             the profile then serves from its own file only and the harness refuses to \
-             run it. Pass raw: true to also get the exact on-disk file (this profile's \
-             own, ancestors excluded) for editing with directory::agents::update.",
+            "Fetch one agent profile by id: the system prompt resolved through its \
+             `extends` chain, display fields, skill filter, model, reasoning_effort, \
+             and `inheritance_error` when the chain does not resolve. Pass raw: true \
+             for the exact on-disk file to edit with directory::agents::update.",
         ),
     );
 }
@@ -302,14 +290,10 @@ fn register_create(iii: &Arc<IIIClient>, cfg: &SharedConfig, subs: &trigger_type
             }
         })
         .description(
-            "Create a NEW agent profile at <agents_folder>/<id>.md from full-file \
-             markdown content (frontmatter block included; a non-empty `name` is \
-             required, `logo` is emoji-only, and the body — the system prompt — must be \
-             non-empty; an `extends: <id>` that does not resolve is reported by list/get \
-             as `inheritance_error`). Rejects ids that already exist in the \
-             configured agents folder, or a target path that already exists on disk; \
-             creating a bundled id shadows the bundled copy. The write is atomic and \
-             fans out directory::agents::on-change with { op: \"create\" }.",
+            "Create a new agent profile at <agents_folder>/<id>.md from full-file \
+             markdown (frontmatter with a non-empty `name`, emoji-only `logo`; the \
+             body is the system prompt and may be empty). Rejects ids or paths that \
+             already exist; a bundled id is shadowed.",
         )
         .metadata(json!({"tool": {"label": "Create agent profile"}})),
     );
@@ -333,14 +317,10 @@ fn register_update(iii: &Arc<IIIClient>, cfg: &SharedConfig, subs: &trigger_type
             }
         })
         .description(
-            "Overwrite one EXISTING agent profile with new full-file markdown content — \
-             the same rules the scanner enforces (required frontmatter with a non-empty \
-             `name`, emoji-only `logo`, non-empty body), so an \
-             update can never produce a file the next directory::agents::list would skip. \
-             The agent profile id stays the file stem; frontmatter `name` is only the \
-             display name. Updating a bundled profile (`builtin: true`) creates the local \
-             file, which then shadows the bundled copy. The write is atomic and fans out \
-             directory::agents::on-change with { op: \"update\" }.",
+            "Overwrite one existing agent profile with full-file markdown \
+             (frontmatter with a non-empty `name`, emoji-only `logo`; the body is the \
+             system prompt and may be empty). Updating a bundled profile creates a \
+             local file that shadows it.",
         )
         .metadata(json!({"tool": {"label": "Update agent profile"}})),
     );
@@ -364,13 +344,9 @@ fn register_delete(iii: &Arc<IIIClient>, cfg: &SharedConfig, subs: &trigger_type
             }
         })
         .description(
-            "Permanently delete one EXISTING agent profile by id. Resolves against the \
-             same merged scan as directory::agents::list, removes only that profile's \
-             markdown file, and fans out directory::agents::on-change with \
-             { op: \"delete\" }. Deleting the local shadow of a bundled profile falls \
-             back to the bundled copy; a bundled profile with no local file has nothing \
-             to delete. Sessions already using this profile are not affected; profiles \
-             that extend it stop resolving until their `extends` is fixed.",
+            "Delete one existing agent profile's markdown file by id. Deleting the \
+             local shadow of a bundled profile falls back to the bundled copy; \
+             profiles that extend it stop resolving until fixed.",
         )
         .metadata(json!({"tool": {"label": "Delete agent profile"}})),
     );
@@ -487,7 +463,11 @@ fn read_agent_body(agent: &FsAgent) -> Result<String, String> {
     if agent.builtin {
         return bundled_raw(agent).map(|raw| fs_source::split_frontmatter(raw).1.to_string());
     }
-    fs_source::read_body(&agent.abs_path)
+    // `read_raw` and not `read_body`: same size cap, but it tolerates an
+    // empty-after-frontmatter file — a profile may carry no prompt of its
+    // own. The shared `read_body` keeps its non-empty contract for skills
+    // and system prompts.
+    fs_source::read_raw(&agent.abs_path).map(|raw| fs_source::split_frontmatter(&raw).1.to_string())
 }
 
 fn read_agent_raw(agent: &FsAgent) -> Result<String, String> {
@@ -500,11 +480,18 @@ fn read_agent_raw(agent: &FsAgent) -> Result<String, String> {
 /// The resolved system prompt, root first: each ancestor's body with its
 /// trailing newlines trimmed, a blank line, then the next body — the
 /// profile's own body last and verbatim, so a profile without `extends`
-/// serves byte-identical to a plain read.
+/// serves byte-identical to a plain read. A blank body contributes
+/// nothing: a leaf without a prompt of its own resolves to its parent
+/// chain unchanged, and a profile with neither resolves to the empty
+/// string — the harness then seeds no identity text of its own (just the
+/// mode paragraph, when the send sets one, plus its runtime context).
 fn compose_prompt(chain: &[&FsAgent]) -> Result<String, String> {
     let mut prompt: Option<String> = None;
     for agent in chain.iter().rev() {
         let body = read_agent_body(agent)?;
+        if body.trim().is_empty() {
+            continue;
+        }
         prompt = Some(match prompt {
             None => body,
             Some(parent) => format!("{}\n\n{body}", parent.trim_end_matches('\n')),
@@ -680,10 +667,10 @@ pub fn delete_agent(
 // ---------- validation ----------
 
 /// Write-time content check, byte-identical to what the scanner
-/// enforces: size cap on the raw file, required valid frontmatter
-/// ([`fs_source::parse_agent_frontmatter`]), non-empty body. Returns the
-/// row the next scan will serve for `dest` (the write receipt reads from
-/// it).
+/// enforces: size cap on the raw file and required valid frontmatter
+/// ([`fs_source::parse_agent_frontmatter`]). The body — the system
+/// prompt — may be empty. Returns the row the next scan will serve for
+/// `dest` (the write receipt reads from it).
 fn validate_agent_content(
     id: &str,
     content: &str,
@@ -696,10 +683,6 @@ fn validate_agent_content(
         ));
     }
     let fm = fs_source::parse_agent_frontmatter(content)?;
-    let (_, body) = fs_source::split_frontmatter(content);
-    if body.trim().is_empty() {
-        return Err("body (the system prompt) must be non-empty".into());
-    }
     Ok(fs_source::agent_from_frontmatter(
         id.to_string(),
         fm,
@@ -987,7 +970,6 @@ mod tests {
                 "---\nname: X\ncolor: ultraviolet\n---\nbody\n",
                 "`color` must be one of",
             ),
-            ("---\nname: X\ndescription: y\n---\n", "non-empty"),
         ] {
             let err = create_agent(
                 &cfg,
@@ -999,6 +981,62 @@ mod tests {
             .unwrap_err();
             assert!(err.contains(needle), "content {content:?} → {err}");
         }
+    }
+
+    /// A profile may carry no prompt of its own: the write is accepted, the
+    /// row lists, `get` opens it (so it stays editable), and a child with an
+    /// empty body resolves to its parent chain alone.
+    #[test]
+    fn an_empty_body_is_a_valid_agent_profile() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_for(tmp.path());
+
+        create_agent(
+            &cfg,
+            &AgentCreateInput {
+                id: "hollow".into(),
+                content: "---\nname: Hollow\ndescription: No prompt.\n---\n".into(),
+            },
+        )
+        .unwrap();
+
+        let got = get_agent(
+            &cfg,
+            AgentGetInput {
+                id: "hollow".into(),
+                raw: Some(true),
+            },
+            &[],
+        )
+        .unwrap();
+        assert_eq!(got.system_prompt, "");
+        assert!(got.raw.unwrap().starts_with("---\n"));
+        assert!(list_agents(&cfg).agents.iter().any(|a| a.id == "hollow"));
+
+        // An empty body contributes nothing to the resolved identity.
+        write_fixture(
+            tmp.path(),
+            "agents/base.md",
+            "---\nname: Base\n---\nBase body.\n",
+        );
+        update_agent(
+            &cfg,
+            &AgentUpdateInput {
+                id: "hollow".into(),
+                content: "---\nname: Hollow\nextends: base\n---\n".into(),
+            },
+        )
+        .unwrap();
+        let got = get_agent(
+            &cfg,
+            AgentGetInput {
+                id: "hollow".into(),
+                raw: None,
+            },
+            &[],
+        )
+        .unwrap();
+        assert_eq!(got.system_prompt, "Base body.\n");
     }
 
     #[test]

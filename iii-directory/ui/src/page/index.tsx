@@ -5,7 +5,7 @@
  * CodeEditor/MarkdownPreview pair, saving through the worker's update
  * functions.
  *
- * All collections stay MOUNTED (the inactive ones are display:none) so an
+ * Both collections stay MOUNTED (the inactive one is display:none) so an
  * unsaved draft survives switching between them.
  */
 
@@ -25,15 +25,6 @@ interface SkillRow {
   modified_at: string
 }
 
-interface SystemPromptRow {
-  name: string
-  description: string
-  modified_at: string
-  /** Bundled with the worker, no file behind it yet: editing creates the
-   * local file; nothing to delete. */
-  builtin?: boolean
-}
-
 interface AgentRow {
   id: string
   name: string
@@ -45,10 +36,6 @@ interface AgentRow {
   /** Bundled with the worker (`iii`, the base identity): editing creates
    * the local file that shadows it; nothing to delete. */
   builtin?: boolean
-}
-
-interface SystemPromptPreview {
-  parts: { kind: string; body: string }[]
 }
 
 const skillsAdapter: BrowserAdapter = {
@@ -92,113 +79,6 @@ const skillsAdapter: BrowserAdapter = {
   },
   async remove(host, id) {
     await host.iii.trigger('directory::skills::delete', { id })
-  },
-}
-
-export const HARNESS_DEFAULT_SYSTEM_PROMPT_KEY = 'harness/default'
-
-/** Frontmatter the built-in default is wrapped in when opened for editing:
- * saving that draft copy-on-writes a LOCAL `default` store entry, which the
- * harness then uses instead of the embedded prompt (deleting the local entry
- * falls back to the embedded one). */
-const HARNESS_DEFAULT_FRONTMATTER =
-  '---\nname: default\ndescription: Harness default system prompt (local override)\n---\n'
-
-function frontmatterName(content: string): string {
-  const match = /^---\n[\s\S]*?^name:[ \t]*(.+?)[ \t]*$[\s\S]*?\n---\n/m.exec(content)
-  return match?.[1] ?? 'default'
-}
-
-export const systemPromptsAdapter: BrowserAdapter = {
-  noun: 'system prompt',
-  crumbRoot: 'system-prompts',
-  slugName: true,
-  descriptionRequired: true,
-  onChangeType: 'directory::system-prompts::on-change',
-  emptyTitle: 'Select a system prompt',
-  emptyBody:
-    'Choose a system prompt from the sidebar to view and edit its markdown. These are what the chat picker offers as an identity prompt — filesystem-backed, so files added to the system-prompts folders appear here automatically.',
-  async list(host) {
-    const out = await host.iii.trigger<{ prompts: SystemPromptRow[] }>('directory::system-prompts::list')
-    const prompts = out.prompts ?? []
-    // The built-in row exists only while no LOCAL `default` overrides it:
-    // editing the built-in saves that local entry (copy-on-write), and the
-    // local row then replaces this one in the list.
-    const overridden = prompts.some((p) => p.name === 'default')
-    return [
-      ...(overridden
-        ? []
-        : [
-            {
-              key: HARNESS_DEFAULT_SYSTEM_PROMPT_KEY,
-              title: 'default',
-              description: 'Harness default system prompt',
-              fine: 'Built-in · edits save a local override',
-              noDelete: true,
-            },
-          ]),
-      ...prompts.map((p) =>
-        p.builtin
-          ? {
-              key: p.name,
-              title: '',
-              description: p.description,
-              fine: 'Built-in · edits save a local override',
-              noDelete: true,
-            }
-          : {
-              key: p.name,
-              title: '',
-              description: p.description,
-              fine: formatRelativeTime(p.modified_at),
-            },
-      ),
-    ]
-  },
-  async load(host, name) {
-    if (name === HARNESS_DEFAULT_SYSTEM_PROMPT_KEY) {
-      const out = await host.iii.trigger<SystemPromptPreview>('harness::system-prompt::get', {
-        session_id: `iii-directory:${host.iii.browserId}`,
-        default_only: true,
-      })
-      const builtIn = out.parts.find((part) => part.kind === 'built_in')
-      if (!builtIn) throw new Error('Harness default system prompt is unavailable')
-      return HARNESS_DEFAULT_FRONTMATTER + builtIn.body
-    }
-    const out = await host.iii.trigger<{ body: string; raw?: string | null }>('directory::system-prompts::get', {
-      name,
-      raw: true,
-    })
-    return out.raw ?? out.body
-  },
-  async save(host, name, content) {
-    if (name === HARNESS_DEFAULT_SYSTEM_PROMPT_KEY) {
-      // Copy-on-write: the built-in prompt has no store file; saving it
-      // CREATES the local `default` entry, which the harness picks up on
-      // the next send. Only that exact name overrides the embedded
-      // identity, so a rename here would silently save an inactive prompt.
-      const local = frontmatterName(content)
-      if (local !== 'default') {
-        throw new Error(
-          'the Harness default override must keep the name "default" — use "New system prompt" to save it under another name',
-        )
-      }
-      const out = await host.iii.trigger<{ name: string }>(
-        'directory::system-prompts::create',
-        { name: local, content },
-      )
-      return out.name ?? local
-    }
-    // The effective name after the write follows a frontmatter rename.
-    const out = await host.iii.trigger<{ name: string }>('directory::system-prompts::update', { name, content })
-    return out.name ?? name
-  },
-  async create(host, name, content) {
-    const out = await host.iii.trigger<{ name: string }>('directory::system-prompts::create', { name, content })
-    return out.name ?? name
-  },
-  async remove(host, name) {
-    await host.iii.trigger('directory::system-prompts::delete', { name })
   },
 }
 
@@ -259,17 +139,22 @@ export const agentsAdapter: BrowserAdapter = {
   },
 }
 
-type Collection = 'skills' | 'system-prompts' | 'agents'
+type Collection = 'skills' | 'agents'
 
-const COLLECTIONS: { value: Collection; label: string }[] = [
+interface PendingCollectionAction {
+  id: number
+  collection: Collection
+  key?: string
+  action?: 'create'
+}
+
+export const COLLECTIONS: { value: Collection; label: string }[] = [
   { value: 'skills', label: 'Skills' },
-  { value: 'system-prompts', label: 'System Prompts' },
   { value: 'agents', label: 'Agent Profiles' },
 ]
 
 const ADAPTERS: Record<Collection, BrowserAdapter> = {
   skills: skillsAdapter,
-  'system-prompts': systemPromptsAdapter,
   agents: agentsAdapter,
 }
 
@@ -282,15 +167,10 @@ export function DirectoryPage({
   commands,
 }: { host: Host } & Partial<PageRenderProps>) {
   const [collection, setCollection] = useState<Collection>('skills')
-  const [pendingOpen, setPendingOpen] = useState<{
-    id: number
-    collection: Collection
-    key: string
-  } | null>(null)
+  const [pendingOpen, setPendingOpen] = useState<PendingCollectionAction | null>(null)
 
-  // A palette row (see palette.ts) selects a collection + entry here once
-  // the page is open. `panelContext.id` is monotonic, so a repeated
-  // identical click still re-applies.
+  // Panel context can open a palette entry or start a collection's creation
+  // flow. `panelContext.id` is monotonic, so a repeated action still applies.
   const appliedContextRef = useRef(0)
   useEffect(() => {
     if (!panelContext || panelContext.id === appliedContextRef.current) return
@@ -298,22 +178,26 @@ export function DirectoryPage({
     const context = panelContext.context as {
       collection?: string
       key?: string
+      action?: string
     } | null
     const collectionValue = context?.collection
     if (
       !context ||
       typeof collectionValue !== 'string' ||
-      typeof context.key !== 'string' ||
       !COLLECTIONS.some((c) => c.value === collectionValue)
     ) {
       return
     }
     const nextCollection = collectionValue as Collection
+    const opensEntry = typeof context.key === 'string'
+    const startsCreate = context.action === 'create'
+    if (!opensEntry && !startsCreate) return
     setCollection(nextCollection)
     setPendingOpen({
       id: panelContext.id,
       collection: nextCollection,
-      key: context.key,
+      ...(opensEntry ? { key: context.key } : {}),
+      ...(startsCreate ? { action: 'create' } : {}),
     })
   }, [panelContext])
 
@@ -324,7 +208,7 @@ export function DirectoryPage({
       options={COLLECTIONS}
       iconOnly
       className="dir-ui-collection-tabs"
-      aria-label="Browse skills, system prompts or agent profiles"
+      aria-label="Browse skills or agent profiles"
     />
   )
 
@@ -333,7 +217,7 @@ export function DirectoryPage({
       <PageHeader
         icon={<MarkdownFileIcon />}
         title="Directory"
-        description="Filesystem-backed skills, system prompts and agent profiles"
+        description="Filesystem-backed skills and agent profiles"
         onClose={onRequestClose}
       />
       {COLLECTIONS.map((c) => (

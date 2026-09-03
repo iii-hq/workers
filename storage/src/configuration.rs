@@ -167,6 +167,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
         "name": "Storage",
         "description": "Object storage buckets across AWS S3, GCS, Cloudflare R2, and a native local filesystem backend.",
         "schema": WorkerConfig::json_schema(),
+        "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
     if let Some(seed) = seed {
         payload["initial_value"] = seed.to_json();

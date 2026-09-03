@@ -15,7 +15,7 @@
       },
       "model": {
         "default": null,
-        "description": "Model name passed through to the server. llama-server embeds with its loaded model regardless; the field is echoed for parity with the other providers.",
+        "description": "Model name echoed for parity with the other providers; llama-server embeds with its loaded model regardless.",
         "type": [
           "string",
           "null"

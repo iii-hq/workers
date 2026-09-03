@@ -1,5 +1,5 @@
 {
-  "description": "Create one or more files. Request shape: {\"files\": [{\"path\": \"...\", \"content\": \"...\"}]}. Per-file `overwrite` and `parents` flags; writes publish atomically. For a conflict-safe overwrite, pass the `revision` returned by coder::read-file as `expected_revision`; stale revisions return C221 without writing. Non-accessible paths return C211. Paths are relative to the primary allowed root or absolute inside any allowed root (coder::info lists them); for host paths outside the jail use shell::fs::*.",
+  "description": "Create one or more files atomically; per-file overwrite and parents flags. For a conflict-safe overwrite pass the revision from coder::read-file as expected_revision (stale revision: C221, nothing written). Paths: relative to the primary root or absolute inside an allowed root (see coder::info).",
   "function_id": "coder::create-file",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -11,7 +11,7 @@
           },
           "expected_revision": {
             "default": null,
-            "description": "Optional optimistic concurrency precondition for an overwrite. Pass the opaque `revision` returned by `coder::read-file`; if the file no longer has that exact content, the entry fails with C221 and is not written. Omit for backward-compatible unconditional overwrite.",
+            "description": "Optimistic-concurrency guard for an overwrite: the `revision` from coder::read-file; if the content changed the entry fails C221 unwritten.",
             "type": [
               "string",
               "null"
@@ -33,7 +33,7 @@
             "type": "boolean"
           },
           "path": {
-            "description": "Path relative to the primary allowed root, or an absolute path inside any allowed root. Call `coder::info` to see the allowed roots. Paths outside every allowed root are rejected — use the shell worker's `shell::fs::*` for host paths outside the jail.",
+            "description": "File to create.",
             "type": "string"
           }
         },

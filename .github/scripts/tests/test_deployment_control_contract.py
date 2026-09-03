@@ -22,7 +22,7 @@ def run(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 def test_contract_schema_is_byte_identical_to_release_control():
-    assert hashlib.sha256(SCHEMA.read_bytes()).hexdigest() == "dc51f42d89626f0d554b94965b49aace257726a0b77010c4be05e22c6eb44196"
+    assert hashlib.sha256(SCHEMA.read_bytes()).hexdigest() == "c9cd573a793ef8287e6d75814f4c7d474449e10dcec2238ff0d85648c6fb6784"
 
 
 def test_compact_identity_input_requires_exact_canonical_fields():
@@ -143,7 +143,8 @@ def test_authorize_posts_nested_canonical_body_and_its_digest(monkeypatch):
     assert request.get_header("Authorization") == "Bearer oidc:release-control-workers"
 
 
-def test_new_deployment_target_rejects_legacy_numbered_rc(tmp_path: pathlib.Path):
+def test_new_deployment_target_accepts_numbered_rc_on_next(tmp_path: pathlib.Path):
+    output = tmp_path / "deployment-result.json"
     result = run(
         "write-result", "--repository", "iii-hq/workers", "--step-id", STEP_ID,
         "--run-id", "123", "--run-attempt", "1", "--workflow", "deploy-prepare.yml",
@@ -155,10 +156,11 @@ def test_new_deployment_target_rejects_legacy_numbered_rc(tmp_path: pathlib.Path
         "--target-version", "1.2.3-rc.1", "--channel", "next",
         "--descriptor-sha256", "d" * 64, "--outcome", "succeeded", "--effects", "[]",
         "--artifacts-json", "[]", "--error-json", "null",
-        "--output", str(tmp_path / "deployment-result.json"),
+        "--output", str(output),
     )
-    assert result.returncode == 2
-    assert "deployment target version" in result.stderr
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(output.read_text())
+    assert payload["subject"]["target_version"] == "1.2.3-rc.1"
 
 
 def test_post_result_sends_the_file_bytes_without_reserializing(tmp_path, monkeypatch):
@@ -197,3 +199,96 @@ def test_phase_and_workflow_must_match(tmp_path: pathlib.Path):
     )
     assert result.returncode == 2
     assert "requires workflow deploy-prepare.yml" in result.stderr
+
+
+def run_finalize_write_result(output: pathlib.Path, **overrides: str) -> subprocess.CompletedProcess[str]:
+    values = {
+        "repository": "iii-hq/workers",
+        "step-id": STEP_ID,
+        "run-id": "123",
+        "run-attempt": "1",
+        "workflow": "deploy-finalize.yml",
+        "event": "workflow_dispatch",
+        "sha": "a" * 40,
+        "deployment-batch-id": DEPLOYMENT_BATCH_ID,
+        "deployment-target-id": DEPLOYMENT_TARGET_ID,
+        "attempt-id": ATTEMPT_ID,
+        "dispatch-nonce": NONCE,
+        "plan-hash": "b" * 64,
+        "worker": "eval",
+        "phase": "finalize",
+        "source-sha": "a" * 40,
+        "prepared-sha": "a" * 40,
+        "candidate-version": "1.7.0-rc.2",
+        "target-version": "1.7.0",
+        "channel": "latest",
+        "descriptor-sha256": "d" * 64,
+        "outcome": "succeeded",
+        "effects": "[]",
+        "artifacts-json": "[]",
+        "error-json": "null",
+        "output": str(output),
+    }
+    values.update({key.replace("_", "-"): value for key, value in overrides.items()})
+    return run("write-result", *[part for key, value in values.items() for part in (f"--{key}", value)])
+
+
+def test_finalize_result_binds_candidate_to_its_stable_version(tmp_path: pathlib.Path):
+    output = tmp_path / "deployment-result.json"
+    result = run_finalize_write_result(output)
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(output.read_text())
+    assert set(payload) == {"contract", "identity", "executor", "subject", "outcome", "effects", "artifacts", "error", "completed_at"}
+    assert set(payload["subject"]) == {
+        "worker", "phase", "source_sha", "prepared_sha", "target_version",
+        "channel", "descriptor_sha256", "candidate_version",
+    }
+    assert payload["subject"]["phase"] == "finalize"
+    assert payload["subject"]["channel"] == "latest"
+    assert payload["subject"]["target_version"] == "1.7.0"
+    assert payload["subject"]["candidate_version"] == "1.7.0-rc.2"
+    assert payload["subject"]["prepared_sha"] == payload["subject"]["source_sha"]
+
+
+def test_finalize_requires_a_candidate_version(tmp_path: pathlib.Path):
+    result = run_finalize_write_result(tmp_path / "deployment-result.json", candidate_version="none")
+    assert result.returncode == 2
+    assert "require --candidate-version" in result.stderr
+
+
+def test_finalize_requires_channel_latest(tmp_path: pathlib.Path):
+    result = run_finalize_write_result(tmp_path / "deployment-result.json", channel="next")
+    assert result.returncode == 2
+    assert "require channel=latest" in result.stderr
+
+
+def test_finalize_requires_prepared_sha_equal_to_source_sha(tmp_path: pathlib.Path):
+    result = run_finalize_write_result(tmp_path / "deployment-result.json", prepared_sha="c" * 40)
+    assert result.returncode == 2
+    assert "prepared_sha equal to source_sha" in result.stderr
+
+
+def test_non_finalize_phases_reject_a_candidate_version(tmp_path: pathlib.Path):
+    result = run_finalize_write_result(
+        tmp_path / "deployment-result.json",
+        workflow="deploy-prepare.yml", phase="prepare", channel="next",
+        target_version="1.7.0-rc.2",
+    )
+    assert result.returncode == 2
+    assert "does not accept" in result.stderr
+
+
+def test_latest_channel_rejects_rc_target_versions(tmp_path: pathlib.Path):
+    result = run_finalize_write_result(
+        tmp_path / "deployment-result.json",
+        workflow="deploy-publish.yml", phase="publish",
+        candidate_version="none", target_version="1.2.3-rc.1",
+    )
+    assert result.returncode == 2
+    assert "pure MAJOR.MINOR.PATCH" in result.stderr
+
+
+def test_finalize_phase_requires_the_finalize_workflow(tmp_path: pathlib.Path):
+    result = run_finalize_write_result(tmp_path / "deployment-result.json", workflow="deploy-verify.yml")
+    assert result.returncode == 2
+    assert "requires workflow deploy-finalize.yml" in result.stderr

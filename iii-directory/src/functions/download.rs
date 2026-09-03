@@ -42,9 +42,8 @@ pub struct DownloadInput {
     /// Source B: explicit semver to pull. Mutually exclusive with `tag`.
     #[serde(default)]
     pub version: Option<String>,
-    /// Source B: registry tag to pull (e.g. `latest`). Mutually
-    /// exclusive with `version`. Defaults to `"latest"` when neither
-    /// `version` nor `tag` is provided.
+    /// Registry tag to pull (default `latest`); mutually exclusive with
+    /// `version`.
     #[serde(default)]
     pub tag: Option<String>,
 }
@@ -148,13 +147,10 @@ fn register_download(iii: &Arc<IIIClient>, cfg: &SharedConfig, subscribers: &sup
             async move { run_and_fan_out(&iii, &cfg, &subs, req).await }
         })
         .description(
-            "Download skills into skills_folder from EITHER source. Prefer the \
-             explicit directory::skills::download_from_registry / \
-             directory::skills::download_from_repo, whose schemas can't be mixed up. \
-             Pass {repo, skill, branch?} to clone one skill folder from a GitHub repo \
-             (branch defaults to \"main\"), or {worker, version?|tag?} to pull from the \
-             workers registry (tag defaults to \"latest\"). Specify exactly ONE source \
-             set. Files in the destination namespace are overwritten file-by-file.",
+            "Download skills into skills_folder from exactly one source: {repo, \
+             skill, branch?} clones a GitHub skill folder; {worker, version?|tag?} \
+             pulls from the workers registry. Prefer the explicit \
+             download_from_registry / download_from_repo.",
         )
         .metadata(json!({"tool": {"label": "Download skills"}})),
     );
@@ -189,11 +185,9 @@ fn register_download_from_registry(
         })
         .description(
             "Download one worker's directory bundle from the workers registry into \
-             skills_folder. `worker` is required; pass either `version` (exact semver) \
-             OR `tag` (e.g. \"latest\", the default when both are omitted), not both. \
-             Files in the destination namespace are overwritten file-by-file. A missing \
-             worker returns a `D310 not_found` naming the next function to call. To pull \
-             from a GitHub repo instead, use directory::skills::download_from_repo.",
+             skills_folder. `worker` is required; pass `version` (exact semver) or \
+             `tag` (default \"latest\"), not both. Files are overwritten \
+             file-by-file.",
         )
         .metadata(json!({"tool": {"label": "Download skills (registry)"}})),
     );
@@ -227,11 +221,9 @@ fn register_download_from_repo(
             }
         })
         .description(
-            "Download one skill folder from a GitHub repo into skills_folder. `repo` (the \
-             repo URL) and `skill` (the subfolder under `skills/`, which also names the \
-             destination namespace) are required; `branch` defaults to \"main\". The repo \
-             URL is validated (https / ssh / git@ only). To pull a published worker \
-             instead, use directory::skills::download_from_registry.",
+            "Download one skill folder from a GitHub repo into skills_folder: `repo` \
+             (https/ssh/git@ URL) and `skill` (subfolder under `skills/`, also the \
+             destination namespace) are required; `branch` defaults to \"main\".",
         )
         .metadata(json!({"tool": {"label": "Download skills (repo)"}})),
     );

@@ -150,6 +150,7 @@ impl Invoker for RecordingInvoker {
         _function_id: &str,
         payload: Value,
         _metadata: Option<Value>,
+        _namespace: Option<&str>,
     ) -> Result<Option<Value>, String> {
         self.deliveries.lock().await.push(payload);
         Ok(None)
@@ -192,7 +193,7 @@ async fn basic_delivery_connect_or_skip() {
 
     let topic = format!("e2e-rmq-basic-{}", Uuid::new_v4());
     adapter
-        .subscribe(&topic, "sub-1", &function_id, None, None, None)
+        .subscribe(&topic, "sub-1", &function_id, None, None, None, None)
         .await;
     // Give the consumer task a beat to actually attach before the first
     // publish.
@@ -447,6 +448,7 @@ async fn priority_ordering_connect_or_skip() {
                 concurrency: Some(1),
                 ..Default::default()
             }),
+            None,
         )
         .await;
 
@@ -494,7 +496,7 @@ async fn unsubscribe_keeps_backlog_for_same_id_resubscribe_connect_or_skip() {
     let topic = format!("e2e-rmq-rearm-{}", Uuid::new_v4());
     let sub_id = "sub-rearm-1";
     adapter
-        .subscribe(&topic, sub_id, "rearm-fn", None, None, None)
+        .subscribe(&topic, sub_id, "rearm-fn", None, None, None, None)
         .await;
     // Give the consumer task a beat to attach before the first publish --
     // same as basic_delivery.
@@ -523,7 +525,7 @@ async fn unsubscribe_keeps_backlog_for_same_id_resubscribe_connect_or_skip() {
     );
 
     adapter
-        .subscribe(&topic, sub_id, "rearm-fn", None, None, None)
+        .subscribe(&topic, sub_id, "rearm-fn", None, None, None, None)
         .await;
     wait_until(
         || {
@@ -596,6 +598,7 @@ async fn fifo_mode_preserves_order_connect_or_skip() {
                 concurrency: Some(1),
                 ..Default::default()
             }),
+            None,
         )
         .await;
     tokio::time::sleep(Duration::from_millis(300)).await;

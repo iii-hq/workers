@@ -15,7 +15,9 @@ on:
       registry_tag:
         required: true
         type: choice
-        options: [latest, next]
+        # The quickstart follows the stable Registry graph. Release validation
+        # may still pin one exact candidate through the separate override.
+        options: [latest]
 
 permissions: {}
 

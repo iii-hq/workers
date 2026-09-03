@@ -74,6 +74,7 @@ pub async fn register_config(
                         the RBAC contract (auth function, expose filters, registration hooks), middleware, \
                         and the worker-internals leak knob.",
         "schema": WorkerConfig::json_schema(),
+        "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
     if let Some(seed) = seed {
         payload["initial_value"] = seed.to_json();

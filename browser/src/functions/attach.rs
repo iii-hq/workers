@@ -9,14 +9,11 @@ use crate::session::TabInfo;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AttachInput {
-    /// CDP endpoint of the running browser: `http://127.0.0.1:9222` (the
-    /// worker resolves the WebSocket URL from `/json/version`) or a
-    /// `ws://` debugger URL directly. Start Chrome with
-    /// `--remote-debugging-port=9222` to expose one.
+    /// CDP endpoint of the running browser: `http://127.0.0.1:9222` (resolved
+    /// via `/json/version`) or a `ws://` debugger URL.
     pub cdp_url: String,
-    /// Adopt the existing tab whose URL contains this substring, exclusively,
-    /// and release it untouched on stop. Omit to open a fresh tab the
-    /// session owns and closes on stop. Must match exactly one open tab.
+    /// Adopt the one open tab whose URL contains this substring (released
+    /// untouched on stop); omit to open a fresh tab the session owns.
     #[serde(default)]
     pub adopt_url_substring: Option<String>,
     /// URL to open in the fresh tab (ignored when adopting). Omit for

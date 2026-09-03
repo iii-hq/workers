@@ -1,7 +1,8 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ChannelReader } from 'iii-sdk';
+import { ChannelReader } from 'iii-sdk/channel';
+import { createChannel } from 'iii-sdk/helpers';
 import { expect, expectEqual, type CaseContext, type TestCase } from './cases.ts';
 
 const URL = process.env.III_URL ?? 'ws://127.0.0.1:49134';
@@ -22,7 +23,7 @@ export async function fsWriteStream(
 ): Promise<{ bytes_written: number; path: string }> {
   const bytes =
     typeof args.bytes === 'string' ? Buffer.from(args.bytes, 'utf8') : args.bytes;
-  const channel = await ctx.iii.createChannel(64);
+  const channel = await createChannel(ctx.iii, 64);
   if (bytes.length === 0) {
     // SDK quirk: write(empty) doesn't trigger WS connect, making close()
     // a no-op. sendMessage('') forces the socket open.

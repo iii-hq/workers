@@ -2,7 +2,7 @@
 //! `fp::pipe` / transform usage guidance to the agent's system prompt,
 //! ONLY while this worker is connected AND the `fp` configuration's
 //! `inject_guidance` is on (the default; see src/configuration.rs — the
-//! console config dialog is the flip surface, and flips hot-apply by
+//! The Console's global Settings modal is the flip surface, and flips hot-apply by
 //! binding/unbinding the trigger, no restart). Binding order does not
 //! matter: the engine parks a binding whose trigger
 //! type is not registered yet as a pending intent and activates it when the
@@ -101,10 +101,9 @@ the step — only a DIRECT call offers the access-grant prompt.
 Trigger-control, session/approval, credential/config, LLM-routing, and
 turn-control steps are excluded — call those directly."#;
 
-/// The slice of the `pre_generate` hook envelope we read (lenient: ignores
-/// every other field the harness sends). The harness nests the live
-/// generation context under `generate` (see harness
-/// `HookRunner::run_pre_generate`).
+/// The `pre_generate` hook envelope slice we read; the generation context is nested
+/// under `generate`.
+// Lenient: every other envelope field is ignored. See harness `HookRunner::run_pre_generate`.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct PreGenerateEvent {
     #[serde(default)]

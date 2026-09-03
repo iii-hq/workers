@@ -72,8 +72,11 @@ Optional `--config` behaviour (see [`session-manager/src/main.rs`](../../session
 All ids are kebab-case (`<worker>::<verb>`), per [`binary-worker.md`](binary-worker.md) §7:
 
 - `configuration::register` — declare an id with name, description, JSON
-  Schema, and an optional `initial_value`; idempotent re-registration replaces
-  the schema/metadata but preserves any stored value.
+  Schema, an optional `initial_value`, and metadata; idempotent re-registration
+  replaces the schema/metadata but preserves any stored value. Configurable
+  workers set `metadata.ui_form` to their stable default id so the Console can
+  reuse the correct deliberate form when `III_CONFIG_NAME` renames the runtime
+  entry.
 - `configuration::set` — replace the value for a registered id; validates
   against the schema and emits `configuration:updated`.
 - `configuration::get` — read one entry by id; expands `${VAR:default}`
@@ -147,7 +150,9 @@ Common to both tiers:
 - `CONFIG_ID = "<worker>"`, `CONFIG_FN_ID = "<worker>::on-config-change"`, retry/backoff constants.
 - `register_config(iii, seed)` — register `json_schema()`; install `seed` as
   `initial_value` when present, else seed `WorkerConfig::default()` only when no
-  value is stored yet (safe to call every boot).
+  value is stored yet (safe to call every boot). Always include
+  `"metadata": { "ui_form": DEFAULT_CONFIG_ID }`; `id` may be the dynamic
+  `config_id()`, while `ui_form` remains the built-in family id.
 - `fetch_config(iii)` — read the authoritative, env-expanded value
   (`NOT_FOUND` ⇒ built-in default).
 - `register_config_trigger` — register `<worker>::on-config-change` and bind a

@@ -64,7 +64,7 @@
             "type": "null"
           }
         ],
-        "description": "The filesystem jail this call runs under. Stamped by the harness on an agent's call; absent on an operator or console call, which is already user-initiated and not subject to the agent's scope."
+        "description": "Filesystem jail this call runs under; stamped by the harness on agent calls, absent on operator or console calls."
       },
       "include_images": {
         "default": false,
@@ -83,7 +83,7 @@
       },
       "pages": {
         "default": null,
-        "description": "1-indexed pages to convert. Omit for the whole document. A page filter is the cheap way to read a long report: take the pages you need rather than the whole thing truncated.",
+        "description": "1-indexed pages to convert; omit for the whole document (a page filter is the cheap way to read a long report).",
         "items": {
           "format": "uint32",
           "minimum": 0.0,

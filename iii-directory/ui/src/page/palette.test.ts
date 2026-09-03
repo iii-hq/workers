@@ -2,13 +2,10 @@ import type { Host } from '@iii-dev/console-ui'
 import { expect, it, vi } from 'vitest'
 import { registerDirectoryPalette } from './palette'
 
-it('searches skills, system prompts, and agents without command prompts', async () => {
+it('searches skills and agents without command prompts', async () => {
   const trigger = vi.fn(async (functionId: string) => {
     if (functionId === 'directory::skills::list') {
       return { skills: [{ id: 'one', title: 'One', description: '' }] }
-    }
-    if (functionId === 'directory::system-prompts::list') {
-      return { prompts: [{ name: 'two', description: '' }] }
     }
     if (functionId === 'directory::agents::list') {
       return { agents: [{ id: 'three', name: 'Three', description: '' }] }
@@ -30,5 +27,5 @@ it('searches skills, system prompts, and agents without command prompts', async 
   await expect(
     source.search('one', { signal: new AbortController().signal }),
   ).resolves.toHaveLength(1)
-  expect(trigger).not.toHaveBeenCalledWith('directory::prompts::list', {})
+  expect(trigger).not.toHaveBeenCalledWith('directory::system-prompts::list', {})
 })

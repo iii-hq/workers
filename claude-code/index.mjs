@@ -1,12 +1,9 @@
 /**
- * The entry `iii.worker.yaml` names: `scripts.start` is `node ./index.mjs`.
+ * Source-checkout bootstrap for manual `node ./index.mjs` use.
  *
- * In a published bundle that path IS the bundle (`dist/bundle/index.mjs` ships
- * as the package root), so this file never runs there. From a source checkout
- * the same command lands here, and here it builds the worker if it has not been
- * built yet and then starts it — so a supervisor that reads the manifest starts
- * this worker either way, and a `worker-compose.yaml` needs no `run` or
- * `pre_run` line of its own.
+ * A published worker starts `dist/bundle/index.mjs` directly because the
+ * release archive preserves that path. From a source checkout this bootstrap
+ * builds the worker if needed and then starts it.
  *
  * TODO(iii-mono): remove the build step below once `iii compose` honours a
  * manifest's `scripts.install` as a container's default `pre_run`. The build

@@ -10,7 +10,7 @@
     ],
     "properties": {
       "diff": {
-        "description": "Return only what changed since this session's previous snapshot instead of the full outline. Falls back to a full snapshot when there is no baseline (first snapshot, or first after a navigation).",
+        "description": "Return only what changed since the previous snapshot; a full outline when there is no baseline (first snapshot or after a navigation).",
         "default": null,
         "type": [
           "boolean",

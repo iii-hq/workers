@@ -7,31 +7,25 @@ use crate::driver::Screen;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct StartInput {
-    /// Boot a fresh desktop inside an iii-sandbox microVM from this OCI image
-    /// (a sandbox preset name or `custom_images` key) and drive it through iii
-    /// primitives alone. A fixed virtual display means 1:1
-    /// coordinates, no HiDPI or multi-monitor ambiguity. Falls back to the
-    /// configured `sandbox_image` when omitted. Takes precedence over
-    /// `endpoint`.
+    /// OCI image (sandbox preset name or `custom_images` key) for a fresh
+    /// iii-sandbox microVM desktop; overrides `endpoint`.
+    // Falls back to the configured `sandbox_image`. Fixed virtual display:
+    // 1:1 coordinates, no HiDPI or multi-monitor ambiguity.
     #[serde(default)]
     pub image: Option<String>,
-    /// Desktop to drive when not using a sandbox `image`. Omit (and leave
-    /// `image` unset) to drive the local machine this worker runs on (native
-    /// driver, nothing else to run). Pass the endpoint of a desktop guest's
-    /// executor (a `ws`/`wss`/`http`/`https` url or a bare `host:port`) to
-    /// drive a remote desktop; falls back to the configured
-    /// `default_endpoint` when omitted.
+    /// Remote desktop guest executor (`ws`/`wss`/`http`/`https` url or
+    /// `host:port`). Omit this and `image` to drive the local machine.
+    // Falls back to the configured `default_endpoint` before going native.
     #[serde(default)]
     pub endpoint: Option<String>,
-    /// Guest OS label recorded on the session and surfaced in
-    /// `session-started` (`linux`, `macos`, `windows`, `android`). Omit and
-    /// each driver labels itself: a sandbox session is `linux`, a remote one
-    /// takes the configured `os`, and a native one takes this host's OS.
+    /// Guest OS label recorded on the session: `linux`, `macos`, `windows` or
+    /// `android`. Omit to let the driver label itself.
+    // Sandbox sessions are `linux`, remote ones take the configured `os`,
+    // native ones this host's OS. Not an enum: the configured `os` is free text.
     #[serde(default)]
     pub os: Option<String>,
-    /// Display index (from `computer::displays`) for a native session. Omit to
-    /// drive the display under the cursor. Ignored for a remote `endpoint`
-    /// or a sandbox `image`.
+    /// Display index from `computer::displays` for a native session; omit for
+    /// the display under the cursor. Ignored with `endpoint` or `image`.
     #[serde(default)]
     pub monitor: Option<u32>,
 }

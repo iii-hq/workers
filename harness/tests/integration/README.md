@@ -1,7 +1,7 @@
 # Harness integration E2E
 
 Deterministic public-path regression tests for the harness. Each scenario
-boots a fresh isolated stack with the pinned engine and the real queue,
+boots a fresh isolated stack with the latest published `iii@rc` engine and the real queue,
 session-manager, context-manager, iii-directory, state, database, and harness
 workers. Only the `router::*` model boundary is replaced by a strict scripted
 worker.
@@ -50,17 +50,18 @@ compiler.
 ## Run the direct scenarios
 
 ```bash
-make -C harness integration-test III_BIN=<path-to-pinned-iii>
+make -C harness install-iii-rc
+make -C harness integration-test III_BIN="$(command -v iii)"
 
 # Select one direct scenario by id or slug.
 make -C harness integration-test \
-  III_BIN=<path-to-pinned-iii> \
+  III_BIN="$(command -v iii)" \
   INTEGRATION_SCENARIO=INT-001
 ```
 
-The engine is never downloaded by the runner. CI builds the source revision
-in `engine.lock`; local runs receive the corresponding binary through
-`III_BIN` or `--engine-bin`.
+CI downloads the latest release candidate through the official installer on
+every run; it never builds the `iii` source. Local runs receive an installed
+binary through `III_BIN` or `--engine-bin`.
 
 Exit codes are:
 
@@ -98,6 +99,7 @@ harness-integration playground \
   --worker-bin queue=<queue> \
   --worker-bin session-manager=<session-manager> \
   --worker-bin context-manager=<context-manager> \
+  --worker-bin cron=<cron> \
   --worker-bin iii-directory=<iii-directory> \
   --worker-bin state=<state> \
   --worker-bin database=<database> \
@@ -150,7 +152,7 @@ initiated Console or SDK turn and waits for shutdown after completion.
 
 - Harness readiness, completion, and trace stabilization are awakened by iii
   triggers. A bounded boot-only discovery barrier verifies the authoritative
-  function surface because the pinned engine does not replay its current
+  function surface because the engine does not replay its current
   registry to late subscribers.
 - All RPCs and event waits use bounded monotonic deadlines.
 - The observability worker captures every session trace with 100% sampling.

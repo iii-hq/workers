@@ -18,7 +18,13 @@
  * accidental tab close, and forgetting it is a high-stakes oversight.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react'
 
 export interface UnsavedGuard {
   dirty: boolean
@@ -32,7 +38,11 @@ export interface UnsavedGuard {
   tryNavigate: (action: () => void) => boolean
 }
 
-export function useUnsavedGuard(): UnsavedGuard {
+export function useUnsavedGuard({
+  guardHashNavigation = false,
+}: {
+  guardHashNavigation?: boolean
+} = {}): UnsavedGuard {
   const [dirty, setDirtyState] = useState(false)
   const dirtyRef = useRef(false)
 
@@ -53,6 +63,35 @@ export function useUnsavedGuard(): UnsavedGuard {
     action()
     return true
   }, [])
+
+  // Browser Back/Forward changes the hash outside every in-app navigation
+  // callback. Install this in a layout effect so it precedes the route hooks'
+  // passive `hashchange` listeners: cancelling restores the previous URL and
+  // stops the route update before the editor can unmount and lose its draft.
+  useLayoutEffect(() => {
+    if (!guardHashNavigation) return
+    const onHashChange = (event: HashChangeEvent) => {
+      if (!dirtyRef.current) return
+      const proceed = window.confirm(
+        'discard unsaved changes? press cancel to keep editing.',
+      )
+      if (proceed) {
+        dirtyRef.current = false
+        setDirtyState(false)
+        return
+      }
+
+      event.stopImmediatePropagation()
+      const previous = new URL(event.oldURL)
+      window.history.replaceState(
+        window.history.state,
+        '',
+        `${previous.pathname}${previous.search}${previous.hash}`,
+      )
+    }
+    window.addEventListener('hashchange', onHashChange)
+    return () => window.removeEventListener('hashchange', onHashChange)
+  }, [guardHashNavigation])
 
   // Browser-level guard: warn before tab close / reload while dirty.
   // The actual message is up to the browser (most ignore the string

@@ -1,5 +1,19 @@
 """Tests for projecting prepared deployments onto the current Registry API."""
+import pytest
+
 from build_publish_payload import build_payload
+
+
+NON_EMPTY_INTERFACE = {
+    "functions": [{
+        "name": "smoke::run",
+        "description": "Run the smoke operation",
+        "request_schema": {"type": "object"},
+        "response_schema": {"type": "object"},
+        "metadata": {},
+    }],
+    "triggers": [],
+}
 
 
 def build_binary_payload() -> dict[str, object]:
@@ -18,7 +32,8 @@ def build_binary_payload() -> dict[str, object]:
         registry_projection=projection,
         published_version="1.0.0-beta",
         repo_url="https://github.com/iii-hq/workers",
-        interface={"functions": [], "triggers": []},
+        interface=NON_EMPTY_INTERFACE,
+        interface_capture="required",
         artifacts={"kind": "rust-binary", "binaries": {"x86_64-unknown-linux-gnu": {"url": "https://example.test/smoke.tgz", "sha256": "b" * 64}}},
     )
 
@@ -49,34 +64,87 @@ def test_target_version_is_independent_from_manifest_metadata_and_has_no_implici
         registry_projection=projection,
         published_version="2.0.0-alpha",
         repo_url="https://github.com/iii-hq/workers",
-        interface={"functions": [], "triggers": []},
+        interface=NON_EMPTY_INTERFACE,
+        interface_capture="required",
         artifacts={"kind": "rust-binary", "binaries": payload["binaries"]},
     )
     assert target["version"] == "2.0.0-alpha"
     assert "tag" not in target
 
 
-def test_new_publish_target_rejects_legacy_numbered_rc() -> None:
+def test_publish_target_accepts_numbered_rc() -> None:
     projection = {
         "worker_name": "smoke", "type": "binary", "description": "smoke",
         "license": "Apache-2.0", "tags": [], "dependencies": [], "config": {},
         "experimental": False, "readme": "# Smoke\n",
     }
-    try:
+    payload = build_payload(
+        registry_projection=projection,
+        published_version="2.0.0-rc.4",
+        repo_url="https://github.com/iii-hq/workers",
+        interface=NON_EMPTY_INTERFACE,
+        interface_capture="required",
+        artifacts={
+            "kind": "rust-binary",
+            "binaries": {"x86_64-unknown-linux-gnu": {"url": "https://example.test/smoke.tgz", "sha256": "b" * 64}},
+        },
+    )
+    assert payload["version"] == "2.0.0-rc.4"
+
+
+def test_required_interface_capture_rejects_empty_registry_surface() -> None:
+    projection = {
+        "worker_name": "web", "type": "binary", "description": "web",
+        "license": "Apache-2.0", "tags": [], "dependencies": [], "config": {},
+        "experimental": False, "readme": "# Web\n",
+    }
+
+    with pytest.raises(ValueError, match="required.*function or trigger"):
         build_payload(
             registry_projection=projection,
-            published_version="2.0.0-rc.4",
+            published_version="1.2.13",
             repo_url="https://github.com/iii-hq/workers",
             interface={"functions": [], "triggers": []},
+            interface_capture="required",
             artifacts={
                 "kind": "rust-binary",
-                "binaries": {"x86_64-unknown-linux-gnu": {"url": "https://example.test/smoke.tgz", "sha256": "b" * 64}},
+                "binaries": {
+                    "x86_64-unknown-linux-gnu": {
+                        "url": "https://example.test/web.tgz",
+                        "sha256": "b" * 64,
+                    }
+                },
             },
         )
-    except ValueError as error:
-        assert "deployment target version" in str(error)
-    else:
-        raise AssertionError("legacy numbered rc target was accepted")
+
+
+@pytest.mark.parametrize("worker_name", ["acp", "lsp"])
+def test_skipped_interface_capture_allows_explicit_empty_surface(worker_name: str) -> None:
+    projection = {
+        "worker_name": worker_name, "type": "binary", "description": worker_name,
+        "license": "Apache-2.0", "tags": [], "dependencies": [], "config": {},
+        "experimental": False, "readme": f"# {worker_name}\n",
+    }
+
+    payload = build_payload(
+        registry_projection=projection,
+        published_version="1.0.0",
+        repo_url="https://github.com/iii-hq/workers",
+        interface={"functions": [], "triggers": []},
+        interface_capture="skipped",
+        artifacts={
+            "kind": "rust-binary",
+            "binaries": {
+                "x86_64-unknown-linux-gnu": {
+                    "url": f"https://example.test/{worker_name}.tgz",
+                    "sha256": "b" * 64,
+                }
+            },
+        },
+    )
+
+    assert payload["functions"] == []
+    assert payload["triggers"] == []
 
 
 def test_engine_builtins_are_not_deployment_targets() -> None:

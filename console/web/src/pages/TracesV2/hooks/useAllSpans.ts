@@ -29,16 +29,29 @@ import {
   type StoredSpan,
   type TraceSummary,
 } from '../api/traces'
+import { createRefetchCoalescer } from '../lib/refetchCoalescer'
 import { isPendingSpan, toMs } from '../lib/traceTransform'
 
 /** Forget spans that ended this long ago (strip window + wide slack). */
 const RETENTION_MS = 120_000
 /** Seed read size — bounds a busy engine's history, not the live feed. */
 const SEED_LIMIT = 500
-/** Maximum compact summaries examined to find the seed's trace IDs. */
-const SEED_TRACE_LIMIT = 500
+/**
+ * Maximum compact summaries examined to find the seed's trace IDs. The
+ * summary RPC prices by the spans it must load to aggregate, so this bounds
+ * the engine's work per reseed: 500 summaries of ~40-span turns meant ~20k
+ * spans decoded per tick — measured live under four concurrent turns at
+ * ~8s per call, the single heaviest query on the connection (MOT-4621). The
+ * strip only needs enough recent traces to fill `SEED_LIMIT` spans, which
+ * 120 covers unless every recent trace is a single span.
+ */
+const SEED_TRACE_LIMIT = 120
 /** Debounce over activity ticks before re-seeding the strip. */
 const ACTIVITY_RESEED_DEBOUNCE_MS = 300
+/** Floor between two consecutive activity-driven reseed STARTS: the seed is
+ *  two engine reads (summaries + spans), so a busy engine gets at most one
+ *  pair per second, one pair in flight (see `createRefetchCoalescer`). */
+const ACTIVITY_RESEED_MIN_INTERVAL_MS = 1_000
 /** Hard ceiling on retained spans; oldest effective-end evicted first. */
 const MAX_SPANS = 1_500
 /** Let focus/visibility churn settle before the expensive seed read. */
@@ -207,17 +220,18 @@ export function useAllSpans(isPaused: boolean): readonly StoredSpan[] {
       const client = await getIiiClient()
       if (disposed) return
       // Notify-then-query: each activity tick re-seeds the strip's recent
-      // window (REPLACE semantics, same reads as the initial seed), debounced
-      // so a burst of consecutive 300ms windows costs one read.
-      let reseedTimer: ReturnType<typeof setTimeout> | undefined
+      // window (REPLACE semantics, same reads as the initial seed). One seed
+      // in flight at a time; a tick that lands mid-seed queues one trailing
+      // reseed, so the strip always settles on the engine's latest state.
+      const reseed = createRefetchCoalescer({
+        run: () => seedRef.current(),
+        debounceMs: ACTIVITY_RESEED_DEBOUNCE_MS,
+        minIntervalMs: ACTIVITY_RESEED_MIN_INTERVAL_MS,
+        shouldRun: () => !disposed && !isPausedRef.current && !isHidden(),
+      })
       const offFeed = startTraceActivityFeed(client, () => {
         if (isPausedRef.current || isHidden()) return
-        if (reseedTimer !== undefined) return
-        reseedTimer = setTimeout(() => {
-          reseedTimer = undefined
-          if (disposed || isPausedRef.current || isHidden()) return
-          void seedRef.current()
-        }, ACTIVITY_RESEED_DEBOUNCE_MS)
+        reseed.request()
       })
       const offConn = client.addConnectionStateListener((state) => {
         if (state === 'connected' && !isPausedRef.current) {
@@ -254,10 +268,7 @@ export function useAllSpans(isPaused: boolean): readonly StoredSpan[] {
         offFeed()
         offConn()
         offVisibility?.()
-        if (reseedTimer !== undefined) {
-          clearTimeout(reseedTimer)
-          reseedTimer = undefined
-        }
+        reseed.dispose()
       }
     })()
 

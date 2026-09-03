@@ -1241,52 +1241,33 @@
    no CSS case transforms anywhere in this form. */
 [data-iii-ui="iii-directory"] .dir-ui-form {
   display: flex;
+  min-width: 0;
   flex-direction: column;
-  gap: 14px;
+  gap: 24px;
+  container-type: inline-size;
+  font-family: var(--font-sans, system-ui, sans-serif);
+  color: var(--color-ink);
 }
-[data-iii-ui="iii-directory"] .dir-ui-form-caption {
-  font-size: 11px;
-  text-transform: none;
-  letter-spacing: normal;
-  color: var(--color-ink-ghost);
-}
-[data-iii-ui="iii-directory"] .dir-ui-field {
+[data-iii-ui="iii-directory"] .dir-ui-config-label {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-[data-iii-ui="iii-directory"] .dir-ui-field > label {
-  font-size: 11px;
-  text-transform: none;
-  letter-spacing: normal;
-  color: var(--color-ink-faint);
-  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+  cursor: pointer;
 }
-[data-iii-ui="iii-directory"] .dir-ui-field .hint {
-  font-size: 11px;
-  color: var(--color-ink-ghost);
-}
-[data-iii-ui="iii-directory"] .dir-ui-field .err {
-  font-size: 11.5px;
+[data-iii-ui="iii-directory"] .dir-ui-config-error {
   color: var(--color-alert);
 }
-[data-iii-ui="iii-directory"] .dir-ui-input {
-  width: 100%;
-  border: 1px solid var(--color-rule);
-  border-radius: 6px;
-  background: var(--color-bg);
-  color: var(--color-ink);
-  padding: 0 12px;
-  height: 36px;
+[data-iii-ui="iii-directory"] .dir-ui-config-control {
+  width: min(100%, 360px);
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 13px;
+  font-variant-numeric: tabular-nums;
 }
-[data-iii-ui="iii-directory"] .dir-ui-input:focus {
-  outline: 2px solid var(--color-ring);
-  outline-offset: -1px;
+[data-iii-ui="iii-directory"] .dir-ui-config-number {
+  max-width: 180px;
 }
+/* This utility is also used by the agent-profile editor. */
 [data-iii-ui="iii-directory"] .dir-ui-checkrow {
   display: flex;
   align-items: center;
@@ -1295,25 +1276,17 @@
 [data-iii-ui="iii-directory"] .dir-ui-checkrow input {
   accent-color: var(--color-accent);
 }
-[data-iii-ui="iii-directory"] .dir-ui-checkrow label {
-  font-size: 12.5px;
-  color: var(--color-ink);
-  text-transform: none;
-  letter-spacing: normal;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
 /* The restart-required marker is the shared <Chip tone="warning"> — no
    local chip CSS; the console styles it. */
 [data-iii-ui="iii-directory"] .dir-ui-form-errors {
-  border: 1px solid var(--color-alert);
-  padding: 8px 12px;
-  font-size: 12px;
-  color: var(--color-alert);
   display: flex;
   flex-direction: column;
   gap: 4px;
+  padding: 10px 12px;
+  border-left: 2px solid var(--color-alert);
+  background: color-mix(in srgb, var(--color-alert) 8%, transparent);
+  color: var(--color-alert);
+  font: 400 12px/1.5 var(--font-sans, system-ui, sans-serif);
 }
 
 /* ── session chip: the chat header's system-prompt read-out ──────────────

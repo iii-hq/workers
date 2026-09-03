@@ -22,9 +22,14 @@
  * gets the same hairline without border bookkeeping.
  */
 
-import { X } from 'lucide-react'
+import { Settings2, X } from 'lucide-react'
 import type * as React from 'react'
+import {
+  openPaneConfiguration,
+  usePaneConfigurationId,
+} from '@/lib/pane-configuration'
 import { cn } from '@/lib/utils'
+import { IconButton } from './IconButton'
 
 export { PageSidebar, type PageSidebarProps } from './PageSidebar'
 
@@ -69,6 +74,8 @@ export function PageHeader({
   onClose,
   className,
 }: PageHeaderProps) {
+  const configurationId = usePaneConfigurationId()
+
   return (
     <header
       className={cn(
@@ -98,6 +105,16 @@ export function PageHeader({
       <div className="flex-1 min-w-0 flex items-center gap-2.5">{children}</div>
       {actions ? (
         <div className="shrink-0 flex items-center gap-1.5">{actions}</div>
+      ) : null}
+      {configurationId ? (
+        <IconButton
+          label="Configure worker"
+          tooltipSide="bottom"
+          className="max-sm:size-12"
+          onClick={() => void openPaneConfiguration(configurationId)}
+        >
+          <Settings2 aria-hidden className="size-4 shrink-0" />
+        </IconButton>
       ) : null}
       {/* No tooltip on the ✕ — a lone close glyph at a pane's corner is
           self-describing, and a box popping over the tab bar to say "close

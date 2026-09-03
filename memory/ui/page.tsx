@@ -14,10 +14,9 @@
  *   `memory::bank-changed` (poll fallback while the bindings are
  *   unavailable).
  *
- * No config-form override: memory's configuration is a flat list of typed
- * scalars, which the console's schema-generated form already renders from
- * the JSON Schema the worker registers. No function-trigger renderer:
- * memory ships no custom chat cards.
+ * The page declares its configuration id so the Console adds the standard
+ * settings action. Its purpose-built form ships with the Console's shared
+ * configuration-form asset. Memory ships no custom chat cards.
  *
  * Registrations go through `host` so the loader disposes them on hot
  * reload / worker disconnect.
@@ -31,6 +30,7 @@ export default function setup(host: Host) {
   host.pages.register({
     id: 'memory',
     title: 'memory',
+    configurationId: 'memory',
     render: (props) => <MemoryPage host={host} {...props} />,
   })
   registerMemoryPalette(host)

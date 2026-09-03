@@ -103,25 +103,10 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             async move { start::handle(&d, req).await.map_err(Error::from) }
         })
         .description(
-            "Launch a declarative multi-agent DAG (fan-out + barrier/join, durable & \
-             crash-resumable) and return its run_id immediately. Use this to ORCHESTRATE \
-             MULTIPLE distinct agents whose pipeline you can draw up front. Do NOT use it for \
-             work you can finish in the current turn: if you already hold the inputs you need \
-             (e.g. you were handed results to synthesize), produce the answer DIRECTLY — never \
-             wrap a single reasoning step in a one-node workflow. For a genuine pipeline it runs \
-             for as long as it needs without blocking the caller. PREFER `notify` (a function_id \
-             pushed {run_id, status, result, result_error} once the run is terminal) over polling: \
-             each workflow::status call costs one of your turns and a poll loop can exhaust your \
-             turn budget. Use workflow::status only for the occasional check, not a tight loop. \
-             Request shape: \
-             `{\"definition\":{\"version\":1,\"nodes\":{\"<id>\":{\"agent\":{\"model\":\"<id from \
-             router::models::list>\"},\"input\":{\"from\":\"run_input\"}}},\"output\":{\"from\":\"node:<id>\"}},\
-             \"notify\":{\"function_id\":\"...\"},\"reply_to\":{}}` — `nodes` is an OBJECT \
-             keyed by node id (NOT an array); each node is `{agent, input, depends_on?, fanout?}`. To get \
-             the result: set `reply_to:{}` (or notify) \
-             and then END YOUR TURN — do NOT claim a result was delivered or produce one this turn, it \
-             arrives as a separate message when the run finishes. Never poll workflow::status in a loop. \
-             Full field docs are inline in this function's request schema.",
+            "Launch a declarative multi-agent DAG (fan-out, barrier/join, durable and \
+             crash-resumable) and return its run_id immediately. To get the result set \
+             `reply_to: {}` (or `notify`) and END YOUR TURN — it arrives as a separate message \
+             when the run finishes; never poll workflow::status in a loop.",
         ),
     );
 
@@ -142,11 +127,10 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             async move { status::handle(&d, req).await.map_err(Error::from) }
         })
         .description(
-            "Return the current status of a workflow run (state per node, plus node_errors / \
-             node_results / result / result_error), or null if not found. A single check is \
-             cheap, but each call costs one of your turns — do NOT poll in a loop waiting for a \
-             long run to finish, that exhausts your turn budget. To be pushed the outcome when \
-             the run reaches a terminal state, pass `notify` to workflow::start instead.",
+            "Return a snapshot of a workflow run (status, per-node state, node_errors, \
+             node_results, result, result_error), or null if not found. Each call costs a turn: \
+             do not poll in a loop; pass `reply_to`/`notify` to workflow::start to be pushed the \
+             outcome.",
         ),
     );
 
@@ -158,11 +142,9 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             async move { node_result::handle(&d, req).await.map_err(Error::from) }
         })
         .description(
-            "Fetch the stored JSON result of a single node by its uid — the `node_uid` arg \
-             (alias `uid`): a node_id, or '{node_id}#{i}' for a fanned-out item. Use it to \
-             recover partial outputs after a run fails partway: workflow::status lists the uids \
-             that have a result under `node_results`. Returns {result: null} if the node has not \
-             completed or has no stored result.",
+            "Fetch the stored JSON result of one node: `node_uid` is the node id, or \
+             '{node_id}#{i}' for a fanout item (workflow::status lists them under \
+             `node_results`). Returns {result: null} when nothing is stored.",
         ),
     );
     let d = deps.clone();
@@ -200,10 +182,8 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
         })
         .description(
             "Internal pre_trigger hook on workflow::start: stamps the caller's session (and, \
-             when the call sets `reply_to`, the caller's model/provider/policy) into the \
-             arguments so the run nests under the orchestrator and can deliver its outcome. \
-             Always continues — never blocks the call. Bound to harness::hook::pre-trigger; \
-             not called directly.",
+             for `reply_to`, model/provider/policy) into the arguments. Always continues; not \
+             called directly.",
         ),
     );
 

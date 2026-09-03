@@ -21,6 +21,7 @@ export default function setup(host: Host) {
   host.pages.register({
     id: 'pdf-reader',
     title: 'pdf',
+    configurationId: 'pdf',
     render: (props) => <PdfPage host={host} {...props} />,
   })
 

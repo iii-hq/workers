@@ -1,15 +1,14 @@
 /**
  * Custom configuration form for the `iii-directory` configuration entry —
  * registered through `host.configForms`, replacing the console's generic
- * schema-driven form for this worker only.
+ * configuration surface with a worker-owned interface.
  *
  * The form edits the working draft via `onChange`; dirty tracking,
  * save/reset, and error mapping stay host-owned (the console's SaveBar
  * below the form drives `configuration::set`). Mirrors SkillsConfig
  * (workers/iii-directory/src/config.rs): skills_folder,
- * local_skills_folder, agents_folder, agents_skills_folder, registry_url,
- * download_timeout_ms, registry_cache_ttl_ms, filter_unregistered,
- * auto_download, inject_hint, hint_min_workers, registry_search.
+ * local_skills_folder, agent profile/skill roots, registry_url, timeouts,
+ * filtering, auto-download, search hints, and registry search.
  */
 
 import {
@@ -17,8 +16,13 @@ import {
   type ConfigFormProps,
   Input,
   type JsonValue,
+  SettingsList,
+  SettingsRow,
+  SettingsSection,
+  Switch,
 } from '@iii-dev/console-ui'
 import { useEffect, useRef } from 'react'
+import { booleanWithDefault } from './model'
 
 type JsonObject = { [key: string]: JsonValue }
 
@@ -40,8 +44,28 @@ const TOPOLOGY_FIELDS = new Set([
   'auto_download',
 ])
 
+const INLINE_ERROR_POINTERS = new Set([
+  '/skills_folder',
+  '/local_skills_folder',
+  '/agents_folder',
+  '/global_agents_folder',
+  '/agents_skills_folder',
+  '/global_agents_skills_folder',
+  '/registry_url',
+  '/download_timeout_ms',
+  '/registry_cache_ttl_ms',
+  '/filter_unregistered',
+  '/auto_download',
+  '/inject_hint',
+  '/hint_min_workers',
+  '/registry_search',
+])
+
 export function DirectoryConfigForm(props: ConfigFormProps) {
   const value = asObject(props.value)
+  const unassociatedErrors = [...(props.errors?.entries() ?? [])].filter(
+    ([pointer]) => !INLINE_ERROR_POINTERS.has(pointer),
+  )
 
   const commit = (next: JsonObject) => props.onChange(next)
 
@@ -63,145 +87,185 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
     commit({ ...value, [field]: checked })
   }
 
-  // Deep-link focus: the host's own scroll+focus targets schema-form DOM
-  // ids, so a custom form honors `focusField` itself.
+  // Each explicit form owns the field markup, so it also honors deep-link
+  // focus requests from global Settings.
   const rootRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
     const field = props.focusField?.[0]
     if (!field || !rootRef.current) return
-    const target = rootRef.current.querySelector<HTMLElement>(
-      `[data-field="${field}"]`,
-    )
-    target?.focus()
+    const target = rootRef.current.querySelector<HTMLElement>(`[data-field="${CSS.escape(field)}"]`)
     target?.scrollIntoView({ block: 'center' })
+    const focusable = target?.matches('input, button, [tabindex]')
+      ? target
+      : target?.querySelector<HTMLElement>('input, button, [tabindex]')
+    focusable?.focus()
   }, [props.focusField])
 
   return (
     <div className="dir-ui-form" ref={rootRef}>
-      <span className="dir-ui-form-caption">
-        Custom form · Shipped by the iii-directory worker
-      </span>
+      <SettingsSection
+        title="Content locations"
+        description="Choose the project and user-level folders scanned for skills and reusable agent profiles."
+      >
+        <SettingsList>
+          <TextField
+            field="skills_folder"
+            label="Skills folder"
+            placeholder="skills"
+            hint="Global root scanned by every read and used for downloads. Paths may be absolute, start with ~/, or be relative to III_COMPOSE_DIR."
+            value={asString(value.skills_folder)}
+            onChange={setString}
+            errors={props.errors}
+          />
+          <TextField
+            field="local_skills_folder"
+            label="Local skills folder"
+            placeholder="skills/iii"
+            hint="Project-scoped overrides relative to III_COMPOSE_DIR. A namespace here takes precedence over the global folder."
+            value={asString(value.local_skills_folder)}
+            onChange={setString}
+            errors={props.errors}
+          />
+          <TextField
+            field="agents_folder"
+            label="Agent profiles folder"
+            placeholder="agents"
+            hint="Read-write root for reusable agent profile Markdown files."
+            value={asString(value.agents_folder)}
+            onChange={setString}
+            errors={props.errors}
+          />
+          <TextField
+            field="global_agents_folder"
+            label="Global agent profiles folder"
+            placeholder="~/.iii/agents"
+            hint="User-level profiles shared by every project. A project profile with the same ID takes precedence."
+            value={asString(value.global_agents_folder)}
+            onChange={setString}
+            errors={props.errors}
+          />
+          <TextField
+            field="agents_skills_folder"
+            label="External agent skills folder"
+            placeholder=".agents/skills"
+            hint="Project-level, read-only skills scanned as <skill>/SKILL.md relative to III_COMPOSE_DIR."
+            value={asString(value.agents_skills_folder)}
+            onChange={setString}
+            errors={props.errors}
+          />
+          <TextField
+            field="global_agents_skills_folder"
+            label="Global external agent skills folder"
+            placeholder="~/.agents/skills"
+            hint="User-level, read-only skills shared by every project. Project and iii skill roots take precedence."
+            value={asString(value.global_agents_skills_folder)}
+            onChange={setString}
+            errors={props.errors}
+          />
+        </SettingsList>
+      </SettingsSection>
 
-      <TextField
-        field="skills_folder"
-        label="Skills folder"
-        placeholder="skills"
-        hint="Global root every read scans and downloads write into — absolute, ~-prefixed, or relative to III_COMPOSE_DIR (process cwd when standalone)"
-        value={asString(value.skills_folder)}
-        onChange={setString}
-        errors={props.errors}
-      />
+      <SettingsSection
+        title="Worker registry"
+        description="Configure downloads, registry requests, and cached responses."
+      >
+        <SettingsList>
+          <TextField
+            field="registry_url"
+            label="Registry URL"
+            placeholder="https://api.workers.iii.dev"
+            hint="Registry used by download and proxy functions."
+            value={asString(value.registry_url)}
+            onChange={setString}
+            errors={props.errors}
+          />
+          <NumberField
+            field="download_timeout_ms"
+            label="Download timeout (ms)"
+            placeholder="60000"
+            hint="Applies to each HTTP request or git clone and to registry proxy requests."
+            value={value.download_timeout_ms}
+            onChange={setNumber}
+            errors={props.errors}
+          />
+          <NumberField
+            field="registry_cache_ttl_ms"
+            label="Registry cache TTL (ms)"
+            placeholder="60000"
+            hint="How long registry list and info responses stay cached in process. Set to 0 to disable caching."
+            value={value.registry_cache_ttl_ms}
+            onChange={setNumber}
+            errors={props.errors}
+          />
+          <CheckField
+            field="registry_search"
+            label="Include installable workers"
+            hint="Search the public registry and include matches from verified authors under installable results."
+            checked={booleanWithDefault(value.registry_search, true)}
+            onChange={setBool}
+            errors={props.errors}
+          />
+        </SettingsList>
+      </SettingsSection>
 
-      <TextField
-        field="local_skills_folder"
-        label="Local skills folder"
-        placeholder="skills/iii"
-        hint="Project-scoped overrides relative to III_COMPOSE_DIR (process cwd when standalone) — a namespace here shadows the global folder"
-        value={asString(value.local_skills_folder)}
-        onChange={setString}
-        errors={props.errors}
-      />
+      <SettingsSection
+        title="Skill availability"
+        description="Control which installed content is visible and how new workers acquire their skills."
+      >
+        <SettingsList>
+          <CheckField
+            field="filter_unregistered"
+            label="Hide skills from uninstalled workers"
+            hint="Show only namespaces that match a registered worker. Turn this off to include everything on disk."
+            checked={booleanWithDefault(value.filter_unregistered, true)}
+            onChange={setBool}
+            errors={props.errors}
+          />
+          <CheckField
+            field="auto_download"
+            label="Download skills when workers are added"
+            hint="Subscribe to worker additions and reconcile missing skill bundles at startup."
+            checked={booleanWithDefault(value.auto_download, true)}
+            onChange={setBool}
+            errors={props.errors}
+          />
+        </SettingsList>
+      </SettingsSection>
 
-      <TextField
-        field="agents_folder"
-        label="Agent profiles folder"
-        placeholder="agents"
-        hint="Read-write root for reusable agent profile Markdown files — absolute, ~-prefixed, or relative to III_COMPOSE_DIR"
-        value={asString(value.agents_folder)}
-        onChange={setString}
-        errors={props.errors}
-      />
-
-      <TextField
-        field="agents_skills_folder"
-        label="External agent skills folder"
-        placeholder=".agents/skills"
-        hint="Read-only root relative to III_COMPOSE_DIR (process cwd when standalone), scanned shallowly as <skill>/SKILL.md"
-        value={asString(value.agents_skills_folder)}
-        onChange={setString}
-        errors={props.errors}
-      />
-
-      <TextField
-        field="registry_url"
-        label="Registry URL"
-        placeholder="https://api.workers.iii.dev"
-        hint="Workers registry the download + registry proxy functions call"
-        value={asString(value.registry_url)}
-        onChange={setString}
-        errors={props.errors}
-      />
-
-      <NumberField
-        field="download_timeout_ms"
-        label="Download timeout (ms)"
-        placeholder="60000"
-        hint="Per download operation (HTTP request or git clone); also the registry proxy request timeout"
-        value={value.download_timeout_ms}
-        onChange={setNumber}
-        errors={props.errors}
-      />
-
-      <NumberField
-        field="registry_cache_ttl_ms"
-        label="Registry cache TTL (ms)"
-        placeholder="60000"
-        hint="How long registry list/info responses are cached in-process; 0 disables caching"
-        value={value.registry_cache_ttl_ms}
-        onChange={setNumber}
-        errors={props.errors}
-      />
-
-      <CheckField
-        field="filter_unregistered"
-        label="Hide skills of uninstalled workers"
-        hint="Reads only show namespaces matching a registered worker; off = everything on disk"
-        checked={value.filter_unregistered !== false}
-        onChange={setBool}
-        errors={props.errors}
-      />
-
-      <CheckField
-        field="auto_download"
-        label="Auto-download skills on worker add"
-        hint="Subscribes to worker add events and reconciles missing bundles at boot"
-        checked={value.auto_download !== false}
-        onChange={setBool}
-        errors={props.errors}
-      />
-
-      <CheckField
-        field="inject_hint"
-        label="Inject the search hint"
-        hint="Binds the directory::pre-generate hook; off unbinds it entirely and the model only finds search_functions through normal discovery"
-        checked={value.inject_hint !== false}
-        onChange={setBool}
-        errors={props.errors}
-      />
-
-      <NumberField
-        field="hint_min_workers"
-        label="Hint minimum surface (workers)"
-        placeholder="2"
-        hint="The hint only fires when the session exposes at least this many distinct non-engine workers; 0 hints on every surface"
-        value={value.hint_min_workers}
-        onChange={setNumber}
-        errors={props.errors}
-      />
-
-      <CheckField
-        field="registry_search"
-        label="Include installable registry workers"
-        hint="Every search also consults the public registry (verified authors only) and lists NOT-installed matches under `installable`"
-        checked={value.registry_search !== false}
-        onChange={setBool}
-        errors={props.errors}
-      />
+      <SettingsSection
+        title="Search guidance"
+        description="Decide when the model receives a hint about directory search."
+      >
+        <SettingsList>
+          <CheckField
+            field="inject_hint"
+            label="Inject the search hint"
+            hint="Bind the directory::pre-generate hook. When off, the model finds search_functions only through normal discovery."
+            checked={booleanWithDefault(value.inject_hint, false)}
+            onChange={setBool}
+            errors={props.errors}
+          />
+          <NumberField
+            field="hint_min_workers"
+            label="Minimum worker surface"
+            placeholder="2"
+            hint="Inject the hint only when the session exposes at least this many distinct non-engine workers. Set to 0 to hint on every surface."
+            value={value.hint_min_workers}
+            onChange={setNumber}
+            errors={props.errors}
+          />
+        </SettingsList>
+      </SettingsSection>
 
       {props.errors && props.errors.size > 0 ? (
-        <div className="dir-ui-form-errors">
-          {[...props.errors.entries()].map(([pointer, message]) => (
-            <div key={pointer}>
+        <div className="dir-ui-form-errors" role="alert">
+          <div>
+            {props.errors.size === 1
+              ? 'There is 1 configuration error. Review the highlighted setting.'
+              : `There are ${props.errors.size} configuration errors. Review the highlighted settings.`}
+          </div>
+          {unassociatedErrors.map(([pointer, message]) => (
+            <div key={pointer || message}>
               {pointer ? `${pointer}: ` : ''}
               {message}
             </div>
@@ -212,33 +276,40 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
   )
 }
 
-function FieldShell({
-  field,
-  label,
-  hint,
-  errors,
-  children,
-}: {
-  field: string
-  label: React.ReactNode
-  hint?: string
-  errors?: ConfigFormProps['errors']
-  children: React.ReactNode
-}) {
-  const error = errors?.get(`/${field}`)
+function describedBy(...ids: Array<string | undefined>): string | undefined {
+  const value = ids.filter(Boolean).join(' ')
+  return value || undefined
+}
+
+function FieldLabel({ field, htmlFor, label }: { field: string; htmlFor: string; label: React.ReactNode }) {
   return (
-    <div className="dir-ui-field">
-      <label htmlFor={`dir-cfg-${field}`}>
-        {label}
-        {TOPOLOGY_FIELDS.has(field) ? (
-          <Chip tone="warning">Restart required</Chip>
-        ) : null}
-      </label>
-      {children}
-      {error ? <span className="err">{error}</span> : null}
-      {hint ? <span className="hint">{hint}</span> : null}
-    </div>
+    <label className="dir-ui-config-label" htmlFor={htmlFor}>
+      {label}
+      {TOPOLOGY_FIELDS.has(field) ? <Chip tone="warning">Restart required</Chip> : null}
+    </label>
   )
+}
+
+function fieldError(field: string, errors: ConfigFormProps['errors']) {
+  return errors?.get(`/${field}`)
+}
+
+function fieldPresentation(field: string, hint: string | undefined, errors: ConfigFormProps['errors']) {
+  const id = `dir-cfg-${field}`
+  const descriptionId = hint ? `${id}-description` : undefined
+  const error = fieldError(field, errors)
+  const errorId = error ? `${id}-error` : undefined
+  return {
+    id,
+    description: hint ? <span id={descriptionId}>{hint}</span> : undefined,
+    meta: error ? (
+      <span className="dir-ui-config-error" id={errorId}>
+        {error}
+      </span>
+    ) : undefined,
+    describedBy: describedBy(descriptionId, errorId),
+    invalid: Boolean(error),
+  }
 }
 
 function TextField({
@@ -258,20 +329,29 @@ function TextField({
   onChange: (field: string, raw: string) => void
   errors?: ConfigFormProps['errors']
 }) {
+  const presentation = fieldPresentation(field, hint, errors)
   return (
-    <FieldShell field={field} label={label} hint={hint} errors={errors}>
-      <Input
-        id={`dir-cfg-${field}`}
-        name={field}
-        data-field={field}
-        className="dir-ui-input"
-        value={value}
-        placeholder={placeholder}
-        spellCheck={false}
-        autoComplete="off"
-        onChange={(next) => onChange(field, next)}
-      />
-    </FieldShell>
+    <SettingsRow
+      data-field={field}
+      label={<FieldLabel field={field} htmlFor={presentation.id} label={label} />}
+      description={presentation.description}
+      meta={presentation.meta}
+      control={
+        <Input
+          id={presentation.id}
+          name={field}
+          className="dir-ui-config-control"
+          value={value}
+          placeholder={placeholder}
+          spellCheck={false}
+          autoComplete="off"
+          aria-label={label}
+          aria-invalid={presentation.invalid || undefined}
+          aria-describedby={presentation.describedBy}
+          onChange={(next) => onChange(field, next)}
+        />
+      }
+    />
   )
 }
 
@@ -292,21 +372,30 @@ function NumberField({
   onChange: (field: string, raw: string) => void
   errors?: ConfigFormProps['errors']
 }) {
+  const presentation = fieldPresentation(field, hint, errors)
   return (
-    <FieldShell field={field} label={label} hint={hint} errors={errors}>
-      <Input
-        id={`dir-cfg-${field}`}
-        name={field}
-        data-field={field}
-        className="dir-ui-input"
-        type="number"
-        min={0}
-        inputMode="numeric"
-        value={typeof value === 'number' ? String(value) : ''}
-        placeholder={placeholder}
-        onChange={(next) => onChange(field, next)}
-      />
-    </FieldShell>
+    <SettingsRow
+      data-field={field}
+      label={<FieldLabel field={field} htmlFor={presentation.id} label={label} />}
+      description={presentation.description}
+      meta={presentation.meta}
+      control={
+        <Input
+          id={presentation.id}
+          name={field}
+          className="dir-ui-config-control dir-ui-config-number"
+          type="number"
+          min={0}
+          inputMode="numeric"
+          value={typeof value === 'number' ? String(value) : ''}
+          placeholder={placeholder}
+          aria-label={label}
+          aria-invalid={presentation.invalid || undefined}
+          aria-describedby={presentation.describedBy}
+          onChange={(next) => onChange(field, next)}
+        />
+      }
+    />
   )
 }
 
@@ -325,26 +414,24 @@ function CheckField({
   onChange: (field: string, checked: boolean) => void
   errors?: ConfigFormProps['errors']
 }) {
-  const error = errors?.get(`/${field}`)
+  const presentation = fieldPresentation(field, hint, errors)
   return (
-    <div className="dir-ui-field">
-      <span className="dir-ui-checkrow">
-        <input
-          id={`dir-cfg-${field}`}
-          data-field={field}
-          type="checkbox"
+    <SettingsRow
+      data-field={field}
+      label={<FieldLabel field={field} htmlFor={presentation.id} label={label} />}
+      description={presentation.description}
+      meta={presentation.meta}
+      layout="inline"
+      control={
+        <Switch
+          id={presentation.id}
           checked={checked}
-          onChange={(e) => onChange(field, e.target.checked)}
+          aria-label={label}
+          aria-invalid={presentation.invalid || undefined}
+          aria-describedby={presentation.describedBy}
+          onChange={(event) => onChange(field, event.currentTarget.checked)}
         />
-        <label htmlFor={`dir-cfg-${field}`}>
-          {label}
-          {TOPOLOGY_FIELDS.has(field) ? (
-            <Chip tone="warning">Restart required</Chip>
-          ) : null}
-        </label>
-      </span>
-      {error ? <span className="err">{error}</span> : null}
-      {hint ? <span className="hint">{hint}</span> : null}
-    </div>
+      }
+    />
   )
 }

@@ -52,6 +52,5 @@ await build({
   logLevel: 'info',
 });
 
-// dist/ is bind-mounted empty inside libkrun. Copy next to worker-compose.yaml so
-// `compose::add` can run `node ./index.mjs` after `cp sandbox.mjs index.mjs`.
+// Keep a separate copy for the sandbox boot verification script.
 await copyFile(join(root, 'dist/bundle/index.mjs'), join(root, 'sandbox.mjs'));

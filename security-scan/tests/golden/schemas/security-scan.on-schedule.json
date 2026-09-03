@@ -3,7 +3,7 @@
   "function_id": "security-scan::on-schedule",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "Payload emitted by the iii cron trigger. Its values are observability data only; the handler resolves all scan inputs from operator configuration.",
+    "description": "Payload emitted by the iii cron trigger. Values are observability data only; scan inputs come from operator configuration.",
     "properties": {
       "actual_time": {
         "type": "string"

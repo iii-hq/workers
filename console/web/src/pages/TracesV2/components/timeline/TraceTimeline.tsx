@@ -36,7 +36,14 @@
  * panel). Selection = 2px accent ring, hover = 1px ink ring.
  */
 
-import { Fragment, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import {
+  Fragment,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { cn } from '@/lib/utils'
 import type { SpanFilterControls } from '../../lib/spanFilters'
 import { internalFamilyOf } from '../../lib/spanLabel'
@@ -92,6 +99,12 @@ export interface TraceTimelineProps {
 
 const PADDING_X = 16
 const RULER_FRACTIONS = [0, 0.25, 0.5, 0.75, 1] as const
+/** A trace with no pending span counts as SETTLED only after this long: a
+ *  running turn has nothing pending for a few milliseconds between two
+ *  engine calls, and shrinking the stage on that gap is the very jump the
+ *  grow-only rule below exists to prevent. */
+const SETTLE_MS = 3_000
+
 /** height of the sticky time ruler row inside the scrollport (h-5) */
 const RULER_H = 20
 /** vertical rhythm of the stacked lines */
@@ -548,6 +561,34 @@ export function TraceTimeline({
   // fitContent: ruler + packed lines, plus room for a classic (non-overlay)
   // horizontal scrollbar so it can't clip the bottom line
   const fitHeight = contentHeight + RULER_H + (scrollableX ? 14 : 0)
+  // On a LIVE trace the stage only grows. Every silent reload and every
+  // one-second live rebuild re-packs the lines, and a pending bar growing
+  // into a neighbour, a closed one settling, or the horizontal scrollbar
+  // coming and going moved the stage by a line (22px) or a scrollbar
+  // (14px) every second or two — with the detail open under its row
+  // (follow mode) everything below jumped along (MOT-4621). Once the trace
+  // has been quiet for `SETTLE_MS` the exact height applies again, so a
+  // finished trace never keeps stale room.
+  const live = detail.spans.some((s) => s.status === 'pending')
+  const [settled, setSettled] = useState(!live)
+  useEffect(() => {
+    if (live) {
+      setSettled(false)
+      return
+    }
+    const timer = setTimeout(() => setSettled(true), SETTLE_MS)
+    return () => clearTimeout(timer)
+  }, [live])
+  const stickyFitRef = useRef(0)
+  const stageHeight = useMemo(() => {
+    if (settled) {
+      stickyFitRef.current = 0
+      return fitHeight
+    }
+    const grown = Math.max(fitHeight, stickyFitRef.current)
+    stickyFitRef.current = grown
+    return grown
+  }, [settled, fitHeight])
 
   const trackHover = (id: string) => (e: React.MouseEvent) => {
     if (dragRef.current?.active) return
@@ -634,7 +675,7 @@ export function TraceTimeline({
           'relative min-h-0',
           fitContent ? 'min-h-[120px] max-h-[60dvh]' : 'flex-1',
         )}
-        style={fitContent ? { height: fitHeight } : undefined}
+        style={fitContent ? { height: stageHeight } : undefined}
       >
         {/* filter menu, floating over the canvas below the ruler row:
             funnel expands on hover into the workers + span-group lists

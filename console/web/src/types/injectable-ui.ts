@@ -217,6 +217,12 @@ export interface PageRegistration {
   id: string
   /** Nav label. */
   title: string
+  /**
+   * Configuration entry owned by this page. When present, the Console adds
+   * the standard configure action to PageHeader and routes it to the global
+   * settings modal. Pages must not render a second configuration button.
+   */
+  configurationId?: string
   /** The page body (right pane). Receives `PageRenderProps` — a plain
       `() => <Page />` render stays valid and simply ignores them. */
   render: React.ComponentType<PageRenderProps>
@@ -346,18 +352,17 @@ export type JsonValue =
   | { [key: string]: JsonValue }
 
 /**
- * Props for a configuration-form override (the `configForms` slot). The
- * override replaces the FORM REGION inside the workers-tab editor — dialog
- * chrome, dirty tracking, save/reset, and error mapping stay host-owned,
- * so an override cannot break persistence.
+ * Props for a configuration form (the `configForms` slot). Every configurable
+ * worker has a deliberate interface inside global Settings. The schema
+ * validates drafts but does not generate UI; modal chrome, dirty tracking,
+ * save/reset, and error mapping stay host-owned.
  */
 export interface ConfigFormProps {
   /** Configuration id, e.g. `state`. */
   id: string
   /**
-   * Deliberately wider than the structural form's schema: `null` means the
-   * worker registered a configuration value but no JSON schema — the one
-   * branch the built-in form cannot render at all.
+   * `null` means the worker registered a configuration value without a JSON
+   * Schema. Forms must still provide a usable interface for that value.
    */
   schema: Record<string, unknown> | null
   value: JsonValue
@@ -366,9 +371,8 @@ export interface ConfigFormProps {
   errors?: ReadonlyMap<string, string>
   /**
    * Deep-link focus request: the decoded fieldPath segments from
-   * `#/workers/configuration/<id>/<fieldPath>`. The host's own scroll+focus
-   * effect targets schema-form DOM ids only, so honoring this is the
-   * override's job. Absent when the editor wasn't opened via a field link.
+   * `#/configuration/workers/<id>/<fieldPath>`. Honoring it is the form's
+   * responsibility. Absent when the editor was not opened via a field link.
    */
   focusField?: readonly string[]
 }

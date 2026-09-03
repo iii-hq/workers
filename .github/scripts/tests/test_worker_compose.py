@@ -3,6 +3,7 @@ from pathlib import Path
 import yaml
 
 import _lib
+import deployment_targets
 import discover_changed_workers
 import validate_worker
 
@@ -61,8 +62,8 @@ def test_rust_frontends_are_explicit_workspace_locked_builds():
         for worker in document["workers"].values()
         for frontend in worker["artifact"].get("frontends", [])
     ]
-    assert sum(bool(worker["artifact"].get("frontends")) for worker in document["workers"].values()) == 39
-    assert len(frontends) == 42
+    assert sum(bool(worker["artifact"].get("frontends")) for worker in document["workers"].values()) == 40
+    assert len(frontends) == 43
     for frontend in frontends:
         assert set(frontend) == {
             "workspace_root", "source_path", "runtime", "package_manager", "lockfile",
@@ -100,7 +101,41 @@ def test_release_toolchains_and_bundle_locks_are_explicit():
         else:
             assert artifact["runtime"] == {"name": "python", "version": "3.12.3"}
             assert artifact["package_manager"] == {"name": "uv", "version": "0.12.5"}
-    assert bundles == 16
+    assert bundles == 15
+
+
+def test_claude_code_release_installs_its_shared_ui_workspace():
+    document = yaml.safe_load(CATALOG.read_text(encoding="utf-8"))
+    artifact = document["workers"]["claude-code"]["artifact"]
+    workspace = yaml.safe_load(
+        (ROOT / "claude-code" / "pnpm-workspace.yaml").read_text(encoding="utf-8")
+    )
+
+    assert artifact["workspace_root"] == "claude-code"
+    assert artifact["install_command"] == ["pnpm", "install", "--frozen-lockfile"]
+    assert set(workspace["packages"]) == {
+        ".",
+        "ui",
+        "../packages/agent-terminal-ui",
+        "../packages/console-ui",
+        "../packages/terminal-font",
+    }
+
+
+def test_worker_bundle_start_commands_target_packaged_entrypoints():
+    document = yaml.safe_load(CATALOG.read_text(encoding="utf-8"))
+
+    for worker_id in ("claude-code", "opencode", "opengantry", "openwiki"):
+        worker = document["workers"][worker_id]
+        manifest = yaml.safe_load(
+            (ROOT / worker["source"]["path"] / "iii.worker.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        start = manifest["scripts"]["start"]
+
+        assert start.startswith("node ./"), worker_id
+        assert start.removeprefix("node ./") in worker["artifact"]["include"], worker_id
 
 
 def test_scrapling_release_bundle_vendors_dependencies():
@@ -108,3 +143,41 @@ def test_scrapling_release_bundle_vendors_dependencies():
     scrapling = document["workers"]["scrapling"]
     assert "dist/site-packages.tar.gz" in scrapling["artifact"]["include"]
     assert scrapling["artifact"]["install_command"][-1] == "--no-install-project"
+
+
+def test_every_rust_worker_ships_windows_or_justifies_its_absence():
+    """Windows must never be lost by silent omission again.
+
+    The deployment cutover dropped all three msvc triples from the catalog
+    without anyone declaring it, and the loss only surfaced when `latest`
+    stayed pinned to a pre-cutover version. A worker now either builds the
+    full Windows matrix or says in writing why it cannot.
+    """
+    document = yaml.safe_load(CATALOG.read_text(encoding="utf-8"))
+    windows = set(deployment_targets.WINDOWS_TARGETS)
+    without_windows = set()
+    for slug, entry in document["workers"].items():
+        artifact = entry["artifact"]
+        if artifact["kind"] != "rust-binary":
+            continue
+        declared = windows.intersection(artifact["targets"])
+        exception = artifact.get("windows_exception")
+        if declared:
+            assert declared == windows, f"{slug}: partial Windows matrix {sorted(declared)}"
+            assert not exception, f"{slug}: declares Windows targets and an exception"
+        else:
+            assert isinstance(exception, str) and exception.strip(), f"{slug}: silent Windows omission"
+            without_windows.add(slug)
+    # Audited against the Registry: every other worker published msvc binaries
+    # before the cutover, so anything joining this set is a regression.
+    assert without_windows == {
+        "acp",
+        "compose-ui",
+        "code-runner",
+        "context-manager",
+        "editor",
+        "lsp",
+        "sandbox-code-runner",
+        "shell",
+        "workflow",
+    }

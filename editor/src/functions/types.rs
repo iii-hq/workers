@@ -15,9 +15,8 @@ use crate::workspace::Buffer;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WorkspaceOpenInput {
-    /// Directory to work in. Jail-relative when shell's `fs.host_roots` are
-    /// set, else absolute. A plain folder is enough — a git repository is an
-    /// overlay, never a requirement.
+    /// Directory to work in: jail-relative when shell's `fs.host_roots` are
+    /// set, else absolute. Need not be a git repository.
     pub root: String,
 }
 
@@ -235,8 +234,7 @@ pub struct TreeInput {
     #[serde(default)]
     pub max_depth: Option<u32>,
     /// Root-relative folders to mark expanded before listing. Expansion is
-    /// part of the shared workspace, so it survives a reload and both surfaces
-    /// agree on it.
+    /// shared workspace state, so it survives a reload.
     #[serde(default)]
     pub expand: Vec<String>,
     /// Root-relative folders to collapse. Collapsing takes its descendants
@@ -343,9 +341,8 @@ pub enum Against {
     Index,
     /// Everything since the last commit: working tree vs HEAD.
     Head,
-    /// Everything not yet pushed: working tree vs the branch's upstream
-    /// (`@{upstream}`). Fails when the branch has no upstream configured,
-    /// which is a real answer rather than an error to swallow.
+    /// Everything not yet pushed: working tree vs `@{upstream}`. Fails when
+    /// the branch has no upstream configured.
     Upstream,
 }
 
@@ -370,10 +367,8 @@ pub struct GitHunksInput {
     /// Which comparison to make. Defaults to `worktree`.
     #[serde(default)]
     pub against: Against,
-    /// Unchanged lines kept around each hunk in `patch`. Defaults to 0, which
-    /// keeps `hunks` exactly the lines that changed — the ranges a gutter
-    /// paints. Pass 3 or so for a patch a person will read, and note that the
-    /// reported ranges widen to include the context you asked for.
+    /// Context lines around each hunk. Default 0 keeps `hunks` to exactly the
+    /// changed lines; a non-zero value widens the reported ranges too.
     #[serde(default)]
     pub context_lines: Option<u32>,
 }
@@ -607,17 +602,15 @@ mod request_tests {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct FindInput {
-    /// Fuzzy query. Matched as a subsequence against every tracked path, with
-    /// basename and word-boundary hits ranked highest. Empty returns the first
-    /// `limit` paths unranked.
+    /// Fuzzy subsequence query over candidate paths; basename and
+    /// word-boundary hits rank highest. Empty returns the first `limit` paths
+    /// unranked.
     pub query: String,
     /// Rows to return. Defaults to the worker's `find_limit`.
     #[serde(default)]
     pub limit: Option<u32>,
-    /// Include files git does not track yet (still honouring `.gitignore`).
-    /// On by default — a file the agent just created is exactly the one you
-    /// are looking for. Ignored outside a repository, where the workspace
-    /// listing is the source of candidates.
+    /// Include files git does not track yet, still honouring `.gitignore`.
+    /// Ignored outside a repository.
     #[serde(default = "default_true")]
     pub include_untracked: bool,
 }
@@ -690,26 +683,19 @@ pub struct SaveInput {
     pub path: String,
     /// Full new contents. This is a whole-file write, not a patch.
     pub content: String,
-    /// The `mtime` from the `editor::open` this edit started from. When it no
-    /// longer matches the file on disk, the write is refused and the
-    /// divergence comes back as a patch. Omit only when deliberately
-    /// overwriting whatever is there.
-    ///
-    /// Resolution is one second, which is all the filesystem reports. Two
-    /// writes inside the same second are therefore indistinguishable to this
-    /// field, and the second one wins silently — send `expected_version`
-    /// instead to close that window.
+    /// `mtime` from the `editor::open` this edit started from (1s resolution).
+    /// A mismatch refuses the write and returns the divergence as a patch.
+    // Two writes inside the same filesystem second are indistinguishable here
+    // and the second wins silently; `expected_version` closes that window.
+    // Omit both guards only to deliberately overwrite whatever is there.
     #[serde(default)]
     pub expected_mtime: Option<i64>,
-    /// The `version` from the `editor::open` — or from the previous
-    /// `editor::save` — this edit started from. It is a version of the
-    /// *content*, so it catches a write that landed inside the same filesystem
-    /// second and it does not care whether a clock or a checkout moved the
-    /// mtime.
-    ///
-    /// When this is present it is the guard and `expected_mtime` is ignored.
-    /// When it is absent the `expected_mtime` comparison applies exactly as
-    /// before, so a caller that has never heard of a version is unaffected.
+    /// `version` from the `editor::open` or `editor::save` this edit started
+    /// from. When present it is the guard and `expected_mtime` is ignored.
+    // A version of the *content*: catches a write inside the same filesystem
+    // second and ignores a clock or checkout moving the mtime. Absent, the
+    // `expected_mtime` comparison applies as before, so version-unaware
+    // callers are unaffected.
     #[serde(default)]
     pub expected_version: Option<String>,
 }

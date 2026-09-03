@@ -33,36 +33,30 @@ use crate::util::{when, WhenOp};
 
 pub const CONDITION_ID: &str = "fp::condition";
 pub const CONDITION_DESC: &str =
-    "Trigger-binding guard: compare a JSON pointer inside the fired event and answer the \
-     condition contract ({ decision: \"allow\" | \"skip\", reason }). Config is \
-     { path?, op, to?, negate? } with the fp::when ops (==, !=, >, >=, <, <=, exists, \
-     not_empty); a pointer that resolves to nothing SKIPS rather than erroring, so \
-     \"not there yet\" is an ordinary answer. Use it as a binding's `conditions` entry so a \
-     reaction fires only on events that matter — it is not a fan-in gate (that is \
-     state::barrier), it filters one event at a time.";
+    "Trigger-binding guard: compare a JSON pointer inside the fired event and answer \
+     { decision: \"allow\" | \"skip\", reason }; config is { path?, op, to?, negate? } with \
+     the fp::when ops. A pointer that resolves to nothing SKIPS rather than erroring.";
+// Filters one event at a time — not a fan-in gate (that is state::barrier).
 
 /// The caller-authored half, out of the binding's `conditions[].config`.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct ConditionConfig {
-    /// JSON pointer into the EVENT (default: the whole event). Almost always
-    /// wanted — comparing a whole event object is rarely what you mean.
+    /// JSON pointer into the event; defaults to the whole event.
     #[serde(default)]
     pub path: Option<String>,
-    /// One of "==", "!=", ">", ">=", "<", "<=", "exists", "not_empty".
+    /// Comparison to run.
     pub op: WhenOp,
     /// Right-hand side for the comparison ops; rejected for exists/not_empty.
     #[serde(default)]
     pub to: Option<Value>,
-    /// Invert the verdict. The only way to say "fire when this is ABSENT",
-    /// since a pointer miss fails the guard and there is no `not_exists` op.
-    /// Note the footgun that comes with it: a path that never resolves then
-    /// fires on EVERY event.
+    /// Invert the verdict — the only way to fire when the path is ABSENT (a path that
+    /// never resolves then fires on every event).
+    // There is no `not_exists` op: a pointer miss fails the guard, so negate covers it.
     #[serde(default)]
     pub negate: bool,
 }
 
-/// The condition envelope. `binding` and `context` are accepted and ignored so
-/// the same function also works as a direct call.
+/// The condition envelope; `binding` and `context` are accepted and ignored.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct ConditionInput {
     pub event: Value,

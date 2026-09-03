@@ -1,5 +1,5 @@
 {
-  "description": "Run any gh command: { args: [\"pr\", \"list\", \"-R\", \"owner/name\"], stdin?, timeout_ms? } -> { stdout, stderr, exit_code, duration_ms, timed_out, stdout_truncated, stderr_truncated }. A non-zero exit or a timeout is DATA here, not an error. The escape hatch for everything without a typed github::* function.",
+  "description": "Run any gh command; `args` is the argv without the leading `gh`. A non-zero exit or a timeout is returned as data, not an error. The escape hatch for everything without a typed github::* function.",
   "function_id": "github::exec",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

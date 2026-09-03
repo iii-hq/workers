@@ -67,8 +67,16 @@ import {
   PageShell,
   PageSidebar,
 } from '@/components/ui/PageChrome'
+import { RawValueInput } from '@/components/ui/RawValueInput'
 import { Select } from '@/components/ui/Select'
 import { Selector } from '@/components/ui/Selector'
+import {
+  SettingsField,
+  SettingsList,
+  SettingsRow,
+  SettingsSection,
+} from '@/components/ui/Settings'
+import { SettingsDeck } from '@/components/ui/SettingsDeck'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { StatusPanel } from '@/components/ui/StatusPanel'
@@ -81,6 +89,7 @@ import {
   PanelBody,
   PanelHeader,
 } from '@/components/ui/Surface'
+import { Switch } from '@/components/ui/Switch'
 import {
   Table,
   TableBody,
@@ -163,12 +172,19 @@ const conformance: {
   Panel: typeof ConsoleUi.Panel
   PanelBody: typeof ConsoleUi.PanelBody
   PanelHeader: typeof ConsoleUi.PanelHeader
+  RawValueInput: typeof ConsoleUi.RawValueInput
   Select: typeof ConsoleUi.Select
   SegmentedControl: typeof ConsoleUi.SegmentedControl
   Selector: typeof ConsoleUi.Selector
+  SettingsDeck: typeof ConsoleUi.SettingsDeck
+  SettingsField: typeof ConsoleUi.SettingsField
+  SettingsList: typeof ConsoleUi.SettingsList
+  SettingsRow: typeof ConsoleUi.SettingsRow
+  SettingsSection: typeof ConsoleUi.SettingsSection
   Skeleton: typeof ConsoleUi.Skeleton
   StatusDot: typeof ConsoleUi.StatusDot
   StatusPanel: typeof ConsoleUi.StatusPanel
+  Switch: typeof ConsoleUi.Switch
   Table: typeof ConsoleUi.Table
   TableBody: typeof ConsoleUi.TableBody
   TableCaption: typeof ConsoleUi.TableCaption
@@ -241,12 +257,19 @@ const conformance: {
   Panel,
   PanelBody,
   PanelHeader,
+  RawValueInput,
   Select,
   SegmentedControl,
   Selector,
+  SettingsDeck,
+  SettingsField,
+  SettingsList,
+  SettingsRow,
+  SettingsSection,
   Skeleton,
   StatusDot,
   StatusPanel,
+  Switch,
   Table,
   TableBody,
   TableCaption,

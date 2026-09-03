@@ -49,8 +49,8 @@ Then open the printed `Local:` URL (Vite picks the first free port from
   code, blockquotes, and inline code on the first run.
   See [`PLAYGROUND.md`](./PLAYGROUND.md) for the full contract.
 - **Storybook** (`pnpm storybook`) — the component spec sheet (composer,
-  messages, function views, primitives, schema form, worker config, type,
-  color) plus the streaming **playground**: a chat surface driven by a catalog
+  messages, function views, shared settings primitives, type, color) plus the
+  streaming **playground**: a chat surface driven by a catalog
   of scenarios (errors, aborts, multi-function runs, slow/fast streams, long
   markdown) that stress every corner of the streaming contract. Useful before
   swapping in a real backend.
@@ -119,11 +119,10 @@ src/
     sidebar/             # ConversationSidebar + ConversationRow
     chat/                # ChatView, Composer, Message, … (+ *.stories.tsx)
   pages/
-    Configuration/       # console + workers config surfaces
+    Configuration/       # global Settings + worker-owned config forms
     Traces/              # trace explorer
     Worktrees/           # live worktree graph (repo -> worktree -> session)
   stories/               # Storybook-only assets (never in the app bundle)
-    decorators.tsx       # shared decorators (.workers-tab scope, padding)
     fixtures/            # mock data for the component stories
     design/              # typography / color / loading token sheets
     playground/          # ChatView harness + EventLog + scenario stories

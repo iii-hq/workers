@@ -1,5 +1,5 @@
 {
-  "description": "Recursive directory snapshot bounded by `max_depth` and a `per_folder_limit`. Slim wire shape: nodes carry only `name` — the root node's path IS the response's top-level `path`; derive any child's path as parent path + '/' + name. Folders that hit the limit are flagged `truncated` and the caller is pointed at coder::list-folder for pagination. Noise directories matching default_exclude_globs (.git, node_modules, target, … — coder::info lists them) appear as childless `truncated` stubs; pass use_default_excludes: false to descend into them. Pass include_hidden: false to omit dot-prefixed entries (they then don't count toward per_folder_limit). A total node budget bounds every snapshot; folders past it are stubs with reason max_nodes — re-root there or paginate with coder::list-folder. Paths are relative to the primary allowed root or absolute inside any allowed root (coder::info lists them); for host paths outside the jail use shell::fs::*.",
+  "description": "Recursive directory snapshot bounded by max_depth, per_folder_limit and a node budget. Nodes carry only name (child path = parent path + '/' + name); over-limit folders are truncated stubs to paginate with coder::list-folder. Paths: relative to the primary root or absolute inside an allowed root (see coder::info).",
   "function_id": "coder::tree",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -12,7 +12,7 @@
     "properties": {
       "include_hidden": {
         "default": true,
-        "description": "List hidden (dot-prefixed) entries. Pass `false` to omit them — files and folders alike — at every level; omitted entries do not count toward `per_folder_limit`, so the cap serves visible names. The requested root itself is exempt: explicitly naming a hidden folder still lists its contents.",
+        "description": "List dot-prefixed entries; false omits them at every level (they then don't count toward per_folder_limit). The requested root is exempt.",
         "type": "boolean"
       },
       "max_depth": {
@@ -27,7 +27,7 @@
       },
       "path": {
         "default": ".",
-        "description": "Base folder for the snapshot. Relative to the primary allowed root, or an absolute path inside any allowed root. Defaults to `.` (the primary root itself). Call `coder::info` to see the allowed roots. Paths outside every allowed root are rejected — use the shell worker's `shell::fs::*` for host paths outside the jail.",
+        "description": "Base folder for the snapshot (default `.`).",
         "type": "string"
       },
       "per_folder_limit": {
@@ -42,7 +42,7 @@
       },
       "use_default_excludes": {
         "default": true,
-        "description": "Apply the worker's `default_exclude_globs` config (noise folders like .git/node_modules/target — call `coder::info` for the active list). Excluded directories still appear as childless nodes flagged `truncated` with reason \"default_exclude\"; excluded files are omitted and their containing directory carries the same truncation reason. Pass `false` to list everything.",
+        "description": "Prune directories matching default_exclude_globs (see coder::info) into childless `truncated` stubs; false lists everything.",
         "type": "boolean"
       }
     },

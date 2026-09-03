@@ -1,8 +1,8 @@
 //! Integration with the builtin `configuration` worker.
 //!
-//! The worker registers its config schema under the id `bridge` (what the
-//! console renders as an editable form), reads the authoritative value before
-//! connecting, and hot-applies `configuration:updated` events onto a shared
+//! The worker registers its config schema under the id `bridge` (validated
+//! when its explicit global Settings form saves), reads the authoritative
+//! value before connecting, and hot-applies `configuration:updated` events onto a shared
 //! [`ConfigCell`].
 //!
 //! ## What reloads live vs. restart-only
@@ -109,6 +109,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&BridgeConfig>) -> Re
         "name": "Bridge",
         "description": "Bridge to a remote iii instance — remote WebSocket URL, functions exposed to the remote engine, and remote functions forwarded locally.",
         "schema": BridgeConfig::json_schema(),
+        "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
     if should_seed_initial_value(iii).await? {
         let seed = seed.cloned().unwrap_or_default().normalized();

@@ -34,16 +34,10 @@ pub struct MoveFileInput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct MoveFileSpec {
-    /// Source path: relative to the primary allowed root, or an absolute path
-    /// inside any allowed root. Call `coder::info` to see the allowed roots.
-    /// Paths outside every allowed root are rejected — use the shell worker's
-    /// `shell::fs::*` for host paths outside the jail.
+    /// Source path.
     pub from: String,
 
-    /// Destination path: relative to the primary allowed root, or an absolute
-    /// path inside any allowed root. Call `coder::info` to see the allowed
-    /// roots. Paths outside every allowed root are rejected — use the shell
-    /// worker's `shell::fs::*` for host paths outside the jail.
+    /// Destination path.
     pub to: String,
 
     /// When false (the default), refuse to overwrite an existing destination.

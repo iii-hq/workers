@@ -175,6 +175,9 @@ importers:
       typescript:
         specifier: ^5.9.2
         version: 5.9.3
+      vitest:
+        specifier: ^4.1.10
+        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.5)(@vitest/coverage-v8@4.1.10)(vite@8.1.5(@types/node@25.9.5)(esbuild@0.25.12)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))
 
   computer/ui:
     dependencies:
@@ -200,6 +203,9 @@ importers:
       '@iii-dev/console-ui':
         specifier: workspace:*
         version: link:../../packages/console-ui
+      lucide-react:
+        specifier: ^1.16.0
+        version: 1.25.0(react@19.2.8)
     devDependencies:
       '@types/react':
         specifier: ^19.2.14
@@ -262,8 +268,8 @@ importers:
         specifier: ^2.1.1
         version: 2.1.1
       iii-browser-sdk:
-        specifier: 0.22.1-alpha.25
-        version: 0.22.1-alpha.25
+        specifier: 0.23.0
+        version: 0.23.0
       lexical:
         specifier: ^0.44.0
         version: 0.44.0
@@ -403,9 +409,18 @@ importers:
       '@types/react':
         specifier: ^19.2.14
         version: 19.2.17
+      '@types/react-dom':
+        specifier: 19.2.3
+        version: 19.2.3(@types/react@19.2.17)
       esbuild:
         specifier: ^0.25.0
         version: 0.25.12
+      react:
+        specifier: 19.2.7
+        version: 19.2.7
+      react-dom:
+        specifier: 19.2.7
+        version: 19.2.7(react@19.2.7)
       typescript:
         specifier: ^5.9.2
         version: 5.9.3
@@ -680,8 +695,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/console-ui
       iii-sdk:
-        specifier: 0.22.1-alpha.25
-        version: 0.22.1-alpha.25
+        specifier: 0.23.0
+        version: 0.23.0
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -1430,8 +1445,8 @@ packages:
   '@iconify/utils@3.1.4':
     resolution: {integrity: sha512-b1S7B1k9ohZ+iNTi2ATxbRYG9fTrJmUT0rc46bvVnNxqNRGW7dyo/vRREwyniI5IRN2RSJHDcm+s3BjWrSAjHw==}
 
-  '@iii-dev/helpers@0.22.1-alpha.25':
-    resolution: {integrity: sha512-q3XQZ4i+eMA4mi1iRaNHlTcIGJVvhCYkmfiIPn0rvlFjLYU32vEqjbxKeNsy9YyRbAhGbjF+kzXp2cUpycVhJw==}
+  '@iii-dev/helpers@0.23.0':
+    resolution: {integrity: sha512-q5iG1zZ8QNo32OuPqgxsSV4VM6/OYD43m/CObPYNUW2+loZBLniaoKo4sR20odxvH+aBue0pDz2G1z+K9sOK7A==}
 
   '@joshwooding/vite-plugin-react-docgen-typescript@0.7.0':
     resolution: {integrity: sha512-qvsTEwEFefhdirGOPnu9Wp6ChfIwy2dBCRuETU3uE+4cC+PFoxMSiiEhxk4lOluA34eARHA0OxqsEUYDqRMgeQ==}
@@ -3933,11 +3948,11 @@ packages:
     resolution: {integrity: sha512-4fCk79wshMdzMp2rH06qWrJE4iolqLhCUH+OiuIgU++RB0+94NlDL81atO7GX55uUKueo0txHNtvEyI6D7WdMw==}
     engines: {node: '>=0.10.0'}
 
-  iii-browser-sdk@0.22.1-alpha.25:
-    resolution: {integrity: sha512-SH35BJofl4GsAEIU2DRWbvmlSVnDSGRCm83GXZVxYmh6yx0XsTEe5MUZibLoD8bD3t8wuO0E3HxWM5W2ayN+Wg==}
+  iii-browser-sdk@0.23.0:
+    resolution: {integrity: sha512-tnTi6Szu5NwtCJNpA9hcbfIJ0Kb9BjXbRdA4gwswRKiSyduhoVNUoHaK8XTMCgQs/6vWRqwhGn1CHeVYeJB2cg==}
 
-  iii-sdk@0.22.1-alpha.25:
-    resolution: {integrity: sha512-WUDzAydJacutn5IQz3Tcx296fAn88UnUt8S5/2slRsZK7WCadMS9o3qXmkgKAUAmPHsdCOAwVolBWNnAz4imqQ==}
+  iii-sdk@0.23.0:
+    resolution: {integrity: sha512-qpz7801IVfzwBy4nA/jGmabwZnDvN3Lf39RE6o9CgfIT4QAzgyYudXOfhOZypngmLfBBV/LDX6qJbUzgTlkSig==}
 
   image-blob-reduce@3.0.1:
     resolution: {integrity: sha512-/VmmWgIryG/wcn4TVrV7cC4mlfUC/oyiKIfSg5eVM3Ten/c1c34RJhMYKCWTnoSMHSqXLt3tsrBR4Q2HInvN+Q==}
@@ -5651,7 +5666,7 @@ snapshots:
       '@iconify/types': 2.0.0
       import-meta-resolve: 4.2.0
 
-  '@iii-dev/helpers@0.22.1-alpha.25':
+  '@iii-dev/helpers@0.23.0':
     dependencies:
       '@opentelemetry/api': 1.9.1
       '@opentelemetry/api-logs': 0.57.2
@@ -8124,11 +8139,11 @@ snapshots:
     dependencies:
       safer-buffer: 2.1.2
 
-  iii-browser-sdk@0.22.1-alpha.25: {}
+  iii-browser-sdk@0.23.0: {}
 
-  iii-sdk@0.22.1-alpha.25:
+  iii-sdk@0.23.0:
     dependencies:
-      '@iii-dev/helpers': 0.22.1-alpha.25
+      '@iii-dev/helpers': 0.23.0
       '@opentelemetry/api': 1.9.1
       ws: 8.21.1
     transitivePeerDependencies:

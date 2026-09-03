@@ -1,0 +1,154 @@
+name: Deployment Registry Finalize
+
+on:
+  workflow_call:
+    inputs:
+      worker: {required: true, type: string}
+      candidate_version: {required: true, type: string}
+      stable_version: {required: true, type: string}
+      github_tag: {required: true, type: string}
+      prepared_artifact: {required: true, type: string}
+      image_tag: {required: false, default: '', type: string}
+      expected_latest_version: {required: true, type: string}
+      expected_next_version: {required: true, type: string}
+    secrets:
+      WORKERS_REGISTRY_API_KEY: {required: true}
+
+permissions: {}
+
+jobs:
+  publish:
+    runs-on: workers-release-linux-8core
+    environment: workers-registry-release
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ${{ inputs.prepared_artifact }}
+          path: deploy-prepared
+
+      - name: Build the current Registry payload from prepared stable bytes
+        env:
+          WORKER: ${{ inputs.worker }}
+          STABLE_VERSION: ${{ inputs.stable_version }}
+          GITHUB_TAG: ${{ inputs.github_tag }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/deployment_train.py verify-prepared \
+            --descriptor deploy-prepared/deployment-descriptor.json \
+            --prepared deploy-prepared/prepared-artifacts.json
+          python3 .github/scripts/deployment_interface.py verify-evidence \
+            --descriptor deploy-prepared/deployment-descriptor.json \
+            --evidence deploy-prepared/deployment-evidence.json
+          python3 .github/scripts/deployment_interface.py export-interface \
+            --descriptor deploy-prepared/deployment-descriptor.json \
+            --snapshot deploy-prepared/deployment-interface.json \
+            --out interface.json
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          descriptor = json.loads(Path("deploy-prepared/deployment-descriptor.json").read_text())
+          prepared = json.loads(Path("deploy-prepared/prepared-artifacts.json").read_text())
+          if descriptor["worker"] != os.environ["WORKER"]:
+              raise SystemExit("prepared descriptor identity mismatch")
+          if prepared["descriptor_sha256"] != descriptor["descriptor_sha256"]:
+              raise SystemExit("prepared artifact descriptor mismatch")
+          kind = descriptor["artifact"]["kind"]
+          base = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/{os.environ['GITHUB_TAG']}"
+          artifacts = [entry for entry in prepared["artifacts"] if entry["role"] != "checksum"]
+          if kind == "rust-binary":
+              targets = {unit["id"]: unit["target"] for unit in descriptor["build_units"]}
+              artifact_payload = {
+                  "kind": kind,
+                  "binaries": {
+                      targets[entry["unit"]]: {
+                          "url": f"{base}/{entry['name']}",
+                          "sha256": entry["sha256"],
+                      }
+                      for entry in artifacts
+                  },
+              }
+          elif kind in {"javascript-bundle", "python-bundle"}:
+              if len(artifacts) != 1:
+                  raise SystemExit("bundle release requires exactly one prepared archive")
+              entry = artifacts[0]
+              artifact_payload = {
+                  "kind": kind,
+                  "archive_url": f"{base}/{entry['name']}",
+                  "sha256": entry["sha256"],
+              }
+          elif kind == "oci-image":
+              image_tag = os.environ["IMAGE_TAG"]
+              if not image_tag or "@sha256:" not in image_tag:
+                  raise SystemExit("image release requires a digest-pinned image tag")
+              artifact_payload = {"kind": kind, "image_tag": image_tag}
+          else:
+              raise SystemExit(f"unsupported artifact kind {kind}")
+          Path("registry-artifacts.json").write_text(json.dumps(artifact_payload, sort_keys=True) + "\n")
+          PY
+          python3 .github/scripts/build_publish_payload.py \
+            --descriptor deploy-prepared/deployment-descriptor.json \
+            --published-version "$STABLE_VERSION" \
+            --repo-url "https://github.com/$GITHUB_REPOSITORY" \
+            --interface-json interface.json \
+            --artifacts-json registry-artifacts.json \
+            --out payload.json
+          if jq -e 'has("package_descriptor") or has("descriptor_sha256") or has("channel")' payload.json >/dev/null; then
+            echo 'descriptor-native fields must never reach the current Registry' >&2
+            exit 1
+          fi
+          test "$(jq 'has("tag")' payload.json)" = false
+
+      - name: Publish immutable stable version with readback
+        env:
+          WORKERS_REGISTRY_API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
+          WORKER: ${{ inputs.worker }}
+          STABLE_VERSION: ${{ inputs.stable_version }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/registry_publication.py publish-version \
+            --api-url https://api.workers.iii.dev \
+            --worker "$WORKER" --version "$STABLE_VERSION" \
+            --payload payload.json --out registry-version-receipt.json
+
+      # The atomic finalize primitive validates next == candidate server-side
+      # under the worker lock; expected_next_version is carried here for the
+      # receipt and audit trail only.
+      - name: Atomically move next and latest to the stable version
+        env:
+          WORKERS_REGISTRY_API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
+          WORKER: ${{ inputs.worker }}
+          CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+          STABLE_VERSION: ${{ inputs.stable_version }}
+          EXPECTED_LATEST_VERSION: ${{ inputs.expected_latest_version }}
+          EXPECTED_NEXT_VERSION: ${{ inputs.expected_next_version }}
+        run: |
+          set -euo pipefail
+          echo "expected next pointer before finalization: $EXPECTED_NEXT_VERSION"
+          python3 .github/scripts/registry_publication.py finalize-release \
+            --api-url https://api.workers.iii.dev \
+            --worker "$WORKER" \
+            --candidate-version "$CANDIDATE_VERSION" \
+            --stable-version "$STABLE_VERSION" \
+            --expected-latest-version "$EXPECTED_LATEST_VERSION" \
+            --out registry-finalize-receipt.json
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: registry-finalization-${{ inputs.worker }}-${{ inputs.stable_version }}
+          path: |
+            payload.json
+            registry-version-receipt.json
+            registry-finalize-receipt.json
+          if-no-files-found: warn
+          retention-days: 30

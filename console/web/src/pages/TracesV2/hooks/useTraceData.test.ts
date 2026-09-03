@@ -3,10 +3,71 @@ import {
   buildTraceListRequestParams,
   filterHiddenTraceRows,
   hiddenFunctionsKey,
+  mergeHeldUpdates,
+  mergeNewTraceIds,
   shouldDeferTraceUpdate,
   type TraceListItem,
   traceTotalForResponse,
 } from './useTraceData'
+
+function item(
+  traceId: string,
+  overrides: Partial<TraceListItem> = {},
+): TraceListItem {
+  return {
+    traceId,
+    rootOperation: 'execute fn',
+    status: 'ok',
+    startTime: 1,
+    spanCount: 1,
+    workers: ['w'],
+    ...overrides,
+  }
+}
+
+describe('mergeHeldUpdates', () => {
+  it('keeps the rows and their order, taking in-place updates only', () => {
+    const rendered = [item('a', { status: 'pending' }), item('b')]
+    const latest = [item('new'), item('b'), item('a', { status: 'ok' })]
+    const merged = mergeHeldUpdates(rendered, latest)
+    expect(merged.map((t) => t.traceId)).toEqual(['a', 'b'])
+    expect(merged[0].status).toBe('ok')
+    expect(merged[1]).toBe(latest[1])
+  })
+
+  it('returns the rendered array itself when nothing on screen changed', () => {
+    const a = item('a')
+    const rendered = [a]
+    expect(mergeHeldUpdates(rendered, [item('new'), a])).toBe(rendered)
+  })
+
+  it('keeps a row the latest answer no longer lists', () => {
+    const rendered = [item('a'), item('gone')]
+    expect(
+      mergeHeldUpdates(rendered, [item('a')]).map((t) => t.traceId),
+    ).toEqual(['a', 'gone'])
+  })
+})
+
+describe('mergeNewTraceIds', () => {
+  it('keeps rows still flashing when the next answer adds more', () => {
+    const merged = mergeNewTraceIds(
+      new Set(['a']),
+      new Set(['b']),
+      new Set(['a', 'b', 'c']),
+    )
+    expect([...merged].sort()).toEqual(['a', 'b'])
+  })
+
+  it('drops ids that left the page so the set stays bounded', () => {
+    const merged = mergeNewTraceIds(
+      new Set(['gone', 'a']),
+      new Set(['b']),
+      new Set(['a', 'b']),
+    )
+    expect([...merged].sort()).toEqual(['a', 'b'])
+  })
+})
 
 describe('shouldDeferTraceUpdate', () => {
   it('renders the first answer of an empty scope while hovered', () => {

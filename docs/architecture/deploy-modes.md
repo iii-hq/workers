@@ -6,15 +6,25 @@ The release train consumes only that descriptor after prepare.
 
 | `artifact.kind` | Prepared artifact | Publication |
 |---|---|---|
-| `rust-binary` | one deterministic `tar.gz` and checksum per target | GitHub Release URLs and digests keyed by Rust target |
+| `rust-binary` | one deterministic `tar.gz` (`zip` on Windows) and checksum per target | GitHub Release URLs and digests keyed by Rust target |
 | `javascript-bundle` | one deterministic archive from explicit files | GitHub Release archive URL and digest |
 | `python-bundle` | one deterministic archive from explicit files | GitHub Release archive URL and digest |
 | `oci-image` | deterministic OCI-layout archive | digest-pinned GHCR image |
 
+Rust workers declare two target profiles: `candidate_targets` (the Unix
+matrix built for every release candidate) and `stable_targets` (the full set a
+finalized stable version ships, optionally adding `x86_64-pc-windows-msvc` for
+workers that opt in — absence must be justified with `windows_exception`).
+`candidate_targets` must be a subset of `stable_targets`; the stable-delta is
+built only at finalization by
+[`deploy-finalize.yml`](../../.github/workflows/deploy-finalize.yml), which
+reuses the rc bytes for everything else and assembles a stable inventory.
+
 [`deploy-prepare.yml`](../../.github/workflows/deploy-prepare.yml) builds one
-matrix job per descriptor build unit. Embedded frontends are built once before
-the Rust target fan-out. Rust units share remote sccache objects by toolchain
-and target, but artifact bytes remain target-specific.
+matrix job per descriptor build unit (the candidate profile). Embedded
+frontends are built once before the Rust target fan-out. Rust units share
+remote sccache objects by toolchain and target, but artifact bytes remain
+target-specific.
 
 [`deploy-publish.yml`](../../.github/workflows/deploy-publish.yml) publishes one
 exact immutable target version and assigns Registry `next` or `latest` with an

@@ -94,9 +94,11 @@ cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-features
 ```
 
-CI builds changed Rust workers and runs the PR-only interface boot smoke unless
-`iii.worker.yaml` sets `interface_smoke: false`. Deployment does not boot the
-prepared binary.
+CI builds changed Rust workers and checks interface registration unless
+`iii.worker.yaml` sets `interface_smoke: false`. Release prepare also boots one
+immutable Linux artifact in an isolated engine to capture Registry metadata.
+That capture invokes no worker function or external backend and is not a
+deployment smoke test.
 
 ## Release behavior
 

@@ -44,6 +44,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&WorkerConfig>) -> Re
         "description": "Scheduled memory hygiene: dedup interval, dry-run mode, bank allowlist, \
                         and the per-pass supersede cap.",
         "schema": WorkerConfig::json_schema(),
+        "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
     if let Some(seed) = seed {
         payload["initial_value"] = seed.to_json();

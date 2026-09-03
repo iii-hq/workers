@@ -63,9 +63,9 @@ pub struct Component {
     pub id: String,
     /// Component name from the negotiated catalog.
     pub component: String,
-    /// Catalog-defined properties. The protocol stays catalog-agnostic; the
-    /// worker validates these against its supported component names and safe
-    /// relationship rules before persistence.
+    /// Catalog-defined properties, validated against the worker's supported
+    /// component names and relationship rules before persistence.
+    // The protocol type stays catalog-agnostic; validation lives in the worker.
     #[serde(flatten)]
     pub properties: BTreeMap<String, Value>,
 }

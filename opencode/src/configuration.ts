@@ -34,6 +34,7 @@ export async function registerOpencodeConfig(iii: IIIClient, seed: Config): Prom
       description:
         'OpenCode worker: per-turn defaults (model, working directory, agent), the agent::events / opencode::events stream names, the opencode CLI path, and whether to inject the iii runtime context.',
       schema: runtimeJsonSchema(),
+      metadata: { ui_form: CONFIG_ID },
       initial_value: toRuntime(seed),
     },
     timeoutMs: TIMEOUT_MS,

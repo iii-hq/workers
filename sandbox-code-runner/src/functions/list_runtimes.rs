@@ -3,12 +3,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::runner::Lang;
 
-/// `list_runtimes` takes no arguments; this empty struct publishes an
-/// accurate (empty-object) request schema.
-///
-/// NOTE: deliberately NOT `#[serde(deny_unknown_fields)]`. The engine
-/// injects a `_caller_worker_id` field into every call's payload, so a
-/// strict no-arg struct would reject EVERY call.
+/// Takes no arguments.
+// Deliberately NOT `#[serde(deny_unknown_fields)]`: the engine injects a
+// `_caller_worker_id` field into every call's payload, so a strict no-arg
+// struct would reject EVERY call.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListRuntimesRequest {}
 

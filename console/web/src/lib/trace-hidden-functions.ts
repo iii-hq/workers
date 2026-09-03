@@ -37,6 +37,21 @@ function parseTraceHiddenIds(res: unknown): ReadonlySet<string> {
 }
 
 /**
+ * Same ids, whatever the Set instances. A refetch parses a fresh Set even
+ * when nothing changed, and react-query's structural sharing only reuses
+ * plain objects and arrays — callers that key memos (and the span-filter
+ * verdict caches) on the set's identity use this to keep the old instance.
+ */
+export function sameHiddenIdSet(
+  previous: ReadonlySet<string> | undefined,
+  next: ReadonlySet<string>,
+): boolean {
+  if (!previous || previous.size !== next.size) return false
+  for (const id of next) if (!previous.has(id)) return false
+  return true
+}
+
+/**
  * Function ids registered with `trace_hidden: true`. Resolves to the empty
  * set on any failure — the traces page then simply hides nothing by default.
  */

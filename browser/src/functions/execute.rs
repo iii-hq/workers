@@ -13,10 +13,8 @@ pub const MAX_ENVELOPE_BYTES: usize = 1_000_000;
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ExecuteInput {
     pub session_id: String,
-    /// Async JavaScript body run in the page. Top-level `await` and `return`
-    /// work. In scope: `state` (JSON object persisted across execute calls
-    /// for the session), `log(...)` (collected into the response), `sleep(ms)`,
-    /// and `waitFor(selector, { timeout })`. Return plain JSON.
+    /// Async JavaScript body run in the page; `state`, `log(...)`, `sleep(ms)`
+    /// and `waitFor(selector, { timeout })` are in scope. Return plain JSON.
     pub code: String,
     /// Upper bound on the run; clamped to `max_timeout_ms`.
     #[serde(default)]

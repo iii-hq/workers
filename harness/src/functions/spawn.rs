@@ -45,8 +45,7 @@ pub enum SubagentColor {
 /// title; icon and color are closed semantic tokens consumed by UIs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SubagentDisplay {
-    /// Short functional name, such as `Frontend` or `Explorer`. Leading and
-    /// trailing whitespace is removed; the result must be 1-48 characters.
+    /// Short functional name such as `Frontend`, 1-48 characters after trimming.
     #[schemars(length(min = 1, max = 48))]
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -59,16 +58,13 @@ pub struct SubagentDisplay {
 pub struct SpawnOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
-    /// How `system_prompt` combines with the built-in prompt: `override`
-    /// replaces it; `enrich` (default) appends to it; `disabled` omits it.
+    /// How `system_prompt` combines with the built-in prompt.
     #[serde(default)]
     pub system_prompt_strategy: SystemPromptStrategy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<Mode>,
-    /// Capped at the parent's remaining turn budget. Omit unless a strict
-    /// child-specific cap is required. It must cover discovery/contract calls
-    /// plus every work call; very small values (for example 2-3) commonly
-    /// strand the child before it can produce its deliverable.
+    /// Turn cap for the child, capped at the parent's remaining budget; omit
+    /// unless required (small values strand the child).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_turns: Option<u32>,
     /// Inherits the parent's ceiling unless explicitly narrowed/overridden.
@@ -79,78 +75,54 @@ pub struct SpawnOptions {
     /// The child's deliverable: text / json / json+schema.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<OutputContract>,
-    /// Override the child's validation-retry budget (output contract AND
-    /// `harness::hook::post-turn` deny re-prompts). Default: worker config.
+    /// Override of the child's validation-retry budget.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_validation_retries: Option<u32>,
-    /// Intersected with the parent policy — narrow, never escalate. An
-    /// `ask`-mode child is further capped at the configured default policy.
+    /// Dispatch policy for the child, intersected with the parent's (narrow,
+    /// never escalate).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub functions: Option<FunctionPolicy>,
-    /// Exact skill ids advertised to the child. On a fresh child, omitted or
-    /// empty means all. A reused child inherits when omitted and resets to all
-    /// when empty. Explicit changes require no active child turn.
+    /// Exact skill ids advertised to the child; omitted or empty means all (a
+    /// reused child inherits when omitted).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skills: Option<Vec<String>>,
-    /// Grant this child the orchestration surface. Default false: a spawned
-    /// child is a LEAF — its policy gains deny globs for `harness::spawn`,
-    /// `harness::send`, `engine::register_trigger`, `engine::unregister_trigger`
-    /// and `engine::registered-triggers::*`, so it performs its assignment and
-    /// updates shared state without spawning, messaging sessions, or touching
-    /// trigger registrations. `true` skips those denies; the child still never
-    /// exceeds its parent's policy.
+    /// Let the child spawn, send, and register triggers (still capped by the
+    /// parent's policy); default false makes it a leaf.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub orchestrator: Option<bool>,
     /// Fan-out guard for the child's own spawns.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_children: Option<u32>,
-    /// Absolute filesystem root for the child turn (e.g. an isolated
-    /// `worktree::create` checkout), written to the child's
-    /// `metadata.fs_scope.root`. When set it overrides the inherited scope
-    /// for this child; when absent the child inherits its direct parent's
-    /// root unchanged.
+    /// Absolute filesystem root for the child turn; omit to inherit the
+    /// parent's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filesystem_root: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SpawnRequest {
-    /// The child's self-contained goal — its opening user message. Include
-    /// every resolved required selector literally (for example `Use database
-    /// db: "primary"`); the child cannot infer resources from the parent.
+    /// The child's self-contained goal, its opening user message; name every
+    /// required resource selector literally (the child cannot infer them).
     pub task: MessageInput,
-    /// Run the child as a directory agent profile (`directory::agents::*`
-    /// id). The profile's resolved system prompt (its `extends` chain
-    /// composed by the directory) becomes the child's whole identity — no
-    /// shared identity underneath, only the `mode` paragraph in front — its
-    /// skill filter applies when `options.skills` is omitted, its `model`
-    /// slots between an explicit `model` and the parent's, and its name/icon
-    /// become the display defaults. Which agent profile to name is the
-    /// prompt's decision. Refused combined with `options.system_prompt`, and
-    /// when the profile's `extends` chain does not resolve.
+    /// Directory agent profile id (`directory::agents::*`) supplying the
+    /// child's prompt, skills, model, and display; refused with
+    /// `options.system_prompt`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
-    /// Optional display-only identity for the child session. This never affects
-    /// session ids, policy, routing, or execution. On named-session reuse the
-    /// existing session title and metadata are retained.
+    /// Display-only name/icon/color for the child session; never affects ids,
+    /// policy, or routing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display: Option<SubagentDisplay>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    /// Spawn into this session, creating it if it does not exist (e.g. a fork,
-    /// or a pre-chosen id to filter `turn-completed` subscriptions on); default:
-    /// create fresh. An in-turn spawn may reuse an EXISTING id only inside its
-    /// own tree (itself, or a child it spawned) — anything else is refused as a
-    /// cross-run id collision. The response reports `reused: true` on reuse.
+    /// Session id to spawn into, created if absent; an existing id may be
+    /// reused only inside the caller's own tree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
-    /// Display-only parent for the console session tree, used when there is no
-    /// live parent turn (e.g. a console- or workflow-issued spawn).
-    /// Writes `SessionMeta.metadata.parent_session_id` so the console nests this
-    /// child; it does NOT grant policy inheritance or parent-call resolution.
-    /// Ignored when the dispatcher injects a real parent link (an in-turn spawn).
+    /// Display-only parent for the console tree when there is no live parent
+    /// turn; grants no policy inheritance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -52,6 +52,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&Config>) -> Result<(
         "name": "Devin",
         "description": "Devin worker: the API bearer token and organization id, the Devin REST base URL and request timeout, the agent::events / devin::events stream names, the devin CLI path and extra args, and whether to inject the iii runtime context into a devin::run prompt.",
         "schema": Config::json_schema(),
+        "metadata": { "ui_form": DEFAULT_CONFIG_ID },
     });
     if let Some(seed) = seed {
         payload["initial_value"] = seed.to_json();

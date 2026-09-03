@@ -105,6 +105,7 @@ import { Composer, type ComposerSubmitPayload } from './Composer'
 import { ContextUsage } from './ContextUsage'
 import { isSessionSubmitBlockedByHydration } from './chat-submit-blocking'
 import { MessageList } from './MessageList'
+import { formatModelLabel } from './model-picker-presentation'
 import { RegisteredTriggerStatusProvider } from './RegisteredTriggerStatus'
 import { SessionTriggers } from './SessionTriggers'
 import {
@@ -113,6 +114,7 @@ import {
   selectionForSend,
   skillSelectionForSend,
 } from './system-prompt-selection'
+import { deriveTurnVisualState } from './turn-visual-state'
 
 /**
  * Order the header's injected chips deterministically. The registry appends
@@ -784,11 +786,14 @@ export function ChatView({
     return [...extSessionTurnSummaries].sort(compareChips).map((summary) => {
       const Summary = summary.render
       return (
-        <Summary
-          key={summary.id}
-          sessionId={conversation.id}
-          isStreaming={streamingIndicator}
-        />
+        <div key={summary.id} className="chat-turn-summary-presence">
+          <div className="chat-turn-summary-presence-inner">
+            <Summary
+              sessionId={conversation.id}
+              isStreaming={streamingIndicator}
+            />
+          </div>
+        </div>
       )
     })
   }, [extSessionTurnSummaries, conversation.id, streamingIndicator])
@@ -1789,24 +1794,14 @@ export function ChatView({
     }
   }, [isStreaming, conversation.status])
 
-  // Covers the gap between submit / fcall-end and the next streamed content,
-  // where the assistant/thought output hasn't yet rendered.
-  const isThinking =
-    streamingIndicator &&
-    (() => {
-      const last =
-        conversation.messages[conversation.messages.length - 1] ?? null
-      if (!last) return true
-      if (last.role === 'user') return true
-      if (
-        last.role === 'function-trigger' &&
-        !last.running &&
-        !last.pendingApproval
-      ) {
-        return true
-      }
-      return false
-    })()
+  // One derived visual state covers both the locally initiated stream and
+  // durable transcript updates received in another tab. Motion may retain the
+  // previous surface briefly, but protocol truth changes here immediately.
+  const turnVisualState = useMemo(
+    () => deriveTurnVisualState(conversation.messages, streamingIndicator),
+    [conversation.messages, streamingIndicator],
+  )
+  const isThinking = turnVisualState.showWaiting
 
   // Pre-content phase text for the waiting indicator. Only trusted while the transcript
   // still ends at the user's message — on the real backend content arrives via
@@ -1827,6 +1822,18 @@ export function ChatView({
         return null
     }
   })()
+  const waitingModelLabel = (() => {
+    if (!effectiveModel) return 'model'
+    const catalogLabel = modelOptions.find(
+      (option) => option.id === effectiveModel,
+    )?.label
+    return formatModelLabel(
+      catalogLabel ?? effectiveModel.split('::').at(-1) ?? effectiveModel,
+    )
+  })()
+  const waitingFallback = turnVisualState.betweenSteps
+    ? `continuing with ${waitingModelLabel}…`
+    : `waiting for ${waitingModelLabel}…`
 
   /* Trace → message landing: a pending turn-focus for THIS session resolves
      to the transcript row to center (see lib/turn-anchor), recomputed as the
@@ -2275,11 +2282,12 @@ export function ChatView({
           }}
           transcriptHydrated={conversation.hydrated !== false}
           isThinking={isThinking}
+          turnVisualPhase={turnVisualState.phase}
+          turnKey={turnVisualState.turnKey}
           thinkingDetail={
             conversation.status === 'working' && conversation.statusReason
               ? conversation.statusReason
-              : (phaseDetail ??
-                (effectiveModel ? `dispatching ${effectiveModel}` : undefined))
+              : (phaseDetail ?? waitingFallback)
           }
           density={density}
           onResolveApproval={resolveApproval}

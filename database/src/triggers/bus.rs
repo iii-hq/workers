@@ -32,9 +32,9 @@ pub const ROW_CHANGED_TYPE: &str = "database::row-changed";
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RowChangedConfig {
-    /// Database handle, as named in the worker's config. Required — a binding
-    /// that watched every database would fire for traffic its owner never
-    /// asked about.
+    /// Database handle, as named in the worker's config.
+    // Required: a binding that watched every database would fire for traffic
+    // its owner never asked about.
     pub db: String,
     /// Table filter. Matched case-insensitively and ignoring a schema
     /// qualifier. Omit to hear every table in the database.

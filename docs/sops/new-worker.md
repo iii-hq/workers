@@ -14,8 +14,8 @@ details are in [`binary-worker.md`](binary-worker.md).
 - Add an entry to the private
   [`.deploy/workers.yaml`](../../.deploy/workers.yaml) build catalog.
 
-The private entry contains exactly `source`, `artifact`, `validation`, and
-`publish`. Public runtime and Registry metadata stay in `iii.worker.yaml`.
+The private entry contains exactly `source`, `artifact`, and `publish`. Public
+runtime and Registry metadata stay in `iii.worker.yaml`.
 See [`worker-compose.md`](../architecture/worker-compose.md) for the boundary.
 Release Control reads only the compiled descriptor index and never either
 source document.
@@ -31,10 +31,13 @@ Never put API keys, tokens, `III_*` connection settings, or mutable external
 references in public defaults; the compiler rejects them before producing the
 immutable Registry projection.
 
-The PR interface boot check is enabled by default. Set
+Interface capture is enabled by default. CI checks it from source, and release
+prepare captures it again from the immutable prepared artifact for Registry
+publication. Set
 `interface_smoke: false` in `iii.worker.yaml` only for a worker that cannot
 expose a collectable interface, such as a stdio-only process. This setting does
-not affect deployment or publication.
+not skip behavior tests: it compiles to `interface_capture: skipped` in the
+immutable descriptor and explicitly permits an empty Registry interface.
 
 ## Local checks
 
@@ -45,7 +48,6 @@ python3 .github/scripts/validate_worker.py \
 python3 .github/scripts/deployment_compiler.py compile-index \
   --source-sha "$(git rev-parse HEAD)" \
   --compiler-repository iii-hq/workers \
-  --compiler-commit "$(git rev-parse HEAD)" \
   --output-dir /tmp/deployment-descriptor-index
 ```
 
@@ -56,8 +58,15 @@ Run the language suite that CI will select:
 - Python: Ruff and pytest.
 
 Handlers published as interface metadata must have typed request and response
-schemas. Add a focused schema/catalog test for the worker and a dedicated E2E
-workflow when startup, sidecars, or external protocol behavior needs coverage.
+schemas. Capture only observes registration; it never invokes a worker function
+or external backend. Add a focused schema/catalog test for the worker and a
+dedicated E2E workflow when behavior, sidecars, or external protocols need
+coverage.
+
+If registration needs safe startup defaults, add `config.collect.yaml` beside
+`iii.worker.yaml`. The compiler records its SHA-256 in the immutable descriptor;
+release prepare reads those exact bytes from the selected source SHA and passes
+the file only to the isolated interface-capture process.
 
 ## Release readiness
 

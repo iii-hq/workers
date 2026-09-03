@@ -45,5 +45,6 @@ describe('EmptyPane', () => {
     expect(markup).toContain('>50</div>')
     expect(markup).toContain('aria-label="remove this panel"')
     expect(markup).toContain('max-h-72 overflow-y-auto')
+    expect(markup).not.toContain('autofocus')
   })
 })

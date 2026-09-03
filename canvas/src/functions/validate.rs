@@ -26,9 +26,8 @@ pub const DESC: &str = "Validate canvas source without storing it: detect the me
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct Request {
-    /// Format the source claims to be: `mermaid` or `freeform`. Omit to
-    /// auto-detect — a source whose first character is `{` is treated as an
-    /// excalidraw scene, anything else as mermaid text.
+    /// Source format, `mermaid` or `freeform`; omit to auto-detect (a source
+    /// starting with `{` is an excalidraw scene, anything else mermaid).
     #[serde(default)]
     pub format: Option<CanvasFormat>,
 

@@ -16,6 +16,9 @@ workers:
       - x86_64-unknown-linux-musl
       - aarch64-unknown-linux-gnu
       - armv7-unknown-linux-gnueabihf
+      - x86_64-pc-windows-msvc
+      - i686-pc-windows-msvc
+      - aarch64-pc-windows-msvc
       frontends:
       - workspace_root: .
         source_path: a2ui/ui
@@ -47,7 +50,14 @@ workers:
         name: rust
         version: 1.97.1
       binary: iii-acp
-      targets: *id001
+      targets:
+      - x86_64-apple-darwin
+      - aarch64-apple-darwin
+      - x86_64-unknown-linux-gnu
+      - x86_64-unknown-linux-musl
+      - aarch64-unknown-linux-gnu
+      - armv7-unknown-linux-gnueabihf
+      windows_exception: not published to the Registry yet; no Windows build to restore
     publish: true
   approval-gate:
     source:
@@ -174,7 +184,6 @@ workers:
       install_command:
       - pnpm
       - install
-      - --ignore-workspace
       - --frozen-lockfile
       build_command:
       - pnpm
@@ -200,6 +209,7 @@ workers:
       - x86_64-unknown-linux-gnu
       - x86_64-unknown-linux-musl
       - aarch64-unknown-linux-gnu
+      windows_exception: not published to the Registry yet; no Windows build to restore
       frontends:
       - workspace_root: .
         source_path: code-runner/ui
@@ -272,29 +282,41 @@ workers:
   compose-ui:
     source:
       path: compose-ui
-      package_manifest: package.json
+      package_manifest: Cargo.toml
     artifact:
-      kind: javascript-bundle
-      workspace_root: compose-ui
-      runtime:
-        name: node
-        version: 22.20.0
-      package_manager:
-        name: pnpm
-        version: 11.13.1
-      lockfile: pnpm-lock.yaml
-      install_command:
-      - pnpm
-      - install
-      - --ignore-workspace
-      - --frozen-lockfile
-      build_command:
-      - pnpm
-      - run
-      - build:bundle
-      include:
-      - dist/bundle/index.mjs
-      - iii.worker.yaml
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: compose-ui
+      targets:
+      - x86_64-apple-darwin
+      - aarch64-apple-darwin
+      - x86_64-unknown-linux-gnu
+      - x86_64-unknown-linux-musl
+      - aarch64-unknown-linux-gnu
+      - armv7-unknown-linux-gnueabihf
+      windows_exception: not published to the Registry yet; no Windows build to restore
+      frontends:
+      - workspace_root: .
+        source_path: compose-ui/ui
+        runtime:
+          name: node
+          version: 22.20.0
+        package_manager:
+          name: pnpm
+          version: 11.13.1
+        lockfile: pnpm-lock.yaml
+        install_command:
+        - pnpm
+        - install
+        - --frozen-lockfile
+        build_command:
+        - pnpm
+        - run
+        - build
+        outputs:
+        - dist
     publish: true
   computer:
     source:
@@ -389,7 +411,14 @@ workers:
         name: rust
         version: 1.97.1
       binary: context-manager
-      targets: *id001
+      targets:
+      - x86_64-apple-darwin
+      - aarch64-apple-darwin
+      - x86_64-unknown-linux-gnu
+      - x86_64-unknown-linux-musl
+      - aarch64-unknown-linux-gnu
+      - armv7-unknown-linux-gnueabihf
+      windows_exception: published releases have never included a Windows build
       frontends:
       - workspace_root: .
         source_path: context-manager/ui
@@ -582,7 +611,14 @@ workers:
         name: rust
         version: 1.97.1
       binary: editor
-      targets: *id001
+      targets:
+      - x86_64-apple-darwin
+      - aarch64-apple-darwin
+      - x86_64-unknown-linux-gnu
+      - x86_64-unknown-linux-musl
+      - aarch64-unknown-linux-gnu
+      - armv7-unknown-linux-gnueabihf
+      windows_exception: published releases have never included a Windows build
       frontends:
       - workspace_root: .
         source_path: editor/ui
@@ -923,7 +959,14 @@ workers:
         name: rust
         version: 1.97.1
       binary: lsp
-      targets: *id001
+      targets:
+      - x86_64-apple-darwin
+      - aarch64-apple-darwin
+      - x86_64-unknown-linux-gnu
+      - x86_64-unknown-linux-musl
+      - aarch64-unknown-linux-gnu
+      - armv7-unknown-linux-gnueabihf
+      windows_exception: not published to the Registry yet; no Windows build to restore
     publish: true
   mcp:
     source:
@@ -1647,7 +1690,14 @@ workers:
         name: rust
         version: 1.97.1
       binary: sandbox-code-runner
-      targets: *id001
+      targets:
+      - x86_64-apple-darwin
+      - aarch64-apple-darwin
+      - x86_64-unknown-linux-gnu
+      - x86_64-unknown-linux-musl
+      - aarch64-unknown-linux-gnu
+      - armv7-unknown-linux-gnueabihf
+      windows_exception: not published to the Registry yet; no Windows build to restore
       frontends:
       - workspace_root: .
         source_path: sandbox-code-runner/ui
@@ -1770,6 +1820,7 @@ workers:
       - x86_64-unknown-linux-musl
       - aarch64-unknown-linux-gnu
       - armv7-unknown-linux-gnueabihf
+      windows_exception: published releases have never included a Windows build
       frontends:
       - workspace_root: .
         source_path: shell/ui
@@ -2067,7 +2118,14 @@ workers:
         name: rust
         version: 1.97.1
       binary: workflow
-      targets: *id001
+      targets:
+      - x86_64-apple-darwin
+      - aarch64-apple-darwin
+      - x86_64-unknown-linux-gnu
+      - x86_64-unknown-linux-musl
+      - aarch64-unknown-linux-gnu
+      - armv7-unknown-linux-gnueabihf
+      windows_exception: not published to the Registry yet; no Windows build to restore
     publish: true
   worktree:
     source:

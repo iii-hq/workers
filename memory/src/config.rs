@@ -3,9 +3,9 @@
 //! The authoritative value comes from the `configuration` worker at boot
 //! (see [`crate::configuration`]); a `--config` YAML file, when passed,
 //! only SEEDS the initial registration. Every field has a serde default so
-//! an empty object yields a fully-populated config. The console renders the
-//! worker-config form from this schema, so every field carries a doc
-//! comment.
+//! an empty object yields a fully-populated config. The schema validates drafts
+//! from the deliberate worker form in global Settings, so every field carries
+//! a doc comment.
 
 use std::path::PathBuf;
 

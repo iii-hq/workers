@@ -71,10 +71,10 @@ pub const SESSIONS_STOP_DESC: &str =
      already-stopped session succeeds with was_running=false.";
 pub const SESSIONS_ATTACH_ID: &str = "browser::sessions::attach";
 pub const SESSIONS_ATTACH_DESC: &str =
-    "Attach a session to an already-running browser over CDP (start Chrome with \
-     --remote-debugging-port). Opens a fresh tab the session owns, or adopts an existing user \
-     tab by URL substring and releases it untouched on stop. Reaches the real profile with its \
-     logins; disabled unless allow_attach is set in config.";
+    "Attach a session to an already-running browser over CDP (Chrome started with \
+     --remote-debugging-port): opens a fresh tab the session owns, or adopts a user tab by URL \
+     substring and releases it untouched on stop. Reaches the real profile and its logins; \
+     requires allow_attach in config.";
 pub const TABS_LIST_ID: &str = "browser::tabs::list";
 pub const TABS_LIST_DESC: &str =
     "List the open tabs of a running browser reachable at a CDP endpoint (url, title, and \

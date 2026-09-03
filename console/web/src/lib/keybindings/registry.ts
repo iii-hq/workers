@@ -150,11 +150,11 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
   },
   {
     id: 'panel.split',
-    title: 'Split the workspace',
+    title: 'Split right',
     group: 'Workspace',
     scope: 'global',
     bindings: { mac: ['Ctrl+\\'], other: ['Alt+\\'] },
-    keywords: ['panel', 'column', 'split'],
+    keywords: ['panel', 'pane', 'column', 'split', 'right'],
   },
   // Go-to chords: a prefix key, then a letter for the place. The prefix never
   // does anything on its own, so the letters stay free for single-key actions

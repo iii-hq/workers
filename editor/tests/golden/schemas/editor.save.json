@@ -10,7 +10,7 @@
       },
       "expected_mtime": {
         "default": null,
-        "description": "The `mtime` from the `editor::open` this edit started from. When it no longer matches the file on disk, the write is refused and the divergence comes back as a patch. Omit only when deliberately overwriting whatever is there.\n\nResolution is one second, which is all the filesystem reports. Two writes inside the same second are therefore indistinguishable to this field, and the second one wins silently — send `expected_version` instead to close that window.",
+        "description": "`mtime` from the `editor::open` this edit started from (1s resolution). A mismatch refuses the write and returns the divergence as a patch.",
         "format": "int64",
         "type": [
           "integer",
@@ -19,7 +19,7 @@
       },
       "expected_version": {
         "default": null,
-        "description": "The `version` from the `editor::open` — or from the previous `editor::save` — this edit started from. It is a version of the *content*, so it catches a write that landed inside the same filesystem second and it does not care whether a clock or a checkout moved the mtime.\n\nWhen this is present it is the guard and `expected_mtime` is ignored. When it is absent the `expected_mtime` comparison applies exactly as before, so a caller that has never heard of a version is unaffected.",
+        "description": "`version` from the `editor::open` or `editor::save` this edit started from. When present it is the guard and `expected_mtime` is ignored.",
         "type": [
           "string",
           "null"

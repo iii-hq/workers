@@ -1,17 +1,19 @@
 iii: v1
 name: compose-ui
-language: javascript
-deploy: bundle
-manifest: package.json
+language: rust
+deploy: binary
+manifest: Cargo.toml
 license: Apache-2.0
+bin: compose-ui
 tags: [compose, console, ui, operations, supervisor, logs]
 description: Compose project supervision in the Console — a page over compose::* with live container state, lifecycle actions, worker packages, and per-container log tails.
 
 runtime:
-  kind: javascript
+  kind: rust
 
 scripts:
-  start: node ./index.mjs
+  install: cargo build
+  start: cargo run
 
 dependencies:
   console: "^1.9.11"

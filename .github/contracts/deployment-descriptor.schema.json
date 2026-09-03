@@ -17,6 +17,7 @@
     "source",
     "artifact",
     "runtime",
+    "interface_capture",
     "publish",
     "build_units",
     "registry_projection"
@@ -48,6 +49,7 @@
       ]
     },
     "runtime": {"type": "object"},
+    "interface_capture": {"enum": ["required", "skipped"]},
     "publish": {"type": "boolean"},
     "build_units": {
       "type": "array",
@@ -129,6 +131,7 @@
         "toolchain": {"$ref": "#/$defs/identityVersion"},
         "binary": {"type": "string", "minLength": 1},
         "targets": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "windows_exception": {"type": "string", "minLength": 1},
         "frontends": {"type": "array", "items": {"$ref": "#/$defs/frontend"}}
       }
     },

@@ -57,8 +57,16 @@ import {
   PageShell,
   PageSidebar,
 } from '@/components/ui/PageChrome'
+import { RawValueInput } from '@/components/ui/RawValueInput'
 import { Select } from '@/components/ui/Select'
 import { Selector } from '@/components/ui/Selector'
+import {
+  SettingsField,
+  SettingsList,
+  SettingsRow,
+  SettingsSection,
+} from '@/components/ui/Settings'
+import { SettingsDeck } from '@/components/ui/SettingsDeck'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { StatusPanel } from '@/components/ui/StatusPanel'
@@ -71,6 +79,7 @@ import {
   PanelBody,
   PanelHeader,
 } from '@/components/ui/Surface'
+import { Switch } from '@/components/ui/Switch'
 import {
   Table,
   TableBody,
@@ -150,12 +159,19 @@ export const components: ConsoleApi['components'] = {
   Panel,
   PanelBody,
   PanelHeader,
+  RawValueInput,
   Select,
   SegmentedControl,
   Selector,
+  SettingsDeck,
+  SettingsField,
+  SettingsList,
+  SettingsRow,
+  SettingsSection,
   Skeleton,
   StatusDot,
   StatusPanel,
+  Switch,
   Table,
   TableBody,
   TableCaption,
@@ -181,9 +197,9 @@ export const components: ConsoleApi['components'] = {
   Markdown,
   MarkdownPreview,
   ModelPicker,
-  // The one page-level composite in the kit: worker pages offer "configure"
-  // in place instead of navigating to the workers tab and stranding the
-  // operator there when the editor closes.
+  // Compatibility bridge for older worker bundles. New pages set
+  // `configurationId`; the Console supplies the PageHeader action and opens
+  // the worker inside global Settings.
   WorkerConfigurationDialog,
 }
 

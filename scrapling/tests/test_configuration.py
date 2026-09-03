@@ -81,6 +81,7 @@ def test_register_config_seeds_default_only_when_nothing_stored():
     empty = FakeIII(store=None)
     configuration.register_config(empty)
     assert empty.registered_payloads[0]["initial_value"] == {"inject_guidance": True}
+    assert empty.registered_payloads[0]["metadata"] == {"ui_form": "scrapling"}
     assert all(request["namespace"] == "default" for request in empty.requests)
 
     populated = FakeIII(store={"inject_guidance": False})

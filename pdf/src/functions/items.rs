@@ -37,8 +37,8 @@ pub struct Request {
     #[serde(default)]
     pub pages: Option<Vec<u32>>,
 
-    /// Items to return before truncating. Omit for the configured default; `0`
-    /// returns every item, which on a dense document is a very large response.
+    /// Items to return before truncating; omit for the worker default, `0`
+    /// returns every item (very large on a dense document).
     #[serde(default)]
     pub max_items: Option<usize>,
 }

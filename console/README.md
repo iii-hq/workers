@@ -262,8 +262,9 @@ rich result into the collapsed chat flow), `host.triggerRenderers` (override
 the compact timeline display, expanded details, source section, and raw-data
 redaction for normalized registration/fired/retirement activities, with host
 fallbacks for every slot), and
-`host.configForms` (replace the workers-tab
-form region for one configuration id; dirty/save/reset stay host-owned). A
+`host.configForms` (provide the deliberate form body for one configuration id
+inside global Settings; dirty/save/reset and schema validation stay
+host-owned). There is no generic schema-generated form fallback. A
 configuration form can opt into `{ layout: 'full' }` to receive the entire
 available editor width and height; contained layout remains the default.
 Renders are fenced by an ErrorBoundary and scoped under

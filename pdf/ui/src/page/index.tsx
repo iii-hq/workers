@@ -14,7 +14,9 @@ import {
   CodeEditor,
   EmptyState,
   MarkdownPreview,
+  PageHeader,
   type PageRenderProps,
+  PageShell,
   StatusPanel,
   Tabs,
   TabsContent,
@@ -99,26 +101,13 @@ export function PdfPage({
   )
 
   return (
-    <div className="pdf-ui">
-      <header className="pdf-ui__head">
-        <div className="pdf-ui__head-row">
-          <h1 className="pdf-ui__title">pdf</h1>
-          {onRequestClose ? (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={onRequestClose}
-              aria-label="close pdf"
-            >
-              close
-            </Button>
-          ) : null}
-        </div>
-        <p className="pdf-ui__lede">
-          Classify a document, see which pages need OCR, and read the markdown
-          an agent would get. Parsing runs in the worker on this machine.
-        </p>
-      </header>
+    <PageShell>
+      <PageHeader
+        title="PDF"
+        description="Classify documents, inspect OCR needs, and read extracted markdown."
+        onClose={onRequestClose}
+      />
+      <div className="pdf-ui">
 
       {/* The drop zone owns the page until a document is loaded, then shrinks
           to a bar: once there are results, they are what the page is for. */}
@@ -187,10 +176,11 @@ export function PdfPage({
         />
       )}
 
-      {state.status === 'done' && (
-        <Result name={state.name} result={state.result} />
-      )}
-    </div>
+        {state.status === 'done' && (
+          <Result name={state.name} result={state.result} />
+        )}
+      </div>
+    </PageShell>
   )
 }
 

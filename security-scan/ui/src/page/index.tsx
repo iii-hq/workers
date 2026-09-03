@@ -12,9 +12,9 @@ import {
   Select,
   StatusDot,
 } from '@iii-dev/console-ui'
-import { type ComponentType, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { errText } from './errors.js'
-import { AlertIcon, ChatIcon, RefreshIcon, SearchIcon, SettingsIcon, ShieldIcon } from './icons'
+import { AlertIcon, ChatIcon, RefreshIcon, SearchIcon, ShieldIcon } from './icons'
 import { ScanRequestForm } from './ScanRequestForm'
 import { buildStatusOptions } from './security-dashboard.js'
 import { SecurityRunDetail } from './SecurityRunDetail'
@@ -45,9 +45,6 @@ import { useSecurityRunsLive } from './useSecurityRunsLive'
 import { automaticFocusTarget, beginRetry, scanHistoryDescription, settleRetry } from './view-state.js'
 
 const NARROW_BELOW = 760
-/** Where a console without the configuration-dialog export sends the operator. */
-const CONFIG_HASH = '#/workers/configuration/security-scan'
-
 type RetryStates = Record<string, { pending: boolean; error: string | null }>
 type FocusTarget = { kind: 'run'; runId: string } | { kind: 'filter' }
 // Console Select reserves the empty string for its placeholder state.
@@ -167,7 +164,7 @@ function RunListRow({
                 onOpenChat()
               }}
             >
-              <ChatIcon size={14} />
+              <ChatIcon size={16} />
             </Button>
           ) : null}
           {stoppable || run.status === 'cancelling' ? (
@@ -425,19 +422,6 @@ export function SecurityScanPage({
     setNarrowDetailOpen(false)
   }
 
-  // Configuration opens in the console's own editor dialog — schema fetch,
-  // dirty guard and save are host-owned, shared with the workers tab rather
-  // than duplicated here. Read off `host.components` at runtime, never
-  // imported: a console predating the export degrades to navigation.
-  const [configOpen, setConfigOpen] = useState(false)
-  const HostConfigDialog = host.components?.WorkerConfigurationDialog as
-    | ComponentType<{ configurationId: string | null; onClose: () => void }>
-    | undefined
-  const openConfiguration = () => {
-    if (HostConfigDialog) setConfigOpen(true)
-    else window.location.hash = CONFIG_HASH
-  }
-
   const showSidebar = !narrow || !narrowDetailOpen
   const showMain = !narrow || narrowDetailOpen
   const filtersActive = Boolean(filters.repository.trim() || filters.status)
@@ -467,42 +451,19 @@ export function SecurityScanPage({
             <Button
               variant="ghost"
               size="sm"
-              className="security-scan-ui-configure"
-              aria-label="Configure security scans"
-              title="Analysis budgets, operator model, and the repository allowlist"
-              onClick={openConfiguration}
-            >
-              <SettingsIcon size={14} />
-              <span>configure</span>
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
               className="security-scan-ui-refresh"
               aria-label="Refresh security scans"
               title="Refresh security scans"
               onClick={refresh}
               disabled={loading}
             >
-              <RefreshIcon size={14} className={refreshing ? 'is-spinning' : undefined} />
+              <RefreshIcon size={16} className={refreshing ? 'is-spinning' : undefined} />
               <span>refresh</span>
             </Button>
           </>
         }
         onClose={onRequestClose}
       />
-
-      {HostConfigDialog ? (
-        <HostConfigDialog
-          configurationId={configOpen ? 'security-scan' : null}
-          onClose={() => {
-            setConfigOpen(false)
-            // A save may have changed the allowlist or the operator model, and
-            // the new-scan form derives both from the stored configuration.
-            refresh()
-          }}
-        />
-      ) : null}
 
       <div ref={bodyRef} className="security-scan-ui-body-observer">
         <PageBody side={panelSide} className={classNames('security-scan-ui-body', narrow && 'is-narrow')}>
@@ -546,7 +507,7 @@ export function SecurityScanPage({
                 <div className="security-scan-ui-filter">
                   <label htmlFor="security-scan-repository-filter">repository</label>
                   <div className="security-scan-ui-input-wrap">
-                    <SearchIcon size={14} />
+                    <SearchIcon size={16} />
                     <Input
                       ref={repositoryFilterRef}
                       id="security-scan-repository-filter"

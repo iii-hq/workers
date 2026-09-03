@@ -81,6 +81,7 @@ pub fn apply_guidance(iii: &IIIClient, state: &GuidanceState, enabled: bool) {
 fn spec() -> config_client::EntrySpec {
     config_client::EntrySpec {
         id: config_id(),
+        form_id: DEFAULT_CONFIG_ID,
         name: "web",
         description:
             "Timeouts, byte caps, user-agent, and loopback policy for the web::fetch worker.",
