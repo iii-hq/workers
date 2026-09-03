@@ -16,9 +16,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// A format this worker converts. The names are the wire vocabulary: stable,
-/// lowercase, and independent of the file extension that named them (`.docm`
-/// is `docx`, `.xlsb` is `excel`).
+/// A format this worker converts. Names are independent of the file extension
+/// that named them (`.docm` is `docx`, `.xlsb` is `excel`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Format {

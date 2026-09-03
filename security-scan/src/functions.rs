@@ -19,7 +19,7 @@ use crate::{
 };
 
 pub const REQUEST_ID: &str = "security-scan::request";
-pub const REQUEST_DESC: &str = "Queue a report-only security review of the full tree at an exact 40-character Git commit SHA for an operator-configured repository. Omit target_sha to analyze the entire repository at HEAD. Optional model follows the Console composer catalog id. Duplicate repository, commit, mode, and model requests return the same run id.";
+pub const REQUEST_DESC: &str = "Queue a report-only security review of an operator-configured repository at an exact 40-character commit SHA; omit target_sha to review HEAD. Duplicate repository, commit, mode and model requests return the same run id.";
 pub const LIST_ID: &str = "security-scan::list";
 pub const LIST_DESC: &str = "List security-scan runs as sanitized lightweight summaries, newest update first. Optional repository and status filters are applied before the bounded result limit.";
 pub const READ_ID: &str = "security-scan::read";

@@ -6,7 +6,7 @@
     "properties": {
       "include_untracked": {
         "default": true,
-        "description": "Include files git does not track yet (still honouring `.gitignore`). On by default — a file the agent just created is exactly the one you are looking for. Ignored outside a repository, where the workspace listing is the source of candidates.",
+        "description": "Include files git does not track yet, still honouring `.gitignore`. Ignored outside a repository.",
         "type": "boolean"
       },
       "limit": {
@@ -20,7 +20,7 @@
         ]
       },
       "query": {
-        "description": "Fuzzy query. Matched as a subsequence against every tracked path, with basename and word-boundary hits ranked highest. Empty returns the first `limit` paths unranked.",
+        "description": "Fuzzy subsequence query over candidate paths; basename and word-boundary hits rank highest. Empty returns the first `limit` paths unranked.",
         "type": "string"
       }
     },

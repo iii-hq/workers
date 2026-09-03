@@ -109,16 +109,9 @@ pub fn register(iii: &Arc<IIIClient>, cell: &ConfigCell) {
             }
         })
         .description(
-            "Send an email via the account's SMTP transport. Payload: \
-             { account: string (key from email worker config), to: string[], \
-             cc?: string[], bcc?: string[], subject: string, html?: string, \
-             text?: string, reply_to?: string, in_reply_to?: string (Message-ID), \
-             references?: string[], attachments?: [{ filename, content_type, \
-             source: { kind: 'base64', data } }] }. Returns { message_id }. \
+            "Send an email via the account's SMTP transport; provide `html`, `text` or both. \
              The SMTP login comes from the account's `smtp.username` / `smtp.password` \
-             configuration, or from `auth::get_token` under provider key `email::<account>` \
-             when the configuration carries none. Provide html OR text (or both); at least \
-             one body is required.",
+             configuration, else from `auth::get_token` under provider key `email::<account>`.",
         ),
     );
 }

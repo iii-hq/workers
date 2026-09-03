@@ -115,12 +115,9 @@ pub struct SchemaDiagramReq {
     pub max_tables: usize,
     #[serde(default = "default_timeout")]
     pub timeout_ms: u64,
-    /// Lay out only the neighbourhood of this table.
-    ///
-    /// A whole schema drawn at once answers "what exists"; it does not answer
-    /// "what does this table touch", which is the question actually being
-    /// asked most of the time. With a focus the diagram becomes explorable
-    /// one hop at a time instead of a wall to be scanned.
+    /// Lay out only the neighbourhood of this table, `depth` hops out.
+    // A whole schema drawn at once answers "what exists", not "what does this
+    // table touch"; a focus makes the diagram explorable one hop at a time.
     #[serde(default)]
     pub focus: Option<String>,
     /// How many foreign-key hops out from `focus` to include. Ignored without

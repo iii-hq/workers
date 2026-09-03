@@ -5,7 +5,7 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "properties": {
       "root": {
-        "description": "Directory to work in. Jail-relative when shell's `fs.host_roots` are set, else absolute. A plain folder is enough — a git repository is an overlay, never a requirement.",
+        "description": "Directory to work in: jail-relative when shell's `fs.host_roots` are set, else absolute. Need not be a git repository.",
         "type": "string"
       }
     },

@@ -42,9 +42,8 @@ pub struct TableView {
     /// Columns the reader has hidden. Order is not meaningful.
     #[serde(default)]
     pub hidden: Vec<String>,
-    /// Column display order. Names not listed keep their natural position
-    /// after those that are, so adding a column to the table does not require
-    /// re-saving the view.
+    /// Column display order. Unlisted columns keep their natural position
+    /// after the listed ones.
     #[serde(default)]
     pub order: Vec<String>,
 }

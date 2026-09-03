@@ -5,7 +5,7 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
       "Format": {
-        "description": "A format this worker converts. The names are the wire vocabulary: stable, lowercase, and independent of the file extension that named them (`.docm` is `docx`, `.xlsb` is `excel`).",
+        "description": "A format this worker converts. Names are independent of the file extension that named them (`.docm` is `docx`, `.xlsb` is `excel`).",
         "oneOf": [
           {
             "description": "Binary Word 97-2003 (`.doc`).",
@@ -94,7 +94,7 @@
         ]
       },
       "FsScope": {
-        "description": "The filesystem jail a call runs under.\n\nThe harness stamps this onto every function it dispatches, so a `path` an agent supplies has to be checked against it. Without the check these functions would read any document on the machine and hand back its text, which is a way around the scope the session was granted. Mirrors the shape the shell and pdf workers take.",
+        "description": "The filesystem jail a call runs under; `path` is checked against it.",
         "properties": {
           "grants": {
             "default": [],
@@ -127,7 +127,7 @@
       },
       "file_name": {
         "default": null,
-        "description": "Original file name for inline bytes, used only to recognise a format the content cannot name. A `.csv` needs this; nothing else does. Ignored when `path` is set, which carries its own name.",
+        "description": "Original file name for `bytes_base64`, used only to recognise a format the content cannot name (`.csv`). Ignored when `path` is set.",
         "type": [
           "string",
           "null"
@@ -154,7 +154,7 @@
             "type": "null"
           }
         ],
-        "description": "The filesystem jail this call runs under. Stamped by the harness on an agent's call; absent on an operator or console call, which is already user-initiated and not subject to the agent's scope."
+        "description": "Filesystem jail for this call. Stamped by the harness on an agent's call; absent on an operator or console call."
       },
       "include_bytes": {
         "default": true,
@@ -241,7 +241,7 @@
         "type": "object"
       },
       "Format": {
-        "description": "A format this worker converts. The names are the wire vocabulary: stable, lowercase, and independent of the file extension that named them (`.docm` is `docx`, `.xlsb` is `excel`).",
+        "description": "A format this worker converts. Names are independent of the file extension that named them (`.docm` is `docx`, `.xlsb` is `excel`).",
         "oneOf": [
           {
             "description": "Binary Word 97-2003 (`.doc`).",

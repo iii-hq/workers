@@ -22,13 +22,12 @@ pub struct QueryReq {
     #[serde(default = "default_timeout")]
     pub timeout_ms: u64,
     /// Whether this run belongs in `database::history`.
-    ///
-    /// Internal only — never deserialized, so a statement arriving over the
-    /// wire always records. The catalog reads behind `describeSchema`,
-    /// `browseTable`, `columnStats`, `explain` and `schemaDiagram` all run
-    /// through this same path, and recording them would bury the statements a
-    /// person actually typed under `PRAGMA table_info(...)` and spawn a
-    /// `state::update` per internal read.
+    // Internal only — never deserialized, so a statement arriving over the
+    // wire always records. The catalog reads behind `describeSchema`,
+    // `browseTable`, `columnStats`, `explain` and `schemaDiagram` all run
+    // through this same path, and recording them would bury the statements a
+    // person actually typed under `PRAGMA table_info(...)` and spawn a
+    // `state::update` per internal read.
     #[serde(skip, default = "records_history")]
     pub record_history: bool,
 }

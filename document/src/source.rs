@@ -18,13 +18,11 @@ use std::path::Path;
 
 use crate::config::WorkerConfig;
 
-/// The filesystem jail a call runs under.
-///
-/// The harness stamps this onto every function it dispatches, so a `path` an
-/// agent supplies has to be checked against it. Without the check these
-/// functions would read any document on the machine and hand back its text,
-/// which is a way around the scope the session was granted. Mirrors the shape
-/// the shell and pdf workers take.
+/// The filesystem jail a call runs under; `path` is checked against it.
+// The harness stamps this onto every function it dispatches. Without the check
+// these functions would read any document on the machine, a way around the
+// scope the session was granted. Mirrors the shape the shell and pdf workers
+// take.
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct FsScope {
     /// The session's working directory.
@@ -48,15 +46,13 @@ pub struct DocumentSource {
     #[serde(default)]
     pub bytes_base64: Option<String>,
 
-    /// Original file name for inline bytes, used only to recognise a format
-    /// the content cannot name. A `.csv` needs this; nothing else does.
-    /// Ignored when `path` is set, which carries its own name.
+    /// Original file name for `bytes_base64`, used only to recognise a format
+    /// the content cannot name (`.csv`). Ignored when `path` is set.
     #[serde(default)]
     pub file_name: Option<String>,
 
-    /// The filesystem jail this call runs under. Stamped by the harness on an
-    /// agent's call; absent on an operator or console call, which is already
-    /// user-initiated and not subject to the agent's scope.
+    /// Filesystem jail for this call. Stamped by the harness on an agent's
+    /// call; absent on an operator or console call.
     #[serde(default)]
     pub fs_scope: Option<FsScope>,
 }

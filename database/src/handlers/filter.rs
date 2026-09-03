@@ -46,10 +46,9 @@ pub enum FilterOp {
     IsNotNull,
     /// NULL or the empty string. Distinct from `is_null` on purpose.
     IsEmpty,
-    /// Set membership, over `values`. Expressing "status is one of open,
-    /// pending, held" as three OR'd equality filters is not possible here —
-    /// filters stack with AND — so without this the question cannot be asked
-    /// at all.
+    /// Set membership, over `values`.
+    // Filters stack with AND, so "status is one of open, pending, held" cannot
+    // be expressed as OR'd equality filters; without this it cannot be asked.
     In,
     NotIn,
 }
@@ -98,9 +97,9 @@ pub struct FilterSpec {
     /// Postgres only. Rejected elsewhere rather than silently ignored.
     #[serde(default)]
     pub case_sensitive: Option<bool>,
-    /// Kept in the list but not applied. A caller refining a query wants to
-    /// switch one condition off and back on without losing how it was built,
-    /// and a console that only offers delete makes that a retype.
+    /// Kept in the list but not applied.
+    // Lets a caller switch one condition off and back on without losing how
+    // it was built; a console that only offers delete makes that a retype.
     #[serde(default)]
     pub disabled: bool,
 }
@@ -119,9 +118,9 @@ pub enum NullsPosition {
     Last,
 }
 
-/// Type-aware sort modes. These exist server-side because the grid is paged:
-/// sorting the fetched page would order 50 rows out of N, which is a
-/// different answer from sorting the table.
+/// Type-aware sort modes, applied server-side over the whole table.
+// They exist here because the grid is paged: sorting the fetched page would
+// order 50 rows out of N, a different answer from sorting the table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SortMode {

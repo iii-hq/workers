@@ -27,10 +27,9 @@ use crate::source::{describe_error, Body, DocumentSource};
 
 pub const ID: &str = "document::to-markdown";
 pub const DESC: &str = "Convert a Word, PowerPoint, Excel, OpenDocument, RTF, EPUB, CSV or PDF \
-                        document to markdown, preserving headings, lists, links and tables. The \
-                        format is detected from the bytes. Responses are capped; pass max_chars 0 \
-                        to take the whole document. For a PDF prefer pdf::classify first, which \
-                        reports which pages need OCR.";
+                        document to markdown, preserving headings, lists, links and tables. \
+                        Responses are capped; pass max_chars 0 for the whole document. For a PDF \
+                        run pdf::classify first to find pages needing OCR.";
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct Request {

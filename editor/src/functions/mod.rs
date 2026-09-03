@@ -40,10 +40,9 @@ pub const DESC_WORKSPACE_GET: &str =
     "The active workspace: its root, the files open against it, and which folders are \
      expanded. Shared by every surface, so this is what the agent and the console both see.";
 pub const DESC_CHANGES: &str =
-    "Recent file changes in the workspace, newest first, one entry per path. Recorded by \
-     the observer for every change however it was made, so it answers what happened while \
-     nothing was watching. Each entry carries the patch, the line counts, the function that \
-     performed the write, and the harness session and turn it happened in.";
+    "Recent file changes in the workspace, newest first, one entry per path, recorded \
+     however the write was made. Each entry carries the patch, line counts, the function \
+     that wrote, and the harness session and turn.";
 pub const DESC_TREE: &str =
     "List a folder in the workspace, with the expansion state the workspace remembers. \
      The walk, the noise-folder excludes and the jail are the shell worker's.";

@@ -13,10 +13,10 @@ use crate::events::{self, CalledEmitter};
 use crate::gh;
 
 pub const EXEC_ID: &str = "github::exec";
-pub const EXEC_DESC: &str = "Run any gh command: { args: [\"pr\", \"list\", \"-R\", \"owner/name\"], stdin?, timeout_ms? } -> { stdout, stderr, exit_code, duration_ms, timed_out, stdout_truncated, stderr_truncated }. A non-zero exit or a timeout is DATA here, not an error. The escape hatch for everything without a typed github::* function.";
+pub const EXEC_DESC: &str = "Run any gh command; `args` is the argv without the leading `gh`. A non-zero exit or a timeout is returned as data, not an error. The escape hatch for everything without a typed github::* function.";
 
 pub const API_ID: &str = "github::api";
-pub const API_DESC: &str = "Call any GitHub REST endpoint via gh api: { path: \"repos/OWNER/REPO/issues\", method?, fields?, body?, jq?, paginate?, timeout_ms? } -> { value: <parsed JSON> }. fields become -f key=value form fields (default method flips to POST); body is sent verbatim as the JSON request body. Non-2xx responses are errors carrying gh's stderr.";
+pub const API_DESC: &str = "Call any GitHub REST endpoint via gh api and return the parsed JSON. `fields` become `-f key=value` form fields and flip the default method to POST; `body` is sent verbatim as JSON. Non-2xx responses are errors carrying gh's stderr.";
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ExecRequest {
@@ -30,9 +30,8 @@ pub struct ExecRequest {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ApiRequest {
-    /// Endpoint path, with concrete owner/repo values (e.g. "rate_limit" or
-    /// "repos/cli/cli/issues") — placeholder expansion needs a checkout the
-    /// worker does not have.
+    /// Endpoint path with concrete owner/repo values, e.g. "rate_limit" or
+    /// "repos/cli/cli/issues"; `{owner}` placeholders are not expanded.
     pub path: String,
     /// HTTP method. gh defaults to GET, or POST when fields/body are present.
     pub method: Option<String>,

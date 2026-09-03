@@ -109,9 +109,8 @@ pub struct TableDescription {
 pub struct DescribeTableReq {
     #[serde(default)]
     pub db: Option<String>,
-    /// Table or view name. May be schema-qualified (`analytics.events`) on
-    /// postgres; prefer the explicit `schema` field when the name itself
-    /// contains a dot.
+    /// Table or view name; may be schema-qualified (`analytics.events`) on
+    /// postgres. Use `schema` when the name itself contains a dot.
     pub table: String,
     #[serde(default)]
     pub schema: Option<String>,
