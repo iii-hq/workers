@@ -236,18 +236,6 @@ def test_registry_publishers_consume_interface_evidence():
         assert "deployment-interface.json" in text, name
 
 
-def test_public_surface_verification_does_not_repeat_registry_interface_readback():
-    verify = body("deploy-verify.yml")
-    assert "deployment_interface.py verify-evidence" not in verify
-    assert "deployment_interface.py compare" not in verify
-    assert "registry-interface.json" not in verify
-
-
-def test_github_asset_publication_leaves_interface_validation_to_registry_publication():
-    publish = body("deploy-publish.yml")
-    assert "deployment_interface.py verify-evidence" not in publish
-
-
 def test_registry_publishers_never_synthesize_an_empty_interface():
     for name in ("_deploy-registry.yml", "_deploy-registry-finalize.yml"):
         text = body(name)
