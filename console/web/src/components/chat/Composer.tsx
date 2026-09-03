@@ -12,7 +12,15 @@ import {
   MoreHorizontal,
   Square,
 } from 'lucide-react'
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { PermissionModePicker } from '@/components/permissions/PermissionModePicker'
 import { MOBILE_LAYOUT_QUERY, useMediaQuery } from '@/hooks/use-media-query'
 import { attachmentsFromFiles } from '@/lib/attachments/from-files'
@@ -155,6 +163,11 @@ interface ComposerProps {
   onTextChange?: (text: string) => void
   /** Initial attachment chips (applied once on mount). */
   initialAttachments?: Attachment[]
+  /**
+   * Injected toolbar actions rendered beside the attach button (the
+   * `host.chat.registerComposerAction` slot), already built by the host.
+   */
+  composerActions?: ReactNode
   functionEntries?: FunctionEntry[]
   /**
    * Queued messages the composer can browse+edit with ↑/↓, oldest→newest.
@@ -211,6 +224,7 @@ export function Composer({
   initialText,
   onTextChange,
   initialAttachments,
+  composerActions,
   functionEntries,
   queuedForEdit,
   onEditQueued,
@@ -553,6 +567,7 @@ export function Composer({
             disabled={inputDisabled}
             className={toolbarIconButtonClass}
           />
+          {composerActions}
           <button
             type="button"
             onClick={() => setMobileSettingsOpen(true)}
@@ -591,6 +606,7 @@ export function Composer({
               disabled={inputDisabled}
               className={toolbarIconButtonClass}
             />
+            {composerActions}
             {showMemoryBank && onMemoryBankChange ? (
               <BankPicker
                 value={memoryBank ?? null}

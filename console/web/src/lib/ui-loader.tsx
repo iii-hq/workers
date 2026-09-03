@@ -28,6 +28,7 @@ import { PaneConfigurationProvider } from '@/lib/pane-configuration'
 import { requestPanelOpen } from '@/lib/panel-context'
 import { ExtensionScopeProvider } from '@/lib/ui-scope'
 import {
+  registerExtComposerAction,
   registerExtConfigForm,
   registerExtPage,
   registerExtProviderConfigForm,
@@ -39,6 +40,7 @@ import {
 } from '@/lib/ui-slots'
 import { requestWorkingDirectoryChange } from '@/lib/working-directory-request'
 import type {
+  ComposerActionProps,
   ConfigFormProps,
   ConsoleApi,
   Host,
@@ -258,6 +260,21 @@ function makeHost(
             render: (props: SessionTurnSummaryProps) => (
               <ScopedExtension scope={scope} path={path}>
                 <Summary {...props} />
+              </ScopedExtension>
+            ),
+          }),
+        )
+      },
+      registerComposerAction(action) {
+        const Action = action.render
+        return track(
+          registerExtComposerAction({
+            ...action,
+            scope,
+            path,
+            render: (props: ComposerActionProps) => (
+              <ScopedExtension scope={scope} path={path}>
+                <Action {...props} />
               </ScopedExtension>
             ),
           }),
