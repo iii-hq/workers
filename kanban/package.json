@@ -19,7 +19,7 @@
     "start": "node dist/bundle/index.mjs"
   },
   "dependencies": {
-    "iii-sdk": "0.22.1-alpha.25"
+    "iii-sdk": "0.23.0"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.10",

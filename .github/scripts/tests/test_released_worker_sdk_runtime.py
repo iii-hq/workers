@@ -15,7 +15,7 @@ def test_opengantry_uses_current_sdk_release() -> None:
         (REPO_ROOT / "opengantry" / "package.json").read_text(encoding="utf-8")
     )
 
-    assert package["dependencies"]["iii-sdk"] == "0.22.1-alpha.25"
+    assert package["dependencies"]["iii-sdk"] == "0.23.0"
 
 
 def test_scrapling_install_does_not_replace_current_sdk_with_vendor_copy() -> None:

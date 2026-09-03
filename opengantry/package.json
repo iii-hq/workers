@@ -23,7 +23,7 @@
   },
   "dependencies": {
     "@jeger-ai/opengantry": "^3.2.5",
-    "iii-sdk": "0.22.1-alpha.25",
+    "iii-sdk": "0.23.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

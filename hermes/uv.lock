@@ -72,8 +72,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "iii-helpers", specifier = "==0.22.1a25" },
-    { name = "iii-sdk", specifier = "==0.22.1a25" },
+    { name = "iii-helpers", specifier = "==0.23.0" },
+    { name = "iii-sdk", specifier = "==0.23.0" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-sdk" },
     { name = "pytest", marker = "extra == 'dev'" },
@@ -122,7 +122,7 @@ wheels = [
 
 [[package]]
 name = "iii-helpers"
-version = "0.22.1a25"
+version = "0.23.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
@@ -131,14 +131,14 @@ dependencies = [
     { name = "pydantic" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/50/32/80bda7e2f96d0681ebfe9b6afe3cefad23edbacc7a76ed6e3306b4fa7215/iii_helpers-0.22.1a25.tar.gz", hash = "sha256:e62b74340b48baa0a3e35e1e116f8195a6b7256db14e234f1011a4c96e44f064", size = 81173, upload-time = "2026-08-27T13:17:50.521Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/85/4e/86f8c14a33972371b0124ad5720ce346c52a47e7d801e95cb9efe3df8502/iii_helpers-0.23.0.tar.gz", hash = "sha256:6035086d8dbf7cecb9f92b7dc6cb9e9793c73d6eebdc286394f171fb71abe5f5", size = 81173, upload-time = "2026-09-01T17:33:13.815Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d1/b6/eb7b9abb7e3c009df121ba663d348468ef4c6269a3a995ea2c55cf4a4ab0/iii_helpers-0.22.1a25-py3-none-any.whl", hash = "sha256:1aa8186b16f38fd4d237064f1d8a078a0a4552d368ef0f3ee59298eb4c9f4e0c", size = 29467, upload-time = "2026-08-27T13:17:49.214Z" },
+    { url = "https://files.pythonhosted.org/packages/4c/96/2d8e36a35b223ac31d8af7b8aa52aa44e49e3eb397d1b2cd6df02420bde4/iii_helpers-0.23.0-py3-none-any.whl", hash = "sha256:035332804bb8f585905a223057f63528000b1cce1ebe7a8bd319b6e9cbf9ccf1", size = 29444, upload-time = "2026-09-01T17:33:12.911Z" },
 ]
 
 [[package]]
 name = "iii-sdk"
-version = "0.22.1a25"
+version = "0.23.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "iii-helpers" },
@@ -146,9 +146,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1f/50/b05e645eed82f9a5f1c4abab30a8ce4d0e4346fb71032e33749852ce98a8/iii_sdk-0.22.1a25.tar.gz", hash = "sha256:2c32929af7882e95744e306314ab49032263218eb8c6fcea6618bac78610c7cf", size = 201917, upload-time = "2026-08-27T13:18:53.043Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2d/4a/f23543aa23f5bb0aed1334f2147a38520555809927faeb967295cd4c00aa/iii_sdk-0.23.0.tar.gz", hash = "sha256:40ec1de1193a8b5f1d7df2a42acb8084cfcbd8627863f8a412281918cd0d6d38", size = 201938, upload-time = "2026-09-01T17:34:44.812Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f3/92/15ef1ef3554190012d71aaba81c7756958064b095f03ed7b7befa8e15ef1/iii_sdk-0.22.1a25-py3-none-any.whl", hash = "sha256:8dee91047d198103af5534392ffee989aa74933f84fede282038651a211fb5a9", size = 42497, upload-time = "2026-08-27T13:18:51.874Z" },
+    { url = "https://files.pythonhosted.org/packages/25/a5/c6e50faff6ebe8025fb03f976128dade6f9bd2c05bb57f8c7a6f4a909da0/iii_sdk-0.23.0-py3-none-any.whl", hash = "sha256:382df8108c7f642768c8956dacba5cbbd9bb2db0b21c74ef3174c620011b717c", size = 42490, upload-time = "2026-09-01T17:34:43.646Z" },
 ]
 
 [[package]]
