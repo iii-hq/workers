@@ -47,9 +47,10 @@ pub struct PdfSource {
     #[serde(default)]
     pub bytes_base64: Option<String>,
 
-    /// The filesystem jail this call runs under. Stamped by the harness on an
-    /// agent's call; absent on an operator or console call, which is already
-    /// user-initiated and not subject to the agent's scope.
+    /// Filesystem jail this call runs under; stamped by the harness on agent
+    /// calls, absent on operator or console calls.
+    // Operator/console calls are user-initiated and not subject to the agent's
+    // scope.
     #[serde(default)]
     pub fs_scope: Option<FsScope>,
 }

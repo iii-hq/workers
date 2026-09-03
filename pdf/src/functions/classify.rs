@@ -31,9 +31,8 @@ pub struct Request {
     #[serde(default)]
     pub password: Option<String>,
 
-    /// Pages sampled for the verdict, overriding the configured default. `0`
-    /// scans every page, which is slower but settles a borderline mixed
-    /// document.
+    /// Pages sampled for the verdict, overriding the worker default; `0` scans
+    /// every page (slower, settles a borderline mixed document).
     #[serde(default)]
     pub sample_pages: Option<usize>,
 }

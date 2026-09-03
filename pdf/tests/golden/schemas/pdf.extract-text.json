@@ -45,7 +45,7 @@
             "type": "null"
           }
         ],
-        "description": "The filesystem jail this call runs under. Stamped by the harness on an agent's call; absent on an operator or console call, which is already user-initiated and not subject to the agent's scope."
+        "description": "Filesystem jail this call runs under; stamped by the harness on agent calls, absent on operator or console calls."
       },
       "max_chars": {
         "default": null,

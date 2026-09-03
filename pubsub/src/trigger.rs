@@ -19,9 +19,9 @@ use crate::hub::Hub;
 pub struct SubscribeTriggerSpec {
     /// Topic to subscribe to
     pub topic: String,
-    /// Optional function ID to evaluate before invoking handler.
-    /// Accepted for schema parity; the builtin never evaluated it and neither
-    /// does this worker.
+    /// Condition function ID accepted for schema parity with the builtin
+    /// trigger; never evaluated.
+    // The engine builtin never evaluated it and neither does this worker.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub condition_function_id: Option<String>,
 }

@@ -137,7 +137,9 @@ pub struct ServeAddInput {
     /// URL path prefix to publish under; defaults to `/`.
     #[serde(default = "default_path")]
     pub path: String,
-    /// What to publish: a local port (`3000`), a loopback URL (`http://127.0.0.1:3000`, `https+insecure://localhost:8443`), or an absolute file or directory path.
+    /// Local port (`3000`), loopback URL (`http://127.0.0.1:3000`,
+    /// `https+insecure://localhost:8443`), or absolute file/directory path to
+    /// publish.
     pub target: String,
     /// Required `true` for Funnel: acknowledges that the target becomes reachable by anyone with the link.
     #[serde(default)]

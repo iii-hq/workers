@@ -471,7 +471,7 @@
         "type": "array"
       },
       "model": {
-        "description": "Model id the prompt targets. `llama-server` serves one model at a time and counts with whichever it loaded, so this is carried for the reply rather than to select a tokenizer.",
+        "description": "Model id the prompt targets; echoed in the reply, since `llama-server` counts with whichever model it has loaded.",
         "type": "string"
       },
       "system_prompt": {

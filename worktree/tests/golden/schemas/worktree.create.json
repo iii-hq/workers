@@ -21,7 +21,7 @@
       },
       "pr": {
         "default": null,
-        "description": "Create the worktree at a GitHub pull request head: fetches `refs/pull/<n>/head` from `origin` and branches `<prefix>pr-<n>` at it. Mutually exclusive with `base_ref` and `branch`.",
+        "description": "Pull request to branch from (fetches `refs/pull/<n>/head` from `origin` as `<prefix>pr-<n>`); excludes `base_ref` and `branch`.",
         "format": "uint64",
         "minimum": 0.0,
         "type": [

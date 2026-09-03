@@ -42,7 +42,7 @@
         "type": "string"
       },
       "target": {
-        "description": "What to publish: a local port (`3000`), a loopback URL (`http://127.0.0.1:3000`, `https+insecure://localhost:8443`), or an absolute file or directory path.",
+        "description": "Local port (`3000`), loopback URL (`http://127.0.0.1:3000`, `https+insecure://localhost:8443`), or absolute file/directory path to publish.",
         "type": "string"
       }
     },

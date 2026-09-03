@@ -6,7 +6,7 @@
     "properties": {
       "family": {
         "default": null,
-        "description": "Only return this diagram family (`flowchart`, `sequenceDiagram`, …; aliases like `graph`, `sequence` or `state` are accepted). Omit for the one-line overview of every family.",
+        "description": "Diagram family to return (`flowchart`, `sequenceDiagram`, …; aliases like `graph` accepted); omit for the overview of every family.",
         "type": [
           "string",
           "null"
