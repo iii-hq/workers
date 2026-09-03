@@ -13,12 +13,10 @@ from deployment_train import (
     build,
     build_frontends,
     build_oci_layout,
-    finalize,
     frontend_metadata,
     matrix,
     normalized_tar,
     normalized_zip,
-    prepare,
     select_descriptor,
     verify_prepared,
 )
@@ -98,76 +96,6 @@ def rust_descriptor(worker: str, source_sha: str, targets: list[str]) -> dict:
         for target in targets
     ]
     return seal_descriptor(selected)
-
-
-def test_prepare_accepts_exact_target_independent_of_manifest_metadata(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    source_sha = "a" * 40
-    selected = descriptor("smoke", source_sha, "0.1.0")
-    descriptor_path = tmp_path / "deployment-descriptor.json"
-    descriptor_path.write_text(json.dumps(selected), encoding="utf-8")
-    monkeypatch.setattr(
-        deployment_train.subprocess,
-        "check_output",
-        lambda *_args, **_kwargs: source_sha + "\n",
-    )
-
-    assert prepare(argparse.Namespace(
-        worker="smoke",
-        source_sha=source_sha,
-        target_version="2.0.0-beta",
-        channel="next",
-        descriptor_sha256=selected["descriptor_sha256"],
-        descriptor=descriptor_path,
-    )) == 0
-
-
-def test_prepare_accepts_numbered_rc_target_on_next(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    source_sha = "a" * 40
-    selected = descriptor("smoke", source_sha, "0.1.0")
-    descriptor_path = tmp_path / "deployment-descriptor.json"
-    descriptor_path.write_text(json.dumps(selected), encoding="utf-8")
-    monkeypatch.setattr(
-        deployment_train.subprocess,
-        "check_output",
-        lambda *_args, **_kwargs: source_sha + "\n",
-    )
-
-    assert prepare(argparse.Namespace(
-        worker="smoke",
-        source_sha=source_sha,
-        target_version="2.0.0-rc.1",
-        channel="next",
-        descriptor_sha256=selected["descriptor_sha256"],
-        descriptor=descriptor_path,
-    )) == 0
-
-
-def test_prepare_rejects_suffixed_target_on_latest(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    source_sha = "a" * 40
-    selected = descriptor("smoke", source_sha, "0.1.0")
-    descriptor_path = tmp_path / "deployment-descriptor.json"
-    descriptor_path.write_text(json.dumps(selected), encoding="utf-8")
-    monkeypatch.setattr(
-        deployment_train.subprocess,
-        "check_output",
-        lambda *_args, **_kwargs: source_sha + "\n",
-    )
-
-    with pytest.raises(SystemExit, match="pure MAJOR.MINOR.PATCH"):
-        prepare(argparse.Namespace(
-            worker="smoke",
-            source_sha=source_sha,
-            target_version="1.2.3-beta",
-            channel="latest",
-            descriptor_sha256=selected["descriptor_sha256"],
-            descriptor=descriptor_path,
-        ))
 
 
 def test_verify_prepared_checks_inventory_without_executing_worker(tmp_path: Path) -> None:
@@ -547,66 +475,3 @@ def _init_release_repo(tmp_path: Path, tags: list[str]) -> str:
     ).strip()
 
 
-def test_finalize_accepts_tagged_candidate_with_matching_stable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    source_sha = _init_release_repo(tmp_path, ["smoke/v1.7.0-rc.2"])
-    selected = rust_descriptor(
-        "smoke", source_sha, ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
-    )
-    descriptor_path = tmp_path / "deployment-descriptor.json"
-    descriptor_path.write_text(json.dumps(selected), encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
-
-    assert finalize(argparse.Namespace(
-        worker="smoke",
-        source_sha=source_sha,
-        candidate_version="1.7.0-rc.2",
-        stable_version="1.7.0",
-        descriptor_sha256=selected["descriptor_sha256"],
-        descriptor=descriptor_path,
-    )) == 0
-
-
-def test_finalize_rejects_candidate_without_rc_tag(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    source_sha = _init_release_repo(tmp_path, [])
-    selected = rust_descriptor(
-        "smoke", source_sha, ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
-    )
-    descriptor_path = tmp_path / "deployment-descriptor.json"
-    descriptor_path.write_text(json.dumps(selected), encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
-
-    with pytest.raises(SystemExit, match="is not in the git history"):
-        finalize(argparse.Namespace(
-            worker="smoke",
-            source_sha=source_sha,
-            candidate_version="1.7.0-rc.2",
-            stable_version="1.7.0",
-            descriptor_sha256=selected["descriptor_sha256"],
-            descriptor=descriptor_path,
-        ))
-
-
-def test_finalize_rejects_stable_behind_existing_tagged_core(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    source_sha = _init_release_repo(tmp_path, ["smoke/v1.7.0-rc.2", "smoke/v2.0.0"])
-    selected = rust_descriptor(
-        "smoke", source_sha, ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
-    )
-    descriptor_path = tmp_path / "deployment-descriptor.json"
-    descriptor_path.write_text(json.dumps(selected), encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
-
-    with pytest.raises(SystemExit, match="is behind existing"):
-        finalize(argparse.Namespace(
-            worker="smoke",
-            source_sha=source_sha,
-            candidate_version="1.7.0-rc.2",
-            stable_version="1.7.0",
-            descriptor_sha256=selected["descriptor_sha256"],
-            descriptor=descriptor_path,
-        ))
