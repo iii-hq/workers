@@ -165,7 +165,8 @@ pub fn register_config_trigger(
         })
         .description(
             "Internal: reload connection pools from the authoritative configuration when it changes.",
-        ),
+        )
+        .metadata(json!({ "internal": true })),
     );
 
     iii.register_trigger(RegisterTriggerInput::new(

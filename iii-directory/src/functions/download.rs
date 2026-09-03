@@ -563,7 +563,7 @@ impl Drop for InFlightClaim {
 
 use std::path::Path;
 
-/// Decide whether a worker from `worker::list` needs a skills download
+/// Decide whether a worker from `compose::status` needs a skills download
 /// during boot reconcile. Returns `None` to skip, `Some(spec)` to
 /// download.
 ///

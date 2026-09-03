@@ -386,7 +386,8 @@ pub fn register_config_trigger(
         })
         .description(
             "Internal: transactionally apply the authoritative storage configuration without restarting the worker.",
-        ),
+        )
+        .metadata(json!({ "internal": true })),
     );
 
     iii.register_trigger(RegisterTriggerInput::new(

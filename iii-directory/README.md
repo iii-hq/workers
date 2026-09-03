@@ -399,7 +399,7 @@ The native ids:
 | Function ID | Description |
 |---|---|
 | `directory::registry::workers::list` | Browse / search published workers in `api.workers.iii.dev`. Optional free-text `search` (matched fuzzy by `pg_trgm`) and opaque `cursor` for pagination; page size is server-authored. Response is `{ workers: [...], pagination: { next_cursor, has_more, page_size } }`. Shares the core `name` / `description` / `version` fields with the engine's `engine::workers::list`. |
-| `directory::registry::workers::info` | Full registry detail for one worker. Fans out two parallel registry calls — `GET /w/{slug}` for the worker envelope (publication metadata + readme + functions + triggers) and `GET /w/{slug}/skills` for the skills tree — and merges them into `{ worker, readme, api_reference, skills_tree }`. The user-facing input still accepts `version:` (semver) or `tag:` (e.g. `latest`); both go on the wire as `?version=…`. |
+| `directory::registry::workers::info` | Pre-install card for one worker. Fans out two parallel registry calls — `GET /w/{slug}` for the worker envelope (publication metadata + readme + functions + triggers) and `GET /w/{slug}/skills` for the skills tree — and merges them into `{ worker, api_reference, skills_tree, readme? }`. The card keeps public function/trigger names and descriptions only: request/response schemas, metadata, internal and search-excluded functions are dropped (browser's schemas alone ran 65 KB; the contract is `engine::functions::info` after installing), and `readme` (10–25 KB) is included only with `readme: true`. The full record stays cached in-process for `directory::search_functions`. Input still accepts `version:` (semver) or `tag:` (e.g. `latest`); both go on the wire as `?version=…`. |
 
 Both `directory::registry::*` responses are cached in-process for
 `registry_cache_ttl_ms` (default 60s).
@@ -411,8 +411,9 @@ There is **no** `directory::skills::register` — see
 
 ## Function search & pre-generate hint
 
-One-shot lexical function search over the live engine catalog, absorbed from
-the former `discovery` worker. It returns only compact `{ function_id,
+One-shot function search over the live engine catalog (hybrid by default:
+BM25 fused with the local MiniLM model, reranked; `function_search_mode:
+lexical` for BM25 only), absorbed from the former `discovery` worker. It returns only compact `{ function_id,
 description }` candidates, grouped by worker in rank order. The model chooses
 the candidates it needs, then fetches their contracts in one
 `engine::functions::info { function_ids: [...] }` call instead of walking the
@@ -447,11 +448,15 @@ Ranking pipeline:
    term coverage or ≥85% score) drops same-worker family riders; a
    namespace-level floor (40% of the leader) drops trailing workers.
 5. **Registry search** (`registry_search`, default on): every call also
-   consults the public workers registry in-process with the same capability
-   queries plus informative-term retries (all concurrent; verified authors
-   only). Candidates merge round-robin across search variants, returning up to
-   2 workers / 6 candidates that WOULD match if installed, with `compose::add`
-   guidance.
+   consults the private workers registry in-process with the same capability
+   queries plus informative-term retries (all concurrent; every listed worker
+   is a candidate — the registry is team-authored). Candidates merge
+   round-robin across search variants; their API references are pooled and
+   ranked per capability with BM25 fused with the MiniLM dense lane (same
+   0.30 admission floor as the installed catalog), so a capability sharing no
+   vocabulary with a contract ("retrieve web news articles" → `web::fetch`)
+   still surfaces. Returns up to 2 workers / 6 candidates that WOULD match if
+   installed, with `compose::add` guidance.
 6. **Session memory** (keyed by caller-supplied OTel baggage, fail-open):
    repeat queries omit candidates already delivered.
 
@@ -504,6 +509,20 @@ script — is not suppressed and will re-trigger itself. Either write through
 ## Local development & testing
 
 ### Run from source
+
+On targets with a pinned static ONNX Runtime (Linux glibc x86_64/aarch64,
+Apple Silicon macOS, Windows MSVC) every build links it and MiniLM retrieval
+and reranking are compiled in. With no `ORT_LIB_PATH`, `ort-sys` downloads the
+runtime for the build target at build time (SHA-256-verified). For offline or
+cached x86_64 Linux builds, provision it once and export the path it prints:
+
+```bash
+export ORT_LIB_PATH="$(scripts/provision-onnxruntime.sh)"   # idempotent, SHA-256 verified
+export ORT_PREFER_DYNAMIC_LINK=0
+```
+
+Other targets (musl, armv7, Intel macOS) build the BM25-only worker and need
+nothing extra.
 
 ```bash
 # --config is an optional YAML seed (see config.yaml.example); omit it to

@@ -233,6 +233,20 @@ jobs:
       # browser-scrapling-e2e.yml's compat-certification job on every
       # browser/** PR, so the generic gate covers browser's default feature
       # set instead of duplicating the artifact plumbing here.
+      # iii-directory links a pinned static ONNX Runtime. ort-sys would download
+      # it at build time itself; pre-provisioning through the script (same
+      # archive, SHA-256 verified at both layers) keeps the build offline-safe
+      # and cacheable on this runner.
+      - name: Provision static ONNX Runtime (iii-directory)
+        if: matrix.worker == 'iii-directory'
+        run: |
+          set -euo pipefail
+          root="$(ORT_LIB_PATH="$RUNNER_TEMP/onnxruntime" "$GITHUB_WORKSPACE/iii-directory/scripts/provision-onnxruntime.sh")"
+          {
+            echo "ORT_LIB_PATH=$root"
+            echo "ORT_PREFER_DYNAMIC_LINK=0"
+          } >> "$GITHUB_ENV"
+
       - name: Run clippy
         if: matrix.worker != 'browser'
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
@@ -626,6 +640,16 @@ jobs:
           if [[ "${{ matrix.worker }}" == "provider-opencode-go" ]]; then
             (cd llm-router/ui && pnpm install --frozen-lockfile && pnpm build)
           fi
+
+      - name: Provision static ONNX Runtime (iii-directory)
+        if: steps.optout.outputs.skip != 'true' && matrix.worker == 'iii-directory'
+        run: |
+          set -euo pipefail
+          root="$(ORT_LIB_PATH="$RUNNER_TEMP/onnxruntime" "$GITHUB_WORKSPACE/iii-directory/scripts/provision-onnxruntime.sh")"
+          {
+            echo "ORT_LIB_PATH=$root"
+            echo "ORT_PREFER_DYNAMIC_LINK=0"
+          } >> "$GITHUB_ENV"
 
       # Build with default features so we boot the same artifact that ships
       # in the GitHub Release (the release build uses default features).
