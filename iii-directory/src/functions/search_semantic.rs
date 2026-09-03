@@ -405,6 +405,56 @@ impl SemanticSearch {
             .collect()
     }
 
+    /// Rank ad-hoc documents (registry contracts, registry worker
+    /// descriptions) against `queries` with the loaded model: encode both on
+    /// the fly, cosine, `minimum_cosine` floor. No catalog index is involved,
+    /// so this serves anything not (yet) installed.
+    pub(crate) async fn rank_documents(
+        &self,
+        queries: &[String],
+        documents: &[ToolSchema],
+        minimum_cosine: f32,
+    ) -> Result<Vec<Vec<(String, f64)>>, SemanticUnavailable> {
+        let model = self
+            .inner
+            .model
+            .read()
+            .expect("semantic model")
+            .clone()
+            .ok_or_else(|| unavailable("model absent"))?;
+        if documents.is_empty() {
+            return Ok(vec![Vec::new(); queries.len()]);
+        }
+        let corpus = canonical_tools(documents);
+        let ids: Vec<String> = corpus.iter().map(|tool| tool.name.clone()).collect();
+        let texts: Vec<String> = corpus.iter().map(searchable_text).collect();
+        let queries = queries.to_vec();
+        let (query_count, document_count) = (queries.len(), ids.len());
+        let dimensions = self.inner.model_kind.dimensions();
+        let (query_vectors, document_vectors) = tokio::task::spawn_blocking(move || {
+            let documents = model.encode(&texts, Some(32))?;
+            let queries = model.encode(&queries, None)?;
+            Ok::<_, SemanticUnavailable>((queries, documents))
+        })
+        .await
+        .map_err(|error| unavailable(format!("document rank task failed: {error}")))??;
+        validate_vectors(&query_vectors, query_count, dimensions)?;
+        validate_vectors(&document_vectors, document_count, dimensions)?;
+        query_vectors
+            .iter()
+            .map(|query| {
+                rank_vectors(
+                    "ad-hoc",
+                    "ad-hoc",
+                    &ids,
+                    &document_vectors,
+                    query,
+                    minimum_cosine,
+                )
+            })
+            .collect()
+    }
+
     #[cfg(minilm)]
     pub(crate) async fn rerank(
         &self,

@@ -448,11 +448,18 @@ Ranking pipeline:
    term coverage or ≥85% score) drops same-worker family riders; a
    namespace-level floor (40% of the leader) drops trailing workers.
 5. **Registry search** (`registry_search`, default on): every call also
-   consults the public workers registry in-process with the same capability
-   queries plus informative-term retries (all concurrent; verified authors
-   only). Candidates merge round-robin across search variants, returning up to
-   2 workers / 6 candidates that WOULD match if installed, with `compose::add`
-   guidance.
+   consults the private workers registry in-process with the same capability
+   queries plus informative-term retries (all concurrent; every listed worker
+   is a candidate — the registry is team-authored). Candidates merge
+   round-robin across search variants; their API references are pooled and
+   ranked per capability with BM25 fused with the MiniLM dense lane (same
+   0.30 admission floor as the installed catalog), so a capability sharing no
+   vocabulary with a contract ("retrieve web news articles" → `web::fetch`)
+   still surfaces. When keyword acquisition offers nothing and the dense lane
+   is on, stage 2 walks every registry page once and ranks worker
+   descriptions through the dense lane instead (the registry's own search is
+   trigram-based). Returns up to 2 workers / 6 candidates that WOULD match if
+   installed, with `compose::add` guidance.
 6. **Session memory** (keyed by caller-supplied OTel baggage, fail-open):
    repeat queries omit candidates already delivered.
 
