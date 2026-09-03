@@ -25,7 +25,7 @@ export type FunctionSearchMode = (typeof FUNCTION_SEARCH_MODE_OPTIONS)[number]['
 const FUNCTION_SEARCH_MODES = new Set<string>(FUNCTION_SEARCH_MODE_OPTIONS.map((option) => option.value))
 
 export function functionSearchModeWithDefault(value: unknown): FunctionSearchMode {
-  return typeof value === 'string' && FUNCTION_SEARCH_MODES.has(value) ? (value as FunctionSearchMode) : 'lexical'
+  return typeof value === 'string' && FUNCTION_SEARCH_MODES.has(value) ? (value as FunctionSearchMode) : 'hybrid'
 }
 
 export function withFunctionSearchMode<T extends Record<string, unknown>>(
@@ -35,6 +35,9 @@ export function withFunctionSearchMode<T extends Record<string, unknown>>(
   return { ...draft, function_search_mode: mode }
 }
 
+/** A semantic mode is stranded only when the model directory is explicitly
+ * `null`: an absent field falls back to the worker's default bundle path (and
+ * the first-run download), so it needs no warning. */
 export function semanticModeNeedsModel(mode: FunctionSearchMode, modelPath: unknown): boolean {
-  return mode !== 'lexical' && (typeof modelPath !== 'string' || modelPath.trim() === '')
+  return mode !== 'lexical' && modelPath === null
 }

@@ -411,8 +411,9 @@ There is **no** `directory::skills::register` — see
 
 ## Function search & pre-generate hint
 
-One-shot lexical function search over the live engine catalog, absorbed from
-the former `discovery` worker. It returns only compact `{ function_id,
+One-shot function search over the live engine catalog (hybrid by default:
+BM25 fused with the local MiniLM model, reranked; `function_search_mode:
+lexical` for BM25 only), absorbed from the former `discovery` worker. It returns only compact `{ function_id,
 description }` candidates, grouped by worker in rank order. The model chooses
 the candidates it needs, then fetches their contracts in one
 `engine::functions::info { function_ids: [...] }` call instead of walking the

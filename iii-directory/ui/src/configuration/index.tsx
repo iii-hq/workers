@@ -459,7 +459,7 @@ function SearchModeField({
 }) {
   const field = 'function_search_mode'
   const hint =
-    'Lexical returns BM25 rankings. Shadow computes semantic rankings without changing results. Hybrid fuses BM25 with the local semantic model.'
+    'Hybrid (default) fuses BM25 with the local semantic model. Lexical returns BM25 rankings. Shadow computes semantic rankings without changing results.'
   const presentation = fieldPresentation(field, hint, errors)
   const needsModel = semanticModeNeedsModel(value, modelPath)
   const noticeId = needsModel ? `${presentation.id}-model-notice` : undefined
@@ -468,8 +468,8 @@ function SearchModeField({
     <span className="dir-ui-config-notice" id={noticeId}>
       <Chip tone="warning">Model required</Chip>
       <span>
-        {modeLabel} requires a local semantic model. Set its directory below and restart iii-directory; searches use
-        lexical fallback until then.
+        {modeLabel} requires a local semantic model, but the model directory is cleared. Set it below (or remove the
+        override to use the default bundle) and restart iii-directory; searches use lexical fallback until then.
       </span>
     </span>
   ) : null

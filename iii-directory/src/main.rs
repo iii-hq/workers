@@ -149,7 +149,22 @@ async fn main() -> Result<()> {
     // `cache_ttl_ms` cell read by both caches.
     let boot_topology = cfg.topology();
     let function_search_model_path = cfg.resolved_function_search_model_path();
-    if cfg.function_search_mode != FunctionSearchMode::Lexical && cfg.function_search_model_download
+    // MiniLM is compiled only for x86_64 Linux GNU; elsewhere a semantic mode
+    // serves BM25 and neither a download nor a missing-bundle warning helps.
+    let minilm_supported = cfg!(all(
+        target_arch = "x86_64",
+        target_os = "linux",
+        target_env = "gnu"
+    ));
+    if !minilm_supported && cfg.function_search_mode != FunctionSearchMode::Lexical {
+        tracing::info!(
+            mode = ?cfg.function_search_mode,
+            "semantic search modes need x86_64 Linux GNU; this build serves BM25 only"
+        );
+    }
+    if minilm_supported
+        && cfg.function_search_mode != FunctionSearchMode::Lexical
+        && cfg.function_search_model_download
     {
         if let Some(root) = function_search_model_path.as_deref() {
             if !functions::search_semantic::bundle_complete(root) {
@@ -173,7 +188,12 @@ async fn main() -> Result<()> {
     let model_ready = function_search_model_path
         .as_deref()
         .is_some_and(functions::search_semantic::bundle_complete);
-    iii_directory::config::warn_if_search_mode_lacks_model(cfg.function_search_mode, model_ready);
+    if minilm_supported {
+        iii_directory::config::warn_if_search_mode_lacks_model(
+            cfg.function_search_mode,
+            model_ready,
+        );
+    }
     let auto_download = cfg.auto_download;
     let cache_ttl_ms = Arc::new(AtomicU64::new(cfg.registry_cache_ttl_ms));
     let registered_cache = make_registered_cache(cache_ttl_ms.clone());

@@ -65,23 +65,23 @@ vi.mock('@iii-dev/console-ui', () => ({
   Switch: ({ onChange: _onChange, ...props }: { onChange?: unknown }) => <input type="checkbox" {...props} />,
 }))
 
-function renderConfiguration(value: Record<string, string>) {
+function renderConfiguration(value: Record<string, string | null>) {
   return renderToStaticMarkup(
     <DirectoryConfigForm id="iii-directory" schema={{}} value={value} onChange={() => {}} errors={new Map()} />,
   )
 }
 
 describe('DirectoryConfigForm function search settings', () => {
-  it('renders lexical as the safe default', () => {
+  it('renders hybrid as the default without a model notice', () => {
     const html = renderConfiguration({})
 
     expect(html).toContain('Function search mode')
-    expect(html).toContain('Lexical')
+    expect(html).toContain('<option value="hybrid" selected="">')
     expect(html).not.toContain('requires a local semantic model')
   })
 
-  it('shows how to recover when hybrid has no model', () => {
-    const html = renderConfiguration({ function_search_mode: 'hybrid' })
+  it('shows how to recover when the model directory is cleared', () => {
+    const html = renderConfiguration({ function_search_mode: 'hybrid', function_search_model_path: null })
 
     expect(html).toContain('Hybrid')
     expect(html).toContain('requires a local semantic model')

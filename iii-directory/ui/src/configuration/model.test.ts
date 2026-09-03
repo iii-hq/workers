@@ -20,8 +20,8 @@ describe('booleanWithDefault', () => {
 
 describe('function search configuration', () => {
   it('uses lexical when a migrated value omits or corrupts the mode', () => {
-    expect(functionSearchModeWithDefault(undefined)).toBe('lexical')
-    expect(functionSearchModeWithDefault('remote')).toBe('lexical')
+    expect(functionSearchModeWithDefault(undefined)).toBe('hybrid')
+    expect(functionSearchModeWithDefault('remote')).toBe('hybrid')
   })
 
   it.each(['lexical', 'shadow', 'hybrid'] as const)('preserves the supported %s mode', (mode) => {
@@ -47,8 +47,12 @@ describe('function search configuration', () => {
 
   it('requires a configured model only for semantic modes', () => {
     expect(semanticModeNeedsModel('lexical', undefined)).toBe(false)
-    expect(semanticModeNeedsModel('hybrid', undefined)).toBe(true)
-    expect(semanticModeNeedsModel('shadow', '   ')).toBe(true)
+    expect(semanticModeNeedsModel('lexical', null)).toBe(false)
+    // Absent field = worker default bundle path + first-run download.
+    expect(semanticModeNeedsModel('hybrid', undefined)).toBe(false)
+    // Explicit null disables the semantic lane: that is the stranded case.
+    expect(semanticModeNeedsModel('hybrid', null)).toBe(true)
+    expect(semanticModeNeedsModel('shadow', null)).toBe(true)
     expect(semanticModeNeedsModel('hybrid', '/models/minilm')).toBe(false)
   })
 })

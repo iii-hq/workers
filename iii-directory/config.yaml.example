@@ -61,9 +61,10 @@ download_timeout_ms: 60000
 
 # --- Function search (tunable, hot-reload) ---
 
-# Search lane: lexical is the stable default. Shadow computes the local
-# semantic lane but returns lexical results; hybrid explicitly uses fusion.
-function_search_mode: lexical
+# Search lane: hybrid (BM25 fused with the local MiniLM model) is the default.
+# Lexical is BM25 only; shadow computes the semantic lane but returns lexical
+# results. Hybrid serves BM25 until the model bundle below is ready.
+function_search_mode: hybrid
 
 # Local semantic model directory: the pinned MiniLM bundle (default) or a
 # Potion directory (scripts/provision-potion.py). Changing it requires restart;

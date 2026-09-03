@@ -109,9 +109,9 @@ fn default_function_search_model_download() -> bool {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FunctionSearchMode {
-    #[default]
     Lexical,
     Shadow,
+    #[default]
     Hybrid,
 }
 
@@ -258,8 +258,11 @@ pub struct SkillsConfig {
     #[serde(default = "default_registry_search")]
     pub registry_search: bool,
 
-    /// Installed-function search lane. Lexical is the stable default;
-    /// shadow computes semantic rankings without returning them.
+    /// Installed-function search lane. Hybrid (BM25 fused with the local
+    /// MiniLM model) is the default; lexical is BM25 only; shadow computes
+    /// semantic rankings without returning them. Hybrid needs the bundle at
+    /// `function_search_model_path` (downloaded on first run by default) and
+    /// serves BM25 until it is ready.
     #[serde(default)]
     pub function_search_mode: FunctionSearchMode,
 
@@ -475,7 +478,7 @@ mod tests {
     #[test]
     fn defaults_from_empty_yaml() {
         let cfg: SkillsConfig = serde_yaml::from_str("{}").unwrap();
-        assert_eq!(cfg.function_search_mode, FunctionSearchMode::Lexical);
+        assert_eq!(cfg.function_search_mode, FunctionSearchMode::Hybrid);
         assert_eq!(
             cfg.function_search_model_path.as_deref(),
             Some("~/.cache/iii/all-MiniLM-L6-v2-c9745ed1d9f207416be6d2e6f8de32d1f16199bf")
