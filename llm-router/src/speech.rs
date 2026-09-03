@@ -386,6 +386,7 @@ pub fn make_speak(
                 &registered,
                 &models,
             )?;
+            let format = req.format.unwrap_or_else(|| "mp3".to_string());
             let reply = forward(
                 &iii,
                 &provider,
@@ -394,7 +395,7 @@ pub fn make_speak(
                     "model": model,
                     "text": req.text,
                     "voice": req.voice,
-                    "format": req.format.unwrap_or_else(|| "mp3".to_string()),
+                    "format": format,
                     "language": req.language,
                     "speed": req.speed,
                 }),
@@ -426,11 +427,24 @@ pub fn make_speak(
                 provider,
                 model: reply.model,
                 audio_base64: reply.audio_base64,
-                mime: reply.mime.unwrap_or_else(|| "audio/mpeg".to_string()),
+                mime: reply
+                    .mime
+                    .unwrap_or_else(|| mime_for_format(&format).to_string()),
                 voice: reply.voice,
                 duration_secs: reply.duration_secs,
             })
         })
+    }
+}
+
+/// The MIME type a requested `format` implies when a provider answers
+/// without naming one.
+fn mime_for_format(format: &str) -> &'static str {
+    match format {
+        "wav" => "audio/wav",
+        "pcm16" => "audio/pcm",
+        "opus" => "audio/ogg",
+        _ => "audio/mpeg",
     }
 }
 
@@ -443,6 +457,14 @@ type BoxedSpeakFuture =
 mod tests {
     use super::*;
     use crate::types::model::SpeechModel;
+
+    #[test]
+    fn mime_fallback_follows_the_requested_format() {
+        assert_eq!(mime_for_format("mp3"), "audio/mpeg");
+        assert_eq!(mime_for_format("wav"), "audio/wav");
+        assert_eq!(mime_for_format("pcm16"), "audio/pcm");
+        assert_eq!(mime_for_format("opus"), "audio/ogg");
+    }
 
     fn speech(id: &str, provider: &str, modality: SpeechModality) -> Model {
         Model {
