@@ -160,9 +160,8 @@ pub fn register_config_trigger(
                 Ok::<_, Error>(ConfigChangeAck { ok: true })
             }
         })
-        .description(
-            "Internal: reload state configuration from the authoritative store on change.",
-        ),
+        .description("Internal: reload state configuration from the authoritative store on change.")
+        .metadata(json!({ "internal": true })),
     );
 
     iii.register_trigger(RegisterTriggerInput::new(

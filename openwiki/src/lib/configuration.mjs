@@ -87,6 +87,7 @@ export function bindConfigTrigger(iii, onChange) {
     },
     {
       description: 'Reload runtime config when the openwiki configuration entry changes.',
+      metadata: { internal: true },
       request_format: { type: 'object', additionalProperties: true, properties: {} },
       response_format: {
         type: 'object',

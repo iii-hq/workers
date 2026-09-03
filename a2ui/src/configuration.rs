@@ -81,7 +81,8 @@ pub fn register_config_trigger(iii: &IIIClient, cell: ConfigCell) -> Result<(), 
         })
         .description(
             "Internal: reload the A2UI worker from authoritative configuration after an update.",
-        ),
+        )
+        .metadata(json!({ "internal": true })),
     );
     iii.register_trigger(RegisterTriggerInput::new(
         "configuration",

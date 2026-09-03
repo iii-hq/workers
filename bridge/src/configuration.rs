@@ -209,7 +209,8 @@ pub async fn register_config_trigger(iii: &Arc<IIIClient>, boot: &BootHandle) ->
         })
         .description(
             "Internal: reload bridge configuration from the authoritative store on change.",
-        ),
+        )
+        .metadata(json!({ "internal": true })),
     );
     // Keep `local_registered` truthful the instant the id is registered: a
     // `forward` entry naming `bridge::on-config-change` must be recognized as

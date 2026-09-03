@@ -27,9 +27,9 @@ pub(crate) const SEARCH_FN: &str = "directory::search_functions";
 pub(crate) const EXCLUDED_FUNCTION_IDS: [&str; 1] = ["state::claim-namespace"];
 /// Function-id suffixes that are internal by convention. `<worker>::on-config-change`
 /// is the configuration-reload handler every worker registers (see the
-/// `iii-config-client` crate); most workers register it by hand without the
-/// `internal: true` metadata the catalog filter keys on, so the convention is
-/// enforced here as well.
+/// `iii-config-client` crate). Every in-repo registration now carries the
+/// `internal: true` metadata the catalog filter keys on; this rule guards
+/// against a future hand-rolled registration that forgets it.
 pub(crate) const EXCLUDED_FUNCTION_SUFFIXES: [&str; 1] = ["::on-config-change"];
 
 /// Whether a function id must be kept out of every search lane: the search's

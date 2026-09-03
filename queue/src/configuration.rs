@@ -144,7 +144,8 @@ pub fn register_config_trigger(
                 Ok::<_, Error>(ConfigChangeAck { ok: true })
             }
         })
-        .description("Internal: reload queue configuration from the authoritative store."),
+        .description("Internal: reload queue configuration from the authoritative store.")
+        .metadata(json!({ "internal": true })),
     );
 
     iii.register_trigger(RegisterTriggerInput::new(

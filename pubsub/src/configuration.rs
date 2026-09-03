@@ -151,7 +151,8 @@ pub fn register_config_trigger(
         })
         .description(
             "Internal: reload pubsub configuration from the authoritative store on change.",
-        ),
+        )
+        .metadata(json!({ "internal": true })),
     );
 
     iii.register_trigger(RegisterTriggerInput::new(
