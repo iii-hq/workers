@@ -305,6 +305,9 @@ jobs:
         if: steps.interface.outputs.kind == 'javascript-bundle' && steps.interface.outputs.interface_capture == 'required'
         with:
           node-version: ${{ steps.interface.outputs.runtime_version }}
+          # The interface job does not install pnpm; avoid setup-node's
+          # package-manager cache lookup before the runtime is available.
+          package-manager-cache: false
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         if: steps.interface.outputs.kind == 'python-bundle' && steps.interface.outputs.interface_capture == 'required'
