@@ -15,7 +15,7 @@
 # registry_cache_ttl_ms, filter_unregistered, function_search_mode). Topology fields require a
 # worker restart (skills_folder, local_skills_folder, agents_folder,
 # global_agents_folder, agents_skills_folder, global_agents_skills_folder,
-# auto_download, function_search_model_path).
+# auto_download, function_search_model_path, function_search_model_download).
 #
 # When omitted entirely, the worker seeds the built-in defaults
 # (skills_folder: skills, agents_folder: agents,

@@ -265,7 +265,7 @@ already satisfied. Always write every `capabilities` entry in English, even when
 user writes in another language; preserve proper names, URLs, and function IDs.";
 
 const SEARCH_INSTALL_GUIDANCE: &str = "No INSTALLED function matched these capabilities. The \
-`installable` entries are registry workers (verified authors) whose functions WOULD match, \
+`installable` entries are registry workers whose functions WOULD match, \
 but they are NOT installed: calling their functions now FAILS with function_not_found. To \
 use one, run its `install` call exactly as given (compose::add), wait for it to report the \
 new worker ready, then call directory::search_functions again \
@@ -351,7 +351,7 @@ fn install_call(worker_name: &str) -> InstallCall {
 pub struct SearchFunctionsResponse {
     pub guidance: String,
     pub workers: Vec<SearchWorker>,
-    /// Matching registry workers from verified authors. Their functions are
+    /// Matching workers from the private registry. Their functions are
     /// NOT callable until the worker is installed.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub installable: Vec<InstallableWorker>,
@@ -749,15 +749,11 @@ struct RegistryCandidate {
     description: String,
 }
 
-/// Verified-author candidates from a registry list page, in the registry's
-/// own relevance order. Unverified authors never surface: the section ends
-/// in an install suggestion, and suggesting unvetted code is not this
-/// worker's call.
+/// Candidates from a registry list page, in the registry's own relevance
+/// order. The registry is private and team-authored, so every listed worker
+/// qualifies; an author-verification filter would drop first-party workers
+/// (browser, web) that carry no verified author.
 fn registry_candidates(workers: &[Worker]) -> Vec<RegistryCandidate> {
-    // This registry is private and every worker is team-authored, so all
-    // listed workers are installable candidates — no author-verification
-    // filter (which would drop first-party workers like browser/web that
-    // carry no verified author).
     workers
         .iter()
         .map(|worker| RegistryCandidate {
@@ -950,13 +946,22 @@ async fn registry_dense_rankings(
     documents: &[ToolSchema],
     minimum_cosine: f32,
 ) -> Option<Vec<Vec<(String, f64)>>> {
-    match semantic?
-        .rank_documents(search_queries, documents, minimum_cosine)
-        .await
+    match tokio::time::timeout(
+        PRODUCTION_RERANK_TIMEOUT,
+        semantic?.rank_documents(search_queries, documents, minimum_cosine),
+    )
+    .await
     {
-        Ok(rankings) => Some(rankings),
-        Err(error) => {
+        Ok(Ok(rankings)) => Some(rankings),
+        Ok(Err(error)) => {
             tracing::debug!(%error, "registry search: dense lane unavailable; lexical only");
+            None
+        }
+        Err(_) => {
+            tracing::warn!(
+                timeout_ms = PRODUCTION_RERANK_TIMEOUT.as_millis(),
+                "registry search: dense lane timed out; lexical only"
+            );
             None
         }
     }

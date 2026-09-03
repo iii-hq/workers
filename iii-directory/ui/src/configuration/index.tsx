@@ -216,7 +216,7 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
           <CheckField
             field="registry_search"
             label="Include installable workers"
-            hint="Search the public registry and include matches from verified authors under installable results."
+            hint="Search the private workers registry and include matching workers under installable results."
             checked={booleanWithDefault(value.registry_search, true)}
             onChange={setBool}
             errors={props.errors}

@@ -33,7 +33,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 use iii_sdk::errors::Error;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
 use serde_json::json;
@@ -44,7 +44,8 @@ use iii_directory::functions::download::{
 };
 use iii_directory::functions::registry::RegistryCache;
 use iii_directory::functions::skills::{
-    make_registered_cache, RegisteredWorkersCache, ENGINE_NAMESPACE,
+    compose_status_request, make_registered_cache, parse_worker_names, RegisteredWorkersCache,
+    ENGINE_NAMESPACE,
 };
 use iii_directory::sources::registry::VersionSpec;
 use iii_directory::{configuration, functions, manifest, trigger_types};
@@ -516,31 +517,19 @@ async fn reconcile_one(
 async fn fetch_worker_names_with_retry(iii: &IIIClient) -> Option<Vec<String>> {
     const MAX_ATTEMPTS: u32 = 6;
     for attempt in 1..=MAX_ATTEMPTS {
-        let request = TriggerRequest {
-            function_id: "compose::status".to_string(),
-            payload: json!({}),
-            action: None,
-            timeout_ms: Some(10_000),
-        };
-        let result = iii.trigger(request).await;
+        let result = iii.trigger(compose_status_request(10_000)).await;
 
         match result {
             Ok(val) => {
-                return Some(
-                    val.get("containers")
-                        .and_then(|c| c.as_array())
-                        .map(|containers| {
-                            containers
-                                .iter()
-                                .filter_map(|c| {
-                                    c.get("container")
-                                        .and_then(|n| n.as_str())
-                                        .map(str::to_string)
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                );
+                return match parse_worker_names(&val) {
+                    Some(names) => Some(names.into_iter().collect()),
+                    None => {
+                        tracing::warn!(
+                            "boot reconcile: compose::status returned no `containers` array; skipping worker reconcile"
+                        );
+                        None
+                    }
+                };
             }
             Err(e) if attempt == MAX_ATTEMPTS => {
                 tracing::warn!(

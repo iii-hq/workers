@@ -249,7 +249,7 @@ pub struct SkillsConfig {
     #[serde(default = "default_hint_min_workers")]
     pub hint_min_workers: usize,
 
-    /// Also search the public worker registry (verified authors only) on
+    /// Also search the private workers registry (every listed worker) on
     /// every `directory::search_functions` call and return matching
     /// NOT-installed workers as an `installable` section alongside the
     /// installed results. Fail-open: a registry error just omits the
@@ -278,6 +278,7 @@ pub struct SkillsConfig {
     /// the pinned files from Hugging Face once, verifying every file by byte
     /// length and SHA-256 before use. Set `false` for air-gapped stacks; the
     /// worker then stays BM25-only until the bundle is provisioned by hand.
+    /// Read once at boot: changing it requires a restart.
     #[serde(default = "default_function_search_model_download")]
     pub function_search_model_download: bool,
 }
@@ -389,7 +390,7 @@ impl SkillsConfig {
     /// Restart-requiring fields. A `configuration:updated` reload that
     /// changes any of these is refused (logged "restart required"):
     /// `skills_folder` / `local_skills_folder` / `agents_folder` /
-    /// `agents_skills_folder` and `function_search_model_path` are on-disk roots baked into
+    /// `agents_skills_folder`, `function_search_model_path` and `function_search_model_download` are baked into
     /// running tasks (and the fs-watch root set), and `auto_download` wires
     /// the `worker`-trigger subscription + boot reconcile at startup — none
     /// can be re-wired safely in place.
@@ -401,6 +402,7 @@ impl SkillsConfig {
             agents_skills_folder: self.agents_skills_folder.clone(),
             auto_download: self.auto_download,
             function_search_model_path: self.resolved_function_search_model_path(),
+            function_search_model_download: self.function_search_model_download,
         }
     }
 
@@ -460,6 +462,7 @@ pub struct Topology {
     pub agents_skills_folder: String,
     pub auto_download: bool,
     pub function_search_model_path: Option<PathBuf>,
+    pub function_search_model_download: bool,
 }
 
 pub fn load_config(path: &str) -> Result<SkillsConfig> {
@@ -789,6 +792,11 @@ auto_download: false
             function_search_model_path: Some("/models/minilm".into()),
             ..base.clone()
         };
+        let download = SkillsConfig {
+            function_search_model_download: !base.function_search_model_download,
+            ..base.clone()
+        };
+        assert_ne!(base.topology(), download.topology());
         assert_ne!(base.topology(), folder.topology());
         assert_ne!(base.topology(), local.topology());
         assert_ne!(base.topology(), agents.topology());

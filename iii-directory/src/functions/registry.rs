@@ -265,6 +265,14 @@ impl WorkerInfoOutput {
             function.response_schema = None;
             function.metadata = None;
         }
+        self.api_reference.triggers.retain(|trigger| {
+            trigger
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("internal"))
+                .and_then(Value::as_bool)
+                != Some(true)
+        });
         for trigger in &mut self.api_reference.triggers {
             trigger.invocation_schema = None;
             trigger.return_schema = None;
@@ -924,7 +932,9 @@ mod tests {
             ],
             "triggers": [
                 { "name": "browser::on-download", "description": "A download finished.",
-                  "invocation_schema": { "type": "object" }, "return_schema": { "type": "object" } }
+                  "invocation_schema": { "type": "object" }, "return_schema": { "type": "object" } },
+                { "name": "browser::ui-tick", "description": "Internal UI refresh.",
+                  "metadata": { "internal": true } }
             ]
         } });
         let full = parse_worker_info_response("browser", &detail, &json!({}));
@@ -944,7 +954,13 @@ mod tests {
         assert_eq!(function.description.as_deref(), Some("Fetch a page."));
         assert!(function.request_schema.is_none() && function.response_schema.is_none());
         assert!(function.metadata.is_none());
+        assert_eq!(
+            card.api_reference.triggers.len(),
+            1,
+            "internal triggers are dropped"
+        );
         let trigger = &card.api_reference.triggers[0];
+        assert_eq!(trigger.name, "browser::on-download");
         assert!(trigger.invocation_schema.is_none() && trigger.return_schema.is_none());
         // Dropped schemas leave the wire entirely.
         let wire = serde_json::to_value(&card).unwrap();

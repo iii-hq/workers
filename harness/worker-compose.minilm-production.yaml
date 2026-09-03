@@ -133,7 +133,6 @@ containers:
       ORT_PREFER_DYNAMIC_LINK: "0"
     scripts:
       run: >-
-        ORT_LIB_PATH="${ORT_LIB_PATH:-$HOME/.cache/iii/onnxruntime-static-1.28.0-x86_64-unknown-linux-gnu}"
         cargo run --locked --bin iii-directory
   image-resize:
     worker: path://../image-resize

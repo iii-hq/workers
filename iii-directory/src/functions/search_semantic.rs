@@ -254,31 +254,33 @@ impl SemanticSearch {
                     Ok(current) => current.clone(),
                     Err(_) => None,
                 };
+                // The reranker is optional: without it the lane serves the
+                // fused BM25+dense order (see production_minilm_assemble), so a
+                // missing or broken `reranker/` bundle must not hold back the
+                // dense index.
                 if reranker.is_none() {
-                    let reranker_root = match inner.model_dir.clone() {
-                        Some(path) => path.join("reranker"),
-                        None => return,
-                    };
-                    match tokio::task::spawn_blocking(move || {
-                        load_verified_reranker(&reranker_root)
-                    })
-                    .await
+                    if let Some(reranker_root) =
+                        inner.model_dir.clone().map(|path| path.join("reranker"))
                     {
-                        Ok(Ok(loaded)) => {
-                            if let Ok(mut slot) = inner.reranker.write() {
-                                *slot = Some(Arc::new(Mutex::new(loaded)));
-                            } else {
-                                tracing::warn!("semantic reranker lock poisoned");
-                                return;
-                            }
-                        }
-                        Ok(Err(error)) => {
-                            tracing::warn!(%error, "semantic reranker unavailable");
-                            return;
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, "semantic reranker load task failed");
-                            return;
+                        match tokio::task::spawn_blocking(move || {
+                            load_verified_reranker(&reranker_root)
+                        })
+                        .await
+                        {
+                            Ok(Ok(loaded)) => match inner.reranker.write() {
+                                Ok(mut slot) => *slot = Some(Arc::new(Mutex::new(loaded))),
+                                Err(_) => tracing::warn!(
+                                    "semantic reranker lock poisoned; hybrid search runs without the cross-encoder"
+                                ),
+                            },
+                            Ok(Err(error)) => tracing::warn!(
+                                %error,
+                                "semantic reranker unavailable; hybrid search runs without the cross-encoder"
+                            ),
+                            Err(error) => tracing::warn!(
+                                %error,
+                                "semantic reranker load task failed; hybrid search runs without the cross-encoder"
+                            ),
                         }
                     }
                 }
