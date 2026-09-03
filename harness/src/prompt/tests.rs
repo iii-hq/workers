@@ -107,29 +107,35 @@ fn identity_line_and_agent_trigger_preserved() {
 }
 
 #[test]
-fn default_discovery_fallback_yields_to_injected_assist() {
+fn default_discovery_prefers_search_functions_then_falls_back() {
     let out = default_prompt().replace('\n', " ");
     let step_one = out
         .find("Step 1. Find the function id through exactly one task-capability discovery path")
         .expect("prompt makes discovery paths mutually exclusive at Step 1");
+    let default_path = out[step_one..]
+        .find("The default path is `directory::search_functions`")
+        .expect("prompt makes directory::search_functions the default discovery path");
     let assist = out[step_one..]
-        .find("If `<discovery_assist>` is present, follow it and do not use `engine::functions::list` to discover task-capability IDs")
+        .find("If `<discovery_assist>` is present, follow it instead of searching")
         .expect("prompt gives injected discovery guidance precedence at Step 1");
-    let inventory = out[step_one..]
-        .find("Fixed-prefix inventory checks for a documented surface or after an install still apply")
-        .expect("prompt keeps inventory verification distinct from capability discovery");
     let fallback = out[step_one..]
-        .find("Only when `<discovery_assist>` is absent, call `engine::functions::list`")
-        .expect("prompt keeps engine discovery as the explicit fallback");
+        .find("Only when `directory::search_functions` is itself unavailable")
+        .expect("prompt keeps engine::functions::list as the explicit fallback");
+    let inventory = out[step_one..]
+        .find("Fixed-prefix inventory checks for a documented surface or after an install use `engine::functions::list")
+        .expect("prompt keeps inventory verification distinct from capability discovery");
+    assert!(default_path < assist);
     assert!(assist < fallback);
-    assert!(inventory < fallback);
+    assert!(fallback < inventory);
     assert!(out.contains("First check what already exists through the active discovery path"));
     assert!(out.contains(
-        "When `<discovery_assist>` is absent and no registered function fits, search the public registry"
+        "`directory::search_functions` surfaces installable registry workers alongside installed"
     ));
-    assert!(out.contains("uses the active discovery path from Step 1 and finds `shell::fs::ls`"));
+    assert!(out.contains(
+        "calls directory::search_functions { capabilities: [\"list files in a directory\"] } and finds `shell::fs::ls`"
+    ));
     assert!(out.contains("Find the replacement through the active discovery path from Step 1"));
-    assert!(out.contains("This fallback example applies only when `<discovery_assist>` is absent"));
+    assert!(out.contains("This example installs a worker that is not yet present"));
     assert!(!out.contains("calls engine::functions::list { search: \"ls\" }"));
 
     let checklist = out
@@ -138,7 +144,7 @@ fn default_discovery_fallback_yields_to_injected_assist() {
         .1;
     assert!(checklist.contains("the active discovery path"));
     assert!(checklist.contains("`<discovery_assist>` when present"));
-    assert!(checklist.contains("otherwise `engine::functions::list`"));
+    assert!(checklist.contains("otherwise `directory::search_functions`"));
     assert!(!checklist.contains("Did I find the id with `engine::functions::list`?"));
 }
 
@@ -203,7 +209,7 @@ fn registry_allowlist_invariant() {
     assert!(out.contains("directory::registry::workers::info"));
     for id in extract_directory_ids(&out) {
         assert!(
-            id.starts_with("directory::registry::workers::"),
+            id.starts_with("directory::registry::workers::") || id == "directory::search_functions",
             "unexpected directory id: {id}"
         );
     }
@@ -488,7 +494,7 @@ fn default_variant_invariants() {
     assert!(out.contains("<example>"));
     for id in extract_directory_ids(out) {
         assert!(
-            id.starts_with("directory::registry::workers::"),
+            id.starts_with("directory::registry::workers::") || id == "directory::search_functions",
             "bad directory id {id}"
         );
     }
