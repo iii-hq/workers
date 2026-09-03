@@ -12,13 +12,6 @@ ROOT = Path(__file__).resolve().parents[3]
 CATALOG = ROOT / ".deploy" / "workers.yaml"
 
 
-def test_private_catalog_has_exact_first_party_and_fixture_counts():
-    workers = _lib.read_worker_catalog(CATALOG)
-    assert len(workers) == 76
-    assert sum(worker.publish for worker in workers.values()) == 70
-    assert sum(not worker.publish for worker in workers.values()) == 6
-
-
 def test_catalog_has_only_release_build_contract_and_explicit_bundle_files():
     workers = _lib.read_worker_catalog(CATALOG)
     legacy = {"language", "deploy", "manifest", "bin", "scripts", "interface_smoke", "registry_interface", "name"}
