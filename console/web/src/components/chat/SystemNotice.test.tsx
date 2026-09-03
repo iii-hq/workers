@@ -129,6 +129,49 @@ describe('SystemNotice · turn failure', () => {
     expect(out).toContain('bg-warn-muted')
   })
 
+  it('renders the durable provider-family failure the Console e2e asserts on', () => {
+    // Mirrors e2e/provider-family-errors.spec.ts: a permanent rejection whose
+    // detail names a billing wall, recorded with the transport code.
+    const out = html({
+      id: 'e_t4_error',
+      role: 'system',
+      kind: 'turn-failure',
+      tone: 'error',
+      content: 'The provider rejected this request.',
+      failure: { summary: 'The provider rejected this request.' },
+      nextActions: [
+        'Review the selected model and provider settings, then try again.',
+      ],
+      technicalDetails: {
+        code: 'invocation_failed',
+        class: 'llm.permanent',
+        detail: 'openai chat completions: insufficient quota',
+        provider: 'openai',
+        model: 'gpt-5.4',
+      },
+      createdAt: 0,
+    })
+    expect(out).toContain('data-failure-category="billing"')
+    expect(out).toContain('data-failure-owner="user"')
+    expect(out).toMatch(/<h3[^>]*>Provider credit or quota exhausted<\/h3>/)
+    expect(out).toContain('Needs your attention')
+    expect(out).toMatch(
+      /data-message-summary[^>]*>The provider rejected this request\.</,
+    )
+    expect(out).toMatch(
+      /data-failure-ownership[^>]*>[^<]*not an iii or console failure/,
+    )
+    expect(out.match(/<li>/g)).toHaveLength(2)
+    expect(out).toMatch(/<li>Add credit/)
+    expect(out).toMatch(/data-technical-detail="code"[^>]*>invocation_failed</)
+    expect(out).toMatch(/data-technical-detail="class"[^>]*>llm\.permanent</)
+    expect(out).toMatch(
+      /data-technical-detail="detail"[^>]*>openai chat completions: insufficient quota</,
+    )
+    // Collapsed by default; the e2e opens it by clicking the summary.
+    expect(out).not.toMatch(/<details[^>]*\sopen/)
+  })
+
   it('classifies a live fallback from its summary alone', () => {
     const out = html({
       id: 'e_t3_error',

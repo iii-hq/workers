@@ -19,6 +19,7 @@ ignore=(
   'https://api.workers.iii.dev/w/$WORKER?version=$TARGET_VERSION' # dynamic exact-version verification API endpoint
   'https://release-control.iii.dev/contracts/deployment-execution.schema.json' # JSON Schema identifier; published at cutover
   'https://workers.iii.dev/workers/'       # URL prefix in a test assertion, not a link
+  'https://api.workers.iii.dev/w?tag=provider&cursor=p2' # test assertion with a fake pagination cursor; the API answers 400
   'https://workers.iii.dev/workers/skills' # published (badge.svg 200) but registry page missing
 )
 
