@@ -10,12 +10,17 @@
 //!     (`name`, `description`, `version`) with the engine's
 //!     `engine::workers::list` rows so callers can pivot between local
 //!     and registry surfaces without re-learning the shape.
-//!   * `directory::registry::workers::info`  — full registry metadata
-//!     for one worker. Wraps the registry-side fields in a top-level
-//!     `worker` envelope (same shape as the list rows), with `readme`
-//!     / `api_reference` / `skills_tree` as surface-specific extras.
-//!     `skills_tree` is fetched from a separate `/w/{slug}/skills`
-//!     endpoint in parallel and merged into the response.
+//!   * `directory::registry::workers::info`  — a pre-install card for
+//!     one worker. Wraps the registry-side fields in a top-level
+//!     `worker` envelope (same shape as the list rows), with
+//!     `api_reference` (public function/trigger names + descriptions,
+//!     schemas dropped — the contract comes from `engine::functions::info`
+//!     after installing) and `skills_tree` as surface-specific extras;
+//!     `readme` only when the caller asks (`readme: true`), it runs
+//!     10–25 KB. `skills_tree` is fetched from a separate
+//!     `/w/{slug}/skills` endpoint in parallel and merged. The full
+//!     record (schemas, README) stays cached for in-process consumers
+//!     such as `directory::search_functions`.
 //!
 //! Both responses are cached in-process for `registry_cache_ttl_ms`
 //! (default 60s) so repeat lookups don't hammer the registry — every
@@ -45,6 +50,7 @@ use tokio::sync::RwLock;
 
 use crate::config::{SharedConfig, SkillsConfig};
 use crate::functions::error::{invalid_input_message, not_found_message, NextAction};
+use crate::functions::search_index::excluded_from_search;
 use crate::sources::build_http_client;
 use crate::sources::registry::validate_worker_name;
 
@@ -174,14 +180,22 @@ pub struct WorkerInfoInput {
     pub version: Option<String>,
     #[serde(default)]
     pub tag: Option<String>,
+    /// Include the README markdown (10–25 KB for most workers). Off by
+    /// default: the card is for judging fit before `compose::add`; the
+    /// README is for setup prose and examples.
+    #[serde(default)]
+    pub readme: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, JsonSchema)]
 pub struct ApiReferenceFunction {
     pub name: String,
     pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_schema: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_schema: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
 }
 
@@ -189,8 +203,11 @@ pub struct ApiReferenceFunction {
 pub struct ApiReferenceTrigger {
     pub name: String,
     pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invocation_schema: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub return_schema: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
 }
 
@@ -223,6 +240,38 @@ pub struct WorkerInfoOutput {
     pub readme: Option<String>,
     pub api_reference: ApiReference,
     pub skills_tree: SkillsTree,
+}
+
+impl WorkerInfoOutput {
+    /// The agent-facing projection of the full record: every schema and
+    /// metadata block dropped (browser's alone run 65 KB; the contract is
+    /// `engine::functions::info` after installing), internal and
+    /// search-excluded functions dropped, README only on request.
+    pub fn into_card(mut self, readme: bool) -> Self {
+        if !readme {
+            self.readme = None;
+        }
+        self.api_reference.functions.retain(|function| {
+            function
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("internal"))
+                .and_then(Value::as_bool)
+                != Some(true)
+                && !excluded_from_search(&function.name)
+        });
+        for function in &mut self.api_reference.functions {
+            function.request_schema = None;
+            function.response_schema = None;
+            function.metadata = None;
+        }
+        for trigger in &mut self.api_reference.triggers {
+            trigger.invocation_schema = None;
+            trigger.return_schema = None;
+            trigger.metadata = None;
+        }
+        self
+    }
 }
 
 // ---------- shared cache + http client ----------
@@ -324,12 +373,21 @@ fn register_worker_info(iii: &Arc<IIIClient>, cfg: &SharedConfig, cache: Registr
         RegisterFunction::new_async(move |req: WorkerInfoInput| {
             let cfg = cfg_inner.load_full();
             let cache = cache_inner.clone();
-            async move { worker_info(&cfg, &cache, req).await.map_err(Error::Handler) }
+            let readme = req.readme;
+            async move {
+                worker_info(&cfg, &cache, req)
+                    .await
+                    .map(|out| out.into_card(readme))
+                    .map_err(Error::Handler)
+            }
         })
         .description(
-            "Fetch one registry worker's full metadata: envelope, readme, API \
-             reference (function and trigger schemas), and skill file paths. Pass \
-             `version` or `tag` (default tag \"latest\").",
+            "Preview one registry worker before installing: envelope (version, \
+             kind, dependencies, config), its public function and trigger names \
+             with descriptions, and skill file paths. Schemas are omitted — \
+             install, then read contracts with engine::functions::info. Pass \
+             `readme: true` for the README prose; `version` or `tag` (default tag \
+             \"latest\").",
         ),
     );
 }
@@ -371,7 +429,9 @@ impl WorkerInfoSpec {
 pub fn classify_worker_info_input(
     input: WorkerInfoInput,
 ) -> Result<(String, WorkerInfoSpec), String> {
-    let WorkerInfoInput { name, version, tag } = input;
+    let WorkerInfoInput {
+        name, version, tag, ..
+    } = input;
     let name = name.trim().to_string();
     if name.is_empty() {
         return Err("name must be non-empty".into());
@@ -665,6 +725,7 @@ mod tests {
             name: "resend".into(),
             version: None,
             tag: None,
+            readme: false,
         })
         .unwrap();
         assert_eq!(name, "resend");
@@ -677,6 +738,7 @@ mod tests {
             name: "resend".into(),
             version: Some("1.2.3".into()),
             tag: None,
+            readme: false,
         })
         .unwrap();
         assert_eq!(spec, WorkerInfoSpec::Version("1.2.3".into()));
@@ -688,6 +750,7 @@ mod tests {
             name: "resend".into(),
             version: Some("1.2.3".into()),
             tag: Some("latest".into()),
+            readme: false,
         })
         .unwrap_err();
         assert!(err.contains("either version OR tag"), "got: {err}");
@@ -699,6 +762,7 @@ mod tests {
             name: "  ".into(),
             version: None,
             tag: None,
+            readme: false,
         })
         .unwrap_err();
         assert!(err.contains("name"), "got: {err}");
@@ -722,6 +786,7 @@ mod tests {
                 name: bad.into(),
                 version: None,
                 tag: None,
+                readme: false,
             })
             .unwrap_err();
             assert!(
@@ -739,6 +804,7 @@ mod tests {
                     name: good.into(),
                     version: None,
                     tag: None,
+                    readme: false,
                 })
                 .is_ok(),
                 "real worker name {good:?} must be accepted"
@@ -752,6 +818,7 @@ mod tests {
             name: "  agent-memory  ".into(),
             version: None,
             tag: Some("  latest\n".into()),
+            readme: false,
         })
         .unwrap();
         assert_eq!(name, "agent-memory");
@@ -840,6 +907,59 @@ mod tests {
         let out = parse_worker_list_response(&v);
         assert!(out.workers.is_empty());
         assert!(!out.pagination.has_more);
+    }
+
+    #[test]
+    fn worker_info_card_keeps_names_and_descriptions_only() {
+        let detail = json!({ "worker": {
+            "name": "browser",
+            "readme": "# Browser\n\nLong prose.",
+            "functions": [
+                { "name": "browser::fetch", "description": "Fetch a page.",
+                  "request_schema": { "type": "object" }, "response_schema": { "type": "object" },
+                  "metadata": {} },
+                { "name": "browser::ui-content", "description": "Serve UI assets.",
+                  "metadata": { "internal": true } },
+                { "name": "browser::on-config-change", "description": "Reload settings." }
+            ],
+            "triggers": [
+                { "name": "browser::on-download", "description": "A download finished.",
+                  "invocation_schema": { "type": "object" }, "return_schema": { "type": "object" } }
+            ]
+        } });
+        let full = parse_worker_info_response("browser", &detail, &json!({}));
+        assert!(full.readme.is_some());
+        assert_eq!(full.api_reference.functions.len(), 3);
+
+        let card = full.into_card(false);
+        assert!(card.readme.is_none());
+        let names: Vec<&str> = card
+            .api_reference
+            .functions
+            .iter()
+            .map(|function| function.name.as_str())
+            .collect();
+        assert_eq!(names, ["browser::fetch"]);
+        let function = &card.api_reference.functions[0];
+        assert_eq!(function.description.as_deref(), Some("Fetch a page."));
+        assert!(function.request_schema.is_none() && function.response_schema.is_none());
+        assert!(function.metadata.is_none());
+        let trigger = &card.api_reference.triggers[0];
+        assert!(trigger.invocation_schema.is_none() && trigger.return_schema.is_none());
+        // Dropped schemas leave the wire entirely.
+        let wire = serde_json::to_value(&card).unwrap();
+        assert!(wire["api_reference"]["functions"][0]
+            .get("request_schema")
+            .is_none());
+        assert!(wire.get("readme").is_none());
+
+        let with_readme =
+            parse_worker_info_response("browser", &detail, &json!({})).into_card(true);
+        assert!(with_readme
+            .readme
+            .as_deref()
+            .unwrap()
+            .starts_with("# Browser"));
     }
 
     #[test]

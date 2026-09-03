@@ -51,7 +51,8 @@ Need a backend capability? Check what is already registered FIRST — it is usua
 away. When nothing fits, search the public registry before building anything:
 `iii trigger directory::registry::workers::list --json '{"search":"<capability>"}'` pages the
 published catalogue and `iii trigger directory::registry::workers::info name=<name>` returns
-one worker's full detail. Say what you are about to install and why, install with
+one worker's pre-install card (functions and triggers by name and description; `readme=true`
+adds the README). Say what you are about to install and why, install with
 `iii trigger worker::add --json '{"source":{"kind":"registry","name":"<name>"}}'`, then
 confirm the new ids appear via `engine::functions::list` with that prefix and fetch each
 contract with `--help` as usual.
