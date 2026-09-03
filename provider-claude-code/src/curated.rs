@@ -35,6 +35,7 @@ fn fallback_model(base_id: &str, display_name: &str, adaptive: bool) -> Model {
         thinking_budgets: None,
         // Subscription billing: no per-token pricing to enrich with.
         pricing: None,
+        speech: None,
     }
 }
 

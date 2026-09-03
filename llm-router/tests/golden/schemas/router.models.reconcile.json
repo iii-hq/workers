@@ -56,6 +56,17 @@
               "null"
             ]
           },
+          "speech": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/SpeechModel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set on speech models only; see [`SpeechModel`]."
+          },
           "supports_cache": {
             "type": [
               "boolean",
@@ -160,6 +171,49 @@
         },
         "required": [
           "effort"
+        ],
+        "type": "object"
+      },
+      "SpeechModality": {
+        "description": "What a speech model does. Chat models carry no `speech` block.",
+        "oneOf": [
+          {
+            "description": "Speech to text, served through `router::transcribe`.",
+            "enum": [
+              "stt"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Text to speech, served through `router::speak`.",
+            "enum": [
+              "tts"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "SpeechModel": {
+        "description": "Facts about a speech model. Present only on models served through `router::transcribe` / `router::speak`; such models report `context_window` and `max_output_tokens` as 0.",
+        "properties": {
+          "languages": {
+            "description": "BCP-47 tags of the languages the model handles; empty when the provider does not say.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "modality": {
+            "$ref": "#/definitions/SpeechModality"
+          },
+          "streaming": {
+            "default": false,
+            "description": "Realtime input (stt) or streamed audio output (tts) is available.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "modality"
         ],
         "type": "object"
       }

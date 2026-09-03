@@ -95,6 +95,7 @@ fn model_from_live(row: &Value) -> Option<Model> {
         thinking_budgets: None,
         // Subscription billing: no per-token pricing.
         pricing: None,
+        speech: None,
     })
 }
 

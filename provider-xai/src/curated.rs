@@ -106,6 +106,7 @@ pub fn enrich(id: &str) -> Model {
             supports_structured_output: Some(true), // native json_schema response_format
             thinking_budgets: None,                 // effort enum, not token budgets
             pricing: Some(pricing),
+            speech: None,
         },
         None => Model {
             id: id.into(),
@@ -123,6 +124,7 @@ pub fn enrich(id: &str) -> Model {
             supports_structured_output: None,
             thinking_budgets: None,
             pricing: None,
+            speech: None,
         },
     }
 }

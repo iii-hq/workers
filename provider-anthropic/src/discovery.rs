@@ -93,6 +93,7 @@ fn model_from_live(row: &Value) -> Option<Model> {
         supports_structured_output: Some(false),
         thinking_budgets: None,
         pricing: pricing_for(id),
+        speech: None,
     })
 }
 

@@ -43,6 +43,18 @@ pub const EMBED_DESC: &str =
      or discovers the first embed-capable one from the live registry; one vector per input, \
      order preserved.";
 
+pub const TRANSCRIBE_ID: &str = "router::transcribe";
+pub const TRANSCRIBE_DESC: &str =
+    "Speech to text through provider::<id>::transcribe: {model?, provider?, audio_base64, \
+     mime?, language?} to {provider, model, text, segments?}. Resolves the provider from the \
+     catalog's stt models when none is named.";
+
+pub const SPEAK_ID: &str = "router::speak";
+pub const SPEAK_DESC: &str =
+    "Text to speech through provider::<id>::speak: {model?, provider?, text, voice?, format?} \
+     to {provider, model, audio_base64, mime}. Resolves the provider from the catalog's tts \
+     models when none is named.";
+
 pub const COUNT_TOKENS_ID: &str = "router::count_tokens";
 pub const COUNT_TOKENS_DESC: &str =
     "Count prompt tokens for {model, provider?, system_prompt?, tools?, messages} through the \
@@ -51,7 +63,8 @@ pub const COUNT_TOKENS_DESC: &str =
 
 pub const MODELS_LIST_ID: &str = "router::models::list";
 pub const MODELS_LIST_DESC: &str =
-    "List catalog models, optionally filtered by provider and/or a capability flag.";
+    "List catalog models, optionally filtered by provider, a capability flag, and modality \
+     (chat by default; stt, tts, or any).";
 
 pub const MODELS_GET_ID: &str = "router::models::get";
 pub const MODELS_GET_DESC: &str =
@@ -137,6 +150,13 @@ pub fn catalog() -> Vec<FunctionSpec> {
         spec::<AbortRequest, AbortResponse>(ABORT_ID, ABORT_DESC),
         spec::<crate::embed::RouterEmbedRequest, crate::embed::RouterEmbedResponse>(
             EMBED_ID, EMBED_DESC,
+        ),
+        spec::<crate::speech::RouterTranscribeRequest, crate::speech::RouterTranscribeResponse>(
+            TRANSCRIBE_ID,
+            TRANSCRIBE_DESC,
+        ),
+        spec::<crate::speech::RouterSpeakRequest, crate::speech::RouterSpeakResponse>(
+            SPEAK_ID, SPEAK_DESC,
         ),
         spec::<
             crate::count_tokens::RouterCountTokensRequest,
