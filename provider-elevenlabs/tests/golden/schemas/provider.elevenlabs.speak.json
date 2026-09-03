@@ -1,0 +1,85 @@
+{
+  "description": "Text to speech on the ElevenLabs voices behind router::speak: text and a voice id or name in, base64 audio out (mp3, wav, pcm16, opus).",
+  "function_id": "provider::elevenlabs::speak",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "format": {
+        "default": null,
+        "description": "`mp3` (default), `wav`, `pcm16`, `opus`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "language": {
+        "default": null,
+        "description": "ISO 639-1 language to enforce; ignored by models that pick it from the text.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "model": {
+        "default": null,
+        "description": "Text-to-speech model id; `eleven_multilingual_v2` when omitted.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "speed": {
+        "default": null,
+        "description": "Speaking-rate multiplier, 0.7 to 1.2; 1.0 is the voice's own pace.",
+        "format": "double",
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "text": {
+        "description": "Text to speak.",
+        "type": "string"
+      },
+      "voice": {
+        "default": null,
+        "description": "Voice id, or the name of a voice on the account; George when omitted.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "text"
+    ],
+    "title": "SpeakRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "audio_base64": {
+        "type": "string"
+      },
+      "mime": {
+        "type": "string"
+      },
+      "model": {
+        "type": "string"
+      },
+      "voice": {
+        "description": "The voice id used.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "audio_base64",
+      "mime",
+      "model",
+      "voice"
+    ],
+    "title": "SpeakResponse",
+    "type": "object"
+  }
+}
