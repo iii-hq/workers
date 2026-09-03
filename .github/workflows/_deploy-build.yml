@@ -236,7 +236,7 @@ jobs:
         if: inputs.kind == 'rust-binary' && inputs.worker == 'iii-directory' && inputs.target == 'x86_64-unknown-linux-gnu'
         run: |
           set -euo pipefail
-          root="$(ORT_LIB_PATH="$RUNNER_TEMP/onnxruntime" iii-directory/scripts/provision-onnxruntime.sh)"
+          root="$(ORT_LIB_PATH="$RUNNER_TEMP/onnxruntime" "$GITHUB_WORKSPACE/iii-directory/scripts/provision-onnxruntime.sh")"
           {
             echo "ORT_LIB_PATH=$root"
             echo "ORT_PREFER_DYNAMIC_LINK=0"

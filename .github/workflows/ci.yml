@@ -241,7 +241,7 @@ jobs:
         if: matrix.worker == 'iii-directory'
         run: |
           set -euo pipefail
-          root="$(ORT_LIB_PATH="$RUNNER_TEMP/onnxruntime" iii-directory/scripts/provision-onnxruntime.sh)"
+          root="$(ORT_LIB_PATH="$RUNNER_TEMP/onnxruntime" "$GITHUB_WORKSPACE/iii-directory/scripts/provision-onnxruntime.sh")"
           {
             echo "ORT_LIB_PATH=$root"
             echo "ORT_PREFER_DYNAMIC_LINK=0"
@@ -645,7 +645,7 @@ jobs:
         if: steps.optout.outputs.skip != 'true' && matrix.worker == 'iii-directory'
         run: |
           set -euo pipefail
-          root="$(ORT_LIB_PATH="$RUNNER_TEMP/onnxruntime" iii-directory/scripts/provision-onnxruntime.sh)"
+          root="$(ORT_LIB_PATH="$RUNNER_TEMP/onnxruntime" "$GITHUB_WORKSPACE/iii-directory/scripts/provision-onnxruntime.sh")"
           {
             echo "ORT_LIB_PATH=$root"
             echo "ORT_PREFER_DYNAMIC_LINK=0"
