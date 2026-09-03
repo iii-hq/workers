@@ -448,31 +448,44 @@ async fn reconcile_one(
     }
 }
 
-/// Fetch the installed-worker list, retrying with backoff while the
-/// engine's worker-manager — which registers `worker::list` — is still
-/// coming up. On a cold engine start the worker-manager registers late,
-/// so `worker::list` reports `function_not_found` for the first few
-/// seconds; without a retry the boot reconcile would skip every worker.
+/// Fetch the compose project's worker (container) names, retrying with
+/// backoff while the engine's worker-manager — which registers
+/// `compose::status` — is still coming up. On a cold engine start the
+/// worker-manager registers late, so `compose::status` reports
+/// `function_not_found` for the first few seconds; without a retry the
+/// boot reconcile would skip every worker. `compose::status` replaced
+/// `worker::list` in iii 0.23 and is registered in this worker's own
+/// namespace, so no namespace override.
 ///
-/// Returns the worker array on success, or `None` if `worker::list`
-/// never became available within the retry budget (~30s).
-async fn fetch_worker_list_with_retry(iii: &IIIClient) -> Option<Vec<serde_json::Value>> {
+/// Returns the container names on success, or `None` if `compose::status`
+/// never became available within the retry budget (~30s). `compose::status`
+/// carries no per-worker version, so reconcile pulls the latest skill tag.
+async fn fetch_worker_names_with_retry(iii: &IIIClient) -> Option<Vec<String>> {
     const MAX_ATTEMPTS: u32 = 6;
     for attempt in 1..=MAX_ATTEMPTS {
         let request = TriggerRequest {
-            function_id: "worker::list".to_string(),
+            function_id: "compose::status".to_string(),
             payload: json!({}),
             action: None,
             timeout_ms: Some(10_000),
         };
-        let result = iii.trigger(request.namespace("default")).await;
+        let result = iii.trigger(request).await;
 
         match result {
             Ok(val) => {
                 return Some(
-                    val.get("workers")
-                        .and_then(|w| w.as_array())
-                        .cloned()
+                    val.get("containers")
+                        .and_then(|c| c.as_array())
+                        .map(|containers| {
+                            containers
+                                .iter()
+                                .filter_map(|c| {
+                                    c.get("container")
+                                        .and_then(|n| n.as_str())
+                                        .map(str::to_string)
+                                })
+                                .collect()
+                        })
                         .unwrap_or_default(),
                 );
             }
@@ -480,7 +493,7 @@ async fn fetch_worker_list_with_retry(iii: &IIIClient) -> Option<Vec<serde_json:
                 tracing::warn!(
                     attempt,
                     error = %e,
-                    "boot reconcile: worker::list unavailable after retries; skipping worker reconcile"
+                    "boot reconcile: compose::status unavailable after retries; skipping worker reconcile"
                 );
                 return None;
             }
@@ -488,7 +501,7 @@ async fn fetch_worker_list_with_retry(iii: &IIIClient) -> Option<Vec<serde_json:
                 tracing::debug!(
                     attempt,
                     error = %e,
-                    "boot reconcile: worker::list not ready (worker-manager still coming up); retrying"
+                    "boot reconcile: compose::status not ready (worker-manager still coming up); retrying"
                 );
                 tokio::time::sleep(std::time::Duration::from_secs(u64::from(attempt) * 2)).await;
             }
@@ -522,9 +535,9 @@ fn spawn_boot_reconcile(
         let mut reconciled = 0u32;
 
         // Always ensure the engine's own skill is present. The engine is
-        // not a worker, so it never appears in `worker::list`; reconcile
+        // not a worker, so it never appears in `compose::status`; reconcile
         // it directly (registry pull), independent of — and before — the
-        // worker list, so it lands even when `worker::list` isn't ready
+        // worker list, so it lands even when `compose::status` isn't ready
         // yet on a cold start.
         if let Some(spec) = reconcile_decision(ENGINE_NAMESPACE, None, &local_root, &global_root) {
             if reconcile_one(&cfg, &in_flight, ENGINE_NAMESPACE, &spec).await {
@@ -532,10 +545,10 @@ fn spawn_boot_reconcile(
             }
         }
 
-        // Retry `worker::list` with backoff: the worker-manager that
+        // Retry `compose::status` with backoff: the worker-manager that
         // provides it registers late on a cold engine start. The engine
         // skill was already reconciled above, independent of this call.
-        let workers = match fetch_worker_list_with_retry(&iii).await {
+        let workers = match fetch_worker_names_with_retry(&iii).await {
             Some(w) => w,
             None => {
                 if reconciled > 0 {
@@ -550,14 +563,10 @@ fn spawn_boot_reconcile(
             }
         };
 
-        for w in &workers {
-            let name = match w.get("name").and_then(|n| n.as_str()) {
-                Some(n) => n,
-                None => continue,
-            };
-
-            let version = w.get("version").and_then(|v| v.as_str());
-            let spec = match reconcile_decision(name, version, &local_root, &global_root) {
+        for name in &workers {
+            // `compose::status` carries no worker version; reconcile the
+            // latest skill tag.
+            let spec = match reconcile_decision(name, None, &local_root, &global_root) {
                 Some(s) => s,
                 None => continue,
             };

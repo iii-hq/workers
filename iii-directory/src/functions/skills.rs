@@ -217,7 +217,7 @@ pub struct SkillGetOutput {
 // ────────────────── registered-workers cache ──────────────────────────
 //
 // Caches the set of installed worker names so `resolve_visible_skills`
-// doesn't hit `worker::list` on every read.  The cache is:
+// doesn't hit `compose::status` on every read.  The cache is:
 //
 //   1. Populated lazily on first read.
 //   2. Invalidated when the `worker` trigger fires an `add`/`remove`.
@@ -261,7 +261,7 @@ impl RegisteredWorkersCache {
     }
 
     /// Get the cached set if fresh, or fetch from the engine via
-    /// `worker::list`. Returns `None` when both the fetch fails AND
+    /// `compose::status`. Returns `None` when both the fetch fails AND
     /// there is no stale cached set — caller should fall back to
     /// unfiltered.
     ///
@@ -286,7 +286,7 @@ impl RegisteredWorkersCache {
         self.fetch_and_store(iii).await
     }
 
-    /// Always fetch `worker::list` fresh (ignoring the TTL), refresh the
+    /// Always fetch `compose::status` fresh (ignoring the TTL), refresh the
     /// cache, and return the current registered set (falling back to the
     /// last-known set on error). Used by `directory::skills::index` so a
     /// just-registered worker shows up immediately instead of waiting on
@@ -295,16 +295,19 @@ impl RegisteredWorkersCache {
         self.fetch_and_store(iii).await
     }
 
-    /// Fetch `worker::list` from the engine WITHOUT holding the lock,
-    /// then store the result (or fall back to the stale set on error).
+    /// Fetch the compose project status from the engine WITHOUT holding
+    /// the lock, then store the result (or fall back to the stale set on
+    /// error). `compose::status` replaced `worker::list` in iii 0.23; it is
+    /// registered by the worker-manager in this worker's own namespace, so
+    /// no namespace override.
     async fn fetch_and_store(&self, iii: &IIIClient) -> Option<HashSet<String>> {
         let request = TriggerRequest {
-            function_id: "worker::list".to_string(),
+            function_id: "compose::status".to_string(),
             payload: json!({}),
             action: None,
             timeout_ms: Some(5_000),
         };
-        let result = iii.trigger(request.namespace("default")).await;
+        let result = iii.trigger(request).await;
 
         // Re-acquire the lock and store or fall back.
         let mut lock = self.inner.lock().await;
@@ -321,7 +324,7 @@ impl RegisteredWorkersCache {
             Err(e) => {
                 tracing::warn!(
                     error = %e,
-                    "worker::list failed; using last-known registered set"
+                    "compose::status failed; using last-known registered set"
                 );
                 // Return stale cache if available.
                 lock.as_ref().map(|entry| entry.workers.clone())
@@ -330,15 +333,17 @@ impl RegisteredWorkersCache {
     }
 }
 
-/// Parse worker names from the `worker::list` response.
+/// Parse worker (container) names from the `compose::status` response.
 ///
-/// Expected shape: `{ workers: [{ name: "foo", ... }, ...] }`.
-/// Falls back to an empty set on unexpected shapes.
+/// Expected shape: `{ containers: [{ container: "foo", ... }, ...] }`.
+/// Every declared container is a project worker, so all are kept
+/// regardless of run state. Falls back to an empty set on unexpected
+/// shapes.
 fn parse_worker_names(val: &serde_json::Value) -> HashSet<String> {
     let mut names = HashSet::new();
-    if let Some(workers) = val.get("workers").and_then(|w| w.as_array()) {
-        for w in workers {
-            if let Some(name) = w.get("name").and_then(|n| n.as_str()) {
+    if let Some(containers) = val.get("containers").and_then(|c| c.as_array()) {
+        for c in containers {
+            if let Some(name) = c.get("container").and_then(|n| n.as_str()) {
                 names.insert(name.to_string());
             }
         }
@@ -365,7 +370,7 @@ fn parse_worker_names(val: &serde_json::Value) -> HashSet<String> {
 //                 ▼
 //     ┌── filter_unregistered? ──┐
 //     │  YES: fetch/cache        │  NO: pass through
-//     │  worker::list            │
+//     │  compose::status         │
 //     │  keep only matched ns    │
 //     │  (+ agents-ns exempt)    │
 //     └──────────┬───────────────┘
@@ -403,7 +408,7 @@ pub async fn resolve_visible_skills(
     let filtered = if !cfg.filter_unregistered {
         merged
     } else {
-        // `fresh` callers (the index) re-fetch `worker::list` every call so a
+        // `fresh` callers (the index) re-fetch `compose::status` every call so a
         // just-registered worker is never hidden by a stale registered-workers
         // cache; cached callers (`list`/`get`) keep the TTL fast path.
         let registered = if fresh {
@@ -434,7 +439,7 @@ pub async fn resolve_visible_skills(
 }
 
 /// The engine's own skill namespace. The iii engine is not a worker, so
-/// it never appears in `worker::list` / the registered-workers set; its
+/// it never appears in `compose::status` / the registered-workers set; its
 /// skill is reconciled unconditionally (see `spawn_boot_reconcile`) and
 /// kept visible regardless of `filter_unregistered`.
 pub const ENGINE_NAMESPACE: &str = "iii";
@@ -454,7 +459,7 @@ pub const ENGINE_NAMESPACE: &str = "iii";
 ///    belongs to an installed worker).
 /// 5. Its top namespace segment is in `agents_ns` — a system-installed
 ///    skill namespace under `agents_skills_folder`; those are skills,
-///    not workers, so `worker::list` never contains them. Matching by
+///    not workers, so `compose::status` never contains them. Matching by
 ///    NAME (not path) keeps a manual global-root copy of an agents
 ///    skill visible as well.
 ///
@@ -2956,38 +2961,42 @@ First paragraph.
     #[test]
     fn parse_worker_names_well_formed() {
         let val = json!({
-            "workers": [
-                {"name": "resend", "version": "1.0.0"},
-                {"name": "agent-memory"}
+            "containers": [
+                {"container": "resend", "pid": 12, "state": "ready"},
+                {"container": "agent-memory", "state": "stopped"}
             ]
         });
         let names = parse_worker_names(&val);
-        assert_eq!(names.len(), 2);
+        assert_eq!(
+            names.len(),
+            2,
+            "stopped containers are still project workers"
+        );
         assert!(names.contains("resend"));
         assert!(names.contains("agent-memory"));
     }
 
     #[test]
-    fn parse_worker_names_missing_workers_key() {
+    fn parse_worker_names_missing_containers_key() {
         let val = json!({"something_else": true});
         let names = parse_worker_names(&val);
         assert!(names.is_empty());
     }
 
     #[test]
-    fn parse_worker_names_workers_not_array() {
-        let val = json!({"workers": "not an array"});
+    fn parse_worker_names_containers_not_array() {
+        let val = json!({"containers": "not an array"});
         let names = parse_worker_names(&val);
         assert!(names.is_empty());
     }
 
     #[test]
-    fn parse_worker_names_entry_missing_name() {
+    fn parse_worker_names_entry_missing_container() {
         let val = json!({
-            "workers": [
-                {"name": "good"},
-                {"version": "1.0.0"},
-                {"name": "also-good"}
+            "containers": [
+                {"container": "good"},
+                {"pid": 1},
+                {"container": "also-good"}
             ]
         });
         let names = parse_worker_names(&val);

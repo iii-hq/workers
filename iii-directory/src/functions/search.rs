@@ -842,9 +842,12 @@ struct RegistryCandidate {
 /// in an install suggestion, and suggesting unvetted code is not this
 /// worker's call.
 fn registry_candidates(workers: &[Worker]) -> Vec<RegistryCandidate> {
+    // This registry is private and every worker is team-authored, so all
+    // listed workers are installable candidates — no author-verification
+    // filter (which would drop first-party workers like browser/web that
+    // carry no verified author).
     workers
         .iter()
-        .filter(|worker| worker.author.as_ref().is_some_and(|author| author.verified))
         .map(|worker| RegistryCandidate {
             name: worker.name.clone(),
             version: worker.version.clone().unwrap_or_default(),
@@ -1003,8 +1006,8 @@ fn assemble_installable(
     section
 }
 
-/// The installable side of a search: ask the public registry with each
-/// capability, pull the top verified candidates' API references, and rank
+/// The installable side of a search: ask the private registry with each
+/// capability, pull the top candidates' API references, and rank
 /// their functions per capability. Candidates whose name is already installed
 /// are skipped. Every failure —
 /// registry down, malformed payload, no matches — returns an empty section:
@@ -2442,17 +2445,19 @@ mod tests {
     }
 
     #[test]
-    fn registry_candidates_keep_verified_authors_in_order() {
+    fn registry_candidates_keep_all_workers_in_order() {
+        // Private registry: unverified (no verified author) workers are kept.
         let workers = vec![
-            registry_worker("unverified", "1.0.0", "d", false),
+            registry_worker("browser", "1.0.0", "headless browser", false),
             registry_worker("email-kit", "0.3.1", "send email", true),
             registry_worker("mailer", "2.0.0", "smtp", true),
         ];
         let candidates = registry_candidates(&workers);
-        assert_eq!(candidates.len(), 2);
-        assert_eq!(candidates[0].name, "email-kit");
-        assert_eq!(candidates[0].version, "0.3.1");
-        assert_eq!(candidates[1].name, "mailer");
+        assert_eq!(candidates.len(), 3);
+        assert_eq!(candidates[0].name, "browser");
+        assert_eq!(candidates[0].version, "1.0.0");
+        assert_eq!(candidates[1].name, "email-kit");
+        assert_eq!(candidates[2].name, "mailer");
         assert!(registry_candidates(&[]).is_empty());
     }
 
