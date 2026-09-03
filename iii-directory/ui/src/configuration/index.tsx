@@ -261,7 +261,7 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
           <TextField
             field="function_search_model_path"
             label="Semantic model directory"
-            placeholder="~/.cache/iii/all-MiniLM-L6-v2-…"
+            placeholder="not set — e.g. ~/.cache/iii/all-MiniLM-L6-v2-<revision>"
             hint="Existing directory containing the local semantic model. The runtime never downloads a model, and changing this path requires a worker restart."
             value={asString(value.function_search_model_path)}
             onChange={setString}

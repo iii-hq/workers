@@ -238,6 +238,10 @@ async fn on_config_change(iii: &IIIClient, state: &SharedState) {
         return;
     }
     let inject_hint = cfg.inject_hint;
+    crate::config::warn_if_search_mode_lacks_model(
+        cfg.function_search_mode,
+        cfg.resolved_function_search_model_path().is_some(),
+    );
     apply_config(state, cfg).await;
     // Reconcile the pre-generate hook binding with the reloaded knob (hot,
     // no restart): on → bind once; off → unregister.

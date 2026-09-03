@@ -102,6 +102,20 @@ pub enum FunctionSearchMode {
     Hybrid,
 }
 
+/// `shadow` and `hybrid` need a local semantic model; without
+/// `function_search_model_path` every search silently runs BM25-only, which
+/// is easy to mistake for the model being active. Say so once, loudly.
+pub fn warn_if_search_mode_lacks_model(mode: FunctionSearchMode, has_model_path: bool) {
+    if mode != FunctionSearchMode::Lexical && !has_model_path {
+        tracing::warn!(
+            ?mode,
+            "function_search_mode needs a local semantic model but function_search_model_path \
+             is unset; directory::search_functions runs BM25-only until a model directory is \
+             configured and iii-directory restarts"
+        );
+    }
+}
+
 fn deserialize_model_path<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: serde::Deserializer<'de>,

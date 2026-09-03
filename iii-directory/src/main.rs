@@ -149,6 +149,10 @@ async fn main() -> Result<()> {
     // `cache_ttl_ms` cell read by both caches.
     let boot_topology = cfg.topology();
     let function_search_model_path = cfg.resolved_function_search_model_path();
+    iii_directory::config::warn_if_search_mode_lacks_model(
+        cfg.function_search_mode,
+        function_search_model_path.is_some(),
+    );
     let auto_download = cfg.auto_download;
     let cache_ttl_ms = Arc::new(AtomicU64::new(cfg.registry_cache_ttl_ms));
     let registered_cache = make_registered_cache(cache_ttl_ms.clone());
