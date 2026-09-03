@@ -65,3 +65,21 @@ def test_descriptor_schema_requires_explicit_interface_capture_policy():
     assert schema["properties"]["interface_capture"] == {
         "enum": ["required", "skipped"]
     }
+
+
+def test_kanban_bundle_install_uses_its_pnpm_build_policy():
+    catalog = deployment_compiler.read_yaml(ROOT / ".deploy" / "workers.yaml")["workers"]
+
+    descriptor = deployment_compiler.compile_worker(
+        ROOT,
+        "kanban",
+        catalog["kanban"],
+        "a" * 40,
+        "b" * 64,
+    )
+
+    assert descriptor["artifact"]["install_command"] == [
+        "pnpm",
+        "install",
+        "--frozen-lockfile",
+    ]
