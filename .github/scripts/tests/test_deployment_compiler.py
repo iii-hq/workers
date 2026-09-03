@@ -26,7 +26,7 @@ def test_canonical_numbers_reject_non_json_values():
         deployment_compiler.canonical_bytes({"budget": float("nan")})
 
 
-def test_compiler_derives_explicit_interface_capture_policy_for_every_worker():
+def test_compiler_derives_registry_interface_capture_policy_for_every_worker():
     catalog = deployment_compiler.read_yaml(ROOT / ".deploy" / "workers.yaml")["workers"]
     descriptors = {
         worker: deployment_compiler.compile_worker(

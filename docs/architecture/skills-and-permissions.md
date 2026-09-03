@@ -20,7 +20,7 @@ canonical `skills/SKILL.md` entrypoint.
 
 ### Publish
 
-On every successful release (when `interface_smoke != false`):
+On every successful release (when `registry_interface != false`):
 
 1. `build_skills_payload.py` collects any non-empty markdown under `skills/`
 2. `POST /w/<worker>/skills` — skipped cleanly when no markdown found

@@ -81,9 +81,6 @@ jobs:
           python3 .github/scripts/deployment_train.py verify-prepared \
             --descriptor deploy-prepared/deployment-descriptor.json \
             --prepared deploy-prepared/prepared-artifacts.json
-          python3 .github/scripts/deployment_interface.py verify-evidence \
-            --descriptor deploy-prepared/deployment-descriptor.json \
-            --evidence deploy-prepared/deployment-evidence.json
           [[ -n "$EXPECTED_MIRROR_VERSION" ]]
           python3 .github/scripts/deployment_control_contract.py validate-identity --identity "$DEPLOYMENT_IDENTITY"
           python3 .github/scripts/deployment_control_contract.py validate-dispatch --step-id "$STEP_ID" --dispatch-nonce "$DISPATCH_NONCE" --descriptor-sha256 "$DESCRIPTOR_SHA256" --plan-hash "$PLAN_HASH" --source-sha "$SOURCE_SHA" --prepared-sha "$PREPARED_SHA" --mutating

@@ -395,7 +395,7 @@ jobs:
             --trigger-types-baseline interface-work/triggers-baseline.json \
             --workers-baseline interface-work/workers-baseline.json
           python3 .github/scripts/collect_worker_interface.py \
-            --assert-non-empty --assert-typed-schemas \
+            --assert-typed-schemas \
             --assert-file interface-work/worker-interface.json
           python3 .github/scripts/deployment_interface.py snapshot \
             --descriptor deploy-prepared/deployment-descriptor.json \

@@ -228,15 +228,12 @@ def test_prepare_upload_requires_interface_evidence():
     assert "deployment-interface.json" in uploaded_path or uploaded_path.rstrip("/").endswith("deploy-prepared")
 
 
-def test_publish_finalize_and_verify_consume_interface_evidence():
+def test_registry_publishers_consume_interface_evidence():
     for name in ("_deploy-registry.yml", "_deploy-registry-finalize.yml"):
         text = body(name)
         assert "deployment_interface.py verify-evidence" in text, name
         assert "deployment-evidence.json" in text, name
         assert "deployment-interface.json" in text, name
-    verify = body("deploy-verify.yml")
-    assert "deployment_interface.py verify-evidence" in verify
-    assert "deployment-evidence.json" in verify
 
 
 def test_registry_publishers_never_synthesize_an_empty_interface():

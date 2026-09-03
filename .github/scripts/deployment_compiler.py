@@ -432,9 +432,11 @@ def compile_worker(root: Path, worker: str, value: Any, source_sha: str, compile
         fail(f"{public_path}: name must be {worker!r}")
     if manifest.get("manifest") != manifest_name:
         fail(f"{public_path}: manifest must match the private package_manifest")
-    interface_smoke = manifest.get("interface_smoke", True)
-    if not isinstance(interface_smoke, bool):
-        fail(f"{public_path}: interface_smoke must be a boolean when present")
+    if "interface_smoke" in manifest:
+        fail(f"{public_path}: interface_smoke was replaced by registry_interface")
+    registry_interface = manifest.get("registry_interface", True)
+    if not isinstance(registry_interface, bool):
+        fail(f"{public_path}: registry_interface must be a boolean when present")
     publish = value["publish"]
     if not isinstance(publish, bool):
         fail(f"workers.{worker}.publish must be a boolean")
@@ -469,10 +471,9 @@ def compile_worker(root: Path, worker: str, value: Any, source_sha: str, compile
         "source": source,
         "artifact": artifact,
         "runtime": normalize_runtime(worker, worker_dir, manifest, str(artifact["kind"])),
-        # Keep the legacy public-manifest spelling at the source boundary only.
-        # Inside the immutable deployment contract this is interface capture:
-        # registration metadata is collected, but no worker function is called.
-        "interface_capture": "required" if interface_smoke else "skipped",
+        # The public flag controls whether Registry functions and trigger types
+        # are collected. No worker function or product behavior is exercised.
+        "interface_capture": "required" if registry_interface else "skipped",
         "publish": publish,
         "build_units": build_units(worker, artifact),
         "registry_projection": projection,

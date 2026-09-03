@@ -63,14 +63,18 @@ def validate_public_manifest(worker: str, spec: _lib.WorkerSpec, hard) -> None:
     ):
         hard(f"{worker}/iii.worker.yaml dependencies must be a string-to-string mapping")
 
-    manifest_skips_interface = manifest.raw.get("interface_smoke") is False
+    if "interface_smoke" in manifest.raw:
+        hard(f"{worker}/iii.worker.yaml interface_smoke was replaced by registry_interface")
+    registry_interface = manifest.raw.get("registry_interface", True)
+    if not isinstance(registry_interface, bool):
+        hard(f"{worker}/iii.worker.yaml registry_interface must be a boolean when present")
     tags = manifest.raw.get("tags")
     if tags is not None and (
         not isinstance(tags, list) or not all(isinstance(tag, str) for tag in tags)
     ):
         hard(f"{worker}/iii.worker.yaml tags must be a string array")
-    elif not manifest_skips_interface and not tags:
-        hard(f"{worker}/iii.worker.yaml tags must be non-empty when interface smoke is enabled")
+    elif registry_interface and not tags:
+        hard(f"{worker}/iii.worker.yaml tags must be non-empty when Registry interface publication is enabled")
 
     if manifest.deploy == "binary":
         executable = manifest.bin or manifest.name
