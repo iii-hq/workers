@@ -21,9 +21,13 @@ COPY src/ src/
 RUN UV_PROJECT_ENVIRONMENT=/app/.venv uv sync --frozen --no-dev --no-editable \
     && find /app/.venv -path '*.dist-info/uv_cache.json' -delete \
     && find /app/.venv -path '*.dist-info/RECORD' -exec sed -i '/uv_cache\.json,/d' {} + \
+    && mkdir -p /app/data/scrapling \
+    && chown -R pwuser:pwuser /app/data \
     && rm -rf /tmp/uv-cache \
     && find /app -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
 
 ENV PATH="/app/.venv/bin:${PATH}"
+
+USER pwuser
 
 CMD ["python", "-m", "src.main"]
