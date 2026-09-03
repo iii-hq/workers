@@ -2615,8 +2615,9 @@ async fn speech_surfaces_forward_to_the_provider_and_stay_out_of_the_chat_list()
     provider.register_function(
         "provider::speech::speak",
         RegisterFunction::new_async(|input: Value| async move {
+            let model = input["model"].as_str().unwrap_or("say-1");
             Ok::<Value, Error>(json!({
-                "model": input["model"],
+                "model": model,
                 "audio_base64": "AAAA",
                 "mime": if input["format"] == json!("wav") { "audio/wav" } else { "audio/mpeg" },
                 "voice": input["voice"],

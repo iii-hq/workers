@@ -162,13 +162,13 @@ fn surface_name(modality: SpeechModality) -> &'static str {
 ///
 /// 1. A composite `provider::model` id splits when its prefix names a
 ///    registered or catalog provider, as everywhere else in the router.
-/// 2. An explicit provider must be registered; its model is the caller's,
-///    or its first catalog model of this modality, or its default.
+/// 2. An explicit provider must be registered; it gets the caller's model
+///    or, with none named, its own default (`None` on the wire).
 /// 3. A model without a provider resolves through the catalog: exactly one
 ///    owner with this modality wins, a model of the other modality is a
 ///    caller error, several owners are ambiguous, none is unserved.
 /// 4. Neither: the first provider (by id) that declared a model of this
-///    modality, with its first such model.
+///    modality, which then uses its own default.
 pub fn resolve_speech_target(
     modality: SpeechModality,
     model: Option<&str>,
@@ -200,16 +200,7 @@ pub fn resolve_speech_target(
                 ),
             ));
         }
-        let model = model.map(str::to_string).or_else(|| {
-            let mut ids: Vec<&str> = catalog
-                .iter()
-                .filter(|m| m.provider == provider && of_modality(m))
-                .map(|m| m.id.as_str())
-                .collect();
-            ids.sort_unstable();
-            ids.first().map(|id| id.to_string())
-        });
-        return Ok((provider.to_string(), model));
+        return Ok((provider.to_string(), model.map(str::to_string)));
     }
 
     if let Some(model) = model {
@@ -257,14 +248,14 @@ pub fn resolve_speech_target(
         };
     }
 
-    let mut candidates: Vec<(&str, &str)> = catalog
+    let mut candidates: Vec<&str> = catalog
         .iter()
         .filter(|m| of_modality(m) && registered_has(&m.provider))
-        .map(|m| (m.provider.as_str(), m.id.as_str()))
+        .map(|m| m.provider.as_str())
         .collect();
     candidates.sort_unstable();
     match candidates.first() {
-        Some((provider, model)) => Ok((provider.to_string(), Some(model.to_string()))),
+        Some(provider) => Ok((provider.to_string(), None)),
         None => Err(RouterError::new(
             RouterCode::NoProviderForModel,
             format!(
@@ -569,7 +560,7 @@ mod tests {
         ];
         assert_eq!(
             resolve_speech_target(SpeechModality::Stt, None, Some("sarvam"), &reg, &catalog),
-            Ok(("sarvam".into(), Some("saarika-v1".into())))
+            Ok(("sarvam".into(), None))
         );
         let err = resolve_speech_target(SpeechModality::Stt, None, Some("ghost"), &reg, &catalog)
             .unwrap_err();
@@ -586,7 +577,7 @@ mod tests {
         let reg = registered(&["elevenlabs", "google-speech"]);
         assert_eq!(
             resolve_speech_target(SpeechModality::Stt, None, None, &reg, &catalog),
-            Ok(("elevenlabs".into(), Some("scribe".into())))
+            Ok(("elevenlabs".into(), None))
         );
         let err = resolve_speech_target(
             SpeechModality::Tts,
