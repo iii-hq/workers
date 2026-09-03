@@ -51,7 +51,6 @@ opentelemetry = { version = "0.31", default-features = false }
 # Catalog fingerprint hashing for the search index.
 sha2 = "0.10"
 # Pinned local-only embedding runtime. Default features include Hub access.
-model2vec-rs = { version = "=0.2.1", default-features = false, features = ["onig", "local-only"] }
 
 # Local MiniLM retrieval and reranking, built on every target for which ort-sys
 # ships a pinned, SHA-256-verified static ONNX Runtime (its dist.tsv): Linux

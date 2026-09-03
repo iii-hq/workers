@@ -22,9 +22,7 @@ use crate::functions::registry::{
 use crate::functions::search_index::{
     canonical_tools, compact_query, excluded_from_search, tool_fingerprint, Bm25Index, ToolSchema,
 };
-use crate::functions::search_semantic::{
-    weighted_rrf, SemanticSearch, MODEL_REVISION, MODEL_SHA256,
-};
+use crate::functions::search_semantic::{weighted_rrf, SemanticSearch};
 use crate::surface::search_catalog as catalog;
 
 /// Timeout for one engine catalog call during a refresh.
@@ -49,8 +47,6 @@ const SEARCH_FN_FLOOR: f64 = 0.5;
 /// Above this fraction of the leader a function stays even with lower term
 /// coverage — the high-score keep that protects co-relevant companions.
 const SEARCH_FN_KEEP: f64 = 0.85;
-const SEMANTIC_WEIGHT: f64 = 0.75;
-const SEMANTIC_MINIMUM_COSINE: f32 = 0.441_937_3;
 /// Frozen v14 production policy: fuse the complete BM25 and embedding
 /// rankings, then anchor the cross-encoder order back into retrieval.
 const PRODUCTION_RETRIEVAL_WEIGHT: f64 = 1.0;
@@ -446,36 +442,6 @@ fn round_robin_rankings(rankings: &[Vec<(String, f64)>], budget: usize) -> Vec<S
     selected
 }
 
-fn needs_semantic(mode: FunctionSearchMode) -> bool {
-    mode != FunctionSearchMode::Lexical
-}
-
-fn rankings_for_mode(
-    mode: FunctionSearchMode,
-    lexical: &[Vec<(String, f64)>],
-    semantic: Option<Vec<Vec<(String, f64)>>>,
-    semantic_weight: f64,
-) -> Vec<Vec<(String, f64)>> {
-    if mode != FunctionSearchMode::Hybrid {
-        return lexical.to_vec();
-    }
-    let fused = match semantic {
-        Some(semantic) if semantic.len() == lexical.len() => lexical
-            .iter()
-            .zip(semantic)
-            .map(|(lexical, semantic)| {
-                if semantic.is_empty() {
-                    Vec::new()
-                } else {
-                    weighted_rrf(lexical, &semantic, semantic_weight)
-                }
-            })
-            .collect(),
-        _ => return lexical.to_vec(),
-    };
-    fused
-}
-
 fn exact_function_id(query: &str, tools: &[ToolSchema]) -> Option<String> {
     let query = query.trim();
     tools
@@ -694,56 +660,11 @@ fn select_preordered_ids(rankings: Vec<Vec<(String, f64)>>) -> Vec<String> {
     limit_search_workers(round_robin_rankings(&rankings, MAX_SEARCH_FUNCTIONS))
 }
 
-#[cfg(test)]
-fn select_ranked_ids(
-    mode: FunctionSearchMode,
-    lexical: &[Vec<(String, f64)>],
-    semantic: Option<Vec<Vec<(String, f64)>>>,
-    semantic_weight: f64,
-) -> Vec<String> {
-    let rankings = rankings_for_mode(mode, lexical, semantic, semantic_weight)
-        .into_iter()
-        .map(|ranking| drop_trailing_namespaces(ranking, SEARCH_RANK_FLOOR))
-        .collect::<Vec<_>>();
-    limit_search_workers(round_robin_rankings(&rankings, MAX_SEARCH_FUNCTIONS))
-}
-
 fn search_queries(capabilities: &[String]) -> Vec<String> {
     capabilities
         .iter()
         .map(|capability| compact_query(capability.trim()))
         .filter(|capability| !intrinsic_capability(capability))
-        .collect()
-}
-
-#[cfg(test)]
-fn hybrid_ranking_for_test(
-    tools: &[ToolSchema],
-    capabilities: &[String],
-    mut raw_semantic: Vec<Vec<(String, f64)>>,
-    minimum_cosine: f32,
-    semantic_weight: f64,
-) -> Vec<String> {
-    let queries = search_queries(capabilities);
-    let corpus = canonical_tools(tools);
-    let lexical = lexical_rankings(&Bm25Index::build(&corpus), &queries);
-    for ranking in &mut raw_semantic {
-        ranking.retain(|(_, score)| *score >= f64::from(minimum_cosine));
-    }
-    let selected = select_ranked_ids(
-        FunctionSearchMode::Hybrid,
-        &lexical,
-        Some(raw_semantic),
-        semantic_weight,
-    );
-    assemble_workers(&selected, tools)
-        .into_iter()
-        .flat_map(|worker| {
-            worker
-                .functions
-                .into_iter()
-                .map(|function| function.function_id)
-        })
         .collect()
 }
 
@@ -1087,101 +1008,11 @@ async fn installable_from_candidates(
     assemble_installable(ranked, &owners)
 }
 
-/// Upper bound on registry pages one walk reads (75 workers in 4 pages of
-/// 20 today).
-const MAX_REGISTRY_WALK_PAGES: usize = 10;
-
-/// Every worker the private registry lists, page by page; a failing page
-/// keeps what was read before it.
-async fn registry_walk(cfg: &SkillsConfig, cache: &RegistryCache) -> Vec<Worker> {
-    let mut workers = Vec::new();
-    let mut cursor: Option<String> = None;
-    for _ in 0..MAX_REGISTRY_WALK_PAGES {
-        let page = match registry::worker_list(
-            cfg,
-            cache,
-            WorkerListInput {
-                search: None,
-                cursor: cursor.take(),
-            },
-        )
-        .await
-        {
-            Ok(page) => page,
-            Err(error) => {
-                tracing::warn!(%error, "registry search: walk page failed; ranking what was read");
-                break;
-            }
-        };
-        workers.extend(page.workers);
-        if !page.pagination.has_more {
-            break;
-        }
-        cursor = page.pagination.next_cursor;
-        if cursor.is_none() {
-            break;
-        }
-    }
-    workers
-}
-
-/// Stage-2 acquisition. The registry's own search is trigram-based, so a
-/// capability sharing no term with any worker ("latest headlines") never
-/// yields a candidate. Rank every not-yet-tried, not-installed worker's name
-/// and description through the dense lane instead and take the admitted best
-/// per capability.
-async fn registry_walk_candidates(
-    cfg: &SkillsConfig,
-    cache: &RegistryCache,
-    semantic: &SemanticSearch,
-    installed_namespaces: &HashSet<&str>,
-    search_queries: &[String],
-    tried: &[RegistryCandidate],
-) -> Vec<RegistryCandidate> {
-    let workers = registry_walk(cfg, cache).await;
-    let candidates: Vec<RegistryCandidate> = registry_candidates(&workers)
-        .into_iter()
-        .filter(|candidate| {
-            !installed_namespaces.contains(candidate.name.as_str())
-                && !tried.iter().any(|seen| seen.name == candidate.name)
-        })
-        .collect();
-    let documents: Vec<ToolSchema> = candidates
-        .iter()
-        .map(|candidate| ToolSchema {
-            name: candidate.name.clone(),
-            description: candidate.description.clone(),
-            parameters: json!({ "type": "object" }),
-        })
-        .collect();
-    let Some(rankings) = registry_dense_rankings(
-        Some(semantic),
-        search_queries,
-        &documents,
-        PRODUCTION_ADMISSION_COSINE as f32,
-    )
-    .await
-    else {
-        return Vec::new();
-    };
-    round_robin_rankings(&rankings, MAX_REGISTRY_CANDIDATES)
-        .into_iter()
-        .filter_map(|name| {
-            candidates
-                .iter()
-                .find(|candidate| candidate.name == name)
-                .cloned()
-        })
-        .collect()
-}
-
 /// The installable side of a search: ask the private registry with each
 /// capability, pull the top candidates' API references, and rank their
 /// functions per capability. Candidates whose name is already installed are
-/// skipped. When that offers nothing and the dense lane is on, stage 2 walks
-/// the whole registry through the dense lane once. Every failure — registry
-/// down, malformed payload, no matches — returns an empty section: the
-/// search itself must never error over this.
+/// skipped. Every failure — registry down, malformed payload, no matches —
+/// returns an empty section: the search itself must never error over this.
 async fn registry_installable(
     cfg: &SkillsConfig,
     cache: &RegistryCache,
@@ -1243,32 +1074,7 @@ async fn registry_installable(
         })
         .collect();
     let candidates = round_robin_registry_candidates(&variant_lists, MAX_REGISTRY_CANDIDATES);
-    let section =
-        installable_from_candidates(cfg, cache, semantic, installed, search_queries, &candidates)
-            .await;
-    if !section.is_empty() {
-        return section;
-    }
-    let Some(dense) = semantic else {
-        return section;
-    };
-    let walked = registry_walk_candidates(
-        cfg,
-        cache,
-        dense,
-        &installed_namespaces,
-        search_queries,
-        &candidates,
-    )
-    .await;
-    if walked.is_empty() {
-        return section;
-    }
-    tracing::debug!(
-        candidates = ?walked.iter().map(|candidate| candidate.name.as_str()).collect::<Vec<_>>(),
-        "registry search: keyword acquisition offered nothing; dense walk candidates"
-    );
-    installable_from_candidates(cfg, cache, semantic, installed, search_queries, &walked).await
+    installable_from_candidates(cfg, cache, semantic, installed, search_queries, &candidates).await
 }
 
 /// One-shot lexical search: rank the catalog with BM25 and return compact
@@ -1344,59 +1150,12 @@ pub async fn search_functions(
         None
     };
     let production_rankings = production_outcome.map(|outcome| outcome.rankings);
-    let semantic = if needs_semantic(mode) && !production_minilm {
-        let semantic_started = Instant::now();
-        match deps
-            .semantic
-            .rank(&fingerprint, &search_queries, SEMANTIC_MINIMUM_COSINE)
-            .await
-        {
-            Ok(rankings) => {
-                let top_ids: Vec<&str> = rankings
-                    .iter()
-                    .filter_map(|ranking| ranking.first().map(|(id, _)| id.as_str()))
-                    .collect();
-                tracing::debug!(
-                    ?mode,
-                    available = true,
-                    %fingerprint,
-                    revision = MODEL_REVISION,
-                    model_sha256 = MODEL_SHA256,
-                    elapsed_ms = semantic_started.elapsed().as_secs_f64() * 1000.0,
-                    ?top_ids,
-                    "semantic lane ranked"
-                );
-                Some(rankings)
-            }
-            Err(error) => {
-                tracing::debug!(
-                    %error,
-                    ?mode,
-                    available = false,
-                    %fingerprint,
-                    revision = MODEL_REVISION,
-                    model_sha256 = MODEL_SHA256,
-                    elapsed_ms = semantic_started.elapsed().as_secs_f64() * 1000.0,
-                    "semantic lane fell back to lexical"
-                );
-                None
-            }
-        }
-    } else {
-        tracing::debug!(?mode, available = false, %fingerprint, "semantic lane bypassed");
-        None
-    };
     let mut selected = match production_rankings {
         Some(rankings) => select_preordered_ids(rankings),
-        None if production_minilm => select_preordered_ids(production_fallback_rankings(
-            &tools,
-            &search_queries,
-            &lexical,
-        )),
         None => select_preordered_ids(production_fallback_rankings(
             &tools,
             &search_queries,
-            &rankings_for_mode(mode, &lexical, semantic, SEMANTIC_WEIGHT),
+            &lexical,
         )),
     };
     let session_id = baggage_session_id();
@@ -1829,60 +1588,6 @@ mod tests {
     }
 
     #[test]
-    fn semantic_mode_selection_preserves_lexical_and_fuses_only_hybrid() {
-        let lexical = vec![vec![("lex::one".into(), 2.0), ("lex::two".into(), 1.0)]];
-        let semantic = vec![vec![("sem::one".into(), 0.9), ("lex::two".into(), 0.8)]];
-
-        assert!(!needs_semantic(FunctionSearchMode::Lexical));
-        assert!(needs_semantic(FunctionSearchMode::Shadow));
-        assert!(needs_semantic(FunctionSearchMode::Hybrid));
-        assert_eq!(
-            rankings_for_mode(
-                FunctionSearchMode::Lexical,
-                &lexical,
-                Some(semantic.clone()),
-                1.0,
-            ),
-            lexical
-        );
-        assert_eq!(
-            rankings_for_mode(
-                FunctionSearchMode::Shadow,
-                &lexical,
-                Some(semantic.clone()),
-                1.0,
-            ),
-            lexical
-        );
-        assert_ne!(
-            rankings_for_mode(FunctionSearchMode::Hybrid, &lexical, Some(semantic), 1.0),
-            lexical
-        );
-        assert_eq!(
-            rankings_for_mode(FunctionSearchMode::Hybrid, &lexical, None, 1.0),
-            lexical
-        );
-        assert_eq!(
-            rankings_for_mode(
-                FunctionSearchMode::Hybrid,
-                &lexical,
-                Some(vec![vec![]]),
-                1.0
-            ),
-            vec![vec![]]
-        );
-        assert_eq!(
-            rankings_for_mode(
-                FunctionSearchMode::Shadow,
-                &lexical,
-                Some(vec![vec![]]),
-                1.0
-            ),
-            lexical
-        );
-    }
-
-    #[test]
     fn production_minilm_ordering_anchors_the_reranker_in_full_retrieval() {
         let lexical = vec![
             ("mail::send".into(), 10.0),
@@ -2125,28 +1830,6 @@ mod tests {
                 vec![("web::fetch".into(), 2.0), ("mail::send".into(), 1.0)],
             ]
         );
-    }
-
-    #[test]
-    fn hybrid_test_adapter_returns_public_worker_grouped_order() {
-        let tool = |name: &str| ToolSchema {
-            name: name.into(),
-            description: "Unrelated contract vocabulary.".into(),
-            parameters: json!({ "type": "object" }),
-        };
-        let tools = vec![tool("alpha::one"), tool("beta::one"), tool("alpha::two")];
-        let ranking = hybrid_ranking_for_test(
-            &tools,
-            &["zzzx qqqx".into()],
-            vec![vec![
-                ("alpha::one".into(), 0.9),
-                ("beta::one".into(), 0.8),
-                ("alpha::two".into(), 0.7),
-            ]],
-            0.0,
-            1.0,
-        );
-        assert_eq!(ranking, ["alpha::one", "alpha::two", "beta::one"]);
     }
 
     #[tokio::test]
@@ -2644,45 +2327,6 @@ mod tests {
             fuse_admitted(lexical.clone(), Some(vec![Vec::new()])),
             lexical
         );
-    }
-
-    #[tokio::test]
-    async fn registry_walk_follows_cursors_until_the_last_page() {
-        use wiremock::matchers::{method, path, query_param, query_param_is_missing};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-        let server = MockServer::start().await;
-        let page = |names: &[&str], next: Option<&str>| {
-            json!({
-                "workers": names
-                    .iter()
-                    .map(|name| json!({ "name": name, "version": "1.0.0", "description": format!("{name} worker") }))
-                    .collect::<Vec<_>>(),
-                "pagination": { "next_cursor": next, "has_more": next.is_some(), "page_size": 2 },
-            })
-        };
-        Mock::given(method("GET"))
-            .and(path("/w"))
-            .and(query_param("cursor", "p2"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(page(&["c"], None)))
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/w"))
-            .and(query_param_is_missing("cursor"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(page(&["a", "b"], Some("p2"))))
-            .mount(&server)
-            .await;
-        let cfg = SkillsConfig {
-            registry_url: server.uri(),
-            ..SkillsConfig::default()
-        };
-        let cache = RegistryCache::new(std::time::Duration::ZERO);
-        let names: Vec<String> = registry_walk(&cfg, &cache)
-            .await
-            .into_iter()
-            .map(|worker| worker.name)
-            .collect();
-        assert_eq!(names, ["a", "b", "c"]);
     }
 
     #[test]

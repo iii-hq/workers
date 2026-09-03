@@ -24,7 +24,7 @@ describe('function search configuration', () => {
     expect(functionSearchModeWithDefault('remote')).toBe('hybrid')
   })
 
-  it.each(['lexical', 'shadow', 'hybrid'] as const)('preserves the supported %s mode', (mode) => {
+  it.each(['lexical', 'hybrid'] as const)('preserves the supported %s mode', (mode) => {
     expect(functionSearchModeWithDefault(mode)).toBe(mode)
   })
 
@@ -52,7 +52,6 @@ describe('function search configuration', () => {
     expect(semanticModeNeedsModel('hybrid', undefined)).toBe(false)
     // Explicit null disables the semantic lane: that is the stranded case.
     expect(semanticModeNeedsModel('hybrid', null)).toBe(true)
-    expect(semanticModeNeedsModel('shadow', null)).toBe(true)
     expect(semanticModeNeedsModel('hybrid', '/models/minilm')).toBe(false)
   })
 })

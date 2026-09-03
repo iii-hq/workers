@@ -25,10 +25,9 @@ result, which is empty for most no-match wording. On the 2026-09-02 snapshot
 this rejected 12 of 15 no-match cases and none of the 64 match or multi cases
 (their weakest best-cosine was 0.315; the holdout split's was 0.351). The
 margin is thin and the floor is model-specific: the earlier v14 evaluation
-found that an absolute cutoff removed substantial valid recall, and the legacy
-0.44 Potion floor would drop nine match cases here. Re-calibrate the floor
-whenever the embedding model changes, and treat the separately qualified
-categorical-admission stage as the fuller answer for abstention.
+found that an absolute cutoff removed substantial valid recall. Re-calibrate
+the floor whenever the embedding model changes, and treat the separately
+qualified categorical-admission stage as the fuller answer for abstention.
 
 The compose stack also prevents the catalog-only provider workers and
 `llm-router` from inheriting API keys or tokens from the operator's shell.

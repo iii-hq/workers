@@ -9,11 +9,6 @@ export const FUNCTION_SEARCH_MODE_OPTIONS = [
     description: 'Use BM25 ranking only.',
   },
   {
-    value: 'shadow',
-    label: 'Shadow',
-    description: 'Compute semantic rankings without changing returned results.',
-  },
-  {
     value: 'hybrid',
     label: 'Hybrid',
     description: 'Fuse BM25 with the configured local semantic model.',

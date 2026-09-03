@@ -110,12 +110,11 @@ fn default_function_search_model_download() -> bool {
 #[serde(rename_all = "snake_case")]
 pub enum FunctionSearchMode {
     Lexical,
-    Shadow,
     #[default]
     Hybrid,
 }
 
-/// `shadow` and `hybrid` need a local semantic model; without a complete
+/// `hybrid` needs a local semantic model; without a complete
 /// bundle at `function_search_model_path` every search silently runs
 /// BM25-only, which is easy to mistake for the model being active. Say so
 /// once, loudly. `model_ready` is "the path is set and the bundle verifies".
@@ -259,16 +258,14 @@ pub struct SkillsConfig {
     pub registry_search: bool,
 
     /// Installed-function search lane. Hybrid (BM25 fused with the local
-    /// MiniLM model) is the default; lexical is BM25 only; shadow computes
-    /// semantic rankings without returning them. Hybrid needs the bundle at
+    /// MiniLM model) is the default; lexical is BM25 only. Hybrid needs the bundle at
     /// `function_search_model_path` (downloaded on first run by default) and
     /// serves BM25 until it is ready.
     #[serde(default)]
     pub function_search_mode: FunctionSearchMode,
 
     /// Local semantic model directory: the pinned MiniLM bundle (embedding
-    /// files at the root, reranker files under `reranker/`), or a Potion
-    /// directory. Defaults to `~/.cache/iii/all-MiniLM-L6-v2-<revision>`;
+    /// files at the root, reranker files under `reranker/`). Defaults to `~/.cache/iii/all-MiniLM-L6-v2-<revision>`;
     /// `null` disables the semantic lane. Changing it requires a restart.
     #[serde(
         default = "default_function_search_model_path",
@@ -501,7 +498,6 @@ mod tests {
     fn function_search_modes_parse_and_invalid_values_fail() {
         for (name, expected) in [
             ("lexical", FunctionSearchMode::Lexical),
-            ("shadow", FunctionSearchMode::Shadow),
             ("hybrid", FunctionSearchMode::Hybrid),
         ] {
             let cfg = SkillsConfig::from_yaml(&format!("function_search_mode: {name}\n")).unwrap();
@@ -790,7 +786,7 @@ auto_download: false
             ..base.clone()
         };
         let model = SkillsConfig {
-            function_search_model_path: Some("/models/potion".into()),
+            function_search_model_path: Some("/models/minilm".into()),
             ..base.clone()
         };
         assert_ne!(base.topology(), folder.topology());

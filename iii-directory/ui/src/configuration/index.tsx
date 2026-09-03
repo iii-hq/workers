@@ -458,8 +458,7 @@ function SearchModeField({
   errors?: ConfigFormProps['errors']
 }) {
   const field = 'function_search_mode'
-  const hint =
-    'Hybrid (default) fuses BM25 with the local semantic model. Lexical returns BM25 rankings. Shadow computes semantic rankings without changing results.'
+  const hint = 'Hybrid (default) fuses BM25 with the local semantic model. Lexical returns BM25 rankings.'
   const presentation = fieldPresentation(field, hint, errors)
   const needsModel = semanticModeNeedsModel(value, modelPath)
   const noticeId = needsModel ? `${presentation.id}-model-notice` : undefined
