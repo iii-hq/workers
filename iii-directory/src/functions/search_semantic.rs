@@ -900,32 +900,91 @@ async fn download_bundle_inner(root: &Path) -> Result<(), SemanticUnavailable> {
                 })?;
             }
             let url = bundle_url(repository, revision, name);
-            tracing::info!(%url, "downloading search model artifact");
-            let bytes = client
-                .get(&url)
-                .send()
-                .await
-                .and_then(reqwest::Response::error_for_status)
-                .map_err(|error| unavailable(format!("fetch {url}: {error}")))?
-                .bytes()
-                .await
-                .map_err(|error| unavailable(format!("read {url}: {error}")))?;
-            if bytes.len() as u64 != *expected_size {
-                return Err(unavailable(format!(
-                    "{url}: expected {expected_size} bytes, got {}",
-                    bytes.len()
-                )));
-            }
-            let digest = format!("{:x}", Sha256::digest(&bytes));
-            if digest != *expected_sha256 {
-                return Err(unavailable(format!("{url}: SHA-256 mismatch")));
-            }
+            tracing::info!(%url, bytes = expected_size, "downloading search model artifact");
             let partial = target.with_extension("part");
-            std::fs::write(&partial, &bytes)
-                .map_err(|error| unavailable(format!("write {}: {error}", partial.display())))?;
+            let result =
+                stream_verified(&client, &url, &partial, *expected_size, expected_sha256).await;
+            if let Err(error) = result {
+                let _ = std::fs::remove_file(&partial);
+                return Err(error);
+            }
             std::fs::rename(&partial, &target)
                 .map_err(|error| unavailable(format!("publish {}: {error}", target.display())))?;
         }
+    }
+    Ok(())
+}
+
+/// Log a progress line whenever the download crosses another 10% of the
+/// file; files under 1 MiB finish before a line would help.
+const PROGRESS_LOG_MIN_BYTES: u64 = 1 << 20;
+
+/// Tenths of `total` covered by `received` (0..=10).
+fn progress_step(received: u64, total: u64) -> u64 {
+    if total == 0 {
+        return 10;
+    }
+    ((u128::from(received) * 10) / u128::from(total)).min(10) as u64
+}
+
+/// Stream `url` into `partial`, hashing as it goes, and reject the file
+/// unless its length and SHA-256 match the pinned manifest. Never holds
+/// the whole artifact in memory.
+async fn stream_verified(
+    client: &reqwest::Client,
+    url: &str,
+    partial: &Path,
+    expected_size: u64,
+    expected_sha256: &str,
+) -> Result<(), SemanticUnavailable> {
+    use std::io::Write;
+
+    let mut response = client
+        .get(url)
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|error| unavailable(format!("fetch {url}: {error}")))?;
+    let mut file = std::fs::File::create(partial)
+        .map_err(|error| unavailable(format!("create {}: {error}", partial.display())))?;
+    let mut hasher = Sha256::new();
+    let mut received: u64 = 0;
+    let mut last_step = 0;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| unavailable(format!("read {url}: {error}")))?
+    {
+        received += chunk.len() as u64;
+        if received > expected_size {
+            return Err(unavailable(format!(
+                "{url}: exceeded the pinned length of {expected_size} bytes"
+            )));
+        }
+        file.write_all(&chunk)
+            .map_err(|error| unavailable(format!("write {}: {error}", partial.display())))?;
+        hasher.update(&chunk);
+        let step = progress_step(received, expected_size);
+        if expected_size >= PROGRESS_LOG_MIN_BYTES && step > last_step {
+            last_step = step;
+            tracing::info!(
+                %url,
+                percent = step * 10,
+                received_mb = received / (1 << 20),
+                total_mb = expected_size / (1 << 20),
+                "search model download progress"
+            );
+        }
+    }
+    file.flush()
+        .map_err(|error| unavailable(format!("flush {}: {error}", partial.display())))?;
+    if received != expected_size {
+        return Err(unavailable(format!(
+            "{url}: expected {expected_size} bytes, got {received}"
+        )));
+    }
+    if format!("{:x}", hasher.finalize()) != expected_sha256 {
+        return Err(unavailable(format!("{url}: SHA-256 mismatch")));
     }
     Ok(())
 }
@@ -1087,6 +1146,18 @@ mod tests {
     }
 
     #[test]
+    fn progress_step_counts_tenths_and_saturates() {
+        assert_eq!(progress_step(0, 100), 0);
+        assert_eq!(progress_step(9, 100), 0);
+        assert_eq!(progress_step(10, 100), 1);
+        assert_eq!(progress_step(55, 100), 5);
+        assert_eq!(progress_step(100, 100), 10);
+        assert_eq!(progress_step(150, 100), 10, "never past 100%");
+        assert_eq!(progress_step(0, 0), 10, "empty file is complete");
+        assert_eq!(progress_step(u64::MAX, u64::MAX), 10, "no overflow");
+    }
+
+    #[test]
     fn bundle_complete_needs_every_pinned_file_at_its_size() {
         let dir = tempfile::tempdir().unwrap();
         assert!(!bundle_complete(dir.path()));
@@ -1118,6 +1189,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "downloads the pinned MiniLM bundle from Hugging Face"]
     async fn downloads_and_verifies_the_pinned_bundle() {
+        // Show the progress lines under --nocapture.
+        let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
         let dir = tempfile::tempdir().unwrap();
         download_bundle(dir.path())
             .await
