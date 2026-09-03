@@ -126,7 +126,7 @@ async fn main() -> Result<()> {
                 async move { put_object::handle(&st, req).await.map_err(Error::from) }
             })
             .description(
-                "Write a small object inline as base64 (10 MiB hard limit). This buffers and inflates the payload; use presignPost or a presignUrl PUT for files and large objects.",
+                "Upload a small object inline as base64 (10 MiB hard limit). This buffers and inflates the payload; use presignPost or a presignUrl PUT for files and large objects.",
             ),
         );
     }
