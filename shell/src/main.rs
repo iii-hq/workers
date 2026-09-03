@@ -582,7 +582,8 @@ fn register_fs(iii: &iii_sdk::IIIClient, state: &AppState) {
         fs_ls,
         fs::LsRequest,
         fs::LsResponse,
-        "List directory contents. Errors return { code, message }; common: S210 bad path, \
+        "List the files and subdirectories of a directory on the filesystem. Errors return \
+         { code, message }; common: S210 bad path, \
          S211 not found or not accessible, S212 not a directory, S215 jail escape. For \
          paginated or recursive listings prefer coder::list-folder / coder::tree."
     );

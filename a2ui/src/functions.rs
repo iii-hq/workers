@@ -55,7 +55,7 @@ pub const EXPORT_DESC: &str = "Export one A2UI surface as a portable, replayable
 pub const ACTION_DESC: &str = "Console-only: persist an A2UI component action and forward it as a structured message to the originating Harness session.";
 const HISTORY_DESC: &str = "List the bounded, restorable revision snapshots for one A2UI surface.";
 const UNDO_DESC: &str =
-    "Restore an A2UI surface from a prior revision while creating a new monotonic revision.";
+    "Undo edits to an A2UI surface by restoring a prior revision as a new monotonic revision.";
 const DUPLICATE_DESC: &str =
     "Duplicate an A2UI surface inside the current Harness session under a new stable id.";
 const PIN_DESC: &str =
