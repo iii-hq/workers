@@ -138,8 +138,9 @@ impl Speaker {
 
     /// Own the child until it exits or is told to stop, then drop it from the
     /// live set and announce `voice::speech-ended` with why.
-    fn watch(&self, speech_id: String, mut child: Child) {
+    async fn watch(&self, speech_id: String, mut child: Child) {
         let (stop_tx, stop_rx) = oneshot::channel::<()>();
+        self.playing.lock().await.insert(speech_id.clone(), stop_tx);
         let playing = self.playing.clone();
         let emitter = self.emitter.clone();
         let ended_id = speech_id.clone();
@@ -167,12 +168,6 @@ impl Speaker {
                     },
                 )
                 .await;
-        });
-        // A stop that arrives before the watcher polls the channel still
-        // lands: the sender is stored, the receiver is awaited above.
-        let playing = self.playing.clone();
-        tokio::spawn(async move {
-            playing.lock().await.insert(speech_id, stop_tx);
         });
     }
 
@@ -216,7 +211,7 @@ impl Speaker {
                         .map_err(|e| format!("write to {}: {e}", command.program))?;
                     stdin.shutdown().await.ok();
                 }
-                self.watch(speech_id.clone(), child);
+                self.watch(speech_id.clone(), child).await;
                 Ok(Spoken {
                     backend: "host".into(),
                     speech_id,

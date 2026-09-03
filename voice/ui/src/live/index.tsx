@@ -18,7 +18,7 @@ export function createVoiceLiveSummary(_host: Host, controller: DictationControl
     if (!listening) return null
     const settled = state.committed.slice(-2).join(' ')
     const room = Math.max(0, PARTIAL_MAX_CHARS - state.partial.length)
-    const settledShown = settled.length > room ? `…${settled.slice(-room)}` : settled
+    const settledShown = settled.length > room ? `…${settled.slice(settled.length - room)}` : settled
     const idle = state.status === 'starting' ? 'starting…' : 'listening'
     return (
       <output className="voice-live" aria-live="polite">

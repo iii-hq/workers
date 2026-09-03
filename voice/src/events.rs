@@ -72,12 +72,17 @@ pub struct BindingConfig {
 }
 
 /// `id` is the session id for dictation events and the speech id for
-/// `voice::speech-ended`; each kind consults its own filter field.
+/// `voice::speech-ended`; each kind consults its own filter field. A
+/// filter on the other kind's field can never match, so a binding that
+/// sets it receives nothing rather than everything.
 pub fn binding_matches(filter: &BindingConfig, kind: EventKind, id: Option<&str>) -> bool {
-    let want = match kind {
-        EventKind::SpeechEnded => &filter.speech_id,
-        _ => &filter.session_id,
+    let (want, stray) = match kind {
+        EventKind::SpeechEnded => (&filter.speech_id, &filter.session_id),
+        _ => (&filter.session_id, &filter.speech_id),
     };
+    if stray.is_some() {
+        return false;
+    }
     match (want, id) {
         (Some(want), Some(have)) => want == have,
         (Some(_), None) => false,

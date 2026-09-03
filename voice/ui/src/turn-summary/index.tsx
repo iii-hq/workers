@@ -104,22 +104,31 @@ export function createVoiceTurnSummary(host: Host): SessionTurnSummaryRegistrati
       )
     })
 
+    const speakOpRef = useRef(0)
+
     useEffect(
       () => () => {
+        speakOpRef.current += 1
         audioRef.current?.pause()
       },
       [],
     )
 
     const onReadAloud = useCallback(async () => {
+      const op = ++speakOpRef.current
       setSpeakState({ phase: 'loading' })
       try {
         const text = lastReply ?? (await fetchLastAssistantText(host, sessionId))
+        if (op !== speakOpRef.current) return
         if (!text) {
           setSpeakState({ phase: 'idle' })
           return
         }
         const res = await speak(host.iii, { text })
+        if (op !== speakOpRef.current) {
+          if (res.speech_id) speakStop(host.iii, { speech_id: res.speech_id }).catch(() => {})
+          return
+        }
         if (res.audio_base64) {
           const mime = res.mime ?? 'audio/mpeg'
           const audio = new Audio(`data:${mime};base64,${res.audio_base64}`)
@@ -134,11 +143,12 @@ export function createVoiceTurnSummary(host: Host): SessionTurnSummaryRegistrati
           setSpeakState({ phase: 'idle' })
         }
       } catch (err) {
-        setSpeakState({ phase: 'error', message: errorMessage(err) })
+        if (op === speakOpRef.current) setSpeakState({ phase: 'error', message: errorMessage(err) })
       }
     }, [sessionId, lastReply])
 
     const onStop = useCallback(() => {
+      speakOpRef.current += 1
       audioRef.current?.pause()
       audioRef.current = null
       const speechId = speakState.phase === 'speaking' ? speakState.speechId : undefined

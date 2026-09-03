@@ -77,9 +77,13 @@ impl Refiner {
                 )
                 .await
                 .map(|(transcript, _)| transcript.text),
-                SttBackend::Openai => engine::remote_transcribe(cfg, &audio, None)
-                    .await
-                    .map(|transcript| transcript.text),
+                SttBackend::Openai => tokio::time::timeout(
+                    Duration::from_millis(REMOTE_REFINE_TIMEOUT_MS),
+                    engine::remote_transcribe(cfg, &audio, None),
+                )
+                .await
+                .map_err(|_| "second pass timed out".to_string())?
+                .map(|transcript| transcript.text),
                 SttBackend::Local => Ok(String::new()),
             },
         }

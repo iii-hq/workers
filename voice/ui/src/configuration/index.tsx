@@ -235,7 +235,8 @@ export function createVoiceConfigForm(host: Host) {
                   )}
                 />
               </>
-            ) : (
+            ) : null}
+            {sttBackend === 'openai' ? (
               <>
                 <SettingsField
                   label="Base URL"
@@ -286,7 +287,7 @@ export function createVoiceConfigForm(host: Host) {
                   )}
                 />
               </>
-            )}
+            ) : null}
           </SettingsList>
         </SettingsSection>
 
