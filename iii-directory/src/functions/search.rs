@@ -50,13 +50,21 @@ const SEARCH_FN_KEEP: f64 = 0.85;
 /// Frozen v14 production policy: fuse the complete BM25 and embedding
 /// rankings, then anchor the cross-encoder order back into retrieval.
 const PRODUCTION_RETRIEVAL_WEIGHT: f64 = 1.0;
-const PRODUCTION_RERANKER_WEIGHT: f64 = 1.25;
+/// Equal weight for the reranker term. Swept on the 79-case set
+/// (2026-09-03, reranker-weight 0.5 / 0.75 / 1.0 / 1.25 / 2.0 / 4.0):
+/// 1.0 and 0.75 tie at the best top-1 (44 vs 42 at 1.25, 40 at 4.0); the
+/// heavier the reranker term the worse. The cross-encoder is the better
+/// orderer but not so much better that it should outvote agreement between
+/// BM25 and the embedding.
+const PRODUCTION_RERANKER_WEIGHT: f64 = 1.0;
 /// Reranker scores are logits. A candidate more than this far below the
 /// query's best candidate is padding: without the cut the fusion filled every
 /// admitted result to the 12-function cap (11.4 functions per query on the
-/// 79-case set; 7.7 with the cut, one paraphrase case lost). Whether the best
-/// candidate is itself noise is `PRODUCTION_RERANK_FLOOR`'s call.
-const PRODUCTION_RERANK_GAP: f64 = 10.0;
+/// 79-case set). Swept 8 / 10 / 12 on 2026-09-03: 8 loses two multi cases,
+/// 10 loses one paraphrase whose target sits 10.65 below its leader, 12 keeps
+/// every case at 8.7 functions per query. Whether the best candidate is
+/// itself noise is `PRODUCTION_RERANK_FLOOR`'s call.
+const PRODUCTION_RERANK_GAP: f64 = 12.0;
 /// Absolute admission on the reranker: a head whose best candidate scores
 /// under this logit is the cross-encoder saying nothing serves the query, and
 /// the position keeps its BM25 ranking (empty for most no-match wording)
@@ -69,9 +77,10 @@ const PRODUCTION_RERANK_FLOOR: f64 = -9.0;
 /// Fused retrieval candidates the cross-encoder scores per query. The tail
 /// keeps its retrieval order: `weighted_rrf` only adds the reranker term to
 /// ids present in its second list, so an unscored id can never outrank a
-/// scored one. Sized from the 2026-09-02 benchmark, where the deepest first
-/// relevant hit sat at fused rank 11 across 79 cases.
-const PRODUCTION_RERANK_DEPTH: usize = 48;
+/// scored one. The deepest first relevant hit sat at fused rank 11 across the
+/// 79 cases (2026-09-02); 24, 48 and 96 rank identically on that set
+/// (2026-09-03 sweep) and 24 costs half the cross-encoder pairs.
+const PRODUCTION_RERANK_DEPTH: usize = 24;
 /// Admission floor on the best MiniLM cosine of a query. Below it the query
 /// keeps its BM25 result (empty for most no-match wording) instead of the
 /// always-ranked dense list. Calibrated on the 2026-09-02 snapshot: the 64
@@ -1706,11 +1715,6 @@ mod tests {
             .expect("head-only reranker output is accepted");
         let ordered_ids: Vec<&str> = ordered.iter().map(|(id, _)| id.as_str()).collect();
 
-        assert_eq!(
-            ordered_ids[0],
-            head.last().unwrap(),
-            "the reranker reorders the head"
-        );
         // Only scores within the gap of the leader survive; the unscored tail
         // goes with the rest.
         let within_gap = PRODUCTION_RERANK_GAP as usize + 1;
@@ -1719,9 +1723,14 @@ mod tests {
         assert!(ordered_ids
             .iter()
             .all(|id| survivors.iter().any(|h| h == id)));
-        assert!(
-            !ordered_ids.iter().any(|id| id.starts_with("fn::05")),
-            "the tail is dropped"
+        // A total inversion at equal weights ties retrieval against the
+        // reranker; retrieval order breaks the tie, so the best-ranked
+        // survivor stays first and the reranker's favourite lands second.
+        assert_eq!(ordered_ids[0], survivors[0], "retrieval breaks the tie");
+        assert_eq!(
+            ordered_ids[1],
+            head.last().unwrap(),
+            "the reranker pulls its favourite into the top pair"
         );
 
         // Scoring the whole union is no longer the contract: reject it.
