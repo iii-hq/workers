@@ -86,18 +86,18 @@ pub struct SttConfig {
     /// Trailing silence, in seconds, that ends an utterance once speech has
     /// been heard. Lower commits dictated text sooner; higher tolerates pauses.
     #[serde(default = "default_silence_after_speech_secs")]
-    pub silence_after_speech_secs: f32,
+    pub silence_after_speech_secs: f64,
 
     /// Trailing silence, in seconds, that ends a segment when nothing has been
     /// recognized yet. Keep this well above the model's lookahead so the
     /// first words of an utterance are never cut.
     #[serde(default = "default_silence_without_speech_secs")]
-    pub silence_without_speech_secs: f32,
+    pub silence_without_speech_secs: f64,
 
     /// Longest single utterance, in seconds, before the recognizer commits
     /// what it has and starts a new segment.
     #[serde(default = "default_max_utterance_secs")]
-    pub max_utterance_secs: f32,
+    pub max_utterance_secs: f64,
 
     /// Settings for the `openai` backend.
     #[serde(default)]
@@ -219,15 +219,15 @@ fn default_num_threads() -> usize {
     2
 }
 
-fn default_silence_after_speech_secs() -> f32 {
+fn default_silence_after_speech_secs() -> f64 {
     0.8
 }
 
-fn default_silence_without_speech_secs() -> f32 {
+fn default_silence_without_speech_secs() -> f64 {
     2.4
 }
 
-fn default_max_utterance_secs() -> f32 {
+fn default_max_utterance_secs() -> f64 {
     20.0
 }
 

@@ -1,16 +1,17 @@
 /**
- * The voice page's "Transcribe a file" panel: a `.wav` file picked through
- * a shared `Button` (the native input stays hidden; read as base64, capped
- * at 10 MiB) or a path text field, calling `voice::transcribe` and
- * rendering the text plus a segments table with copy and "send to chat"
- * actions. Inputs stack in narrow panes.
+ * The Transcribe section: drop or choose a WAV file (read as base64, capped
+ * at 10 MiB) or name a path on the worker's machine, run
+ * `voice::transcribe`, and read the result with per-segment timestamps and
+ * copy / send-to-chat actions.
  */
 
 import {
   Button,
+  Chip,
   type Host,
   IconButton,
   Input,
+  StatusPanel,
   Table,
   TableBody,
   TableCell,
@@ -20,19 +21,20 @@ import {
   TableRow,
   TableViewport,
 } from '@iii-dev/console-ui'
-import type { ChangeEvent } from 'react'
+import type { ChangeEvent, DragEvent } from 'react'
 import { useEffect, useRef, useState } from 'react'
 import { transcribe } from '../lib/client'
 import { errorMessage, formatSeconds } from '../lib/format'
-import { CopyIcon, SendIcon } from '../lib/icons'
-import type { Segment, TranscribeResponse } from '../lib/types'
+import { CopyIcon, FileAudioIcon, SendIcon, TrashIcon, UploadIcon } from '../lib/icons'
+import type { TranscribeResponse } from '../lib/types'
+import { formatBytes, formatDuration, SectionCard } from './shared'
 
 const MAX_BYTES = 10 * 1024 * 1024
 
 type Result =
   | { phase: 'idle' }
   | { phase: 'loading' }
-  | { phase: 'ready'; data: TranscribeResponse }
+  | { phase: 'ready'; data: TranscribeResponse; source: string }
   | { phase: 'error'; message: string }
 
 function readFileAsBase64(file: File): Promise<string> {
@@ -50,57 +52,66 @@ function readFileAsBase64(file: File): Promise<string> {
 
 export function TranscribeSection({ host, focusSignal }: { host: Host; focusSignal: number }) {
   const [path, setPath] = useState('')
-  const [fileName, setFileName] = useState<string | null>(null)
+  const [file, setFile] = useState<{ name: string; size: number; base64: string } | null>(null)
   const [fileError, setFileError] = useState<string | null>(null)
+  const [dragging, setDragging] = useState(false)
   const [result, setResult] = useState<Result>({ phase: 'idle' })
-  const audioBase64Ref = useRef<string | null>(null)
+  const [copied, setCopied] = useState(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
-  const chooseRef = useRef<HTMLButtonElement | null>(null)
+  const dropRef = useRef<HTMLButtonElement | null>(null)
 
   useEffect(() => {
-    if (focusSignal > 0) chooseRef.current?.focus()
+    if (focusSignal > 0) dropRef.current?.focus()
   }, [focusSignal])
 
-  const onFile = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    if (!file) return
-    if (file.size > MAX_BYTES) {
-      setFileError(`file is ${(file.size / (1024 * 1024)).toFixed(1)} MiB; the limit is 10 MiB`)
-      event.target.value = ''
-      audioBase64Ref.current = null
-      setFileName(null)
+  const acceptFile = (candidate: File | undefined) => {
+    if (!candidate) return
+    if (candidate.size > MAX_BYTES) {
+      setFileError(
+        `${candidate.name} is ${formatBytes(candidate.size)}; the inline limit is 10 MB. Pass a path instead.`,
+      )
+      setFile(null)
       return
     }
     setFileError(null)
-    setFileName(file.name)
-    readFileAsBase64(file)
-      .then((b64) => {
-        audioBase64Ref.current = b64
-      })
+    readFileAsBase64(candidate)
+      .then((base64) => setFile({ name: candidate.name, size: candidate.size, base64 }))
       .catch((err: unknown) => setFileError(errorMessage(err)))
   }
 
-  const clearFile = () => {
-    audioBase64Ref.current = null
-    setFileName(null)
-    if (fileInputRef.current) fileInputRef.current.value = ''
+  const onInput = (event: ChangeEvent<HTMLInputElement>) => {
+    acceptFile(event.target.files?.[0])
+    event.target.value = ''
+  }
+
+  const onDrop = (event: DragEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    setDragging(false)
+    acceptFile(event.dataTransfer.files?.[0])
   }
 
   const run = () => {
-    const audioBase64 = audioBase64Ref.current
-    if (!audioBase64 && !path.trim()) {
-      setFileError('choose a .wav file or enter a path')
+    if (!file && !path.trim()) {
+      setFileError('Choose a WAV file or enter a path.')
       return
     }
     setFileError(null)
     setResult({ phase: 'loading' })
-    transcribe(host.iii, audioBase64 ? { audio_base64: audioBase64 } : { path: path.trim() })
-      .then((data) => setResult({ phase: 'ready', data }))
+    const source = file ? file.name : path.trim()
+    transcribe(host.iii, file ? { audio_base64: file.base64 } : { path: path.trim() })
+      .then((data) => setResult({ phase: 'ready', data, source }))
       .catch((err: unknown) => setResult({ phase: 'error', message: errorMessage(err) }))
   }
 
   const copyText = () => {
-    if (result.phase === 'ready') navigator.clipboard.writeText(result.data.text).catch(() => {})
+    if (result.phase !== 'ready') return
+    navigator.clipboard
+      .writeText(result.data.text)
+      .then(() => {
+        setCopied(true)
+        window.setTimeout(() => setCopied(false), 2000)
+      })
+      .catch(() => {})
   }
 
   const sendToChat = () => {
@@ -108,62 +119,104 @@ export function TranscribeSection({ host, focusSignal }: { host: Host; focusSign
   }
 
   return (
-    <section className="voice-section">
-      <h3 className="voice-section-title">Transcribe a file</h3>
-      <div className="voice-transcribe-inputs">
+    <>
+      <SectionCard title="Audio">
         <input
           ref={fileInputRef}
           type="file"
           accept=".wav,audio/wav"
-          onChange={onFile}
+          onChange={onInput}
           className="voice-file-input"
           aria-label="choose a WAV file"
           tabIndex={-1}
         />
-        <div className="voice-transcribe-file">
-          <Button ref={chooseRef} variant="ghost" size="sm" onClick={() => fileInputRef.current?.click()}>
-            Choose WAV file
-          </Button>
-          {fileName ? (
-            <span className="voice-file-name" title={fileName}>
-              {fileName}
-              <button type="button" className="voice-file-clear" onClick={clearFile} aria-label="clear chosen file">
-                ×
-              </button>
+        <button
+          ref={dropRef}
+          type="button"
+          className={dragging ? 'voice-dropzone dragging' : 'voice-dropzone'}
+          onClick={() => fileInputRef.current?.click()}
+          onDragOver={(event) => {
+            event.preventDefault()
+            setDragging(true)
+          }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={onDrop}
+          aria-label="choose or drop a WAV file"
+        >
+          <UploadIcon className="voice-dropzone-icon" />
+          {file ? (
+            <span className="voice-dropzone-file">
+              <FileAudioIcon />
+              <span className="voice-dropzone-name">{file.name}</span>
+              <span className="voice-sub">{formatBytes(file.size)}</span>
             </span>
           ) : (
-            <span className="voice-transcribe-or">or a path on the worker's machine</span>
+            <span className="voice-dropzone-copy">
+              <span className="voice-strong">Drop a WAV file or click to choose</span>
+              <span className="voice-sub">Any sample rate or channel count, up to 10 MB inline</span>
+            </span>
           )}
+        </button>
+        {file ? (
+          <div className="voice-inline-actions">
+            <IconButton
+              label="Remove file"
+              variant="ghost"
+              onClick={() => {
+                setFile(null)
+                setFileError(null)
+              }}
+            >
+              <TrashIcon />
+            </IconButton>
+          </div>
+        ) : null}
+        <div className="voice-fields">
+          <div className="voice-field">
+            <span className="voice-field-label">Or a path on the worker's machine</span>
+            <Input value={path} onChange={setPath} placeholder="/recordings/meeting.wav" aria-label="audio file path" />
+          </div>
+          <div className="voice-field-actions">
+            <Button variant="primary" onClick={run} disabled={result.phase === 'loading'}>
+              {result.phase === 'loading' ? 'transcribing…' : 'Transcribe'}
+            </Button>
+          </div>
         </div>
-        <Input
-          value={path}
-          onChange={setPath}
-          placeholder="/path/to/audio.wav"
-          className="voice-path-input"
-          aria-label="audio file path"
-        />
-        <Button variant="primary" size="sm" onClick={run} disabled={result.phase === 'loading'}>
-          {result.phase === 'loading' ? 'transcribing…' : 'Transcribe'}
-        </Button>
-      </div>
-      {fileError ? <div className="voice-note warn">{fileError}</div> : null}
-      {result.phase === 'error' ? <div className="voice-note warn">{result.message}</div> : null}
+        {fileError ? <StatusPanel variant="warn" headline="Cannot use that input" detail={fileError} /> : null}
+      </SectionCard>
+
+      {result.phase === 'error' ? (
+        <StatusPanel variant="alert" headline="Transcription failed" detail={result.message} />
+      ) : null}
+
       {result.phase === 'ready' ? (
-        <div className="voice-transcribe-result">
-          <div className="voice-transcribe-text-row">
-            <p className="voice-transcribe-text">{result.data.text}</p>
-            <div className="voice-transcribe-actions">
-              <IconButton label="Copy transcript" onClick={copyText}>
+        <SectionCard
+          title={
+            <span className="voice-fact-line">
+              <span>Transcript</span>
+              <Chip tone="neutral">{result.data.backend === 'local' ? result.data.model : 'openai'}</Chip>
+              <span className="voice-sub">
+                {formatDuration(result.data.duration_secs)} · {result.source}
+              </span>
+            </span>
+          }
+          actions={
+            <span className="voice-card-actions">
+              {copied ? <Chip tone="success">copied</Chip> : null}
+              <IconButton label="Copy transcript" variant="ghost" onClick={copyText}>
                 <CopyIcon />
               </IconButton>
               {host.chat?.compose ? (
-                <IconButton label="Send to chat" onClick={sendToChat}>
+                <Button variant="primary" size="sm" onClick={sendToChat}>
                   <SendIcon />
-                </IconButton>
+                  Send to chat
+                </Button>
               ) : null}
-            </div>
-          </div>
-          {result.data.segments.length > 0 ? (
+            </span>
+          }
+        >
+          <p className="voice-transcript-text">{result.data.text || 'The recognizer heard no speech.'}</p>
+          {result.data.segments.length > 1 ? (
             <TableViewport>
               <TableFrame>
                 <Table density="compact">
@@ -176,11 +229,11 @@ export function TranscribeSection({ host, focusSignal }: { host: Host; focusSign
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {result.data.segments.map((segment: Segment) => (
+                    {result.data.segments.map((segment) => (
                       <TableRow key={segment.segment}>
-                        <TableCell>{segment.segment}</TableCell>
-                        <TableCell>{formatSeconds(segment.start_secs)}</TableCell>
-                        <TableCell>{formatSeconds(segment.end_secs)}</TableCell>
+                        <TableCell>{segment.segment + 1}</TableCell>
+                        <TableCell className="voice-mono">{formatSeconds(segment.start_secs)}</TableCell>
+                        <TableCell className="voice-mono">{formatSeconds(segment.end_secs)}</TableCell>
                         <TableCell>{segment.text}</TableCell>
                       </TableRow>
                     ))}
@@ -189,8 +242,8 @@ export function TranscribeSection({ host, focusSignal }: { host: Host; focusSign
               </TableFrame>
             </TableViewport>
           ) : null}
-        </div>
+        </SectionCard>
       ) : null}
-    </section>
+    </>
   )
 }

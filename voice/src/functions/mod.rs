@@ -89,6 +89,10 @@ pub fn catalog() -> Vec<FunctionSpec> {
             catalog::DOWNLOAD_ID,
             catalog::DOWNLOAD_DESC,
         ),
+        spec::<catalog::RemoveRequest, catalog::RemoveResponse>(
+            catalog::REMOVE_ID,
+            catalog::REMOVE_DESC,
+        ),
         spec::<doctor::Request, doctor::Response>(doctor::ID, doctor::DESC),
     ]
 }
@@ -160,6 +164,13 @@ pub fn register_all(iii: &Arc<IIIClient>, state: &Arc<AppState>) {
         catalog::DOWNLOAD_DESC,
         catalog::download
     );
+    register!(
+        iii,
+        state,
+        catalog::REMOVE_ID,
+        catalog::REMOVE_DESC,
+        catalog::remove
+    );
     register!(iii, state, doctor::ID, doctor::DESC, doctor::handle);
 }
 
@@ -170,7 +181,7 @@ mod tests {
     #[test]
     fn every_function_id_is_namespaced_and_unique() {
         let ids: Vec<&str> = catalog().iter().map(|s| s.function_id).collect();
-        assert_eq!(ids.len(), 10);
+        assert_eq!(ids.len(), 11);
         for id in &ids {
             assert!(id.starts_with("voice::"), "{id}");
         }

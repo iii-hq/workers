@@ -125,7 +125,7 @@ the `openai` backend with an empty `api_key`.
 | `voice::transcribe` | A WAV file (path or base64) to text with segments. |
 | `voice::dictation::start` / `push` / `stop` / `list` | Live sessions. |
 | `voice::speak` / `voice::speak::stop` | Read text aloud, stop playback. |
-| `voice::models::list` / `voice::models::download` | Local model catalog and install. |
+| `voice::models::list` / `voice::models::download` / `voice::models::remove` | Local model catalog, install, delete. |
 | `voice::doctor` | Backends, model state, open sessions. |
 
 Triggers: `voice::transcript`, `voice::session-started`,

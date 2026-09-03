@@ -18,6 +18,8 @@ import type {
   ModelsDownloadRequest,
   ModelsDownloadResponse,
   ModelsListResponse,
+  ModelsRemoveRequest,
+  ModelsRemoveResponse,
   SpeakRequest,
   SpeakResponse,
   SpeakStopRequest,
@@ -60,6 +62,10 @@ export function modelsList(iii: ExtensionIii): Promise<ModelsListResponse> {
 
 export function modelsDownload(iii: ExtensionIii, req: ModelsDownloadRequest = {}): Promise<ModelsDownloadResponse> {
   return iii.trigger<ModelsDownloadResponse>('voice::models::download', req)
+}
+
+export function modelsRemove(iii: ExtensionIii, req: ModelsRemoveRequest): Promise<ModelsRemoveResponse> {
+  return iii.trigger<ModelsRemoveResponse>('voice::models::remove', req)
 }
 
 export function doctor(iii: ExtensionIii): Promise<DoctorResponse> {

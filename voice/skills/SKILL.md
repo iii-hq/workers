@@ -31,6 +31,7 @@ Local speech-to-text and read-aloud on the iii bus. Nothing leaves the machine b
 - `voice::speak::stop` — stop host playback.
 - `voice::models::list` — local models and whether each is installed.
 - `voice::models::download` — install a local model, checksum-verified.
+- `voice::models::remove` — delete a downloaded model.
 - `voice::doctor` — backends, model state, open sessions.
 
 ## Reactive triggers

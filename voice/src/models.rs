@@ -141,7 +141,7 @@ static PARAKEET_TDT_06B_V2_FILES: [ModelFile; 4] = [
 static CATALOG: [ModelSpec; 2] = [
     ModelSpec {
         id: DEFAULT_MODEL,
-        name: "Streaming Zipformer, English, 20M parameters (int8)",
+        name: "Zipformer streaming 20M",
         kind: ModelKind::StreamingTransducer,
         languages: &["en"],
         license: "Apache-2.0",
@@ -153,7 +153,7 @@ static CATALOG: [ModelSpec; 2] = [
     },
     ModelSpec {
         id: DEFAULT_FINAL_MODEL,
-        name: "Parakeet TDT 0.6B v2, English, punctuation and casing (int8)",
+        name: "Parakeet TDT 0.6B v2",
         kind: ModelKind::OfflineNemoTransducer,
         languages: &["en"],
         license: "CC-BY-4.0",

@@ -20,6 +20,7 @@ fn the_catalog_lists_every_public_function_in_order() {
             "voice::speak::stop",
             "voice::models::list",
             "voice::models::download",
+            "voice::models::remove",
             "voice::doctor",
         ]
     );

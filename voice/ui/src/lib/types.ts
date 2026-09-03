@@ -55,6 +55,7 @@ export interface DictationStopResponse {
 
 export interface DictationListEntry {
   session_id: string
+  model: string
   started_at_ms: number
   duration_secs: number
   segments: number
@@ -110,7 +111,9 @@ export interface SpeakStopResponse {
 export interface ModelInfo {
   id: string
   name: string
+  kind?: 'streaming_transducer' | 'offline_nemo_transducer'
   languages: string[]
+  license?: string
   size_bytes: number
   installed: boolean
 }
@@ -131,6 +134,15 @@ export interface ModelsDownloadResponse {
   bytes: number
 }
 
+export type ModelsRemoveRequest = {
+  id: string
+}
+
+export interface ModelsRemoveResponse {
+  id: string
+  removed: boolean
+}
+
 export interface DoctorResponse {
   stt: {
     backend: 'local' | 'openai'
@@ -139,6 +151,7 @@ export interface DoctorResponse {
     loaded: boolean
     load_ms?: number
     models_dir: string
+    problem?: string
     final_model: string
     final_state: 'off' | 'missing' | 'downloading' | 'installed' | 'loaded' | 'unknown'
     final_load_ms?: number

@@ -106,3 +106,38 @@ pub fn progress_sink(state: &AppState) -> ProgressSink {
         });
     })
 }
+
+pub const REMOVE_ID: &str = "voice::models::remove";
+pub const REMOVE_DESC: &str =
+    "Delete a downloaded local model from models_dir. A model still named in the \
+                               configuration downloads again on its next use.";
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RemoveRequest {
+    /// Model id from voice::models::list.
+    pub id: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct RemoveResponse {
+    pub id: String,
+    pub removed: bool,
+}
+
+pub async fn remove(state: &AppState, req: RemoveRequest) -> Result<RemoveResponse, String> {
+    let cfg = state.cfg.read().await.clone();
+    let spec = models::find(&req.id).ok_or_else(|| {
+        format!(
+            "unknown model `{}`; voice::models::list names the choices",
+            req.id
+        )
+    })?;
+    let dir = cfg.models_path();
+    let removed = spec.is_installed(&dir);
+    models::remove(spec, &dir).await?;
+    state.engine.invalidate().await;
+    Ok(RemoveResponse {
+        id: spec.id.to_string(),
+        removed,
+    })
+}

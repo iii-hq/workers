@@ -26,6 +26,8 @@ export interface DictationState {
   status: DictationStatus
   partial: string
   committed: string[]
+  /** Segment index of each committed line, a stable key for rendering. */
+  committedIds: number[]
   error?: string
 }
 
@@ -38,6 +40,7 @@ export const initialDictationReduceState: DictationReduceState = {
   status: 'idle',
   partial: '',
   committed: [],
+  committedIds: [],
   lastSeq: -1,
 }
 
@@ -55,6 +58,7 @@ export function reduceTranscriptEvent(state: DictationReduceState, event: Transc
         ...state,
         status: 'listening',
         committed: [...state.committed, event.text],
+        committedIds: [...state.committedIds, event.segment],
         partial: '',
         lastSeq,
       }
@@ -220,6 +224,7 @@ export function useDictation(controller: DictationController): UseDictationResul
       status: state.status,
       partial: state.partial,
       committed: state.committed,
+      committedIds: state.committedIds,
       error: state.error,
     },
     start: controller.start,

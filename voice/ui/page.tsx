@@ -12,6 +12,7 @@
 import type { Host } from '@iii-dev/console-ui'
 import { createVoiceSessionChip } from './src/chip'
 import { createVoiceComposerAction } from './src/composer'
+import { createVoiceConfigForm } from './src/configuration'
 import { createDictationController } from './src/lib/dictation'
 import type { ComposerCapableChat } from './src/lib/types'
 import { createVoiceLiveSummary } from './src/live'
@@ -28,6 +29,7 @@ export default function setup(host: Host) {
     configurationId: 'voice',
     render: (props) => <VoicePage host={host} controller={controller} {...props} />,
   })
+  host.configForms.register('voice', createVoiceConfigForm(host))
 
   host.commands?.register('voice', [
     {

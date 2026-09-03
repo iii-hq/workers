@@ -71,9 +71,9 @@ impl LoadKey {
         Self {
             model: cfg.stt.model.clone(),
             num_threads: cfg.stt.num_threads,
-            rule1: cfg.stt.silence_without_speech_secs,
-            rule2: cfg.stt.silence_after_speech_secs,
-            rule3: cfg.stt.max_utterance_secs,
+            rule1: cfg.stt.silence_without_speech_secs as f32,
+            rule2: cfg.stt.silence_after_speech_secs as f32,
+            rule3: cfg.stt.max_utterance_secs as f32,
         }
     }
 }
