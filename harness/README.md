@@ -135,6 +135,7 @@ default_pending_timeout_ms: 1800000  # legacy parked-call (hold / pre-deploy chi
 max_depth: 3                     # sub-agent depth budget
 max_children: 8                  # sub-agent spawns-per-turn budget
 max_transient_resumes: 1         # recovery generations after a partial stream failure
+projects_file_path: ./data/harness-projects.json  # durable operator project catalog
 sweep_expression: "0 * * * * *"  # cron for the pending-call expiry sweep
 ```
 
@@ -178,13 +179,6 @@ notifications, spawn leaves directly, define completion per medium) lives in
 [`skills/orchestration.md`](skills/orchestration.md) — paste it into a task
 prompt or pass it via `options.system_prompt`.
 
-An optional `mode` (`ask` | `agent`) prepends a short operating-mode
-paragraph; `ask` is also enforced structurally — the dispatch policy of an
-ask-mode send (a steer's inherited one, and an ask-mode spawned child's
-resolved one) is capped at the configured default policy (`default_functions`).
-The cap applies to a NEW turn; a steer folded into an already-running turn
-keeps that turn's frozen policy until it finalises.
-
 A non-empty `options.system_prompt` is combined with the built-in
 prompt per `options.system_prompt_strategy`: `enrich` (default) appends it to
 the built-in prompt, while `override` uses it verbatim. Assembly is tested in
@@ -196,9 +190,8 @@ dispatch policy: a send to an existing session that names neither
 resolved prompt verbatim (a prior `disabled` turn's absent prompt inherits
 too). Naming either field resolves fresh — an explicit bare
 `system_prompt_strategy` (e.g. `"enrich"`) is the reset-to-default escape
-hatch. Because the inherited string is frozen at its original resolution,
-changing `mode` on a later send without prompt fields keeps the old
-operating-mode paragraph — resend the prompt fields to re-resolve.
+hatch. The inherited string is frozen at its original resolution — resend
+the prompt fields to re-resolve.
 
 ### Agent profiles
 
@@ -208,17 +201,16 @@ resolves it ONCE via `directory::agents::get` and freezes the result onto the
 turn: the profile's RESOLVED system prompt — the directory composes `extends`
 chains root-first, so `tech-lead` extending the bundled `iii` base arrives as
 the full iii doctrine followed by the tech-lead body — IS the session
-identity. Nothing built-in sits underneath it and no prefix is added; only the
-per-send `mode` paragraph goes in front, then the usual per-step runtime
-context (session id, working directory, policy aid, skills index, hook
-injections). A profile whose `extends` chain does not resolve is refused as an
+identity. Nothing built-in sits underneath it and no prefix is added; the
+usual per-step runtime context (session id, working directory, policy aid,
+skills index, hook injections) follows it. A profile whose `extends` chain does not resolve is refused as an
 invalid request with the directory's D415 text. The profile's skill filter
 becomes the session's skill selection (an explicit `options.skills` wins), its
 `model` and optional provider-native `reasoning_effort` are authoritative for
 the session, and — when the send also omits
 `options.functions` — the dispatch policy defaults to the configured
 `default_functions` baseline instead of deny-all (an identity picked to DO
-something must be able to dispatch; the ask-mode cap still applies). The
+something must be able to dispatch). The
 The frozen name/icon/color/model/effort snapshot is also written to session
 metadata for clients that render established sessions. The frozen identity
 travels with the prompt-stickiness rule: bare later sends

@@ -186,7 +186,6 @@ async fn run_playground_phases(
                         prepared.scenario.send.provider,
                         prepared.scenario.send.model
                     ),
-                    "mode": "agent",
                     "title_manual": true,
                     "integration_run_id": runner.run_id
                 }

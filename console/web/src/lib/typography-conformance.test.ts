@@ -25,7 +25,6 @@ const humanFacingPrimitives = [
 ]
 
 const globalSelectorChrome = [
-  'console/web/src/components/chat/ModePicker.tsx',
   'console/web/src/components/chat/ModelPicker.tsx',
   'console/web/src/components/chat/SessionAddonsPicker.tsx',
   'console/web/src/components/chat/SystemPromptPicker.tsx',

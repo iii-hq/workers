@@ -3,14 +3,6 @@
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "definitions": {
-      "Mode": {
-        "description": "Operating mode prepended to the identity prompt; `ask` also caps the dispatch policy at the configured default.",
-        "enum": [
-          "ask",
-          "agent"
-        ],
-        "type": "string"
-      },
       "SelectedSystemPrompt": {
         "properties": {
           "body": {
@@ -71,16 +63,6 @@
         "type": [
           "string",
           "null"
-        ]
-      },
-      "mode": {
-        "anyOf": [
-          {
-            "$ref": "#/definitions/Mode"
-          },
-          {
-            "type": "null"
-          }
         ]
       },
       "selected_prompt": {

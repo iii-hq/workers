@@ -997,7 +997,6 @@ fn harness_request(plan: &AnalysisPlan) -> Value {
         "options": {
             "system_prompt": plan.system_prompt,
             "system_prompt_strategy": "override",
-            "mode": "agent",
             "max_turns": plan.max_turns,
             "max_output_tokens": plan.max_output_tokens,
             "max_total_tokens": plan.max_total_tokens,

@@ -4,7 +4,6 @@ import {
   CircleAlert,
   CircleOff,
   FunctionSquare,
-  Info,
   RadioTower,
   ShieldCheck,
 } from 'lucide-react'
@@ -14,6 +13,8 @@ import {
   useTriggerActivityRenderers,
 } from '@/components/trigger-activity/renderer-registry'
 import {
+  TriggerEyebrow,
+  TriggerGlyph,
   TriggerJsonPane,
   TriggerStats,
   TriggerTrace,
@@ -148,34 +149,32 @@ export function RegisterTriggerView({
           },
         ]
       : []),
-    ...(regId ? [{ label: 'ID', value: regId }] : []),
+    ...(regId ? [{ label: 'ID', value: regId, mono: true }] : []),
   ]
 
+  // The card's Terminal tab hands this view the full pane, so the view owns
+  // its padding and its container query scope (the WHEN/THEN row switches to
+  // two columns by the card's width, not the chat column's).
   return (
     <div
-      className="flex min-w-0 flex-col gap-4"
+      className="@container flex min-w-0 flex-col gap-4 p-4 sm:p-3"
       data-trigger-registration-details=""
     >
       {running || !registered ? (
         <div className="flex min-w-0 items-start gap-3">
-          <div
-            className={cn(
-              'flex size-9 shrink-0 items-center justify-center rounded-full',
-              running ? 'bg-accent-muted' : 'bg-warn-muted',
-            )}
-          >
+          <TriggerGlyph tone={running ? 'accent' : 'warn'}>
             {running ? (
               <RadioTower
                 aria-hidden
-                className="size-5 animate-pulse stroke-accent motion-reduce:animate-none"
+                className="animate-pulse motion-reduce:animate-none"
               />
             ) : (
-              <CircleAlert aria-hidden className="size-5 stroke-warn" />
+              <CircleAlert aria-hidden />
             )}
-          </div>
+          </TriggerGlyph>
           <div className="min-w-0 flex-1 font-sans">
             <div className="text-base font-medium text-ink sm:text-sm">
-              {running ? 'registering trigger…' : 'trigger registration failed'}
+              {running ? 'Registering trigger…' : 'Trigger registration failed'}
             </div>
             <p className="text-pretty text-base text-ink-faint sm:text-sm">
               {running
@@ -193,13 +192,12 @@ export function RegisterTriggerView({
             icon={<RadioTower aria-hidden />}
             label="When"
             title={registration.activity.triggerType}
+            mono
           >
-            <div className="flex min-w-0 flex-col gap-2">
-              <TriggerSource
-                activity={registration.activity}
-                presentation="compact"
-              />
-            </div>
+            <TriggerSource
+              activity={registration.activity}
+              presentation="compact"
+            />
           </TriggerTraceNode>
         }
         then={
@@ -212,14 +210,15 @@ export function RegisterTriggerView({
             title={target ? 'Call' : 'Notify'}
           >
             <div className="flex min-w-0 flex-col gap-2">
-              <div
-                className={cn(
-                  'min-w-0 font-sans text-base break-all sm:text-sm',
-                  target ? 'text-ink' : 'text-ink-faint italic',
-                )}
-              >
-                {target?.function_id ?? 'this session'}
-              </div>
+              {target ? (
+                <div className="min-w-0 font-mono text-[13px] break-all text-ink">
+                  {target.function_id}
+                </div>
+              ) : (
+                <div className="min-w-0 font-sans text-base text-ink-faint sm:text-sm">
+                  this session
+                </div>
+              )}
               {eventInto !== undefined ? (
                 <FilterChip label="event into" value={eventInto || '(root)'} />
               ) : null}
@@ -231,19 +230,14 @@ export function RegisterTriggerView({
       <TriggerStats items={stats} />
 
       {req.conditions?.length ? (
-        <CardHighlight className="p-3 @xl:p-4">
-          <div className="flex min-w-0 items-start gap-3">
-            <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-accent-muted">
-              <ShieldCheck
-                aria-hidden
-                className="size-5 shrink-0 stroke-accent"
-              />
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="font-mono text-base tracking-wide text-ink-ghost uppercase sm:text-xs">
-                Only if
-              </div>
-              <div className="mt-2 flex min-w-0 flex-col divide-y divide-edge">
+        <CardHighlight>
+          <div className="flex min-w-0 items-start gap-3 p-3 @xl:p-4">
+            <TriggerGlyph>
+              <ShieldCheck aria-hidden />
+            </TriggerGlyph>
+            <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+              <TriggerEyebrow>Only if</TriggerEyebrow>
+              <div className="flex min-w-0 flex-col divide-y divide-edge">
                 {req.conditions.map((condition, index) => (
                   <ConditionRow
                     // biome-ignore lint/suspicious/noArrayIndexKey: conditions have no id; their declared order is their identity and execution order.
@@ -270,22 +264,6 @@ export function RegisterTriggerView({
           value={registrationMetadata}
           variant="secondary"
         />
-      ) : null}
-
-      {resp?.note ? (
-        <div className="flex min-w-0 items-start gap-3 border-t border-edge pt-4">
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-accent-muted">
-            <Info aria-hidden className="size-5 shrink-0 stroke-accent" />
-          </div>
-          <div className="min-w-0 flex-1 font-sans">
-            <div className="text-base font-medium text-ink sm:text-sm">
-              Registration note
-            </div>
-            <p className="text-pretty text-base wrap-break-word text-ink-faint sm:text-sm">
-              {resp.note}
-            </p>
-          </div>
-        </div>
       ) : null}
     </div>
   )
@@ -444,7 +422,14 @@ function ConditionRow({
   )
   return (
     <div className="flex min-w-0 flex-col gap-2 py-3 first:pt-0 last:pb-0">
-      <div className="font-sans text-base font-medium break-all text-ink sm:text-sm">
+      <div
+        className={cn(
+          'min-w-0 break-all text-ink',
+          condition.function_id
+            ? 'font-mono text-[13px]'
+            : 'font-sans text-base font-medium sm:text-sm',
+        )}
+      >
         {condition.function_id ?? 'Condition'}
       </div>
       {chippable.length > 0 ? (

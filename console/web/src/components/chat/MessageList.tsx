@@ -55,7 +55,6 @@ import { Message, type SpawnTaskContext } from './Message'
 import { ModelWaitingIndicator } from './ModelWaitingIndicator'
 import {
   DEFAULT_SYSTEM_PROMPT_STATE,
-  type SkillSelection,
   type SystemPromptState,
 } from './system-prompt-selection'
 import { THOUGHT_SETTLE_DURATION_MS } from './ThoughtMessage'
@@ -1209,6 +1208,10 @@ function FunctionTriggerGroup({
   const [expanded, setExpanded] = useState(!!defaultOpenCalls)
   const contentId = useId()
   const collapsedItems = collapsedTimelineActivities(row.items, (call) => {
+    // Trigger registrations stay visible as durable activity receipts without
+    // opting the engine renderer into the richer `display` presentation.
+    if (call.functionId === 'engine::register_trigger') return true
+
     const rendered = firstRendered(renderers, (renderer) => {
       if (!renderer.isMatch(call.functionId) || call.pendingApproval)
         return null
@@ -1300,7 +1303,9 @@ function FunctionTriggerGroup({
                   expanded && 'rotate-90',
                 )}
               />
-              <span className="tabular-nums">Agent triggered {row.items.length} functions</span>
+              <span className="tabular-nums">
+                Agent triggered {row.items.length} functions
+              </span>
               <span className="text-ink-ghost">·</span>
               <span className="chat-trigger-disclosure-label">
                 <span data-active={!expanded} aria-hidden={expanded}>
@@ -1415,10 +1420,6 @@ function resolveEmptyState(
     agentProfile: active?.agentProfile,
     onAgentProfileChange: active
       ? (next) => ctx.setAgentProfile(active.id, next)
-      : undefined,
-    skills: active?.skills,
-    onSkillsChange: active
-      ? (next: SkillSelection) => ctx.setSkills(active.id, next)
       : undefined,
     ...directory,
   }

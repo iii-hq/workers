@@ -203,7 +203,12 @@ A provider worker must:
    `writer_ref` it receives, ending with one terminal frame.
 2. Declare itself at startup via `router::provider::register` — retrying with
    backoff until acknowledged (covers provider-before-router boot order) —
-   and re-declare on the `router::ready` event after a router restart.
+   and re-declare on the `router::ready` event after a router restart. The
+   declaration may carry `icon_svg`: one self-contained, monochrome `<svg>`
+   document (square `viewBox`, no fixed size, at most 32 KiB). The router
+   echoes it in `router::provider::list` and the console paints it as a
+   `currentColor` mask beside the provider's models; a missing or malformed
+   mark falls back to the provider's initial.
 3. Resolve credentials per request via `router::provider::resolve`; never
    read keys directly.
 4. Treat closure of its stream channel as cancellation: abort the upstream

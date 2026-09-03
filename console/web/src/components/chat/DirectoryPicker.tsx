@@ -7,8 +7,10 @@ import {
   CornerDownLeft,
   Folder,
   FolderOpen,
-  FolderPlus,
   GitBranch,
+  Pencil,
+  Plus,
+  Save,
   Search,
   X,
 } from 'lucide-react'
@@ -24,8 +26,13 @@ import {
 import { BottomSheet, BottomSheetContent } from '@/components/ui/BottomSheet'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { useMediaQuery } from '@/hooks/use-media-query'
+import {
+  deleteHarnessProject,
+  type HarnessProject,
+  listHarnessProjects,
+  upsertHarnessProject,
+} from '@/lib/backend/projects'
 import { getIiiClient } from '@/lib/iii-client'
-import { loadRecentProjects, removeRecentProject } from '@/lib/storage'
 import { PortalScope } from '@/lib/ui-scope'
 import { cn } from '@/lib/utils'
 import {
@@ -47,7 +54,7 @@ import {
 /**
  * Per-session working-directory picker, project-switcher style.
  *
- * Opens to your remembered projects (most-recent first) — pick one in a click,
+ * Opens to your harness projects (most-recent first) — pick one in a click,
  * or "browse to add" a new directory. Browsing uses shell's operator workspace
  * control plane one level at a time. The search box filters the current level
  * live; typing/pasting an absolute path jumps straight there (browse) or
@@ -81,9 +88,9 @@ interface DirectoryPickerProps {
   externalError?: string | null
   /**
    * The stack's default working directory (harness launch folder). Pinned at
-   * the top of the projects view: unlike recents it is never forgettable and
-   * survives re-scoping away, so the launch folder stays one click away.
-   * Deduped against the recents list.
+   * the top of the projects view: it is never forgettable and survives
+   * re-scoping away, so the launch folder stays one click away. Deduped
+   * against the rest of the project list.
    */
   defaultDir?: string | null
   /** Show the worktrees tab next to directory browsing. */
@@ -119,6 +126,160 @@ function basename(p: string): string {
   return parts.length ? parts[parts.length - 1] : p
 }
 
+function withProject(
+  projects: HarnessProject[],
+  project: HarnessProject,
+): HarnessProject[] {
+  return [
+    project,
+    ...projects.filter((item) => item.path !== project.path),
+  ].sort((a, b) => b.last_used_at - a.last_used_at)
+}
+
+function ProjectRow({
+  project,
+  selected,
+  hint,
+  disabled,
+  renaming,
+  draftName,
+  onDraftNameChange,
+  onSelect,
+  onBeginRename,
+  onCancelRename,
+  onSaveRename,
+  onForget,
+}: {
+  project: HarnessProject
+  selected: boolean
+  /** Faint trailing text: "default" for the pinned row, the parent folder
+      when two projects share a name. */
+  hint?: string
+  disabled: boolean
+  renaming: boolean
+  draftName: string
+  onDraftNameChange: (name: string) => void
+  onSelect: () => void
+  onBeginRename: () => void
+  onCancelRename: () => void
+  onSaveRename: () => void
+  onForget?: () => void
+}) {
+  if (renaming) {
+    return (
+      <form
+        className="flex min-h-14 min-w-0 items-center gap-2 rounded-md bg-surface-selected p-1.5 md:min-h-8 md:p-1"
+        onSubmit={(event) => {
+          event.preventDefault()
+          onSaveRename()
+        }}
+      >
+        <Folder className="size-4 shrink-0 text-ink-faint" aria-hidden />
+        <input
+          // biome-ignore lint/a11y/noAutofocus: rename starts from an explicit pointer/keyboard action
+          autoFocus
+          name="project-name"
+          aria-label={`name for ${project.path}`}
+          value={draftName}
+          onChange={(event) => onDraftNameChange(event.target.value)}
+          className="min-w-0 flex-1 rounded-sm bg-panel-raised px-2 py-1.5 font-sans text-base text-ink outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:py-1 md:text-[12px]"
+        />
+        <button
+          type="submit"
+          disabled={disabled}
+          aria-label={`save name for ${project.path}`}
+          className="relative flex size-10 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:opacity-50 md:size-7"
+        >
+          <Save className="size-4 shrink-0" aria-hidden />
+          <span
+            className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+            aria-hidden="true"
+          />
+        </button>
+        <button
+          type="button"
+          onClick={onCancelRename}
+          aria-label="cancel rename"
+          className="relative flex size-10 shrink-0 items-center justify-center rounded-sm text-ink-ghost hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:size-7"
+        >
+          <X className="size-4 shrink-0" aria-hidden />
+          <span
+            className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+            aria-hidden="true"
+          />
+        </button>
+      </form>
+    )
+  }
+
+  return (
+    <div
+      className={cn(
+        'group flex items-center gap-1 rounded-md pr-1 hover:bg-surface-hover',
+        selected && 'bg-surface-selected',
+      )}
+    >
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onSelect}
+        aria-current={selected ? 'true' : undefined}
+        className="flex min-h-14 min-w-0 flex-1 items-center gap-3 rounded-md px-3 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:opacity-50 md:min-h-8 md:gap-2 md:px-2 md:py-1"
+        title={project.path}
+      >
+        <Folder
+          className={cn(
+            'size-4 shrink-0',
+            selected ? 'text-ink' : 'text-ink-faint',
+          )}
+          aria-hidden
+        />
+        <span className="flex min-w-0 flex-1 items-baseline gap-2 font-sans text-base md:text-[12px]">
+          <span className="min-w-0 truncate font-medium text-ink">
+            {project.name}
+          </span>
+          {hint ? (
+            <span className="min-w-0 truncate text-ink-ghost">{hint}</span>
+          ) : null}
+        </span>
+      </button>
+      <button
+        type="button"
+        aria-label={`rename ${project.name}`}
+        title="rename project"
+        onClick={onBeginRename}
+        className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-ghost hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:size-7 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100"
+      >
+        <span
+          className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+          aria-hidden="true"
+        />
+        <Pencil className="size-4 shrink-0" aria-hidden />
+      </button>
+      {onForget ? (
+        <button
+          type="button"
+          aria-label={`forget ${project.name}`}
+          title="forget this project"
+          onClick={onForget}
+          className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-ghost hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:size-7 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100"
+        >
+          <span
+            className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+            aria-hidden="true"
+          />
+          <X className="size-4 shrink-0" aria-hidden />
+        </button>
+      ) : null}
+      {selected ? (
+        <span className="flex size-12 shrink-0 items-center justify-center md:size-7">
+          <Check className="size-4 shrink-0 text-ink" aria-hidden />
+        </span>
+      ) : null}
+    </div>
+  )
+}
+
 function parentOf(p: string): string {
   const trimmed = p.replace(/\/+$/, '')
   const idx = trimmed.lastIndexOf('/')
@@ -144,7 +305,7 @@ export function DirectoryPicker({
   worktrees,
   className,
   triggerAppearance = 'default',
-  emptyLabel = 'Choose directory',
+  emptyLabel = 'Choose project',
   presentation = 'trigger',
   onSelect,
 }: DirectoryPickerProps) {
@@ -153,8 +314,11 @@ export function DirectoryPicker({
   const [view, setView] = useState<'projects' | 'browse' | 'worktrees'>(
     'projects',
   )
-  const [projects, setProjects] = useState<string[]>([])
+  const [projects, setProjects] = useState<HarnessProject[]>([])
+  const [projectsLoading, setProjectsLoading] = useState(true)
   const [query, setQuery] = useState('')
+  const [renamingPath, setRenamingPath] = useState<string | null>(null)
+  const [projectName, setProjectName] = useState('')
   // browse state
   const [roots, setRoots] = useState<string[] | null>(null)
   const [root, setRoot] = useState<string | null>(null)
@@ -170,21 +334,38 @@ export function DirectoryPicker({
   const triggerRef = useRef<HTMLButtonElement>(null)
   const mobileSheet = useMediaQuery('(max-width: 767px)')
 
+  const refreshProjects = useCallback(async () => {
+    setProjectsLoading(true)
+    try {
+      setProjects(await listHarnessProjects())
+    } catch (err) {
+      setError(`can't load projects — ${errMsg(err)}`)
+    } finally {
+      setProjectsLoading(false)
+    }
+  }, [])
+
   const openPanel = useCallback(() => {
-    setProjects(loadRecentProjects())
     setView('projects')
     setQuery('')
+    setRenamingPath(null)
     setError(externalError ?? null)
     setOpen(true)
-  }, [externalError])
+    void refreshProjects()
+  }, [externalError, refreshProjects])
+
+  useEffect(() => {
+    void refreshProjects()
+  }, [refreshProjects])
 
   useEffect(() => {
     if (!embedded) return
-    setProjects(loadRecentProjects())
     setView('projects')
     setQuery('')
+    setRenamingPath(null)
     setError(externalError ?? null)
-  }, [embedded, externalError])
+    void refreshProjects()
+  }, [embedded, externalError, refreshProjects])
 
   // Keep an externally detected error available for an explicitly opened
   // picker without interrupting the current chat with a surprise dialog.
@@ -285,14 +466,14 @@ export function DirectoryPicker({
         return
       }
       setView('projects')
-      setProjects(loadRecentProjects())
+      void refreshProjects()
       return
     }
     const next = parentOf(path)
     const clamped = next.length < root.length ? root : next
     setPath(clamped)
     void loadFolder(clamped)
-  }, [path, root, roots, loadFolder])
+  }, [path, root, roots, loadFolder, refreshProjects])
 
   const jumpTo = useCallback(
     async (raw: string) => {
@@ -333,11 +514,18 @@ export function DirectoryPicker({
       setError(null)
       setValidating(dir)
       // Select the canonical resolved dir the worker echoes back, not raw
-      // input, so stored recent projects are stable across symlinks.
+      // input, so stored projects are stable across symlinks.
       const res = await validateWorkspaceDir(dir)
       if (res.ok) {
-        setValidating(null)
-        select(res.path)
+        try {
+          const project = await upsertHarnessProject(res.path)
+          setProjects((current) => withProject(current, project))
+          setValidating(null)
+          select(res.path)
+        } catch (err) {
+          setError(`can't save this project — ${errMsg(err)}`)
+          setValidating(null)
+        }
         return
       }
       setError(`can't use ${dir} — ${res.error}`)
@@ -346,10 +534,41 @@ export function DirectoryPicker({
     [select],
   )
 
-  const forget = useCallback((dir: string) => {
-    removeRecentProject(dir)
-    setProjects(loadRecentProjects())
+  const forget = useCallback(async (dir: string) => {
+    setValidating(dir)
+    setError(null)
+    try {
+      await deleteHarnessProject(dir)
+      setProjects((current) =>
+        current.filter((project) => project.path !== dir),
+      )
+    } catch (err) {
+      setError(`can't remove this project — ${errMsg(err)}`)
+    } finally {
+      setValidating(null)
+    }
   }, [])
+
+  const beginRename = useCallback((project: HarnessProject) => {
+    setRenamingPath(project.path)
+    setProjectName(project.name)
+    setError(null)
+  }, [])
+
+  const saveProjectName = useCallback(async () => {
+    if (!renamingPath) return
+    setValidating(renamingPath)
+    setError(null)
+    try {
+      const project = await upsertHarnessProject(renamingPath, projectName)
+      setProjects((current) => withProject(current, project))
+      setRenamingPath(null)
+    } catch (err) {
+      setError(`can't rename this project — ${errMsg(err)}`)
+    } finally {
+      setValidating(null)
+    }
+  }, [projectName, renamingPath])
 
   const enterWorktrees = useCallback(async () => {
     setView('worktrees')
@@ -378,15 +597,41 @@ export function DirectoryPicker({
   )
 
   const q = query.trim().toLowerCase()
-  // The pinned default row replaces any identical recents row (a user who
-  // explicitly picked the default lands it in recents too — show it once).
+  // The pinned default row replaces any identical catalog row (a user who
+  // explicitly picked the default lands it in the catalog too — show it once).
   const filteredProjects = useMemo(
     () =>
-      projects.filter((p) => p !== defaultDir && p.toLowerCase().includes(q)),
+      projects.filter(
+        (project) =>
+          project.path !== defaultDir &&
+          (project.name.toLowerCase().includes(q) ||
+            project.path.toLowerCase().includes(q)),
+      ),
     [projects, q, defaultDir],
   )
+  const defaultProject = projects.find((project) => project.path === defaultDir)
+  // Two projects with the same name are told apart by their parent folder;
+  // everything else stays a bare name so the list reads as a short menu.
+  const ambiguousNames = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const project of projects) {
+      counts.set(project.name, (counts.get(project.name) ?? 0) + 1)
+    }
+    return new Set(
+      [...counts.entries()]
+        .filter(([, count]) => count > 1)
+        .map(([name]) => name),
+    )
+  }, [projects])
+  const hintFor = (project: HarnessProject): string | undefined =>
+    ambiguousNames.has(project.name)
+      ? `…/${basename(parentOf(project.path))}`
+      : undefined
   const showDefaultRow =
-    !!defaultDir && (q === '' || defaultDir.toLowerCase().includes(q))
+    !!defaultDir &&
+    (q === '' ||
+      defaultDir.toLowerCase().includes(q) ||
+      defaultProject?.name.toLowerCase().includes(q) === true)
   const filteredDirs = useMemo(
     () =>
       q
@@ -418,7 +663,10 @@ export function DirectoryPicker({
     else if (view === 'browse') void jumpTo(query)
   }
 
-  const label = value ? basename(value) : emptyLabel
+  const label = value
+    ? (projects.find((project) => project.path === value)?.name ??
+      basename(value))
+    : emptyLabel
 
   if (locked && !embedded) {
     return (
@@ -461,7 +709,7 @@ export function DirectoryPicker({
           className={cn(
             triggerAppearance === 'inline'
               ? 'relative inline-flex min-w-0 h-6.5 items-baseline border-dashed border-b border-ink-faint/50 px-0.5 font-sans font-medium text-ink hover:border-ink hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:opacity-50'
-              : 'inline-flex h-12 min-w-0 items-center gap-2 rounded-sm border border-transparent bg-transparent px-3 font-sans text-base text-ink-faint hover:border-ink hover:bg-surface-hover hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:opacity-50 sm:h-9 sm:text-[13px]',
+              : 'inline-flex h-12 min-w-0 items-center gap-2 rounded-sm border border-transparent bg-transparent px-3 font-sans text-base text-ink-faint hover:bg-surface-hover hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:opacity-50 sm:h-9 sm:text-[13px]',
             externalError ? 'text-warn' : value ? 'text-ink' : 'text-ink-faint',
           )}
         >
@@ -490,7 +738,7 @@ export function DirectoryPicker({
         {worktrees?.enabled ? (
           <div
             role="tablist"
-            className="mx-4 mb-3 flex shrink-0 gap-1 rounded-md bg-surface p-1 font-sans text-base md:mx-0 md:mb-1 md:text-[12px]"
+            className="mx-4 mb-3 flex shrink-0 gap-1 rounded-md bg-surface p-1 font-sans text-base md:mx-0 md:mb-1 md:p-0.5 md:text-[11px]"
           >
             <button
               type="button"
@@ -498,12 +746,12 @@ export function DirectoryPicker({
               aria-selected={view !== 'worktrees'}
               onClick={() => {
                 setView('projects')
-                setProjects(loadRecentProjects())
+                void refreshProjects()
                 setQuery('')
                 setError(null)
               }}
               className={cn(
-                'min-h-12 flex-1 rounded-sm px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-8 md:py-1.5',
+                'min-h-12 flex-1 rounded-sm px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-7 md:py-1',
                 view !== 'worktrees'
                   ? 'bg-panel-raised text-ink ring-1 ring-edge'
                   : 'text-ink-faint hover:bg-surface-hover hover:text-ink',
@@ -517,7 +765,7 @@ export function DirectoryPicker({
               aria-selected={view === 'worktrees'}
               onClick={() => void enterWorktrees()}
               className={cn(
-                'min-h-12 flex-1 rounded-sm px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-8 md:py-1.5',
+                'min-h-12 flex-1 rounded-sm px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-7 md:py-1',
                 view === 'worktrees'
                   ? 'bg-panel-raised text-ink ring-1 ring-edge'
                   : 'text-ink-faint hover:bg-surface-hover hover:text-ink',
@@ -528,8 +776,9 @@ export function DirectoryPicker({
           </div>
         ) : null}
 
-        {/* search */}
-        <div className="mx-4 mb-3 flex min-h-12 shrink-0 items-center gap-2 rounded-md bg-surface px-3 py-2 focus-within:ring-2 focus-within:ring-rule-focus md:mx-0 md:mb-1 md:min-h-8 md:px-2.5 md:py-1">
+        {/* search — a boxed field on the mobile sheet, a bare line with a
+            magnifier on desktop where the popover itself is the box */}
+        <div className="mx-4 mb-3 flex min-h-12 shrink-0 items-center gap-2 rounded-md bg-surface px-3 py-2 focus-within:ring-2 focus-within:ring-rule-focus md:mx-0 md:mb-1 md:min-h-8 md:rounded-none md:border-b md:border-rule-2 md:bg-transparent md:px-2 md:py-1 md:focus-within:ring-0">
           <Search className="size-4 shrink-0 text-ink-ghost" aria-hidden />
           <input
             // biome-ignore lint/a11y/noAutofocus: desktop popovers keep keyboard-first filtering; mobile avoids opening the keyboard on entry
@@ -544,7 +793,7 @@ export function DirectoryPicker({
                   ? 'Filter worktrees…'
                   : 'Filter this folder or paste a path…'
             }
-            aria-label="search directories"
+            aria-label="search projects and directories"
             name="directory-search"
             className="min-w-0 flex-1 bg-transparent text-base text-ink placeholder:text-ink-ghost focus:outline-none md:text-[12px]"
           />
@@ -676,128 +925,101 @@ export function DirectoryPicker({
               </button>
             ) : null}
 
-            {showDefaultRow || filteredProjects.length > 0 ? (
-              <p className="px-1 pt-2 pb-1 font-sans text-base font-medium text-ink-faint md:pt-1 md:text-[11px]">
-                Current and recent
-              </p>
+            {projectsLoading ? (
+              <div className="rounded-md bg-surface px-3 py-4 font-sans text-base text-ink-faint md:text-[11px]">
+                Loading projects…
+              </div>
             ) : null}
 
             {showDefaultRow && defaultDir ? (
-              <button
-                type="button"
+              <ProjectRow
+                project={
+                  defaultProject ?? {
+                    path: defaultDir,
+                    name: basename(defaultDir),
+                    last_used_at: 0,
+                  }
+                }
+                selected={defaultDir === value}
+                hint="default"
                 disabled={validating !== null}
-                onClick={() => void validateAndSelect(defaultDir)}
-                aria-current={defaultDir === value ? 'true' : undefined}
-                className={cn(
-                  'flex min-h-14 w-full items-center gap-3 rounded-md px-3 py-2.5 text-left hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:opacity-50 md:min-h-9 md:gap-2 md:py-1.5',
-                  defaultDir === value && 'bg-surface-selected',
-                )}
-                title={`${defaultDir} — the folder the stack was started from`}
-              >
-                <Folder
-                  className={cn(
-                    'size-4 shrink-0',
-                    defaultDir === value ? 'text-ink' : 'text-ink-faint',
-                  )}
-                  aria-hidden
-                />
-                <span className="min-w-0 flex-1 truncate font-sans text-base font-medium text-ink md:text-[12px]">
-                  {basename(defaultDir)}
-                </span>
-                {defaultDir === value ? (
-                  <Check className="size-4 shrink-0 text-ink" aria-hidden />
-                ) : null}
-              </button>
+                renaming={renamingPath === defaultDir}
+                draftName={projectName}
+                onDraftNameChange={setProjectName}
+                onSelect={() => void validateAndSelect(defaultDir)}
+                onBeginRename={() =>
+                  beginRename(
+                    defaultProject ?? {
+                      path: defaultDir,
+                      name: basename(defaultDir),
+                      last_used_at: 0,
+                    },
+                  )
+                }
+                onCancelRename={() => setRenamingPath(null)}
+                onSaveRename={() => void saveProjectName()}
+              />
             ) : null}
 
-            {filteredProjects.map((p) => {
-              const isSelected = p === value
+            {filteredProjects.map((project) => {
+              const isSelected = project.path === value
               return (
-                <div
-                  key={p}
-                  className={cn(
-                    'group flex items-center gap-1 rounded-md pr-1 hover:bg-surface-hover',
-                    isSelected && 'bg-surface-selected',
-                  )}
-                >
-                  <button
-                    type="button"
-                    disabled={validating !== null}
-                    onClick={() => void validateAndSelect(p)}
-                    aria-current={isSelected ? 'true' : undefined}
-                    className="flex min-h-14 min-w-0 flex-1 items-center gap-3 rounded-md px-3 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus disabled:opacity-50 md:min-h-9 md:gap-2 md:py-1.5"
-                    title={p}
-                  >
-                    <Folder
-                      className={cn(
-                        'size-4 shrink-0',
-                        isSelected ? 'text-ink' : 'text-ink-faint',
-                      )}
-                      aria-hidden
-                    />
-                    <span className="min-w-0 flex-1 truncate font-sans text-base font-medium text-ink md:text-[12px]">
-                      {basename(p)}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`forget ${p}`}
-                    title="forget this project"
-                    onClick={() => forget(p)}
-                    className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-ghost hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:size-8 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100"
-                  >
-                    <span
-                      className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
-                      aria-hidden="true"
-                    />
-                    <X className="size-4 shrink-0 md:size-4" aria-hidden />
-                  </button>
-                  {isSelected ? (
-                    <span className="flex size-12 shrink-0 items-center justify-center md:size-8">
-                      <Check className="size-4 shrink-0 text-ink" aria-hidden />
-                    </span>
-                  ) : null}
-                </div>
+                <ProjectRow
+                  key={project.path}
+                  project={project}
+                  selected={isSelected}
+                  hint={hintFor(project)}
+                  disabled={validating !== null}
+                  renaming={renamingPath === project.path}
+                  draftName={projectName}
+                  onDraftNameChange={setProjectName}
+                  onSelect={() => void validateAndSelect(project.path)}
+                  onBeginRename={() => beginRename(project)}
+                  onCancelRename={() => setRenamingPath(null)}
+                  onSaveRename={() => void saveProjectName()}
+                  onForget={() => void forget(project.path)}
+                />
               )
             })}
 
-            {filteredProjects.length === 0 &&
+            {!projectsLoading &&
+            filteredProjects.length === 0 &&
             !showDefaultRow &&
             !isAbsPath(query) ? (
               <div className="rounded-md bg-surface px-3 py-4 font-sans text-base text-ink-faint md:text-[11px]">
                 {projects.length === 0
-                  ? 'No recent projects yet.'
+                  ? 'No projects yet.'
                   : 'No matching projects.'}{' '}
-                Browse to add one.
+                Add one to get started.
               </div>
             ) : null}
 
-            <div className="pt-2">
+            <div className="mt-1 border-t border-rule-2 pt-1">
               <button
                 type="button"
                 onClick={() => void enterBrowse()}
-                className="flex min-h-14 w-full items-center gap-3 rounded-md bg-surface px-3 py-2.5 text-left font-sans text-base font-medium text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-9 md:gap-2 md:py-1.5 md:text-[12px]"
+                className="flex min-h-14 w-full items-center gap-3 rounded-md px-3 py-2.5 text-left font-sans text-base font-medium text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-8 md:gap-2 md:px-2 md:py-1 md:text-[12px]"
               >
-                <FolderPlus className="size-4 shrink-0" aria-hidden />
-                Browse folders
+                <Plus className="size-4 shrink-0 text-ink-faint" aria-hidden />
+                Add project
               </button>
             </div>
           </div>
         ) : (
           <div className={cn(embedded && 'flex min-h-0 flex-1 flex-col')}>
             {/* browse header */}
-            <div className="mx-4 mb-2 flex min-h-14 shrink-0 items-center justify-between gap-2 rounded-md bg-surface p-1 md:mx-0 md:min-h-10">
+            <div className="mx-4 mb-2 flex min-h-14 shrink-0 items-center justify-between gap-2 rounded-md bg-surface p-1 md:mx-0 md:mb-1 md:min-h-9">
               <div className="flex min-w-0 flex-1 items-center gap-1 font-sans text-base text-ink-faint md:text-[11px]">
                 <button
                   type="button"
                   aria-label="back to projects"
                   onClick={() => {
                     setView('projects')
-                    setProjects(loadRecentProjects())
+                    void refreshProjects()
                     setQuery('')
                     setError(null)
                   }}
-                  className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:size-8"
+                  className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:size-7"
                 >
                   <ArrowLeft className="size-4 shrink-0" aria-hidden />
                 </button>
@@ -806,7 +1028,7 @@ export function DirectoryPicker({
                     type="button"
                     aria-label="up one level"
                     onClick={goUp}
-                    className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:size-8"
+                    className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:size-7"
                   >
                     <ChevronUp className="size-4 shrink-0" aria-hidden />
                   </button>
@@ -818,7 +1040,7 @@ export function DirectoryPicker({
                   type="button"
                   disabled={validating !== null}
                   onClick={() => void validateAndSelect(path)}
-                  className="inline-flex min-h-12 shrink-0 items-center gap-1.5 rounded-sm bg-accent py-2 pr-3 pl-2 font-sans text-base font-medium whitespace-nowrap text-accent-fg hover:bg-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rule-focus disabled:opacity-50 md:min-h-8 md:text-[11px]"
+                  className="inline-flex min-h-12 shrink-0 items-center gap-1.5 rounded-sm bg-accent py-2 pr-3 pl-2 font-sans text-base font-medium whitespace-nowrap text-accent-fg hover:bg-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rule-focus disabled:opacity-50 md:min-h-7 md:py-1 md:text-[11px]"
                 >
                   <Check className="size-4 shrink-0" aria-hidden />
                   Use folder
@@ -836,7 +1058,7 @@ export function DirectoryPicker({
                 <button
                   type="button"
                   onClick={() => void jumpTo(query)}
-                  className="flex min-h-14 w-full items-center gap-3 rounded-md bg-accent-muted px-3 py-2.5 text-left font-sans text-base text-accent hover:bg-surface-selected focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-10 md:gap-2 md:py-2 md:text-[12px]"
+                  className="flex min-h-14 w-full items-center gap-3 rounded-md bg-accent-muted px-3 py-2.5 text-left font-sans text-base text-accent hover:bg-surface-selected focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-8 md:gap-2 md:px-2 md:py-1 md:text-[12px]"
                 >
                   <CornerDownLeft className="size-4 shrink-0" aria-hidden />
                   <span className="truncate font-mono">
@@ -861,7 +1083,7 @@ export function DirectoryPicker({
                     key={r}
                     type="button"
                     onClick={() => enterRoot(r)}
-                    className="flex min-h-14 w-full items-center gap-3 rounded-md px-3 py-2.5 text-left font-sans text-base text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-10 md:gap-2 md:py-2 md:text-[12px]"
+                    className="flex min-h-14 w-full items-center gap-3 rounded-md px-3 py-2.5 text-left font-sans text-base text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-8 md:gap-2 md:px-2 md:py-1 md:text-[12px]"
                   >
                     <FolderOpen
                       className="size-4 shrink-0 text-ink-faint"
@@ -876,7 +1098,7 @@ export function DirectoryPicker({
                     key={d}
                     type="button"
                     onClick={() => enterDir(d)}
-                    className="flex min-h-14 w-full items-center gap-3 rounded-md px-3 py-2.5 text-left font-sans text-base text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-10 md:gap-2 md:py-2 md:text-[12px]"
+                    className="flex min-h-14 w-full items-center gap-3 rounded-md px-3 py-2.5 text-left font-sans text-base text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus md:min-h-8 md:gap-2 md:px-2 md:py-1 md:text-[12px]"
                   >
                     <Folder
                       className="size-4 shrink-0 text-ink-faint"
@@ -934,7 +1156,7 @@ function DirectoryPickerSurface({
     return (
       <BottomSheet open={open} onOpenChange={onOpenChange}>
         <BottomSheetContent
-          heading="Working directory"
+          heading="Projects"
           closeLabel="Close project picker"
         >
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
@@ -960,7 +1182,7 @@ function DirectoryPickerSurface({
             sticky="always"
             role="dialog"
             aria-label="select working directory"
-            className="iii-ui-motion-dropdown z-50 max-h-[var(--radix-popover-content-available-height)] w-[min(360px,calc(100vw-24px))] overflow-y-auto overscroll-contain rounded-lg border border-edge bg-panel-raised p-1.5 shadow-floating"
+            className="iii-ui-motion-dropdown z-50 max-h-[var(--radix-popover-content-available-height)] w-[min(320px,calc(100vw-24px))] overflow-y-auto overscroll-contain rounded-lg border border-edge bg-panel-raised p-1 shadow-floating"
           >
             {children}
           </PopoverPrimitive.Content>

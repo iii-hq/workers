@@ -88,7 +88,7 @@ end of stress.`
 
 export const markdownStress = makeBackend(
   'markdown-stress',
-  async function* (_prompt, _mode, _model, opts) {
+  async function* (_prompt, _model, opts) {
     yield* streamAssistant(BODY, { signal: opts?.signal, meanDelayMs: 4 })
   },
 )

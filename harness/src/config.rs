@@ -85,8 +85,7 @@ pub struct WorkerConfig {
     /// explicit options always win; spawned children additionally get the
     /// leaf control-plane denies unless `options.orchestrator` is set.
     /// Defaults to allowing every function; set to `null` explicitly to
-    /// restore deny-all. Doubles as the ceiling every ask-mode turn's policy
-    /// is clamped to — `null` makes ask mode a plain chat loop.
+    /// restore deny-all.
     #[serde(default = "default_functions")]
     pub default_functions: Option<FunctionPolicy>,
 
@@ -100,6 +99,12 @@ pub struct WorkerConfig {
     /// never retroactively scoped.
     #[serde(default)]
     pub default_filesystem_root: Option<String>,
+
+    /// JSON file used for the operator's durable project catalog. Relative
+    /// paths resolve from the harness process working directory. Changes take
+    /// effect on the next project operation without restarting the worker.
+    #[serde(default = "default_projects_file_path")]
+    pub projects_file_path: String,
 }
 
 impl WorkerConfig {
@@ -244,15 +249,14 @@ fn default_sweep_expression() -> String {
     // daily at midnight.
     "0 0 0 * * *".to_string()
 }
+fn default_projects_file_path() -> String {
+    "./data/harness-projects.json".to_string()
+}
 fn default_functions() -> Option<FunctionPolicy> {
     // Default policy for PARENTLESS spawns that carry no inherited policy
     // (direct/CLI/console calls). In-turn children inherit their parent
     // directly; every spawned child additionally gets the leaf
     // control-plane denies unless the spawn passed `options.orchestrator`.
-    //
-    // DOUBLES AS THE ASK-MODE CEILING: every ask-mode send / steer / child has
-    // its dispatch policy clamped to this policy (see
-    // `functions::send::clamp_for_mode`).
     Some(FunctionPolicy {
         allow: vec!["*".to_string()],
         deny: vec![],
@@ -302,6 +306,7 @@ impl Default for WorkerConfig {
             sweep_expression: default_sweep_expression(),
             default_functions: default_functions(),
             default_filesystem_root: None,
+            projects_file_path: default_projects_file_path(),
         }
     }
 }
@@ -319,6 +324,7 @@ mod tests {
         assert_eq!(cfg.max_children, 8);
         assert_eq!(cfg.max_transient_resumes, 3);
         assert_eq!(cfg.sweep_expression, "0 0 0 * * *");
+        assert_eq!(cfg.projects_file_path, "./data/harness-projects.json");
     }
 
     #[test]
@@ -347,6 +353,15 @@ mod tests {
         };
         let back = WorkerConfig::from_json(&cfg.to_json()).unwrap();
         assert_eq!(back, cfg);
+    }
+
+    #[test]
+    fn projects_file_path_can_be_overridden() {
+        let cfg = WorkerConfig::from_json(&serde_json::json!({
+            "projects_file_path": "/var/lib/iii/projects.json"
+        }))
+        .unwrap();
+        assert_eq!(cfg.projects_file_path, "/var/lib/iii/projects.json");
     }
 
     #[test]

@@ -1,11 +1,23 @@
-import { ChevronRight } from 'lucide-react'
+import { ChevronRight, Folder, RadioTower } from 'lucide-react'
 import { TriggerIcon } from '@/components/ui/TriggerIcon'
 
+export type TimelineActivityKind =
+  | 'function'
+  | 'trigger-registration'
+  | 'trigger'
+  | 'working-dir'
+
 interface TimelineActivityTrailProps {
-  kind: 'function' | 'trigger'
+  kind: TimelineActivityKind
 }
 
-/** Persistent activity-kind marker shown beside the row's status icon. */
+/**
+ * Persistent activity-kind marker shown beside the row's status icon. One
+ * glyph and one color per kind — ƒ in accent for a function call, the bolt in
+ * warn for a trigger fire, the tower in ok for a registration, the folder in
+ * workdir (sky) for a session scope change — so a reader can tell the rows
+ * apart from the left edge alone.
+ */
 export function TimelineActivityTrail({ kind }: TimelineActivityTrailProps) {
   return (
     <div
@@ -17,6 +29,10 @@ export function TimelineActivityTrail({ kind }: TimelineActivityTrailProps) {
         <div className="font-mono text-sm font-semibold text-accent italic">
           ƒ
         </div>
+      ) : kind === 'trigger-registration' ? (
+        <RadioTower aria-hidden="true" className="size-4 shrink-0 stroke-ok" />
+      ) : kind === 'working-dir' ? (
+        <Folder aria-hidden="true" className="size-4 shrink-0 stroke-workdir" />
       ) : (
         <TriggerIcon className="size-4 shrink-0 fill-warn" />
       )}

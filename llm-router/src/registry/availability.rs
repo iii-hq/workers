@@ -34,6 +34,7 @@ pub fn make_provider_list(
                     configured: resolved.configured,
                     available: rec.available,
                     supports_model_listing: rec.declaration.supports_model_listing.unwrap_or(false),
+                    icon_svg: rec.declaration.icon_svg.clone(),
                 });
             }
             providers.sort_by(|a, b| a.id.cmp(&b.id));

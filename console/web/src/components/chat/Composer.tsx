@@ -4,17 +4,29 @@ import {
   $getRoot,
   type LexicalEditor,
 } from 'lexical'
-import { ArrowUp, Loader2, MoreHorizontal, Square } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  ArrowUp,
+  ChevronDown,
+  ChevronUp,
+  Loader2,
+  MoreHorizontal,
+  Square,
+} from 'lucide-react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { PermissionModePicker } from '@/components/permissions/PermissionModePicker'
+import { MOBILE_LAYOUT_QUERY, useMediaQuery } from '@/hooks/use-media-query'
 import { attachmentsFromFiles } from '@/lib/attachments/from-files'
 import type { PermissionMode } from '@/lib/backend/approval-settings'
-import { onComposerAttach } from '@/lib/composer-insert'
+import {
+  onComposerAttach,
+  onComposerFocusRequest,
+  onComposerInsert,
+  requestComposerFocus,
+} from '@/lib/composer-insert'
 import type { FunctionEntry } from '@/lib/functions'
 import { cn } from '@/lib/utils'
 import type {
   Attachment,
-  Mode,
   ModelId,
   ModelOption,
   ThinkingLevel,
@@ -23,10 +35,10 @@ import { AttachmentButton } from './AttachmentButton'
 import { AttachmentChip } from './AttachmentChip'
 import { BankPicker } from './BankPicker'
 import { ChatSettingsSheet } from './ChatSettingsSheet'
+import { composerCardClass, toolbarIconButtonClass } from './composer-chrome'
 import { DirectoryPicker, type WorktreePickerOptions } from './DirectoryPicker'
 import { LexicalShell } from './LexicalShell'
 import { ModelPicker } from './ModelPicker'
-import { ModePicker } from './ModePicker'
 import { nextHistoryTarget } from './queue-history'
 import { useFileDrop } from './use-file-drop'
 
@@ -37,7 +49,7 @@ export interface ComposerSubmitPayload {
 
 /** Round icon action button (send / queue / stop) at the composer's edge. */
 const actionButtonClass = cn(
-  'inline-flex size-12 items-center justify-center rounded-full sm:size-9',
+  'composer-action inline-flex size-11 shrink-0 items-center justify-center rounded-full sm:size-10',
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus',
   'disabled:pointer-events-none disabled:opacity-40',
 )
@@ -46,10 +58,17 @@ const actionButtonClass = cn(
 const actionReadyClass = 'bg-ink text-bg hover:bg-ink/90'
 
 /** Composer is empty: the action recedes into the surface. */
-const actionIdleClass = 'bg-surface-active text-ink-ghost'
+const actionIdleClass =
+  'bg-surface text-ink-faint hover:bg-surface-hover hover:text-ink'
+
+/** The chevron at the project strip's edge that folds the card away (phone only). */
+const stripToggleClass = cn(
+  'absolute top-0 right-1 flex size-8 items-center justify-center rounded-full text-ink-faint sm:hidden',
+  'hover:bg-surface-hover hover:text-ink',
+  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus',
+)
 
 interface ComposerProps {
-  mode: Mode
   model: ModelId | null
   modelOptions: ModelOption[]
   catalogLoading?: boolean
@@ -92,7 +111,6 @@ interface ComposerProps {
   defaultWorkingDir?: string | null
   /** Worktrees tab in the picker (real backend + worktree worker only). */
   worktreePicker?: WorktreePickerOptions
-  onModeChange: (next: Mode) => void
   onModelChange: (next: ModelId) => void
   onWorkingDirChange?: (next: string) => void
   onThinkingLevelChange: (next: ThinkingLevel) => void
@@ -158,7 +176,6 @@ interface ComposerProps {
 }
 
 export function Composer({
-  mode,
   model,
   modelOptions,
   catalogLoading,
@@ -177,7 +194,6 @@ export function Composer({
   workingDirError,
   defaultWorkingDir,
   worktreePicker,
-  onModeChange,
   onModelChange,
   onWorkingDirChange,
   onThinkingLevelChange,
@@ -205,6 +221,20 @@ export function Composer({
   )
   const [clearToken, setClearToken] = useState(0)
   const [mobileSettingsOpen, setMobileSettingsOpen] = useState(false)
+  // Phone only: the chevron on the project strip folds the whole card away,
+  // leaving the strip as the session's one-line footer. Wider layouts ignore
+  // the flag (the chevron is hidden there), so a fold made on a phone never
+  // strands a resized window without a composer.
+  const [collapsed, setCollapsed] = useState(false)
+  const collapsedRef = useRef(false)
+  const setFolded = useCallback((next: boolean) => {
+    collapsedRef.current = next
+    setCollapsed(next)
+  }, [])
+  const mobileLayout = useMediaQuery(MOBILE_LAYOUT_QUERY)
+  const hasProjectStrip = Boolean(showWorkingDir && onWorkingDirChange)
+  const cardHidden = collapsed && mobileLayout && hasProjectStrip
+  const cardId = useId()
   const textRef = useRef(initialContent ? '' : (initialText ?? ''))
   /* Boolean mirror of "the editor holds text": the action button swaps on
      the empty↔non-empty transition, and state updates for an unchanged
@@ -310,9 +340,14 @@ export function Composer({
     onTextChange,
   ])
 
-  const handleAttach = useCallback((next: Attachment[]) => {
-    setAttachments((current) => [...current, ...next])
-  }, [])
+  const handleAttach = useCallback(
+    (next: Attachment[]) => {
+      setAttachments((current) => [...current, ...next])
+      // Chips land in the card; a fold would hide what was just added.
+      if (collapsedRef.current) setFolded(false)
+    },
+    [setFolded],
+  )
 
   const handleRemoveAttachment = useCallback((id: string) => {
     setAttachments((current) => current.filter((a) => a.id !== id))
@@ -329,6 +364,30 @@ export function Composer({
     () => onComposerAttach((files) => void attachFiles(files)),
     [attachFiles],
   )
+
+  // A folded card can neither take the caret nor show what lands in it, so
+  // anything reaching for the composer from outside unfolds it first. The
+  // focus request is then replayed: the editor's own listener already ran
+  // against a hidden node.
+  const refocusAfterUnfoldRef = useRef(false)
+  useEffect(() => {
+    const unfold = () => {
+      if (!collapsedRef.current) return
+      refocusAfterUnfoldRef.current = true
+      setFolded(false)
+    }
+    const offFocus = onComposerFocusRequest(unfold)
+    const offInsert = onComposerInsert(unfold)
+    return () => {
+      offFocus()
+      offInsert()
+    }
+  }, [setFolded])
+  useEffect(() => {
+    if (collapsed || !refocusAfterUnfoldRef.current) return
+    refocusAfterUnfoldRef.current = false
+    requestComposerFocus()
+  }, [collapsed])
 
   // The drop zone is the whole chat pane, claimed in the capture phase — see
   // `use-file-drop`. A drop onto the transcript, where people actually let go
@@ -369,38 +428,28 @@ export function Composer({
             : actionIdleClass,
         )}
       >
-        <ArrowUp aria-hidden className="size-4 shrink-0" />
+        <ArrowUp aria-hidden className="size-[22px] shrink-0" />
       </button>
     )
 
   return (
     <div
       ref={shell}
+      data-composer-streaming={isStreaming ? 'true' : undefined}
       className={cn(
-        'rounded-xl bg-panel-raised shadow-raised transition-shadow',
-        dragging && 'ring-2 ring-rule-focus',
+        'composer-shell relative',
+        hasProjectStrip ? 'pt-8' : 'pt-0',
       )}
     >
-      {dragging ? (
-        <div className="flex items-center justify-center border-b border-rule-2 px-3 py-2 font-mono text-[12px] text-ink-faint">
-          drop to attach
-        </div>
-      ) : null}
-
-      {attachments.length > 0 ? (
-        <div className="flex flex-wrap gap-2 p-3 border-b border-rule-2">
-          {attachments.map((a) => (
-            <AttachmentChip
-              key={a.id}
-              attachment={a}
-              onRemove={handleRemoveAttachment}
-            />
-          ))}
-        </div>
-      ) : null}
-
-      <div className="flex min-h-14 min-w-0 items-center gap-2 px-2 pt-1 sm:hidden">
-        {showWorkingDir && onWorkingDirChange ? (
+      {showWorkingDir && onWorkingDirChange ? (
+        /* The project strip: a folder bar inset 8px from the card's edges and
+           tucked behind its top edge. The button is taller than the visible
+           strip (its bottom padding hides under the card), so the label sits
+           centred in what shows; folded, the card is gone and the strip
+           rounds off on its own. Fill and ink are both nudged a few percent
+           toward each other so the strip reads as a step behind the card in
+           either theme; hover only nudges the fill further — no outline. */
+        <div className="composer-project-tab absolute inset-x-2 top-0 z-0">
           <DirectoryPicker
             value={workingDir ?? null}
             onChange={onWorkingDirChange}
@@ -409,104 +458,113 @@ export function Composer({
             externalError={workingDirError}
             defaultDir={defaultWorkingDir}
             worktrees={worktreePicker}
-            className="min-w-0 flex-1 [&>button]:w-full"
+            className={cn(
+              'w-full [&>button]:w-full [&>button]:justify-start [&>button]:gap-2 [&>button]:bg-[color-mix(in_oklab,var(--color-panel-raised)_96%,var(--color-ink))] [&>button]:pr-12 [&>button]:pl-4 [&>button]:text-xs [&>button]:font-medium [&>button]:text-[color-mix(in_oklab,var(--color-ink)_80%,var(--color-panel-raised))] [&>button:hover]:bg-[color-mix(in_oklab,var(--color-panel-raised)_90%,var(--color-ink))] [&>button>svg]:size-4',
+              cardHidden
+                ? '[&>button]:h-8 [&>button]:rounded-xl [&>button]:shadow-lift'
+                : '[&>button]:h-11 [&>button]:rounded-t-xl [&>button]:rounded-b-none [&>button]:pb-3',
+            )}
           />
-        ) : (
-          <span className="min-w-0 flex-1 truncate px-3 font-sans text-base font-medium text-ink">
-            Chat settings
-          </span>
+          <button
+            type="button"
+            onClick={() => setFolded(!collapsedRef.current)}
+            aria-label={collapsed ? 'expand composer' : 'collapse composer'}
+            aria-expanded={!collapsed}
+            aria-controls={cardId}
+            className={stripToggleClass}
+          >
+            <span
+              className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+              aria-hidden="true"
+            />
+            {collapsed ? (
+              <ChevronUp className="size-4 shrink-0" aria-hidden />
+            ) : (
+              <ChevronDown className="size-4 shrink-0" aria-hidden />
+            )}
+          </button>
+        </div>
+      ) : null}
+
+      <div
+        id={cardId}
+        hidden={cardHidden}
+        className={cn(
+          'composer-card relative z-10 transition-shadow',
+          composerCardClass,
+          dragging && 'ring-2 ring-rule-focus',
         )}
-        <button
-          type="button"
-          onClick={() => setMobileSettingsOpen(true)}
-          aria-label="chat settings"
-          className="flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
-        >
-          <MoreHorizontal className="size-5" aria-hidden />
-        </button>
-      </div>
+      >
+        {dragging ? (
+          <div className="flex items-center justify-center border-b border-rule-2 px-3 py-2 font-mono text-[12px] text-ink-faint">
+            drop to attach
+          </div>
+        ) : null}
 
-      <div className="px-1 pt-1">
-        <LexicalShell
-          onChange={(text) => {
-            textRef.current = text
-            setHasText(text.trim().length > 0)
-            if (browseIdRef.current === null) onTextChange?.(text)
-          }}
-          onSubmit={handleSubmit}
-          clearToken={clearToken}
-          placeholder={
-            blocked
-              ? blockedPlaceholder
-              : isStreaming
-                ? queueWhileStreaming
-                  ? 'queue a message…'
-                  : 'streaming response…'
-                : 'send a message…'
-          }
-          disabled={inputDisabled}
-          autoFocus={autoFocus}
-          initialContent={resolvedInitialContent}
-          functionEntries={functionEntries}
-          workingDir={workingDir}
-          onHistoryNav={onEditQueued ? handleHistoryNav : undefined}
-        />
-      </div>
+        {attachments.length > 0 ? (
+          <div className="flex flex-wrap gap-2 border-b border-rule-2 p-3">
+            {attachments.map((a) => (
+              <AttachmentChip
+                key={a.id}
+                attachment={a}
+                onRemove={handleRemoveAttachment}
+              />
+            ))}
+          </div>
+        ) : null}
 
-      <div className="flex min-w-0 items-center gap-2 px-2 pb-2 sm:hidden">
-        <AttachmentButton
-          onAttach={handleAttach}
-          disabled={inputDisabled}
-          className="size-12 shrink-0"
-        />
-        <ModelPicker
-          value={model}
-          options={modelOptions}
-          openRequest={modelPickerOpenRequest}
-          thinkingLevel={thinkingLevel}
-          onChange={onModelChange}
-          onThinkingLevelChange={onThinkingLevelChange}
-          disabled={optionsDisabled || modelLocked}
-          loading={catalogLoading}
-          showRefresh={false}
-          className="min-w-0 flex-1 bg-surface"
-        />
-        {renderActionButton()}
-      </div>
-
-      <div className="hidden min-w-0 flex-col gap-2 px-3 pb-2 sm:flex lg:flex-row lg:items-center">
-        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-          <ModePicker
-            value={mode}
-            onChange={onModeChange}
-            className="shrink-0"
+        <div className="composer-editor-slot px-1 pt-1">
+          <LexicalShell
+            onChange={(text) => {
+              textRef.current = text
+              setHasText(text.trim().length > 0)
+              if (browseIdRef.current === null) onTextChange?.(text)
+            }}
+            onSubmit={handleSubmit}
+            clearToken={clearToken}
+            placeholder={
+              blocked
+                ? blockedPlaceholder
+                : isStreaming
+                  ? queueWhileStreaming
+                    ? 'queue a message…'
+                    : 'streaming response…'
+                  : 'send a message…'
+            }
+            disabled={inputDisabled}
+            autoFocus={autoFocus}
+            initialContent={resolvedInitialContent}
+            functionEntries={functionEntries}
+            workingDir={workingDir}
+            onHistoryNav={onEditQueued ? handleHistoryNav : undefined}
           />
-          {showWorkingDir && onWorkingDirChange ? (
-            <DirectoryPicker
-              value={workingDir ?? null}
-              onChange={onWorkingDirChange}
-              locked={workingDirLocked}
-              disabled={optionsDisabled}
-              externalError={workingDirError}
-              defaultDir={defaultWorkingDir}
-              worktrees={worktreePicker}
-              className="shrink-0"
+        </div>
+
+        {/* Tapping a toolbar button must not take the caret: on a phone the
+            blur folds the card to one line and drops the keyboard, so the
+            tap would land on a surface that just moved. The pickers open on
+            click, which a cancelled pointerdown leaves alone. */}
+        <div
+          className="composer-mobile-toolbar flex min-w-0 items-center gap-1 px-2 pb-2 sm:hidden"
+          onPointerDown={(event) => event.preventDefault()}
+        >
+          <AttachmentButton
+            onAttach={handleAttach}
+            disabled={inputDisabled}
+            className={toolbarIconButtonClass}
+          />
+          <button
+            type="button"
+            onClick={() => setMobileSettingsOpen(true)}
+            aria-label="chat settings"
+            className="relative flex size-12 shrink-0 items-center justify-center rounded-sm text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus"
+          >
+            <span
+              className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
+              aria-hidden="true"
             />
-          ) : null}
-          {showMemoryBank && onMemoryBankChange ? (
-            <BankPicker
-              value={memoryBank ?? null}
-              onChange={onMemoryBankChange}
-              disabled={optionsDisabled}
-            />
-          ) : null}
-          {showPermissionMode ? (
-            <PermissionModePicker
-              value={permissionMode}
-              onChange={onPermissionModeChange}
-              disabled={optionsDisabled || !!permissionModeLoading}
-            />
-          ) : null}
+            <MoreHorizontal className="size-5 shrink-0" aria-hidden />
+          </button>
           <ModelPicker
             value={model}
             options={modelOptions}
@@ -516,28 +574,65 @@ export function Composer({
             onThinkingLevelChange={onThinkingLevelChange}
             disabled={optionsDisabled || modelLocked}
             loading={catalogLoading}
-            className="min-w-0 flex-1 max-lg:order-first max-lg:min-w-40"
+            showRefresh={false}
+            triggerAppearance="subtle"
+            className="ml-auto min-w-0"
           />
+          {renderActionButton()}
         </div>
 
-        <div className="flex shrink-0 items-center gap-1 self-end">
-          <AttachmentButton
-            onAttach={handleAttach}
-            disabled={inputDisabled}
-            className="size-12 sm:size-9"
-          />
-          {/* ONE action button. Mid-stream the slot shows Stop, but the moment
-              the composer holds queueable content (text or attachments) it
-              flips to send — the editor advertises "queue a message…", and the
-              click must queue it, not kill the turn. */}
-          {renderActionButton()}
+        {/* Desktop toolbar: attach (and the optional memory / permission
+            pickers) on the left; the quiet model label and the send button
+            on the right, where the eye lands after typing. */}
+        <div className="hidden min-w-0 items-center gap-1 px-2 pb-2 sm:flex">
+          <div className="flex min-w-0 flex-1 items-center gap-1">
+            <AttachmentButton
+              onAttach={handleAttach}
+              disabled={inputDisabled}
+              className={toolbarIconButtonClass}
+            />
+            {showMemoryBank && onMemoryBankChange ? (
+              <BankPicker
+                value={memoryBank ?? null}
+                onChange={onMemoryBankChange}
+                disabled={optionsDisabled}
+              />
+            ) : null}
+            {showPermissionMode ? (
+              <PermissionModePicker
+                value={permissionMode}
+                onChange={onPermissionModeChange}
+                disabled={optionsDisabled || !!permissionModeLoading}
+              />
+            ) : null}
+          </div>
+
+          <div className="flex min-w-0 shrink-0 items-center gap-1.5">
+            <ModelPicker
+              value={model}
+              options={modelOptions}
+              openRequest={modelPickerOpenRequest}
+              thinkingLevel={thinkingLevel}
+              onChange={onModelChange}
+              onThinkingLevelChange={onThinkingLevelChange}
+              disabled={optionsDisabled || modelLocked}
+              loading={catalogLoading}
+              showRefresh={false}
+              triggerAppearance="subtle"
+              className="min-w-0 max-w-[16rem]"
+            />
+            {/* ONE action button. Mid-stream the slot shows Stop, but the moment
+                the composer holds queueable content (text or attachments) it
+                flips to send — the editor advertises "queue a message…", and the
+                click must queue it, not kill the turn. */}
+            {renderActionButton()}
+          </div>
         </div>
       </div>
 
       <ChatSettingsSheet
         open={mobileSettingsOpen}
         onOpenChange={setMobileSettingsOpen}
-        mode={mode}
         model={model}
         modelOptions={modelOptions}
         catalogLoading={catalogLoading}
@@ -555,7 +650,6 @@ export function Composer({
         worktreePicker={worktreePicker}
         disabled={optionsDisabled}
         modelDisabled={modelLocked}
-        onModeChange={onModeChange}
         onModelChange={onModelChange}
         onMemoryBankChange={onMemoryBankChange}
         onWorkingDirChange={onWorkingDirChange}

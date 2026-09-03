@@ -1,13 +1,7 @@
-use super::{
-    build_system_prompt, resolve_system_prompt, variants, Mode, SystemPromptOpts,
-    SystemPromptStrategy,
-};
+use super::{resolve_system_prompt, variants, SystemPromptStrategy};
 
 fn default_prompt() -> String {
-    build_system_prompt(SystemPromptOpts {
-        mode: None,
-        identity: variants::DEFAULT,
-    })
+    variants::DEFAULT.to_string()
 }
 
 #[test]
@@ -16,7 +10,6 @@ fn resolve_non_empty_override_returns_verbatim() {
         resolve_system_prompt(
             Some("custom".into()),
             SystemPromptStrategy::Override,
-            Some(Mode::Ask),
             variants::DEFAULT
         ),
         Some("custom".into())
@@ -28,7 +21,6 @@ fn resolve_empty_override_falls_through_to_builtin() {
     let out = resolve_system_prompt(
         Some(String::new()),
         SystemPromptStrategy::Override,
-        None,
         variants::DEFAULT,
     )
     .expect("built-in prompt");
@@ -37,19 +29,14 @@ fn resolve_empty_override_falls_through_to_builtin() {
 
 #[test]
 fn resolve_missing_override_uses_embedded_default() {
-    let out = resolve_system_prompt(
-        None,
-        SystemPromptStrategy::Override,
-        None,
-        variants::DEFAULT,
-    )
-    .expect("built-in prompt");
+    let out = resolve_system_prompt(None, SystemPromptStrategy::Override, variants::DEFAULT)
+        .expect("built-in prompt");
     assert_eq!(out, variants::DEFAULT);
 }
 
 #[test]
 fn resolve_enrich_without_a_custom_prompt_uses_embedded_default() {
-    let out = resolve_system_prompt(None, SystemPromptStrategy::Enrich, None, variants::DEFAULT)
+    let out = resolve_system_prompt(None, SystemPromptStrategy::Enrich, variants::DEFAULT)
         .expect("built-in prompt");
     assert_eq!(out, variants::DEFAULT);
 }
@@ -59,7 +46,6 @@ fn resolve_enrich_appends_custom_to_builtin() {
     let out = resolve_system_prompt(
         Some("Speak only in haiku.".into()),
         SystemPromptStrategy::Enrich,
-        None,
         variants::DEFAULT,
     )
     .expect("enriched prompt");
@@ -74,15 +60,10 @@ fn resolve_enrich_with_empty_custom_falls_through_to_builtin() {
     let out = resolve_system_prompt(
         Some(String::new()),
         SystemPromptStrategy::Enrich,
-        None,
         variants::DEFAULT,
     )
     .expect("built-in prompt");
-    let built_in = build_system_prompt(SystemPromptOpts {
-        mode: None,
-        identity: variants::DEFAULT,
-    });
-    assert_eq!(out, built_in);
+    assert_eq!(out, default_prompt());
 }
 
 #[test]
@@ -91,7 +72,6 @@ fn resolve_disabled_omits_system_prompt() {
         resolve_system_prompt(
             Some("ignored".into()),
             SystemPromptStrategy::Disabled,
-            Some(Mode::Agent),
             variants::DEFAULT,
         ),
         None
@@ -332,56 +312,11 @@ fn prompt_injection_defense() {
 }
 
 #[test]
-fn mode_ask_prepends_before_identity() {
-    let out = build_system_prompt(SystemPromptOpts {
-        mode: Some(Mode::Ask),
-        identity: variants::DEFAULT,
-    });
-    assert!(out.contains("operating in ask mode"));
-    assert!(out.find("operating in ask mode") < out.find("You are an iii agent worker"));
-}
-
-#[test]
-fn mode_agent_prepends_before_identity() {
-    let out = build_system_prompt(SystemPromptOpts {
-        mode: Some(Mode::Agent),
-        identity: variants::DEFAULT,
-    });
-    assert!(out.contains("operating in agent mode"));
-    assert!(out.find("operating in agent mode") < out.find("You are an iii agent worker"));
-}
-
-#[test]
-fn mode_agent_matches_the_requested_scope_and_detail() {
-    let out = super::paragraph(Mode::Agent);
-    assert!(out.contains("Match the user's requested scope and level of detail"));
-    assert!(out.contains("do not expand the task"));
-}
-
-#[test]
-fn mode_prepends_before_embedded_identity() {
-    let out = build_system_prompt(SystemPromptOpts {
-        mode: Some(Mode::Ask),
-        identity: variants::DEFAULT,
-    });
-    assert!(out.starts_with("You are operating in ask mode"));
-    assert!(out.ends_with(variants::DEFAULT));
-}
-
-#[test]
-fn omitting_mode_starts_with_identity() {
+fn default_prompt_starts_with_identity() {
     let out = default_prompt();
     assert!(out.starts_with("You are an iii agent worker"));
     assert!(!out.contains("operating in ask mode"));
     assert!(!out.contains("operating in agent mode"));
-}
-
-#[test]
-fn removed_plan_mode_is_rejected_not_silently_accepted() {
-    // Hard removal (intentional, no compat shim): `"plan"` is not a valid mode.
-    // Pinned so a future refactor doesn't silently make `Mode` lenient again —
-    // a stale client or pre-upgrade record carrying `"plan"` fails loudly.
-    assert!(serde_json::from_value::<Mode>(serde_json::json!("plan")).is_err());
 }
 
 #[test]

@@ -45,7 +45,6 @@ function conversation(overrides: Partial<Conversation>): Conversation {
     id: 'console-1',
     title: 'old session',
     model: 'provider::removed-model',
-    mode: 'agent',
     messages: [],
     status: 'done',
     hydrated: false,
@@ -158,30 +157,6 @@ describe('mergeConversationMeta', () => {
     ).toBe(undefined)
   })
 
-  it('degrades a removed/unknown persisted mode to the default', () => {
-    // Pre-upgrade sessions parked in the removed "plan" mode (and any garbage
-    // value) must fall back to DEFAULT_MODE, not crash or carry the dead value.
-    expect(
-      mergeConversationMeta(
-        undefined,
-        sessionMeta({ metadata: { mode: 'plan' } }),
-      ).mode,
-    ).toBe('agent')
-    expect(
-      mergeConversationMeta(
-        undefined,
-        sessionMeta({ metadata: { mode: 'xyz' } }),
-      ).mode,
-    ).toBe('agent')
-    // A still-valid mode is preserved.
-    expect(
-      mergeConversationMeta(
-        undefined,
-        sessionMeta({ metadata: { mode: 'ask' } }),
-      ).mode,
-    ).toBe('ask')
-  })
-
   it('restores the session thinking level and defaults older sessions', () => {
     expect(
       mergeConversationMeta(
@@ -216,7 +191,6 @@ describe('mergeConversationMeta', () => {
         updated_at: 4_000,
         metadata: {
           model: 'provider::current-model',
-          mode: 'agent',
           parent_session_id: 'console-parent',
           depth: 1,
         },
@@ -630,7 +604,6 @@ describe('metadataFor', () => {
     expect(next).toEqual({
       surface: 'console',
       model: 'provider::current-model',
-      mode: 'agent',
       parent_session_id: 'console-parent',
       parent_turn_id: 'turn-parent',
       function_call_id: 'call-spawn-1',
@@ -1096,7 +1069,6 @@ describe('mergeConversationMeta / system_prompt', () => {
     const metadata = metadataFor(
       conversation({
         model: 'provider::model',
-        mode: 'agent',
         skills: ['review', 'release'],
         systemPrompt: DEFAULT_SYSTEM_PROMPT_STATE,
       }),
@@ -1105,7 +1077,6 @@ describe('mergeConversationMeta / system_prompt', () => {
     expect(metadata).toEqual({
       surface: 'console',
       model: 'provider::model',
-      mode: 'agent',
       skills: ['review', 'release'],
     })
     expect(JSON.stringify(metadata)).not.toContain('body')
@@ -1118,7 +1089,6 @@ describe('mergeConversationMeta / system_prompt', () => {
         metadata: {
           surface: 'console',
           model: 'provider::model',
-          mode: 'agent',
           parent_session_id: 'console-parent',
           function_call_id: 'call-1',
           depth: 2,
@@ -1142,7 +1112,6 @@ describe('mergeConversationMeta / system_prompt', () => {
       metadata: {
         surface: 'console',
         model: 'provider::model',
-        mode: 'agent',
         parent_session_id: 'console-parent',
         function_call_id: 'call-1',
         depth: 2,
@@ -1184,7 +1153,6 @@ describe('mergeConversationMeta / system_prompt', () => {
       metadata: {
         foreign: 'preserved',
         surface: 'console',
-        mode: 'agent',
         skills: ['review'],
       },
     })
@@ -1226,7 +1194,6 @@ describe('mergeConversationMeta / system_prompt', () => {
       metadata: {
         foreign: 'preserved',
         surface: 'console',
-        mode: 'agent',
         skills: ['review'],
       },
     })
@@ -1240,7 +1207,6 @@ describe('mergeConversationMeta / system_prompt', () => {
           metadata: {
             surface: 'legacy-surface',
             model: 'provider::old',
-            mode: 'agent',
             title_manual: true,
             fs_scope: { root: '/old' },
             memory_bank: 'old-bank',
@@ -1263,7 +1229,6 @@ describe('mergeConversationMeta / system_prompt', () => {
         title: 'renamed',
         titleManual: false,
         model: 'provider::new',
-        mode: 'ask',
         workingDir: null,
         memoryBank: null,
         systemPrompt: {
@@ -1284,7 +1249,6 @@ describe('mergeConversationMeta / system_prompt', () => {
         metadata: {
           surface: 'console',
           model: 'provider::old',
-          mode: 'agent',
           title_manual: true,
           fs_scope: { root: '/old' },
           memory_bank: 'old-bank',
@@ -1299,7 +1263,6 @@ describe('mergeConversationMeta / system_prompt', () => {
       title: 'renamed',
       titleManual: false,
       model: 'provider::new',
-      mode: 'ask',
       workingDir: null,
       memoryBank: null,
       skills: ['release'],
@@ -1309,7 +1272,6 @@ describe('mergeConversationMeta / system_prompt', () => {
       metadata: {
         surface: 'console',
         model: 'provider::new',
-        mode: 'ask',
         parent_session_id: 'console-parent',
         foreign: { keep: true },
         system_prompt: {
@@ -1330,7 +1292,6 @@ describe('mergeConversationMeta / system_prompt', () => {
     ({ selection, skills }) => {
       const legacyMetadata = {
         surface: 'console',
-        mode: 'agent',
         parent_session_id: 'console-parent',
         foreign: { keep: true },
         system_prompt: {
@@ -1353,7 +1314,6 @@ describe('mergeConversationMeta / system_prompt', () => {
         sessionMeta({
           metadata: {
             surface: 'console',
-            mode: 'agent',
             skills: ['stale'],
           },
         }),
@@ -1367,7 +1327,6 @@ describe('mergeConversationMeta / system_prompt', () => {
         session_id: 'console-1',
         metadata: {
           surface: 'console',
-          mode: 'agent',
           parent_session_id: 'console-parent',
           foreign: { keep: true },
           ...(skills ? { skills } : {}),
@@ -1384,7 +1343,6 @@ describe('mergeConversationMeta / system_prompt', () => {
     ({ selection, skills }) => {
       const legacyMetadata = {
         surface: 'console',
-        mode: 'agent',
         parent_session_id: 'console-parent',
         foreign: { keep: true },
         system_prompt: {
@@ -1413,7 +1371,6 @@ describe('mergeConversationMeta / system_prompt', () => {
         sessionMeta({
           metadata: {
             surface: 'console',
-            mode: 'agent',
             skills: ['stale'],
           },
         }),
@@ -1423,7 +1380,6 @@ describe('mergeConversationMeta / system_prompt', () => {
         session_id: 'console-1',
         metadata: {
           surface: 'console',
-          mode: 'agent',
           parent_session_id: 'console-parent',
           foreign: { keep: true },
           ...(skills ? { skills } : {}),
@@ -1445,7 +1401,6 @@ describe('mergeConversationMeta / system_prompt', () => {
       const legacyMetadata = {
         surface: 'console',
         model: 'provider::old',
-        mode: 'agent',
         parent_session_id: 'console-parent',
         function_call_id: 'call-1',
         depth: 2,
@@ -1463,7 +1418,7 @@ describe('mergeConversationMeta / system_prompt', () => {
             undefined,
             sessionMeta({ metadata: legacyMetadata }),
           ),
-          { model: 'provider::new', mode: 'ask', skills: selection },
+          { model: 'provider::new', skills: selection },
           3_000,
         ),
         [],
@@ -1474,7 +1429,7 @@ describe('mergeConversationMeta / system_prompt', () => {
 
       expect(acknowledged.legacySkillMigration).toMatchObject({
         state: 'empty',
-        edits: { model: 'provider::new', mode: 'ask' },
+        edits: { model: 'provider::new' },
       })
       expect(
         Object.hasOwn(acknowledged.legacySkillMigration?.edits ?? {}, 'skills'),
@@ -1491,7 +1446,6 @@ describe('mergeConversationMeta / system_prompt', () => {
           metadata: {
             surface: 'console',
             model: 'provider::old',
-            mode: 'agent',
             system_prompt: legacyMetadata.system_prompt,
           },
         }),
@@ -1500,7 +1454,6 @@ describe('mergeConversationMeta / system_prompt', () => {
       expect(delayed).toMatchObject({
         started: true,
         model: 'provider::new',
-        mode: 'ask',
         skills: selected,
       })
       expect(delayed.systemPrompt?.addons).toEqual([])
@@ -1513,7 +1466,6 @@ describe('mergeConversationMeta / system_prompt', () => {
       expect(metadataForWrite(delayed)).toEqual({
         surface: 'console',
         model: 'provider::new',
-        mode: 'ask',
         parent_session_id: 'console-parent',
         function_call_id: 'call-1',
         depth: 2,
@@ -1543,7 +1495,6 @@ describe('mergeConversationMeta / system_prompt', () => {
       const legacyMetadata = {
         surface: 'console',
         model: 'provider::old',
-        mode: 'agent',
         parent_session_id: 'console-parent',
         function_call_id: 'call-1',
         depth: 2,
@@ -1561,7 +1512,7 @@ describe('mergeConversationMeta / system_prompt', () => {
             undefined,
             sessionMeta({ metadata: legacyMetadata }),
           ),
-          { model: 'provider::new', mode: 'ask', skills: selection },
+          { model: 'provider::new', skills: selection },
           3_000,
         ),
         [],
@@ -1584,7 +1535,6 @@ describe('mergeConversationMeta / system_prompt', () => {
           metadata: {
             surface: 'console',
             model: 'provider::old',
-            mode: 'agent',
             system_prompt: legacyMetadata.system_prompt,
           },
         }),
@@ -1598,7 +1548,6 @@ describe('mergeConversationMeta / system_prompt', () => {
       expect(edited).toMatchObject({
         started: true,
         model: 'provider::new',
-        mode: 'ask',
         memoryBank: 'current-bank',
         skills: selected,
       })
@@ -1606,7 +1555,6 @@ describe('mergeConversationMeta / system_prompt', () => {
       expect(metadataForWrite(edited)).toEqual({
         surface: 'console',
         model: 'provider::new',
-        mode: 'ask',
         memory_bank: 'current-bank',
         parent_session_id: 'console-parent',
         function_call_id: 'call-1',
@@ -1624,7 +1572,6 @@ describe('mergeConversationMeta / system_prompt', () => {
       sessionMeta({
         metadata: {
           surface: 'console',
-          mode: 'agent',
           system_prompt: {
             choice: 'default',
             strategy: 'enrich',
@@ -1652,7 +1599,6 @@ describe('mergeConversationMeta / system_prompt', () => {
           metadata: {
             surface: 'console',
             model: 'provider::model',
-            mode: 'agent',
             parent_session_id: 'console-parent',
             function_call_id: 'call-1',
             depth: 2,
@@ -1682,7 +1628,6 @@ describe('mergeConversationMeta / system_prompt', () => {
     expect(metadataForWrite(edited)).toEqual({
       surface: 'console',
       model: 'provider::model',
-      mode: 'agent',
       memory_bank: 'current-bank',
       parent_session_id: 'console-parent',
       function_call_id: 'call-1',

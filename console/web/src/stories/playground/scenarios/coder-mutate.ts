@@ -11,7 +11,7 @@ import {
 
 export const coderMutate = makeBackend(
   'coder-mutate',
-  async function* (_prompt, _mode, _model, opts) {
+  async function* (_prompt, _model, opts) {
     const signal = opts?.signal
     yield* streamThought('scouting the workers tree, then scaffolding…', {
       signal,
