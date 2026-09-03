@@ -177,7 +177,7 @@ under that one operation ID and publish one terminal result for the batch.
 Compose forwards the stored `__binding` metadata with that event, and the
 normal delivery handler resolves the durable record directly. A null operation
 ID is a wildcard and must not be used for one-operation correlation. After
-registration or invocation, one `compose::operation` read closes the activation
+invocation, one `compose::operation` read closes the activation
 race. If that snapshot is terminal, the caller removes the still-armed wake.
 Other Compose operations return their final result directly and do not use this
 trigger flow.
