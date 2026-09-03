@@ -85,6 +85,28 @@ export function Overview({
 
   const download = (id: string) => run(id, modelsDownload(host.iii, { id }), `${id} is installed and ready.`)
 
+  const liveWordsFact = (
+    <Fact label="Live words">
+      <span className="voice-choice">
+        <span className="voice-fact-line">
+          <StatusDot tone={stt.loaded ? 'accent' : 'ink'} />
+          <span>{live?.name ?? stt.model}</span>
+        </span>
+        {!stt.installed ? (
+          <Chip tone="warning">downloads on first use</Chip>
+        ) : (
+          <Chip tone="success">{stt.loaded ? 'running' : 'installed'}</Chip>
+        )}
+      </span>
+      <span className="voice-sub voice-block">
+        Shows words as you speak and decides where a sentence ends; it always runs on this machine. Change it under All
+        settings.
+      </span>
+    </Fact>
+  )
+
+  const providerOf = (model: string) => model.split('::')[0] ?? ''
+
   const accurateStatus = (() => {
     if (stt.final_state === 'off') return null
     if (stt.final_state === 'loaded') return <Chip tone="success">ready</Chip>
@@ -165,6 +187,7 @@ export function Overview({
                 dictate, live words stay local and each finished sentence is re-decoded by this model.
               </span>
             </Fact>
+            {liveWordsFact}
           </Facts>
         ) : null}
         {stt.backend === 'local' ? (
@@ -209,22 +232,7 @@ export function Overview({
                   : 'Each sentence is re-decoded by this model after you pause, so transcripts get punctuation, casing and its accuracy.'}
               </span>
             </Fact>
-            <Fact label="Live words">
-              <span className="voice-choice">
-                <span className="voice-fact-line">
-                  <StatusDot tone={stt.loaded ? 'accent' : 'ink'} />
-                  <span>{live?.name ?? stt.model}</span>
-                </span>
-                {!stt.installed ? (
-                  <Chip tone="warning">downloads on first use</Chip>
-                ) : (
-                  <Chip tone="success">{stt.loaded ? 'running' : 'installed'}</Chip>
-                )}
-              </span>
-              <span className="voice-sub voice-block">
-                Shows words as you speak and decides where a sentence ends. Change it under All settings.
-              </span>
-            </Fact>
+            {liveWordsFact}
             <Fact label="Runs on">
               <span>this machine, nothing leaves it</span>
             </Fact>
@@ -283,11 +291,17 @@ export function Overview({
                   value={routerTtsModel}
                   disabled={busy !== null || routerTts.models === null}
                   onChange={(next) => {
+                    const providerChanged = providerOf(next) !== providerOf(routerTtsModel)
                     setRouterTtsModel(next)
-                    choose(
-                      ['tts', 'router', 'model'],
-                      next,
-                      next ? `Read aloud uses ${next}.` : 'The router picks the voice model.',
+                    run(
+                      'config',
+                      patchConfig(host.iii, (current) => {
+                        const withModel = setPath(current, ['tts', 'router', 'model'], next)
+                        return providerChanged ? setPath(withModel, ['tts', 'router', 'voice'], '') : withModel
+                      }),
+                      next
+                        ? `Read aloud uses ${next}.${providerChanged ? " Voice reset to that provider's default." : ''}`
+                        : 'The router picks the voice model.',
                     )
                   }}
                   options={routerModelOptions(routerTts.models, routerTtsModel)}
