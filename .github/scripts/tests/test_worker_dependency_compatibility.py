@@ -53,6 +53,7 @@ WORKER_DEPENDENCY_RANGE_OVERRIDES: dict[str, dict[str, str]] = {
     # router::speak and filters speech models out of chat listings; an
     # older router would offer their models to chat pickers.
     "provider-elevenlabs": {"llm-router": "^1.4.16"},
+    "provider-sarvam": {"llm-router": "^1.4.16"},
 }
 
 
