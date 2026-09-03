@@ -100,7 +100,7 @@ endpointing change reloads the recognizer on next use.
 | --- | --- | --- |
 | `models_dir` | `data/voice/models` | Where models live (relative to the project directory). |
 | `stt.backend` | `local` | `local` (bundled recognizer), `openai` (any `/v1/audio/transcriptions` server), or `router` (llm-router's `router::transcribe`, any registered speech provider). |
-| `stt.model` | `zipformer-en-20m` | Streaming model id from `voice::models::list` (live partial text). |
+| `stt.model` | `zipformer-en-20m` | Streaming model for live words and sentence boundaries: `zipformer-en-20m` (44 MB, fastest) or `zipformer-en-large` (73 MB, fewer misheard words in the preview). |
 | `stt.final_model` | `parakeet-tdt-0.6b-v2` | Second-pass model that re-decodes each utterance for the final text. Empty disables the second pass. |
 | `stt.num_threads` | `2` | Decoder threads. |
 | `stt.silence_after_speech_secs` | `0.8` | Trailing silence that commits an utterance. |

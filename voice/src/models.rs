@@ -115,6 +115,33 @@ static ZIPFORMER_EN_20M_FILES: [ModelFile; 4] = [
     },
 ];
 
+static ZIPFORMER_EN_LARGE_FILES: [ModelFile; 4] = [
+    ModelFile {
+        name: "encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
+        url: "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26/resolve/main/encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
+        sha256: "563fde436d16cf7607cf408cd6b30909819d03162652ef389c2450ced3f45ac1",
+        size_bytes: 71_083_163,
+    },
+    ModelFile {
+        name: "decoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
+        url: "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26/resolve/main/decoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
+        sha256: "98da299f471e38bb4e1a8df579b8cc9122d6039576a77e357b3c60f17dd83b02",
+        size_bytes: 1_307_236,
+    },
+    ModelFile {
+        name: "joiner-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
+        url: "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26/resolve/main/joiner-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
+        sha256: "d944208d660d67c8d72cd2acaeac971fa5ceb8c80e76c1968148846fedd6e297",
+        size_bytes: 259_335,
+    },
+    ModelFile {
+        name: "tokens.txt",
+        url: "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26/resolve/main/tokens.txt",
+        sha256: "49e3c2646595fd907228b3c6787069658f67b17377c60aeb8619c4551b2316fb",
+        size_bytes: 5_048,
+    },
+];
+
 static PARAKEET_TDT_06B_V2_FILES: [ModelFile; 4] = [
     ModelFile {
         name: "encoder.int8.onnx",
@@ -142,7 +169,7 @@ static PARAKEET_TDT_06B_V2_FILES: [ModelFile; 4] = [
     },
 ];
 
-static CATALOG: [ModelSpec; 2] = [
+static CATALOG: [ModelSpec; 3] = [
     ModelSpec {
         id: DEFAULT_MODEL,
         name: "Zipformer streaming 20M",
@@ -156,6 +183,20 @@ static CATALOG: [ModelSpec; 2] = [
         encoder: "encoder-epoch-99-avg-1.int8.onnx",
         decoder: "decoder-epoch-99-avg-1.int8.onnx",
         joiner: "joiner-epoch-99-avg-1.int8.onnx",
+        tokens: "tokens.txt",
+    },
+    ModelSpec {
+        id: "zipformer-en-large",
+        name: "Zipformer streaming large",
+        kind: ModelKind::StreamingTransducer,
+        languages: &["en"],
+        license: "Apache-2.0",
+        author: "k2-fsa (icefall)",
+        source: "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26",
+        files: &ZIPFORMER_EN_LARGE_FILES,
+        encoder: "encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
+        decoder: "decoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
+        joiner: "joiner-epoch-99-avg-1-chunk-16-left-128.int8.onnx",
         tokens: "tokens.txt",
     },
     ModelSpec {
