@@ -4,7 +4,10 @@
  * page or chip may bind. Mirrors the Rust side exactly; kept
  * dependency-free so client.ts and every consumer can import it directly.
  */
+import type { ExtensionIii } from '@iii-dev/console-ui'
 import type { ComponentType } from 'react'
+
+export type { ExtensionIii }
 
 export interface Segment {
   segment: number
@@ -76,7 +79,7 @@ export interface TranscribeResponse {
   segments: Segment[]
   duration_secs: number
   model: string
-  backend: 'local' | 'openai'
+  backend: 'local' | 'openai' | 'router'
 }
 
 export type SpeakRequest = {
@@ -92,7 +95,7 @@ export type SpeakRequest = {
  * speech has finished.
  */
 export interface SpeakResponse {
-  backend: 'host' | 'openai'
+  backend: 'host' | 'openai' | 'router'
   speech_id: string
   played: boolean
   audio_base64?: string
@@ -146,7 +149,7 @@ export interface ModelsRemoveResponse {
 
 export interface DoctorResponse {
   stt: {
-    backend: 'local' | 'openai'
+    backend: 'local' | 'openai' | 'router'
     model: string
     installed: boolean
     loaded: boolean
@@ -158,7 +161,7 @@ export interface DoctorResponse {
     final_load_ms?: number
   }
   tts: {
-    backend: 'host' | 'openai' | 'off'
+    backend: 'host' | 'openai' | 'router' | 'off'
     command?: string
     available: boolean
     /** Utterances currently playing on this backend, polled to detect an
@@ -235,4 +238,21 @@ export interface ComposerActionRegistration {
 /** `host.chat` on a console that ships the composer toolbar slot; feature-detect the method. */
 export interface ComposerCapableChat {
   registerComposerAction?(action: ComposerActionRegistration): () => void
+}
+
+/* ── llm-router speech models, as `router::models::list` returns them ─── */
+
+export interface RouterSpeechModel {
+  id: string
+  provider: string
+  display_name?: string
+  speech?: {
+    modality: 'stt' | 'tts'
+    languages?: string[]
+    streaming?: boolean
+  }
+}
+
+export interface RouterModelsListResponse {
+  models: RouterSpeechModel[]
 }

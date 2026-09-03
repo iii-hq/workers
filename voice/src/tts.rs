@@ -196,6 +196,9 @@ impl Speaker {
                     mime: Some(mime),
                 })
             }
+            TtsBackend::Router => {
+                Err("the router engine is served by voice::speak, not the host speaker".to_string())
+            }
         }
     }
 

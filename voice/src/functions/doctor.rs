@@ -81,6 +81,22 @@ pub async fn handle(state: &AppState, _req: Request) -> Result<Response, String>
                 .await
                 .map(|l| l.load_ms as u64),
         },
+        SttBackend::Router => SttReport {
+            backend: "router".into(),
+            model: if cfg.stt.router.model.trim().is_empty() {
+                "router picks".into()
+            } else {
+                cfg.stt.router.model.clone()
+            },
+            installed: true,
+            loaded: true,
+            load_ms: None,
+            models_dir: dir.to_string_lossy().into_owned(),
+            problem: crate::router::problem(&state.iii, "stt").await,
+            final_model: String::new(),
+            final_state: FinalState::Off,
+            final_load_ms: None,
+        },
         SttBackend::Openai => SttReport {
             backend: "openai".into(),
             model: cfg.stt.openai.model.clone(),
@@ -114,6 +130,12 @@ pub async fn handle(state: &AppState, _req: Request) -> Result<Response, String>
             backend: "openai".into(),
             command: None,
             available: !cfg.tts.openai.base_url.trim().is_empty(),
+            playing: 0,
+        },
+        TtsBackend::Router => TtsReport {
+            backend: "router".into(),
+            command: crate::router::problem(&state.iii, "tts").await,
+            available: crate::router::problem(&state.iii, "tts").await.is_none(),
             playing: 0,
         },
         TtsBackend::Off => TtsReport {

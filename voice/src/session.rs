@@ -14,10 +14,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use iii_sdk::IIIClient;
 use tokio::sync::Mutex;
 
 use crate::audio::{self, TARGET_SAMPLE_RATE};
-use crate::config::WorkerConfig;
+use crate::config::{SttBackend, WorkerConfig};
 use crate::configuration::ConfigCell;
 use crate::engine::{self, Engine, FinalLoaded, Segment, Stream, Transcript};
 use crate::events::{
@@ -41,12 +42,68 @@ pub fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// Where a finished utterance goes for its final text. Live words always
+/// come from the local streaming model; the second pass follows the
+/// configured engine, so the model a person picked is the one that writes
+/// the transcript.
+pub enum Refiner {
+    Local(Arc<FinalLoaded>),
+    Remote {
+        iii: Arc<IIIClient>,
+        cfg: Arc<WorkerConfig>,
+    },
+}
+
+/// A remote second pass that has not answered by then keeps the streaming
+/// text; dictation must not stall on a slow provider.
+const REMOTE_REFINE_TIMEOUT_MS: u64 = 30_000;
+
+impl Refiner {
+    async fn refine(&self, audio: Vec<f32>) -> Result<String, String> {
+        match self {
+            Refiner::Local(loaded) => {
+                let loaded = loaded.clone();
+                tokio::task::spawn_blocking(move || loaded.refine(&audio))
+                    .await
+                    .map_err(|e| format!("second pass task failed: {e}"))
+            }
+            Refiner::Remote { iii, cfg } => match cfg.stt.backend {
+                SttBackend::Router => crate::router::transcribe_within(
+                    iii,
+                    cfg,
+                    &audio,
+                    None,
+                    REMOTE_REFINE_TIMEOUT_MS,
+                )
+                .await
+                .map(|(transcript, _)| transcript.text),
+                SttBackend::Openai => engine::remote_transcribe(cfg, &audio, None)
+                    .await
+                    .map(|transcript| transcript.text),
+                SttBackend::Local => Ok(String::new()),
+            },
+        }
+    }
+
+    fn label(&self) -> String {
+        match self {
+            Refiner::Local(loaded) => loaded.key.model.clone(),
+            Refiner::Remote { cfg, .. } => match cfg.stt.backend {
+                SttBackend::Router if cfg.stt.router.model.trim().is_empty() => "router".into(),
+                SttBackend::Router => cfg.stt.router.model.trim().to_string(),
+                SttBackend::Openai => cfg.stt.openai.model.clone(),
+                SttBackend::Local => String::new(),
+            },
+        }
+    }
+}
+
 pub struct Session {
     pub id: String,
     pub output_function_id: String,
     pub model: String,
     stream: Stream,
-    refiner: Option<Arc<FinalLoaded>>,
+    refiner: Option<Arc<Refiner>>,
     seq: u64,
     last_push_seq: Option<u64>,
     segments: Vec<Segment>,
@@ -103,8 +160,8 @@ impl Session {
     async fn commit(&mut self, mut seg: Segment) -> TranscriptEvent {
         if let Some(refiner) = self.refiner.clone() {
             let audio = self.utterance.clone();
-            match tokio::task::spawn_blocking(move || refiner.refine(&audio)).await {
-                Ok(refined) if !refined.is_empty() => seg.text = refined,
+            match refiner.refine(audio).await {
+                Ok(refined) if !refined.trim().is_empty() => seg.text = refined.trim().to_string(),
                 Ok(_) => {}
                 Err(e) => tracing::warn!(error = %e, "second pass failed; streaming text stands"),
             }
@@ -149,6 +206,7 @@ pub struct SessionSummary {
 
 pub struct Sessions {
     inner: Mutex<HashMap<String, Arc<Mutex<Session>>>>,
+    iii: Arc<IIIClient>,
     engine: Arc<Engine>,
     emitter: Arc<Emitter>,
     cfg: ConfigCell,
@@ -156,9 +214,15 @@ pub struct Sessions {
 }
 
 impl Sessions {
-    pub fn new(engine: Arc<Engine>, emitter: Arc<Emitter>, cfg: ConfigCell) -> Self {
+    pub fn new(
+        iii: Arc<IIIClient>,
+        engine: Arc<Engine>,
+        emitter: Arc<Emitter>,
+        cfg: ConfigCell,
+    ) -> Self {
         Self {
             inner: Mutex::new(HashMap::new()),
+            iii,
             engine,
             emitter,
             cfg,
@@ -197,16 +261,23 @@ impl Sessions {
         }
         let progress = self.progress.lock().await.clone();
         let loaded = self.engine.ensure_loaded(&cfg, progress.clone()).await?;
-        let refiner = match self.engine.ensure_final_loaded(&cfg, progress).await {
-            Ok(refiner) => refiner,
-            Err(e) => {
-                tracing::warn!(error = %e, "second-pass model unavailable; streaming text stands");
-                None
-            }
+        let refiner = match cfg.stt.backend {
+            SttBackend::Local => match self.engine.ensure_final_loaded(&cfg, progress).await {
+                Ok(refiner) => refiner.map(Refiner::Local),
+                Err(e) => {
+                    tracing::warn!(error = %e, "second-pass model unavailable; streaming text stands");
+                    None
+                }
+            },
+            SttBackend::Router | SttBackend::Openai => Some(Refiner::Remote {
+                iii: self.iii.clone(),
+                cfg: cfg.clone(),
+            }),
         };
+        let refiner = refiner.map(Arc::new);
         let id = format!("d_{}", uuid::Uuid::new_v4().simple());
         let model = match &refiner {
-            Some(r) => format!("{}+{}", loaded.key.model, r.key.model),
+            Some(r) => format!("{}+{}", loaded.key.model, r.label()),
             None => loaded.key.model.clone(),
         };
         tracing::info!(session_id = %id, model = %model, output = %output_function_id, "dictation session started");

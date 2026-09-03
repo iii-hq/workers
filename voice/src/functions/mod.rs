@@ -25,6 +25,7 @@ use crate::tts::Speaker;
 
 /// Everything a handler can reach.
 pub struct AppState {
+    pub iii: Arc<IIIClient>,
     pub cfg: ConfigCell,
     pub engine: Arc<Engine>,
     pub sessions: Arc<Sessions>,

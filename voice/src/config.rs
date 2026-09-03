@@ -58,12 +58,15 @@ pub enum SttBackend {
     Local,
     /// An OpenAI-compatible `/v1/audio/transcriptions` endpoint.
     Openai,
+    /// llm-router's `router::transcribe`: any speech provider registered
+    /// with the router (ElevenLabs, OpenAI, a self-hosted server).
+    Router,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SttConfig {
-    /// `local` (default) or `openai`.
+    /// `local` (default), `openai`, or `router`.
     #[serde(default = "default_stt_backend")]
     pub backend: SttBackend,
 
@@ -102,6 +105,23 @@ pub struct SttConfig {
     /// Settings for the `openai` backend.
     #[serde(default)]
     pub openai: OpenaiSttConfig,
+
+    /// Settings for the `router` backend.
+    #[serde(default)]
+    pub router: RouterSttConfig,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RouterSttConfig {
+    /// Speech-to-text model as the router lists it (`provider::model`, or a
+    /// bare id the router resolves). Empty lets the router pick.
+    #[serde(default)]
+    pub model: String,
+
+    /// Language hint (BCP-47) sent with each request. Empty means detect.
+    #[serde(default)]
+    pub language: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
@@ -136,6 +156,9 @@ pub enum TtsBackend {
     /// An OpenAI-compatible `/v1/audio/speech` endpoint. Audio is returned to
     /// the caller for playback in the browser.
     Openai,
+    /// llm-router's `router::speak`: any speech provider registered with the
+    /// router. Audio is returned to the caller for playback in the browser.
+    Router,
     /// Read-aloud disabled.
     Off,
 }
@@ -164,6 +187,42 @@ pub struct TtsConfig {
     /// Settings for the `openai` backend.
     #[serde(default)]
     pub openai: OpenaiTtsConfig,
+
+    /// Settings for the `router` backend.
+    #[serde(default)]
+    pub router: RouterTtsConfig,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RouterTtsConfig {
+    /// Text-to-speech model as the router lists it (`provider::model`, or a
+    /// bare id the router resolves). Empty lets the router pick.
+    #[serde(default)]
+    pub model: String,
+
+    /// Voice id or name as the provider knows it. Empty uses the provider's
+    /// default voice.
+    #[serde(default)]
+    pub voice: String,
+
+    /// Audio container to ask for: `mp3` (default), `wav`, `pcm16`, `opus`.
+    #[serde(default = "default_router_format")]
+    pub format: String,
+}
+
+fn default_router_format() -> String {
+    "mp3".to_string()
+}
+
+impl Default for RouterTtsConfig {
+    fn default() -> Self {
+        Self {
+            model: String::new(),
+            voice: String::new(),
+            format: default_router_format(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema)]
@@ -302,6 +361,7 @@ impl Default for SttConfig {
             silence_without_speech_secs: default_silence_without_speech_secs(),
             max_utterance_secs: default_max_utterance_secs(),
             openai: OpenaiSttConfig::default(),
+            router: RouterSttConfig::default(),
         }
     }
 }
@@ -325,6 +385,7 @@ impl Default for TtsConfig {
             rate_wpm: 0,
             max_speak_chars: default_max_speak_chars(),
             openai: OpenaiTtsConfig::default(),
+            router: RouterTtsConfig::default(),
         }
     }
 }

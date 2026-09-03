@@ -22,10 +22,12 @@ import {
   TableRow,
   TableViewport,
 } from '@iii-dev/console-ui'
+import { useEffect, useState } from 'react'
 import { modelsDownload } from '../lib/client'
-import { NONE, patchConfig, setPath } from '../lib/config'
+import { NONE, patchConfig, readConfig, setPath, stringAt } from '../lib/config'
 import { MicIcon } from '../lib/icons'
 import { type ProgressById, percent } from '../lib/progress'
+import { routerModelOptions, useRouterSpeechModels } from '../lib/router'
 import type { DictationListEntry, DoctorResponse, ModelInfo, ModelsListResponse } from '../lib/types'
 import { Fact, Facts, formatBytes, formatDuration, SectionCard, useBusyAction } from './shared'
 
@@ -58,6 +60,21 @@ export function Overview({
   const accurate: ModelInfo | undefined = offline.find((m) => m.id === stt.final_model)
   const live: ModelInfo | undefined = models?.models.find((m) => m.id === stt.model)
   const pct = percent(progress[stt.final_model])
+  const routerStt = useRouterSpeechModels(host.iii, 'stt', stt.backend === 'router')
+  const routerTts = useRouterSpeechModels(host.iii, 'tts', tts.backend === 'router')
+  const [routerTtsModel, setRouterTtsModel] = useState('')
+  useEffect(() => {
+    if (tts.backend !== 'router') return
+    let cancelled = false
+    readConfig(host.iii)
+      .then((value) => {
+        if (!cancelled) setRouterTtsModel(stringAt(value, ['tts', 'router', 'model']))
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [host.iii, tts.backend])
 
   const choose = (path: readonly string[], next: string, label: string) =>
     run(
@@ -94,6 +111,62 @@ export function Overview({
           </Button>
         }
       >
+        <Facts>
+          <Fact label="Engine">
+            <span className="voice-choice">
+              <Select
+                aria-label="speech to text engine"
+                value={stt.backend}
+                disabled={busy !== null}
+                onChange={(next) => choose(['stt', 'backend'], next, `Speech to text uses ${next}.`)}
+                options={[
+                  { value: 'local', label: 'Local models on this machine', description: 'Nothing leaves the machine' },
+                  {
+                    value: 'router',
+                    label: 'A speech provider through llm-router',
+                    description: 'ElevenLabs, OpenAI, ...',
+                  },
+                  {
+                    value: 'openai',
+                    label: 'OpenAI-compatible endpoint',
+                    description: 'Any /audio/transcriptions server',
+                  },
+                ]}
+              />
+            </span>
+          </Fact>
+        </Facts>
+        {stt.backend === 'router' ? (
+          <Facts>
+            <Fact label="Model">
+              <span className="voice-choice">
+                <Select
+                  aria-label="router speech to text model"
+                  value={report.stt.model === 'router picks' ? '' : report.stt.model}
+                  disabled={busy !== null || routerStt.models === null}
+                  onChange={(next) =>
+                    choose(
+                      ['stt', 'router', 'model'],
+                      next,
+                      next ? `Transcripts use ${next}.` : 'The router picks the model.',
+                    )
+                  }
+                  options={routerModelOptions(
+                    routerStt.models,
+                    report.stt.model === 'router picks' ? '' : report.stt.model,
+                  )}
+                />
+                {routerStt.models !== null && routerStt.models.length === 0 ? (
+                  <Chip tone="warning">no speech provider registered</Chip>
+                ) : null}
+              </span>
+              <span className="voice-sub voice-block">
+                Audio goes to the provider that serves this model; its key lives in the router's Settings. While you
+                dictate, live words stay local and each finished sentence is re-decoded by this model.
+              </span>
+            </Fact>
+          </Facts>
+        ) : null}
         {stt.backend === 'local' ? (
           <Facts>
             <Fact label="Model">
@@ -156,19 +229,20 @@ export function Overview({
               <span>this machine, nothing leaves it</span>
             </Fact>
           </Facts>
-        ) : (
+        ) : null}
+        {stt.backend === 'openai' ? (
           <Facts>
-            <Fact label="Engine">
+            <Fact label="Endpoint model">
               <span className="voice-fact-line">
                 <Chip tone="neutral">OpenAI-compatible</Chip>
                 <span className="voice-mono">{stt.model}</span>
               </span>
               <span className="voice-sub voice-block">
-                Audio is sent to the configured endpoint. Switch to local models under All settings.
+                Audio is sent to the configured endpoint; its address and key are under All settings.
               </span>
             </Fact>
           </Facts>
-        )}
+        ) : null}
         {stt.problem ? <p className="voice-note voice-warn">{stt.problem}</p> : null}
       </SectionCard>
 
@@ -189,6 +263,11 @@ export function Overview({
                     label: "This machine's speech command",
                     description: 'say on macOS, espeak-ng on Linux',
                   },
+                  {
+                    value: 'router',
+                    label: 'A speech provider through llm-router',
+                    description: 'Audio plays in the browser',
+                  },
                   { value: 'openai', label: 'OpenAI-compatible endpoint', description: 'Audio plays in the browser' },
                   { value: 'off', label: 'Off' },
                 ]}
@@ -196,6 +275,32 @@ export function Overview({
               {ttsAvailability}
             </span>
           </Fact>
+          {tts.backend === 'router' ? (
+            <Fact label="Model">
+              <span className="voice-choice">
+                <Select
+                  aria-label="router text to speech model"
+                  value={routerTtsModel}
+                  disabled={busy !== null || routerTts.models === null}
+                  onChange={(next) => {
+                    setRouterTtsModel(next)
+                    choose(
+                      ['tts', 'router', 'model'],
+                      next,
+                      next ? `Read aloud uses ${next}.` : 'The router picks the voice model.',
+                    )
+                  }}
+                  options={routerModelOptions(routerTts.models, routerTtsModel)}
+                />
+                {routerTts.models !== null && routerTts.models.length === 0 ? (
+                  <Chip tone="warning">no speech provider registered</Chip>
+                ) : null}
+              </span>
+              <span className="voice-sub voice-block">
+                {tts.command ?? 'The voice name and audio format are under All settings.'}
+              </span>
+            </Fact>
+          ) : null}
           <Fact label="Playing">
             <span>{tts.playing === 0 ? 'nothing' : `${tts.playing} clip${tts.playing === 1 ? '' : 's'}`}</span>
           </Fact>
