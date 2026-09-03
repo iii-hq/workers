@@ -54,10 +54,18 @@ const PRODUCTION_RERANKER_WEIGHT: f64 = 1.25;
 /// Reranker scores are logits. A candidate more than this far below the
 /// query's best candidate is padding: without the cut the fusion filled every
 /// admitted result to the 12-function cap (11.4 functions per query on the
-/// 79-case set; 7.7 with the cut, one paraphrase case lost). It does not
-/// abstain when the best candidate is itself noise — that is the admission
-/// question, decided separately.
+/// 79-case set; 7.7 with the cut, one paraphrase case lost). Whether the best
+/// candidate is itself noise is `PRODUCTION_RERANK_FLOOR`'s call.
 const PRODUCTION_RERANK_GAP: f64 = 10.0;
+/// Absolute admission on the reranker: a head whose best candidate scores
+/// under this logit is the cross-encoder saying nothing serves the query, and
+/// the position keeps its BM25 ranking (empty for most no-match wording)
+/// instead of a page of dense lookalikes. Measured on the 79-case set with
+/// the gap in place: match 51→49, multi 7→6, no-match false positives 4→3,
+/// the "today's top news" case 11→2 functions. The two lost matches are hard
+/// paraphrases whose target scores like noise (−10.4, −11.3); no logit
+/// separates them from an unserved query, so this trades them for silence.
+const PRODUCTION_RERANK_FLOOR: f64 = -9.0;
 /// Fused retrieval candidates the cross-encoder scores per query. The tail
 /// keeps its retrieval order: `weighted_rrf` only adds the reranker term to
 /// ids present in its second list, so an unscored id can never outrank a
@@ -491,10 +499,11 @@ fn production_rerank_head(retrieval: &[(String, f64)]) -> impl Iterator<Item = &
 
 /// Apply the frozen production ordering only when the reranker returns one
 /// finite, unique score for every member of the fused retrieval head (the
-/// first `PRODUCTION_RERANK_DEPTH` ids). Candidates scored more than
-/// `PRODUCTION_RERANK_GAP` below the head's best are dropped, and so is the
-/// unscored tail. Invalid model output is represented by `None` so the
-/// caller can fail open to the fused retrieval.
+/// first `PRODUCTION_RERANK_DEPTH` ids). A head whose best score is under
+/// `PRODUCTION_RERANK_FLOOR` yields the BM25 ranking unchanged; otherwise
+/// candidates scored more than `PRODUCTION_RERANK_GAP` below that best are
+/// dropped, and so is the unscored tail. Invalid model output is represented
+/// by `None` so the caller can fail open to the fused retrieval.
 fn production_minilm_ordering(
     lexical: &[(String, f64)],
     semantic: &[(String, f64)],
@@ -521,6 +530,9 @@ fn production_minilm_ordering(
     let Some(leader) = reranker.first().map(|(_, score)| *score) else {
         return Some(Vec::new());
     };
+    if leader < PRODUCTION_RERANK_FLOOR {
+        return Some(lexical.to_vec());
+    }
     reranker.retain(|(_, score)| *score >= leader - PRODUCTION_RERANK_GAP);
     let survivors: HashSet<&str> = reranker.iter().map(|(id, _)| id.as_str()).collect();
     let retrieval: Vec<(String, f64)> = retrieval
@@ -1723,6 +1735,40 @@ mod tests {
         );
         // No retrieval, no reranker output: an empty (valid) ordering.
         assert_eq!(production_minilm_ordering(&[], &[], &[]), Some(Vec::new()));
+    }
+
+    #[test]
+    fn production_minilm_ordering_abstains_when_the_leader_is_noise() {
+        let lexical = vec![("mail::send".to_string(), 3.0)];
+        let semantic = vec![
+            ("web::fetch".to_string(), 0.4),
+            ("state::get".to_string(), 0.3),
+        ];
+        let retrieval = weighted_rrf(&lexical, &semantic, PRODUCTION_RETRIEVAL_WEIGHT);
+        let head: Vec<String> = production_rerank_head(&retrieval)
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(head.len(), 3);
+
+        // Every candidate under the floor: the cross-encoder found nothing,
+        // the position keeps BM25 rather than the dense page.
+        let noise: Vec<(String, f64)> = head
+            .iter()
+            .map(|id| (id.clone(), PRODUCTION_RERANK_FLOOR - 1.0))
+            .collect();
+        assert_eq!(
+            production_minilm_ordering(&lexical, &semantic, &noise),
+            Some(lexical.clone())
+        );
+
+        // A leader exactly at the floor is admitted and the gap rules.
+        let at_floor: Vec<(String, f64)> = head
+            .iter()
+            .map(|id| (id.clone(), PRODUCTION_RERANK_FLOOR))
+            .collect();
+        let ordered = production_minilm_ordering(&lexical, &semantic, &at_floor)
+            .expect("head-only reranker output is accepted");
+        assert_eq!(ordered.len(), 3, "{ordered:?}");
     }
 
     #[test]
