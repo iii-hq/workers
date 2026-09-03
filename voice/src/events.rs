@@ -434,6 +434,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_filter_on_the_other_kind_never_matches() {
+        let dictation = BindingConfig {
+            session_id: Some("d_1".into()),
+            speech_id: None,
+        };
+        assert!(!binding_matches(
+            &dictation,
+            EventKind::SpeechEnded,
+            Some("s_1")
+        ));
+        assert!(binding_matches(
+            &dictation,
+            EventKind::Transcript,
+            Some("d_1")
+        ));
+        let speech = BindingConfig {
+            session_id: None,
+            speech_id: Some("s_1".into()),
+        };
+        assert!(!binding_matches(
+            &speech,
+            EventKind::Transcript,
+            Some("d_1")
+        ));
+        assert!(binding_matches(
+            &speech,
+            EventKind::SpeechEnded,
+            Some("s_1")
+        ));
+    }
+
+    #[test]
     fn a_misspelled_filter_key_is_rejected() {
         let set = SubscriberSet::new(EventKind::Transcript);
         let err = set
