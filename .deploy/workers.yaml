@@ -1324,6 +1324,18 @@ workers:
         outputs:
         - dist
     publish: true
+  provider-groq:
+    source:
+      path: provider-groq
+      package_manifest: Cargo.toml
+    artifact:
+      kind: rust-binary
+      toolchain:
+        name: rust
+        version: 1.97.1
+      binary: provider-groq
+      targets: *id001
+    publish: true
   provider-kimi:
     source:
       path: provider-kimi
