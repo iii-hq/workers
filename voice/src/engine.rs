@@ -731,8 +731,10 @@ pub async fn remote_transcribe(
         form = form.text("language", language);
     }
     let mut request = client.post(&url).multipart(form);
-    if !remote.api_key.trim().is_empty() {
-        request = request.bearer_auth(remote.api_key.trim());
+    let api_key = remote.api_key.trim();
+    if !api_key.is_empty() {
+        crate::config::check_bearer_transport(&remote.base_url, api_key)?;
+        request = request.bearer_auth(api_key);
     }
     let response = request
         .send()

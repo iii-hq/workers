@@ -4,7 +4,7 @@ The voice worker itself is Apache-2.0 (see the repository `LICENSE`). This file 
 
 ## Linked into the binary
 
-The build downloads the `-static-no-tts-lib` archives from the sherpa-onnx GitHub releases and links these static libraries. The vendored `vendor/sherpa-onnx-sys` crate (Apache-2.0, license file kept) is the upstream `sherpa-onnx-sys` 1.13.7 crate with one change: its link list omits `espeak-ng`, `piper_phonemize` and `ucd`, so the GPL-3.0 text-to-speech pieces that ship in the full archives are never linked.
+The build downloads the `-static-no-tts-lib` archives from the sherpa-onnx GitHub releases, checks each against a SHA-256 pinned in the vendored build script, and links these static libraries. The vendored `vendor/sherpa-onnx-sys` crate (Apache-2.0, license file kept) is the upstream `sherpa-onnx-sys` 1.13.7 crate with one change: its link list omits `espeak-ng`, `piper_phonemize` and `ucd`, so the GPL-3.0 text-to-speech pieces that ship in the full archives are never linked.
 
 | Component | License | Source | Role |
 | --- | --- | --- | --- |

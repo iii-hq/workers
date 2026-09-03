@@ -100,11 +100,13 @@ impl Session {
     /// Commit one streaming segment: the second pass replaces its text when
     /// the model is loaded and heard something; the utterance buffer keeps
     /// only a short tail so the next utterance's onset survives.
-    fn commit(&mut self, mut seg: Segment) -> TranscriptEvent {
-        if let Some(refiner) = &self.refiner {
-            let refined = refiner.refine(&self.utterance);
-            if !refined.is_empty() {
-                seg.text = refined;
+    async fn commit(&mut self, mut seg: Segment) -> TranscriptEvent {
+        if let Some(refiner) = self.refiner.clone() {
+            let audio = self.utterance.clone();
+            match tokio::task::spawn_blocking(move || refiner.refine(&audio)).await {
+                Ok(refined) if !refined.is_empty() => seg.text = refined,
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, "second pass failed; streaming text stands"),
             }
         }
         let keep = self.utterance.len().min(ONSET_PAD_SAMPLES);
@@ -223,7 +225,16 @@ impl Sessions {
             last_audio: Instant::now(),
         };
         let handle = Arc::new(Mutex::new(session));
-        self.inner.lock().await.insert(id.clone(), handle.clone());
+        {
+            let mut inner = self.inner.lock().await;
+            if inner.len() >= cfg.max_sessions {
+                return Err(format!(
+                    "{} dictation sessions are already open (max_sessions); stop one first",
+                    cfg.max_sessions
+                ));
+            }
+            inner.insert(id.clone(), handle.clone());
+        }
         self.emitter
             .emit(
                 EventKind::SessionStarted,
@@ -256,7 +267,7 @@ impl Sessions {
         let step = session.stream.feed(&samples);
         let mut events = Vec::new();
         for seg in step.finals {
-            events.push(session.commit(seg));
+            events.push(session.commit(seg).await);
         }
         if let Some(partial) = step.partial {
             session.partial = partial.clone();
@@ -282,7 +293,7 @@ impl Sessions {
         let mut events = Vec::new();
         if !discard {
             for seg in session.stream.finish() {
-                events.push(session.commit(seg));
+                events.push(session.commit(seg).await);
             }
         } else {
             session.segments.clear();

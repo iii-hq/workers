@@ -8,7 +8,7 @@
  */
 
 import { IconButton } from '@iii-dev/console-ui'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DictationController } from './dictation'
 import { useDictation } from './dictation'
 import { MicIcon } from './icons'
@@ -29,6 +29,7 @@ export function useMicPointer(controller: DictationController, onFinish: (text: 
   const [errorFlash, setErrorFlash] = useState<string | null>(null)
   const holdTimerRef = useRef<number | null>(null)
   const heldRef = useRef(false)
+  const pendingRef = useRef<'finish' | 'cancel' | null>(null)
   const messageTimerRef = useRef<number | null>(null)
 
   useEffect(() => {
@@ -49,10 +50,21 @@ export function useMicPointer(controller: DictationController, onFinish: (text: 
   const listening = state.status === 'listening' || state.status === 'starting'
   const canStart = state.status === 'idle' || state.status === 'error'
 
-  async function finish() {
+  const finish = useCallback(async () => {
     const text = (await stop()).trim()
     if (text) onFinish(text)
-  }
+  }, [stop, onFinish])
+
+  useEffect(() => {
+    if (state.status === 'listening' && pendingRef.current) {
+      const pending = pendingRef.current
+      pendingRef.current = null
+      if (pending === 'finish') finish()
+      else cancel()
+    } else if (state.status === 'idle' || state.status === 'error') {
+      pendingRef.current = null
+    }
+  }, [state.status, finish, cancel])
 
   function clearHold() {
     if (holdTimerRef.current !== null) {
@@ -76,6 +88,7 @@ export function useMicPointer(controller: DictationController, onFinish: (text: 
       if (heldRef.current) {
         heldRef.current = false
         if (state.status === 'listening') finish()
+        else if (state.status === 'starting') pendingRef.current = 'finish'
         return
       }
       if (canStart) start()
@@ -86,6 +99,7 @@ export function useMicPointer(controller: DictationController, onFinish: (text: 
       if (heldRef.current) {
         heldRef.current = false
         if (state.status === 'listening') cancel()
+        else if (state.status === 'starting') pendingRef.current = 'cancel'
       }
     },
   }
@@ -115,7 +129,7 @@ export function MicButton({ pointer, className }: { pointer: MicPointer; classNa
 export async function deliverTranscript(
   host: { chat?: { compose?: (draft: { text?: string }) => void } },
   text: string,
-): Promise<'composer' | 'clipboard'> {
+): Promise<'composer' | 'clipboard' | 'failed'> {
   if (host.chat?.compose) {
     host.chat.compose({ text: `${text} ` })
     return 'composer'
@@ -123,7 +137,7 @@ export async function deliverTranscript(
   try {
     await navigator.clipboard.writeText(text)
   } catch {
-    return 'clipboard'
+    return 'failed'
   }
   return 'clipboard'
 }

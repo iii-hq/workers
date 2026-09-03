@@ -19,6 +19,7 @@ import type { TranscriptEvent } from './types'
 
 const LOCAL_FN = 'iii::voice-ui::transcript'
 const MAX_INFLIGHT_PUSHES = 4
+const FLUSH_PUSHES_MS = 2000
 
 export type DictationStatus = 'idle' | 'starting' | 'listening' | 'stopping' | 'error'
 
@@ -83,9 +84,11 @@ export class DictationController {
   private capture: CaptureHandle | null = null
   private offHandler: (() => void) | null = null
   private starting = false
+  private stopping = false
   private seq = 0
   private inflight = 0
   private queue: PushQueueItem[] = []
+  private drainWaiters: Array<() => void> = []
 
   constructor(private readonly host: Host) {}
 
@@ -124,8 +127,29 @@ export class DictationController {
         .finally(() => {
           this.inflight -= 1
           this.drainQueue()
+          this.notifyDrained()
         })
     }
+  }
+
+  private notifyDrained(): void {
+    if (this.queue.length > 0 || this.inflight > 0) return
+    const waiters = this.drainWaiters
+    this.drainWaiters = []
+    for (const resolve of waiters) resolve()
+  }
+
+  /** Resolves once every queued chunk has been pushed, or after `limitMs`. */
+  private flushPushes(limitMs: number): Promise<void> {
+    this.drainQueue()
+    if (this.queue.length === 0 && this.inflight === 0) return Promise.resolve()
+    return new Promise((resolve) => {
+      const timer = window.setTimeout(resolve, limitMs)
+      this.drainWaiters.push(() => {
+        window.clearTimeout(timer)
+        resolve()
+      })
+    })
   }
 
   private dropHandler(): void {
@@ -136,8 +160,9 @@ export class DictationController {
   start = async (): Promise<void> => {
     if (this.starting || this.sessionId) return
     this.starting = true
-    this.set((s) => ({ ...s, status: 'starting', error: undefined }))
+    this.set({ ...initialDictationReduceState, status: 'starting' })
     this.offHandler = this.host.iii.on<TranscriptEvent>(LOCAL_FN, (event) => {
+      if (this.sessionId && event.session_id !== this.sessionId) return
       this.set((s) => reduceTranscriptEvent(s, event))
     })
     try {
@@ -175,26 +200,35 @@ export class DictationController {
 
   stop = async (): Promise<string> => {
     const sessionId = this.sessionId
-    this.capture?.stop()
+    const capture = this.capture
     this.capture = null
-    if (!sessionId) return this.state.committed.join(' ')
-    this.sessionId = null
+    if (!sessionId || this.stopping) {
+      await capture?.stop()
+      return this.state.committed.join(' ')
+    }
+    this.stopping = true
     this.set((s) => ({ ...s, status: 'stopping' }))
     try {
+      await capture?.stop()
+      await this.flushPushes(FLUSH_PUSHES_MS)
+      this.sessionId = null
       const res = await dictationStop(this.host.iii, { session_id: sessionId })
       this.dropHandler()
       this.set((s) => ({ ...s, status: 'idle', partial: '' }))
       return res.text
     } catch (err) {
+      this.sessionId = null
       this.dropHandler()
       this.set((s) => ({ ...s, status: 'error', error: errorMessage(err) }))
       return this.state.committed.join(' ')
+    } finally {
+      this.stopping = false
     }
   }
 
   cancel = async (): Promise<void> => {
     const sessionId = this.sessionId
-    this.capture?.stop()
+    void this.capture?.stop()
     this.capture = null
     this.sessionId = null
     this.dropHandler()

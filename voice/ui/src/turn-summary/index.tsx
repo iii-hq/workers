@@ -74,17 +74,18 @@ export function createVoiceTurnSummary(host: Host): SessionTurnSummaryRegistrati
     const audioRef = useRef<HTMLAudioElement | null>(null)
     const estimateTimerRef = useRef<number | null>(null)
     const pollTimerRef = useRef<number | null>(null)
-    const [hasReply, setHasReply] = useState(false)
+    const [lastReply, setLastReply] = useState<string | null>(null)
+    const hasReply = lastReply !== null
 
     useEffect(() => {
       if (isStreaming) return
       let cancelled = false
       fetchLastAssistantText(host, sessionId)
         .then((text) => {
-          if (!cancelled) setHasReply(Boolean(text))
+          if (!cancelled) setLastReply(text)
         })
         .catch(() => {
-          if (!cancelled) setHasReply(false)
+          if (!cancelled) setLastReply(null)
         })
       return () => {
         cancelled = true
@@ -148,7 +149,7 @@ export function createVoiceTurnSummary(host: Host): SessionTurnSummaryRegistrati
     const onReadAloud = useCallback(async () => {
       setSpeakState({ phase: 'loading' })
       try {
-        const text = await fetchLastAssistantText(host, sessionId)
+        const text = lastReply ?? (await fetchLastAssistantText(host, sessionId))
         if (!text) {
           setSpeakState({ phase: 'idle' })
           return
@@ -171,7 +172,7 @@ export function createVoiceTurnSummary(host: Host): SessionTurnSummaryRegistrati
       } catch (err) {
         setSpeakState({ phase: 'error', message: errorMessage(err) })
       }
-    }, [sessionId, armHostPlaybackWatch])
+    }, [sessionId, lastReply, armHostPlaybackWatch])
 
     const onStop = useCallback(() => {
       audioRef.current?.pause()

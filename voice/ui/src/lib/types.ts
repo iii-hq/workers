@@ -20,7 +20,6 @@ export interface Segment {
 export type DictationStartRequest = {
   output_function_id: string
   sample_rate?: number
-  language?: string
 }
 
 export interface DictationStartResponse {

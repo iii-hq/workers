@@ -25,31 +25,37 @@ export function DictateSection({
 }) {
   const { state, start, stop, cancel } = useDictation(controller)
   const [draft, setDraft] = useState<string[]>([])
+  const [cleared, setCleared] = useState(false)
   const [copied, setCopied] = useState(false)
   const appliedSignalRef = useRef(0)
 
   useEffect(() => {
     if (autoStartSignal > appliedSignalRef.current) {
       appliedSignalRef.current = autoStartSignal
+      setDraft([])
+      setCleared(false)
       start()
     }
   }, [autoStartSignal, start])
 
   const listening = state.status === 'listening' || state.status === 'starting'
-  const entries =
-    !listening && draft.length > 0
-      ? draft.map((text) => ({ id: `draft-${text.length}`, text }))
-      : state.committed.map((text, index) => ({ id: `segment-${state.committedIds[index] ?? text.length}`, text }))
+  const entries = (() => {
+    if (cleared) return []
+    if (!listening && draft.length > 0) return draft.map((text) => ({ id: `draft-${text.length}`, text }))
+    return state.committed.map((text, index) => ({ id: `segment-${state.committedIds[index] ?? text.length}`, text }))
+  })()
   const text = [...entries.map((entry) => entry.text), listening ? state.partial : ''].filter(Boolean).join(' ')
   const hasText = text.trim().length > 0
 
   const onStop = async () => {
     const result = (await stop()).trim()
+    setCleared(false)
     setDraft(result ? [result] : [])
   }
 
   const onStart = () => {
     setDraft([])
+    setCleared(false)
     start()
   }
 
@@ -71,6 +77,7 @@ export function DictateSection({
 
   const clear = () => {
     setDraft([])
+    setCleared(true)
     if (listening) cancel()
   }
 

@@ -52,8 +52,17 @@ pub async fn handle(state: &AppState, req: Request) -> Result<Response, String> 
         (Some(path), None) => read_path(path).await?,
         (None, Some(b64)) => {
             use base64::Engine;
+            let trimmed = b64.trim();
+            let encoded_cap = cfg.max_audio_bytes.div_ceil(3) * 4;
+            if trimmed.len() > encoded_cap {
+                return Err(format!(
+                    "audio_base64 is {} characters, more than {} bytes (max_audio_bytes) encode to; pass a path instead",
+                    trimmed.len(),
+                    cfg.max_audio_bytes
+                ));
+            }
             let decoded = base64::engine::general_purpose::STANDARD
-                .decode(b64.trim())
+                .decode(trimmed)
                 .map_err(|e| format!("audio_base64 is not valid base64: {e}"))?;
             if decoded.len() > cfg.max_audio_bytes {
                 return Err(format!(
@@ -85,8 +94,13 @@ pub async fn handle(state: &AppState, req: Request) -> Result<Response, String> 
 }
 
 async fn read_path(path: &str) -> Result<Vec<u8>, String> {
+    use tokio::io::AsyncReadExt;
     let resolved = iii_worker_paths::resolve_path(path);
-    let meta = tokio::fs::metadata(&resolved)
+    let file = tokio::fs::File::open(&resolved)
+        .await
+        .map_err(|e| format!("{}: {e}", resolved.display()))?;
+    let meta = file
+        .metadata()
         .await
         .map_err(|e| format!("{}: {e}", resolved.display()))?;
     if !meta.is_file() {
@@ -99,7 +113,16 @@ async fn read_path(path: &str) -> Result<Vec<u8>, String> {
             meta.len()
         ));
     }
-    tokio::fs::read(&resolved)
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    file.take(MAX_PATH_BYTES + 1)
+        .read_to_end(&mut bytes)
         .await
-        .map_err(|e| format!("read {}: {e}", resolved.display()))
+        .map_err(|e| format!("read {}: {e}", resolved.display()))?;
+    if bytes.len() as u64 > MAX_PATH_BYTES {
+        return Err(format!(
+            "{} grew past the {MAX_PATH_BYTES}-byte limit while it was read",
+            resolved.display()
+        ));
+    }
+    Ok(bytes)
 }

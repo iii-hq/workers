@@ -2050,7 +2050,6 @@ workers:
       - x86_64-apple-darwin
       - aarch64-apple-darwin
       - x86_64-unknown-linux-gnu
-      - aarch64-unknown-linux-gnu
       windows_exception: the speech engine publishes static libraries for glibc Linux and macOS only; no musl, armv7 or Windows archive to link
       frontends:
       - workspace_root: .

@@ -36,10 +36,6 @@ pub struct StartRequest {
     /// Sample rate of the audio the caller will push. Only 16000 is accepted.
     #[serde(default)]
     pub sample_rate: Option<u32>,
-    /// Language hint (ISO 639-1). The local model is English; the hint is
-    /// recorded for the remote backend.
-    #[serde(default)]
-    pub language: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]

@@ -139,9 +139,10 @@ Triggers: `voice::transcript`, `voice::session-started`,
   example `ffmpeg -i in.m4a -ac 1 -ar 16000 out.wav`.
 - Read-aloud on the `host` backend plays on the worker's machine. In a remote
   deployment use the `openai` backend so the audio reaches the browser.
-- Prebuilt binaries cover macOS (Intel and Apple silicon) and glibc Linux
-  (x86_64 and aarch64); the speech engine ships no static libraries for musl
-  or 32-bit ARM.
+- Prebuilt binaries cover macOS (Intel and Apple silicon) and x86_64 glibc
+  Linux. The speech engine publishes no static no-TTS archive for Linux on
+  aarch64, musl or 32-bit ARM, and the build only accepts archives whose
+  SHA-256 it pins.
 
 ## Licenses
 

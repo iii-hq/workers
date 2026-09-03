@@ -28,6 +28,9 @@ import type {
   TranscribeResponse,
 } from './types'
 
+const TRANSCRIBE_TIMEOUT_MS = 10 * 60 * 1000
+const DOWNLOAD_TIMEOUT_MS = 60 * 60 * 1000
+
 export function dictationStart(iii: ExtensionIii, req: DictationStartRequest): Promise<DictationStartResponse> {
   return iii.trigger<DictationStartResponse>('voice::dictation::start', req)
 }
@@ -45,7 +48,7 @@ export function dictationList(iii: ExtensionIii): Promise<DictationListResponse>
 }
 
 export function transcribe(iii: ExtensionIii, req: TranscribeRequest): Promise<TranscribeResponse> {
-  return iii.trigger<TranscribeResponse>('voice::transcribe', req)
+  return iii.trigger<TranscribeResponse>('voice::transcribe', req, { timeoutMs: TRANSCRIBE_TIMEOUT_MS })
 }
 
 export function speak(iii: ExtensionIii, req: SpeakRequest): Promise<SpeakResponse> {
@@ -61,7 +64,7 @@ export function modelsList(iii: ExtensionIii): Promise<ModelsListResponse> {
 }
 
 export function modelsDownload(iii: ExtensionIii, req: ModelsDownloadRequest = {}): Promise<ModelsDownloadResponse> {
-  return iii.trigger<ModelsDownloadResponse>('voice::models::download', req)
+  return iii.trigger<ModelsDownloadResponse>('voice::models::download', req, { timeoutMs: DOWNLOAD_TIMEOUT_MS })
 }
 
 export function modelsRemove(iii: ExtensionIii, req: ModelsRemoveRequest): Promise<ModelsRemoveResponse> {

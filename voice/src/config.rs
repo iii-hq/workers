@@ -199,6 +199,29 @@ fn default_max_sessions() -> usize {
     8
 }
 
+/// A bearer token may only travel over HTTPS or stay on this machine.
+pub fn check_bearer_transport(base_url: &str, api_key: &str) -> Result<(), String> {
+    if api_key.trim().is_empty() {
+        return Ok(());
+    }
+    let url = reqwest::Url::parse(base_url.trim())
+        .map_err(|e| format!("base_url `{base_url}` is not a valid URL: {e}"))?;
+    let loopback = url.host_str().is_some_and(|host| {
+        host.eq_ignore_ascii_case("localhost")
+            || host
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
+    });
+    if url.scheme() == "https" || (url.scheme() == "http" && loopback) {
+        return Ok(());
+    }
+    Err(format!(
+        "api_key is set but base_url `{base_url}` is not https; use https or leave api_key empty"
+    ))
+}
+
 fn default_session_idle_secs() -> u64 {
     120
 }
@@ -339,6 +362,9 @@ impl WorkerConfig {
         }
         if self.max_sessions == 0 {
             return Err("max_sessions must be at least 1".to_string());
+        }
+        if self.session_idle_secs == 0 {
+            return Err("session_idle_secs must be at least 1".to_string());
         }
         if self.stt.model.trim().is_empty() {
             return Err("stt.model must not be empty".to_string());
@@ -492,5 +518,29 @@ mod tests {
         let schema = WorkerConfig::json_schema();
         assert_eq!(schema["example"], WorkerConfig::default().to_json());
         assert!(schema["properties"]["stt"].is_object());
+    }
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+
+    #[test]
+    fn bearer_only_over_https_or_loopback() {
+        assert!(check_bearer_transport("https://api.openai.com/v1", "k").is_ok());
+        assert!(check_bearer_transport("http://127.0.0.1:8080/v1", "k").is_ok());
+        assert!(check_bearer_transport("http://localhost:8080/v1", "k").is_ok());
+        assert!(check_bearer_transport("http://[::1]:8080/v1", "k").is_ok());
+        assert!(check_bearer_transport("http://whisper.internal/v1", "k").is_err());
+        assert!(check_bearer_transport("http://whisper.internal/v1", "").is_ok());
+        assert!(check_bearer_transport("not a url", "k").is_err());
+    }
+
+    #[test]
+    fn idle_timeout_must_be_positive() {
+        let err = WorkerConfig::from_json(&serde_json::json!({ "session_idle_secs": 0 }))
+            .err()
+            .unwrap_or_default();
+        assert!(err.contains("session_idle_secs"), "{err}");
     }
 }

@@ -59,6 +59,7 @@ export function TranscribeSection({ host, focusSignal }: { host: Host; focusSign
   const [copied, setCopied] = useState(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const dropRef = useRef<HTMLButtonElement | null>(null)
+  const readGenerationRef = useRef(0)
 
   useEffect(() => {
     if (focusSignal > 0) dropRef.current?.focus()
@@ -66,6 +67,8 @@ export function TranscribeSection({ host, focusSignal }: { host: Host; focusSign
 
   const acceptFile = (candidate: File | undefined) => {
     if (!candidate) return
+    readGenerationRef.current += 1
+    const generation = readGenerationRef.current
     if (candidate.size > MAX_BYTES) {
       setFileError(
         `${candidate.name} is ${formatBytes(candidate.size)}; the inline limit is 10 MB. Pass a path instead.`,
@@ -75,8 +78,12 @@ export function TranscribeSection({ host, focusSignal }: { host: Host; focusSign
     }
     setFileError(null)
     readFileAsBase64(candidate)
-      .then((base64) => setFile({ name: candidate.name, size: candidate.size, base64 }))
-      .catch((err: unknown) => setFileError(errorMessage(err)))
+      .then((base64) => {
+        if (generation === readGenerationRef.current) setFile({ name: candidate.name, size: candidate.size, base64 })
+      })
+      .catch((err: unknown) => {
+        if (generation === readGenerationRef.current) setFileError(errorMessage(err))
+      })
   }
 
   const onInput = (event: ChangeEvent<HTMLInputElement>) => {

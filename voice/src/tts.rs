@@ -263,8 +263,10 @@ async fn remote_speech(
         "response_format": "mp3",
     });
     let mut request = client.post(&url).json(&body);
-    if !remote.api_key.trim().is_empty() {
-        request = request.bearer_auth(remote.api_key.trim());
+    let api_key = remote.api_key.trim();
+    if !api_key.is_empty() {
+        crate::config::check_bearer_transport(&remote.base_url, api_key)?;
+        request = request.bearer_auth(api_key);
     }
     let response = request
         .send()

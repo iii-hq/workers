@@ -5,7 +5,7 @@
  */
 
 import { Button, Chip, type Host, StatusPanel } from '@iii-dev/console-ui'
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { speak, speakStop } from '../lib/client'
 import { errorMessage } from '../lib/format'
 import { SpeakerIcon, StopIcon } from '../lib/icons'
@@ -34,6 +34,15 @@ export function ReadAloudSection({ host, report }: { host: Host; report: DoctorR
       timerRef.current = null
     }
   }
+
+  useEffect(
+    () => () => {
+      audioRef.current?.pause()
+      audioRef.current = null
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current)
+    },
+    [],
+  )
 
   const onSpeak = async () => {
     const body = text.trim()

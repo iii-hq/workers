@@ -20,12 +20,12 @@ const PARTIAL_MAX_CHARS = 48
 export function createVoiceSessionChip(host: Host, controller: DictationController): SessionChipRegistration {
   function VoiceMicChip(_props: SessionChipProps) {
     const [available, setAvailable] = useState(false)
-    const [clipboardResult, setClipboardResult] = useState<string | null>(null)
+    const [flash, setFlash] = useState<{ kind: 'copied' | 'failed'; text: string } | null>(null)
     const pointer = useMicPointer(controller, async (text) => {
-      if ((await deliverTranscript(host, text)) === 'clipboard') {
-        setClipboardResult(text)
-        window.setTimeout(() => setClipboardResult(null), MESSAGE_DISPLAY_MS)
-      }
+      const delivered = await deliverTranscript(host, text)
+      if (delivered === 'composer') return
+      setFlash({ kind: delivered === 'clipboard' ? 'copied' : 'failed', text })
+      window.setTimeout(() => setFlash(null), MESSAGE_DISPLAY_MS)
     })
 
     useEffect(() => {
@@ -47,9 +47,14 @@ export function createVoiceSessionChip(host: Host, controller: DictationControll
     return (
       <span className="voice-chip-root">
         <MicButton pointer={pointer} className="voice-chip-btn" />
-        {!pointer.listening && clipboardResult ? (
-          <span className="voice-chip-copied" title={clipboardResult}>
-            {truncate(clipboardResult, PARTIAL_MAX_CHARS)} · copied
+        {!pointer.listening && flash?.kind === 'copied' ? (
+          <span className="voice-chip-copied" title={flash.text}>
+            {truncate(flash.text, PARTIAL_MAX_CHARS)} · copied
+          </span>
+        ) : null}
+        {!pointer.listening && flash?.kind === 'failed' ? (
+          <span className="voice-chip-error" title={flash.text}>
+            clipboard blocked: {truncate(flash.text, PARTIAL_MAX_CHARS)}
           </span>
         ) : null}
         {!pointer.listening && pointer.errorFlash ? (

@@ -60,6 +60,24 @@ export function createVoiceConfigForm(host: Host) {
       if (!Number.isFinite(n) || n < min || (integer && !Number.isInteger(n))) return
       set(path, n)
     }
+    const [drafts, setDrafts] = useState<Record<string, string>>({})
+    const numberField = (path: readonly string[], fallback: number, integer: boolean, min = 0) => {
+      const key = path.join('.')
+      return {
+        value: drafts[key] ?? String(numberAt(value, path, fallback)),
+        onChange: (raw: string) => {
+          setDrafts((current) => ({ ...current, [key]: raw }))
+          setNumber(path, raw, integer, min)
+        },
+        onBlur: () => {
+          setDrafts((current) => {
+            if (!(key in current)) return current
+            const { [key]: _committed, ...rest } = current
+            return rest
+          })
+        },
+      }
+    }
 
     const sttBackend = stringAt(value, ['stt', 'backend'], DEFAULTS.sttBackend)
     const ttsBackend = stringAt(value, ['tts', 'backend'], DEFAULTS.ttsBackend)
@@ -137,8 +155,7 @@ export function createVoiceConfigForm(host: Host) {
                       type="number"
                       step="0.1"
                       min="0.2"
-                      value={String(numberAt(value, ['stt', 'silence_after_speech_secs'], DEFAULTS.silenceAfterSpeech))}
-                      onChange={(raw) => setNumber(['stt', 'silence_after_speech_secs'], raw, false, 0.1)}
+                      {...numberField(['stt', 'silence_after_speech_secs'], DEFAULTS.silenceAfterSpeech, false, 0.1)}
                     />
                   )}
                 />
@@ -152,8 +169,7 @@ export function createVoiceConfigForm(host: Host) {
                       type="number"
                       step="1"
                       min="2"
-                      value={String(numberAt(value, ['stt', 'max_utterance_secs'], DEFAULTS.maxUtterance))}
-                      onChange={(raw) => setNumber(['stt', 'max_utterance_secs'], raw, false, 1)}
+                      {...numberField(['stt', 'max_utterance_secs'], DEFAULTS.maxUtterance, false, 1)}
                     />
                   )}
                 />
@@ -167,10 +183,12 @@ export function createVoiceConfigForm(host: Host) {
                       type="number"
                       step="0.1"
                       min="1"
-                      value={String(
-                        numberAt(value, ['stt', 'silence_without_speech_secs'], DEFAULTS.silenceWithoutSpeech),
+                      {...numberField(
+                        ['stt', 'silence_without_speech_secs'],
+                        DEFAULTS.silenceWithoutSpeech,
+                        false,
+                        0.5,
                       )}
-                      onChange={(raw) => setNumber(['stt', 'silence_without_speech_secs'], raw, false, 0.5)}
                     />
                   )}
                 />
@@ -184,8 +202,7 @@ export function createVoiceConfigForm(host: Host) {
                       type="number"
                       step="1"
                       min="1"
-                      value={String(numberAt(value, ['stt', 'num_threads'], DEFAULTS.numThreads))}
-                      onChange={(raw) => setNumber(['stt', 'num_threads'], raw, true, 1)}
+                      {...numberField(['stt', 'num_threads'], DEFAULTS.numThreads, true, 1)}
                     />
                   )}
                 />
@@ -287,8 +304,7 @@ export function createVoiceConfigForm(host: Host) {
                       type="number"
                       step="10"
                       min="0"
-                      value={String(numberAt(value, ['tts', 'rate_wpm'], 0))}
-                      onChange={(raw) => setNumber(['tts', 'rate_wpm'], raw, true, 0)}
+                      {...numberField(['tts', 'rate_wpm'], 0, true, 0)}
                     />
                   )}
                 />
@@ -356,8 +372,7 @@ export function createVoiceConfigForm(host: Host) {
                     type="number"
                     step="100"
                     min="1"
-                    value={String(numberAt(value, ['tts', 'max_speak_chars'], DEFAULTS.maxSpeakChars))}
-                    onChange={(raw) => setNumber(['tts', 'max_speak_chars'], raw, true, 1)}
+                    {...numberField(['tts', 'max_speak_chars'], DEFAULTS.maxSpeakChars, true, 1)}
                   />
                 )}
               />
@@ -389,14 +404,22 @@ export function createVoiceConfigForm(host: Host) {
                   type="number"
                   step="1"
                   min="1"
-                  value={String(
-                    Math.round(numberAt(value, ['max_audio_bytes'], DEFAULTS.maxAudioBytes) / (1024 * 1024)),
-                  )}
+                  value={
+                    drafts.max_audio_bytes ??
+                    String(Math.round(numberAt(value, ['max_audio_bytes'], DEFAULTS.maxAudioBytes) / (1024 * 1024)))
+                  }
                   onChange={(raw) => {
+                    setDrafts((current) => ({ ...current, max_audio_bytes: raw }))
                     const mb = Number(raw)
                     if (raw.trim() === '') set(['max_audio_bytes'], undefined)
                     else if (Number.isInteger(mb) && mb >= 1) set(['max_audio_bytes'], mb * 1024 * 1024)
                   }}
+                  onBlur={() =>
+                    setDrafts((current) => {
+                      const { max_audio_bytes: _committed, ...rest } = current
+                      return rest
+                    })
+                  }
                 />
               )}
             />
@@ -410,8 +433,7 @@ export function createVoiceConfigForm(host: Host) {
                   type="number"
                   step="1"
                   min="1"
-                  value={String(numberAt(value, ['max_sessions'], DEFAULTS.maxSessions))}
-                  onChange={(raw) => setNumber(['max_sessions'], raw, true, 1)}
+                  {...numberField(['max_sessions'], DEFAULTS.maxSessions, true, 1)}
                 />
               )}
             />
@@ -425,8 +447,7 @@ export function createVoiceConfigForm(host: Host) {
                   type="number"
                   step="10"
                   min="10"
-                  value={String(numberAt(value, ['session_idle_secs'], DEFAULTS.sessionIdleSecs))}
-                  onChange={(raw) => setNumber(['session_idle_secs'], raw, true, 5)}
+                  {...numberField(['session_idle_secs'], DEFAULTS.sessionIdleSecs, true, 5)}
                 />
               )}
             />

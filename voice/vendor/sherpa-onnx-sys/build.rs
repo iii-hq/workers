@@ -203,6 +203,7 @@ fn download_prebuilt_libs(
             let mut reader = response.into_reader();
             write_reader_atomically(&mut reader, &archive_path)?;
         }
+        verify_archive_digest(&archive_path, &archive_name)?;
     }
 
     if extracted_dir.exists() {
@@ -778,6 +779,43 @@ fn copy_file_atomically(src: &Path, dst: &Path) -> Result<(), DynError> {
     }
     fs::copy(src, &temp_path)?;
     fs::rename(&temp_path, dst)?;
+    Ok(())
+}
+
+/// Local change: the release archives this build accepts, by SHA-256. A
+/// download that does not match is discarded, and a target without a pin
+/// cannot build from a downloaded archive.
+fn expected_archive_sha256(archive_name: &str) -> Option<&'static str> {
+    match archive_name {
+        "sherpa-onnx-v1.13.7-linux-x64-static-no-tts-lib.tar.bz2" => {
+            Some("649eb54d43ac1524ad674706d468928cb5275811beec72c7feef649bf517fb72")
+        }
+        "sherpa-onnx-v1.13.7-osx-x64-static-no-tts-lib.tar.bz2" => {
+            Some("44ecd6b5f4812521f28927a0e7b3801adb1ac7b6f01a240c649944aab0564ff0")
+        }
+        "sherpa-onnx-v1.13.7-osx-arm64-static-no-tts-lib.tar.bz2" => {
+            Some("37a6721dacb10ead2bcf55e4b9364ef87735134fc110fe8640581dddf271dd22")
+        }
+        _ => None,
+    }
+}
+
+fn verify_archive_digest(archive_path: &Path, archive_name: &str) -> Result<(), DynError> {
+    use sha2::{Digest, Sha256};
+    let expected = expected_archive_sha256(archive_name).ok_or_else(|| {
+        format!("no pinned SHA-256 for {archive_name}; this build only accepts the archives it pins")
+    })?;
+    let mut file = File::open(archive_path)?;
+    let mut hasher = Sha256::new();
+    io::copy(&mut file, &mut hasher)?;
+    let digest = format!("{:x}", hasher.finalize());
+    if digest != expected {
+        let _ = fs::remove_file(archive_path);
+        return Err(format!(
+            "{archive_name} failed its SHA-256 check (got {digest}, expected {expected}); the archive was discarded"
+        )
+        .into());
+    }
     Ok(())
 }
 

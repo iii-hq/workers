@@ -238,14 +238,15 @@ pub async fn download(
     Ok(written)
 }
 
-async fn download_one(
+/// Stream one file into `partial`, hashing as it lands. Returns the byte
+/// count and hex digest; the caller decides what to do with the file.
+async fn stream_to_partial(
     client: &reqwest::Client,
     spec: &ModelSpec,
     file: &ModelFile,
-    target: &Path,
+    partial: &Path,
     progress: Option<&ProgressSink>,
-) -> Result<u64, String> {
-    let partial = target.with_extension("part");
+) -> Result<(u64, String), String> {
     let response = client
         .get(file.url)
         .send()
@@ -253,7 +254,7 @@ async fn download_one(
         .map_err(|e| format!("GET {}: {e}", file.url))?
         .error_for_status()
         .map_err(|e| format!("GET {}: {e}", file.url))?;
-    let mut out = tokio::fs::File::create(&partial)
+    let mut out = tokio::fs::File::create(partial)
         .await
         .map_err(|e| format!("create {}: {e}", partial.display()))?;
     let mut hasher = Sha256::new();
@@ -282,8 +283,24 @@ async fn download_one(
         }
     }
     out.flush().await.map_err(|e| format!("flush: {e}"))?;
-    drop(out);
-    let digest = format!("{:x}", hasher.finalize());
+    Ok((received, format!("{:x}", hasher.finalize())))
+}
+
+async fn download_one(
+    client: &reqwest::Client,
+    spec: &ModelSpec,
+    file: &ModelFile,
+    target: &Path,
+    progress: Option<&ProgressSink>,
+) -> Result<u64, String> {
+    let partial = target.with_extension(format!("{}.part", uuid::Uuid::new_v4().simple()));
+    let (received, digest) = match stream_to_partial(client, spec, file, &partial, progress).await {
+        Ok(done) => done,
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&partial).await;
+            return Err(e);
+        }
+    };
     if digest != file.sha256 {
         let _ = tokio::fs::remove_file(&partial).await;
         return Err(format!(
@@ -298,9 +315,10 @@ async fn download_one(
             file.name, file.size_bytes
         ));
     }
-    tokio::fs::rename(&partial, target)
-        .await
-        .map_err(|e| format!("rename {}: {e}", target.display()))?;
+    if let Err(e) = tokio::fs::rename(&partial, target).await {
+        let _ = tokio::fs::remove_file(&partial).await;
+        return Err(format!("rename {}: {e}", target.display()));
+    }
     if let Some(sink) = progress {
         sink(Progress {
             id: spec.id.to_string(),

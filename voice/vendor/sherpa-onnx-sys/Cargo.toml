@@ -26,6 +26,7 @@ shared = []
 
 [build-dependencies]
 bzip2 = "0.4"
+sha2 = "0.10"
 tar = "0.4"
 ureq = { version = "2.12", features = ["proxy-from-env"] }
 zip = "2"

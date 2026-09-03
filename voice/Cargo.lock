@@ -1700,6 +1700,7 @@ name = "sherpa-onnx-sys"
 version = "1.13.7"
 dependencies = [
  "bzip2 0.4.4",
+ "sha2",
  "tar",
  "ureq",
  "zip",

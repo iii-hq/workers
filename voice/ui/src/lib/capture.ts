@@ -54,24 +54,32 @@ function buildWorkletModuleSource(): string {
     '    this._chunks = []',
     '    this._bufferedSamples = 0',
     `    this._batchSamples = Math.ceil((sampleRate * ${BATCH_MS}) / 1000)`,
+    '    this.port.onmessage = (event) => {',
+    '      if (event.data && event.data.flush) {',
+    '        this._flush()',
+    '        this.port.postMessage({ flushed: true })',
+    '      }',
+    '    }',
+    '  }',
+    '  _flush() {',
+    '    if (this._bufferedSamples === 0) return',
+    '    const merged = new Float32Array(this._bufferedSamples)',
+    '    let offset = 0',
+    '    for (const chunk of this._chunks) {',
+    '      merged.set(chunk, offset)',
+    '      offset += chunk.length',
+    '    }',
+    '    this._chunks = []',
+    '    this._bufferedSamples = 0',
+    '    const pcm16 = resampleTo16kMonoInt16(merged, sampleRate)',
+    '    this.port.postMessage({ pcm16: pcm16.buffer }, [pcm16.buffer])',
     '  }',
     '  process(inputs) {',
     '    const channel = inputs[0] && inputs[0][0]',
     '    if (channel && channel.length) {',
     '      this._chunks.push(channel.slice())',
     '      this._bufferedSamples += channel.length',
-    '      if (this._bufferedSamples >= this._batchSamples) {',
-    '        const merged = new Float32Array(this._bufferedSamples)',
-    '        let offset = 0',
-    '        for (const chunk of this._chunks) {',
-    '          merged.set(chunk, offset)',
-    '          offset += chunk.length',
-    '        }',
-    '        this._chunks = []',
-    '        this._bufferedSamples = 0',
-    '        const pcm16 = resampleTo16kMonoInt16(merged, sampleRate)',
-    '        this.port.postMessage({ pcm16: pcm16.buffer }, [pcm16.buffer])',
-    '      }',
+    '      if (this._bufferedSamples >= this._batchSamples) this._flush()',
     '    }',
     '    return true',
     '  }',
@@ -121,9 +129,11 @@ export interface StartCaptureOptions {
   onChunk: (chunk: CaptureChunk) => void
 }
 
+const FLUSH_TIMEOUT_MS = 300
+
 export interface CaptureHandle {
-  /** Release the track, disconnect the graph and close the context. */
-  stop: () => void
+  /** Deliver the audio still buffered, then release the track, disconnect the graph and close the context. */
+  stop: () => Promise<void>
 }
 
 export async function startCapture(options: StartCaptureOptions): Promise<CaptureHandle> {
@@ -135,13 +145,34 @@ export async function startCapture(options: StartCaptureOptions): Promise<Captur
   } catch (err) {
     throw new Error(permissionErrorMessage(err))
   }
+  try {
+    return await wireGraph(stream, options)
+  } catch (err) {
+    for (const track of stream.getTracks()) track.stop()
+    throw err
+  }
+}
 
-  const AudioContextCtor = resolveAudioContextCtor()
-  const audioContext = createContextAt16k(AudioContextCtor)
+async function wireGraph(stream: MediaStream, options: StartCaptureOptions): Promise<CaptureHandle> {
+  const audioContext = createContextAt16k(resolveAudioContextCtor())
+  try {
+    return await wireNodes(audioContext, stream, options)
+  } catch (err) {
+    audioContext.close().catch(() => {})
+    throw err
+  }
+}
+
+async function wireNodes(
+  audioContext: AudioContext,
+  stream: MediaStream,
+  options: StartCaptureOptions,
+): Promise<CaptureHandle> {
   const source = audioContext.createMediaStreamSource(stream)
   const supportsWorklet = typeof AudioWorkletNode !== 'undefined' && 'audioWorklet' in audioContext
 
   let teardown: () => void
+  let flush: () => Promise<void>
 
   if (supportsWorklet) {
     const blob = new Blob([buildWorkletModuleSource()], { type: 'application/javascript' })
@@ -152,11 +183,22 @@ export async function startCapture(options: StartCaptureOptions): Promise<Captur
       URL.revokeObjectURL(url)
     }
     const node = new AudioWorkletNode(audioContext, WORKLET_NAME)
+    let flushed: (() => void) | null = null
     node.port.onmessage = (event: MessageEvent) => {
-      const data = event.data as { pcm16: ArrayBuffer }
-      options.onChunk({ pcm16: new Int16Array(data.pcm16) })
+      const data = event.data as { pcm16?: ArrayBuffer; flushed?: boolean }
+      if (data.pcm16) options.onChunk({ pcm16: new Int16Array(data.pcm16) })
+      if (data.flushed) flushed?.()
     }
     source.connect(node)
+    flush = () =>
+      new Promise<void>((resolve) => {
+        const timer = window.setTimeout(resolve, FLUSH_TIMEOUT_MS)
+        flushed = () => {
+          window.clearTimeout(timer)
+          resolve()
+        }
+        node.port.postMessage({ flush: true })
+      })
     teardown = () => {
       node.port.onmessage = null
       node.disconnect()
@@ -167,24 +209,27 @@ export async function startCapture(options: StartCaptureOptions): Promise<Captur
     let chunks: Float32Array[] = []
     let bufferedSamples = 0
     const batchSamples = Math.ceil((audioContext.sampleRate * BATCH_MS) / 1000)
+    const emit = () => {
+      if (bufferedSamples === 0) return
+      const merged = new Float32Array(bufferedSamples)
+      let offset = 0
+      for (const chunk of chunks) {
+        merged.set(chunk, offset)
+        offset += chunk.length
+      }
+      chunks = []
+      bufferedSamples = 0
+      options.onChunk({ pcm16: resampleTo16kMonoInt16(merged, audioContext.sampleRate) })
+    }
     processor.onaudioprocess = (event: AudioProcessingEvent) => {
       const channel = event.inputBuffer.getChannelData(0)
       chunks.push(channel.slice())
       bufferedSamples += channel.length
-      if (bufferedSamples >= batchSamples) {
-        const merged = new Float32Array(bufferedSamples)
-        let offset = 0
-        for (const chunk of chunks) {
-          merged.set(chunk, offset)
-          offset += chunk.length
-        }
-        chunks = []
-        bufferedSamples = 0
-        options.onChunk({ pcm16: resampleTo16kMonoInt16(merged, audioContext.sampleRate) })
-      }
+      if (bufferedSamples >= batchSamples) emit()
     }
     source.connect(processor)
     processor.connect(audioContext.destination)
+    flush = async () => emit()
     teardown = () => {
       processor.onaudioprocess = null
       processor.disconnect()
@@ -193,9 +238,10 @@ export async function startCapture(options: StartCaptureOptions): Promise<Captur
 
   let stopped = false
   return {
-    stop: () => {
+    stop: async () => {
       if (stopped) return
       stopped = true
+      await flush()
       teardown()
       source.disconnect()
       for (const track of stream.getTracks()) track.stop()

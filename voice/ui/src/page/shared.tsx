@@ -65,9 +65,9 @@ export function formatBytes(bytes: number): string {
 export function formatDuration(secs: number): string {
   if (!Number.isFinite(secs) || secs < 0) return '0s'
   if (secs < 60) return `${secs.toFixed(secs < 10 ? 1 : 0)}s`
-  const minutes = Math.floor(secs / 60)
-  const rest = Math.round(secs - minutes * 60)
-  return `${minutes}m ${rest}s`
+  const total = Math.round(secs)
+  const minutes = Math.floor(total / 60)
+  return `${minutes}m ${total - minutes * 60}s`
 }
 
 export function useBusyAction(
