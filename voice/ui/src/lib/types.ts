@@ -114,6 +114,8 @@ export interface ModelInfo {
   kind?: 'streaming_transducer' | 'offline_nemo_transducer'
   languages: string[]
   license?: string
+  author?: string
+  source?: string
   size_bytes: number
   installed: boolean
 }

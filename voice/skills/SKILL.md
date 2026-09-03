@@ -29,7 +29,7 @@ Local speech-to-text and read-aloud on the iii bus. Nothing leaves the machine b
 - `voice::dictation::list` — open sessions.
 - `voice::speak` — read text aloud; returns a `speech_id`.
 - `voice::speak::stop` — stop host playback.
-- `voice::models::list` — local models and whether each is installed.
+- `voice::models::list` — local models, whether each is installed, and each one's license, author and source (Parakeet TDT 0.6B v2 is CC BY 4.0: keep the attribution if you copy its files elsewhere).
 - `voice::models::download` — install a local model, checksum-verified.
 - `voice::models::remove` — delete a downloaded model.
 - `voice::doctor` — backends, model state, open sessions.

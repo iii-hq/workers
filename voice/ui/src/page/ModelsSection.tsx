@@ -117,7 +117,17 @@ export function ModelsSection({
                     </span>
                     <span className="voice-sub">
                       {purpose} · {m.languages.join(', ')} · {formatBytes(m.size_bytes)}
-                      {m.license ? ` · ${m.license}` : ''}
+                    </span>
+                    <span className="voice-sub">
+                      {m.author ? `by ${m.author}` : ''}
+                      {m.author && m.license ? ' · ' : ''}
+                      {m.source ? (
+                        <a className="voice-link" href={m.source} target="_blank" rel="noreferrer">
+                          {m.license ?? 'model card'}
+                        </a>
+                      ) : (
+                        (m.license ?? '')
+                      )}
                     </span>
                     <span className="voice-mono voice-sub">{m.id}</span>
                   </div>

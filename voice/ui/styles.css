@@ -611,3 +611,13 @@
   display: block;
   margin-top: 0.25rem;
 }
+
+[data-iii-ui='voice'] .voice-link {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+[data-iii-ui='voice'] .voice-link:hover {
+  color: var(--ui-fg, inherit);
+}

@@ -31,7 +31,12 @@ pub struct ModelEntry {
     /// (second pass).
     pub kind: crate::models::ModelKind,
     pub languages: Vec<String>,
+    /// SPDX id of the model weights' license.
     pub license: String,
+    /// Who trained the model; CC-BY weights must carry this when redistributed.
+    pub author: String,
+    /// Model card with the license text and the files' origin.
+    pub source: String,
     pub size_bytes: u64,
     pub installed: bool,
 }
@@ -58,6 +63,8 @@ pub async fn list(state: &AppState, _req: ListRequest) -> Result<ListResponse, S
                 kind: m.kind,
                 languages: m.languages.iter().map(|l| l.to_string()).collect(),
                 license: m.license.to_string(),
+                author: m.author.to_string(),
+                source: m.source.to_string(),
                 size_bytes: m.size_bytes(),
                 installed: m.is_installed(&dir),
             })

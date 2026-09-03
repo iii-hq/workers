@@ -51,6 +51,10 @@ pub struct ModelSpec {
     pub kind: ModelKind,
     pub languages: &'static [&'static str],
     pub license: &'static str,
+    /// Who trained the model; the attribution its license asks for.
+    pub author: &'static str,
+    /// Page the files come from, with the license text and model card.
+    pub source: &'static str,
     pub files: &'static [ModelFile],
     pub encoder: &'static str,
     pub decoder: &'static str,
@@ -145,6 +149,9 @@ static CATALOG: [ModelSpec; 2] = [
         kind: ModelKind::StreamingTransducer,
         languages: &["en"],
         license: "Apache-2.0",
+        author: "k2-fsa (icefall)",
+        source:
+            "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17",
         files: &ZIPFORMER_EN_20M_FILES,
         encoder: "encoder-epoch-99-avg-1.int8.onnx",
         decoder: "decoder-epoch-99-avg-1.int8.onnx",
@@ -157,6 +164,8 @@ static CATALOG: [ModelSpec; 2] = [
         kind: ModelKind::OfflineNemoTransducer,
         languages: &["en"],
         license: "CC-BY-4.0",
+        author: "NVIDIA",
+        source: "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8",
         files: &PARAKEET_TDT_06B_V2_FILES,
         encoder: "encoder.int8.onnx",
         decoder: "decoder.int8.onnx",

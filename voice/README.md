@@ -143,6 +143,10 @@ Triggers: `voice::transcript`, `voice::session-started`,
   (x86_64 and aarch64); the speech engine ships no static libraries for musl
   or 32-bit ARM.
 
+## Licenses
+
+The worker is Apache-2.0. Everything it links, downloads or runs is listed with its license and source in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md). In short: sherpa-onnx and its Kaldi-derived libraries are Apache-2.0, ONNX Runtime is MIT, KISS FFT is BSD-3-Clause; the streaming Zipformer model is Apache-2.0 and Parakeet TDT 0.6B v2 is NVIDIA's under CC BY 4.0, with the attribution text in the notices file. The build links the no-TTS archives and drops espeak-ng and its `ucd` tables (GPL-3.0), so no GPL code is in the binary; on Linux, read-aloud runs `espeak-ng` as a separate program when it is installed. Models are downloaded on the user's machine from Hugging Face on first use, and `voice::models::list` reports each model's license, author and source.
+
 ## Development
 
 ```bash
