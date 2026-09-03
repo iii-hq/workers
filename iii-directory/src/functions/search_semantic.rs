@@ -8,7 +8,7 @@ use model2vec_rs::model::StaticModel;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+#[cfg(minilm)]
 use fastembed::{
     InitOptionsUserDefined, OnnxSource, Pooling, RerankInitOptionsUserDefined, RerankResult,
     TextEmbedding, TextRerank, TokenizerFiles, UserDefinedEmbeddingModel,
@@ -120,7 +120,7 @@ impl ModelKind {
 
 enum LoadedModel {
     Potion(StaticModel),
-    #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+    #[cfg(minilm)]
     MiniLm(Mutex<TextEmbedding>),
 }
 
@@ -130,13 +130,13 @@ impl LoadedModel {
         texts: &[String],
         batch_size: Option<usize>,
     ) -> Result<Vec<Vec<f32>>, SemanticUnavailable> {
-        #[cfg(not(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu")))]
+        #[cfg(not(minilm))]
         let _ = batch_size;
         match self {
             Self::Potion(model) => {
                 catch_encoding(|| model.encode_with_args(texts, Some(512), 1024))
             }
-            #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+            #[cfg(minilm)]
             Self::MiniLm(model) => {
                 if texts.is_empty() {
                     return Ok(Vec::new());
@@ -164,7 +164,7 @@ struct Inner {
     model_dir: Option<PathBuf>,
     model_kind: ModelKind,
     model: RwLock<Option<Arc<LoadedModel>>>,
-    #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+    #[cfg(minilm)]
     reranker: RwLock<Option<Arc<Mutex<TextRerank>>>>,
     active: RwLock<Option<Arc<DenseIndex>>>,
     desired_catalog: Mutex<Option<String>>,
@@ -177,7 +177,7 @@ impl Default for Inner {
             model_dir: None,
             model_kind: ModelKind::Potion,
             model: RwLock::default(),
-            #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+            #[cfg(minilm)]
             reranker: RwLock::default(),
             active: RwLock::default(),
             desired_catalog: Mutex::default(),
@@ -320,7 +320,7 @@ impl SemanticSearch {
                 searchable_texts,
                 vectors,
             };
-            #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+            #[cfg(minilm)]
             if inner.model_kind == ModelKind::MiniLm {
                 let reranker = match inner.reranker.read() {
                     Ok(current) => current.clone(),
@@ -405,7 +405,7 @@ impl SemanticSearch {
             .collect()
     }
 
-    #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+    #[cfg(minilm)]
     pub(crate) async fn rerank(
         &self,
         catalog_fingerprint: &str,
@@ -479,14 +479,14 @@ impl SemanticSearch {
         .map_err(|error| unavailable(format!("rerank task failed: {error}")))?
     }
 
-    #[cfg(not(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu")))]
+    #[cfg(not(minilm))]
     pub(crate) async fn rerank(
         &self,
         _catalog_fingerprint: &str,
         _queries: &[String],
         _candidate_ids: &[Vec<String>],
     ) -> Result<Vec<Vec<(String, f64)>>, SemanticUnavailable> {
-        Err(unavailable("production MiniLM support is not compiled"))
+        Err(unavailable("MiniLM is not compiled for this target"))
     }
 
     #[cfg(test)]
@@ -1035,7 +1035,7 @@ fn load_verified_model(
     }
 }
 
-#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+#[cfg(minilm)]
 fn tokenizer_files(root: &Path) -> Result<TokenizerFiles, SemanticUnavailable> {
     let read = |name: &str| {
         let path = root.join(name);
@@ -1050,7 +1050,7 @@ fn tokenizer_files(root: &Path) -> Result<TokenizerFiles, SemanticUnavailable> {
     })
 }
 
-#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+#[cfg(minilm)]
 fn load_verified_minilm(path: &Path) -> Result<LoadedModel, SemanticUnavailable> {
     verify_artifacts(path, &MINILM_FILES)?;
     let onnx = std::fs::read(path.join("onnx/model.onnx"))
@@ -1070,12 +1070,12 @@ fn load_verified_minilm(path: &Path) -> Result<LoadedModel, SemanticUnavailable>
     Ok(loaded)
 }
 
-#[cfg(not(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu")))]
+#[cfg(not(minilm))]
 fn load_verified_minilm(_path: &Path) -> Result<LoadedModel, SemanticUnavailable> {
-    Err(unavailable("production MiniLM support is not compiled"))
+    Err(unavailable("MiniLM is not compiled for this target"))
 }
 
-#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+#[cfg(minilm)]
 fn load_verified_reranker(path: &Path) -> Result<TextRerank, SemanticUnavailable> {
     verify_artifacts(path, &RERANKER_FILES)?;
     let onnx = std::fs::read(path.join("onnx/model.onnx"))
@@ -1091,7 +1091,7 @@ fn load_verified_reranker(path: &Path) -> Result<TextRerank, SemanticUnavailable
     .map_err(|error| unavailable(format!("initialize reranker: {error}")))
 }
 
-#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+#[cfg(minilm)]
 fn map_rerank_results(
     candidate_ids: &[String],
     results: &[RerankResult],
@@ -1115,7 +1115,7 @@ fn map_rerank_results(
         .collect()
 }
 
-#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+#[cfg(minilm)]
 fn normalize_minilm_embedding(embedding: &mut [f32]) -> Result<(), SemanticUnavailable> {
     if embedding.len() != MINILM_DIMENSIONS || embedding.iter().any(|value| !value.is_finite()) {
         return Err(unavailable("invalid MiniLM embedding dimensions or values"));
@@ -1321,7 +1321,7 @@ mod tests {
         assert_eq!(semantic.model_revision(), MINILM_REVISION);
     }
 
-    #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+    #[cfg(minilm)]
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "requires III_DIRECTORY_MINILM_MODEL_PATH and the pinned ONNX runtime"]
     async fn real_production_minilm_retrieval_and_reranker_round_trip() {

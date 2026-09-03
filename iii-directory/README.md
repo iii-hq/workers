@@ -506,16 +506,19 @@ script — is not suppressed and will re-trigger itself. Either write through
 
 ### Run from source
 
-On `x86_64-unknown-linux-gnu` every build links the pinned static ONNX Runtime
-(MiniLM retrieval and reranking are always compiled in; ort-sys never downloads
-it). Provision it once, then export the path it prints:
+On targets with a pinned static ONNX Runtime (Linux glibc x86_64/aarch64,
+Apple Silicon macOS, Windows MSVC) every build links it and MiniLM retrieval
+and reranking are compiled in. With no `ORT_LIB_PATH`, `ort-sys` downloads the
+runtime for the build target at build time (SHA-256-verified). For offline or
+cached x86_64 Linux builds, provision it once and export the path it prints:
 
 ```bash
 export ORT_LIB_PATH="$(scripts/provision-onnxruntime.sh)"   # idempotent, SHA-256 verified
-export ORT_PREFER_DYNAMIC_LINK=0 ORT_CXX_STDLIB=stdc++
+export ORT_PREFER_DYNAMIC_LINK=0
 ```
 
-Other targets build the BM25-only worker and need nothing extra.
+Other targets (musl, armv7, Intel macOS) build the BM25-only worker and need
+nothing extra.
 
 ```bash
 # --config is an optional YAML seed (see config.yaml.example); omit it to

@@ -40,9 +40,11 @@ operations remain unconfigured.
 
 ## Runtime prerequisites
 
-MiniLM retrieval and reranking are always compiled into `iii-directory` on
-Linux x86_64 GNU (other targets build the BM25-only worker). The compose file
-uses these portable defaults:
+MiniLM retrieval and reranking are compiled into `iii-directory` on every
+target for which `ort-sys` ships a pinned, SHA-256-verified static ONNX
+Runtime: Linux glibc x86_64 and aarch64, Apple Silicon macOS, and Windows
+MSVC. Other targets (musl, armv7, Intel macOS) build the BM25-only worker and
+log that at boot. The compose file uses these portable defaults:
 
 - Model bundle:
   `~/.cache/iii/all-MiniLM-L6-v2-c9745ed1d9f207416be6d2e6f8de32d1f16199bf`
@@ -58,10 +60,11 @@ uses these portable defaults:
 The model directory must contain the embedding files at its root and the
 reranker files under `reranker/`. At startup, the directory worker verifies all
 ten files by exact byte length and SHA-256 before loading them. The ONNX runtime
-directory must contain `libonnxruntime.a`; `iii-directory/scripts/provision-onnxruntime.sh`
-downloads and verifies it once (no network when already present), and
-`ORT_LIB_PATH` overrides its default location. Every `iii-directory` build on this
-target links it, including `harness/worker-compose.yaml`.
+directory must contain `libonnxruntime.a`. Without `ORT_LIB_PATH`, `ort-sys`
+downloads the pinned runtime for the build target itself at build time
+(verified against its own manifest); `iii-directory/scripts/provision-onnxruntime.sh`
+pre-provisions the x86_64 Linux archive for offline or cached builds, and
+`ORT_LIB_PATH` points at it (as `harness/worker-compose.yaml` does).
 
 Slack and Telegram use the repository's interface-collection token in this
 stack. This lets both workers register their static function surfaces without

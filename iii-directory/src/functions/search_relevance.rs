@@ -1538,7 +1538,7 @@ async fn write_search_relevance_baseline() {
     }
 }
 
-#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+#[cfg(minilm)]
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires a live catalog snapshot and III_DIRECTORY_MINILM_MODEL_PATH"]
 async fn benchmark_bm25_against_minilm_production() {
@@ -1639,7 +1639,7 @@ async fn benchmark_bm25_against_minilm_production() {
 /// as the benchmark; writes one JSON array to
 /// `III_DIRECTORY_SEARCH_ADMISSION_OUTPUT` (default
 /// `target/search-eval/admission-scores.json`).
-#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
+#[cfg(minilm)]
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires a live catalog snapshot and III_DIRECTORY_MINILM_MODEL_PATH"]
 async fn record_admission_scores_per_stage() {

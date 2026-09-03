@@ -233,10 +233,10 @@ jobs:
       # browser-scrapling-e2e.yml's compat-certification job on every
       # browser/** PR, so the generic gate covers browser's default feature
       # set instead of duplicating the artifact plumbing here.
-      # iii-directory always links a pinned static ONNX Runtime on
-      # x86_64-unknown-linux-gnu (ort-sys with download disabled, so cargo never
-      # fetches it). The script downloads the same archive ort-sys would use,
-      # verified by SHA-256 at both layers, so clippy/test binaries can link.
+      # iii-directory links a pinned static ONNX Runtime. ort-sys would download
+      # it at build time itself; pre-provisioning through the script (same
+      # archive, SHA-256 verified at both layers) keeps the build offline-safe
+      # and cacheable on this runner.
       - name: Provision static ONNX Runtime (iii-directory)
         if: matrix.worker == 'iii-directory'
         run: |
@@ -245,7 +245,6 @@ jobs:
           {
             echo "ORT_LIB_PATH=$root"
             echo "ORT_PREFER_DYNAMIC_LINK=0"
-            echo "ORT_CXX_STDLIB=stdc++"
           } >> "$GITHUB_ENV"
 
       - name: Run clippy
@@ -650,7 +649,6 @@ jobs:
           {
             echo "ORT_LIB_PATH=$root"
             echo "ORT_PREFER_DYNAMIC_LINK=0"
-            echo "ORT_CXX_STDLIB=stdc++"
           } >> "$GITHUB_ENV"
 
       # Build with default features so we boot the same artifact that ships

@@ -82,7 +82,6 @@ containers:
     environment:
       RUST_LOG: info
       ORT_PREFER_DYNAMIC_LINK: "0"
-      ORT_CXX_STDLIB: stdc++
     scripts:
       # iii-directory links the pinned static ONNX Runtime; provision once with
       # ../iii-directory/scripts/provision-onnxruntime.sh (or point ORT_LIB_PATH).

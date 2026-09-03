@@ -131,7 +131,6 @@ containers:
     environment:
       RUST_LOG: info
       ORT_PREFER_DYNAMIC_LINK: "0"
-      ORT_CXX_STDLIB: stdc++
     scripts:
       run: >-
         ORT_LIB_PATH="${ORT_LIB_PATH:-$HOME/.cache/iii/onnxruntime-static-1.28.0-x86_64-unknown-linux-gnu}"

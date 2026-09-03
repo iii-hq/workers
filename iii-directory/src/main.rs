@@ -149,17 +149,15 @@ async fn main() -> Result<()> {
     // `cache_ttl_ms` cell read by both caches.
     let boot_topology = cfg.topology();
     let function_search_model_path = cfg.resolved_function_search_model_path();
-    // MiniLM is compiled only for x86_64 Linux GNU; elsewhere a semantic mode
-    // serves BM25 and neither a download nor a missing-bundle warning helps.
-    let minilm_supported = cfg!(all(
-        target_arch = "x86_64",
-        target_os = "linux",
-        target_env = "gnu"
-    ));
+    // MiniLM is compiled only for targets with a pinned ONNX Runtime (see
+    // build.rs); elsewhere a semantic mode serves BM25 and neither a download
+    // nor a missing-bundle warning helps.
+    let minilm_supported = cfg!(minilm);
     if !minilm_supported && cfg.function_search_mode != FunctionSearchMode::Lexical {
         tracing::info!(
             mode = ?cfg.function_search_mode,
-            "semantic search modes need x86_64 Linux GNU; this build serves BM25 only"
+            target = env!("TARGET"),
+            "no pinned ONNX Runtime for this target; this build serves BM25 only"
         );
     }
     if minilm_supported
