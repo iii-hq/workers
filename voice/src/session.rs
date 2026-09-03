@@ -10,7 +10,7 @@
 //! saw. A session that goes quiet for `session_idle_secs` is closed by the
 //! sweep with reason `idle`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -98,6 +98,44 @@ impl Refiner {
     }
 }
 
+/// One committed segment on its way to the second pass.
+struct RefineJob {
+    index: usize,
+    audio: Vec<f32>,
+    refiner: Option<Arc<Refiner>>,
+}
+
+/// Second passes finish in any order; Final events must leave in segment
+/// order. Each staged segment waits here until every earlier one has its
+/// text. A settled `None` keeps the streaming text.
+#[derive(Default)]
+struct RefineQueue {
+    pending: VecDeque<(usize, Option<String>)>,
+}
+
+impl RefineQueue {
+    fn stage(&mut self, index: usize) {
+        self.pending.push_back((index, None));
+    }
+
+    fn settle(&mut self, index: usize, refined: Option<String>) -> Vec<(usize, Option<String>)> {
+        if let Some(slot) = self.pending.iter_mut().find(|(i, _)| *i == index) {
+            slot.1 = Some(refined.unwrap_or_default());
+        }
+        let mut ready = Vec::new();
+        while self.pending.front().is_some_and(|(_, text)| text.is_some()) {
+            let (index, text) = self.pending.pop_front().expect("front was checked");
+            let text = text.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+            ready.push((index, text));
+        }
+        ready
+    }
+
+    fn clear(&mut self) {
+        self.pending.clear();
+    }
+}
+
 pub struct Session {
     pub id: String,
     pub output_function_id: String,
@@ -110,6 +148,10 @@ pub struct Session {
     partial: String,
     /// Audio since the last committed segment, for the second pass.
     utterance: Vec<f32>,
+    /// Committed segments whose second pass has not settled yet.
+    queue: RefineQueue,
+    /// Second passes still running; drained on stop.
+    passes: Vec<tokio::task::JoinHandle<()>>,
     pub started_at: Instant,
     last_audio: Instant,
 }
@@ -154,25 +196,41 @@ impl Session {
         }
     }
 
-    /// Commit one streaming segment: the second pass replaces its text when
-    /// the model is loaded and heard something; the utterance buffer keeps
-    /// only a short tail so the next utterance's onset survives.
-    async fn commit(&mut self, mut seg: Segment) -> TranscriptEvent {
-        if let Some(refiner) = self.refiner.clone() {
-            let audio = self.utterance.clone();
-            match refiner.refine(audio).await {
-                Ok(refined) if !refined.trim().is_empty() => seg.text = refined.trim().to_string(),
-                Ok(_) => {}
-                Err(e) => tracing::warn!(error = %e, "second pass failed; streaming text stands"),
-            }
-        }
+    /// Commit one streaming segment: its transcript slot is reserved now and
+    /// its audio goes to the second pass, which runs off the session lock so
+    /// live words keep flowing meanwhile. The utterance buffer keeps only a
+    /// short tail so the next utterance's onset survives.
+    fn stage(&mut self, seg: Segment) -> RefineJob {
+        let audio = self.utterance.clone();
         let keep = self.utterance.len().min(ONSET_PAD_SAMPLES);
         let tail = self.utterance.split_off(self.utterance.len() - keep);
         self.utterance = tail;
         self.partial.clear();
-        let text = seg.text.clone();
+        let index = self.segments.len();
         self.segments.push(seg);
-        self.event(TranscriptKind::Final, text, None)
+        self.queue.stage(index);
+        RefineJob {
+            index,
+            audio,
+            refiner: self.refiner.clone(),
+        }
+    }
+
+    /// Take one finished second pass and turn every segment that is now
+    /// complete, front of the queue first, into its Final event.
+    fn settle(&mut self, index: usize, refined: Option<String>) -> Vec<TranscriptEvent> {
+        let mut events = Vec::new();
+        for (index, refined) in self.queue.settle(index, refined) {
+            if let Some(refined) = refined {
+                self.segments[index].text = refined;
+            }
+            let text = self.segments[index].text.clone();
+            let segment = self.segments[index].segment;
+            let mut event = self.event(TranscriptKind::Final, text, None);
+            event.segment = segment;
+            events.push(event);
+        }
+        events
     }
 
     fn transcript(&self) -> Transcript {
@@ -292,6 +350,8 @@ impl Sessions {
             segments: Vec::new(),
             partial: String::new(),
             utterance: Vec::new(),
+            queue: RefineQueue::default(),
+            passes: Vec::new(),
             started_at: Instant::now(),
             last_audio: Instant::now(),
         };
@@ -338,8 +398,11 @@ impl Sessions {
         let step = session.stream.feed(&samples);
         let mut events = Vec::new();
         for seg in step.finals {
-            events.push(session.commit(seg).await);
+            let job = session.stage(seg);
+            let pass = self.spawn_pass(handle.clone(), job);
+            session.passes.push(pass);
         }
+        session.passes.retain(|pass| !pass.is_finished());
         if let Some(partial) = step.partial {
             session.partial = partial.clone();
             events.push(session.event(TranscriptKind::Partial, partial, None));
@@ -362,13 +425,24 @@ impl Sessions {
             .ok_or_else(|| format!("no dictation session `{id}`"))?;
         let mut session = handle.lock().await;
         let mut events = Vec::new();
-        if !discard {
-            for seg in session.stream.finish() {
-                events.push(session.commit(seg).await);
+        if discard {
+            for pass in session.passes.drain(..) {
+                pass.abort();
             }
-        } else {
+            session.queue.clear();
             session.segments.clear();
             session.partial.clear();
+        } else {
+            let mut passes: Vec<tokio::task::JoinHandle<()>> = session.passes.drain(..).collect();
+            for seg in session.stream.finish() {
+                let job = session.stage(seg);
+                passes.push(self.spawn_pass(handle.clone(), job));
+            }
+            drop(session);
+            for pass in passes {
+                let _ = pass.await;
+            }
+            session = handle.lock().await;
         }
         let transcript = session.transcript();
         tracing::info!(
@@ -450,10 +524,35 @@ impl Sessions {
     }
 
     async fn deliver(&self, output_function_id: &str, event: &TranscriptEvent) {
-        self.emitter.deliver_direct(output_function_id, event).await;
-        self.emitter
-            .emit(EventKind::Transcript, Some(&event.session_id), event)
-            .await;
+        deliver(&self.emitter, output_function_id, event).await;
+    }
+
+    /// Run one second pass off the session lock, then settle it and deliver
+    /// the Final events that are ready, holding the lock through delivery so
+    /// finals leave in segment order.
+    fn spawn_pass(
+        &self,
+        handle: Arc<Mutex<Session>>,
+        job: RefineJob,
+    ) -> tokio::task::JoinHandle<()> {
+        let emitter = self.emitter.clone();
+        tokio::spawn(async move {
+            let refined = match &job.refiner {
+                Some(refiner) => match refiner.refine(job.audio).await {
+                    Ok(text) => Some(text),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "second pass failed; streaming text stands");
+                        None
+                    }
+                },
+                None => None,
+            };
+            let mut session = handle.lock().await;
+            let output = session.output_function_id.clone();
+            for event in session.settle(job.index, refined) {
+                deliver(&emitter, &output, &event).await;
+            }
+        })
     }
 
     /// Spawn the idle sweep.
@@ -493,9 +592,30 @@ pub fn validate_output_function_id(id: &str) -> Result<(), String> {
     Ok(())
 }
 
+async fn deliver(emitter: &Emitter, output_function_id: &str, event: &TranscriptEvent) {
+    emitter.deliver_direct(output_function_id, event).await;
+    emitter
+        .emit(EventKind::Transcript, Some(&event.session_id), event)
+        .await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finals_leave_in_segment_order() {
+        let mut queue = RefineQueue::default();
+        queue.stage(0);
+        queue.stage(1);
+        assert!(queue.settle(1, Some("second".into())).is_empty());
+        assert_eq!(
+            queue.settle(0, None),
+            vec![(0, None), (1, Some("second".to_string()))]
+        );
+        queue.stage(2);
+        assert_eq!(queue.settle(2, Some("  ".into())), vec![(2, None)]);
+    }
 
     #[test]
     fn output_function_ids_are_checked() {
