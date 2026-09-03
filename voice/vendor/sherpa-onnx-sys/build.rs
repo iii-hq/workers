@@ -165,14 +165,17 @@ fn download_prebuilt_libs(
     let lib_dir_name = if is_ios_sim { "lib-sim" } else { "lib" };
     let lib_dir = extracted_dir.join(lib_dir_name);
 
-    if lib_dir.is_dir() {
-        return Ok((lib_dir, archive_stem.to_string()));
-    }
+    let verified_marker = extracted_dir.join(".verified");
+    if verified_marker.is_file() {
+        if lib_dir.is_dir() {
+            return Ok((lib_dir, archive_stem.to_string()));
+        }
 
-    // Android archives use jniLibs/{abi}/ instead of lib/. Check both.
-    let android_lib_dir = extracted_dir.join("jniLibs").join(android_abi(target_arch));
-    if android_lib_dir.is_dir() {
-        return Ok((android_lib_dir, archive_stem.to_string()));
+        // Android archives use jniLibs/{abi}/ instead of lib/. Check both.
+        let android_lib_dir = extracted_dir.join("jniLibs").join(android_abi(target_arch));
+        if android_lib_dir.is_dir() {
+            return Ok((android_lib_dir, archive_stem.to_string()));
+        }
     }
 
     fs::create_dir_all(&cache_root)?;
@@ -203,8 +206,8 @@ fn download_prebuilt_libs(
             let mut reader = response.into_reader();
             write_reader_atomically(&mut reader, &archive_path)?;
         }
-        verify_archive_digest(&archive_path, &archive_name)?;
     }
+    verify_archive_digest(&archive_path, &archive_name)?;
 
     if extracted_dir.exists() {
         fs::remove_dir_all(&extracted_dir)?;
@@ -239,6 +242,7 @@ fn download_prebuilt_libs(
         )
         .into());
     }
+    fs::write(&verified_marker, b"")?;
 
     if !lib_dir.is_dir() {
         // Android archives use jniLibs/{abi}/ instead of lib/.

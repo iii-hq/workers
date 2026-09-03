@@ -54,6 +54,7 @@ export function TranscribeSection({ host, focusSignal }: { host: Host; focusSign
   const [path, setPath] = useState('')
   const [file, setFile] = useState<{ name: string; size: number; base64: string } | null>(null)
   const [fileError, setFileError] = useState<string | null>(null)
+  const [reading, setReading] = useState(false)
   const [dragging, setDragging] = useState(false)
   const [result, setResult] = useState<Result>({ phase: 'idle' })
   const [copied, setCopied] = useState(false)
@@ -74,15 +75,22 @@ export function TranscribeSection({ host, focusSignal }: { host: Host; focusSign
         `${candidate.name} is ${formatBytes(candidate.size)}; the inline limit is 10 MB. Pass a path instead.`,
       )
       setFile(null)
+      setReading(false)
       return
     }
     setFileError(null)
+    setFile(null)
+    setReading(true)
     readFileAsBase64(candidate)
       .then((base64) => {
-        if (generation === readGenerationRef.current) setFile({ name: candidate.name, size: candidate.size, base64 })
+        if (generation !== readGenerationRef.current) return
+        setFile({ name: candidate.name, size: candidate.size, base64 })
+        setReading(false)
       })
       .catch((err: unknown) => {
-        if (generation === readGenerationRef.current) setFileError(errorMessage(err))
+        if (generation !== readGenerationRef.current) return
+        setFileError(errorMessage(err))
+        setReading(false)
       })
   }
 
@@ -98,6 +106,7 @@ export function TranscribeSection({ host, focusSignal }: { host: Host; focusSign
   }
 
   const run = () => {
+    if (reading) return
     if (!file && !path.trim()) {
       setFileError('Choose a WAV file or enter a path.')
       return
@@ -170,8 +179,10 @@ export function TranscribeSection({ host, focusSignal }: { host: Host; focusSign
               label="Remove file"
               variant="ghost"
               onClick={() => {
+                readGenerationRef.current += 1
                 setFile(null)
                 setFileError(null)
+                setReading(false)
               }}
             >
               <TrashIcon />
@@ -184,8 +195,8 @@ export function TranscribeSection({ host, focusSignal }: { host: Host; focusSign
             <Input value={path} onChange={setPath} placeholder="/recordings/meeting.wav" aria-label="audio file path" />
           </div>
           <div className="voice-field-actions">
-            <Button variant="primary" onClick={run} disabled={result.phase === 'loading'}>
-              {result.phase === 'loading' ? 'transcribing…' : 'Transcribe'}
+            <Button variant="primary" onClick={run} disabled={result.phase === 'loading' || reading}>
+              {result.phase === 'loading' ? 'transcribing…' : reading ? 'reading file…' : 'Transcribe'}
             </Button>
           </div>
         </div>

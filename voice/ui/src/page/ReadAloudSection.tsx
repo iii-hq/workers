@@ -25,6 +25,7 @@ export function ReadAloudSection({ host, report }: { host: Host; report: DoctorR
   const [state, setState] = useState<SpeakState>({ phase: 'idle' })
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const timerRef = useRef<number | null>(null)
+  const speechIdRef = useRef<string | undefined>(undefined)
   const { tts } = report
   const disabled = tts.backend === 'off' || !tts.available
 
@@ -40,8 +41,11 @@ export function ReadAloudSection({ host, report }: { host: Host; report: DoctorR
       audioRef.current?.pause()
       audioRef.current = null
       if (timerRef.current !== null) window.clearTimeout(timerRef.current)
+      const speechId = speechIdRef.current
+      speechIdRef.current = undefined
+      if (speechId) speakStop(host.iii, { speech_id: speechId }).catch(() => {})
     },
-    [],
+    [host.iii],
   )
 
   const onSpeak = async () => {
@@ -59,10 +63,14 @@ export function ReadAloudSection({ host, report }: { host: Host; report: DoctorR
         setState({ phase: 'speaking', speechId: res.speech_id })
       } else if (res.played) {
         setState({ phase: 'speaking', speechId: res.speech_id })
+        speechIdRef.current = res.speech_id
         const words = body.split(/\s+/).length
         clearTimer()
         timerRef.current = window.setTimeout(
-          () => setState({ phase: 'idle' }),
+          () => {
+            speechIdRef.current = undefined
+            setState({ phase: 'idle' })
+          },
           Math.min(60_000, Math.max(1500, (words / 150) * 60_000)),
         )
       } else {
@@ -78,6 +86,7 @@ export function ReadAloudSection({ host, report }: { host: Host; report: DoctorR
     audioRef.current = null
     clearTimer()
     const speechId = state.phase === 'speaking' ? state.speechId : undefined
+    speechIdRef.current = undefined
     speakStop(host.iii, speechId ? { speech_id: speechId } : {}).catch(() => {})
     setState({ phase: 'idle' })
   }

@@ -155,7 +155,7 @@ export function createVoiceConfigForm(host: Host) {
                       type="number"
                       step="0.1"
                       min="0.2"
-                      {...numberField(['stt', 'silence_after_speech_secs'], DEFAULTS.silenceAfterSpeech, false, 0.1)}
+                      {...numberField(['stt', 'silence_after_speech_secs'], DEFAULTS.silenceAfterSpeech, false, 0.2)}
                     />
                   )}
                 />
@@ -169,7 +169,7 @@ export function createVoiceConfigForm(host: Host) {
                       type="number"
                       step="1"
                       min="2"
-                      {...numberField(['stt', 'max_utterance_secs'], DEFAULTS.maxUtterance, false, 1)}
+                      {...numberField(['stt', 'max_utterance_secs'], DEFAULTS.maxUtterance, false, 2)}
                     />
                   )}
                 />
@@ -183,12 +183,7 @@ export function createVoiceConfigForm(host: Host) {
                       type="number"
                       step="0.1"
                       min="1"
-                      {...numberField(
-                        ['stt', 'silence_without_speech_secs'],
-                        DEFAULTS.silenceWithoutSpeech,
-                        false,
-                        0.5,
-                      )}
+                      {...numberField(['stt', 'silence_without_speech_secs'], DEFAULTS.silenceWithoutSpeech, false, 1)}
                     />
                   )}
                 />
@@ -447,7 +442,7 @@ export function createVoiceConfigForm(host: Host) {
                   type="number"
                   step="10"
                   min="10"
-                  {...numberField(['session_idle_secs'], DEFAULTS.sessionIdleSecs, true, 5)}
+                  {...numberField(['session_idle_secs'], DEFAULTS.sessionIdleSecs, true, 10)}
                 />
               )}
             />

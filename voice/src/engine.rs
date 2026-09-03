@@ -711,6 +711,7 @@ pub async fn remote_transcribe(
     );
     let client = reqwest::Client::builder()
         .user_agent(concat!("iii-voice/", env!("CARGO_PKG_VERSION")))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| format!("http client: {e}"))?;
     let mut form = reqwest::multipart::Form::new()

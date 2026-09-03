@@ -250,6 +250,7 @@ async fn remote_speech(
     let url = format!("{}/audio/speech", remote.base_url.trim_end_matches('/'));
     let client = reqwest::Client::builder()
         .user_agent(concat!("iii-voice/", env!("CARGO_PKG_VERSION")))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| format!("http client: {e}"))?;
     let voice = voice

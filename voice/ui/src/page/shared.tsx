@@ -55,20 +55,7 @@ export function LoadingRows({ rows = 3 }: { rows?: number }) {
   )
 }
 
-export function formatBytes(bytes: number): string {
-  if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`
-  if (bytes >= 1_000_000) return `${Math.round(bytes / 1_000_000)} MB`
-  if (bytes >= 1_000) return `${Math.round(bytes / 1_000)} KB`
-  return `${bytes} B`
-}
-
-export function formatDuration(secs: number): string {
-  if (!Number.isFinite(secs) || secs < 0) return '0s'
-  if (secs < 60) return `${secs.toFixed(secs < 10 ? 1 : 0)}s`
-  const total = Math.round(secs)
-  const minutes = Math.floor(total / 60)
-  return `${minutes}m ${total - minutes * 60}s`
-}
+export { formatBytes, formatDuration } from '../lib/format'
 
 export function useBusyAction(
   onNotice: (notice: { kind: 'error' | 'success'; text: string } | null) => void,
