@@ -410,16 +410,6 @@
       "EvalModelConfigV1": {
         "additionalProperties": false,
         "properties": {
-          "mode": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/Mode"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "model": {
             "type": "string"
           },
@@ -966,14 +956,6 @@
         },
         "type": "object"
       },
-      "Mode": {
-        "description": "Operating mode prepended to the identity prompt; `ask` also caps the dispatch policy at the configured default.",
-        "enum": [
-          "ask",
-          "agent"
-        ],
-        "type": "string"
-      },
       "NormalizedEvalRequestV1": {
         "additionalProperties": false,
         "properties": {
@@ -1488,7 +1470,7 @@
             "type": "integer"
           },
           "system_prompt": {
-            "description": "Final assembled system prompt excluding tokens attributed to `skills`: mode paragraph, identity, per-step aids, and any compaction summary section.",
+            "description": "Final assembled system prompt excluding tokens attributed to `skills`: identity, per-step aids, and any compaction summary section.",
             "format": "uint64",
             "minimum": 0.0,
             "type": "integer"
