@@ -81,8 +81,14 @@ containers:
     worker: path://../iii-directory
     environment:
       RUST_LOG: info
+      ORT_PREFER_DYNAMIC_LINK: "0"
+      ORT_CXX_STDLIB: stdc++
     scripts:
-      run: cargo run --locked --bin iii-directory
+      # iii-directory links the pinned static ONNX Runtime; provision once with
+      # ../iii-directory/scripts/provision-onnxruntime.sh (or point ORT_LIB_PATH).
+      run: >-
+        ORT_LIB_PATH="${ORT_LIB_PATH:-$HOME/.cache/iii/onnxruntime-static-1.28.0-x86_64-unknown-linux-gnu}"
+        cargo run --locked --bin iii-directory
 
   cron:
     worker: path://../cron
@@ -125,6 +131,3 @@ containers:
     scripts:
       run: cargo run --locked --bin harness
   # added by compose::add
-  browser:
-    worker: package://api.workers.iii.dev/browser
-    version: "0.2.9"

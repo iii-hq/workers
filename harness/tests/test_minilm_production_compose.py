@@ -46,7 +46,7 @@ class MiniLmProductionComposeTests(unittest.TestCase):
         directory = document["containers"]["iii-directory"]
 
         self.assertEqual(document["namespace"], "minilm-production")
-        self.assertIn("--features minilm-production", directory["scripts"]["run"])
+        self.assertNotIn("--features", directory["scripts"]["run"])
         self.assertEqual(directory["config_name"], "iii-directory-minilm-production")
         self.assertEqual(directory["environment"]["ORT_PREFER_DYNAMIC_LINK"], "0")
         self.assertIn("${ORT_LIB_PATH:-$HOME/.cache/iii/", directory["scripts"]["run"])

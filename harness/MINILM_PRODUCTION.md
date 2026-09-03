@@ -40,8 +40,9 @@ operations remain unconfigured.
 
 ## Runtime prerequisites
 
-The `minilm-production` Cargo feature is supported on Linux x86_64 GNU. The
-compose file uses these portable defaults:
+MiniLM retrieval and reranking are always compiled into `iii-directory` on
+Linux x86_64 GNU (other targets build the BM25-only worker). The compose file
+uses these portable defaults:
 
 - Model bundle:
   `~/.cache/iii/all-MiniLM-L6-v2-c9745ed1d9f207416be6d2e6f8de32d1f16199bf`
@@ -51,8 +52,10 @@ compose file uses these portable defaults:
 The model directory must contain the embedding files at its root and the
 reranker files under `reranker/`. At startup, the directory worker verifies all
 ten files by exact byte length and SHA-256 before loading them. The ONNX runtime
-directory must contain `libonnxruntime.a`; set `ORT_LIB_PATH` before starting
-compose to override its default location.
+directory must contain `libonnxruntime.a`; `iii-directory/scripts/provision-onnxruntime.sh`
+downloads and verifies it once (no network when already present), and
+`ORT_LIB_PATH` overrides its default location. Every `iii-directory` build on this
+target links it, including `harness/worker-compose.yaml`.
 
 Slack and Telegram use the repository's interface-collection token in this
 stack. This lets both workers register their static function surfaces without
@@ -106,7 +109,7 @@ III_DIRECTORY_MINILM_MODEL_PATH="$HOME/.cache/iii/all-MiniLM-L6-v2-c9745ed1d9f20
 III_DIRECTORY_SEARCH_BENCHMARK_CATALOG_PATH="<artifact>/catalog.json" \
 III_DIRECTORY_SEARCH_BENCHMARK_OUTPUT="<artifact>/bm25-vs-minilm-production.json" \
 cargo test --lib benchmark_bm25_against_minilm_production \
-  --features minilm-production -- --ignored --nocapture --test-threads=1
+  -- --ignored --nocapture --test-threads=1
 ```
 
 ### Reference run: 2026-09-02

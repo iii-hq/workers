@@ -133,7 +133,7 @@ containers:
     scripts:
       run: >-
         ORT_LIB_PATH="${ORT_LIB_PATH:-$HOME/.cache/iii/onnxruntime-static-1.28.0-x86_64-unknown-linux-gnu}"
-        cargo run --locked --features minilm-production --bin iii-directory
+        cargo run --locked --bin iii-directory
   image-resize:
     worker: path://../image-resize
     scripts: { run: cargo run --locked --bin image-resize }

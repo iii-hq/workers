@@ -505,6 +505,17 @@ script — is not suppressed and will re-trigger itself. Either write through
 
 ### Run from source
 
+On `x86_64-unknown-linux-gnu` every build links the pinned static ONNX Runtime
+(MiniLM retrieval and reranking are always compiled in; ort-sys never downloads
+it). Provision it once, then export the path it prints:
+
+```bash
+export ORT_LIB_PATH="$(scripts/provision-onnxruntime.sh)"   # idempotent, SHA-256 verified
+export ORT_PREFER_DYNAMIC_LINK=0 ORT_CXX_STDLIB=stdc++
+```
+
+Other targets build the BM25-only worker and need nothing extra.
+
 ```bash
 # --config is an optional YAML seed (see config.yaml.example); omit it to
 # rely on the value stored in the `configuration` worker (or built-in defaults).

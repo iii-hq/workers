@@ -6,12 +6,6 @@ version = "1.2.5-rc.3"
 edition = "2021"
 publish = false
 
-[features]
-default = []
-# Local production retrieval and reranking. This feature deliberately has no
-# NLI, GGUF, llama.cpp, remote-model, or model-download dependency.
-minilm-production = ["dep:fastembed", "dep:ort"]
-
 [[bin]]
 name = "iii-directory"
 path = "src/main.rs"
@@ -60,8 +54,12 @@ sha2 = "0.10"
 model2vec-rs = { version = "=0.2.1", default-features = false, features = ["onig", "local-only"] }
 
 [target.'cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))'.dependencies]
-fastembed = { version = "=6.0.0", optional = true, default-features = false }
-ort = { version = "=2.0.0-rc.13", optional = true, default-features = false, features = ["std", "ndarray", "api-24"] }
+# Local production retrieval and reranking (always built on this target).
+# Deliberately no NLI, GGUF, llama.cpp, remote-model, or model-download
+# dependency; linking needs the pinned static ONNX Runtime at ORT_LIB_PATH
+# (scripts/provision-onnxruntime.sh).
+fastembed = { version = "=6.0.0", default-features = false }
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "api-24"] }
 
 [dev-dependencies]
 serde_json = "1"

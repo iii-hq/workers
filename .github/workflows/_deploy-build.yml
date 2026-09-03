@@ -228,6 +228,21 @@ jobs:
           version: v0.36.1
           driver-opts: image=moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
 
+      # iii-directory always links a pinned static ONNX Runtime on
+      # x86_64-unknown-linux-gnu (ort-sys with download disabled). Provision the
+      # SHA-256-verified archive so the release binary can link; other targets
+      # build the BM25-only worker and need nothing.
+      - name: Provision static ONNX Runtime (iii-directory, x86_64 linux gnu)
+        if: inputs.kind == 'rust-binary' && inputs.worker == 'iii-directory' && inputs.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          set -euo pipefail
+          root="$(ORT_LIB_PATH="$RUNNER_TEMP/onnxruntime" iii-directory/scripts/provision-onnxruntime.sh)"
+          {
+            echo "ORT_LIB_PATH=$root"
+            echo "ORT_PREFER_DYNAMIC_LINK=0"
+            echo "ORT_CXX_STDLIB=stdc++"
+          } >> "$GITHUB_ENV"
+
       - name: Build immutable artifact
         env:
           BUILD_UNIT: ${{ inputs.unit }}
