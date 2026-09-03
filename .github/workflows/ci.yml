@@ -264,6 +264,54 @@ jobs:
         run: cargo test --locked
 
   # ──────────────────────────────────────────────────────────────
+  # iii-directory links a static ONNX Runtime on five release targets; the
+  # ubuntu gate above proves only x86_64 linux-gnu. Build the two natively
+  # available here (Apple Silicon, Windows x86_64 MSVC) and assert the dense
+  # lane compiled in, so Cargo.toml's target cfg and build.rs' MINILM_TARGETS
+  # cannot drift apart unnoticed. The console UI is irrelevant to this proof:
+  # stubbed dist assets let build.rs skip pnpm.
+  # ──────────────────────────────────────────────────────────────
+  iii-directory-minilm-targets:
+    name: "iii-directory: MiniLM build (${{ matrix.os }})"
+    needs: discover
+    if: contains(needs.discover.outputs.rust, '"iii-directory"')
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    defaults:
+      run:
+        # Windows runners default to pwsh; the hosted images ship bash too.
+        shell: bash
+        working-directory: iii-directory
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Rewrite SSH to HTTPS for public deps
+        run: git config --local url."https://github.com/".insteadOf "ssh://git@github.com/"
+
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: 1.97.1
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: worker-iii-directory
+          save-if: ${{ github.event_name == 'push' }}
+          workspaces: iii-directory -> target
+
+      - name: Stub the embedded console UI
+        run: mkdir -p ui/dist && touch ui/dist/page.js ui/dist/styles.css
+
+      - name: Build and prove the dense lane compiled in
+        env:
+          SKIP_UI_BUILD: "1"
+          III_REQUIRE_MINILM: "1"
+        run: cargo test --locked --test minilm_target
+
+  # ──────────────────────────────────────────────────────────────
   # Shared Rust crates (crates/*): lint + test. Workers link these by
   # path; discover also fans a changed crate's dependents into the rust
   # matrix above, so dependents rebuild against the change while this
