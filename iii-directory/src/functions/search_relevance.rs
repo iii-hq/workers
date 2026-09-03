@@ -1,7 +1,8 @@
 //! Deterministic relevance tests for `reflex::discover` over a frozen
 //! snapshot of the live catalog (512 functions with their real
 //! descriptions and request schemas, captured 2026-08-28 via
-//! `engine::functions::info`). bm25 — the shipped
+//! `engine::functions::info`; descriptions refreshed 2026-09-03 from the
+//! repo-wide description lint, MOT-4680). bm25 — the shipped
 //! default — is purely lexical, so no engine, no model, and no judge are
 //! involved: expectations pin exact function sets and run in
 //! milliseconds. If a rank change breaks one of these, either the scorer
@@ -299,8 +300,10 @@ async fn repeat_query_in_one_session_omits_delivered_contracts() {
     let first_ids: Vec<&str> = function_ids(&first);
     assert!(first_ids.contains(&"state::set"));
     // A different request overlapping the first: overlapping contracts are
-    // omitted and named in the guidance instead.
-    let second = ask_capabilities(&deps, &["update persisted value", "list state keys"]).await;
+    // omitted and named in the guidance instead. ("update persisted value"
+    // used to overlap through the old "Set a value in state" wording; the
+    // linted descriptions rank state::update alone for it.)
+    let second = ask_capabilities(&deps, &["store a value at a key", "list state keys"]).await;
     for id in function_ids(&second) {
         assert!(
             !first_ids.contains(&id),
