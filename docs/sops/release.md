@@ -1,70 +1,63 @@
-# Release train operations
+# Deployment operations
 
-Release Control is the exclusive operator interface. Do not dispatch release
-workflows by hand, rerun a mutating Actions run, move Registry channels
-directly, or retag GHCR outside a Release Control recovery operation.
+Release Control is the exclusive operator interface. This repository builds; it
+never publishes. Do not move Registry channels directly, and do not retag GHCR
+by hand.
 
 ## Before starting
 
 The selected source commit must contain the worker's `.deploy/workers.yaml`
 entry and public `iii.worker.yaml`. The package-manifest version is source
-metadata; Release Control owns the independent exact `target_version`. Prepare
-never bumps, commits, or pushes source.
+metadata; Release Control owns the exact version being released.
 
 [`deploy-descriptor-index.yml`](../../.github/workflows/deploy-descriptor-index.yml)
-compiles every worker at the source SHA with the Workers-owned compiler.
-Its artifact contains `deployment-descriptor-index.json` and exact
+compiles every worker at the source SHA with the Workers-owned compiler. Its
+artifact contains `deployment-descriptor-index.json` and exact
 `descriptors/<worker>.json` files. Release Control verifies the workflow,
 source SHA, compiler commit/digest, artifact and descriptor digest before
 planning.
 
-## Sequence
+## What a build does
 
-Releases are rc-first: `next` only ever receives `X.Y.Z-rc.N` candidates
-(minted by the nightly window or an operator deploy), and `latest` only ever
-receives the pure `X.Y.Z` minted by a `finalize_release` operation from a
-tested candidate.
+[`build.yml`](../../.github/workflows/build.yml) runs for one worker and one
+exact source SHA, with `correlation_id` carrying the Release Control
+deployment it belongs to:
 
-1. `deploy-prepare.yml` authorizes the dispatch, verifies descriptor identity,
-   builds one job per **candidate-profile** target, and uploads the
-   byte-unchanged descriptor, prepared inventory, and artifacts with their
-   SHA-256 and size. It then captures registered functions and triggers from
-   one immutable artifact and binds that interface evidence to the descriptor
-   and prepared inventory (retained 90 days as the finalization fast path).
-2. `deploy-publish.yml` publishes or proves GitHub assets, the exact Registry
-   version and a digest-pinned OCI image when applicable, then CASes the
-   requested channel from the value captured in the plan.
-3. `deploy-finalize.yml` executes `finalize_release` operations exclusively:
-   it re-verifies the rc bytes (from the retained artifact, or from the rc's
-   immutable GitHub Release checked against Registry hashes when the artifact
-   expired), builds only the supplemental **stable-profile** targets (Windows
-   `x86_64-pc-windows-msvc` for opted-in workers), assembles the stable
-   inventory without rebuilding anything already proved, publishes the pure
-   version to the Registry **without a channel**, and then moves `next` and
-   `latest` together through the Registry's transactional finalize primitive.
-   It shares the `deployment-<worker>` concurrency group with publish.
-4. `deploy-verify.yml` verifies GitHub, the exact Registry interface captured
-   during prepare, and optional GHCR surfaces.
+1. `resolve` downloads the descriptor checkpoint, verifies that the checkout is
+   exactly `source_sha`, and emits the build matrix from the descriptor's
+   `build_units`.
+2. `build` runs one job per unit through
+   [`_deploy-build.yml`](../../.github/workflows/_deploy-build.yml).
+3. `assemble` packages the prepared inventory and captures registered functions
+   and triggers by observing the artifact against an isolated engine. Interface
+   capture is a publication-integrity step: it never calls a worker function or
+   an external backend, and it is not a smoke test.
+4. `upload` creates the shared `build-<source_sha>` prerelease if it does not
+   exist and uploads each asset once. An asset already present with identical
+   bytes is skipped; one present with different bytes fails the job, because
+   these bytes are immutable. When the descriptor declares an image, the OCI
+   index is pushed under the same `build-<source_sha>` tag, or verified if it is
+   already there.
+5. `manifest` writes `manifest.json` (assets with URL and SHA-256, image
+   digest, descriptor, interface, evidence), attests it with
+   `actions/attest-build-provenance`, and uploads it as the `build-manifest`
+   artifact with 90-day retention.
 
-Interface capture is a publication-integrity step. It starts the artifact only
-to observe registration against an isolated engine; it never calls a worker
-function or external backend and is not a deployment smoke test.
+Rerunning a build is safe and is the normal recovery: it converges on the same
+bytes and produces the same manifest.
 
-Every entrypoint authorizes with GitHub OIDC audience
-`release-control-workers`. It uploads
-`deployment-result-<deployment-target-id>-<step-id>-attempt-<run-attempt>` containing the
-single file `deployment-result.json`, then posts those exact bytes to Release
-Control with their SHA-256 header.
+## What Release Control does with it
 
-## Recovery
+Release Control reads the manifest from the run, publishes the immutable
+Registry version, moves the requested channel by compare-and-swap, creates the
+versioned GitHub release pointing at the same assets, and tags the image. It
+then reads every surface back and only calls the deployment converged when they
+all match. Versions, channels and retries are decided there, never here.
 
-Use the failed operation's recovery action in Release Control. A recovery gets
-a new operation/step/nonce and reuses immutable descriptor and prepared
-artifacts for the same exact target. Results report effects as `unknown` when the workflow cannot prove a
-mutation completed, allowing reconciliation without pretending success.
+## Capacity
 
 If either physical macOS runner pool cannot schedule three independent jobs,
-stop the release and fix external capacity first. The diagnostic
+stop and fix external capacity first. The diagnostic
 [`macos-runner-capacity.yml`](../../.github/workflows/macos-runner-capacity.yml)
 tests both Intel and Apple Silicon gates; this repository does not provision
 EC2 Mac hosts.

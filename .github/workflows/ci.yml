@@ -40,44 +40,6 @@ jobs:
           tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
           /tmp/actionlint -color
 
-  release-contract-drift:
-    name: Release Control contract drift
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          persist-credentials: false
-      - name: Validate immutable Release Control contract pin
-        id: release-contract
-        run: python3 .github/scripts/deployment_contract_pin.py --github-output "$GITHUB_OUTPUT"
-      - name: Mint read-only cross-repository token
-        id: release-contract-token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
-        with:
-          app-id: ${{ secrets.III_CI_APP_ID }}
-          private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
-          owner: iii-hq
-          repositories: release-control
-      - name: Checkout pinned Release Control contract
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          persist-credentials: false
-          repository: ${{ steps.release-contract.outputs.repository }}
-          ref: ${{ steps.release-contract.outputs.commit }}
-          token: ${{ steps.release-contract-token.outputs.token }}
-          path: release-control-contract
-          sparse-checkout: ${{ steps.release-contract.outputs.path }}
-      - name: Compare canonical Release Control schema bytes
-        env:
-          CONTRACT_PATH: ${{ steps.release-contract.outputs.path }}
-          EXPECTED_SHA256: ${{ steps.release-contract.outputs.sha256 }}
-        run: |
-          set -euo pipefail
-          cmp .github/contracts/deployment-execution.schema.json "release-control-contract/$CONTRACT_PATH"
-          echo "$EXPECTED_SHA256  .github/contracts/deployment-execution.schema.json" | sha256sum --check
-
   # ──────────────────────────────────────────────────────────────
   # Discover: enumerate changed catalog workers and bucket their artifact
   # kinds for the matrix jobs below.

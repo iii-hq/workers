@@ -15,7 +15,6 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-import _lib
 import deployment_targets
 import validate_oci_dockerfile
 
@@ -447,66 +446,6 @@ def build_oci_layout(*, context: Path, dockerfile: Path, platforms: list[object]
     return f"sha256:{sha256(index)}"
 
 
-def prepare(args: argparse.Namespace) -> int:
-    actual = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-    if actual != args.source_sha:
-        raise SystemExit(f"source SHA mismatch: checkout={actual}, requested={args.source_sha}")
-    try:
-        _lib.validate_channel_target_version(args.channel, args.target_version)
-    except ValueError as error:
-        raise SystemExit(str(error)) from error
-
-    descriptor = verify_descriptor(json.loads(args.descriptor.read_bytes()))
-    expected = {
-        "worker": args.worker,
-        "source_sha": args.source_sha,
-        "descriptor_sha256": args.descriptor_sha256,
-    }
-    if any(descriptor[field] != value for field, value in expected.items()):
-        raise SystemExit("selected descriptor identity differs from deployment intent")
-    print(json.dumps(descriptor, sort_keys=True))
-    return 0
-
-
-def finalize(args: argparse.Namespace) -> int:
-    """Validate a finalize_release intent against the immutable rc origin.
-
-    The stable version reuses the rc bytes, so the descriptor identity, the
-    annotated rc tag, and the release history must all prove the candidate
-    before any supplemental build or channel move happens.
-    """
-    actual = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-    if actual != args.source_sha:
-        raise SystemExit(f"source SHA mismatch: checkout={actual}, requested={args.source_sha}")
-    try:
-        _lib.validate_finalization(args.candidate_version, args.stable_version)
-        _lib.validate_channel_target_version("latest", args.stable_version)
-    except ValueError as error:
-        raise SystemExit(str(error)) from error
-
-    descriptor = verify_descriptor(json.loads(args.descriptor.read_bytes()))
-    expected = {
-        "worker": args.worker,
-        "source_sha": args.source_sha,
-        "descriptor_sha256": args.descriptor_sha256,
-    }
-    if any(descriptor[field] != value for field, value in expected.items()):
-        raise SystemExit("selected descriptor identity differs from finalization intent")
-
-    # Requires a full clone (fetch-depth 0): the rc tag proves the candidate
-    # was published from this exact source, and the history gate proves the
-    # stable core is not moving backwards.
-    versions = _lib.list_tagged_versions(args.worker)
-    if args.candidate_version not in versions:
-        raise SystemExit(f"candidate tag {args.worker}/v{args.candidate_version} is not in the git history")
-    try:
-        _lib.validate_release_history(args.stable_version, versions)
-    except ValueError as error:
-        raise SystemExit(str(error)) from error
-    print(json.dumps(descriptor, sort_keys=True))
-    return 0
-
-
 def matrix(args: argparse.Namespace) -> int:
     descriptor = verify_descriptor(json.loads(args.descriptor.read_text(encoding="utf-8")))
     include: list[dict[str, str]] = []
@@ -730,22 +669,6 @@ def make_parser() -> argparse.ArgumentParser:
     build_metadata_parser.add_argument("--descriptor", type=Path, required=True)
     build_metadata_parser.add_argument("--unit", required=True)
     build_metadata_parser.add_argument("--github-output", type=Path)
-    prepare_parser = sub.add_parser("prepare")
-    prepare_parser.set_defaults(handler=prepare)
-    prepare_parser.add_argument("--worker", required=True)
-    prepare_parser.add_argument("--source-sha", required=True)
-    prepare_parser.add_argument("--target-version", required=True)
-    prepare_parser.add_argument("--channel", choices=["next", "latest"], required=True)
-    prepare_parser.add_argument("--descriptor-sha256", required=True)
-    prepare_parser.add_argument("--descriptor", type=Path, required=True)
-    finalize_parser = sub.add_parser("finalize")
-    finalize_parser.set_defaults(handler=finalize)
-    finalize_parser.add_argument("--worker", required=True)
-    finalize_parser.add_argument("--source-sha", required=True)
-    finalize_parser.add_argument("--candidate-version", required=True)
-    finalize_parser.add_argument("--stable-version", required=True)
-    finalize_parser.add_argument("--descriptor-sha256", required=True)
-    finalize_parser.add_argument("--descriptor", type=Path, required=True)
     matrix_parser = sub.add_parser("matrix")
     matrix_parser.set_defaults(handler=matrix)
     matrix_parser.add_argument("--descriptor", type=Path, required=True)
