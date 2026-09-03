@@ -177,7 +177,7 @@ impl SemanticSearch {
         RERANKER_REVISION
     }
 
-    pub(crate) fn rebuild(&self, tools: Arc<Vec<ToolSchema>>) {
+    pub fn rebuild(&self, tools: Arc<Vec<ToolSchema>>) {
         let fingerprint = tool_fingerprint(&tools);
         *self.inner.desired_catalog.lock().expect("desired catalog") = Some(fingerprint.clone());
         let inner = self.inner.clone();

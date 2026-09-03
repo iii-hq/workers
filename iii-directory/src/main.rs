@@ -160,36 +160,21 @@ async fn main() -> Result<()> {
             "no pinned ONNX Runtime for this target; this build serves BM25 only"
         );
     }
-    if minilm_supported
-        && cfg.function_search_mode != FunctionSearchMode::Lexical
-        && cfg.function_search_model_download
-    {
-        if let Some(root) = function_search_model_path.as_deref() {
-            if !functions::search_semantic::bundle_complete(root) {
-                tracing::info!(
-                    path = %root.display(),
-                    "downloading the pinned MiniLM search bundle (first run, ~180 MB, every file \
-                     verified by length and SHA-256)"
-                );
-                match functions::search_semantic::download_bundle(root).await {
-                    Ok(()) => tracing::info!(path = %root.display(), "MiniLM search bundle ready"),
-                    Err(error) => tracing::warn!(
-                        %error,
-                        path = %root.display(),
-                        "MiniLM search bundle download failed; directory::search_functions runs \
-                         BM25-only until the bundle is provisioned"
-                    ),
-                }
-            }
-        }
-    }
-    let model_ready = function_search_model_path
+    // A missing bundle is fetched in the background AFTER the functions are
+    // registered (below): ~180 MB must never sit between boot and
+    // `directory::*` being callable. BM25 serves until the index is built.
+    let bundle_ready = function_search_model_path
         .as_deref()
         .is_some_and(functions::search_semantic::bundle_complete);
-    if minilm_supported {
+    let download_bundle = minilm_supported
+        && cfg.function_search_mode != FunctionSearchMode::Lexical
+        && cfg.function_search_model_download
+        && function_search_model_path.is_some()
+        && !bundle_ready;
+    if minilm_supported && !download_bundle {
         iii_directory::config::warn_if_search_mode_lacks_model(
             cfg.function_search_mode,
-            model_ready,
+            bundle_ready,
         );
     }
     let auto_download = cfg.auto_download;
@@ -216,7 +201,8 @@ async fn main() -> Result<()> {
     // reconcile the pre-generate hint binding with the inject_hint knob.
     let search_catalog: functions::search::CatalogCell =
         Arc::new(tokio::sync::RwLock::new(Arc::new(Vec::new())));
-    let semantic = functions::search_semantic::SemanticSearch::new(function_search_model_path);
+    let semantic =
+        functions::search_semantic::SemanticSearch::new(function_search_model_path.clone());
     if functions::search::refresh_catalog(&iii, &search_catalog, &semantic)
         .await
         .is_err()
@@ -225,13 +211,37 @@ async fn main() -> Result<()> {
     }
     let search_deps = functions::search::Deps {
         config: cfg_handle.clone(),
-        catalog: search_catalog,
+        catalog: search_catalog.clone(),
         sessions: Arc::default(),
         registry_cache: registry_cache.clone(),
-        semantic,
+        semantic: semantic.clone(),
     };
     functions::search::register(&iii, &search_deps);
     functions::search::bind_best_effort(&iii);
+    if download_bundle {
+        let root = function_search_model_path.clone().expect("checked above");
+        let catalog = search_catalog.clone();
+        tokio::spawn(async move {
+            tracing::info!(
+                path = %root.display(),
+                "downloading the pinned MiniLM search bundle in the background (first run, \
+                 ~180 MB, every file verified by length and SHA-256); BM25 serves meanwhile"
+            );
+            match functions::search_semantic::download_bundle(&root).await {
+                Ok(()) => {
+                    tracing::info!(path = %root.display(), "MiniLM search bundle ready");
+                    let tools = catalog.read().await.clone();
+                    semantic.rebuild(tools);
+                }
+                Err(error) => tracing::warn!(
+                    %error,
+                    path = %root.display(),
+                    "MiniLM search bundle download failed; directory::search_functions runs \
+                     BM25-only until the bundle is provisioned"
+                ),
+            }
+        });
+    }
     let hint_binding = iii_directory::hook::HintBindingState::default();
     iii_directory::hook::apply(&iii, &hint_binding, cfg_handle.load().inject_hint);
 
