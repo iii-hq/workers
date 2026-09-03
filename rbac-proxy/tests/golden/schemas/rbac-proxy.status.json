@@ -1,5 +1,5 @@
 {
-  "description": "Health/identity probe: bound host/port, the (credential-redacted) upstream engine URL, whether an auth function is configured, and the live downstream connection count.",
+  "description": "Check proxy health: bound host/port, the (credential-redacted) upstream engine URL, whether an auth function is configured, and the live downstream connection count.",
   "function_id": "rbac-proxy::status",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

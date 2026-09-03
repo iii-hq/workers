@@ -1,5 +1,5 @@
 {
-  "description": "Update the Tailscale client to the latest release, or with dry_run=true only report what would change.",
+  "description": "Update the Tailscale client to the latest release. With dry_run=true, only report what would change.",
   "function_id": "tailscale::update",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

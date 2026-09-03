@@ -1487,9 +1487,9 @@ pub fn register(
                 }
             })
             .description(
-                "One turn of a session's change history: every file it changed, the change \
-                 kind, the function that made it, the sub-agent that did it when one did, \
-                 the file's pre-image (revision and body up to 64 KiB each, 1 MiB per \
+                "Fetch one turn of a session's change history: every file it changed, the \
+                 change kind, the function that made it, the sub-agent that did it when one \
+                 did, the file's pre-image (revision and body up to 64 KiB each, 1 MiB per \
                  response) and, when a later turn kept it, the body the turn left behind \
                  (`after`), so the exact patch of that turn can be shown later. Omit turn_id \
                  for the newest turn.",

@@ -1,5 +1,5 @@
 {
-  "description": "View one release including body and assets: { repo: \"owner/name\", tag } -> { value }.",
+  "description": "View one release by tag, including its notes and attached assets.",
   "function_id": "github::release::view",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

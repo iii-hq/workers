@@ -1,5 +1,5 @@
 {
-  "description": "Fuzzy file finder over the workspace, ranked the way an editor's open-file palette ranks. Candidates come from git when the root is a repository and from the folder listing when it is not.",
+  "description": "Find a file by name in the workspace, fuzzy-ranked like an editor's open-file palette. Candidates come from git when the root is a repository and from the folder listing when it is not.",
   "function_id": "editor::find",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

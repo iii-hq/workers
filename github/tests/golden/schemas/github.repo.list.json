@@ -1,5 +1,5 @@
 {
-  "description": "List repositories of an owner: { owner?, limit? } -> { value: [{name, nameWithOwner, description, url, visibility, ...}] }. owner defaults to the authenticated user.",
+  "description": "List the repositories owned by a user or organization. owner defaults to the authenticated user.",
   "function_id": "github::repo::list",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

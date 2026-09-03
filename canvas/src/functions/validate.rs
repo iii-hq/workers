@@ -19,10 +19,10 @@ use crate::functions::family;
 use crate::store::{CanvasFormat, Store};
 
 pub const ID: &str = "canvas::validate";
-pub const DESC: &str = "Validate canvas source without storing it: detect the mermaid diagram \
-                        family, check the size cap, balanced fences and per-family lints, or \
-                        check an excalidraw scene JSON's shape. A cheap pre-flight — full \
-                        parsing happens at render time in the console.";
+pub const DESC: &str = "Check canvas source for errors without storing it. Detects the mermaid \
+                        diagram family, the size cap, balanced fences and per-family lints, or an \
+                        excalidraw scene JSON's shape — a cheap pre-flight; full parsing happens \
+                        at render time in the console.";
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct Request {

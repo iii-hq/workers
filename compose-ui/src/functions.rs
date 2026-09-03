@@ -47,7 +47,7 @@ pub fn register(iii: &Arc<IIIClient>, watcher: StateWatcher) {
                 }
             })
             .description(
-                "Last lines of one compose container's log from the daemon state directory (default 200, at most 500; a missing log answers with missing: true).",
+                "Read the last lines of one compose container's log file (default 200, at most 500; a missing log answers with missing: true).",
             ),
         );
     }
@@ -61,7 +61,7 @@ pub fn register(iii: &Arc<IIIClient>, watcher: StateWatcher) {
                 async move { project(&iii, input).await }
             })
             .description(
-                "The compose file as declared plus what each container listens on: namespace, engine endpoint, timeouts, worker source, dependencies, environment keys, run script, PID, and listening TCP ports.",
+                "Read the declared compose file plus what each container listens on: namespace, engine endpoint, timeouts, worker source, dependencies, environment keys, run script, PID, listening TCP ports.",
             ),
         );
     }

@@ -1,6 +1,6 @@
 {
   "function_id": "browser::session-list",
-  "description": "List open sessions with their type and idle time.",
+  "description": "List open scraping sessions: type and idle time.",
   "request_schema": {
     "type": "object",
     "properties": {

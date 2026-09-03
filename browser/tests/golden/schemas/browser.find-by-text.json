@@ -1,6 +1,6 @@
 {
   "function_id": "browser::find-by-text",
-  "description": "Find elements whose visible text matches a string (exact or `partial`).",
+  "description": "Find elements with this exact text, or `partial` for a substring.",
   "request_schema": {
     "type": "object",
     "properties": {

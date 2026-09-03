@@ -1,5 +1,5 @@
 {
-  "description": "Schedule and last-pass report: enabled, interval, last run, whether a pass is due, and the most recent per-bank results.",
+  "description": "Check the consolidation schedule and last pass: enabled, interval, last run, due, and the latest per-bank results.",
   "function_id": "memory-consolidate::status",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

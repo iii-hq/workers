@@ -660,7 +660,11 @@ worker.registerFunction(
 worker.registerFunction(
   'openwiki::status',
   async (a) => (await store.getStatus(wikiIdOf(a))) || { phase: 'unknown', progress: 0, updated_at: now() },
-  { description: 'Poll generation status for a wiki id.', request_format: S.STATUS_REQ, response_format: S.STATUS_RES },
+  {
+    description: 'Check the generation status and progress of a wiki.',
+    request_format: S.STATUS_REQ,
+    response_format: S.STATUS_RES,
+  },
 );
 
 worker.registerFunction('openwiki::wikis', async () => ({ wikis: await store.listWikis() }), {
@@ -674,7 +678,7 @@ worker.registerFunction(
   async () => ({ models: await listModels(worker), default_model: cfg.model }),
   {
     description:
-      "Models available via llm-router (for the UI's model picker), plus the configured default. Empty when no provider is configured.",
+      'List the models available for wiki generation, plus the configured default. Empty when no provider is configured.',
     request_format: S.MODELS_REQ,
     response_format: S.MODELS_RES,
   },
@@ -788,7 +792,7 @@ worker.registerFunction(
     return { reads, page_count: pages.length, output_bytes };
   },
   {
-    description: 'Measurement: source bytes the agent read and page bytes produced for a generation.',
+    description: 'Report the source bytes read and page bytes written for one wiki generation.',
     request_format: S.WIKI_REQ,
     response_format: {
       type: 'object',
@@ -919,7 +923,7 @@ worker.registerFunction(
     return { slug: s, ok: true };
   },
   {
-    description: 'A page-writer sub-agent stores its finished page (markdown + metadata) for a generating wiki.',
+    description: 'Store a finished wiki page (markdown + metadata) from a page-writer sub-agent.',
     request_format: S.WRITE_PAGE_REQ,
     response_format: S.WRITE_PAGE_RES,
   },

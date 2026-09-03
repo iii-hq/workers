@@ -1,6 +1,6 @@
 {
   "function_id": "browser::css",
-  "description": "One CSS query over HTML; first-or-all; `attr` pulls an attribute else text.",
+  "description": "Query HTML with a CSS selector; first-or-all; `attr` pulls an attribute.",
   "request_schema": {
     "type": "object",
     "properties": {

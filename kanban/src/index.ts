@@ -667,7 +667,7 @@ iii.registerFunction('kanban::models::list', async () => discoverModels(await li
 })
 
 iii.registerFunction('kanban::board', () => board(), {
-  description: 'Project Harness session trees, executor topology, managed worktrees, and Git status into durable runs.',
+  description: 'Read the Kanban board: every run, its tasks, and the live executors and models.',
   request_format: object(),
   response_format: object(
     {

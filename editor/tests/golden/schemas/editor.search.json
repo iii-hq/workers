@@ -1,5 +1,5 @@
 {
-  "description": "Search file contents across the workspace, grouped by file — the shell worker's recursive grep, shaped into what a results panel renders.",
+  "description": "Search file contents across the workspace, grouped by file. The shell worker's recursive grep, shaped into what a results panel renders.",
   "function_id": "editor::search",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

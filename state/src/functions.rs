@@ -369,7 +369,7 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                     Ok(result)
                 }
             })
-            .description("Set a value in state"),
+            .description("Store a value under a key in a state scope"),
         );
     }
 
@@ -475,7 +475,7 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                         .map_err(|e| Error::Handler(format!("GET_ERROR: Failed to get value: {e}")))
                 }
             })
-            .description("Get a value from state")
+            .description("Read the value stored at a key in a state scope")
             .response_format(json_value_or_null_schema(
                 "StateGetResponse",
                 "The raw value stored at scope/key, or null if absent.",
@@ -519,7 +519,7 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                     Ok(old)
                 }
             })
-            .description("Delete a value from state")
+            .description("Delete the value stored at a key in a state scope")
             .response_format(json_value_or_null_schema(
                 "StateDeleteResponse",
                 "The value that was deleted (read before delete), or null if it did not exist.",
@@ -559,7 +559,9 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                     Ok(result)
                 }
             })
-            .description("Update a value in state"),
+            .description(
+                "Update part of a stored value: set, merge, increment, append or remove fields",
+            ),
         );
     }
 
@@ -578,7 +580,7 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                     Ok(serde_json::to_value(values).ok())
                 }
             })
-            .description("Get a group from state")
+            .description("List every value stored in a state scope")
             .response_format(json_value_or_null_schema(
                 "StateListResponse",
                 "The values in the given scope, as a JSON array (or null on the \
@@ -604,7 +606,7 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                     Ok(StateListKeysResult { keys })
                 }
             })
-            .description("List the keys stored in a scope"),
+            .description("List the keys stored in a state scope"),
         );
     }
 
@@ -629,7 +631,7 @@ pub fn register_functions(iii: &Arc<IIIClient>, ctx: Arc<StateCtx>) {
                     Ok(StateListGroupsResult { groups: normalized })
                 }
             })
-            .description("List all state groups"),
+            .description("List all state scopes (groups) that hold values"),
         );
     }
 }

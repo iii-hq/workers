@@ -47,6 +47,7 @@ async function startWorker() {
 
   for (const [functionId, formats] of Object.entries(FUNCTION_FORMATS)) {
     worker.registerFunction(functionId, HANDLERS[functionId], {
+      ...(formats.description ? { description: formats.description } : {}),
       request_format: formatFor(formats.request),
       response_format: formatFor(formats.response),
     });

@@ -1,5 +1,5 @@
 {
-  "description": "Unified diff between two texts. Pure: nothing is read from disk. Use it to show what an edit will do before writing it, or to explain what a write did.",
+  "description": "Compare two texts as a unified diff. Pure: nothing is read from disk. Use it to preview an edit before writing it, or to explain what a write did.",
   "function_id": "editor::diff",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

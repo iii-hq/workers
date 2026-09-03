@@ -1,6 +1,6 @@
 {
   "function_id": "browser::history::list",
-  "description": "The session's visited pages, newest first, for a history panel or address-bar suggestions. Filter with query. Distinct from browser::history, which moves back / forward / reloads.",
+  "description": "List the pages this session visited, newest first, for a history panel or address-bar suggestions. Filter with query. browser::history moves back / forward / reloads instead.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "HistoryListInput",

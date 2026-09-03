@@ -157,7 +157,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             crate::runtime::exact(input).map_err(Error::from)
         })
         .description(
-            "Built-in deterministic evaluator: deep-compare output with arguments.expected.",
+            "Deep-compare output with arguments.expected; deterministic built-in evaluator.",
         ),
     );
 
@@ -167,8 +167,8 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             crate::runtime::normalized_text(input).map_err(Error::from)
         })
         .description(
-            "Built-in deterministic evaluator: compare text after normalizing case, \
-             whitespace, and surrounding punctuation.",
+            "Compare text after normalizing case, whitespace, and surrounding punctuation; \
+             deterministic built-in evaluator.",
         ),
     );
 

@@ -78,10 +78,10 @@ pub fn register(iii: &Arc<IIIClient>, pool: &Arc<crate::provider::imap::ImapPool
             }
         })
         .description(
-            "List recent messages in a folder. Payload: { account, folder?='INBOX', \
-             limit?=50, since_uid?=<int> }. Returns { items: [{ uid, message_id, from, \
-             subject, snippet, ts, seen, flagged }], next_since_uid }. Pass next_since_uid \
-             back as since_uid to page forward without missing or duplicating messages.",
+            "List recent emails in a folder, newest first. Payload: { account, \
+             folder?='INBOX', limit?=50, since_uid?=<int> }. Returns { items: [{ uid, \
+             message_id, from, subject, snippet, ts, seen, flagged }], next_since_uid }. \
+             Pass next_since_uid back as since_uid to page forward without gaps or duplicates.",
         ),
     );
 }

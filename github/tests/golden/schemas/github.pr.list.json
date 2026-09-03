@@ -1,5 +1,5 @@
 {
-  "description": "List pull requests: { repo: \"owner/name\", state?, limit?, author?, labels?, base?, search? } -> { value: [{number, title, state, url, author, headRefName, baseRefName, isDraft, labels, createdAt, updatedAt}] }.",
+  "description": "List pull requests in a repository. Filter by state, author, labels, base branch, or a search query.",
   "function_id": "github::pr::list",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

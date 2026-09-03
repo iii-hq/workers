@@ -45,15 +45,15 @@ pub const TEMPLATE_GET_ID: &str = "a2ui::template::get";
 pub const TEMPLATE_APPLY_ID: &str = "a2ui::template::apply";
 pub const TEMPLATE_DELETE_ID: &str = "a2ui::template::delete";
 
-pub const GENERATE_DESC: &str = "Generate a safe A2UI v0.9.1 Console surface from a short description and optional data; returns a compact receipt while the UI renders in chat and on the A2UI page.";
-pub const APPLY_DESC: &str = "Validate and atomically apply a batch of A2UI v0.9.1 protocol messages to the current Harness session's durable surface state.";
+pub const GENERATE_DESC: &str = "Generate a user interface from a short description and optional data. Renders a safe A2UI v0.9.1 surface in chat and on the A2UI page, returning a compact receipt.";
+pub const APPLY_DESC: &str = "Apply a batch of A2UI v0.9.1 protocol messages to a surface, validated and applied atomically to the session's durable state.";
 pub const GET_DESC: &str = "Read one durable A2UI surface, including its flat component graph and data model, from the current Harness session.";
-pub const LIST_DESC: &str = "List compact summaries of the durable A2UI surfaces owned by the current Harness session, newest first.";
+pub const LIST_DESC: &str = "List the A2UI surfaces owned by the current Harness session, newest first, as compact summaries.";
 pub const DELETE_DESC: &str = "Delete one A2UI surface from the current Harness session and publish the change to subscribed Console pages.";
-pub const PATCH_DESC: &str = "Update an existing A2UI surface from a plain-language instruction while preserving unspecified content and rejecting stale revisions.";
+pub const PATCH_DESC: &str = "Update an A2UI surface from a plain-language instruction. Unspecified content is preserved; stale revisions are rejected.";
 pub const EXPORT_DESC: &str = "Export one A2UI surface as a portable, replayable JSON package without Harness session metadata.";
 pub const ACTION_DESC: &str = "Console-only: persist an A2UI component action and forward it as a structured message to the originating Harness session.";
-const HISTORY_DESC: &str = "List the bounded, restorable revision snapshots for one A2UI surface.";
+const HISTORY_DESC: &str = "List the saved revisions of one A2UI surface, restorable by undo.";
 const UNDO_DESC: &str =
     "Undo edits to an A2UI surface by restoring a prior revision as a new monotonic revision.";
 const DUPLICATE_DESC: &str =
@@ -63,7 +63,7 @@ const PIN_DESC: &str =
 const IMPORT_DESC: &str =
     "Import a portable A2UI surface package into the current Harness session.";
 const EXPORT_CODE_DESC: &str =
-    "Export a generated interface as a runnable React app or a data-serving iii worker template.";
+    "Generate source code from an A2UI surface: a React app or a data-serving iii worker.";
 const BINDING_SET_DESC: &str =
     "Attach an allowlisted live state, stream, or shell event binding to a surface.";
 const BINDING_DELETE_DESC: &str = "Remove a declarative live event binding from an A2UI surface.";

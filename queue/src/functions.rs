@@ -168,7 +168,7 @@ pub fn register_all(
             let adapter = publish_adapter.clone();
             async move { publish(adapter, input).await }
         })
-        .description("Enqueue a message"),
+        .description("Enqueue a message onto a queue topic"),
     );
 
     let redrive_adapter = adapter.clone();
@@ -208,7 +208,7 @@ pub fn register_all(
             let adapter = list_adapter.clone();
             async move { list_topics(adapter).await }
         })
-        .description("List all queue topics"),
+        .description("List all queue topics with their broker type"),
     );
 
     let stats_adapter = adapter.clone();
@@ -218,7 +218,7 @@ pub fn register_all(
             let adapter = stats_adapter.clone();
             async move { topic_stats(adapter, input).await }
         })
-        .description("Get stats for a queue topic"),
+        .description("Get queue depth, delivered and failed counts for a topic"),
     );
 
     let dlq_topics_adapter = adapter.clone();
@@ -228,7 +228,7 @@ pub fn register_all(
             let adapter = dlq_topics_adapter.clone();
             async move { dlq_topics(adapter).await }
         })
-        .description("List DLQ topics with counts"),
+        .description("List dead-letter (DLQ) topics with their message counts"),
     );
 
     let dlq_messages_adapter = adapter;
@@ -238,7 +238,7 @@ pub fn register_all(
             let adapter = dlq_messages_adapter.clone();
             async move { dlq_messages(adapter, input).await }
         })
-        .description("Browse DLQ messages"),
+        .description("Browse the dead-lettered (DLQ) messages of a queue"),
     );
 }
 

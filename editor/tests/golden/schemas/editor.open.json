@@ -1,5 +1,5 @@
 {
-  "description": "Read a text file and record it as an open buffer, with the metadata needed to write it back safely: its language id, and the mtime and content version to hand to editor::save.",
+  "description": "Read a text file and record it as an open buffer. Carries the metadata needed to write it back safely: its language id, the mtime and content version to hand to editor::save.",
   "function_id": "editor::open",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

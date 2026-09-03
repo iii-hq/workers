@@ -700,9 +700,9 @@ fn register_index_skills(
             }
         })
         .description(
-            "Per-worker overview: one short markdown block per installed worker \
+            "Read a per-worker overview: one markdown block per installed worker \
              (title, first paragraph, and the directory::skills::get call for the \
-             full reference). For per-skill rows use directory::skills::list.",
+             reference). For per-skill rows use directory::skills::list.",
         ),
     );
 }

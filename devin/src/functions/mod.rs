@@ -164,7 +164,7 @@ fn register_stop(iii: &IIIClient) {
                 "reason": { "type": ["string", "null"] },
             },
         }))
-        .description("Interrupt a live devin::run CLI turn for a session."),
+        .description("Stop a running Devin CLI turn for a session."),
     );
 }
 
@@ -194,7 +194,7 @@ fn register_status(iii: &IIIClient) {
                 "record": { "type": ["object", "null"] },
             },
         }))
-        .description("Point-in-time status of a local devin::run session."),
+        .description("Check the status of a local Devin CLI run."),
     );
 }
 
@@ -216,8 +216,8 @@ fn register_sessions_list(iii: &IIIClient) {
             "properties": { "sessions": { "type": "array", "items": { "type": "object" } } },
         }))
         .description(
-            "List every devin::run / devin::start session this worker has recorded, each linked \
-             to its Devin session id. For all Devin cloud sessions org-wide, use devin::api \
+            "List the Devin CLI runs this worker has recorded, each linked to its Devin \
+             cloud session id. For all Devin cloud sessions org-wide, use devin::api \
              {method: GET, path: sessions}.",
         ),
     );
@@ -252,7 +252,7 @@ fn register_api(iii: &IIIClient, cell: &ConfigCell, http: &Client) {
         .request_format(schema_value::<ApiRequest>())
         .response_format(passthrough_schema())
         .description(
-            "Raw authenticated call to any Devin v3 endpoint: {method, path, query?, body?}. \
+            "Call any Devin v3 API endpoint directly: {method, path, query?, body?}. \
              Use for anything the typed devin::session::* wrappers do not cover.",
         ),
     );
@@ -337,7 +337,7 @@ fn register_session_message(iii: &IIIClient, cell: &ConfigCell, http: &Client) {
         })
         .request_format(schema_value::<SessionMessageRequest>())
         .response_format(passthrough_schema())
-        .description("Send a follow-up message to a running Devin cloud session."),
+        .description("Send a message to continue a running Devin cloud session."),
     );
 }
 

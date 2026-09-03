@@ -1,5 +1,5 @@
 {
-  "description": "List issues: { repo: \"owner/name\", state?, limit?, author?, labels?, assignee?, search? } -> { value: [{number, title, state, url, author, labels, assignees, milestone, createdAt, updatedAt}] }.",
+  "description": "List issues in a repository. Filter by state, author, labels, assignee, or a search query.",
   "function_id": "github::issue::list",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

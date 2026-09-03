@@ -365,7 +365,7 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
       executeRun(iii, getCfg(), emit, emitRaw, RunPayloadSchema.parse(payload ?? {})),
     {
       description:
-        'Run one OpenCode turn and wait for the result. Accepts `prompt` or a `messages` array; streams raw OpenCode JSON events onto opencode::events, AgentEvent frames onto agent::events, and returns {session_id, result, usage, total_cost_usd}.',
+        'Run one OpenCode coding-agent turn and wait for the result. Accepts `prompt` or a `messages` array; streams raw events onto opencode::events, AgentEvent frames onto agent::events, and returns {session_id, result, usage, total_cost_usd}.',
       request_format: RUN_REQUEST_FORMAT,
       response_format: RUN_RESPONSE_FORMAT,
     },
@@ -410,7 +410,7 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
       return { session_id, stopped: true };
     },
     {
-      description: 'Interrupt a live OpenCode run for a session.',
+      description: 'Stop a live OpenCode run for a session.',
       request_format: SESSION_ID_FORMAT,
       response_format: STOP_RESPONSE_FORMAT,
     },
@@ -424,7 +424,7 @@ export function register(iii: IIIClient, getCfg: () => Config, emit: Emit, emitR
       return { session_id, live: live.has(session_id), record };
     },
     {
-      description: 'Point-in-time status of an OpenCode session.',
+      description: 'Check the status of an OpenCode session.',
       request_format: SESSION_ID_FORMAT,
       response_format: STATUS_RESPONSE_FORMAT,
     },

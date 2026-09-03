@@ -7,22 +7,23 @@ use serde::Deserialize;
 use super::{argv, push_opt};
 
 pub const REPOS_ID: &str = "github::search::repos";
-pub const REPOS_DESC: &str = "Search repositories: { query, limit? } -> { value: [{fullName, description, url, visibility, stargazersCount, language, updatedAt, ...}] }. GitHub search syntax (e.g. \"language:rust stars:>100 topic:cli\").";
+pub const REPOS_DESC: &str = "Search GitHub for repositories matching a query. GitHub search syntax (e.g. \"language:rust stars:>100 topic:cli\").";
 pub const REPOS_JSON: &str =
     "fullName,description,url,visibility,isArchived,isFork,stargazersCount,forksCount,language,updatedAt";
 
 pub const ISSUES_ID: &str = "github::search::issues";
-pub const ISSUES_DESC: &str = "Search issues across repositories: { query, limit? } -> { value: [{number, title, state, url, repository, author, labels, commentsCount, ...}] }. Use qualifiers like \"repo:o/r is:open label:bug\".";
+pub const ISSUES_DESC: &str =
+    "Search issues across GitHub repositories. Use qualifiers like \"repo:o/r is:open label:bug\".";
 pub const ISSUES_JSON: &str =
     "number,title,state,url,repository,author,labels,commentsCount,createdAt,updatedAt";
 
 pub const PRS_ID: &str = "github::search::prs";
-pub const PRS_DESC: &str = "Search pull requests across repositories: { query, limit? } -> { value }. Use qualifiers like \"repo:o/r is:open review:required\".";
+pub const PRS_DESC: &str = "Search pull requests across GitHub repositories. Use qualifiers like \"repo:o/r is:open review:required\".";
 pub const PRS_JSON: &str =
     "number,title,state,url,repository,author,labels,commentsCount,createdAt,updatedAt,isDraft";
 
 pub const CODE_ID: &str = "github::search::code";
-pub const CODE_DESC: &str = "Search code: { query, limit? } -> { value: [{path, repository, sha, url, textMatches}] }. Use qualifiers like \"repo:o/r language:rust symbol\".";
+pub const CODE_DESC: &str = "Search code across GitHub repositories for a string or symbol. Use qualifiers like \"repo:o/r language:rust symbol\".";
 pub const CODE_JSON: &str = "path,repository,sha,url,textMatches";
 
 macro_rules! search_request {

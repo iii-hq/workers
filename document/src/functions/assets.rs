@@ -22,10 +22,10 @@ use crate::format::{self, Format};
 use crate::source::{describe_error, DocumentSource};
 
 pub const ID: &str = "document::extract-assets";
-pub const DESC: &str = "Pull the images and embedded objects out of a document as base64, for a \
+pub const DESC: &str = "Extract the images and embedded objects from a document as base64, for a \
                         deck or report whose content is pictures rather than text. Capped per \
-                        response and per asset; anything left out is still listed with its type \
-                        and size. Not available for PDFs — use pdf::extract-regions.";
+                        response and per asset; anything left out is listed with its type and \
+                        size. Not available for PDFs — use pdf::extract-regions.";
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct Request {

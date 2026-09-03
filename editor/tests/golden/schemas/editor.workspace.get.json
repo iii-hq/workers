@@ -1,5 +1,5 @@
 {
-  "description": "The active workspace: its root, the files open against it, and which folders are expanded. Shared by every surface, so this is what the agent and the console both see.",
+  "description": "Get the active workspace: its root, the open files, and which folders are expanded. Shared by every surface — what the agent and the console both see.",
   "function_id": "editor::workspace::get",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

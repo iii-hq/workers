@@ -153,7 +153,9 @@ pub fn register_bridge_functions(iii: &Arc<IIIClient>, remote: RemoteCell) {
                     .map_err(Error::from)
             }
         })
-        .description("Fire-and-forget invoke on the remote III instance"),
+        .description(
+            "Invoke a remote III function without waiting for the result (fire-and-forget)",
+        ),
     );
 }
 

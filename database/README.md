@@ -187,13 +187,13 @@ const { rows } = await iii.trigger({
 | `database::execute` | Write SQL. Returns `{ affected_rows, last_insert_id, returned_rows }`.<br>**`last_insert_id` semantics:** SQLite/MySQL surface the engine's `last_insert_rowid()` / `LAST_INSERT_ID()` (only populated for INSERT). Postgres has no equivalent — `last_insert_id` is set from the **first column of the first RETURNING row**, so put your PK first: `RETURNING id, name`, not `RETURNING name, id`. |
 | `database::executeBatch` | Convenience form of `transaction`: statements may be bare SQL strings or `{ sql, params }` objects (use `params` for dynamic values instead of inlining them). Same envelope and semantics as `transaction` — atomic, rolls back on first failure, reports `failed_index`, supports `isolation`. |
 | `database::prepareStatement` | Pin a connection and return `{ handle: { id, expires_at } }`. |
-| `database::runStatement` | Run a previously-prepared handle. (No `timeout_ms` — uses the pinned connection's session lifetime; configure via `ttl_seconds` on `prepareStatement`.) |
+| `database::runStatement` | Run a prepared SQL statement by handle. (No `timeout_ms` — uses the pinned connection's session lifetime; configure via `ttl_seconds` on `prepareStatement`.) |
 | `database::transaction` | Atomic batch sequence; rolls back on first failure. One-shot — pass all statements together. Rejects bare transaction-control SQL (`BEGIN`/`COMMIT`/`ROLLBACK`/…) and empty statements with `INVALID_PARAM`. |
 | `database::beginTransaction` | Open an interactive transaction. Returns `{ transaction: { id, expires_at } }`. Configurable `timeout_ms` (default 30 000, max 300 000) auto-rolls back if the deadline elapses. |
 | `database::transactionQuery` | Read SQL inside an interactive transaction. Same envelope as `query`. |
 | `database::transactionExecute` | Write SQL inside an interactive transaction. Same envelope as `execute`. Rejects bare `BEGIN`/`COMMIT`/`ROLLBACK`/`SAVEPOINT`/`SET TRANSACTION` with `INVALID_PARAM` — finalize via the dedicated handlers below. |
-| `database::commitTransaction` | Commit and finalize an interactive transaction. Subsequent calls against the same id return `TRANSACTION_NOT_FOUND`. |
-| `database::rollbackTransaction` | Rollback and finalize an interactive transaction. Subsequent calls against the same id return `TRANSACTION_NOT_FOUND`. |
+| `database::commitTransaction` | Commit an open SQL transaction, making its writes permanent. Subsequent calls against the same id return `TRANSACTION_NOT_FOUND`. |
+| `database::rollbackTransaction` | Roll back an open SQL transaction, discarding its uncommitted writes. Subsequent calls against the same id return `TRANSACTION_NOT_FOUND`. |
 | `database::listDatabases` | List configured databases. Returns `{ databases, count }`; each entry has `name`, `driver`, credential-redacted `url`, `pool` settings, and `tls` (`mode`, `ca_cert_present`, `trust_native`). Config only — no health checks or live pool stats. |
 
 ### Reading the schema
@@ -217,7 +217,7 @@ const { rows } = await iii.trigger({
 
 | Function | Description |
 |---|---|
-| `database::health` | Live pool occupancy plus active queries, table sizes, blocking locks and cache hit ratio. Each section reports separately as `available`, `unsupported` or `denied`, so a driver gap or a restricted role is never mistaken for an empty result. |
+| `database::health` | Check live pool occupancy plus active queries, table sizes, blocking locks and cache hit ratio. Each section reports separately as `available`, `unsupported` or `denied`, so a driver gap or a restricted role never reads as an empty result. |
 | `database::terminateQuery` | Terminate a backend session, or cancel just its statement with `cancel_only`. Takes an id from `health`. Separate from `health` because it is a write. |
 
 ### Saved queries and history

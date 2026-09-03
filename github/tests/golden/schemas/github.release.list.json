@@ -1,5 +1,5 @@
 {
-  "description": "List releases: { repo: \"owner/name\", limit? } -> { value: [{tagName, name, isDraft, isLatest, isPrerelease, createdAt, publishedAt}] }.",
+  "description": "List a repository's releases with their tags and draft/prerelease flags.",
   "function_id": "github::release::list",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

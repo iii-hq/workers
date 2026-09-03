@@ -9,26 +9,24 @@ use serde::Deserialize;
 use super::{argv, push_bool, push_opt};
 
 pub const RUN_LIST_ID: &str = "github::run::list";
-pub const RUN_LIST_DESC: &str = "List GitHub Actions workflow runs: { repo: \"owner/name\", workflow?, branch?, status?, limit? } -> { value: [{databaseId, displayTitle, workflowName, headBranch, event, status, conclusion, url, ...}] }.";
+pub const RUN_LIST_DESC: &str = "List recent GitHub Actions runs (CI builds) in a repository. Filter by workflow, branch, or status.";
 pub const RUN_JSON: &str = "databaseId,number,displayTitle,name,workflowName,headBranch,headSha,event,status,conclusion,attempt,createdAt,startedAt,updatedAt,url";
 
 pub const RUN_VIEW_ID: &str = "github::run::view";
-pub const RUN_VIEW_DESC: &str = "View one workflow run including its jobs and their steps: { repo: \"owner/name\", run_id } -> { value }.";
+pub const RUN_VIEW_DESC: &str = "View one workflow run with its jobs and their steps.";
 
 pub const RUN_RERUN_ID: &str = "github::run::rerun";
-pub const RUN_RERUN_DESC: &str =
-    "Rerun a workflow run: { repo, run_id, failed? } -> { output }. failed reruns only the failed jobs.";
+pub const RUN_RERUN_DESC: &str = "Rerun a workflow run. failed reruns only the failed jobs.";
 
 pub const RUN_CANCEL_ID: &str = "github::run::cancel";
-pub const RUN_CANCEL_DESC: &str =
-    "Cancel an in-progress workflow run: { repo, run_id } -> { output }.";
+pub const RUN_CANCEL_DESC: &str = "Cancel a workflow run that is still in progress.";
 
 pub const WORKFLOW_LIST_ID: &str = "github::workflow::list";
-pub const WORKFLOW_LIST_DESC: &str = "List workflows in a repo: { repo: \"owner/name\", all? } -> { value: [{id, name, path, state}] }. all includes disabled workflows.";
+pub const WORKFLOW_LIST_DESC: &str = "List the workflow definitions (.github/workflows files) in a repository. all includes disabled workflows.";
 pub const WORKFLOW_JSON: &str = "id,name,path,state";
 
 pub const WORKFLOW_RUN_ID: &str = "github::workflow::run";
-pub const WORKFLOW_RUN_DESC: &str = "Dispatch a workflow (workflow_dispatch): { repo, workflow: <file name or id>, ref?, inputs? } -> { output }. inputs become -f key=value pairs.";
+pub const WORKFLOW_RUN_DESC: &str = "Trigger a workflow run (workflow_dispatch) on a branch or tag. inputs become -f key=value pairs.";
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RunListRequest {

@@ -146,7 +146,7 @@ export function registerAuth(
     },
     {
       description:
-        'Who pays for a Claude terminal session on this host: a Claude subscription, an API key (which overrides the subscription login), or nothing yet. Read from `claude auth status` on the terminal host.',
+        'Check who pays for a Claude terminal session on this host. Reports a Claude subscription, an API key (which overrides the login), or nothing yet; read from `claude auth status` on the host.',
       request_format: { type: 'object', properties: {} },
       response_format: {
         type: 'object',

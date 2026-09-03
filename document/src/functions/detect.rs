@@ -13,9 +13,9 @@ use crate::format::{self, DetectedFrom, Family, Format};
 use crate::source::DocumentSource;
 
 pub const ID: &str = "document::detect";
-pub const DESC: &str = "Identify a document's format from its bytes (falling back to the file \
-                        name for CSV, which carries no signature), and report which family it \
-                        belongs to and whether this worker can convert it. Microseconds, and no \
+pub const DESC: &str = "Identify a document's file format from its bytes. Reports the family it \
+                        belongs to and whether this worker can convert it, falling back to the \
+                        file name for CSV, which carries no signature. Microseconds, and no \
                         conversion.";
 
 #[derive(Debug, Deserialize, JsonSchema)]

@@ -1,5 +1,5 @@
 {
-  "description": "Unified diff of a pull request: { repo, number } -> { diff, truncated }. truncated is true when the diff exceeded the capture cap.",
+  "description": "Read the code changes of a pull request as a unified diff. truncated is true when the diff exceeded the capture cap.",
   "function_id": "github::pr::diff",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

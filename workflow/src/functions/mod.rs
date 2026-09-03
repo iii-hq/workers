@@ -103,10 +103,10 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             async move { start::handle(&d, req).await.map_err(Error::from) }
         })
         .description(
-            "Launch a declarative multi-agent DAG (fan-out, barrier/join, durable and \
-             crash-resumable) and return its run_id immediately. To get the result set \
+            "Run a multi-agent workflow and return its run_id immediately. Declarative DAG: \
+             fan-out, barrier/join, durable, crash-resumable. To get the result set \
              `reply_to: {}` (or `notify`) and END YOUR TURN — it arrives as a separate message \
-             when the run finishes; never poll workflow::status in a loop.",
+             when the run ends; never poll workflow::status in a loop.",
         ),
     );
 
@@ -154,7 +154,7 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Deps) {
             let d = d.clone();
             async move { stop::handle(&d, req).await.map_err(Error::from) }
         })
-        .description("Cooperatively cancel a workflow run and cascade harness::stop to each live node session."),
+        .description("Cancel a workflow run, cascading harness::stop to each live node session."),
     );
     let d = deps.clone();
     iii.register_function(

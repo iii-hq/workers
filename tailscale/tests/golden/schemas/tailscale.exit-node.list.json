@@ -1,5 +1,5 @@
 {
-  "description": "List the peers that offer to be an exit node for internet traffic, and which one this node uses.",
+  "description": "List the available exit nodes for internet traffic, and which one this node uses.",
   "function_id": "tailscale::exit-node::list",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
