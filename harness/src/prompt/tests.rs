@@ -259,11 +259,41 @@ fn registry_flow() {
     let out = default_prompt();
     assert!(out.contains("directory::registry::workers::list { search: \"<capability>\" }"));
     assert!(out.contains("directory::registry::workers::info { name: \"<name>\" }"));
-    assert!(out.contains("compose::add { worker: \"<name>\" }"));
+    assert!(out.contains("compose::add { worker: \"<name>\", operation_id: \"<operation-id>\" }"));
     assert!(out.contains("say what you are about to install and why"));
     assert!(out.contains("confirm the new function ids appear"));
     assert!(out.contains("engine::functions::list { prefix: \"<worker>::\" }"));
     assert!(out.contains("a preview, not the contract"));
+}
+
+#[test]
+fn observable_compose_mutations_register_a_terminal_wake_before_starting() {
+    let out = default_prompt();
+    let registration = out
+        .find("engine::register_trigger { trigger_type: \"compose-operation\"")
+        .expect("compose-operation registration");
+    let add = out[registration..]
+        .find("compose::add { worker: \"<name>\", operation_id: \"<operation-id>\" }")
+        .map(|index| registration + index)
+        .expect("compose::add with correlated operation id");
+
+    assert!(registration < add);
+    assert!(out.contains("operation_id: \"<operation-id>\", terminal_only: true"));
+    assert!(
+        out.contains("compose::update { worker: \"<name>\", operation_id: \"<operation-id>\" }")
+    );
+    assert!(out.contains(
+        "compose::remove { workers: [\"<name>\", \"<name>\"], operation_id: \"<operation-id>\" }"
+    ));
+    assert!(
+        out.contains("`add` and `remove` accept `worker` for one worker or `workers` for a batch")
+    );
+    assert!(out.contains("applies only to `add`, `update`, and `remove`"));
+    assert!(out.contains("unregister the wake with its"));
+    assert!(out.contains("compose::operation { operation_id: \"<operation-id>\" }"));
+    assert!(out.contains("Do not poll"));
+    assert!(out.contains("terminal: true"));
+    assert!(!out.contains("The call waits until newly declared workers are ready"));
 }
 
 #[test]
@@ -499,7 +529,7 @@ fn capability_ladder_ordering() {
     let out = variants::DEFAULT;
     assert!(out.find("directory::registry::workers::list") < out.find("registerWorker"));
     assert!(out.find("coder::") < out.find("registerWorker"));
-    assert!(out.contains("compose::add { worker: \"<name>\" }"));
+    assert!(out.contains("compose::add { worker: \"<name>\", operation_id: \"<operation-id>\" }"));
     assert!(out.contains("compose::schema { function_id: \"compose::<operation>\" }"));
     assert!(!out.contains("worker::add { source:"));
 }

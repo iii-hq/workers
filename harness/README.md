@@ -108,10 +108,12 @@ the only contract.
 **3. Need a capability that is not registered?**
 - `directory::registry::workers::list { search: "<capability>" }`
 - `directory::registry::workers::info { name }` to judge fit
-- `compose::add { worker: "<name>" }` to declare and start it
-- confirm with `engine::functions::list { prefix: "<worker>::" }` and fetch each contract
+- choose an operation id and register a one-shot `compose-operation` wake with
+  `{ "operation_id": "<operation-id>", "terminal_only": true }`
+- call `compose::add { worker: "<name>", operation_id: "<operation-id>" }` with the same id
+- read `compose::operation` once for race recovery, then confirm the functions after the terminal event
 
-**4. Worker lifecycle.** `compose::status`, `compose::add`, `compose::up`, `compose::down`, `compose::restart`, `compose::update`, and `compose::remove`. Fetch their contracts with `compose::schema { function_id: "compose::<operation>" }`. The harness routes `compose::*` to its supervising daemon and scopes each call to its own compose file.
+**4. Worker lifecycle.** `compose::status`, `compose::add`, `compose::up`, `compose::down`, `compose::restart`, `compose::update`, and `compose::remove`. `add`, `update`, and `remove` use the same `compose-operation` wake flow above; the other operations return their final result directly. `add` and `remove` accept a `workers` list for one batch, while their singular `worker` field remains compatible. Fetch their contracts with `compose::schema { function_id: "compose::<operation>" }`. The harness routes `compose::*` to its supervising daemon and scopes each call to its own compose file.
 
 **5. Triggers, not polling.** To react to events (HTTP, schedule, webhook, file change), bind a trigger instead of polling. Discover the type with `engine::triggers::list`, copy config from its schema, and confirm the binding fires with a real call (e.g. `web::fetch` to its local URL).
 

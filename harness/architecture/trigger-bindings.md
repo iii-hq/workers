@@ -133,12 +133,14 @@ intercepting it. The engine-side trigger, though, is registered over the
 target, home, and provider namespaces to `default`, so in a namespaced
 deployment the binding parks as PENDING forever and a fire would resolve
 `harness::trigger::deliver` where this harness never registered it. The
-channel path stamps the connection's namespace on both ends, and the SDK
-replays the registration on reconnect. Channel registrations die with the
-connection — durability lives in the binding record: the startup sweep
+channel path stamps the connection's namespace on the target and normally on
+the provider. `compose-operation` is the exception: its provider is selected
+with `III_COMPOSE_NAMESPACE`, while its target stays in the harness namespace.
+The SDK replays the registration on reconnect. Channel registrations die with
+the connection — durability lives in the binding record: the startup sweep
 re-arms every surviving binding's engine trigger from the store and, for
-one-shot `state` wakes that never fired, reads the watched key and delivers
-the wake the dead trigger missed. The accepted shape:
+one-shot `state` wakes that never fired, reads the watched key and delivers the
+wake the dead trigger missed. The accepted shape:
 
 ```jsonc
 {
@@ -153,6 +155,32 @@ the wake the dead trigger missed. The accepted shape:
   "lifecycle": { "once": true }
 }
 ```
+
+### Observable Compose mutations
+
+`compose::add`, `compose::update`, and `compose::remove` accept work before the
+mutation finishes. A caller that needs the final result first creates a unique
+operation ID. It registers a one-shot `compose-operation` wake with this config:
+
+```jsonc
+{
+  "operation_id": "<operation-id>",
+  "terminal_only": true
+}
+```
+
+The caller registers this wake before it calls the mutation, and it sends the
+same `operation_id` in both calls. `terminal_only` makes Compose deliver only
+the success or failure event, so progress cannot consume the one-shot wake.
+`compose::add` and `compose::remove` accept `workers` to mutate several workers
+under that one operation ID and publish one terminal result for the batch.
+Compose forwards the stored `__binding` metadata with that event, and the
+normal delivery handler resolves the durable record directly. A null operation
+ID is a wildcard and must not be used for one-operation correlation. After
+registration or invocation, one `compose::operation` read closes the activation
+race. If that snapshot is terminal, the caller removes the still-armed wake.
+Other Compose operations return their final result directly and do not use this
+trigger flow.
 
 Backward-compatible shorthands, all still accepted:
 
