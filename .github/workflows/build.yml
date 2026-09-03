@@ -505,7 +505,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y skopeo
           base="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/$WORKER"
-          skopeo login ghcr.io --username "$GITHUB_ACTOR" --password "$GH_TOKEN"
+          authfile="$RUNNER_TEMP/skopeo-auth.json"
+          # OCI archives contain root-owned entries, so hardened runners must
+          # extract them through the same privileged path used during capture.
+          printf '%s' "$GH_TOKEN" | sudo skopeo login --authfile "$authfile" \
+            ghcr.io --username "$GITHUB_ACTOR" --password-stdin
           index_state=pushed
           if docker buildx imagetools inspect "$base:$BUILD_TAG" --raw >published-index.json 2>/dev/null; then
             index_state=existing
@@ -519,18 +523,21 @@ jobs:
             platform_slug=${platform//\//-}
             test -f "deploy-prepared/$archive"
             gzip -dc "deploy-prepared/$archive" >"image-$platform_slug.oci.tar"
-            source_digest=$(skopeo inspect --format '{{.Digest}}' "oci-archive:image-$platform_slug.oci.tar")
+            source_digest=$(sudo skopeo inspect --authfile "$authfile" --format '{{.Digest}}' \
+              "oci-archive:image-$platform_slug.oci.tar")
             [[ "$source_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
             # Per-platform manifests are addressed by the same build tag; they
             # are the inputs of the index, never version or channel tags.
             staging_tag="$BUILD_TAG-$platform_slug"
-            if remote_digest=$(skopeo inspect --format '{{.Digest}}' "docker://$base:$staging_tag" 2>/dev/null); then
+            if remote_digest=$(sudo skopeo inspect --authfile "$authfile" --format '{{.Digest}}' \
+              "docker://$base:$staging_tag" 2>/dev/null); then
               test "$remote_digest" = "$source_digest"
             elif [[ "$index_state" == existing ]]; then
               echo "::error::OCI index $base:$BUILD_TAG exists but its platform manifest $staging_tag is missing"
               exit 1
             else
-              skopeo copy "oci-archive:image-$platform_slug.oci.tar" "docker://$base:$staging_tag"
+              sudo skopeo copy --authfile "$authfile" \
+                "oci-archive:image-$platform_slug.oci.tar" "docker://$base:$staging_tag"
             fi
             docker buildx imagetools inspect "$base:$staging_tag" --raw >"staging-$platform_slug.json"
             if jq -e '.manifests | type == "array"' "staging-$platform_slug.json" >/dev/null; then
