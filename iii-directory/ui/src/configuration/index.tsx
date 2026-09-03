@@ -70,6 +70,7 @@ const INLINE_ERROR_POINTERS = new Set([
   '/registry_search',
   '/function_search_mode',
   '/function_search_model_path',
+  '/function_search_model_download',
 ])
 
 export function DirectoryConfigForm(props: ConfigFormProps) {
@@ -262,9 +263,17 @@ export function DirectoryConfigForm(props: ConfigFormProps) {
             field="function_search_model_path"
             label="Semantic model directory"
             placeholder="not set — e.g. ~/.cache/iii/all-MiniLM-L6-v2-<revision>"
-            hint="Existing directory containing the local semantic model. The runtime never downloads a model, and changing this path requires a worker restart."
+            hint="Directory holding the pinned MiniLM bundle (default under ~/.cache/iii). Changing this path requires a worker restart."
             value={asString(value.function_search_model_path)}
             onChange={setString}
+            errors={props.errors}
+          />
+          <CheckField
+            field="function_search_model_download"
+            label="Download the model on first run"
+            hint="When a semantic mode is on and the bundle is missing at startup, fetch the pinned files from Hugging Face once, each verified by length and SHA-256. Turn off for air-gapped stacks."
+            checked={booleanWithDefault(value.function_search_model_download, true)}
+            onChange={setBool}
             errors={props.errors}
           />
         </SettingsList>

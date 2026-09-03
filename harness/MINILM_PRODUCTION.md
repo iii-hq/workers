@@ -46,6 +46,12 @@ uses these portable defaults:
 
 - Model bundle:
   `~/.cache/iii/all-MiniLM-L6-v2-c9745ed1d9f207416be6d2e6f8de32d1f16199bf`
+  (also the built-in default of `function_search_model_path`). With a semantic
+  mode configured and the bundle missing at boot, `iii-directory` downloads the
+  ten pinned files from Hugging Face once, each verified by byte length and
+  SHA-256 before use (`function_search_model_download`, default `true`). This
+  compose sets it to `false`: the stack makes no remote model calls and expects
+  the bundle to be provisioned ahead of time.
 - Static ONNX Runtime 1.28.0:
   `~/.cache/iii/onnxruntime-static-1.28.0-x86_64-unknown-linux-gnu`
 

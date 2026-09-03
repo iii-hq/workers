@@ -93,6 +93,19 @@ fn default_auto_download() -> bool {
     true
 }
 
+/// The pinned MiniLM search bundle lives here unless configured otherwise:
+/// embedding files at the root, reranker files under `reranker/`.
+pub fn default_function_search_model_path() -> Option<String> {
+    Some(format!(
+        "~/.cache/iii/all-MiniLM-L6-v2-{}",
+        crate::functions::search_semantic::MINILM_REVISION
+    ))
+}
+
+fn default_function_search_model_download() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FunctionSearchMode {
@@ -102,16 +115,18 @@ pub enum FunctionSearchMode {
     Hybrid,
 }
 
-/// `shadow` and `hybrid` need a local semantic model; without
-/// `function_search_model_path` every search silently runs BM25-only, which
-/// is easy to mistake for the model being active. Say so once, loudly.
-pub fn warn_if_search_mode_lacks_model(mode: FunctionSearchMode, has_model_path: bool) {
-    if mode != FunctionSearchMode::Lexical && !has_model_path {
+/// `shadow` and `hybrid` need a local semantic model; without a complete
+/// bundle at `function_search_model_path` every search silently runs
+/// BM25-only, which is easy to mistake for the model being active. Say so
+/// once, loudly. `model_ready` is "the path is set and the bundle verifies".
+pub fn warn_if_search_mode_lacks_model(mode: FunctionSearchMode, model_ready: bool) {
+    if mode != FunctionSearchMode::Lexical && !model_ready {
         tracing::warn!(
             ?mode,
-            "function_search_mode needs a local semantic model but function_search_model_path \
-             is unset; directory::search_functions runs BM25-only until a model directory is \
-             configured and iii-directory restarts"
+            "function_search_mode needs a local semantic model but no complete bundle is \
+             available at function_search_model_path (unset, missing, or failed \
+             verification/download); directory::search_functions runs BM25-only until the \
+             bundle is in place and iii-directory restarts"
         );
     }
 }
@@ -248,9 +263,23 @@ pub struct SkillsConfig {
     #[serde(default)]
     pub function_search_mode: FunctionSearchMode,
 
-    /// Existing local Potion model directory. Runtime never downloads it.
-    #[serde(default, deserialize_with = "deserialize_model_path")]
+    /// Local semantic model directory: the pinned MiniLM bundle (embedding
+    /// files at the root, reranker files under `reranker/`), or a Potion
+    /// directory. Defaults to `~/.cache/iii/all-MiniLM-L6-v2-<revision>`;
+    /// `null` disables the semantic lane. Changing it requires a restart.
+    #[serde(
+        default = "default_function_search_model_path",
+        deserialize_with = "deserialize_model_path"
+    )]
     pub function_search_model_path: Option<String>,
+
+    /// When a semantic mode is configured and the bundle at
+    /// `function_search_model_path` is missing or incomplete at boot, download
+    /// the pinned files from Hugging Face once, verifying every file by byte
+    /// length and SHA-256 before use. Set `false` for air-gapped stacks; the
+    /// worker then stays BM25-only until the bundle is provisioned by hand.
+    #[serde(default = "default_function_search_model_download")]
+    pub function_search_model_download: bool,
 }
 
 fn default_inject_hint() -> bool {
@@ -283,7 +312,8 @@ impl Default for SkillsConfig {
             hint_min_workers: default_hint_min_workers(),
             registry_search: default_registry_search(),
             function_search_mode: FunctionSearchMode::default(),
-            function_search_model_path: None,
+            function_search_model_path: default_function_search_model_path(),
+            function_search_model_download: default_function_search_model_download(),
         }
     }
 }
@@ -446,7 +476,13 @@ mod tests {
     fn defaults_from_empty_yaml() {
         let cfg: SkillsConfig = serde_yaml::from_str("{}").unwrap();
         assert_eq!(cfg.function_search_mode, FunctionSearchMode::Lexical);
-        assert_eq!(cfg.function_search_model_path, None);
+        assert_eq!(
+            cfg.function_search_model_path.as_deref(),
+            Some("~/.cache/iii/all-MiniLM-L6-v2-c9745ed1d9f207416be6d2e6f8de32d1f16199bf")
+        );
+        assert!(cfg.function_search_model_download);
+        let disabled = SkillsConfig::from_yaml("function_search_model_path: null\n").unwrap();
+        assert_eq!(disabled.function_search_model_path, None);
         assert_eq!(cfg.skills_folder, default_skills_folder());
         assert_eq!(cfg.local_skills_folder, default_local_skills_folder());
         assert_eq!(cfg.agents_folder, default_agents_folder());
@@ -676,6 +712,7 @@ auto_download: false
             "auto_download",
             "function_search_mode",
             "function_search_model_path",
+            "function_search_model_download",
         ] {
             assert!(props.contains_key(field), "schema missing {field}");
         }

@@ -126,6 +126,8 @@ containers:
     config_override:
       function_search_mode: hybrid
       function_search_model_path: "~/.cache/iii/all-MiniLM-L6-v2-c9745ed1d9f207416be6d2e6f8de32d1f16199bf"
+      # Provisioned ahead of time; this stack makes no remote model calls.
+      function_search_model_download: false
     environment:
       RUST_LOG: info
       ORT_PREFER_DYNAMIC_LINK: "0"

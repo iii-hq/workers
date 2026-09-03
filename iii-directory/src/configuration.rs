@@ -240,7 +240,9 @@ async fn on_config_change(iii: &IIIClient, state: &SharedState) {
     let inject_hint = cfg.inject_hint;
     crate::config::warn_if_search_mode_lacks_model(
         cfg.function_search_mode,
-        cfg.resolved_function_search_model_path().is_some(),
+        cfg.resolved_function_search_model_path()
+            .as_deref()
+            .is_some_and(crate::functions::search_semantic::bundle_complete),
     );
     apply_config(state, cfg).await;
     // Reconcile the pre-generate hook binding with the reloaded knob (hot,

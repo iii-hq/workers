@@ -38,7 +38,7 @@ use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{register_worker, IIIClient, InitOptions, RegisterFunction};
 use serde_json::json;
 
-use iii_directory::config::{SharedConfig, SkillsConfig};
+use iii_directory::config::{FunctionSearchMode, SharedConfig, SkillsConfig};
 use iii_directory::functions::download::{
     download_worker_skills, reconcile_decision, InFlightGuard,
 };
@@ -149,10 +149,31 @@ async fn main() -> Result<()> {
     // `cache_ttl_ms` cell read by both caches.
     let boot_topology = cfg.topology();
     let function_search_model_path = cfg.resolved_function_search_model_path();
-    iii_directory::config::warn_if_search_mode_lacks_model(
-        cfg.function_search_mode,
-        function_search_model_path.is_some(),
-    );
+    if cfg.function_search_mode != FunctionSearchMode::Lexical && cfg.function_search_model_download
+    {
+        if let Some(root) = function_search_model_path.as_deref() {
+            if !functions::search_semantic::bundle_complete(root) {
+                tracing::info!(
+                    path = %root.display(),
+                    "downloading the pinned MiniLM search bundle (first run, ~180 MB, every file \
+                     verified by length and SHA-256)"
+                );
+                match functions::search_semantic::download_bundle(root).await {
+                    Ok(()) => tracing::info!(path = %root.display(), "MiniLM search bundle ready"),
+                    Err(error) => tracing::warn!(
+                        %error,
+                        path = %root.display(),
+                        "MiniLM search bundle download failed; directory::search_functions runs \
+                         BM25-only until the bundle is provisioned"
+                    ),
+                }
+            }
+        }
+    }
+    let model_ready = function_search_model_path
+        .as_deref()
+        .is_some_and(functions::search_semantic::bundle_complete);
+    iii_directory::config::warn_if_search_mode_lacks_model(cfg.function_search_mode, model_ready);
     let auto_download = cfg.auto_download;
     let cache_ttl_ms = Arc::new(AtomicU64::new(cfg.registry_cache_ttl_ms));
     let registered_cache = make_registered_cache(cache_ttl_ms.clone());

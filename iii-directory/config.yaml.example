@@ -65,9 +65,16 @@ download_timeout_ms: 60000
 # semantic lane but returns lexical results; hybrid explicitly uses fusion.
 function_search_mode: lexical
 
-# Existing local Potion model directory. Changing it requires restart.
-# Provision explicitly with scripts/provision-potion.py; runtime never downloads.
-# function_search_model_path: ./models/potion-multilingual-128M
+# Local semantic model directory: the pinned MiniLM bundle (default) or a
+# Potion directory (scripts/provision-potion.py). Changing it requires restart;
+# `null` disables the semantic lane.
+# function_search_model_path: ~/.cache/iii/all-MiniLM-L6-v2-c9745ed1d9f207416be6d2e6f8de32d1f16199bf
+
+# With a semantic mode and a missing/incomplete bundle at boot, download the
+# pinned files from Hugging Face once (each verified by length and SHA-256).
+# Set false for air-gapped stacks; the worker then stays BM25-only until the
+# bundle is provisioned by hand.
+function_search_model_download: true
 
 # Bind the directory::pre-generate hook so the conditional search hint can
 # be injected into agent generations. Off unbinds the hook entirely.

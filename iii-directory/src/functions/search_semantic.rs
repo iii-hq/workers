@@ -840,6 +840,96 @@ fn required_file_is_regular(path: &Path) -> bool {
         .is_ok_and(|metadata| metadata.file_type().is_file())
 }
 
+/// Whether the complete pinned MiniLM bundle (embedding files at `root`,
+/// reranker files under `root/reranker`) is present with the expected byte
+/// lengths. Cheap (metadata only); `load_verified_*` still hashes every file
+/// before use.
+pub fn bundle_complete(root: &Path) -> bool {
+    minilm_artifact_contract_matches(root)
+        && RERANKER_FILES.iter().all(|(name, expected_size, _)| {
+            root.join("reranker")
+                .join(name)
+                .symlink_metadata()
+                .is_ok_and(|metadata| {
+                    metadata.file_type().is_file() && metadata.len() == *expected_size
+                })
+        })
+}
+
+fn bundle_url(repository: &str, revision: &str, file: &str) -> String {
+    format!("https://huggingface.co/{repository}/resolve/{revision}/{file}")
+}
+
+/// One pinned artifact set: target directory, repository, revision, files.
+type BundleSet<'a> = (&'a Path, &'a str, &'a str, &'a [(&'a str, u64, &'a str)]);
+
+/// Download the pinned MiniLM bundle into `root`, one file at a time, each
+/// verified by byte length and SHA-256 before it is renamed into place.
+/// Files that already verify are left alone, so a partial earlier run
+/// resumes. Any mismatch leaves the previous state untouched and fails.
+pub async fn download_bundle(root: &Path) -> Result<(), String> {
+    download_bundle_inner(root)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn download_bundle_inner(root: &Path) -> Result<(), SemanticUnavailable> {
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("iii-directory/", env!("CARGO_PKG_VERSION")))
+        .timeout(std::time::Duration::from_secs(600))
+        .build()
+        .map_err(|error| unavailable(format!("build download client: {error}")))?;
+    let sets: [BundleSet<'_>; 2] = [
+        (root, MINILM_REPOSITORY, MINILM_REVISION, &MINILM_FILES),
+        (
+            &root.join("reranker"),
+            RERANKER_REPOSITORY,
+            RERANKER_REVISION,
+            &RERANKER_FILES,
+        ),
+    ];
+    for (dir, repository, revision, files) in sets {
+        for (name, expected_size, expected_sha256) in files {
+            let target = dir.join(name);
+            if verify_artifacts(dir, &[(name, *expected_size, expected_sha256)]).is_ok() {
+                continue;
+            }
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent).map_err(|error| {
+                    unavailable(format!("create {}: {error}", parent.display()))
+                })?;
+            }
+            let url = bundle_url(repository, revision, name);
+            tracing::info!(%url, "downloading search model artifact");
+            let bytes = client
+                .get(&url)
+                .send()
+                .await
+                .and_then(reqwest::Response::error_for_status)
+                .map_err(|error| unavailable(format!("fetch {url}: {error}")))?
+                .bytes()
+                .await
+                .map_err(|error| unavailable(format!("read {url}: {error}")))?;
+            if bytes.len() as u64 != *expected_size {
+                return Err(unavailable(format!(
+                    "{url}: expected {expected_size} bytes, got {}",
+                    bytes.len()
+                )));
+            }
+            let digest = format!("{:x}", Sha256::digest(&bytes));
+            if digest != *expected_sha256 {
+                return Err(unavailable(format!("{url}: SHA-256 mismatch")));
+            }
+            let partial = target.with_extension("part");
+            std::fs::write(&partial, &bytes)
+                .map_err(|error| unavailable(format!("write {}: {error}", partial.display())))?;
+            std::fs::rename(&partial, &target)
+                .map_err(|error| unavailable(format!("publish {}: {error}", target.display())))?;
+        }
+    }
+    Ok(())
+}
+
 fn minilm_artifact_contract_matches(path: &Path) -> bool {
     MINILM_FILES.iter().all(|(name, expected_size, _)| {
         path.join(name).symlink_metadata().is_ok_and(|metadata| {
@@ -985,6 +1075,60 @@ fn normalize_minilm_embedding(embedding: &mut [f32]) -> Result<(), SemanticUnava
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bundle_url_targets_the_pinned_revision() {
+        assert_eq!(
+            bundle_url(MINILM_REPOSITORY, MINILM_REVISION, "onnx/model.onnx"),
+            format!(
+                "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/{MINILM_REVISION}/onnx/model.onnx"
+            )
+        );
+    }
+
+    #[test]
+    fn bundle_complete_needs_every_pinned_file_at_its_size() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!bundle_complete(dir.path()));
+        // Sparse files of the pinned lengths satisfy the metadata check
+        // (the loader hashes them later; this predicate only gates download).
+        for (sub, files) in [("", &MINILM_FILES[..]), ("reranker", &RERANKER_FILES[..])] {
+            for (name, size, _) in files {
+                let path = dir.path().join(sub).join(name);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::File::create(&path)
+                    .unwrap()
+                    .set_len(*size)
+                    .unwrap();
+            }
+        }
+        assert!(bundle_complete(dir.path()));
+        std::fs::File::create(dir.path().join("reranker/tokenizer.json"))
+            .unwrap()
+            .set_len(1)
+            .unwrap();
+        assert!(
+            !bundle_complete(dir.path()),
+            "a short file breaks completeness"
+        );
+    }
+
+    /// Network: fetches ~180 MB from Hugging Face. Proves the pinned URLs,
+    /// lengths and hashes still agree.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "downloads the pinned MiniLM bundle from Hugging Face"]
+    async fn downloads_and_verifies_the_pinned_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        download_bundle(dir.path())
+            .await
+            .expect("download + verify");
+        assert!(bundle_complete(dir.path()));
+        verify_artifacts(dir.path(), &MINILM_FILES).expect("embedding files verify");
+        verify_artifacts(&dir.path().join("reranker"), &RERANKER_FILES)
+            .expect("reranker files verify");
+        // A second run is a no-op: everything already verifies.
+        download_bundle(dir.path()).await.expect("idempotent");
+    }
 
     fn valid_contract() -> ObservedModelContract {
         ObservedModelContract::expected()
