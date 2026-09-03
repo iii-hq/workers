@@ -119,9 +119,8 @@ cost, isolation and performance measurements.
 | `workers-release-control-linux-2core` | Larger GitHub-hosted Linux | 8 concurrent | Reserved for a later migration of release control jobs; no workflow selects it yet |
 | `workers-release-linux-8core` | Larger GitHub-hosted Linux | 8 concurrent | Linux release builds and, until migrated, release control jobs |
 | `windows-latest` | Standard GitHub-hosted Windows | GitHub-managed | Windows release builds |
-| `workers-release-macos-12core` | Larger GitHub-hosted Intel macOS | 3 concurrent | Intel macOS release builds |
+| `workers-release-macos-12core` | Larger GitHub-hosted Intel macOS | 3 concurrent | No release target left after `x86_64-apple-darwin` was dropped; only the manual capacity diagnostic selects it |
 | `workers-release-macos-arm-5core` | Larger GitHub-hosted Apple Silicon | 3 concurrent | ARM macOS release builds |
-| `workers-release-macos-aws-intel` | Self-hosted Intel macOS on AWS | 3 registered | Explicit contingency capacity; no workflow selects it by default |
 
 The `workers-ci-linux-8core` group is restricted to the Harness integration
 and benchmark workflows. Release pools stay in the release-only runner group
