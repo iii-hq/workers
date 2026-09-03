@@ -7,21 +7,29 @@ hybrid production search pipeline on CPU:
 1. BM25 and `sentence-transformers/all-MiniLM-L6-v2` retrieve against the full
    installed function catalog.
 2. Reciprocal-rank fusion combines both retrieval orders.
-3. `cross-encoder/ms-marco-MiniLM-L6-v2` reranks the complete retrieval union.
+3. `cross-encoder/ms-marco-MiniLM-L6-v2` reranks the top 48 fused candidates;
+   the tail keeps its fused retrieval order below them.
 4. A second reciprocal-rank fusion anchors reranker order to retrieval.
 
 No hosted embedding or LLM API is used by function search. Exact function IDs
-bypass both models. If a local model is unavailable or returns invalid output,
-the affected query falls back to BM25.
+bypass both models. Degradation is staged: if the embedding index is
+unavailable, the query falls back to BM25; if only the cross-encoder fails,
+returns invalid output, or exceeds its 3 s budget, the query keeps the fused
+BM25+MiniLM retrieval order without reranking.
 
-This stack intentionally ships the v14 ordering policy without the separate
-categorical-admission judge. MiniLM retrieves and orders candidates; it does
-not reliably decide that no installed function supports a natural-language
-capability. A no-match request can therefore still return plausible but
-unsupported functions. Adding an absolute MiniLM score cutoff is not an
-equivalent substitute: the v14 evaluation found that this removes substantial
-valid recall. Reliable abstention requires the separately qualified
-categorical-admission stage.
+MiniLM retrieves and orders candidates; it does not by itself decide that no
+installed function supports a natural-language capability. The stack therefore
+gates MiniLM behind a cosine admission floor (`PRODUCTION_ADMISSION_COSINE`,
+0.30): a query whose best dense match sits below the floor keeps its BM25
+result, which is empty for most no-match wording. On the 2026-09-02 snapshot
+this rejected 12 of 15 no-match cases and none of the 64 match or multi cases
+(their weakest best-cosine was 0.315; the holdout split's was 0.351). The
+margin is thin and the floor is model-specific: the earlier v14 evaluation
+found that an absolute cutoff removed substantial valid recall, and the legacy
+0.44 Potion floor would drop nine match cases here. Re-run the
+`record_admission_scores_per_stage` diagnostic whenever the embedding model or
+the qrels change, and treat the separately qualified categorical-admission
+stage as the fuller answer for abstention.
 
 The compose stack also prevents the catalog-only provider workers and
 `llm-router` from inheriting API keys or tokens from the operator's shell.
@@ -73,7 +81,8 @@ The ignored Rust benchmark runs both modes through the real
 `directory::search_functions` handler. Both lanes use the same captured live
 catalog and the same 79 reviewed qrel cases; registry search is disabled. The
 report includes input and model hashes, overall and sliced quality metrics,
-mean/p50/p95/max latency, MiniLM-minus-BM25 deltas, and every per-case ranking.
+mean/p50/p95/max latency, MiniLM-minus-BM25 deltas with paired bootstrap 95%
+intervals, and every per-case ranking.
 Each case embeds its qrels, forbidden constraints, derived judgments, and a
 flag proving that the production MiniLM path completed without fallback. A
 capture with any collection error and a run with any MiniLM fallback fail.
@@ -113,21 +122,43 @@ qrels SHA-256 is
 | --- | --- | ---: | ---: | ---: |
 | Overall | MRR@1 | 0.7222 | 0.7778 | +0.0556 |
 | Overall | Recall@12 | 0.7469 | 0.9444 | +0.1975 |
-| Overall | nDCG@12 | 0.7442 | 0.8400 | +0.0957 |
+| Overall | nDCG@12 | 0.7442 | 0.8438 | +0.0996 |
 | Overall | Worker recall@12 | 0.8148 | 0.9630 | +0.1481 |
 | Exact | MRR@1 | 0.8333 | 0.8333 | 0.0000 |
 | Exact | Recall@12 | 0.8651 | 0.9643 | +0.0992 |
 | Paraphrase | MRR@1 | 0.3333 | 0.5833 | +0.2500 |
 | Paraphrase | Recall@12 | 0.3333 | 0.8750 | +0.5417 |
-| Paraphrase | nDCG@12 | 0.3721 | 0.6957 | +0.3236 |
+| Paraphrase | nDCG@12 | 0.3721 | 0.7168 | +0.3447 |
 | Multi-capability | Complete coverage@12 | 0.7000 | 1.0000 | +0.3000 |
-| No-match | False-positive rate | 0.1333 | 1.0000 | +0.8667 |
+| No-match | False-positive rate | 0.1333 | 0.2667 | +0.1333 |
+
+The report also carries a paired percentile bootstrap (2000 resamples of
+the case set, fixed seed) for every slice. A delta is significant when its 95%
+interval excludes zero:
+
+| Quality slice | Metric | Delta | CI 2.5% | CI 97.5% | Significant |
+| --- | --- | ---: | ---: | ---: | :---: |
+| Overall | MRR@1 | +0.0556 | -0.0200 | +0.1373 | no |
+| Overall | Recall@12 | +0.1975 | +0.1037 | +0.2963 | yes |
+| Overall | nDCG@12 | +0.0996 | +0.0321 | +0.1740 | yes |
+| Exact | Recall@12 | +0.0992 | +0.0238 | +0.1905 | yes |
+| Paraphrase | MRR@1 | +0.2500 | +0.0000 | +0.5000 | no |
+| Paraphrase | Recall@12 | +0.5417 | +0.2917 | +0.7917 | yes |
+| Multi-capability | Complete coverage@12 | +0.3000 | +0.1000 | +0.6000 | yes |
+| No-match | False-positive rate | +0.1333 | +0.0000 | +0.3333 | no |
+| Holdout | Recall@12 | +0.1562 | +0.0000 | +0.3333 | no |
+
+With 79 cases the MRR@1 gain is not distinguishable from noise; the recall,
+nDCG, multi-capability coverage and paraphrase gains are. After the admission
+floor the no-match false-positive rate (4 of 15 versus BM25's 2 of 15) is no
+longer distinguishable from BM25's.
 
 MiniLM provides the intended quality gain on semantic wording and complete
-multi-capability retrieval. The no-match result also quantifies the known
-boundary of this ordering-only stack: MiniLM is not an admission classifier.
-It needs the separately qualified categorical-admission stage to abstain
-reliably.
+multi-capability retrieval. The three remaining no-match false positives that
+BM25 avoids are "write a friendly reply to this message" (`email::send`),
+"format this JSON so a person can read it" and "draft a thirty minute meeting
+agenda"; their best cosines (0.37, 0.37, 0.30) overlap the weakest genuine
+matches, so the floor cannot remove them without losing recall.
 
 The overall ranking metrics use the 54 `match` cases, complete coverage uses
 the 10 `multi` cases, and false-positive rate uses the 15 `no_match` cases.
@@ -137,11 +168,23 @@ hybrid calls fell back to BM25.
 
 | Latency | BM25 | MiniLM | Delta |
 | --- | ---: | ---: | ---: |
-| Mean | 32.7 ms | 4,951.8 ms | +4,919.1 ms |
-| p50 | 32.2 ms | 4,369.6 ms | +4,337.4 ms |
-| p95 | 35.3 ms | 8,703.6 ms | +8,668.3 ms |
-| Max | 36.8 ms | 12,455.0 ms | +12,418.1 ms |
+| Mean | 33.2 ms | 371.6 ms | +338.5 ms |
+| p50 | 32.1 ms | 364.9 ms | +332.8 ms |
+| p95 | 37.3 ms | 732.8 ms | +695.4 ms |
+| Max | 75.0 ms | 930.8 ms | +855.8 ms |
 
 These latency values came from the Cargo test profile on one local CPU, with
 one warm-up case and the full 663-function corpus. They are useful for
 same-machine comparison, not as a production service-level target.
+
+The cross-encoder scores only the top 48 fused candidates per query
+(`PRODUCTION_RERANK_DEPTH`). Scoring the complete retrieval union instead, on
+the same snapshot and machine, produced identical MRR@1, recall@12 and
+per-case win/loss counts, nDCG@12 of 0.8400 overall and 0.6957 on paraphrases,
+and a mean hybrid latency of 4,951.8 ms (p95 8,703.6 ms), about 12x slower.
+
+The same run under `cargo test --release` (same snapshot, same machine)
+measured BM25 at 4.4 ms mean and the hybrid lane at 362 ms mean, 316 ms p50,
+656 ms p95, 830 ms max, with byte-identical rankings. The remaining hybrid cost
+is ONNX inference (one MiniLM query embedding plus 48 cross-encoder pairs in
+batches of 8), which the Rust build profile does not change.

@@ -20,12 +20,13 @@ use tokio::sync::RwLock;
 use crate::config::{FunctionSearchMode, SkillsConfig};
 use crate::functions::registry::RegistryCache;
 use crate::functions::search::{
-    hybrid_ranking_for_test, search_functions, search_queries, Deps, SearchFunctionsRequest,
-    SearchFunctionsResponse, SEMANTIC_MINIMUM_COSINE, SEMANTIC_WEIGHT,
+    hybrid_ranking_for_test, lexical_rankings, production_rerank_head, search_functions,
+    search_queries, Deps, SearchFunctionsRequest, SearchFunctionsResponse,
+    PRODUCTION_RETRIEVAL_WEIGHT, SEMANTIC_MINIMUM_COSINE, SEMANTIC_WEIGHT,
 };
-use crate::functions::search_index::{tool_fingerprint, ToolSchema};
+use crate::functions::search_index::{canonical_tools, tool_fingerprint, Bm25Index, ToolSchema};
 use crate::functions::search_semantic::{
-    SemanticSearch, MINILM_MODEL_SHA256, MINILM_REPOSITORY, MINILM_REVISION,
+    weighted_rrf, SemanticSearch, MINILM_MODEL_SHA256, MINILM_REPOSITORY, MINILM_REVISION,
     MINILM_TOKENIZER_SHA256, MODEL_REVISION, MODEL_SHA256, RERANKER_MODEL_SHA256,
     RERANKER_REPOSITORY, RERANKER_REVISION, RERANKER_TOKENIZER_SHA256,
 };
@@ -789,6 +790,96 @@ fn benchmark_delta_value(
     })
 }
 
+/// Paired bootstrap resamples for the MiniLM-minus-BM25 deltas.
+const BOOTSTRAP_RESAMPLES: usize = 2000;
+/// Fixed seed so two runs on the same inputs produce the same intervals.
+const BOOTSTRAP_SEED: u64 = 0x2026_0902_5EED;
+const BOOTSTRAP_METRICS: [&str; 6] = [
+    "mrr_at_1",
+    "recall_at_12",
+    "ndcg_at_12",
+    "worker_recall_at_12",
+    "multi_capability_coverage_at_12",
+    "false_positive_rate",
+];
+
+/// splitmix64: reproducible resamples without a crate dependency.
+fn splitmix64(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+fn lane_metric(metrics: &LaneMetrics, name: &str) -> f64 {
+    match name {
+        "mrr_at_1" => metrics.mrr_at_1,
+        "recall_at_12" => metrics.recall_at_12,
+        "ndcg_at_12" => metrics.ndcg_at_12,
+        "worker_recall_at_12" => metrics.worker_recall_at_12,
+        "multi_capability_coverage_at_12" => metrics.multi_capability_coverage_at_12,
+        "false_positive_rate" => metrics.false_positive_rate,
+        other => panic!("unknown bootstrap metric {other}"),
+    }
+}
+
+/// Paired bootstrap over cases: resample case indices with replacement,
+/// evaluate both lanes on the same resample, and report the 2.5th/97.5th
+/// percentiles of the MiniLM-minus-BM25 delta. `significant` means the 95%
+/// interval excludes zero.
+fn benchmark_bootstrap_value(
+    fixture: &EvalFixture,
+    lexical: &[LaneResult],
+    hybrid: &[LaneResult],
+    predicate: impl Fn(&EvalCase) -> bool,
+) -> Value {
+    let indices: Vec<usize> = fixture
+        .cases
+        .iter()
+        .enumerate()
+        .filter_map(|(index, case)| predicate(case).then_some(index))
+        .collect();
+    if indices.is_empty() {
+        return serde_json::json!({});
+    }
+    let point = comparison_for_indices(fixture, lexical, hybrid, &indices);
+    let mut deltas: HashMap<&str, Vec<f64>> = BOOTSTRAP_METRICS
+        .iter()
+        .map(|name| (*name, Vec::with_capacity(BOOTSTRAP_RESAMPLES)))
+        .collect();
+    let mut state = BOOTSTRAP_SEED;
+    let mut sample = Vec::with_capacity(indices.len());
+    for _ in 0..BOOTSTRAP_RESAMPLES {
+        sample.clear();
+        sample.extend(
+            (0..indices.len())
+                .map(|_| indices[(splitmix64(&mut state) % indices.len() as u64) as usize]),
+        );
+        let comparison = comparison_for_indices(fixture, lexical, hybrid, &sample);
+        for name in BOOTSTRAP_METRICS {
+            deltas.get_mut(name).expect("metric slot").push(
+                lane_metric(&comparison.semantic, name) - lane_metric(&comparison.lexical, name),
+            );
+        }
+    }
+    let mut out = serde_json::Map::new();
+    for name in BOOTSTRAP_METRICS {
+        let values = &deltas[name];
+        let low = percentile(values, 0.025);
+        let high = percentile(values, 0.975);
+        out.insert(
+            name.into(),
+            serde_json::json!({
+                "delta": lane_metric(&point.semantic, name) - lane_metric(&point.lexical, name),
+                "ci95": [low, high],
+                "significant": low > 0.0 || high < 0.0,
+            }),
+        );
+    }
+    Value::Object(out)
+}
+
 fn benchmark_population_value(
     fixture: &EvalFixture,
     predicate: impl Fn(&EvalCase) -> bool,
@@ -940,6 +1031,18 @@ fn build_minilm_production_benchmark_report(
             "multi": benchmark_delta_value(fixture, lexical, hybrid, |case| case.kind == "multi"),
             "no_match": benchmark_delta_value(fixture, lexical, hybrid, |case| case.kind == "no_match"),
         },
+        "bootstrap": {
+            "resamples": BOOTSTRAP_RESAMPLES,
+            "seed": BOOTSTRAP_SEED,
+            "method": "paired percentile bootstrap over cases",
+            "overall": benchmark_bootstrap_value(fixture, lexical, hybrid, |_| true),
+            "calibration": benchmark_bootstrap_value(fixture, lexical, hybrid, |case| case.split == "calibration"),
+            "holdout": benchmark_bootstrap_value(fixture, lexical, hybrid, |case| case.split == "holdout"),
+            "exact": benchmark_bootstrap_value(fixture, lexical, hybrid, |case| case.kind == "match" && !case.id.starts_with("paraphrase-")),
+            "paraphrase": benchmark_bootstrap_value(fixture, lexical, hybrid, |case| case.kind == "match" && case.id.starts_with("paraphrase-")),
+            "multi": benchmark_bootstrap_value(fixture, lexical, hybrid, |case| case.kind == "multi"),
+            "no_match": benchmark_bootstrap_value(fixture, lexical, hybrid, |case| case.kind == "no_match"),
+        },
         "latency_ms": {
             "bm25": bm25_latency,
             "minilm": minilm_latency,
@@ -1082,6 +1185,50 @@ fn evaluator_compares_lanes_and_keeps_no_match_separate() {
 }
 
 #[test]
+fn bootstrap_intervals_are_zero_for_identical_lanes_and_exclude_zero_for_uniform_gains() {
+    let cases: Vec<EvalCase> = (0..20)
+        .map(|index| EvalCase::matching(&format!("m{index}"), vec![("wanted", 3, vec![])]))
+        .collect();
+    let fixture = EvalFixture {
+        version: 1,
+        cases: cases.clone(),
+    };
+    let miss: Vec<LaneResult> = cases
+        .iter()
+        .map(|_| LaneResult::new(vec!["other", "wanted"], 1.0))
+        .collect();
+    let hit: Vec<LaneResult> = cases
+        .iter()
+        .map(|_| LaneResult::new(vec!["wanted", "other"], 1.0))
+        .collect();
+
+    let same = benchmark_bootstrap_value(&fixture, &miss, &miss, |_| true);
+    assert_eq!(same["mrr_at_1"]["delta"], 0.0);
+    assert_eq!(same["mrr_at_1"]["ci95"], serde_json::json!([0.0, 0.0]));
+    assert_eq!(same["mrr_at_1"]["significant"], false);
+
+    let gain = benchmark_bootstrap_value(&fixture, &miss, &hit, |_| true);
+    assert_eq!(gain["mrr_at_1"]["delta"], 1.0);
+    assert_eq!(gain["mrr_at_1"]["ci95"], serde_json::json!([1.0, 1.0]));
+    assert_eq!(gain["mrr_at_1"]["significant"], true);
+    assert_eq!(
+        gain["recall_at_12"]["significant"], false,
+        "both lanes recall the target within 12"
+    );
+
+    // Same inputs, same seed, same intervals.
+    assert_eq!(
+        benchmark_bootstrap_value(&fixture, &miss, &hit, |_| true),
+        gain
+    );
+    assert_eq!(
+        benchmark_bootstrap_value(&fixture, &miss, &hit, |case| case.kind == "multi"),
+        serde_json::json!({}),
+        "an empty slice yields no intervals"
+    );
+}
+
+#[test]
 fn rollout_helpers_use_strict_f32_threshold_and_nearest_rank_p95() {
     let observed = f64::from(0.5_f32);
     let threshold = next_f32_above(observed);
@@ -1209,6 +1356,16 @@ fn minilm_benchmark_report_keeps_inputs_metrics_latency_and_case_evidence() {
     );
     assert_eq!(report["deltas"]["paraphrase"]["mrr_at_1"], 1.0);
     assert_eq!(report["deltas"]["no_match"]["false_positive_rate"], -1.0);
+    assert_eq!(report["bootstrap"]["resamples"], BOOTSTRAP_RESAMPLES);
+    assert_eq!(
+        report["bootstrap"]["no_match"]["false_positive_rate"]["delta"],
+        -1.0
+    );
+    assert_eq!(
+        report["bootstrap"]["no_match"]["false_positive_rate"]["ci95"],
+        serde_json::json!([-1.0, -1.0]),
+        "a single-case slice resamples to itself"
+    );
     assert_eq!(report["latency_ms"]["bm25"]["p50_ms"], 20.0);
     assert_eq!(report["latency_ms"]["minilm"]["p95_ms"], 42.0);
     assert_eq!(report["latency_ms"]["delta"]["p50_ms"], 2.0);
@@ -1479,6 +1636,120 @@ async fn benchmark_bm25_against_minilm_production() {
         "warmup_cases": 1,
     });
     write_benchmark_report(&output, &report).expect("write MiniLM production benchmark");
+    println!("wrote {}", output.display());
+}
+
+/// Diagnostic, not a gate: records the strongest score each stage produced per
+/// case so an admission floor can be chosen from data. Reads the same inputs
+/// as the benchmark; writes one JSON array to
+/// `III_DIRECTORY_SEARCH_ADMISSION_OUTPUT` (default
+/// `target/search-eval/admission-scores.json`).
+#[cfg(all(
+    feature = "minilm-production",
+    target_arch = "x86_64",
+    target_os = "linux",
+    target_env = "gnu"
+))]
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a live catalog snapshot and III_DIRECTORY_MINILM_MODEL_PATH"]
+async fn record_admission_scores_per_stage() {
+    use std::time::Duration;
+
+    let catalog_path = std::path::PathBuf::from(
+        std::env::var("III_DIRECTORY_SEARCH_BENCHMARK_CATALOG_PATH")
+            .expect("set III_DIRECTORY_SEARCH_BENCHMARK_CATALOG_PATH to a captured catalog.json"),
+    );
+    let model_path = std::env::var("III_DIRECTORY_MINILM_MODEL_PATH")
+        .expect("set III_DIRECTORY_MINILM_MODEL_PATH to the pinned local model bundle");
+    let output = std::env::var("III_DIRECTORY_SEARCH_ADMISSION_OUTPUT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("target/search-eval/admission-scores.json")
+        });
+    let (catalog, _) = load_benchmark_catalog(&catalog_path).expect("load captured live catalog");
+    let fixture = fixture_qrels();
+    validate_qrels(&fixture, &catalog).expect("live catalog supports the reviewed qrels");
+    let fingerprint = tool_fingerprint(&catalog);
+    let semantic = SemanticSearch::new(Some(model_path.into()));
+    assert!(semantic.is_production_minilm());
+    semantic.rebuild(Arc::new(catalog.clone()));
+    let readiness = search_queries(&fixture.cases[0].capabilities);
+    tokio::time::timeout(Duration::from_secs(300), async {
+        while semantic.rank(&fingerprint, &readiness, -1.0).await.is_err() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("MiniLM catalog preparation timed out");
+    let index = Bm25Index::build(&canonical_tools(&catalog));
+
+    fn top_two(lane: &[(String, f64)]) -> (f64, f64) {
+        let mut scores: Vec<f64> = lane.iter().map(|(_, score)| *score).collect();
+        scores.sort_by(|left, right| right.total_cmp(left));
+        (
+            scores.first().copied().unwrap_or(f64::NAN),
+            scores.get(1).copied().unwrap_or(f64::NAN),
+        )
+    }
+    fn max_finite(values: impl Iterator<Item = f64>) -> Option<f64> {
+        values
+            .filter(|value| value.is_finite())
+            .fold(None, |best, value| {
+                Some(best.map_or(value, |best: f64| best.max(value)))
+            })
+    }
+
+    let mut rows = Vec::with_capacity(fixture.cases.len());
+    for case in &fixture.cases {
+        let queries = search_queries(&case.capabilities);
+        let lexical = lexical_rankings(&index, &queries);
+        let dense = semantic
+            .rank(&fingerprint, &queries, -1.0)
+            .await
+            .expect("dense lane");
+        let heads: Vec<Vec<String>> = lexical
+            .iter()
+            .zip(&dense)
+            .map(|(lexical, dense)| {
+                let retrieval = weighted_rrf(lexical, dense, PRODUCTION_RETRIEVAL_WEIGHT);
+                production_rerank_head(&retrieval)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .collect();
+        let reranked = semantic
+            .rerank(&fingerprint, &queries, &heads)
+            .await
+            .expect("reranker lane");
+
+        let bm25 = lexical.iter().map(|lane| top_two(lane));
+        let dense_scores = dense.iter().map(|lane| top_two(lane));
+        let rerank_scores = reranked.iter().map(|lane| top_two(lane));
+        let rerank_mean = reranked.iter().map(|lane| {
+            if lane.is_empty() {
+                f64::NAN
+            } else {
+                lane.iter().map(|(_, score)| score).sum::<f64>() / lane.len() as f64
+            }
+        });
+        let (bm25_top, _): (Vec<f64>, Vec<f64>) = bm25.unzip();
+        let (dense_top, dense_second): (Vec<f64>, Vec<f64>) = dense_scores.unzip();
+        let (rerank_top, rerank_second): (Vec<f64>, Vec<f64>) = rerank_scores.unzip();
+        rows.push(serde_json::json!({
+            "id": case.id,
+            "kind": case.kind,
+            "split": case.split,
+            "capabilities": case.capabilities,
+            "bm25_empty": lexical.iter().all(Vec::is_empty),
+            "bm25_top": max_finite(bm25_top.into_iter()),
+            "dense_top": max_finite(dense_top.iter().copied()),
+            "dense_gap": max_finite(dense_top.iter().zip(&dense_second).map(|(a, b)| a - b)),
+            "rerank_top": max_finite(rerank_top.iter().copied()),
+            "rerank_gap": max_finite(rerank_top.iter().zip(&rerank_second).map(|(a, b)| a - b)),
+            "rerank_mean": max_finite(rerank_mean),
+        }));
+    }
+    write_benchmark_report(&output, &Value::Array(rows)).expect("write admission scores");
     println!("wrote {}", output.display());
 }
 

@@ -54,8 +54,25 @@ pub(super) const SEMANTIC_WEIGHT: f64 = 0.75;
 pub(super) const SEMANTIC_MINIMUM_COSINE: f32 = 0.441_937_3;
 /// Frozen v14 production policy: fuse the complete BM25 and embedding
 /// rankings, then anchor the cross-encoder order back into retrieval.
-const PRODUCTION_RETRIEVAL_WEIGHT: f64 = 1.0;
+pub(super) const PRODUCTION_RETRIEVAL_WEIGHT: f64 = 1.0;
 const PRODUCTION_RERANKER_WEIGHT: f64 = 1.25;
+/// Fused retrieval candidates the cross-encoder scores per query. The tail
+/// keeps its retrieval order: `weighted_rrf` only adds the reranker term to
+/// ids present in its second list, so an unscored id can never outrank a
+/// scored one. Sized from the 2026-09-02 benchmark, where the deepest first
+/// relevant hit sat at fused rank 11 across 79 cases.
+const PRODUCTION_RERANK_DEPTH: usize = 48;
+/// Admission floor on the best MiniLM cosine of a query. Below it the query
+/// keeps its BM25 result (empty for most no-match wording) instead of the
+/// always-ranked dense list. Calibrated on the 2026-09-02 snapshot: the 64
+/// match/multi cases bottom out at 0.315 (holdout 0.351); 12 of 15 no-match
+/// cases sit at or below 0.302. The 0.015 margin is thin, so re-run
+/// `record_admission_scores_per_stage` whenever the model or qrels change.
+const PRODUCTION_ADMISSION_COSINE: f64 = 0.30;
+/// Wall-clock budget for one cross-encoder call (all queries of a request).
+/// On expiry the request serves the fused retrieval order; the blocking
+/// rerank task itself is not cancelled and finishes in the background.
+const PRODUCTION_RERANK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 /// Capability-sized searches accepted by one request.
 const MAX_SEARCH_QUERIES: usize = 6;
 /// Registry list queries per search: each capability, then informative
@@ -402,7 +419,7 @@ fn drop_low_coverage(ranked: Vec<(String, f64, u32)>) -> Vec<(String, f64)> {
 /// Rank each capability against its own leader, taking results round-robin so
 /// every capability gets a candidate before any gets a rider. Scores from
 /// separate rankings are not comparable.
-fn lexical_rankings(index: &Bm25Index, queries: &[String]) -> Vec<Vec<(String, f64)>> {
+pub(super) fn lexical_rankings(index: &Bm25Index, queries: &[String]) -> Vec<Vec<(String, f64)>> {
     queries
         .iter()
         .map(|query| drop_low_coverage(index.rank_with_matches(query)))
@@ -502,23 +519,42 @@ fn production_fallback_rankings(
     rankings
 }
 
+/// Stage-1 admission: does the dense lane show enough affinity to let MiniLM
+/// order this query at all?
+fn production_admits(dense: &[(String, f64)]) -> bool {
+    dense
+        .iter()
+        .map(|(_, cosine)| *cosine)
+        .fold(f64::NEG_INFINITY, f64::max)
+        >= PRODUCTION_ADMISSION_COSINE
+}
+
+/// Fused retrieval head handed to the cross-encoder.
+pub(super) fn production_rerank_head(retrieval: &[(String, f64)]) -> impl Iterator<Item = &str> {
+    retrieval
+        .iter()
+        .take(PRODUCTION_RERANK_DEPTH)
+        .map(|(id, _)| id.as_str())
+}
+
 /// Apply the frozen production ordering only when the reranker returns one
-/// finite, unique score for every member of the complete retrieval union.
-/// Invalid model output is represented by `None` so the caller can fail open
-/// to the lexical baseline.
+/// finite, unique score for every member of the fused retrieval head (the
+/// first `PRODUCTION_RERANK_DEPTH` ids). The unscored tail keeps its
+/// retrieval order below the head. Invalid model output is represented by
+/// `None` so the caller can fail open to the lexical baseline.
 fn production_minilm_ordering(
     lexical: &[(String, f64)],
     semantic: &[(String, f64)],
     raw_reranker: &[(String, f64)],
 ) -> Option<Vec<(String, f64)>> {
     let retrieval = weighted_rrf(lexical, semantic, PRODUCTION_RETRIEVAL_WEIGHT);
-    let retrieval_ids: HashSet<&str> = retrieval.iter().map(|(id, _)| id.as_str()).collect();
+    let head_ids: HashSet<&str> = production_rerank_head(&retrieval).collect();
     let mut reranker_ids = HashSet::with_capacity(raw_reranker.len());
-    if raw_reranker.len() != retrieval_ids.len()
+    if raw_reranker.len() != head_ids.len()
         || raw_reranker
             .iter()
             .any(|(id, score)| !score.is_finite() || !reranker_ids.insert(id.as_str()))
-        || reranker_ids != retrieval_ids
+        || reranker_ids != head_ids
     {
         return None;
     }
@@ -578,47 +614,97 @@ async fn production_minilm_rankings(
     if semantic_ranked.len() != model_positions.len() {
         return None;
     }
+    // Queries below the admission floor keep the BM25 fallback already in
+    // `rankings`; only admitted queries are fused and reranked.
+    let (model_positions, semantic_ranked): (Vec<usize>, Vec<Vec<(String, f64)>>) = model_positions
+        .into_iter()
+        .zip(semantic_ranked)
+        .filter(|(_, dense)| production_admits(dense))
+        .unzip();
+    if model_positions.is_empty() {
+        return Some(ProductionMinilmOutcome {
+            rankings,
+            complete: true,
+        });
+    }
+    let model_queries: Vec<String> = model_positions
+        .iter()
+        .map(|position| queries[*position].clone())
+        .collect();
     let candidate_ids: Vec<Vec<String>> = model_positions
         .iter()
         .zip(&semantic_ranked)
         .map(|(position, dense)| {
-            weighted_rrf(&lexical[*position], dense, PRODUCTION_RETRIEVAL_WEIGHT)
-                .into_iter()
-                .map(|(id, _)| id)
+            let retrieval = weighted_rrf(&lexical[*position], dense, PRODUCTION_RETRIEVAL_WEIGHT);
+            production_rerank_head(&retrieval)
+                .map(str::to_owned)
                 .collect()
         })
         .collect();
-    let reranked = semantic
-        .rerank(catalog_fingerprint, &model_queries, &candidate_ids)
-        .await
-        .ok()?;
-    if reranked.len() != model_positions.len() {
-        return None;
-    }
-    let mut complete = true;
-    for (((position, dense), raw_reranker), expected_ids) in model_positions
-        .into_iter()
-        .zip(semantic_ranked)
-        .zip(reranked)
-        .zip(candidate_ids)
+    let reranked = match tokio::time::timeout(
+        PRODUCTION_RERANK_TIMEOUT,
+        semantic.rerank(catalog_fingerprint, &model_queries, &candidate_ids),
+    )
+    .await
     {
-        let Some(ordered) = production_minilm_ordering(&lexical[position], &dense, &raw_reranker)
-        else {
-            complete = false;
-            continue;
-        };
-        let ordered_ids: HashSet<&str> = ordered.iter().map(|(id, _)| id.as_str()).collect();
-        if expected_ids.len() != ordered_ids.len()
-            || expected_ids
-                .iter()
-                .any(|id| !ordered_ids.contains(id.as_str()))
-        {
-            complete = false;
-            continue;
+        Ok(Ok(reranked)) if reranked.len() == model_positions.len() => Some(reranked),
+        Ok(Ok(_)) => {
+            tracing::warn!("production MiniLM reranker returned a lane count mismatch");
+            None
         }
-        rankings[position] = ordered;
-    }
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "production MiniLM reranker unavailable");
+            None
+        }
+        Err(_) => {
+            tracing::warn!(
+                timeout_ms = PRODUCTION_RERANK_TIMEOUT.as_millis(),
+                "production MiniLM reranker timed out"
+            );
+            None
+        }
+    };
+    let complete = production_minilm_assemble(
+        &mut rankings,
+        &model_positions,
+        lexical,
+        &semantic_ranked,
+        reranked.as_deref(),
+    );
     Some(ProductionMinilmOutcome { rankings, complete })
+}
+
+/// Stage-2 assembly. Every model position first receives the fused
+/// BM25+dense retrieval order, so a missing or invalid reranker lane degrades
+/// to that order instead of to BM25 alone. Returns whether every position
+/// received the complete reranked ordering.
+fn production_minilm_assemble(
+    rankings: &mut [Vec<(String, f64)>],
+    model_positions: &[usize],
+    lexical: &[Vec<(String, f64)>],
+    semantic_ranked: &[Vec<(String, f64)>],
+    reranked: Option<&[Vec<(String, f64)>]>,
+) -> bool {
+    let mut complete = true;
+    for (index, (position, dense)) in model_positions.iter().zip(semantic_ranked).enumerate() {
+        let retrieval = weighted_rrf(&lexical[*position], dense, PRODUCTION_RETRIEVAL_WEIGHT);
+        let ordered = reranked
+            .and_then(|lanes| lanes.get(index))
+            .and_then(|raw| production_minilm_ordering(&lexical[*position], dense, raw))
+            .filter(|ordered| {
+                let ordered_ids: HashSet<&str> =
+                    ordered.iter().map(|(id, _)| id.as_str()).collect();
+                production_rerank_head(&retrieval).all(|id| ordered_ids.contains(id))
+            });
+        match ordered {
+            Some(ordered) => rankings[*position] = ordered,
+            None => {
+                complete = false;
+                rankings[*position] = retrieval;
+            }
+        }
+    }
+    complete
 }
 
 fn select_preordered_ids(rankings: Vec<Vec<(String, f64)>>) -> Vec<String> {
@@ -1651,7 +1737,7 @@ mod tests {
                 &[("mail::send".into(), 1.0), ("web::fetch".into(), 0.9)]
             ),
             None,
-            "the reranker must cover the entire retrieval union"
+            "the reranker must cover the entire rerank head"
         );
         assert_eq!(
             production_minilm_ordering(
@@ -1677,6 +1763,132 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn production_minilm_ordering_reranks_only_the_head_and_keeps_the_tail_in_retrieval_order() {
+        let lexical: Vec<(String, f64)> = (0..PRODUCTION_RERANK_DEPTH + 10)
+            .map(|index| (format!("fn::{index:03}"), 100.0 - index as f64))
+            .collect();
+        let semantic: Vec<(String, f64)> = Vec::new();
+        let retrieval = weighted_rrf(&lexical, &semantic, PRODUCTION_RETRIEVAL_WEIGHT);
+        let head: Vec<String> = production_rerank_head(&retrieval)
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(head.len(), PRODUCTION_RERANK_DEPTH);
+
+        // Reranker inverts the head: the last head member becomes its favourite.
+        let raw_reranker: Vec<(String, f64)> = head
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (id.clone(), index as f64))
+            .collect();
+        let ordered = production_minilm_ordering(&lexical, &semantic, &raw_reranker)
+            .expect("head-only reranker output is accepted");
+        let ordered_ids: Vec<&str> = ordered.iter().map(|(id, _)| id.as_str()).collect();
+
+        assert_eq!(ordered.len(), lexical.len(), "the tail is not dropped");
+        assert_eq!(
+            ordered_ids[0],
+            head.last().unwrap(),
+            "the reranker reorders the head"
+        );
+        let tail_ids: Vec<&str> = ordered_ids[PRODUCTION_RERANK_DEPTH..].to_vec();
+        let expected_tail: Vec<&str> = lexical[PRODUCTION_RERANK_DEPTH..]
+            .iter()
+            .map(|(id, _)| id.as_str())
+            .collect();
+        assert_eq!(tail_ids, expected_tail, "the tail keeps retrieval order");
+
+        // Scoring the whole union is no longer the contract: reject it.
+        let full_union: Vec<(String, f64)> = lexical
+            .iter()
+            .map(|(id, score)| (id.clone(), *score))
+            .collect();
+        assert_eq!(
+            production_minilm_ordering(&lexical, &semantic, &full_union),
+            None
+        );
+    }
+
+    #[test]
+    fn production_minilm_assemble_degrades_to_fused_retrieval_not_bm25() {
+        let lexical = vec![vec![
+            ("mail::send".into(), 10.0),
+            ("web::fetch".into(), 9.0),
+            ("docs::read".into(), 8.0),
+        ]];
+        let semantic = vec![vec![
+            ("docs::read".into(), 0.92),
+            ("web::fetch".into(), 0.88),
+            ("calendar::list".into(), 0.81),
+        ]];
+        let fused = weighted_rrf(&lexical[0], &semantic[0], PRODUCTION_RETRIEVAL_WEIGHT);
+        let bm25_only = lexical.clone();
+
+        // Reranker absent or timed out: fused order, flagged incomplete.
+        let mut rankings = bm25_only.clone();
+        assert!(!production_minilm_assemble(
+            &mut rankings,
+            &[0],
+            &lexical,
+            &semantic,
+            None
+        ));
+        assert_eq!(rankings[0], fused);
+        assert_ne!(rankings[0], bm25_only[0]);
+
+        // Reranker returned garbage for the lane: same fused fallback.
+        let mut rankings = bm25_only.clone();
+        let garbage = vec![vec![("mail::send".into(), f64::NAN)]];
+        assert!(!production_minilm_assemble(
+            &mut rankings,
+            &[0],
+            &lexical,
+            &semantic,
+            Some(&garbage)
+        ));
+        assert_eq!(rankings[0], fused);
+
+        // Valid reranker output: the frozen ordering, flagged complete.
+        let raw_reranker = vec![vec![
+            ("calendar::list".into(), 5.0),
+            ("docs::read".into(), 4.0),
+            ("web::fetch".into(), 3.0),
+            ("mail::send".into(), 2.0),
+        ]];
+        let mut rankings = bm25_only;
+        assert!(production_minilm_assemble(
+            &mut rankings,
+            &[0],
+            &lexical,
+            &semantic,
+            Some(&raw_reranker)
+        ));
+        assert_eq!(
+            rankings[0],
+            production_minilm_ordering(&lexical[0], &semantic[0], &raw_reranker[0]).unwrap()
+        );
+    }
+
+    #[test]
+    fn production_admission_floor_is_inclusive_and_rejects_empty_lanes() {
+        let at_floor = vec![("mail::send".to_string(), PRODUCTION_ADMISSION_COSINE)];
+        let below = vec![
+            ("mail::send".to_string(), PRODUCTION_ADMISSION_COSINE - 1e-9),
+            ("web::fetch".to_string(), 0.1),
+        ];
+        let unsorted_but_strong = vec![
+            ("web::fetch".to_string(), 0.1),
+            ("mail::send".to_string(), 0.9),
+        ];
+        assert!(production_admits(&at_floor));
+        assert!(!production_admits(&below));
+        assert!(
+            production_admits(&unsorted_but_strong),
+            "uses the max, not the first"
+        );
+        assert!(!production_admits(&[]));
     }
 
     #[test]
