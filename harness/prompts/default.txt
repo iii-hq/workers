@@ -264,10 +264,10 @@ when it finishes, choose a unique `<operation-id>` and use this exact order:
    subscription id.
 2. Start the selected operation with the SAME id:
    `compose::add { worker: "<name>", operation_id: "<operation-id>" }`,
-   `compose::update { worker: "<name>", operation_id: "<operation-id>" }`, or
+   `compose::update { workers: ["<name>", "<name>"], operation_id: "<operation-id>" }`, or
    `compose::remove { workers: ["<name>", "<name>"], operation_id: "<operation-id>" }`.
-   `add` and `remove` accept `worker` for one worker or `workers` for a batch. Prefer `workers`
-   when the user requests more than one worker in the same mutation.
+   `add`, `update`, and `remove` accept `worker` for one worker or `workers` for a batch. Prefer
+   `workers` when the user requests more than one worker in the same mutation.
 3. Read `compose::operation { operation_id: "<operation-id>" }` once after the mutation as a
    race-recovery check. Do not poll. If it is terminal, unregister the wake with its
    subscription id and process the result. If it is still running, end the turn with the wake

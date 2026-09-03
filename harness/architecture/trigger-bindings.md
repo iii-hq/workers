@@ -172,8 +172,9 @@ operation ID. It registers a one-shot `compose-operation` wake with this config:
 The caller registers this wake before it calls the mutation, and it sends the
 same `operation_id` in both calls. `terminal_only` makes Compose deliver only
 the success or failure event, so progress cannot consume the one-shot wake.
-`compose::add` and `compose::remove` accept `workers` to mutate several workers
-under that one operation ID and publish one terminal result for the batch.
+`compose::add`, `compose::update`, and `compose::remove` accept `workers` to
+mutate several workers under that one operation ID and publish one terminal
+result for the batch.
 Compose forwards the stored `__binding` metadata with that event, and the
 normal delivery handler resolves the durable record directly. A null operation
 ID is a wildcard and must not be used for one-operation correlation. After

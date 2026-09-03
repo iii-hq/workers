@@ -279,15 +279,15 @@ fn observable_compose_mutations_register_a_terminal_wake_before_starting() {
 
     assert!(registration < add);
     assert!(out.contains("operation_id: \"<operation-id>\", terminal_only: true"));
-    assert!(
-        out.contains("compose::update { worker: \"<name>\", operation_id: \"<operation-id>\" }")
-    );
+    assert!(out.contains(
+        "compose::update { workers: [\"<name>\", \"<name>\"], operation_id: \"<operation-id>\" }"
+    ));
     assert!(out.contains(
         "compose::remove { workers: [\"<name>\", \"<name>\"], operation_id: \"<operation-id>\" }"
     ));
-    assert!(
-        out.contains("`add` and `remove` accept `worker` for one worker or `workers` for a batch")
-    );
+    assert!(out.contains(
+        "`add`, `update`, and `remove` accept `worker` for one worker or `workers` for a batch"
+    ));
     assert!(out.contains("applies only to `add`, `update`, and `remove`"));
     assert!(out.contains("unregister the wake with its"));
     assert!(out.contains("compose::operation { operation_id: \"<operation-id>\" }"));
