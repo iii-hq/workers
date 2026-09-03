@@ -235,6 +235,16 @@ body steers it, nothing gates it. Spawning
 with `agent` into an already RUNNING session of the caller's own tree merges
 the task like any reuse and does not re-apply the profile.
 
+The harness ships one profile of its own, `worker-builder`
+([`agents/worker-builder.md`](agents/worker-builder.md)): an identity that
+extends the bundled `iii` base and takes a new worker for this repository from
+scope to scaffold, CI gates, live verification on the bus, pull request, and an
+experimental registry release, asking before every irreversible step.
+`directory::skills::download { worker: "harness" }` installs it into the
+directory's `agents_folder` next to any local profiles; then
+`harness::send { options: { agent: "worker-builder" } }` (or the console's
+agent picker) runs it.
+
 New sessions also freeze a names-and-descriptions-only skill index into the
 system-prompt prefix. `options.skills` on `harness::send` or `harness::spawn`
 accepts exact skill ids. For a fresh session, omitted or empty means all
