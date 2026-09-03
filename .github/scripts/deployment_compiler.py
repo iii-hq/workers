@@ -459,7 +459,6 @@ def compile_worker(root: Path, worker: str, value: Any, source_sha: str, compile
     }
     descriptor: dict[str, Any] = {
         "contract": "deployment-descriptor",
-        "contract_version": 1,
         "worker": worker,
         "package_manifest_version": package_manifest_version,
         "source_sha": source_sha,
@@ -524,7 +523,6 @@ def compile_index(args: argparse.Namespace) -> int:
         }
     index = {
         "contract": "deployment-descriptor-index",
-        "contract_version": 1,
         "source_sha": args.source_sha,
         "compiler": {
             "repository": args.compiler_repository,

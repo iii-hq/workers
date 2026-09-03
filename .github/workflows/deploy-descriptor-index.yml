@@ -46,7 +46,6 @@ jobs:
           schema = json.loads(Path(".github/contracts/deployment-descriptor.schema.json").read_text())
           index = json.loads((root / "deployment-descriptor-index.json").read_text())
           assert index["contract"] == "deployment-descriptor-index"
-          assert index["contract_version"] == 1
           assert index["source_sha"] == os.environ["SOURCE_SHA"]
           assert index["compiler"]["repository"] == os.environ["GITHUB_REPOSITORY"]
           assert index["compiler"]["commit"] == os.environ["SOURCE_SHA"]

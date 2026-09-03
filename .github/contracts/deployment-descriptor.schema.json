@@ -6,7 +6,6 @@
   "additionalProperties": false,
   "required": [
     "contract",
-    "contract_version",
     "worker",
     "package_manifest_version",
     "source_sha",
@@ -25,7 +24,6 @@
   ],
   "properties": {
     "contract": {"const": "deployment-descriptor"},
-    "contract_version": {"const": 1},
     "worker": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$"},
     "package_manifest_version": {"type": "string", "minLength": 1},
     "source_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
