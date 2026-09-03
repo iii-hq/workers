@@ -51,6 +51,13 @@ const SEARCH_FN_KEEP: f64 = 0.85;
 /// rankings, then anchor the cross-encoder order back into retrieval.
 const PRODUCTION_RETRIEVAL_WEIGHT: f64 = 1.0;
 const PRODUCTION_RERANKER_WEIGHT: f64 = 1.25;
+/// Reranker scores are logits. A candidate more than this far below the
+/// query's best candidate is padding: without the cut the fusion filled every
+/// admitted result to the 12-function cap (11.4 functions per query on the
+/// 79-case set; 7.7 with the cut, one paraphrase case lost). It does not
+/// abstain when the best candidate is itself noise — that is the admission
+/// question, decided separately.
+const PRODUCTION_RERANK_GAP: f64 = 10.0;
 /// Fused retrieval candidates the cross-encoder scores per query. The tail
 /// keeps its retrieval order: `weighted_rrf` only adds the reranker term to
 /// ids present in its second list, so an unscored id can never outrank a
@@ -484,9 +491,10 @@ fn production_rerank_head(retrieval: &[(String, f64)]) -> impl Iterator<Item = &
 
 /// Apply the frozen production ordering only when the reranker returns one
 /// finite, unique score for every member of the fused retrieval head (the
-/// first `PRODUCTION_RERANK_DEPTH` ids). The unscored tail keeps its
-/// retrieval order below the head. Invalid model output is represented by
-/// `None` so the caller can fail open to the lexical baseline.
+/// first `PRODUCTION_RERANK_DEPTH` ids). Candidates scored more than
+/// `PRODUCTION_RERANK_GAP` below the head's best are dropped, and so is the
+/// unscored tail. Invalid model output is represented by `None` so the
+/// caller can fail open to the fused retrieval.
 fn production_minilm_ordering(
     lexical: &[(String, f64)],
     semantic: &[(String, f64)],
@@ -510,6 +518,15 @@ fn production_minilm_ordering(
             .total_cmp(&left.1)
             .then_with(|| left.0.cmp(&right.0))
     });
+    let Some(leader) = reranker.first().map(|(_, score)| *score) else {
+        return Some(Vec::new());
+    };
+    reranker.retain(|(_, score)| *score >= leader - PRODUCTION_RERANK_GAP);
+    let survivors: HashSet<&str> = reranker.iter().map(|(id, _)| id.as_str()).collect();
+    let retrieval: Vec<(String, f64)> = retrieval
+        .into_iter()
+        .filter(|(id, _)| survivors.contains(id.as_str()))
+        .collect();
     Some(weighted_rrf(
         &retrieval,
         &reranker,
@@ -635,12 +652,7 @@ fn production_minilm_assemble(
         let retrieval = weighted_rrf(&lexical[*position], dense, PRODUCTION_RETRIEVAL_WEIGHT);
         let ordered = reranked
             .and_then(|lanes| lanes.get(index))
-            .and_then(|raw| production_minilm_ordering(&lexical[*position], dense, raw))
-            .filter(|ordered| {
-                let ordered_ids: HashSet<&str> =
-                    ordered.iter().map(|(id, _)| id.as_str()).collect();
-                production_rerank_head(&retrieval).all(|id| ordered_ids.contains(id))
-            });
+            .and_then(|raw| production_minilm_ordering(&lexical[*position], dense, raw));
         match ordered {
             Some(ordered) => rankings[*position] = ordered,
             None => {
@@ -1656,7 +1668,7 @@ mod tests {
     }
 
     #[test]
-    fn production_minilm_ordering_reranks_only_the_head_and_keeps_the_tail_in_retrieval_order() {
+    fn production_minilm_ordering_keeps_only_the_head_within_the_reranker_gap() {
         let lexical: Vec<(String, f64)> = (0..PRODUCTION_RERANK_DEPTH + 10)
             .map(|index| (format!("fn::{index:03}"), 100.0 - index as f64))
             .collect();
@@ -1677,18 +1689,23 @@ mod tests {
             .expect("head-only reranker output is accepted");
         let ordered_ids: Vec<&str> = ordered.iter().map(|(id, _)| id.as_str()).collect();
 
-        assert_eq!(ordered.len(), lexical.len(), "the tail is not dropped");
         assert_eq!(
             ordered_ids[0],
             head.last().unwrap(),
             "the reranker reorders the head"
         );
-        let tail_ids: Vec<&str> = ordered_ids[PRODUCTION_RERANK_DEPTH..].to_vec();
-        let expected_tail: Vec<&str> = lexical[PRODUCTION_RERANK_DEPTH..]
+        // Only scores within the gap of the leader survive; the unscored tail
+        // goes with the rest.
+        let within_gap = PRODUCTION_RERANK_GAP as usize + 1;
+        assert_eq!(ordered.len(), within_gap, "{ordered_ids:?}");
+        let survivors = &head[PRODUCTION_RERANK_DEPTH - within_gap..];
+        assert!(ordered_ids
             .iter()
-            .map(|(id, _)| id.as_str())
-            .collect();
-        assert_eq!(tail_ids, expected_tail, "the tail keeps retrieval order");
+            .all(|id| survivors.iter().any(|h| h == id)));
+        assert!(
+            !ordered_ids.iter().any(|id| id.starts_with("fn::05")),
+            "the tail is dropped"
+        );
 
         // Scoring the whole union is no longer the contract: reject it.
         let full_union: Vec<(String, f64)> = lexical
@@ -1699,6 +1716,8 @@ mod tests {
             production_minilm_ordering(&lexical, &semantic, &full_union),
             None
         );
+        // No retrieval, no reranker output: an empty (valid) ordering.
+        assert_eq!(production_minilm_ordering(&[], &[], &[]), Some(Vec::new()));
     }
 
     #[test]
