@@ -96,8 +96,8 @@ const SEARCH_DESC: &str = "Search file contents (literal or regex) and/or paths 
 
 const UPDATE_FILE_ID: &str = "coder::update-file";
 const UPDATE_FILE_DESC: &str =
-    "Apply batched line ops (1-based, inclusive, applied bottom-up) then \
-     regex replace ops to one or more files; each file commits atomically. \
+    "Edit one or more files: batched line ops (1-based, inclusive, applied \
+     bottom-up), then regex replace ops; each file commits atomically. \
      To replace a large region use two short anchors joined by .*? with \
      dot_matches_newline: true instead of quoting it. Paths: relative to \
      the primary root or absolute inside an allowed root (see coder::info).";
@@ -118,14 +118,13 @@ const DELETE_FILE_DESC: &str =
      allowed root (see coder::info).";
 
 const LIST_FOLDER_ID: &str = "coder::list-folder";
-const LIST_FOLDER_DESC: &str =
-    "Paginated single-folder listing sorted by name. Entries carry only \
+const LIST_FOLDER_DESC: &str = "List one folder, paginated and sorted by name. Entries carry only \
      name; entry path = response path + '/' + name. Non-accessible entries \
      are listed with non_accessible: true. Paths: relative to the primary \
      root or absolute inside an allowed root (see coder::info).";
 
 const TREE_ID: &str = "coder::tree";
-const TREE_DESC: &str = "Recursive directory snapshot bounded by max_depth, per_folder_limit \
+const TREE_DESC: &str = "Show a directory tree, bounded by max_depth, per_folder_limit \
      and a node budget. Nodes carry only name (child path = parent path + \
      '/' + name); over-limit folders are truncated stubs to paginate with \
      coder::list-folder. Paths: relative to the primary root or absolute \

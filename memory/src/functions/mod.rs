@@ -28,15 +28,15 @@ use crate::error::MemoryError;
 
 pub const BANK_CREATE_ID: &str = "memory::bank::create";
 pub const BANK_CREATE_DESC: &str =
-    "Create (or idempotently ensure) a named memory bank — an isolated scope of rules and \
-     memories, e.g. one per project or persona. Sessions select it via metadata `memory_bank`.";
+    "Create a named memory bank: an isolated scope of rules and memories, e.g. one per \
+     project or persona. Idempotent; sessions select it via metadata `memory_bank`.";
 
 pub const BANK_LIST_ID: &str = "memory::bank::list";
 pub const BANK_LIST_DESC: &str = "List every memory bank with memory/rule/pin counts.";
 
 pub const BANK_DELETE_ID: &str = "memory::bank::delete";
 pub const BANK_DELETE_DESC: &str =
-    "Move a bank's folder into the store's .trash (recoverable by hand); never destroys data.";
+    "Delete a memory bank: the folder moves to the store's .trash, recoverable by hand.";
 
 pub const SAVE_ID: &str = "memory::save";
 pub const SAVE_DESC: &str =
@@ -48,7 +48,8 @@ pub const GET_DESC: &str = "Fetch one memory by id, including superseded/tombsto
 
 pub const LIST_ID: &str = "memory::list";
 pub const LIST_DESC: &str =
-    "Page through a bank's memories, newest first. `include_superseded` shows history too.";
+    "List a bank's memories page by page, newest first. `include_superseded` shows history \
+     too.";
 
 pub const UPDATE_ID: &str = "memory::update";
 pub const UPDATE_DESC: &str =
@@ -57,8 +58,8 @@ pub const UPDATE_DESC: &str =
 
 pub const DELETE_ID: &str = "memory::delete";
 pub const DELETE_DESC: &str =
-    "Tombstone a memory (sets invalid_at). It leaves recall immediately but stays on disk \
-     and readable with include_superseded.";
+    "Delete a memory (tombstone: sets invalid_at). It leaves recall immediately but stays \
+     on disk, readable with include_superseded.";
 
 pub const PIN_ID: &str = "memory::pin";
 pub const PIN_DESC: &str =
@@ -72,20 +73,21 @@ pub const SUPERSEDE_DESC: &str =
 
 pub const TAGS_ID: &str = "memory::tags";
 pub const TAGS_DESC: &str =
-    "Distinct tags across a bank's live memories with usage counts, most used first — the \
+    "List the tags across a bank's live memories with usage counts, most used first — the \
      filter source for tag-scoped list/recall.";
 
 pub const PREVIEW_ID: &str = "memory::preview";
 pub const PREVIEW_DESC: &str =
-    "Full injection dry-run for a hypothetical chat message: the exact system-prompt memory \
-     section (rules, budgets, truncation markers), the memories the turn would be handed \
-     (post ambient floor and token budget), and the appended message verbatim. Runs the same \
-     code as the pre-generate hook.";
+    "Preview the memory injection for a hypothetical chat message: the exact system-prompt \
+     memory section (rules, budgets, truncation markers), the memories the turn would be \
+     handed (post ambient floor and token budget), and the appended message verbatim. Runs \
+     the pre-generate hook's own code.";
 
 pub const RECALL_ID: &str = "memory::recall";
 pub const RECALL_DESC: &str =
-    "Rank a bank's memories against a query (BM25 + entity match + corroboration + recency; \
-     no LLM). The same scorer the pre-generate hook uses — call it to preview an injection.";
+    "Search a bank's memories relevant to a query (BM25 + entities + corroboration + \
+     recency; no LLM). The same scorer the pre-generate hook uses — call it to preview an \
+     injection.";
 
 pub const RULE_LIST_ID: &str = "memory::rule::list";
 pub const RULE_LIST_DESC: &str =
@@ -99,9 +101,9 @@ pub const RULE_SET_DESC: &str =
 
 pub const DOCTOR_ID: &str = "memory::doctor";
 pub const DOCTOR_DESC: &str =
-    "End-to-end self-test: data-dir writability, a save→recall→trash roundtrip in a scratch \
-     bank, and sibling reachability (router, session-manager). Reports degraded states \
-     explicitly instead of a bare process-up health.";
+    "Self-test memory end to end: data-dir writability, a scratch-bank write/read/trash \
+     roundtrip, and sibling reachability (router, session-manager). Reports degraded states \
+     explicitly, not a bare process-up health.";
 
 pub const RELOAD_ID: &str = "memory::reload";
 pub const RELOAD_DESC: &str =

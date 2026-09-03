@@ -26,8 +26,8 @@ pub const RUN_DESC: &str =
 
 pub const STATUS_ID: &str = "memory-consolidate::status";
 pub const STATUS_DESC: &str =
-    "Schedule and last-pass report: enabled, interval, last run, whether a pass is due, and \
-     the most recent per-bank results.";
+    "Check the consolidation schedule and last pass: enabled, interval, last run, due, and \
+     the latest per-bank results.";
 
 pub const TICK_ID: &str = "memory-consolidate::on-tick";
 pub const TICK_DESC: &str =

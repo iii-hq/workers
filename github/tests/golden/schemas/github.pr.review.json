@@ -1,5 +1,5 @@
 {
-  "description": "Review a pull request: { repo, number, event: approve|request-changes|comment, body? } -> { output }. gh requires body for request-changes and comment reviews.",
+  "description": "Review a pull request: approve, request changes, or comment. gh requires body for request-changes and comment reviews.",
   "function_id": "github::pr::review",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

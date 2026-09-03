@@ -1,5 +1,5 @@
 {
-  "description": "Export a generated interface as a runnable React app or a data-serving iii worker template.",
+  "description": "Generate source code from an A2UI surface: a React app or a data-serving iii worker.",
   "function_id": "a2ui::surface::export-code",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

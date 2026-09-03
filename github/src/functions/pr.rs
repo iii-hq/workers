@@ -7,35 +7,36 @@ use serde::Deserialize;
 use super::{argv, push_bool, push_each, push_opt};
 
 pub const LIST_ID: &str = "github::pr::list";
-pub const LIST_DESC: &str = "List pull requests: { repo: \"owner/name\", state?, limit?, author?, labels?, base?, search? } -> { value: [{number, title, state, url, author, headRefName, baseRefName, isDraft, labels, createdAt, updatedAt}] }.";
+pub const LIST_DESC: &str = "List pull requests in a repository. Filter by state, author, labels, base branch, or a search query.";
 pub const LIST_JSON: &str =
     "number,title,state,url,author,headRefName,baseRefName,isDraft,labels,createdAt,updatedAt";
 
 pub const VIEW_ID: &str = "github::pr::view";
-pub const VIEW_DESC: &str = "View one pull request with body, mergeability, review decision, and diff stats: { repo: \"owner/name\", number } -> { value }.";
+pub const VIEW_DESC: &str =
+    "View one pull request with its body, mergeability, review decision, and diff stats.";
 pub const VIEW_JSON: &str = "number,title,state,url,author,headRefName,baseRefName,isDraft,labels,createdAt,updatedAt,body,mergeable,mergeStateStatus,reviewDecision,additions,deletions,changedFiles,assignees,milestone,mergedAt,closedAt";
 
 pub const CREATE_ID: &str = "github::pr::create";
-pub const CREATE_DESC: &str = "Open a pull request: { repo: \"owner/name\", title, body, head, base?, draft? } -> { output: <pr url> }. head is required: the worker runs outside any checkout, so gh cannot infer a current branch.";
+pub const CREATE_DESC: &str = "Open a pull request from a head branch. head is required: the worker runs outside any checkout, so gh cannot infer a current branch.";
 
 pub const EDIT_ID: &str = "github::pr::edit";
-pub const EDIT_DESC: &str = "Edit a pull request's title/body/base/labels: { repo, number, title?, body?, base?, add_labels?, remove_labels? } -> { output }.";
+pub const EDIT_DESC: &str = "Edit a pull request's title, body, base branch, or labels.";
 
 pub const MERGE_ID: &str = "github::pr::merge";
-pub const MERGE_DESC: &str = "Merge a pull request: { repo, number, method: merge|squash|rebase, delete_branch?, auto? } -> { output }. auto enables auto-merge once requirements pass.";
+pub const MERGE_DESC: &str = "Merge a pull request with merge, squash, or rebase. auto enables auto-merge once requirements pass.";
 
 pub const COMMENT_ID: &str = "github::pr::comment";
-pub const COMMENT_DESC: &str =
-    "Comment on a pull request: { repo, number, body } -> { output: <comment url> }.";
+pub const COMMENT_DESC: &str = "Comment on a pull request. Returns the URL of the new comment.";
 
 pub const REVIEW_ID: &str = "github::pr::review";
-pub const REVIEW_DESC: &str = "Review a pull request: { repo, number, event: approve|request-changes|comment, body? } -> { output }. gh requires body for request-changes and comment reviews.";
+pub const REVIEW_DESC: &str = "Review a pull request: approve, request changes, or comment. gh requires body for request-changes and comment reviews.";
 
 pub const DIFF_ID: &str = "github::pr::diff";
-pub const DIFF_DESC: &str = "Unified diff of a pull request: { repo, number } -> { diff, truncated }. truncated is true when the diff exceeded the capture cap.";
+pub const DIFF_DESC: &str = "Read the code changes of a pull request as a unified diff. truncated is true when the diff exceeded the capture cap.";
 
 pub const CHECKS_ID: &str = "github::pr::checks";
-pub const CHECKS_DESC: &str = "CI check rollup for a pull request: { repo, number } -> { value: [{bucket, name, state, link, workflow, description, startedAt, completedAt}] }. Failing or pending checks are data, not errors.";
+pub const CHECKS_DESC: &str =
+    "Check whether CI passed on a pull request. Failing or pending checks are data, not errors.";
 pub const CHECKS_JSON: &str = "bucket,name,state,link,workflow,description,startedAt,completedAt";
 
 /// PR state filter.

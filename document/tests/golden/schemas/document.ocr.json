@@ -1,5 +1,5 @@
 {
-  "description": "Transcribe a document with no readable text (scanned PDF, photographed page, picture-only deck) by rendering its pages and reading them with a vision model. Costs money per page: pass `pages` (pdf::classify names them) to narrow it.",
+  "description": "Transcribe a scanned document with no readable text: a scanned PDF, a photographed page, a picture-only deck. Renders the pages and reads them with a vision model. Costs money per page: pass `pages` (pdf::classify) to narrow it.",
   "function_id": "document::ocr",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

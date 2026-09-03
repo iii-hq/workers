@@ -15,9 +15,10 @@ use crate::functions::family;
 use crate::store::Store;
 
 pub const ID: &str = "canvas::syntax";
-pub const DESC: &str = "Return the mermaid syntax reference: every supported diagram family with \
-                        a short summary and a working example, or — narrowed to one family — a \
-                        compact syntax primer. Call this before writing mermaid source.";
+pub const DESC: &str =
+    "Look up how to write mermaid diagram syntax. Every supported family with a short \
+     summary and a working example, or, narrowed to one family, a compact primer. Call \
+     this before writing mermaid source.";
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct Request {

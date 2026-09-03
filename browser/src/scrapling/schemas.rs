@@ -604,25 +604,25 @@ pub fn catalog() -> Vec<FunctionSpec> {
     vec![
         FunctionSpec {
             function_id: "browser::fetch",
-            description: "Fast HTTP fetch, TLS impersonation: get/post/put/delete, inline extraction, bulk `urls`.",
+            description: "Scrape a URL over HTTP with TLS impersonation: get/post/put/delete, extraction, bulk.",
             request: fetch_request(),
             response: fetch_response(),
         },
         FunctionSpec {
             function_id: "browser::stealthy-fetch",
-            description: "Camoufox stealth browser: solves Cloudflare, hardens WebRTC/canvas; extraction + bulk.",
+            description: "Scrape a bot-protected URL: Camoufox stealth solves Cloudflare, hardens WebRTC/canvas.",
             request: stealthy_fetch_request(),
             response: fetch_response(),
         },
         FunctionSpec {
             function_id: "browser::dynamic-fetch",
-            description: "Playwright/Chromium fetch: JS render, waits, XHR capture, CDP; extraction + bulk.",
+            description: "Scrape a JS-rendered URL with Playwright/Chromium: waits, XHR capture, CDP.",
             request: dynamic_fetch_request(),
             response: fetch_response(),
         },
         FunctionSpec {
             function_id: "browser::screenshot-url",
-            description: "Capture a page screenshot as image content blocks via a browser fetcher (dynamic or stealthy).",
+            description: "Screenshot a URL with a browser fetcher (dynamic or stealthy); returns image content blocks.",
             request: screenshot_request(),
             response: screenshot_response(),
         },
@@ -634,13 +634,13 @@ pub fn catalog() -> Vec<FunctionSpec> {
         },
         FunctionSpec {
             function_id: "browser::css",
-            description: "One CSS query over HTML; first-or-all; `attr` pulls an attribute else text.",
+            description: "Query HTML with a CSS selector; first-or-all; `attr` pulls an attribute.",
             request: query_request(),
             response: json!({"type": "object", "properties": {"result": result_schema()}}),
         },
         FunctionSpec {
             function_id: "browser::xpath",
-            description: "One XPath query over HTML; first-or-all; `attr` pulls an attribute else text.",
+            description: "Query HTML with an XPath expression; first-or-all; `attr` pulls an attribute.",
             request: query_request(),
             response: json!({"type": "object", "properties": {"result": result_schema()}}),
         },
@@ -652,7 +652,7 @@ pub fn catalog() -> Vec<FunctionSpec> {
         },
         FunctionSpec {
             function_id: "browser::find-similar",
-            description: "Structural auto-match: given one example element, return it plus similar elements.",
+            description: "Find elements structurally similar to one example element, plus that element.",
             request: find_similar_request(),
             response: json!({
                 "type": "object",
@@ -670,13 +670,13 @@ pub fn catalog() -> Vec<FunctionSpec> {
         },
         FunctionSpec {
             function_id: "browser::find-by-text",
-            description: "Find elements whose visible text matches a string (exact or `partial`).",
+            description: "Find elements with this exact text, or `partial` for a substring.",
             request: find_by_text_request(),
             response: elements_response(),
         },
         FunctionSpec {
             function_id: "browser::find-by-regex",
-            description: "Find elements whose visible text matches a regex pattern.",
+            description: "Find elements whose text matches a regex pattern.",
             request: find_by_regex_request(),
             response: elements_response(),
         },
@@ -712,13 +712,13 @@ pub fn catalog() -> Vec<FunctionSpec> {
         },
         FunctionSpec {
             function_id: "browser::session-list",
-            description: "List open sessions with their type and idle time.",
+            description: "List open scraping sessions: type and idle time.",
             request: session_list_request(),
             response: session_list_response(),
         },
         FunctionSpec {
             function_id: "browser::crawl",
-            description: "BFS-crawl from start_urls (follow same-domain links), extract per page, stream items.",
+            description: "Crawl a site from start_urls (same-domain links), extract per page, stream items.",
             request: crawl_request(),
             response: crawl_response(),
         },

@@ -108,9 +108,9 @@ pub fn register(iii: &Arc<IIIClient>, pool: &Arc<crate::provider::imap::ImapPool
             }
         })
         .description(
-            "Move a message to another folder. Payload: \
+            "Move an email to another folder, e.g. archive or trash. Payload: \
              { account, folder, uid, dst_folder }. Uses RFC 6851 UID MOVE when \
-             the server supports it; falls back to COPY + STORE \\Deleted otherwise. \
+             supported; else COPY + STORE \\Deleted. \
              Destination folder must exist on the server.",
         ),
     );

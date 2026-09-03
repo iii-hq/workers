@@ -1,6 +1,6 @@
 {
   "function_id": "browser::crawl",
-  "description": "BFS-crawl from start_urls (follow same-domain links), extract per page, stream items.",
+  "description": "Crawl a site from start_urls (same-domain links), extract per page, stream items.",
   "request_schema": {
     "type": "object",
     "properties": {

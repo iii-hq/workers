@@ -1,5 +1,5 @@
 {
-  "description": "Pull the images and embedded objects out of a document as base64, for a deck or report whose content is pictures rather than text. Capped per response and per asset; anything left out is still listed with its type and size. Not available for PDFs — use pdf::extract-regions.",
+  "description": "Extract the images and embedded objects from a document as base64, for a deck or report whose content is pictures rather than text. Capped per response and per asset; anything left out is listed with its type and size. Not available for PDFs — use pdf::extract-regions.",
   "function_id": "document::extract-assets",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

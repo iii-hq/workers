@@ -1,6 +1,6 @@
 {
   "function_id": "browser::fetch",
-  "description": "Fast HTTP fetch, TLS impersonation: get/post/put/delete, inline extraction, bulk `urls`.",
+  "description": "Scrape a URL over HTTP with TLS impersonation: get/post/put/delete, extraction, bulk.",
   "request_schema": {
     "type": "object",
     "properties": {

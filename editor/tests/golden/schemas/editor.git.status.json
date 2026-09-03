@@ -1,5 +1,5 @@
 {
-  "description": "Working-tree status as typed rows: branch, upstream, ahead/behind, and one entry per changed path. Fails when the root is not a repository — that is an absent overlay, not a broken workspace.",
+  "description": "Show git working-tree status: branch, upstream, ahead/behind, and one typed row per changed path. Fails when the root is not a repository — that is an absent overlay, not a broken workspace.",
   "function_id": "editor::git::status",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

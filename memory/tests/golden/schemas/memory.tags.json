@@ -1,5 +1,5 @@
 {
-  "description": "Distinct tags across a bank's live memories with usage counts, most used first — the filter source for tag-scoped list/recall.",
+  "description": "List the tags across a bank's live memories with usage counts, most used first — the filter source for tag-scoped list/recall.",
   "function_id": "memory::tags",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

@@ -59,9 +59,9 @@ pub fn register_all(iii: &IIIClient, cell: ConfigCell) {
             .request_format(schema_value::<RunRequest>())
             .response_format(run_response_schema())
             .description(
-                "Run one Grok turn and wait for the result. Accepts `prompt` or a `messages` \
-                 array; streams raw Grok events onto grok::events, AgentEvent frames onto \
-                 agent::events, and returns {session_id, result, stop_reason}.",
+                "Run a Grok coding-agent turn and wait for its result. Accepts `prompt` or a \
+                 `messages` array; streams Grok events to grok::events, AgentEvent frames to \
+                 agent::events; returns {session_id, result, stop_reason}.",
             ),
         );
     }
@@ -168,7 +168,7 @@ pub fn register_all(iii: &IIIClient, cell: ConfigCell) {
                     "record": { "type": ["object", "null"] },
                 },
             }))
-            .description("Point-in-time status of a Grok session."),
+            .description("Check the status of one Grok session."),
         );
     }
 

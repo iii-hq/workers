@@ -1,6 +1,6 @@
 {
   "function_id": "browser::cookies::list",
-  "description": "The cookies visible to the session's current page (name, value, domain, path, flags).",
+  "description": "List the cookies on the session's current page (name, value, domain, path, flags).",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "CookiesListInput",

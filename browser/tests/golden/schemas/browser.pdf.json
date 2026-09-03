@@ -1,6 +1,6 @@
 {
   "function_id": "browser::pdf",
-  "description": "Print the page to a PDF (the browser's Print -> Save as PDF) and return it base64 with a file name from the title.",
+  "description": "Print the page to a PDF (the browser's Print -> Save as PDF). Returns it base64 with a file name from the title.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "PdfInput",

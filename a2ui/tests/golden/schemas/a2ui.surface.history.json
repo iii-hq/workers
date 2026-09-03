@@ -1,5 +1,5 @@
 {
-  "description": "List the bounded, restorable revision snapshots for one A2UI surface.",
+  "description": "List the saved revisions of one A2UI surface, restorable by undo.",
   "function_id": "a2ui::surface::history",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

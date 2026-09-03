@@ -1,5 +1,5 @@
 {
-  "description": "Rank a bank's memories against a query (BM25 + entity match + corroboration + recency; no LLM). The same scorer the pre-generate hook uses — call it to preview an injection.",
+  "description": "Search a bank's memories relevant to a query (BM25 + entities + corroboration + recency; no LLM). The same scorer the pre-generate hook uses — call it to preview an injection.",
   "function_id": "memory::recall",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

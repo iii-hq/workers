@@ -104,6 +104,8 @@ export const FUNCTION_FORMATS = {
     response: MiddlewareResponseSchema,
   },
   'gantry::verify': {
+    description:
+      "Verify a mission by running the repo's own build and test gates. Returns a signed verdict token bound to that mission revision, which promote-class calls must carry.",
     request: VerifyRequestSchema,
     response: VerifyResponseSchema,
   },

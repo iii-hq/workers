@@ -27,7 +27,7 @@ pub fn register(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         iii,
         deps,
         "slack::search::messages",
-        "Search messages (requires a configured user_token).",
+        "Search messages in the workspace by keyword. Requires a configured user_token.",
         |d, req: MessagesReq| async move {
             let params = serde_json::to_value(&req)
                 .map_err(|e| iii_sdk::errors::Error::Handler(format!("serialize search: {e}")))?;

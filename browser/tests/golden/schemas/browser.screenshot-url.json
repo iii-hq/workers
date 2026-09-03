@@ -1,6 +1,6 @@
 {
   "function_id": "browser::screenshot-url",
-  "description": "Capture a page screenshot as image content blocks via a browser fetcher (dynamic or stealthy).",
+  "description": "Screenshot a URL with a browser fetcher (dynamic or stealthy); returns image content blocks.",
   "request_schema": {
     "type": "object",
     "properties": {

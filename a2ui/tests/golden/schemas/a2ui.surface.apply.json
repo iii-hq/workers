@@ -1,5 +1,5 @@
 {
-  "description": "Validate and atomically apply a batch of A2UI v0.9.1 protocol messages to the current Harness session's durable surface state.",
+  "description": "Apply a batch of A2UI v0.9.1 protocol messages to a surface, validated and applied atomically to the session's durable state.",
   "function_id": "a2ui::surface::apply",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

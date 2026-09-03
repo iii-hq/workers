@@ -1,5 +1,5 @@
 {
-  "description": "Recent file changes in the workspace, newest first, one entry per path, recorded however the write was made. Each entry carries the patch, line counts, the function that wrote, and the harness session and turn.",
+  "description": "List recent file changes in the workspace, newest first, one per path, recorded however the write was made. Each entry carries the patch, line counts, the function that wrote, and the harness session and turn.",
   "function_id": "editor::changes",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

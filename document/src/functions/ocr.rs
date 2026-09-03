@@ -31,10 +31,10 @@ use crate::format::{self, Format};
 use crate::source::{Body, DocumentSource};
 
 pub const ID: &str = "document::ocr";
-pub const DESC: &str = "Transcribe a document with no readable text (scanned PDF, photographed \
-                        page, picture-only deck) by rendering its pages and reading them with a \
-                        vision model. Costs money per page: pass `pages` (pdf::classify names \
-                        them) to narrow it.";
+pub const DESC: &str = "Transcribe a scanned document with no readable text: a scanned PDF, a \
+                        photographed page, a picture-only deck. Renders the pages and reads them \
+                        with a vision model. Costs money per page: pass `pages` (pdf::classify) to \
+                        narrow it.";
 
 /// The prompt every page is read with.
 ///

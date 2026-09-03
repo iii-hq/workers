@@ -1,6 +1,6 @@
 {
   "function_id": "browser::xpath",
-  "description": "One XPath query over HTML; first-or-all; `attr` pulls an attribute else text.",
+  "description": "Query HTML with an XPath expression; first-or-all; `attr` pulls an attribute.",
   "request_schema": {
     "type": "object",
     "properties": {

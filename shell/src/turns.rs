@@ -1256,10 +1256,10 @@ pub fn register(iii: &IIIClient, config: &TurnsConfig) -> Arc<TurnLog> {
                 }
             })
             .description(
-                "One turn of a session's change history: every file it changed, the change \
-                 kind, the function that made it, and the file's pre-image (revision and body \
-                 up to 64 KiB each, 1 MiB per response) so a diff can be shown later. Omit \
-                 turn_id for the newest turn.",
+                "Fetch one turn of a session's change history: every file it changed, the \
+                 change kind, the function that made it, and the file's pre-image (revision \
+                 and body up to 64 KiB each, 1 MiB per response) so a diff can be shown. \
+                 Omit turn_id for the newest turn.",
             ),
         );
     }

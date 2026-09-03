@@ -6,28 +6,28 @@ use serde::Deserialize;
 use super::{argv, push_each, push_opt};
 
 pub const LIST_ID: &str = "github::issue::list";
-pub const LIST_DESC: &str = "List issues: { repo: \"owner/name\", state?, limit?, author?, labels?, assignee?, search? } -> { value: [{number, title, state, url, author, labels, assignees, milestone, createdAt, updatedAt}] }.";
+pub const LIST_DESC: &str =
+    "List issues in a repository. Filter by state, author, labels, assignee, or a search query.";
 pub const LIST_JSON: &str =
     "number,title,state,url,author,labels,assignees,milestone,createdAt,updatedAt";
 
 pub const VIEW_ID: &str = "github::issue::view";
-pub const VIEW_DESC: &str =
-    "View one issue with body and comments: { repo: \"owner/name\", number } -> { value }.";
+pub const VIEW_DESC: &str = "View one issue with its body and comments.";
 pub const VIEW_JSON: &str = "number,title,state,url,author,labels,assignees,milestone,createdAt,updatedAt,body,stateReason,comments,closedAt";
 
 pub const CREATE_ID: &str = "github::issue::create";
-pub const CREATE_DESC: &str = "Open an issue: { repo: \"owner/name\", title, body, labels?, assignees? } -> { output: <issue url> }.";
+pub const CREATE_DESC: &str =
+    "Open a new issue in a repository, with optional labels and assignees.";
 
 pub const EDIT_ID: &str = "github::issue::edit";
-pub const EDIT_DESC: &str = "Edit an issue's title/body/labels/assignees: { repo, number, title?, body?, add_labels?, remove_labels?, add_assignees? } -> { output }.";
+pub const EDIT_DESC: &str = "Edit an issue's title, body, labels, or assignees.";
 
 pub const COMMENT_ID: &str = "github::issue::comment";
-pub const COMMENT_DESC: &str =
-    "Comment on an issue: { repo, number, body } -> { output: <comment url> }.";
+pub const COMMENT_DESC: &str = "Comment on an issue. Returns the URL of the new comment.";
 
 pub const CLOSE_ID: &str = "github::issue::close";
 pub const CLOSE_DESC: &str =
-    "Close an issue: { repo, number, comment?, reason?: completed|not-planned } -> { output }.";
+    "Close an issue, optionally with a closing comment and a completed / not-planned reason.";
 
 /// Issue state filter.
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]

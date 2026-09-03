@@ -1,5 +1,5 @@
 {
-  "description": "Update an existing A2UI surface from a plain-language instruction while preserving unspecified content and rejecting stale revisions.",
+  "description": "Update an A2UI surface from a plain-language instruction. Unspecified content is preserved; stale revisions are rejected.",
   "function_id": "a2ui::surface::patch",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

@@ -1,6 +1,6 @@
 {
   "function_id": "browser::download",
-  "description": "Read one downloaded file's bytes by guid (from browser::downloads::list), base64, for saving or attaching to the chat.",
+  "description": "Read a downloaded file's bytes for saving or attaching to the chat. Base64; guid from browser::downloads::list.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "DownloadInput",

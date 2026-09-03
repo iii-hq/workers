@@ -1,5 +1,5 @@
 {
-  "description": "List GitHub Actions workflow runs: { repo: \"owner/name\", workflow?, branch?, status?, limit? } -> { value: [{databaseId, displayTitle, workflowName, headBranch, event, status, conclusion, url, ...}] }.",
+  "description": "List recent GitHub Actions runs (CI builds) in a repository. Filter by workflow, branch, or status.",
   "function_id": "github::run::list",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

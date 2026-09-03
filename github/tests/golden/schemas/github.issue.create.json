@@ -1,5 +1,5 @@
 {
-  "description": "Open an issue: { repo: \"owner/name\", title, body, labels?, assignees? } -> { output: <issue url> }.",
+  "description": "Open a new issue in a repository, with optional labels and assignees.",
   "function_id": "github::issue::create",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

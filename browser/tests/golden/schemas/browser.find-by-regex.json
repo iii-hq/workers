@@ -1,6 +1,6 @@
 {
   "function_id": "browser::find-by-regex",
-  "description": "Find elements whose visible text matches a regex pattern.",
+  "description": "Find elements whose text matches a regex pattern.",
   "request_schema": {
     "type": "object",
     "properties": {

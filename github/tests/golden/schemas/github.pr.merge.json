@@ -1,5 +1,5 @@
 {
-  "description": "Merge a pull request: { repo, number, method: merge|squash|rebase, delete_branch?, auto? } -> { output }. auto enables auto-merge once requirements pass.",
+  "description": "Merge a pull request with merge, squash, or rebase. auto enables auto-merge once requirements pass.",
   "function_id": "github::pr::merge",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

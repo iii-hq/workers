@@ -1,5 +1,5 @@
 {
-  "description": "Open a pull request: { repo: \"owner/name\", title, body, head, base?, draft? } -> { output: <pr url> }. head is required: the worker runs outside any checkout, so gh cannot infer a current branch.",
+  "description": "Open a pull request from a head branch. head is required: the worker runs outside any checkout, so gh cannot infer a current branch.",
   "function_id": "github::pr::create",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

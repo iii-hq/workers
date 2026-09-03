@@ -1,5 +1,5 @@
 {
-  "description": "Recursive directory snapshot bounded by max_depth, per_folder_limit and a node budget. Nodes carry only name (child path = parent path + '/' + name); over-limit folders are truncated stubs to paginate with coder::list-folder. Paths: relative to the primary root or absolute inside an allowed root (see coder::info).",
+  "description": "Show a directory tree, bounded by max_depth, per_folder_limit and a node budget. Nodes carry only name (child path = parent path + '/' + name); over-limit folders are truncated stubs to paginate with coder::list-folder. Paths: relative to the primary root or absolute inside an allowed root (see coder::info).",
   "function_id": "coder::tree",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

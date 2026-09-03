@@ -97,7 +97,7 @@ pub fn register(iii: &Arc<IIIClient>, pool: &Arc<crate::provider::imap::ImapPool
             }
         })
         .description(
-            "Fetch a single message by UID. Payload: { account, folder, uid }. \
+            "Read a single email by UID. Payload: { account, folder, uid }. \
              Returns { uid, message_id, from, to[], subject, date, html?, text?, \
              attachments: [{ part_id, filename, content_type, size }] }. Use \
              email::attachment::get with the returned part_id to stream attachment bytes.",

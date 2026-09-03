@@ -60,9 +60,9 @@ pub fn register_all(iii: &IIIClient, cell: ConfigCell) {
             .request_format(schema_value::<RunRequest>())
             .response_format(run_response_schema())
             .description(
-                "Run one Codex turn and wait for the result. Accepts `prompt` or a `messages` \
-                 array plus a raw SDK `codex_config` pass-through; streams raw Codex events onto \
-                 codex::events, AgentEvent frames onto agent::events, and returns \
+                "Run a Codex coding-agent turn and wait for its result. Accepts `prompt` or a \
+                 `messages` array plus a `codex_config` pass-through; streams Codex events to \
+                 codex::events, AgentEvent frames to agent::events, and returns \
                  {session_id, result, usage}.",
             ),
         );
@@ -170,7 +170,7 @@ pub fn register_all(iii: &IIIClient, cell: ConfigCell) {
                     "record": { "type": ["object", "null"] },
                 },
             }))
-            .description("Point-in-time status of a Codex session."),
+            .description("Check the status of one Codex session."),
         );
     }
 

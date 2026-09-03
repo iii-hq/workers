@@ -72,11 +72,11 @@ pub fn register(iii: &Arc<IIIClient>, pool: &Arc<crate::provider::imap::ImapPool
             }
         })
         .description(
-            "Add or remove a system flag on a message. Payload: \
+            "Mark an email read, flagged, or answered by setting a flag. Payload: \
              { account, folder, uid, flag, add?=true }. `flag` is one of \
              'seen', 'flagged', 'answered', 'deleted', 'draft' (without \
-             the leading backslash). Marking a message 'deleted' does NOT \
-             expunge — use email::move to trash, or future email::expunge.",
+             the leading backslash). Marking 'deleted' does NOT expunge — \
+             use email::move to trash.",
         ),
     );
 }

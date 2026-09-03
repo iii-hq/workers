@@ -121,8 +121,8 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         deps,
         "worktree::create",
         create,
-        "Create an isolated, locked git worktree off a base ref and register it \
-         in the cross-agent registry. Returns the path to hand to an agent as \
+        "Create an isolated, locked git worktree off a base ref. Registered \
+         in the cross-agent registry; returns the path to hand to an agent as \
          its working directory."
     );
     register!(
@@ -154,23 +154,23 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         deps,
         "worktree::claim",
         claim,
-        "Claim a worktree for a session. Fails with W210 when another session \
-         holds it, unless force is set."
+        "Claim a worktree for a session, locking out other sessions. Fails with \
+         W210 when another session holds it, unless force is set."
     );
     register!(
         iii,
         deps,
         "worktree::release",
         release,
-        "Release a session's claim. Fails with W211 when the caller does not \
-         hold the claim, unless force is set."
+        "Release a session's claim on a worktree. Fails with W211 when the caller \
+         does not hold the claim, unless force is set."
     );
     register!(
         iii,
         deps,
         "worktree::status",
         status,
-        "Git status for one worktree: cleanliness, ahead/behind, diffstat, \
+        "Show one worktree's git status: clean, ahead/behind, diffstat, \
          rebase-in-progress, lifecycle."
     );
     register!(
@@ -195,8 +195,8 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         deps,
         "worktree::land",
         land,
-        "Queue a land: rebase onto the target, run the optional test gate via \
-         shell::exec, fast-forward the target with an atomic CAS, then clean \
+        "Merge a worktree's branch into its target: rebase, run the optional \
+         test gate via shell::exec, fast-forward with an atomic CAS, then clean \
          up. Serialized per repo via the land queue."
     );
     register!(
