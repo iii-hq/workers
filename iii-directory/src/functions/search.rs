@@ -49,11 +49,11 @@ const SEARCH_FN_FLOOR: f64 = 0.5;
 /// Above this fraction of the leader a function stays even with lower term
 /// coverage — the high-score keep that protects co-relevant companions.
 const SEARCH_FN_KEEP: f64 = 0.85;
-pub(super) const SEMANTIC_WEIGHT: f64 = 0.75;
-pub(super) const SEMANTIC_MINIMUM_COSINE: f32 = 0.441_937_3;
+const SEMANTIC_WEIGHT: f64 = 0.75;
+const SEMANTIC_MINIMUM_COSINE: f32 = 0.441_937_3;
 /// Frozen v14 production policy: fuse the complete BM25 and embedding
 /// rankings, then anchor the cross-encoder order back into retrieval.
-pub(super) const PRODUCTION_RETRIEVAL_WEIGHT: f64 = 1.0;
+const PRODUCTION_RETRIEVAL_WEIGHT: f64 = 1.0;
 const PRODUCTION_RERANKER_WEIGHT: f64 = 1.25;
 /// Fused retrieval candidates the cross-encoder scores per query. The tail
 /// keeps its retrieval order: `weighted_rrf` only adds the reranker term to
@@ -353,10 +353,6 @@ pub struct SearchFunctionsResponse {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub installable: Vec<InstallableWorker>,
     pub latency_ms: f64,
-    #[cfg(test)]
-    #[serde(skip)]
-    #[schemars(skip)]
-    pub(crate) production_minilm_complete: Option<bool>,
 }
 
 /// Drop every worker whose best-ranked function scores below
@@ -418,7 +414,7 @@ fn drop_low_coverage(ranked: Vec<(String, f64, u32)>) -> Vec<(String, f64)> {
 /// Rank each capability against its own leader, taking results round-robin so
 /// every capability gets a candidate before any gets a rider. Scores from
 /// separate rankings are not comparable.
-pub(super) fn lexical_rankings(index: &Bm25Index, queries: &[String]) -> Vec<Vec<(String, f64)>> {
+fn lexical_rankings(index: &Bm25Index, queries: &[String]) -> Vec<Vec<(String, f64)>> {
     queries
         .iter()
         .map(|query| drop_low_coverage(index.rank_with_matches(query)))
@@ -513,7 +509,7 @@ fn production_admits(dense: &[(String, f64)]) -> bool {
 }
 
 /// Fused retrieval head handed to the cross-encoder.
-pub(super) fn production_rerank_head(retrieval: &[(String, f64)]) -> impl Iterator<Item = &str> {
+fn production_rerank_head(retrieval: &[(String, f64)]) -> impl Iterator<Item = &str> {
     retrieval
         .iter()
         .take(PRODUCTION_RERANK_DEPTH)
@@ -712,7 +708,7 @@ fn select_ranked_ids(
     limit_search_workers(round_robin_rankings(&rankings, MAX_SEARCH_FUNCTIONS))
 }
 
-pub(super) fn search_queries(capabilities: &[String]) -> Vec<String> {
+fn search_queries(capabilities: &[String]) -> Vec<String> {
     capabilities
         .iter()
         .map(|capability| compact_query(capability.trim()))
@@ -721,7 +717,7 @@ pub(super) fn search_queries(capabilities: &[String]) -> Vec<String> {
 }
 
 #[cfg(test)]
-pub(super) fn hybrid_ranking_for_test(
+fn hybrid_ranking_for_test(
     tools: &[ToolSchema],
     capabilities: &[String],
     mut raw_semantic: Vec<Vec<(String, f64)>>,
@@ -1347,12 +1343,6 @@ pub async fn search_functions(
     } else {
         None
     };
-    #[cfg(test)]
-    let production_minilm_complete = production_minilm.then(|| {
-        production_outcome
-            .as_ref()
-            .is_some_and(|outcome| outcome.complete)
-    });
     let production_rankings = production_outcome.map(|outcome| outcome.rankings);
     let semantic = if needs_semantic(mode) && !production_minilm {
         let semantic_started = Instant::now();
@@ -1465,8 +1455,6 @@ unchanged — reuse the earlier result): {}.",
         workers,
         installable,
         latency_ms: started.elapsed().as_secs_f64() * 1000.0,
-        #[cfg(test)]
-        production_minilm_complete,
     })
 }
 

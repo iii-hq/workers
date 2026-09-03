@@ -1,9 +1,0 @@
-{
-  "functions": [
-    {"function_id": "zeta::last"},
-    {"function_id": "engine::functions::list"},
-    {"function_id": "alpha::first"},
-    {"function_id": "directory::search_functions"},
-    {"function_id": "alpha::first"}
-  ]
-}

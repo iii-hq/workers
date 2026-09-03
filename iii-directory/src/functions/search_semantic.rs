@@ -209,16 +209,6 @@ impl SemanticSearch {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn production_minilm_unavailable_for_test() -> Self {
-        Self {
-            inner: Arc::new(Inner {
-                model_kind: ModelKind::MiniLm,
-                ..Inner::default()
-            }),
-        }
-    }
-
     pub(crate) fn is_production_minilm(&self) -> bool {
         self.inner.model_kind == ModelKind::MiniLm
     }
