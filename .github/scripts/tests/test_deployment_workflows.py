@@ -234,6 +234,8 @@ def test_build_workflow_only_builds_and_uploads_immutable_bytes():
     assert 'gh release create "$BUILD_TAG" --target "$SOURCE_SHA" --prerelease' in text
     assert 'docker buildx imagetools create --tag "$base:$BUILD_TAG"' in text
     assert 'sudo skopeo login --authfile "$authfile"' in text
+    assert "--password-stdin" in text
+    assert '--password "$GH_TOKEN"' not in text
     assert 'sudo skopeo inspect --authfile "$authfile"' in text
     assert 'sudo skopeo copy --authfile "$authfile"' in text
     assert "immutable assets are never overwritten" in text
