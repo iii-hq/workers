@@ -94,8 +94,9 @@ struct WireModel {
 
 /// `GET /v1/models` rows to catalog records: text-to-speech models only,
 /// each with the language ids it speaks.
-pub fn parse_live_models(json: &serde_json::Value) -> Vec<Model> {
-    let rows: Vec<WireModel> = serde_json::from_value(json.clone()).unwrap_or_default();
+pub fn parse_live_models(json: &serde_json::Value) -> Result<Vec<Model>, Error> {
+    let rows: Vec<WireModel> = serde_json::from_value(json.clone())
+        .map_err(|e| Error::Handler(format!("provider/bad_response: models list: {e}")))?;
     let mut models: Vec<Model> = rows
         .into_iter()
         .filter(|m| m.can_do_text_to_speech)
@@ -106,7 +107,7 @@ pub fn parse_live_models(json: &serde_json::Value) -> Vec<Model> {
         })
         .collect();
     models.sort_by(|a, b| a.id.cmp(&b.id));
-    models
+    Ok(models)
 }
 
 /// The refresh flow; returns the reconciled slice size.
@@ -143,7 +144,7 @@ pub async fn refresh_models(iii: &IIIClient, http: &reqwest::Client) -> Result<u
         .await
         .map_err(|e| Error::Handler(format!("provider/bad_response: models list: {e}")))?;
     let mut models = stt_models();
-    models.extend(parse_live_models(&json));
+    models.extend(parse_live_models(&json)?);
     let count = models.len();
     router_client::reconcile(iii, models, token.as_deref()).await?;
     Ok(count)
@@ -170,6 +171,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_malformed_row_is_an_error_not_an_empty_catalog() {
+        let json = serde_json::json!([
+            { "model_id": "eleven_v3", "can_do_text_to_speech": true },
+            { "name": "row without a model_id" }
+        ]);
+        let err = parse_live_models(&json).expect_err("malformed row");
+        assert!(err.to_string().contains("provider/bad_response"), "{err}");
+    }
+
+    #[test]
     fn live_models_keep_tts_rows_with_languages() {
         let json = serde_json::json!([
             { "model_id": "eleven_v3", "name": "Eleven v3", "can_do_text_to_speech": true,
@@ -177,7 +188,7 @@ mod tests {
             { "model_id": "eleven_english_sts_v2", "name": "Eleven English v2", "can_do_text_to_speech": false,
               "languages": [{ "language_id": "en", "name": "English" }] }
         ]);
-        let models = parse_live_models(&json);
+        let models = parse_live_models(&json).expect("rows parse");
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].id, "eleven_v3");
         assert_eq!(models[0].speech_modality(), Some(SpeechModality::Tts));

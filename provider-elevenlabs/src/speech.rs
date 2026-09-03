@@ -29,6 +29,8 @@ pub const DEFAULT_VOICE_ID: &str = "JBFqnCBsd6RMkjVDRZzb";
 const MAX_AUDIO_BYTES: usize = 100 * 1024 * 1024;
 const TRANSCRIBE_TIMEOUT_SECS: u64 = 280;
 const SPEAK_TIMEOUT_SECS: u64 = 110;
+/// The voice directory fetch sits on the speak request path.
+const VOICES_TIMEOUT_SECS: u64 = 20;
 /// Words further apart than this start a new transcript segment.
 const SEGMENT_GAP_SECS: f64 = 0.8;
 
@@ -177,6 +179,7 @@ impl Voices {
         let response = http
             .get(format!("{api_url}/voices"))
             .header("xi-api-key", credential)
+            .timeout(std::time::Duration::from_secs(VOICES_TIMEOUT_SECS))
             .send()
             .await
             .map_err(|e| Error::Handler(format!("provider/upstream: voices fetch failed: {e}")))?;
@@ -397,8 +400,15 @@ pub async fn transcribe(
     cache: &ScaffoldCache,
     req: TranscribeRequest,
 ) -> Result<TranscribeResponse, Error> {
+    let encoded = req.audio_base64.trim();
+    if encoded.len() > MAX_AUDIO_BYTES / 3 * 4 + 4 {
+        return Err(Error::Handler(format!(
+            "provider/invalid_input: audio_base64 is {} characters, more than a {MAX_AUDIO_BYTES}-byte file encodes to",
+            encoded.len()
+        )));
+    }
     let audio = base64::engine::general_purpose::STANDARD
-        .decode(req.audio_base64.trim())
+        .decode(encoded)
         .map_err(|e| {
             Error::Handler(format!(
                 "provider/invalid_input: audio_base64 is not base64: {e}"

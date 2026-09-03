@@ -53,8 +53,8 @@ pub fn check_golden(rel: &str, actual: &str) -> Result<(), String> {
 /// Readable first-divergence diff hint: line number, expected vs actual
 /// around the mismatch, and the regeneration instructions.
 fn diff_hint(rel: &str, expected: &str, actual: &str) -> String {
-    let exp_lines: Vec<&str> = expected.lines().collect();
-    let act_lines: Vec<&str> = actual.lines().collect();
+    let exp_lines: Vec<&str> = expected.split('\n').collect();
+    let act_lines: Vec<&str> = actual.split('\n').collect();
     let first_diff = exp_lines
         .iter()
         .zip(act_lines.iter())
