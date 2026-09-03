@@ -20,6 +20,21 @@ const INDEX_DESCRIPTION_BYTES: usize = 160;
 pub(crate) const EXCLUDED_NAMESPACE_PREFIXES: [&str; 1] = ["engine::"];
 /// The search's own id: never searchable, never operating evidence.
 pub(crate) const SEARCH_FN: &str = "directory::search_functions";
+/// Exact function ids hidden from search regardless of their worker: infra
+/// primitives an agent must never be handed as a capability (they fail the
+/// agent's dispatch policy if returned). `state::claim-namespace` is a
+/// worker-lifecycle claim, not a task capability.
+pub(crate) const EXCLUDED_FUNCTION_IDS: [&str; 1] = ["state::claim-namespace"];
+
+/// Whether a function id must be kept out of every search lane: the search's
+/// own id, an excluded namespace prefix, or an explicitly excluded id.
+pub(crate) fn excluded_from_search(id: &str) -> bool {
+    id == SEARCH_FN
+        || EXCLUDED_NAMESPACE_PREFIXES
+            .iter()
+            .any(|prefix| id.starts_with(prefix))
+        || EXCLUDED_FUNCTION_IDS.contains(&id)
+}
 
 /// One catalog entry: the contract fields search runs on.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -389,12 +404,7 @@ pub(crate) fn canonical_tools(tools: &[ToolSchema]) -> Vec<ToolSchema> {
         // The engine control plane is not a selectable "worker", and the
         // search must never rank itself: excluding both keeps results to
         // capabilities a task can actually be built from.
-        .filter(|tool| {
-            tool.name != SEARCH_FN
-                && EXCLUDED_NAMESPACE_PREFIXES
-                    .iter()
-                    .all(|prefix| !tool.name.starts_with(prefix))
-        })
+        .filter(|tool| !excluded_from_search(&tool.name))
         .map(|tool| ToolSchema {
             name: tool.name.clone(),
             description: slim_description(&tool.description),

@@ -20,8 +20,7 @@ use crate::functions::registry::{
     self, RegistryCache, Worker, WorkerInfoInput, WorkerInfoOutput, WorkerListInput,
 };
 use crate::functions::search_index::{
-    canonical_tools, compact_query, tool_fingerprint, Bm25Index, ToolSchema,
-    EXCLUDED_NAMESPACE_PREFIXES, SEARCH_FN,
+    canonical_tools, compact_query, excluded_from_search, tool_fingerprint, Bm25Index, ToolSchema,
 };
 use crate::functions::search_semantic::{
     weighted_rrf, SemanticSearch, MODEL_REVISION, MODEL_SHA256,
@@ -873,11 +872,7 @@ fn registry_contracts(info: &WorkerInfoOutput, installed: &HashSet<&str>) -> Vec
                 != Some(true)
         })
         .filter(|function| {
-            !installed.contains(function.name.as_str())
-                && function.name != SEARCH_FN
-                && EXCLUDED_NAMESPACE_PREFIXES
-                    .iter()
-                    .all(|prefix| !function.name.starts_with(prefix))
+            !installed.contains(function.name.as_str()) && !excluded_from_search(&function.name)
         })
         .map(|function| ToolSchema {
             name: function.name.clone(),
@@ -1336,12 +1331,7 @@ fn listed_ids(value: &Value) -> Result<Vec<String>, String> {
     if ids.iter().any(|id| !seen.insert(id.as_str())) {
         return Err("catalog list contained duplicate function id".into());
     }
-    ids.retain(|id| {
-        id != SEARCH_FN
-            && EXCLUDED_NAMESPACE_PREFIXES
-                .iter()
-                .all(|prefix| !id.starts_with(prefix))
-    });
+    ids.retain(|id| !excluded_from_search(id));
     Ok(ids)
 }
 
@@ -1583,7 +1573,38 @@ pub fn register(iii: &Arc<IIIClient>, deps: &Deps) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::functions::search_index::SEARCH_FN;
     use crate::hook::ExposeKind;
+
+    #[test]
+    fn excluded_from_search_hides_claim_namespace_and_infra() {
+        assert!(excluded_from_search(SEARCH_FN));
+        assert!(excluded_from_search("engine::functions::list"));
+        assert!(excluded_from_search("state::claim-namespace"));
+        assert!(!excluded_from_search("state::set"));
+        assert!(!excluded_from_search("state::claim"));
+    }
+
+    #[test]
+    fn canonical_tools_drops_excluded_ids() {
+        let tools = vec![
+            ToolSchema {
+                name: "state::claim-namespace".into(),
+                description: "claim a namespace".into(),
+                parameters: json!({ "type": "object" }),
+            },
+            ToolSchema {
+                name: "state::set".into(),
+                description: "set a value".into(),
+                parameters: json!({ "type": "object" }),
+            },
+        ];
+        let kept: Vec<String> = canonical_tools(&tools)
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(kept, vec!["state::set".to_string()]);
+    }
 
     fn search_deps(tools: Vec<ToolSchema>) -> Deps {
         let config = SkillsConfig {
