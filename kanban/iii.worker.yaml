@@ -11,7 +11,7 @@ runtime:
   kind: javascript
 
 scripts:
-  start: node ./index.mjs
+  start: node ./dist/bundle/index.mjs
 
 dependencies:
   console: "^1.9.11"
