@@ -39,14 +39,6 @@
         },
         "type": "object"
       },
-      "Mode": {
-        "description": "Operating mode prepended to the identity prompt; `ask` also caps the dispatch policy at the configured default.",
-        "enum": [
-          "ask",
-          "agent"
-        ],
-        "type": "string"
-      },
       "OutputContract": {
         "description": "Free text by default; `json` constrains the final answer to a JSON value, validated against `schema` when supplied.",
         "oneOf": [
@@ -135,16 +127,6 @@
             "type": [
               "integer",
               "null"
-            ]
-          },
-          "mode": {
-            "anyOf": [
-              {
-                "$ref": "#/definitions/Mode"
-              },
-              {
-                "type": "null"
-              }
             ]
           },
           "orchestrator": {

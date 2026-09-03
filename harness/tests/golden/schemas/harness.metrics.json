@@ -418,7 +418,7 @@
             "type": "integer"
           },
           "system_prompt": {
-            "description": "Final assembled system prompt excluding tokens attributed to `skills`: mode paragraph, identity, per-step aids, and any compaction summary section.",
+            "description": "Final assembled system prompt excluding tokens attributed to `skills`: identity, per-step aids, and any compaction summary section.",
             "format": "uint64",
             "minimum": 0.0,
             "type": "integer"

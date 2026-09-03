@@ -675,6 +675,10 @@ export function FunctionTriggerCard({
       : errored
         ? 'error'
         : 'done'
+  const collapsedActivityKind =
+    !expandedSurface && message.functionId === 'engine::register_trigger'
+      ? 'trigger-registration'
+      : 'function'
 
   if (expandableCustomDisplay) {
     const detailsOpen = running || open
@@ -798,7 +802,7 @@ export function FunctionTriggerCard({
               expanded={expandedSurface}
               status={status}
             />
-            <TimelineActivityTrail kind="function" />
+            <TimelineActivityTrail kind={collapsedActivityKind} />
             <div
               className={cn(
                 'min-w-0 flex-1',

@@ -104,6 +104,10 @@ pub struct ProviderInfo {
     pub configured: bool,
     pub available: bool,
     pub supports_model_listing: bool,
+    /// The provider's mark as inline SVG, copied from its declaration. Absent
+    /// when the provider declared none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_svg: Option<String>,
 }
 /// Input of `router::provider::list` — takes no arguments. A struct (rather
 /// than `Value`) keeps the request schema concrete; unknown fields (e.g. the
@@ -147,6 +151,25 @@ pub struct ProviderDeclaration {
     pub models: Option<Vec<Model>>, // static catalog slice; reconciled at registration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worker_id: Option<String>, // self-reported; availability mapping only, never authorization
+    /// The provider's mark: one self-contained `<svg>` document, monochrome,
+    /// drawn with a square `viewBox` and no fixed size. Consoles paint it as
+    /// a `currentColor` mask next to the provider's models, so colour and
+    /// scripts are ignored. Keep it under [`PROVIDER_ICON_SVG_MAX_BYTES`];
+    /// the router drops anything larger or not starting with `<svg`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_svg: Option<String>,
+}
+
+/// Upper bound the router accepts for [`ProviderDeclaration::icon_svg`].
+pub const PROVIDER_ICON_SVG_MAX_BYTES: usize = 32 * 1024;
+
+/// `Some(svg)` when the declared mark is a plausibly renderable SVG document
+/// within the size cap; `None` otherwise (the console then shows an initial).
+pub fn accepted_icon_svg(icon_svg: Option<&str>) -> Option<String> {
+    let svg = icon_svg?.trim();
+    let starts_like_svg = svg.starts_with("<svg") || svg.starts_with("<?xml");
+    (starts_like_svg && svg.ends_with("</svg>") && svg.len() <= PROVIDER_ICON_SVG_MAX_BYTES)
+        .then(|| svg.to_string())
 }
 
 /// `registration_token` is the provider ownership credential; only its sha256
@@ -464,4 +487,36 @@ pub struct FunctionsChangedEvent {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct RouterAck {
     pub ok: bool,
+}
+
+#[cfg(test)]
+mod icon_svg_tests {
+    use super::{accepted_icon_svg, PROVIDER_ICON_SVG_MAX_BYTES};
+
+    #[test]
+    fn keeps_a_plain_svg_document() {
+        let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\"><path d=\"M0 0h24v24H0z\"/></svg>";
+        assert_eq!(accepted_icon_svg(Some(svg)).as_deref(), Some(svg));
+        assert_eq!(
+            accepted_icon_svg(Some(&format!("  {svg}\n"))).as_deref(),
+            Some(svg)
+        );
+    }
+
+    #[test]
+    fn drops_marks_that_are_not_svg_documents() {
+        assert_eq!(accepted_icon_svg(None), None);
+        assert_eq!(accepted_icon_svg(Some("")), None);
+        assert_eq!(accepted_icon_svg(Some("<img src=x>")), None);
+        assert_eq!(
+            accepted_icon_svg(Some("<svg></svg><script></script>")),
+            None
+        );
+    }
+
+    #[test]
+    fn drops_oversized_marks() {
+        let big = format!("<svg>{}</svg>", "a".repeat(PROVIDER_ICON_SVG_MAX_BYTES));
+        assert_eq!(accepted_icon_svg(Some(&big)), None);
+    }
 }

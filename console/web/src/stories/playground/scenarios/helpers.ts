@@ -1,9 +1,8 @@
 import type { ChatBackend, ChatStreamOptions, StreamEvent } from '@/lib/backend'
-import type { Mode, ModelId } from '@/types/chat'
+import type { ModelId } from '@/types/chat'
 
 export type ScenarioStream = (
   prompt: string,
-  mode: Mode,
   model: ModelId,
   opts?: ChatStreamOptions,
 ) => AsyncGenerator<StreamEvent>

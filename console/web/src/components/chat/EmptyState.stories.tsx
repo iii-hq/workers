@@ -6,7 +6,6 @@ import type { AgentEntry } from '@/lib/backend/directory-prompts'
 import { EmptyState, type EmptyStateProps } from './EmptyState'
 import {
   DEFAULT_SYSTEM_PROMPT_STATE,
-  type SkillSelection,
   type SystemPromptState,
 } from './system-prompt-selection'
 
@@ -79,7 +78,7 @@ const meta = {
   },
   decorators: [
     (Story) => (
-      <div className="flex h-[680px] w-full flex-col bg-bg">
+      <div className="@container flex h-[680px] w-full flex-col bg-bg">
         <Story />
       </div>
     ),
@@ -93,15 +92,12 @@ function ConfiguredReadyStory(args: EmptyStateProps) {
   const [systemPrompt, setSystemPrompt] = useState<SystemPromptState>(
     args.systemPrompt ?? DEFAULT_SYSTEM_PROMPT_STATE,
   )
-  const [skills, setSkills] = useState<SkillSelection>(args.skills)
 
   return (
     <EmptyState
       {...args}
       systemPrompt={systemPrompt}
       onSystemPromptChange={setSystemPrompt}
-      skills={skills}
-      onSkillsChange={setSkills}
     />
   )
 }
@@ -116,7 +112,6 @@ export const Ready: Story = {
     onWorkingDirChange: fn(),
     systemPrompt: DEFAULT_SYSTEM_PROMPT_STATE,
     onSystemPromptChange: fn(),
-    onSkillsChange: fn(),
     agentEntries: agents,
   },
 }
@@ -134,8 +129,6 @@ export const ReadyConfigured: Story = {
       choice: { named: 'reviewer' },
     },
     onSystemPromptChange: fn(),
-    skills: ['design', 'linear-workflow', 'canonicalize-tailwind'],
-    onSkillsChange: fn(),
     agentEntries: agents,
   },
 }
@@ -148,7 +141,6 @@ export const ReadyWithoutProject: Story = {
     onWorkingDirChange: fn(),
     systemPrompt: DEFAULT_SYSTEM_PROMPT_STATE,
     onSystemPromptChange: fn(),
-    onSkillsChange: fn(),
     agentEntries: agents,
   },
 }
@@ -163,7 +155,6 @@ export const ReadyWithoutAgentProfiles: Story = {
     onWorkingDirChange: fn(),
     systemPrompt: DEFAULT_SYSTEM_PROMPT_STATE,
     onSystemPromptChange: fn(),
-    onSkillsChange: fn(),
     agentEntries: [],
   },
 }

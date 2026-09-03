@@ -40,6 +40,7 @@ describe('Cursor LLM Router provider', () => {
       worker_id: 'cursor',
     });
     expect(declaration).not.toHaveProperty('credential_env_var');
+    expect(String(declaration.icon_svg)).toMatch(/^<svg [^>]*viewBox="0 0 24 24"[\s\S]*<\/svg>$/);
     expect(declaration).not.toHaveProperty('system_prompt');
     const reconciliation = routerCalls.find(
       (call) => call.function_id === 'router::models::reconcile',

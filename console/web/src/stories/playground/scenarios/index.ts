@@ -1,5 +1,4 @@
 import type { ChatBackend } from '@/lib/backend'
-import type { Mode } from '@/types/chat'
 import { abortMidThought } from './abort-mid-thought'
 import { coderMutate } from './coder-mutate'
 import { coderUpdate } from './coder-update'
@@ -30,8 +29,6 @@ export interface PlaygroundScenario {
   label: string
   description: string
   group: ScenarioGroup
-  /** mode the chat surface should be put into to make the scenario read right */
-  preferredMode?: Mode
   backend: ChatBackend
 }
 
@@ -41,7 +38,6 @@ export const SCENARIOS: PlaygroundScenario[] = [
     label: 'happy · ask',
     description: 'assistant body only, no thought, no function triggers.',
     group: 'happy paths',
-    preferredMode: 'ask',
     backend: happyAsk,
   },
   {
@@ -49,7 +45,6 @@ export const SCENARIOS: PlaygroundScenario[] = [
     label: 'happy · agent',
     description: 'thought + one function trigger + assistant body.',
     group: 'happy paths',
-    preferredMode: 'agent',
     backend: happyAgent,
   },
   {
@@ -58,7 +53,6 @@ export const SCENARIOS: PlaygroundScenario[] = [
     description:
       'coder::tree scout, then coder::create-file writing workers/iii/skills/SKILL.md.',
     group: 'happy paths',
-    preferredMode: 'agent',
     backend: coderMutate,
   },
   {
@@ -67,7 +61,6 @@ export const SCENARIOS: PlaygroundScenario[] = [
     description:
       'coder::search → numbered coder::read-file window → coder::update-file with post-apply echoes.',
     group: 'happy paths',
-    preferredMode: 'agent',
     backend: coderUpdate,
   },
   {
@@ -76,7 +69,6 @@ export const SCENARIOS: PlaygroundScenario[] = [
     description:
       '~200ms between assistant tokens — watch for renderer flicker.',
     group: 'timing',
-    preferredMode: 'ask',
     backend: slowTokens,
   },
   {
@@ -84,7 +76,6 @@ export const SCENARIOS: PlaygroundScenario[] = [
     label: 'fast tokens',
     description: '~5ms between assistant tokens — stresses the patch path.',
     group: 'timing',
-    preferredMode: 'ask',
     backend: fastTokens,
   },
   {
@@ -93,7 +84,6 @@ export const SCENARIOS: PlaygroundScenario[] = [
     description:
       'half a thought, then throws AbortError. ChatView should clean up and stay responsive.',
     group: 'failure modes',
-    preferredMode: 'agent',
     backend: abortMidThought,
   },
   {
@@ -102,7 +92,6 @@ export const SCENARIOS: PlaygroundScenario[] = [
     description:
       'function trigger ends with an error payload (rate_limited) instead of data.',
     group: 'failure modes',
-    preferredMode: 'agent',
     backend: errorOnFcall,
   },
   {
@@ -111,7 +100,6 @@ export const SCENARIOS: PlaygroundScenario[] = [
     description:
       'three sequential function triggers before the assistant body — surfaces fcall pointer reuse.',
     group: 'agent',
-    preferredMode: 'agent',
     backend: multiFunctionAgent,
   },
   {
@@ -120,7 +108,6 @@ export const SCENARIOS: PlaygroundScenario[] = [
     description:
       'gated create → fs::write → exec → stop, then a create that fails with the daemon S102 transient error.',
     group: 'agent',
-    preferredMode: 'agent',
     backend: sandboxLifecycle,
   },
   {
@@ -129,7 +116,6 @@ export const SCENARIOS: PlaygroundScenario[] = [
     description:
       'gated scrapling::stealthy-fetch (approve → extraction), then fetch + css cards.',
     group: 'agent',
-    preferredMode: 'agent',
     backend: scraplingScrape,
   },
   {
@@ -138,7 +124,6 @@ export const SCENARIOS: PlaygroundScenario[] = [
     description:
       'pure parsers: find-by-text → describe → to-markdown over static HTML (no approval).',
     group: 'agent',
-    preferredMode: 'agent',
     backend: scraplingParse,
   },
   {
@@ -147,7 +132,6 @@ export const SCENARIOS: PlaygroundScenario[] = [
     description:
       'session lifecycle: gated open → gated fetch (reuses cookies) → list → close.',
     group: 'agent',
-    preferredMode: 'agent',
     backend: scraplingSession,
   },
   {
@@ -156,7 +140,6 @@ export const SCENARIOS: PlaygroundScenario[] = [
     description:
       'gated crawl that BFS-follows same-domain links and streams extracted items back.',
     group: 'agent',
-    preferredMode: 'agent',
     backend: scraplingCrawlScenario,
   },
   {
@@ -165,7 +148,6 @@ export const SCENARIOS: PlaygroundScenario[] = [
     description:
       'fcall that requires user approval; auto-resolves after a delay so you can watch the lifecycle.',
     group: 'agent',
-    preferredMode: 'agent',
     backend: pendingApproval,
   },
   {
@@ -174,7 +156,6 @@ export const SCENARIOS: PlaygroundScenario[] = [
     description:
       '~4kB body: headings, lists, tables, fenced code in 3 langs, blockquotes, task lists.',
     group: 'markdown',
-    preferredMode: 'ask',
     backend: longMarkdown,
   },
   {
@@ -183,7 +164,6 @@ export const SCENARIOS: PlaygroundScenario[] = [
     description:
       'pathological markdown: nested lists, footnotes, autolinks, hard breaks, busy tables.',
     group: 'markdown',
-    preferredMode: 'ask',
     backend: markdownStress,
   },
 ]

@@ -13,7 +13,7 @@ import { FunctionTriggerCard } from './FunctionTriggerCard'
 import { FIRST_PARTY_RENDERERS } from './renderer-registry'
 
 describe('featured first-party renderers', () => {
-  it('marks only trigger registration as prominent', () => {
+  it('keeps trigger registration on the normal function-call presentation', () => {
     const register = FIRST_PARTY_RENDERERS.find(
       (renderer) => renderer.id === 'first-party/engine-register-trigger',
     )
@@ -24,10 +24,7 @@ describe('featured first-party renderers', () => {
       (renderer) => renderer.id === 'first-party/engine',
     )
 
-    expect(register?.metadata).toEqual({
-      display: true,
-      displayAction: 'expand',
-    })
+    expect(register?.metadata?.display).not.toBe(true)
     expect(register?.tryRenderDisplay).toBeTypeOf('function')
     expect(harnessFamily?.metadata?.display).not.toBe(true)
     expect(engineFamily?.metadata?.display).not.toBe(true)
@@ -215,7 +212,7 @@ describe('trigger registration display', () => {
     ).toBe('')
   })
 
-  it('keeps the registration receipt as the primary card when details expand', () => {
+  it('keeps registration details behind the normal function-call disclosure', () => {
     const collapsed = renderToStaticMarkup(
       <FunctionTriggerCard message={engineRegisterTriggerSubscribe} />,
     )
@@ -226,23 +223,26 @@ describe('trigger registration display', () => {
       />,
     )
 
-    for (const html of [collapsed, expanded]) {
-      expect(html.match(/Trigger registered/g)).toHaveLength(1)
-      expect(html).toContain('research-progress-watch')
-      expect(html).toContain('data-trigger-registration-details')
-      expect(html).toContain('data-trigger-execution-trace')
-      expect(html).toContain('data-trigger-flow-card="when"')
-      expect(html).toContain('data-trigger-flow-card="then"')
-      expect(html).toContain('Terminal')
-      expect(html).toContain('Raw JSON')
-      expect(html).toContain('p-4 select-none sm:p-3')
-      expect(html).not.toContain('fcall-chrome')
-      expect(html).not.toContain('copy function id')
-    }
-
+    expect(collapsed).not.toContain('Trigger registered')
+    expect(collapsed).not.toContain('data-trigger-registration-details')
+    expect(collapsed).not.toContain('data-function-display-slot=""')
+    expect(collapsed).toContain(
+      'data-timeline-activity-kind="trigger-registration"',
+    )
     expect(collapsed).toContain('aria-expanded="false"')
-    expect(collapsed).toContain('aria-hidden="true"')
+
+    expect(expanded).not.toContain('Trigger registered')
+    expect(expanded).toContain('data-trigger-registration-details')
+    expect(expanded).toContain('data-trigger-execution-trace')
+    expect(expanded).toContain('data-trigger-flow-card="when"')
+    expect(expanded).toContain('data-trigger-flow-card="then"')
+    expect(expanded).toContain('Terminal')
+    expect(expanded).toContain('Raw JSON')
+    expect(expanded).toContain('fcall-chrome')
+    expect(expanded).toContain('data-timeline-activity-kind="function"')
+    expect(expanded).not.toContain(
+      'data-timeline-activity-kind="trigger-registration"',
+    )
     expect(expanded).toContain('aria-expanded="true"')
-    expect(expanded).toContain('aria-hidden="false"')
   })
 })

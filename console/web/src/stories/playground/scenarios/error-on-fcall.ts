@@ -25,7 +25,7 @@ saturated and the rate-limit policy needs a tuning pass.`
  */
 export const errorOnFcall = makeBackend(
   'error-on-fcall',
-  async function* (prompt, _mode, _model, opts) {
+  async function* (prompt, _model, opts) {
     const signal = opts?.signal
     const text = prompt.replace(/\s+/g, ' ').trim().slice(0, 200) || '(empty)'
     yield* streamThought(THOUGHT, { signal })

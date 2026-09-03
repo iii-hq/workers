@@ -8,7 +8,6 @@ function conv(id: string, title: string, at = clock++): Conversation {
     id,
     title,
     model: null,
-    mode: 'agent',
     messages: [],
     createdAt: at,
     updatedAt: at,

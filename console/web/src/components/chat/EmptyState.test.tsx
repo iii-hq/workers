@@ -44,7 +44,7 @@ describe('EmptyState', () => {
     expect(html).toContain('console')
   })
 
-  it('keeps session prompt and selected skills compact beneath the question', () => {
+  it('keeps the agent gallery visible for an existing manual configuration', () => {
     const html = renderToStaticMarkup(
       <EmptyState
         variant="ready"
@@ -55,26 +55,18 @@ describe('EmptyState', () => {
           choice: { named: 'reviewer' },
         }}
         onSystemPromptChange={() => {}}
-        skills={['design', 'linear-workflow']}
-        onSkillsChange={() => {}}
         agentEntries={agents}
       />,
     )
 
     expect(html).toContain('aria-label="session setup"')
-    expect(html).toContain('Configure manually')
-    expect(html).toContain('aria-expanded="true"')
-    expect(html).toContain('data-open="true"')
-    expect(html).toContain('t-acc-panel')
-    expect(html).toContain('System prompt')
-    expect(html).toContain('reviewer')
-    expect(html).toContain('items-baseline')
-    expect(html).not.toContain('Extending')
-    expect(html).not.toContain('Overriding')
-    expect(html).toContain('border-dashed')
-    expect(html).toContain('Add skills')
-    expect(html).toContain('remove design from this session')
-    expect(html).toContain('remove linear-workflow from this session')
+    expect(html).toContain('Use Engineer agent profile')
+    expect(html).toContain('Use Researcher agent profile')
+    expect(html).toContain('Create a new agent profile')
+    expect(html).not.toContain('Configure manually')
+    expect(html).not.toContain('System prompt')
+    expect(html).not.toContain('remove design from this session')
+    expect(html).not.toContain('remove linear-workflow from this session')
   })
 
   it('shows agent cards by default with only identity content', () => {
@@ -91,16 +83,26 @@ describe('EmptyState', () => {
       />,
     )
 
-    expect(html).toContain('aria-expanded="false"')
-    expect(html).toContain('data-open="false"')
     expect(html).toContain('Use Engineer agent profile')
     expect(html).toContain('aria-pressed="true"')
     expect(html).toContain('Builds and reviews production code.')
     expect(html).toContain('Use Researcher agent profile')
     expect(html).toContain('active-subagent-chip')
     expect(html).toContain('data-color="blue"')
+    expect(html).toContain('Create a new agent profile')
+    expect(html).toContain('@lg:grid-cols-2')
+    expect(html).toContain('@3xl:grid-cols-3')
+    expect(html).toContain('@lg:min-h-40')
+    expect(html).not.toContain('h-full min-h-40')
+    expect(html).toContain('flex min-w-0 items-center gap-3 @lg:block')
+    expect(html).toContain('text-ink @lg:hidden')
+    expect(html).toContain('hidden font-sans text-sm')
+    expect(html).toContain('@lg:block')
+    expect(html).toContain('lucide-plus size-4 h-lh shrink-0')
+    expect(html).toContain('flex items-center gap-1.5')
     expect(html).not.toContain('Sub-agent')
     expect(html).not.toContain('ActivityMetadata')
+    expect(html).not.toContain('Configure manually')
   })
 
   it('uses the frozen session profile to keep the selected card identified', () => {
@@ -135,11 +137,12 @@ describe('EmptyState', () => {
       />,
     )
 
-    expect(html).toContain('Create your first agent profile')
+    expect(html).toContain('Create a new agent')
     expect(html).toContain(
-      'Save instructions, a model, and skills once, then reuse them in any session.',
+      'Save a reusable set of instructions, a model, and skills.',
     )
     expect(html).toContain('Create agent profile')
-    expect(html).not.toContain('No agent profiles are available yet.')
+    expect(html).toContain('bg-surface')
+    expect(html).not.toContain('shadow-raised')
   })
 })

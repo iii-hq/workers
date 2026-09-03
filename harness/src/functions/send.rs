@@ -13,7 +13,7 @@ use crate::deps::Deps;
 use crate::error::HarnessError;
 use crate::ids;
 use crate::policy;
-use crate::prompt::{self, Mode, SystemPromptOpts, SystemPromptStrategy};
+use crate::prompt::{self, SystemPromptStrategy};
 use crate::turn_loop;
 use crate::types::message::{AgentMessage, UserMessage, UserRoleTag};
 use crate::types::model::ThinkingLevel;
@@ -72,8 +72,6 @@ pub struct SendOptions {
     /// prompt fields on an existing session inherits the prior prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt_strategy: Option<SystemPromptStrategy>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode: Option<Mode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_turns: Option<u32>,
     /// Per-generation output-token ceiling forwarded to the router.
@@ -292,15 +290,13 @@ async fn start_with_delivery_lock(
     };
     let mut options = build_options(&cfg, &req, model, provider, agent.as_ref(), &identity);
     inherit_prior_functions(
-        &cfg,
         &mut options,
         prev.as_ref()
             .and_then(|p| p.options.functions.as_ref())
             // An agent send with no explicit policy gets the configured
             // default instead of deny-all: an identity picked to DO something
             // must be able to dispatch. `prev` and `agent` are mutually
-            // exclusive (resolve_send_agent), and the ask-mode clamp inside
-            // still caps the result.
+            // exclusive (resolve_send_agent).
             .or_else(|| agent.as_ref().and(cfg.default_functions.as_ref())),
     );
     if let (true, Some(prev)) = (inherits_prompt, prev.as_ref()) {
@@ -820,7 +816,6 @@ fn build_options(
     identity: &str,
 ) -> TurnOptions {
     let opts = req.options.clone().unwrap_or_default();
-    let functions = clamp_for_mode(cfg, opts.mode, opts.functions);
     let mut thinking_level = opts.thinking_level;
     let mut provider_options = opts.provider_options;
     if let Some(agent) = agent {
@@ -835,23 +830,17 @@ fn build_options(
         provider,
         // An agent profile supplies the prompt (validated exclusive with the
         // explicit prompt fields in resolve_send_agent) and IS the identity:
-        // nothing built-in underneath, and the mode paragraph applies to it
-        // exactly as it would to the built-in identity.
+        // nothing built-in underneath.
         system_prompt: match agent {
-            Some(a) => Some(prompt::build_system_prompt(SystemPromptOpts {
-                mode: opts.mode,
-                identity: &a.prompt,
-            })),
+            Some(a) => Some(a.prompt.clone()),
             None => prompt::resolve_system_prompt(
                 opts.system_prompt,
                 opts.system_prompt_strategy.unwrap_or_default(),
-                opts.mode,
                 identity,
             ),
         },
         skills_prompt: None,
         skill_context: None,
-        mode: opts.mode,
         max_turns: opts.max_turns.unwrap_or(cfg.default_max_turns),
         max_output_tokens: opts.max_output_tokens,
         max_total_tokens: opts.max_total_tokens,
@@ -860,7 +849,7 @@ fn build_options(
         thinking_level,
         provider_options,
         output: opts.output.unwrap_or_default(),
-        functions,
+        functions: opts.functions,
         metadata: opts.metadata,
         agent: agent.map(|a| a.identity.clone()),
         max_validation_retries: opts
@@ -886,37 +875,16 @@ pub(crate) fn session_metadata_with_agent(
     Some(Value::Object(object))
 }
 
-/// The single chokepoint for the ask-mode policy cap:
-/// every turn-seeding path (a fresh send, an inherited steer, a spawned child)
-/// routes its resolved dispatch policy through here, so ask mode is capped at
-/// the configured default policy no matter how the policy was assembled.
-/// A non-ask turn passes through untouched.
-pub(crate) fn clamp_for_mode(
-    cfg: &WorkerConfig,
-    mode: Option<Mode>,
-    functions: Option<FunctionPolicy>,
-) -> Option<FunctionPolicy> {
-    match mode {
-        Some(Mode::Ask) => policy::clamp_policy(cfg.default_functions.as_ref(), functions.as_ref()),
-        _ => functions,
-    }
-}
-
 /// A steer also inherits the prior turn's dispatch policy unless this send
 /// names its own: `functions` is fail-closed, so leaving it `None` on a fresh
 /// steer record would silently DISARM a live run — every turn from the nudge
 /// onward denied all dispatch. Explicit strip stays possible
-/// (`options.functions: { allow: [] }`). An ask-mode steer stays armed but
-/// read-only via the shared [`clamp_for_mode`] cap.
-fn inherit_prior_functions(
-    cfg: &WorkerConfig,
-    options: &mut TurnOptions,
-    prev_functions: Option<&FunctionPolicy>,
-) {
+/// (`options.functions: { allow: [] }`).
+fn inherit_prior_functions(options: &mut TurnOptions, prev_functions: Option<&FunctionPolicy>) {
     if options.functions.is_some() {
         return;
     }
-    options.functions = clamp_for_mode(cfg, options.mode, prev_functions.cloned());
+    options.functions = prev_functions.cloned();
 }
 
 fn select_skill_context(
@@ -1474,7 +1442,7 @@ mod tests {
 
     #[tokio::test]
     async fn live_queue_root_refresh_cannot_restore_a_stale_skill_filter() {
-        let mut stale_recheck = options_with(None, None);
+        let mut stale_recheck = options_with(None);
         stale_recheck.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["old".into()]),
             baseline: Some("frozen".into()),
@@ -1736,10 +1704,7 @@ mod tests {
             provider: Some("anthropic".into()),
             idempotency_key: None,
             session: None,
-            options: Some(SendOptions {
-                mode: Some(Mode::Agent),
-                ..Default::default()
-            }),
+            options: Some(SendOptions::default()),
         };
         let opts = build_options(
             &cfg,
@@ -1750,7 +1715,7 @@ mod tests {
             crate::prompt::DEFAULT,
         );
         let prompt = opts.system_prompt.expect("built-in prompt");
-        assert!(prompt.contains("operating in agent mode"));
+        assert_eq!(prompt, crate::prompt::DEFAULT);
         assert!(prompt.contains("# System rules"));
     }
 
@@ -1767,7 +1732,6 @@ mod tests {
             options: Some(SendOptions {
                 system_prompt: Some("custom".into()),
                 system_prompt_strategy: Some(SystemPromptStrategy::Override),
-                mode: Some(Mode::Ask),
                 ..Default::default()
             }),
         };
@@ -1782,14 +1746,13 @@ mod tests {
         assert_eq!(opts.system_prompt.as_deref(), Some("custom"));
     }
 
-    fn options_with(mode: Option<Mode>, functions: Option<FunctionPolicy>) -> TurnOptions {
+    fn options_with(functions: Option<FunctionPolicy>) -> TurnOptions {
         TurnOptions {
             model: "m".into(),
             provider: None,
             system_prompt: None,
             skills_prompt: None,
             skill_context: None,
-            mode,
             max_turns: 16,
             max_output_tokens: None,
             max_total_tokens: None,
@@ -1818,7 +1781,7 @@ mod tests {
             abort: false,
             watermark_entry_id: None,
             stream_request_id: None,
-            options: options_with(None, None),
+            options: options_with(None),
             calls: Default::default(),
             parent: None,
             display_parent_session_id: None,
@@ -1879,7 +1842,7 @@ mod tests {
         let mut terminal = terminal_record_with_skill_state(2, true);
         terminal.options.skill_context = None;
         terminal.options.skills_prompt = Some("authoritative legacy body".into());
-        let mut prepared = options_with(None, None);
+        let mut prepared = options_with(None);
         prepared.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["stale".into()]),
             baseline: Some("stale baseline".into()),
@@ -1928,7 +1891,7 @@ mod tests {
 
     #[test]
     fn fresh_skill_options_keep_the_prepared_context() {
-        let mut prepared = options_with(None, None);
+        let mut prepared = options_with(None);
         prepared.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["fresh".into()]),
             baseline: Some("fresh baseline".into()),
@@ -1945,7 +1908,7 @@ mod tests {
         let mut terminal = terminal_record_with_skill_state(2, true);
         terminal.options.skill_context = None;
         terminal.options.skills_prompt = Some("legacy body".into());
-        let mut prepared = options_with(None, None);
+        let mut prepared = options_with(None);
         prepared.skill_context = Some(crate::types::turn::SkillContext {
             filter: None,
             baseline: None,
@@ -1963,7 +1926,7 @@ mod tests {
         let mut terminal = terminal_record_with_skill_state(2, true);
         terminal.options.skill_context = None;
         terminal.options.skills_prompt = Some("legacy body".into());
-        let mut prepared = options_with(None, None);
+        let mut prepared = options_with(None);
         prepared.skill_context = Some(crate::types::turn::SkillContext {
             filter: None,
             baseline: None,
@@ -1987,26 +1950,20 @@ mod tests {
     }
 
     #[test]
-    fn ask_mode_steer_inherits_the_prior_policy_clamped() {
-        let cfg = WorkerConfig::default();
+    fn steer_inherits_the_prior_policy_whole() {
         let broad = FunctionPolicy {
             allow: vec!["*".into()],
             deny: vec![],
             expose: Default::default(),
         };
 
-        // An ask-mode steer keeps the run armed and is capped at the wildcard
-        // default policy.
-        let mut options = options_with(Some(Mode::Ask), None);
-        inherit_prior_functions(&cfg, &mut options, Some(&broad));
+        // A steer with no policy of its own keeps the run armed exactly as
+        // the prior turn left it.
+        let mut options = options_with(None);
+        inherit_prior_functions(&mut options, Some(&broad));
         let compiled = policy::CompiledPolicy::from(options.functions.as_ref());
         assert!(compiled.allows("state::get"));
         assert!(compiled.allows("state::set"));
-
-        // Outside ask mode the prior policy is inherited whole.
-        let mut options = options_with(Some(Mode::Agent), None);
-        inherit_prior_functions(&cfg, &mut options, Some(&broad));
-        assert!(policy::CompiledPolicy::from(options.functions.as_ref()).allows("state::set"));
 
         // An explicit policy on the send still beats inheritance.
         let strip = FunctionPolicy {
@@ -2014,8 +1971,8 @@ mod tests {
             deny: vec![],
             expose: Default::default(),
         };
-        let mut options = options_with(Some(Mode::Ask), Some(strip));
-        inherit_prior_functions(&cfg, &mut options, Some(&broad));
+        let mut options = options_with(Some(strip));
+        inherit_prior_functions(&mut options, Some(&broad));
         assert!(!policy::CompiledPolicy::from(options.functions.as_ref()).allows("state::get"));
     }
 
@@ -2028,7 +1985,7 @@ mod tests {
         // …and inheritance copies the prior turn's RESOLVED prompt verbatim,
         // replacing the built-in prompt build_options resolved.
         let mut options = bare_options();
-        let mut prev = options_with(None, None);
+        let mut prev = options_with(None);
         prev.system_prompt = Some("frozen custom prompt".into());
         prev.skills_prompt = Some("frozen skill prompt".into());
         inherit_prior_system_prompt(&mut options, &prev);
@@ -2044,7 +2001,7 @@ mod tests {
         // A prior `disabled` turn's None inherits too — disabled stays disabled.
         let mut options = bare_options();
         assert!(options.system_prompt.is_some());
-        inherit_prior_system_prompt(&mut options, &options_with(None, None));
+        inherit_prior_system_prompt(&mut options, &options_with(None));
         assert_eq!(options.system_prompt, None);
     }
 
@@ -2073,7 +2030,7 @@ mod tests {
         let fresh = select_skill_context(None, None, &view).unwrap().unwrap();
         assert_eq!(fresh.filter, None);
 
-        let mut previous = options_with(None, None);
+        let mut previous = options_with(None);
         previous.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["one".into()]),
             baseline: Some("frozen".into()),
@@ -2144,12 +2101,12 @@ mod tests {
 
     #[test]
     fn post_append_race_merges_only_the_explicit_filter_into_the_active_context() {
-        let mut active = options_with(None, None);
+        let mut active = options_with(None);
         active.skill_context = Some(crate::types::turn::SkillContext {
             filter: Some(vec!["old".into()]),
             baseline: Some("active frozen baseline".into()),
         });
-        let mut requested = options_with(None, None);
+        let mut requested = options_with(None);
         requested.skill_context = Some(crate::types::turn::SkillContext {
             filter: None,
             baseline: Some("stale request baseline".into()),
@@ -2166,17 +2123,16 @@ mod tests {
     }
 
     #[test]
-    fn build_options_clamps_functions_to_the_default_policy_in_ask_mode() {
+    fn build_options_passes_functions_through_unclamped() {
         let cfg = WorkerConfig::default();
         let req = SendRequest {
             session_id: None,
             message: MessageInput::Text("hi".into()),
             model: Some("m".into()),
-            provider: Some("anthropic".into()),
+            provider: None,
             idempotency_key: None,
             session: None,
             options: Some(SendOptions {
-                mode: Some(Mode::Ask),
                 functions: Some(FunctionPolicy {
                     allow: vec!["*".into()],
                     deny: vec![],
@@ -2185,52 +2141,12 @@ mod tests {
                 ..Default::default()
             }),
         };
-        let opts = build_options(
-            &cfg,
-            &req,
-            "m".into(),
-            req.provider.clone(),
-            None,
-            crate::prompt::DEFAULT,
-        );
+        let opts = build_options(&cfg, &req, "m".into(), None, None, crate::prompt::DEFAULT);
         let compiled = policy::CompiledPolicy::from(opts.functions.as_ref());
-        // The wildcard default preserves the requested policy…
         assert!(compiled.allows("state::get"));
-        assert!(compiled.allows("engine::functions::list"));
         assert!(compiled.allows("state::set"));
         assert!(compiled.allows("harness::spawn"));
-        assert!(compiled.allows("engine::register_trigger"));
         assert!(compiled.allows("shell::run"));
-    }
-
-    #[test]
-    fn build_options_leaves_functions_unclamped_outside_ask_mode() {
-        let cfg = WorkerConfig::default();
-        for mode in [Some(Mode::Agent), None] {
-            let req = SendRequest {
-                session_id: None,
-                message: MessageInput::Text("hi".into()),
-                model: Some("m".into()),
-                provider: None,
-                idempotency_key: None,
-                session: None,
-                options: Some(SendOptions {
-                    mode,
-                    functions: Some(FunctionPolicy {
-                        allow: vec!["*".into()],
-                        deny: vec![],
-                        expose: Default::default(),
-                    }),
-                    ..Default::default()
-                }),
-            };
-            let opts = build_options(&cfg, &req, "m".into(), None, None, crate::prompt::DEFAULT);
-            let compiled = policy::CompiledPolicy::from(opts.functions.as_ref());
-            assert!(
-                compiled.allows("state::set"),
-                "mode {mode:?} must not clamp"
-            );
-        }
     }
 
     #[test]
@@ -2469,8 +2385,8 @@ mod tests {
         }
     }
 
-    /// The profile prompt IS the identity: no built-in prompt underneath,
-    /// and the mode paragraph is the only layer the harness adds in front.
+    /// The profile prompt IS the identity: no built-in prompt underneath and
+    /// nothing added in front.
     #[test]
     fn build_options_applies_agent_prompt_as_the_identity() {
         let cfg = WorkerConfig::default();
@@ -2494,25 +2410,12 @@ mod tests {
             "override, not enrich"
         );
         assert_eq!(opts.agent, Some(agent.identity.clone()));
-
-        let req = agent_send_request(SendOptions {
-            agent: Some("tech-leader".into()),
-            mode: Some(Mode::Agent),
-            ..Default::default()
-        });
-        let opts = build_options(
-            &cfg,
-            &req,
-            "m".into(),
-            None,
-            Some(&agent),
-            crate::prompt::DEFAULT,
-        );
-        let prompt = opts.system_prompt.expect("agent prompt");
-        assert!(prompt.starts_with("You are operating in agent mode"));
-        assert!(prompt.ends_with(&format!("\n\n{}", agent.prompt)));
         assert!(
-            !prompt.contains("# System rules"),
+            !opts
+                .system_prompt
+                .as_deref()
+                .unwrap_or_default()
+                .contains("# System rules"),
             "the built-in identity never rides under a profile"
         );
     }
@@ -2583,7 +2486,6 @@ mod tests {
             crate::prompt::DEFAULT,
         );
         inherit_prior_functions(
-            &cfg,
             &mut opts,
             None.or_else(|| Some(&agent).and(cfg.default_functions.as_ref())),
         );
@@ -2609,45 +2511,12 @@ mod tests {
             crate::prompt::DEFAULT,
         );
         inherit_prior_functions(
-            &cfg,
             &mut opts,
             None.or_else(|| Some(&agent).and(cfg.default_functions.as_ref())),
         );
         let compiled = policy::CompiledPolicy::from(opts.functions.as_ref());
         assert!(compiled.allows("state::get"));
         assert!(!compiled.allows("harness::spawn"));
-        // Ask mode still clamps: the shipped wildcard baseline is identity, so
-        // the agent default survives — same as an explicit `allow:["*"]` ask
-        // send. A narrowed operator baseline stays authoritative.
-        let narrow_cfg = WorkerConfig {
-            default_functions: Some(FunctionPolicy {
-                allow: vec!["state::get".into()],
-                deny: vec![],
-                expose: Default::default(),
-            }),
-            ..Default::default()
-        };
-        let req = agent_send_request(SendOptions {
-            agent: Some("tech-leader".into()),
-            mode: Some(Mode::Ask),
-            ..Default::default()
-        });
-        let mut opts = build_options(
-            &narrow_cfg,
-            &req,
-            "m".into(),
-            None,
-            Some(&agent),
-            crate::prompt::DEFAULT,
-        );
-        inherit_prior_functions(
-            &narrow_cfg,
-            &mut opts,
-            None.or_else(|| Some(&agent).and(narrow_cfg.default_functions.as_ref())),
-        );
-        let compiled = policy::CompiledPolicy::from(opts.functions.as_ref());
-        assert!(compiled.allows("state::get"));
-        assert!(!compiled.allows("harness::spawn"), "ask cap holds");
     }
 
     #[test]

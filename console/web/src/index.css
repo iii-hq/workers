@@ -91,6 +91,13 @@
      Desaturated to sit with alert/warn; 5.3:1 on cream at 12px (AA). */
   --color-ok: #356f3d;
   --color-ok-muted: rgba(53, 111, 61, 0.12);
+  /* Session scope (working directory) — the folder mark in the chat
+     timeline's activity-kind trail, beside ƒ (accent), trigger (warn) and
+     registration (ok). Tailwind sky-500, identical in both themes so the
+     folder reads the same wherever the marker appears. Single use: never a
+     fill, a border, or body text. */
+  --color-workdir: #0ea5e9;
+  --color-workdir-muted: rgba(14, 165, 233, 0.12);
 
   --color-ring: color-mix(in oklab, var(--foreground) 5%, transparent);
 
@@ -117,6 +124,20 @@
      there the shadow is the only depth cue, so it carries more weight. */
   --shadow-raised: 0 1px 2px #1410081a, 0 4px 12px #1410081a;
   --shadow-floating: 0 2px 4px #1410081a, 0 10px 24px #1410081a;
+  /* `lift` is the crisp-edged instrument surface (the chat composer): a lit
+     inset top edge, an inset hairline ring, a 1px outer edge, and two tight
+     drops. The ingredients are theme tokens so the composed value below
+     stays a single source; the dark block only re-tints them. */
+  --iii-ui-lift-highlight: rgba(255, 255, 255, 0.7);
+  --iii-ui-lift-ring: rgba(20, 16, 8, 0.04);
+  --iii-ui-lift-edge: rgba(20, 16, 8, 0.1);
+  --iii-ui-lift-drop: rgba(20, 16, 8, 0.08);
+  --shadow-lift:
+    inset 0 1px 0 0 var(--iii-ui-lift-highlight),
+    inset 0 0 0 1px var(--iii-ui-lift-ring),
+    0 0 0 1px var(--iii-ui-lift-edge),
+    0 1px 1px -0.5px var(--iii-ui-lift-drop),
+    0 3px 3px -1.5px var(--iii-ui-lift-drop);
 
   /* ── Motion ─────────────────────────────────────────────────────────── */
   --motion-duration-instant: 0ms;
@@ -146,6 +167,11 @@
   --scale-tiny: 0.99;
   --blur-small: 2px;
   --blur-medium: 3px;
+  /* transitions.dev #04 text states swap — read by `.t-text-swap`. */
+  --text-swap-dur: var(--duration-quick);
+  --text-swap-translate-y: var(--distance-micro);
+  --text-swap-blur: var(--blur-small);
+  --text-swap-ease: var(--ease-in-out);
 
   --spacing-gutter: 24px;
   --spacing-section-x: 36px;
@@ -168,6 +194,11 @@
     0 1px 0 rgba(255, 255, 255, 0.025) inset, 0 8px 24px rgba(0, 0, 0, 0.18);
   --shadow-floating:
     0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 12px 32px rgba(0, 0, 0, 0.28);
+  /* Lift on near-black: a faint white rim and heavier drops. */
+  --iii-ui-lift-highlight: rgba(255, 255, 255, 0.05);
+  --iii-ui-lift-ring: rgba(255, 255, 255, 0.02);
+  --iii-ui-lift-edge: rgba(0, 0, 0, 0.12);
+  --iii-ui-lift-drop: rgba(0, 0, 0, 0.18);
   --color-bg: #0a0a0a;
   --color-sidebar: #0e0e0e;
   --color-panel: #111111;
@@ -202,6 +233,8 @@
   --color-warn-muted: rgba(245, 165, 36, 0.12);
   --color-ok: #36c98f;
   --color-ok-muted: rgba(54, 201, 143, 0.12);
+  --color-workdir: #0ea5e9;
+  --color-workdir-muted: rgba(14, 165, 233, 0.14);
 }
 
 @layer base {
@@ -801,6 +834,64 @@
   line-height: 1.7;
   color: var(--color-ink-ghost);
   user-select: none;
+}
+
+/* The project trigger reads as a strip tucked behind the composer card. On
+   mobile the blurred composer is a one-line field, like a text input: the
+   toolbar folds away with the extra lines, and focusing it grows the
+   writing surface (and its buttons) back. */
+@media (max-width: 639px) {
+  /* Blurred: exactly one line (top padding + line-height), no bottom
+     padding, so the next line never peeks in. The measured content height
+     stays in the inline custom property, so focus animates straight back
+     to it; the measuring pass keeps `height: auto`. */
+  .composer-shell:not(:focus-within) .composer-editor {
+    min-height: 36px;
+    padding-bottom: 0;
+    overflow-y: hidden;
+  }
+
+  .composer-shell:not(:focus-within)
+    .composer-editor[data-composer-height-ready]:not(
+      [data-composer-height-measuring]
+    ) {
+    height: 36px;
+  }
+
+  .composer-editor[data-composer-height-ready] {
+    transition-property: height, min-height, padding-bottom;
+  }
+
+  /* Blurred: no toolbar, and the slot takes over the editor's bottom
+     padding so the single line sits centred in the card. */
+  .composer-shell:not(:focus-within):not([data-composer-streaming])
+  .composer-mobile-toolbar {
+    display: none;
+  }
+
+  .composer-shell:not(:focus-within):not([data-composer-streaming])
+    .composer-editor-slot {
+    padding-bottom: 12px;
+  }
+
+  /* While a turn runs the send/stop button is the only way to stop it on
+     a phone, so it alone survives the blur, parked at the card's edge. */
+  .composer-shell:not(:focus-within)[data-composer-streaming]
+  .composer-mobile-toolbar {
+    justify-content: flex-end;
+  }
+
+  .composer-shell:not(:focus-within)[data-composer-streaming]
+    .composer-mobile-toolbar
+    > :not(.composer-action) {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-editor[data-composer-height-ready] {
+    transition: none;
+  }
 }
 
 @media (min-width: 640px) {

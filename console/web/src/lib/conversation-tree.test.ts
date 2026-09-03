@@ -11,7 +11,6 @@ function conv(id: string, parentId?: string, at = clock++): Conversation {
     id,
     title: id,
     model: null,
-    mode: 'agent',
     messages: [],
     parentId,
     createdAt: at,

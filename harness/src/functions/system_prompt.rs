@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::deps::Deps;
 use crate::error::HarnessError;
-use crate::prompt::{self, Mode, SystemPromptOpts, SystemPromptStrategy};
+use crate::prompt::{self, SystemPromptStrategy};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SelectedSystemPrompt {
@@ -22,8 +22,6 @@ pub struct SystemPromptRequest {
     /// registry, or hook layers.
     #[serde(default)]
     pub default_only: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode: Option<Mode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_prompt: Option<SelectedSystemPrompt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -62,9 +60,6 @@ pub async fn handle(
     }
     let cfg = deps.cfg().await;
     let record = crate::state::get_turn(&deps.iii, &req.session_id, cfg.session_timeout_ms).await?;
-    let mode = req
-        .mode
-        .or_else(|| record.as_ref().and_then(|r| r.options.mode));
     // With no caller-supplied selection, the turn record's RESOLVED prompt is
     // the session's truth: it is what the last turn ran under and — prompt
     // fields omitted — what the next send inherits. A `None` there (a
@@ -78,13 +73,7 @@ pub async fn handle(
         Some(prompt) => ("session (frozen at send)".to_string(), prompt),
         None => {
             let (name, identity) = default_identity(deps).await;
-            (
-                name,
-                Some(prompt::build_system_prompt(SystemPromptOpts {
-                    mode,
-                    identity: &identity,
-                })),
-            )
+            (name, Some(identity))
         }
     };
 

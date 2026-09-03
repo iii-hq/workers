@@ -36,6 +36,10 @@ pub enum HarnessError {
     #[error("harness/state: {0}")]
     State(String),
 
+    /// The harness-owned project catalog could not be read or written.
+    #[error("harness/project_store: {0}")]
+    ProjectStore(String),
+
     /// An unexpected internal failure inside a loop step.
     #[error("harness/internal: {0}")]
     Internal(String),
@@ -52,6 +56,7 @@ impl HarnessError {
             HarnessError::Dependency(_) => "harness/dependency",
             HarnessError::ContextOverflow(_) => "harness/context_overflow",
             HarnessError::State(_) => "harness/state",
+            HarnessError::ProjectStore(_) => "harness/project_store",
             HarnessError::Internal(_) => "harness/internal",
         }
     }
@@ -77,6 +82,7 @@ mod tests {
             HarnessError::Dependency("m".into()),
             HarnessError::ContextOverflow("m".into()),
             HarnessError::State("m".into()),
+            HarnessError::ProjectStore("m".into()),
             HarnessError::Internal("m".into()),
         ];
         for v in variants {

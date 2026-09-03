@@ -612,6 +612,50 @@ export const engineRegisterTriggerRunning = base(
   { running: true },
 )
 
+/** A guarded call binding: long scope id, gating condition, call target with
+ * payload, and a bounded lifecycle — exercises every block of the details view. */
+export const engineRegisterTriggerCallGuarded = base(
+  'engine-register-trigger-call-guarded',
+  'engine::register_trigger',
+  {
+    trigger_type: 'state',
+    config: {
+      key: 'ready/agent1',
+      scope: 'code-review-console-7a7a991e-2394-4636-ac45-59964ebc57bc-k4m8',
+    },
+    label: 'Watching for Agent 1 readiness',
+    target: {
+      function_id: 'harness::send',
+      event_into: 'event',
+      payload: { session_id: 'sess_01', text: 'Agent 1 is ready' },
+    },
+    conditions: [
+      {
+        function_id: 'state::equals',
+        config: { path: 'status', value: 'ready', strict: true },
+      },
+    ],
+    lifecycle: { once: true, max_fires: 1, expires_in_ms: 7_200_000 },
+    metadata: { action: 'Agent 1 reported ready', source: 'orchestrator' },
+  },
+  wrapHarness({
+    once: true,
+    subscription_id: 'sub_c8d6d6d6d77b429d85a01dd633106138',
+  }),
+)
+
+/** Settled without an id: the engine answered but no binding was created. */
+export const engineRegisterTriggerFailed = base(
+  'engine-register-trigger-failed',
+  'engine::register_trigger',
+  {
+    trigger_type: 'state',
+    config: { key: 'progress', scope: 'research' },
+    label: 'research-progress-watch',
+  },
+  { registered: false, reason: 'trigger type is not available in this scope' },
+)
+
 export const engineFixtures = [
   engineFunctionsListDone,
   engineFunctionsListRaw,
@@ -635,6 +679,8 @@ export const engineFixtures = [
   engineRegisterTriggerCron,
   engineRegisterTriggerSubscribe,
   engineRegisterTriggerRunning,
+  engineRegisterTriggerCallGuarded,
+  engineRegisterTriggerFailed,
   engineRunning,
   engineFunctionsListGateError,
 ] as const

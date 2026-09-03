@@ -20,7 +20,7 @@ later — the interface is the thing that matters.`
 
 export const happyAsk = makeBackend(
   'happy-ask',
-  async function* (_prompt, _mode, _model, opts) {
+  async function* (_prompt, _model, opts) {
     yield* streamAssistant(BODY, { signal: opts?.signal })
   },
 )

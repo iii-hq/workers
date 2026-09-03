@@ -34,7 +34,7 @@ const createS102Error = {
  */
 export const sandboxLifecycle = makeBackend(
   'sandbox-lifecycle',
-  async function* (_prompt, _mode, _model, opts) {
+  async function* (_prompt, _model, opts) {
     const signal = opts?.signal
     yield* streamThought(
       'booting a microVM, writing the script in, running it, then tearing the sandbox down…',

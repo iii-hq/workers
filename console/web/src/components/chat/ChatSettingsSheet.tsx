@@ -1,4 +1,4 @@
-import { Bot, Brain, Folder, ShieldCheck, Sparkles } from 'lucide-react'
+import { Brain, Folder, ShieldCheck, Sparkles } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import { FullModeConfirmContent } from '@/components/permissions/FullModeConfirmDialog'
 import { PermissionModePickerPanel } from '@/components/permissions/PermissionModePicker'
@@ -11,11 +11,11 @@ import {
 } from '@/components/ui/SheetNavigation'
 import type { PermissionMode } from '@/lib/backend/approval-settings'
 import { useUnsavedGuard } from '@/pages/Configuration/tabs/WorkersTab/useUnsavedGuard'
-import type { Mode, ModelId, ModelOption, ThinkingLevel } from '@/types/chat'
+import type { ModelId, ModelOption, ThinkingLevel } from '@/types/chat'
+import { AddProviderPanel } from './AddProviderPanel'
 import { BankPickerPanel } from './BankPicker'
 import { DirectoryPicker, type WorktreePickerOptions } from './DirectoryPicker'
-import { ModelPickerPanel, ReasoningEffortPanel } from './ModelPicker'
-import { ModePickerPanel } from './ModePicker'
+import { ModelPickerPanel } from './ModelPicker'
 import {
   formatProviderLabel,
   getModelPresentation,
@@ -25,9 +25,8 @@ import { ProviderConfigurationPanel } from './ProviderConfigurationPanel'
 type ChatSettingsPage =
   | 'settings'
   | 'model'
-  | 'reasoning'
   | 'provider-config'
-  | 'mode'
+  | 'add-provider'
   | 'permissions'
   | 'full-permissions'
   | 'memory'
@@ -36,7 +35,6 @@ type ChatSettingsPage =
 interface ChatSettingsSheetProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  mode: Mode
   model: ModelId | null
   modelOptions: ModelOption[]
   catalogLoading?: boolean
@@ -55,7 +53,6 @@ interface ChatSettingsSheetProps {
   disabled?: boolean
   /** Disable only model/reasoning while leaving other chat settings usable. */
   modelDisabled?: boolean
-  onModeChange: (next: Mode) => void
   onModelChange: (next: ModelId) => void
   onMemoryBankChange?: (next: string | null) => void
   onWorkingDirChange?: (next: string) => void
@@ -102,7 +99,6 @@ function directoryName(path: string | null | undefined): string {
 export function ChatSettingsSheet({
   open,
   onOpenChange,
-  mode,
   model,
   modelOptions,
   catalogLoading,
@@ -120,7 +116,6 @@ export function ChatSettingsSheet({
   worktreePicker,
   disabled,
   modelDisabled,
-  onModeChange,
   onModelChange,
   onMemoryBankChange,
   onWorkingDirChange,
@@ -133,7 +128,10 @@ export function ChatSettingsSheet({
   >(null)
   const configurationGuard = useUnsavedGuard()
   const modelPresentation = getModelPresentation(model, modelOptions)
-  const selectedModel = modelOptions.find((option) => option.id === model)
+  const openProviderConfiguration = (providerId: string) => {
+    setConfigurationProvider(providerId)
+    navigation.push('provider-config')
+  }
 
   function handleOpenChange(next: boolean) {
     if (next) {
@@ -172,33 +170,28 @@ export function ChatSettingsSheet({
               />
             </SettingsSection>
 
-            <SettingsSection id="chat-settings-behavior" label="Behavior">
-              <SheetMenuRow
-                label="Mode"
-                value={<span className="capitalize">{mode}</span>}
-                icon={<Bot className="size-[18px]" aria-hidden />}
-                disabled={disabled}
-                onClick={() => navigation.push('mode')}
-              />
-              {showPermissionMode ? (
-                <SheetMenuRow
-                  label="Permissions"
-                  value={<span className="capitalize">{permissionMode}</span>}
-                  icon={<ShieldCheck className="size-[18px]" aria-hidden />}
-                  disabled={disabled || permissionModeLoading}
-                  onClick={() => navigation.push('permissions')}
-                />
-              ) : null}
-              {showMemoryBank && onMemoryBankChange ? (
-                <SheetMenuRow
-                  label="Memory"
-                  value={memoryBank ?? 'Auto'}
-                  icon={<Brain className="size-[18px]" aria-hidden />}
-                  disabled={disabled}
-                  onClick={() => navigation.push('memory')}
-                />
-              ) : null}
-            </SettingsSection>
+            {showPermissionMode || (showMemoryBank && onMemoryBankChange) ? (
+              <SettingsSection id="chat-settings-behavior" label="Behavior">
+                {showPermissionMode ? (
+                  <SheetMenuRow
+                    label="Permissions"
+                    value={<span className="capitalize">{permissionMode}</span>}
+                    icon={<ShieldCheck className="size-[18px]" aria-hidden />}
+                    disabled={disabled || permissionModeLoading}
+                    onClick={() => navigation.push('permissions')}
+                  />
+                ) : null}
+                {showMemoryBank && onMemoryBankChange ? (
+                  <SheetMenuRow
+                    label="Memory"
+                    value={memoryBank ?? 'Auto'}
+                    icon={<Brain className="size-[18px]" aria-hidden />}
+                    disabled={disabled}
+                    onClick={() => navigation.push('memory')}
+                  />
+                ) : null}
+              </SettingsSection>
+            ) : null}
 
             {showWorkingDir && onWorkingDirChange ? (
               <SettingsSection
@@ -231,33 +224,25 @@ export function ChatSettingsSheet({
               thinkingLevel={thinkingLevel}
               onChange={onModelChange}
               onThinkingLevelChange={onThinkingLevelChange}
-              onConfigureProvider={(providerId) => {
-                setConfigurationProvider(providerId)
-                navigation.push('provider-config')
-              }}
-              onOpenReasoning={() => navigation.push('reasoning')}
+              onConfigureProvider={openProviderConfiguration}
+              onAddProvider={() => navigation.push('add-provider')}
               disabled={disabled || modelDisabled}
               loading={catalogLoading}
             />
           </SheetPage>
         ) : null}
 
-        {navigation.page === 'reasoning' ? (
+        {navigation.page === 'add-provider' ? (
           <SheetPage
-            title="Reasoning effort"
-            description="Choose how much reasoning this model should use."
+            title="Add a provider"
+            description="Provider workers from the workers registry."
             onBack={navigation.back}
             backLabel="Back to models"
-            contentClassName="px-4 pb-4"
+            contentClassName="flex overflow-hidden"
           >
-            <ReasoningEffortPanel
-              model={selectedModel}
-              value={thinkingLevel}
-              onChange={(next) => {
-                onThinkingLevelChange(next)
-                navigation.back()
-              }}
+            <AddProviderPanel
               disabled={disabled || modelDisabled}
+              onConfigureProvider={openProviderConfiguration}
             />
           </SheetPage>
         ) : null}
@@ -281,25 +266,6 @@ export function ChatSettingsSheet({
             <ProviderConfigurationPanel
               providerId={configurationProvider}
               onDirtyChange={configurationGuard.setDirty}
-            />
-          </SheetPage>
-        ) : null}
-
-        {navigation.page === 'mode' ? (
-          <SheetPage
-            title="Mode"
-            description="Choose how the assistant handles your message."
-            onBack={navigation.back}
-            backLabel="Back to chat settings"
-            contentClassName="px-4 pb-4"
-          >
-            <ModePickerPanel
-              value={mode}
-              disabled={disabled}
-              onChange={(next) => {
-                onModeChange(next)
-                navigation.back()
-              }}
             />
           </SheetPage>
         ) : null}

@@ -22,7 +22,7 @@ ready for the next instruction.`
 
 export const happyAgent = makeBackend(
   'happy-agent',
-  async function* (prompt, _mode, _model, opts) {
+  async function* (prompt, _model, opts) {
     const signal = opts?.signal
     const text = prompt.replace(/\s+/g, ' ').trim().slice(0, 200) || '(empty)'
     yield* streamThought(THOUGHT, { signal })

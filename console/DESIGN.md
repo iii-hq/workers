@@ -782,12 +782,19 @@ backgrounds. Status is expressed through **text color + a small icon/dot on
 a muted tinted fill**, never a full-saturation background and never a
 stripe or outline.
 
-| Token    | Use                                       |
-| -------- | ----------------------------------------- |
-| `accent` | live / running / focused / primary action |
-| `ok`     | success, completed calls, diff additions  |
-| `alert`  | error states (traces, status panels)      |
-| `warn`   | warning states, pending approval          |
+| Token     | Use                                                            |
+| --------- | -------------------------------------------------------------- |
+| `accent`  | live / running / focused / primary action                      |
+| `ok`      | success, completed calls, diff additions                       |
+| `alert`   | error states (traces, status panels)                           |
+| `warn`    | warning states, pending approval                               |
+| `workdir` | the session-scope (working directory) mark in the chat timeline |
+
+`workdir` (Tailwind sky-500, the same value in both themes) has exactly one
+job: the folder glyph in the chat activity trail, beside ƒ (`accent`), the
+trigger bolt (`warn`) and the registration tower (`ok`). Its `-muted` fill
+tints the glyph tile in the expanded row. Never a border, a body text color,
+or a selection state.
 
 ### Dark theme
 
@@ -1390,6 +1397,32 @@ export function StatusPanel({
   )
 }
 ```
+
+### Chat system notices (`SystemNotice`)
+
+Every `role: 'system'` transcript entry that is not a compaction marker or a
+trigger fire renders through `components/chat/SystemNotice.tsx`, in one of
+three presentations chosen by `kind`:
+
+- **One-line notice** (`kind: 'notice'` or unset): the `StatusPanel` recipe —
+  a `w-fit` row on the tone's muted fill (`surface` / `warn-muted` /
+  `alert-muted`), a 16 px Lucide glyph (`Info` / `TriangleAlert` /
+  `CircleAlert`), a sans headline and an `ink-faint` detail. The console
+  authors these as `headline — detail`; the row splits at the dash and raises
+  only a plain leading word (`/compact`, `max_turns`, paths stay as authored).
+- **Turn failure** (`kind: 'turn-failure'`): a `Card` whose header leads with
+  WHO has to act — a `Chip` (`warning` "Needs your attention", neutral "Can
+  happen · retry", `danger` "iii error") next to a category title — then the
+  harness summary, one plain sentence of ownership, a "What you can do" list
+  on `CardHighlight`, and a collapsed "Technical details" footer with a copy
+  affordance. Classification lives in `lib/turn-failure.ts`; transient
+  failures tint `warn`, everything someone must fix tints `alert`.
+- **Working directory** (`kind: 'working-dir'`): the activity-row grammar
+  shared with function calls and trigger fires — status icon, kind trail
+  (folder in `workdir`), one truncating line, hover disclosure — expanding to
+  the before/after paths on `CardHighlight`.
+
+No presentation draws a stripe, an outline, or uses CSS case transforms.
 
 ### `CodeBlock`
 

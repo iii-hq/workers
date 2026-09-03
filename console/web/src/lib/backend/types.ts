@@ -1,4 +1,4 @@
-import type { Mode, ModelId } from '@/types/chat'
+import type { ModelId } from '@/types/chat'
 import type { HarnessImageBlock } from './harness-send'
 import type { SessionTriggerInfo } from './triggers'
 
@@ -255,7 +255,6 @@ export interface ChatBackend {
   readonly id: string
   stream(
     prompt: string,
-    mode: Mode,
     model: ModelId,
     opts?: ChatStreamOptions,
   ): AsyncGenerator<StreamEvent>
@@ -290,7 +289,6 @@ export interface ChatBackend {
    */
   queueMessage?(
     prompt: string,
-    mode: Mode,
     model: ModelId,
     opts?: ChatStreamOptions,
   ): Promise<void>

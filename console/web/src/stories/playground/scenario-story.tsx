@@ -5,8 +5,8 @@ import { findScenario } from './scenarios'
 /**
  * Build a Storybook story from a registered playground scenario. Each story
  * renders the live `PlaygroundHarness` (ChatView + event log) over the
- * scenario's `ChatBackend`, preserving its preferred mode — the closest
- * parity with the old `#/playground` picker, now driven by the sidebar.
+ * scenario's `ChatBackend` — the closest parity with the old `#/playground`
+ * picker, now driven by the sidebar.
  */
 export function scenarioStory(id: string): StoryObj {
   const scenario = findScenario(id)
@@ -14,11 +14,7 @@ export function scenarioStory(id: string): StoryObj {
   return {
     name: scenario.label,
     render: () => (
-      <PlaygroundHarness
-        backend={scenario.backend}
-        label={scenario.label}
-        preferredMode={scenario.preferredMode}
-      />
+      <PlaygroundHarness backend={scenario.backend} label={scenario.label} />
     ),
   }
 }

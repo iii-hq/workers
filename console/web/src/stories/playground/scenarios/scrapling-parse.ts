@@ -12,7 +12,7 @@ import {
 
 export const scraplingParse = makeBackend(
   'scrapling-parse',
-  async function* (_prompt, _mode, _model, opts) {
+  async function* (_prompt, _model, opts) {
     const signal = opts?.signal
     yield* streamThought(
       'parsing the page: locate the heading, describe it, then render Markdown…',

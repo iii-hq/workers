@@ -90,8 +90,7 @@ impl From<crate::clients::context::ByRoleTokens> for SnapshotMessagesV1 {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SnapshotCategoriesV1 {
     /// Final assembled system prompt excluding tokens attributed to `skills`:
-    /// mode paragraph, identity, per-step aids, and any compaction summary
-    /// section.
+    /// identity, per-step aids, and any compaction summary section.
     pub system_prompt: u64,
     /// Selected skill bodies contained in the system prompt.
     #[serde(default)]

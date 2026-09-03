@@ -11,9 +11,9 @@
  * - "new chat" is a LOCAL DRAFT (`draft: true`, id `console-<uuid>`); the
  *   session is materialised by `ensureSession` on the first send so empty
  *   chats never litter the store.
- * - rename / model / thinking / mode / skills changes write through
+ * - rename / model / thinking / skills changes write through
  *   `session::set-meta`. The console owns the metadata convention
- *   `{ surface, model, thinking_level, mode, skills, title_manual }`;
+ *   `{ surface, model, thinking_level, skills, title_manual }`;
  *   metadata replaces WHOLESALE, so the full object is always sent.
  * - delete writes through `session::delete`; the sidebar prunes on the
  *   `session::deleted` event (and optimistically).
@@ -32,6 +32,7 @@ import {
   type SystemPromptAddon,
   type SystemPromptState,
 } from '@/components/chat/system-prompt-selection'
+import { upsertHarnessProject } from '@/lib/backend/projects'
 import { requestComposerFocus } from '@/lib/composer-insert'
 import { getIiiClient, type IIIConnectionState } from '@/lib/iii-client'
 import { newSessionId } from '@/lib/session-id'
@@ -66,18 +67,15 @@ import {
   saveActiveId,
   saveLastModel,
   saveLastThinkingLevel,
-  saveRecentProject,
 } from '@/lib/storage'
 import { releaseConsoleClaimIfAny } from '@/lib/worktree-claims'
 import {
   type AgentProfileSnapshot,
   type Conversation,
   type ConversationMetadataEdits,
-  DEFAULT_MODE,
   DEFAULT_THINKING_LEVEL,
   type Message,
   type MessagePatch,
-  type Mode,
   type ModelId,
   type SubagentAppearance,
   type SubagentColor,
@@ -114,7 +112,6 @@ function emptyConversation(
     title: 'new chat',
     model: defaultModel,
     thinkingLevel: defaultThinkingLevel,
-    mode: DEFAULT_MODE,
     // Drafts start with no working dir; ChatView pre-fills the stack's
     // default folder (harness::filesystem::info, validated against the live
     // shell) once known — always visible in the picker chip. What stays
@@ -139,10 +136,6 @@ export function isUntouchedDraft(conversation: Conversation): boolean {
     conversation.messages.length === 0 &&
     (conversation.draftText ?? '') === ''
   )
-}
-
-function isMode(v: unknown): v is Mode {
-  return v === 'ask' || v === 'agent'
 }
 
 const SUBAGENT_ICON_VALUES = new Set<SubagentIcon>([
@@ -429,7 +422,6 @@ export function metadataFor(
     Conversation,
     | 'model'
     | 'thinkingLevel'
-    | 'mode'
     | 'titleManual'
     | 'workingDir'
     | 'memoryBank'
@@ -460,7 +452,8 @@ export function metadataFor(
     surface: _surface,
     model: _model,
     thinking_level: _thinkingLevel,
-    mode: _mode,
+    // `mode` (ask | agent) is gone; drop it from sessions written before.
+    mode: _legacyMode,
     title_manual: _titleManual,
     fs_scope: _fsScope,
     memory_bank: _memoryBank,
@@ -476,7 +469,6 @@ export function metadataFor(
     ...(c.thinkingLevel && c.thinkingLevel !== DEFAULT_THINKING_LEVEL
       ? { thinking_level: c.thinkingLevel }
       : {}),
-    mode: c.mode,
     ...(c.titleManual ? { title_manual: true } : {}),
     ...(c.workingDir ? { fs_scope: { root: c.workingDir } } : {}),
     ...(c.memoryBank ? { memory_bank: c.memoryBank } : {}),
@@ -490,7 +482,6 @@ const CONSOLE_METADATA_KEYS = [
   'surface',
   'model',
   'thinking_level',
-  'mode',
   'title_manual',
   'fs_scope',
   'memory_bank',
@@ -586,7 +577,6 @@ function conversationFromMeta(
       typeof md.thinking_level === 'string' && md.thinking_level.length > 0
         ? md.thinking_level
         : (agentProfile?.reasoningEffort ?? DEFAULT_THINKING_LEVEL),
-    mode: isMode(md.mode) ? md.mode : DEFAULT_MODE,
     workingDir:
       typeof md.fs_scope === 'object' &&
       md.fs_scope !== null &&
@@ -662,7 +652,6 @@ export function applyConversationMetadataEvent(
       typeof md.thinking_level === 'string' && md.thinking_level.length > 0
         ? md.thinking_level
         : (agentProfile?.reasoningEffort ?? DEFAULT_THINKING_LEVEL),
-    mode: isMode(md.mode) ? md.mode : conversation.mode,
     memoryBank:
       typeof md.memory_bank === 'string' && md.memory_bank.length > 0
         ? md.memory_bank
@@ -844,7 +833,6 @@ export function mergeConversationMeta(
       titleManual: existing.titleManual,
       model: existing.model,
       thinkingLevel: existing.thinkingLevel,
-      mode: existing.mode,
       workingDir: existing.workingDir,
       memoryBank: existing.memoryBank,
       systemPrompt: existing.systemPrompt,
@@ -990,7 +978,6 @@ export interface ConversationsApi {
     agentProfile: AgentProfileSnapshot | undefined,
   ) => void
   setSkills: (id: string, skills: string[] | undefined) => void
-  setMode: (id: string, mode: Mode) => void
   /** Per-session working directory; null clears a scope that is no longer usable. */
   setWorkingDir: (id: string, dir: string | null) => void
   /**
@@ -1509,7 +1496,6 @@ export function useConversations(
               id: event.session_id,
               title: event.title || event.session_id,
               model: null,
-              mode: DEFAULT_MODE,
               messages: [],
               status: event.status,
               serverMetaUpdatedAt: event.created_at,
@@ -2145,15 +2131,6 @@ export function useConversations(
     [patchConversation, conversations, writeMeta],
   )
 
-  const setMode = useCallback(
-    (id: string, mode: Mode) => {
-      patchConversation(id, (c) => applyConversationMetadataPatch(c, { mode }))
-      const conv = conversations.find((c) => c.id === id)
-      if (conv) writeMeta(applyConversationMetadataPatch(conv, { mode }))
-    },
-    [patchConversation, conversations, writeMeta],
-  )
-
   const setMemoryBank = useCallback(
     (id: string, memoryBank: string | null) => {
       patchConversation(id, (c) =>
@@ -2225,7 +2202,10 @@ export function useConversations(
       patchConversation(id, (c) =>
         applyConversationMetadataPatch(c, { workingDir: dir }),
       )
-      if (dir) saveRecentProject(dir)
+      // DirectoryPicker persists before selection; this also covers working
+      // directory changes initiated by extensions and other control surfaces.
+      if (dir && serverEnabled)
+        void upsertHarnessProject(dir).catch(() => undefined)
       // Moving the working directory away from a console-claimed worktree
       // releases the claim (keepPath guards the pick-this-worktree flow,
       // which records the claim before updating the dir).
@@ -2234,7 +2214,7 @@ export function useConversations(
       if (conv)
         writeMeta(applyConversationMetadataPatch(conv, { workingDir: dir }))
     },
-    [patchConversation, conversations, writeMeta],
+    [patchConversation, conversations, serverEnabled, writeMeta],
   )
 
   const prefillWorkingDir = useCallback(
@@ -2416,7 +2396,6 @@ export function useConversations(
     setSystemPrompt,
     setAgentProfile,
     setSkills,
-    setMode,
     setWorkingDir,
     prefillWorkingDir,
     appendMessage,

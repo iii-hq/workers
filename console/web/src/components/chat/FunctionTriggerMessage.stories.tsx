@@ -6,6 +6,9 @@ import { coderFixtures } from '@/stories/fixtures/coder-fixtures'
 import { directoryFixtures } from '@/stories/fixtures/directory-fixtures'
 import {
   engineFixtures,
+  engineRegisterTriggerCallGuarded,
+  engineRegisterTriggerFailed,
+  engineRegisterTriggerRunning,
   engineRegisterTriggerSubscribe,
 } from '@/stories/fixtures/engine-fixtures'
 import { fpFixtures } from '@/stories/fixtures/fp-fixtures'
@@ -278,6 +281,21 @@ export const FileChangesArtifact: Story = {
 export const TriggerRegisteredWidget: Story = {
   name: 'trigger registered widget',
   args: { message: engineRegisterTriggerSubscribe },
+}
+
+export const TriggerRegisteredDetails: Story = {
+  name: 'trigger registered details (call, conditions, lifecycle)',
+  args: { message: engineRegisterTriggerCallGuarded, defaultOpen: true },
+}
+
+export const TriggerRegistering: Story = {
+  name: 'trigger registering (running)',
+  args: { message: engineRegisterTriggerRunning, defaultOpen: true },
+}
+
+export const TriggerRegistrationFailed: Story = {
+  name: 'trigger registration failed',
+  args: { message: engineRegisterTriggerFailed, defaultOpen: true },
 }
 
 export const DoneExpanded: Story = {

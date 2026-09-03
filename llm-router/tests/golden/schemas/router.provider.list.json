@@ -28,6 +28,13 @@
           "display_name": {
             "type": "string"
           },
+          "icon_svg": {
+            "description": "The provider's mark as inline SVG, copied from its declaration. Absent when the provider declared none.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "id": {
             "type": "string"
           },

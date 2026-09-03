@@ -14,6 +14,7 @@ use crate::discovery::{FunctionsCell, FunctionsSnapshot};
 use crate::events::TurnEvents;
 use crate::hooks::HookRegistry;
 use crate::locks::{SessionLocks, TurnCancels};
+use crate::projects::ProjectStore;
 use crate::skills::{SkillsCell, SkillsSnapshot};
 
 #[derive(Clone)]
@@ -26,6 +27,9 @@ pub struct Deps {
     pub hooks: HookRegistry,
     pub locks: SessionLocks,
     pub cancels: TurnCancels,
+    /// Harness-owned JSON project catalog, serialized across concurrent
+    /// console requests while allowing its configured file path to hot-reload.
+    pub projects: ProjectStore,
     /// SDK handles for the delivery triggers this process registered; see
     /// [`crate::bindings::TriggerHandles`].
     pub trigger_handles: crate::bindings::TriggerHandles,
@@ -49,6 +53,7 @@ impl Deps {
             hooks,
             locks: SessionLocks::new(),
             cancels: TurnCancels::new(),
+            projects: ProjectStore::default(),
             trigger_handles: crate::bindings::TriggerHandles::default(),
         }
     }

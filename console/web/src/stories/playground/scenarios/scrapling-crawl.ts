@@ -8,7 +8,7 @@ import {
 
 export const scraplingCrawlScenario = makeBackend(
   'scrapling-crawl',
-  async function* (_prompt, _mode, _model, opts) {
+  async function* (_prompt, _model, opts) {
     const signal = opts?.signal
     yield* streamThought('crawling the blog, following same-domain links…', {
       signal,

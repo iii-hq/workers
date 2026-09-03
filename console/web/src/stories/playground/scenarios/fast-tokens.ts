@@ -18,7 +18,7 @@ processor honest under high token rate.
 
 export const fastTokens = makeBackend(
   'fast-tokens',
-  async function* (_prompt, _mode, _model, opts) {
+  async function* (_prompt, _model, opts) {
     yield* streamAssistant(BODY, { signal: opts?.signal, meanDelayMs: 5 })
   },
 )
