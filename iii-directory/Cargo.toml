@@ -59,7 +59,7 @@ sha2 = "0.10"
 # Intel macOS) build the BM25-only worker. `download-binaries` lets ort-sys
 # fetch that runtime at build time; ORT_LIB_PATH (scripts/provision-onnxruntime.sh)
 # overrides it for offline or cached builds. No NLI, GGUF or llama.cpp here.
-[target.'cfg(any(all(target_os = "linux", target_env = "gnu", any(target_arch = "x86_64", target_arch = "aarch64")), all(target_os = "macos", target_arch = "aarch64"), all(target_os = "windows", target_env = "msvc")))'.dependencies]
+[target.'cfg(any(all(target_os = "linux", target_env = "gnu", any(target_arch = "x86_64", target_arch = "aarch64")), all(target_os = "macos", target_arch = "aarch64"), all(target_os = "windows", target_env = "msvc", any(target_arch = "x86_64", target_arch = "aarch64"))))'.dependencies]
 fastembed = { version = "=6.0.0", default-features = false }
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "api-24", "download-binaries", "tls-rustls"] }
 
