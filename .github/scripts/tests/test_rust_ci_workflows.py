@@ -131,7 +131,6 @@ def test_actionlint_knows_the_repository_runner_pool_labels() -> None:
         "workers-ci-linux-8core",
         "workers-release-control-linux-2core",
         "workers-release-linux-8core",
-        "workers-release-macos-aws-intel",
         "workers-release-macos-12core",
         "workers-release-macos-arm-5core",
     ]
@@ -147,7 +146,6 @@ def test_runner_pool_contract_is_documented() -> None:
         "windows-latest",
         "workers-release-macos-12core",
         "workers-release-macos-arm-5core",
-        "workers-release-macos-aws-intel",
     }
     for label in labels:
         assert f"`{label}`" in runner_docs

@@ -11,7 +11,6 @@ description: Unix shell + filesystem worker — exec with denylist/timeout/outpu
 # POSIX-only: src/fs/host.rs uses std::os::unix::fs::PermissionsExt / chown /
 # OpenOptionsExt directly, so the Windows triples cannot compile.
 targets:
-  - x86_64-apple-darwin
   - aarch64-apple-darwin
   - x86_64-unknown-linux-gnu
   - x86_64-unknown-linux-musl
