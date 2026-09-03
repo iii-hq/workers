@@ -5,24 +5,16 @@ use crate::runner::Lang;
 
 #[derive(Deserialize, JsonSchema)]
 pub struct RegisterRequest {
-    /// e.g. "my-app::greet". The first registration in a namespace (the
-    /// segment before `::`) claims it; later ids must share it.
-    /// sandbox-code-runner keeps ONE persistent runtime per (namespace, lang)
-    /// — the first
-    /// registration creates it, later ones reuse it — as an implementation
-    /// detail you never see or manage.
+    /// Bus id, e.g. `my-app::greet`; the segment before the first `::` is the namespace,
+    /// which holds one persistent runtime per lang.
     pub function_id: String,
-    /// Source that DEFINES `handler(payload)` in `lang`:
-    /// `export function handler(payload) {…}` (node) or
-    /// `def handler(payload): …` (python). The runner loads the file, calls
-    /// `handler`, and JSON-serializes the return value.
+    /// Source that defines `handler(payload)` in `lang`: `export function handler(payload)
+    /// {…}` (node) or `def handler(payload): …` (python).
     pub source: String,
-    /// What engine::functions::info shows a caller — write one.
+    /// What `engine::functions::info` shows a caller — write one.
     #[serde(default)]
     pub description: Option<String>,
-    /// Which runner backs this namespace: "node" or "python". A namespace's
-    /// language is fixed by its first registration; a later id under the
-    /// same namespace but a different lang is refused.
+    /// Language of the namespace runtime this handler runs in.
     pub lang: Lang,
 }
 

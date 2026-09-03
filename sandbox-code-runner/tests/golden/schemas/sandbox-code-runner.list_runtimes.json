@@ -1,9 +1,9 @@
 {
-  "description": "List every runtime this worker currently holds: kept-run runtimes (sandbox-code-runner::run keep=true) and register_function namespace runtimes alike, newest first. Each entry carries runtime_id (treat it as a secret — it is the capability to run into or tear down that runtime), lang, the backing sandbox_id, created_at_ms (epoch milliseconds), and the bus function ids registered onto it. One-shot runs never appear: their VM is destroyed before the run's response is sent.",
+  "description": "List every runtime this worker holds (kept runs and register_function namespaces), newest first, with runtime_id, lang, sandbox_id, created_at_ms and registered function ids. One-shot runs never appear.",
   "function_id": "sandbox-code-runner::list_runtimes",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
-    "description": "`list_runtimes` takes no arguments; this empty struct publishes an accurate (empty-object) request schema.\n\nNOTE: deliberately NOT `#[serde(deny_unknown_fields)]`. The engine injects a `_caller_worker_id` field into every call's payload, so a strict no-arg struct would reject EVERY call.",
+    "description": "Takes no arguments.",
     "title": "ListRuntimesRequest",
     "type": "object"
   },

@@ -5,34 +5,21 @@ use crate::runner::Lang;
 
 #[derive(Deserialize, JsonSchema)]
 pub struct RunRequest {
-    /// Source run as a whole file by a fresh interpreter process. Variables
-    /// do NOT survive between runs; whether files and installed packages
-    /// do depends on the path below. A global `iii` is in scope — the real
-    /// iii-sdk client, lazily connected to the engine on first use:
-    /// `await iii.trigger({ function_id, payload })` in Node,
-    /// `iii.trigger({'function_id': ..., 'payload': ...})` in Python.
-    /// Functions registered with `iii.registerFunction` live only until
-    /// this process exits — use sandbox-code-runner::register_function
-    /// (callable through `iii.trigger`) for one that persists.
+    /// Source run as a file by a fresh interpreter process; variables do not survive
+    /// between runs. A global `iii` (iii-sdk client) is in scope.
+    // Functions registered through `iii.registerFunction` die with the process;
+    // persistent ones go through sandbox-code-runner::register_function.
     pub code: String,
-    /// Run in a SPECIFIC runtime, sharing its filesystem: the write and
-    /// the run land in that VM, and it is NOT stopped afterwards — you own
-    /// it. Omit this to run one-shot (see `keep`).
+    /// Run in this existing runtime (from a keep: true run), sharing its filesystem; it is
+    /// not stopped afterwards. Omit to run one-shot.
     #[serde(default)]
     pub runtime_id: Option<String>,
-    /// Required when `runtime_id` is omitted — picks the sandbox image
-    /// ("node" or "python"). On an existing runtime: omit it, or pass the
-    /// runtime's own language; languages cannot be mixed in one runtime.
+    /// Required when `runtime_id` is omitted; on an existing runtime omit it or pass the
+    /// runtime's own language.
     #[serde(default)]
     pub lang: Option<Lang>,
-    /// Only meaningful when `runtime_id` is omitted. `false` (the default):
-    /// one-shot — boot a VM, run `code`, return the result, destroy the VM.
-    /// Nothing persists: no files, no installed packages. `true`: boot a VM
-    /// and leave it running; the response's `runtime_id` addresses it for
-    /// later runs (pass it back to keep working in the same filesystem) and
-    /// is the capability `sandbox-code-runner::teardown` needs to stop it.
-    /// Every runtime boots with outbound network (the `iii` global's engine
-    /// link needs it), so npm/pip installs work on any path.
+    /// When `runtime_id` is omitted: `true` leaves the VM running and returns its
+    /// `runtime_id`; `false` destroys it after the run.
     #[serde(default)]
     pub keep: bool,
     /// Wall-clock budget in milliseconds, clamped to the configured maximum.

@@ -5,28 +5,22 @@ use crate::lang::Lang;
 
 #[derive(Deserialize, JsonSchema)]
 pub struct RunRequest {
-    /// Node: the body of an async function — `return x` yields the result,
-    /// top-level `await` works. Python: a module — assign `result = x`. Both
-    /// get a global `iii` that can trigger any bus function; node's can also
-    /// register functions for the life of the runtime and reach its private
-    /// scratch directory via `iii.files`, python's is synchronous and gets
-    /// `/work` instead.
+    /// Node: an async function body (`return x` sets `result`; `await` works). Python: a
+    /// module (assign `result = x`). A global `iii` is in scope.
+    // Node's `iii` also registers functions and reaches scratch via `iii.files`;
+    // python's is synchronous and gets `/work` instead — the injected guidance
+    // covers both.
     pub code: String,
-    /// Run in a SPECIFIC runtime, sharing its scratch directory and its
-    /// globals: the run lands in that runtime and it is NOT destroyed
-    /// afterwards — you own it. Omit this to run one-shot (see `keep`).
+    /// Run in this existing runtime (from a keep: true run), sharing its globals and scratch;
+    /// it is not destroyed afterwards. Omit to run one-shot.
     #[serde(default)]
     pub runtime_id: Option<String>,
-    /// Required when `runtime_id` is omitted — picks the engine ("node" or
-    /// "python"). On an existing runtime: omit it, or pass the runtime's own
-    /// language; languages cannot be mixed in one runtime.
+    /// Required when `runtime_id` is omitted; on an existing runtime omit it or pass the
+    /// runtime's own language.
     #[serde(default)]
     pub lang: Option<Lang>,
-    /// Only meaningful when `runtime_id` is omitted. `false` (the default):
-    /// one-shot — create a runtime, run `code`, return the result, destroy
-    /// it. Nothing persists. `true`: leave it running; the response's
-    /// `runtime_id` addresses it for later runs and is the capability
-    /// `code-runner::teardown` needs to stop it.
+    /// When `runtime_id` is omitted: `true` leaves the runtime running and returns its
+    /// `runtime_id`; `false` destroys it after the run.
     #[serde(default)]
     pub keep: bool,
     /// Wall-clock budget in milliseconds, clamped to the configured maximum.

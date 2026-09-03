@@ -19,58 +19,29 @@ use crate::manager::RuntimeManager;
 
 pub const RUN_ID: &str = "sandbox-code-runner::run";
 pub const RUN_DESC: &str =
-    "Run code in an isolated microVM. Pass lang (\"node\" or \"python\"). By default run is \
-     ONE-SHOT: it boots a fresh VM, runs code, returns the result, and destroys the VM — \
-     nothing persists, no files, no installed packages, and the response carries no \
-     runtime_id (there is nothing left to address). Pass keep: true to leave the VM running \
-     instead: the response's runtime_id then addresses it, and is the capability \
-     sandbox-code-runner::teardown needs to stop it later. Pass runtime_id on a later call to \
-     reuse that same VM (same filesystem, fresh interpreter process each time) — that runtime \
-     is never auto-stopped, you own it until you tear it down or its idle TTL reaps it, and a \
-     reaped reuse fails with sandbox-code-runner::expired (retry without runtime_id to boot a \
-     fresh one). Every VM boots with outbound network, so npm/pip installs work on any path. \
-     Code you run gets a global `iii` — the real iii-sdk client, lazily connected to the engine on \
-     first use: `await iii.trigger({ function_id, payload })` (Node) / \
-     `iii.trigger({'function_id': ..., 'payload': ...})` (Python, synchronous) invokes any \
-     bus function, and the full SDK surface is available. Functions registered with \
-     iii.registerFunction die when the run process exits — register through \
-     sandbox-code-runner::register_function (via iii.trigger) for one that persists. stdout, \
-     stderr and exit_code come back verbatim — a failing script is a response, not an error.";
+    "Run code in an isolated microVM with outbound network. One-shot by default: nothing \
+     persists and no runtime_id is returned. keep: true keeps the VM and returns its \
+     runtime_id to reuse until sandbox-code-runner::teardown or the idle TTL reaps it. A \
+     failing script is a response, not an error.";
 
 pub const TEARDOWN_ID: &str = "sandbox-code-runner::teardown";
 pub const TEARDOWN_DESC: &str =
-    "Destroy a runtime: unregister every bus function it registered, stop its microVM(s), and \
-     free the slot(s). Pass exactly one of runtime_id (a kept run's runtime, from \
-     sandbox-code-runner::run keep=true) or namespace (a register_function namespace, e.g. \
-     \"app\" for ids like app::greet) — never both, never neither.";
+    "Destroy a runtime: unregister its bus functions, stop its microVM(s) and free the slot. \
+     Pass exactly one of runtime_id (from a keep: true run) or namespace (a register_function \
+     namespace, e.g. \"app\" for app::greet).";
 
 pub const REGISTER_ID: &str = "sandbox-code-runner::register_function";
 pub const REGISTER_DESC: &str =
-    "Publish a bus function whose handler executes inside a microVM. No runtime_id needed: \
-     sandbox-code-runner keeps one persistent runtime per namespace (the segment of \
-     function_id before `::`) and language — the first registration in a namespace boots it, \
-     later ones in the same namespace and lang reuse it automatically. `source` must DEFINE \
-     handler(payload) in `lang` — `export function handler(payload) {...}` (node) or \
-     `def handler(payload): ...` (python); each call runs it in a fresh interpreter process \
-     with the trigger payload and returns its JSON-serialized result. The first registered id \
-     in a namespace claims it; later ids must share both the namespace and its lang. \
-     `description` is what engine::functions::info shows a caller — write one. Handlers get \
-     the same global `iii` that run code gets (the real iii-sdk client, lazily connected) — but a \
-     handler that triggers a function registered on ITS OWN runtime waits on the runtime's \
-     one-exec-at-a-time slot and can only time out; call across runtimes or workers instead. \
-     Functions stop resolving when their namespace is torn down \
-     (sandbox-code-runner::teardown namespace=...) or its runtime is reaped for idleness.";
+    "Publish a bus function whose handler runs in a microVM; no runtime_id needed. source \
+     must define handler(payload) in lang; each call runs it and returns its JSON result. The \
+     namespace (function_id before `::`) shares one runtime per lang; its functions stop \
+     resolving once torn down or idle-reaped.";
 
 pub const LIST_RUNTIMES_ID: &str = "sandbox-code-runner::list_runtimes";
 pub const LIST_RUNTIMES_DESC: &str =
-    "List every runtime this worker currently holds: kept-run runtimes \
-     (sandbox-code-runner::run keep=true) and register_function namespace \
-     runtimes alike, newest first. Each entry carries runtime_id (treat it \
-     as a secret — it is the capability to run into or tear down that \
-     runtime), lang, the backing sandbox_id, created_at_ms (epoch \
-     milliseconds), and the bus function ids registered onto it. One-shot \
-     runs never appear: their VM is destroyed before the run's response is \
-     sent.";
+    "List every runtime this worker holds (kept runs and register_function namespaces), \
+     newest first, with runtime_id, lang, sandbox_id, created_at_ms and registered function \
+     ids. One-shot runs never appear.";
 
 /// Every id this worker registers on its own client, in registration order.
 /// `register_all` asserts it registered exactly this list, and the schema

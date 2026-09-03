@@ -1,10 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// Exactly one of `runtime_id` (a runtime you got back from
-/// `sandbox-code-runner::run keep=true`) or `namespace` (a `register_function`
-/// namespace, e.g. "app" for ids like `app::greet`) must be set — never both,
-/// never neither.
+/// Exactly one of `runtime_id` or `namespace` must be set.
 #[derive(Deserialize, JsonSchema)]
 pub struct TeardownRequest {
     #[serde(default)]

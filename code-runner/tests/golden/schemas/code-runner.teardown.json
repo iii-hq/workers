@@ -1,10 +1,10 @@
 {
   "function_id": "code-runner::teardown",
-  "description": "Destroy a runtime: unregister every bus function it registered, kill it, and free its slot. Pass exactly one of runtime_id (a kept run's runtime, from code-runner::run keep=true) or namespace (a register_function namespace, e.g. \"app\" for ids like app::greet) — never both, never neither.",
+  "description": "Destroy a runtime: unregister its bus functions, kill it and free its slot. Pass exactly one of runtime_id (from a keep: true run) or namespace (a register_function namespace, e.g. \"app\" for app::greet).",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "TeardownRequest",
-    "description": "Exactly one of `runtime_id` (a kept run's runtime) or `namespace` (a `register_function` namespace) must be set — never both, never neither.",
+    "description": "Exactly one of `runtime_id` or `namespace` must be set.",
     "type": "object",
     "properties": {
       "namespace": {
