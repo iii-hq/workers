@@ -8,7 +8,8 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def test_release_oci_dockerfile_has_only_immutable_inputs() -> None:
-    validate(REPO_ROOT / "hermes" / "Dockerfile")
+    for worker in ("hermes", "scrapling"):
+        validate(REPO_ROOT / worker / "Dockerfile")
 
 
 @pytest.mark.parametrize(

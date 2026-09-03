@@ -1702,40 +1702,12 @@ workers:
       path: scrapling
       package_manifest: pyproject.toml
     artifact:
-      kind: python-bundle
-      workspace_root: scrapling
-      runtime:
-        name: python
-        version: 3.12.3
-      package_manager:
-        name: uv
-        version: 0.12.5
-      lockfile: uv.lock
-      install_command:
-      - uv
-      - sync
-      - --frozen
-      - --no-dev
-      - --no-install-project
-      build_command:
-      - python
-      - scripts/build_release_runtime.py
-      include:
-      - dist/site-packages.tar.gz
-      - pyproject.toml
-      - scripts/build_release_runtime.py
-      - src/__init__.py
-      - src/configuration.py
-      - src/core.py
-      - src/crawl.py
-      - src/guidance.py
-      - src/handlers.py
-      - src/main.py
-      - src/schemas.py
-      - src/sessions.py
-      - src/storage.py
-      - uv.lock
-      - iii.worker.yaml
+      kind: oci-image
+      context: .
+      dockerfile: Dockerfile
+      platforms:
+      - linux/amd64
+      - linux/arm64
     publish: true
   security-scan:
     source:
