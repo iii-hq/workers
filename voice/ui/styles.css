@@ -1,0 +1,476 @@
+/**
+ * Every rule is scoped under [data-iii-ui="voice"]. Injected CSS is
+ * unlayered, so an unscoped selector would silently beat the console's
+ * own fully-layered styles document-wide. Colors and motion come from the
+ * console's design tokens, so both themes and reduced motion work without
+ * a duplicate ruleset.
+ */
+
+[data-iii-ui='voice'] .voice-ui {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+
+/* ── chat header chip (src/chip) ────────────────────────────────────── */
+
+[data-iii-ui='voice'] .voice-chip-root {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+[data-iii-ui='voice'] .voice-chip-btn.listening {
+  color: var(--color-accent);
+}
+
+[data-iii-ui='voice'] .voice-chip-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.125rem 0.5rem;
+  border-radius: 999px;
+  background: var(--color-surface-raised);
+  color: var(--color-ink-faint);
+  font-size: 0.75rem;
+  max-width: 16rem;
+}
+
+[data-iii-ui='voice'] .voice-chip-dot {
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--color-accent);
+  animation: voice-pulse 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-iii-ui='voice'] .voice-chip-dot {
+    animation: none;
+  }
+}
+
+[data-iii-ui='voice'] .voice-chip-partial {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui='voice'] .voice-chip-copied,
+[data-iii-ui='voice'] .voice-chip-error {
+  padding: 0.125rem 0.5rem;
+  border-radius: 999px;
+  background: var(--color-surface-raised);
+  color: var(--color-ink-faint);
+  font-size: 0.75rem;
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui='voice'] .voice-chip-error {
+  color: var(--color-alert);
+}
+
+@keyframes voice-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* ── turn summary row (src/turn-summary) ───────────────────────────────── */
+
+[data-iii-ui='voice'] .voice-turn-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.75rem;
+  color: var(--color-ink-faint);
+  font-size: 0.8125rem;
+}
+
+[data-iii-ui='voice'] .voice-turn-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  border: none;
+  background: none;
+  padding: 0.25rem 0.5rem;
+  border-radius: 6px;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+[data-iii-ui='voice'] .voice-turn-action:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
+}
+
+[data-iii-ui='voice'] .voice-turn-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+[data-iii-ui='voice'] .voice-turn-error {
+  color: var(--color-alert);
+}
+
+/* ── page (src/page) ────────────────────────────────────────────────── */
+
+[data-iii-ui='voice'] .voice-page-main {
+  overflow-y: auto;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+[data-iii-ui='voice'] .voice-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+
+[data-iii-ui='voice'] .voice-section-title {
+  margin: 0;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--color-ink);
+}
+
+[data-iii-ui='voice'] .voice-note {
+  color: var(--color-ink-faint);
+  font-size: 0.8125rem;
+}
+
+[data-iii-ui='voice'] .voice-note.warn {
+  color: var(--color-warn);
+}
+
+[data-iii-ui='voice'] .voice-status-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+[data-iii-ui='voice'] .voice-status-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+}
+
+[data-iii-ui='voice'] .voice-status-label {
+  min-width: 8rem;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='voice'] .voice-status-detail {
+  color: var(--color-ink);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.75rem;
+}
+
+[data-iii-ui='voice'] .voice-status-download {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+[data-iii-ui='voice'] .voice-status-progress {
+  font-size: 0.75rem;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='voice'] .voice-status-progress.warn {
+  color: var(--color-alert);
+}
+
+[data-iii-ui='voice'] .voice-transcribe-inputs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+[data-iii-ui='voice'] .voice-file-input {
+  font-size: 0.8125rem;
+  color: var(--color-ink);
+}
+
+[data-iii-ui='voice'] .voice-file-name {
+  font-size: 0.75rem;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='voice'] .voice-transcribe-or {
+  font-size: 0.75rem;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='voice'] .voice-path-input {
+  min-width: 16rem;
+  flex: 1;
+}
+
+[data-iii-ui='voice'] .voice-transcribe-result {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+[data-iii-ui='voice'] .voice-transcribe-text-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+[data-iii-ui='voice'] .voice-transcribe-text {
+  margin: 0;
+  flex: 1;
+  font-size: 0.8125rem;
+  color: var(--color-ink);
+  white-space: pre-wrap;
+}
+
+[data-iii-ui='voice'] .voice-transcribe-actions {
+  display: flex;
+  gap: 0.25rem;
+  flex-shrink: 0;
+}
+
+[data-iii-ui='voice'] .voice-dictation-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+[data-iii-ui='voice'] .voice-dictation-status {
+  font-size: 0.75rem;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='voice'] .voice-dictation-transcript {
+  min-height: 6rem;
+  padding: 0.5rem;
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  background: var(--color-panel);
+  color: var(--color-ink);
+  font-size: 0.8125rem;
+  resize: vertical;
+}
+
+/* ── composer toolbar action (src/composer) ─────────────────────────── */
+
+[data-iii-ui='voice'] .voice-composer-action {
+  display: inline-flex;
+  align-items: center;
+}
+
+[data-iii-ui='voice'] .voice-composer-btn {
+  width: 2.25rem;
+  height: 2.25rem;
+}
+
+[data-iii-ui='voice'] .voice-composer-btn.listening {
+  color: var(--color-accent);
+}
+
+@media (max-width: 639px) {
+  [data-iii-ui='voice'] .voice-composer-btn {
+    width: 3rem;
+    height: 3rem;
+  }
+}
+
+/* ── live transcript row above the composer (src/live) ─────────────── */
+
+[data-iii-ui='voice'] .voice-live {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 0.25rem 0.75rem;
+  color: var(--color-ink-faint);
+  font-size: 0.8125rem;
+}
+
+[data-iii-ui='voice'] .voice-live-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-ink);
+}
+
+/* ── touch: no long-press menu or text selection on the mic ────────── */
+
+[data-iii-ui='voice'] .voice-chip-btn,
+[data-iii-ui='voice'] .voice-composer-btn {
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+@media (pointer: coarse) {
+  [data-iii-ui='voice'] .voice-chip-btn,
+  [data-iii-ui='voice'] .voice-composer-btn {
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+  }
+
+  [data-iii-ui='voice'] .voice-file-clear,
+  [data-iii-ui='voice'] .voice-turn-action {
+    min-height: 2.75rem;
+  }
+}
+
+/* ── status grid: label/value pairs that stack in narrow panes ─────── */
+
+[data-iii-ui='voice'] .voice-status-grid {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: 1rem;
+  row-gap: 0.5rem;
+  margin: 0;
+  align-items: center;
+}
+
+[data-iii-ui='voice'] .voice-status-label {
+  min-width: 0;
+  margin: 0;
+  color: var(--color-ink-faint);
+  font-size: 0.8125rem;
+}
+
+[data-iii-ui='voice'] .voice-status-value {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  margin: 0;
+}
+
+[data-iii-ui='voice'] .voice-status-detail {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui='voice'] .voice-status-meta,
+[data-iii-ui='voice'] .voice-status-version {
+  color: var(--color-ink-faint);
+  font-size: 0.75rem;
+}
+
+[data-iii-ui='voice'] .voice-status-download {
+  flex-wrap: wrap;
+}
+
+/* ── transcribe inputs: one column, full-width controls ────────────── */
+
+[data-iii-ui='voice'] .voice-transcribe-inputs {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+[data-iii-ui='voice'] .voice-transcribe-file {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+[data-iii-ui='voice'] .voice-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+[data-iii-ui='voice'] .voice-file-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-ink);
+}
+
+[data-iii-ui='voice'] .voice-file-clear {
+  border: none;
+  background: none;
+  padding: 0 0.25rem;
+  color: var(--color-ink-faint);
+  font: inherit;
+  cursor: pointer;
+}
+
+[data-iii-ui='voice'] .voice-file-clear:hover {
+  color: var(--color-ink);
+}
+
+[data-iii-ui='voice'] .voice-path-input {
+  min-width: 0;
+  width: 100%;
+}
+
+[data-iii-ui='voice'] .voice-transcribe-actions {
+  flex-wrap: wrap;
+}
+
+[data-iii-ui='voice'] .voice-dictation-controls {
+  flex-wrap: wrap;
+}
+
+@container (max-width: 30rem) {
+  [data-iii-ui='voice'] .voice-page-main {
+    padding: 0.75rem;
+    gap: 1rem;
+  }
+
+  [data-iii-ui='voice'] .voice-status-grid {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 0.25rem;
+  }
+
+  [data-iii-ui='voice'] .voice-status-label {
+    margin-top: 0.375rem;
+    font-size: 0.75rem;
+  }
+
+  [data-iii-ui='voice'] .voice-transcribe-inputs {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  [data-iii-ui='voice'] .voice-transcribe-text-row {
+    flex-direction: column;
+  }
+}

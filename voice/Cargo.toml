@@ -1,0 +1,50 @@
+[workspace]
+
+[package]
+name = "voice"
+version = "0.1.0-experimental"
+edition = "2021"
+description = "Voice worker for iii — local speech-to-text for dictation and file transcription, plus read-aloud, with a console mic chip and a voice page (voice::* functions)"
+license = "Apache-2.0"
+repository = "https://github.com/iii-hq/workers"
+publish = false
+
+[lib]
+name = "voice"
+path = "src/lib.rs"
+
+[[bin]]
+name = "voice"
+path = "src/main.rs"
+
+[dependencies]
+iii-sdk = "=0.23.0"
+# Worker-side injectable console UI (content function + console:script/style
+# triggers + hot-reload watcher) — direct link, never published.
+iii-console-ui = { path = "../crates/console-ui" }
+iii-worker-paths = { path = "../crates/worker-paths" }
+# Streaming speech recognition (onnxruntime, statically linked). The sys crate
+# is patched below so the binary never links the GPL phonemizer libraries.
+sherpa-onnx = "=1.13.7"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "process", "fs", "io-util"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+clap = { version = "4", features = ["derive", "env"] }
+schemars = "0.8"
+async-trait = "0.1"
+base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "multipart", "json"] }
+futures = "0.3"
+sha2 = "0.10"
+hound = "3"
+
+[dev-dependencies]
+tempfile = "3"
+
+[patch.crates-io]
+sherpa-onnx-sys = { path = "vendor/sherpa-onnx-sys" }

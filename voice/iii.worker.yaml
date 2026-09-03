@@ -1,0 +1,21 @@
+iii: v1
+name: voice
+language: rust
+deploy: binary
+manifest: Cargo.toml
+license: Apache-2.0
+bin: voice
+tags: [voice, speech, dictation, transcription, stt, tts, audio]
+description: Speak to the console — local streaming speech-to-text for dictation and file transcription, read-aloud of replies, and an optional OpenAI-compatible audio endpoint, with a mic chip and a voice page.
+dependencies:
+  configuration: "0.x"
+
+# The speech engine links a prebuilt onnxruntime that its upstream publishes
+# only for these four triples (glibc Linux and macOS). musl and armv7 have no
+# static archive to link, so the release matrix stays on the supported set —
+# the code-runner precedent.
+targets:
+  - x86_64-apple-darwin
+  - aarch64-apple-darwin
+  - x86_64-unknown-linux-gnu
+  - aarch64-unknown-linux-gnu

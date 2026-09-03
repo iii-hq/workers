@@ -41,7 +41,7 @@ or the selection/motion rules change.
 
 ## Injectable worker sweep
 
-All 24 checked-in injectable UI packages were inspected. “Domain adapter”
+All 25 checked-in injectable UI packages were inspected. “Domain adapter”
 means a local component still adds information architecture or semantics; it
 must compose shared controls/tokens and is not permission to fork base hover,
 selection, tooltip, or selector behavior.
@@ -71,6 +71,7 @@ selection, tooltip, or selector behavior.
 | `storage` | Neutral object/config navigation; shared motion tokens | Bucket/object browser |
 | `tailscale` | Shared page chrome with `PageSidebar` section navigation, `ListItem` rows, `IconButton` header and row actions, shared `Input`/`Select`/`SegmentedControl`, `Table` family, `Badge`/`Chip`/`StatusDot`, `EmptyState`/`Skeleton`, `ConfirmDialog` for public publishing; neutral selection; shared motion tokens | Tailnet device table with ping paths, QR link card, netcheck and DNS facts, preference rows |
 | `compose-ui` | Shared page chrome with `PageSidebar` section navigation, `ListItem` rows, `IconButton` row actions, ghost `Button` refresh with a live `StatusDot` in the header, `Input`, `Table` family, `Badge`/`Chip`/`StatusDot`, `EmptyState`/`Skeleton`, `TerminalStream` log tails, `ConfirmDialog` for stop/restart/remove/update/daemon stop; neutral selection; shared motion tokens; no section-switch animation | Topology graph (engine, namespace group, containers layered by `start_after`, upstream/downstream tracing on select, arrow-key node navigation), project health stats, container table with log tail rows, worker package declaration with selectable declared-worker chips, daemon projects table |
+| `voice` | Shared page chrome (`PageShell`/`PageHeader`/`PageBody`/`PageMain`), `IconButton` for the header mic chip and copy actions, `Button`, `Badge`, `StatusPanel`, `Input`, `Table` family; chat-slot registrations (`registerSessionChip`, `registerTurnSummary`) with one shell-anatomy text action; shared motion tokens with a reduced-motion guard on the listening pulse | Microphone capture, live partial transcript pill, segment timestamps |
 | `web` | Minimal shared renderer audited; no selectable navigation | HTTP response payload |
 | `worktree` | Neutral graph node/edge selection; shared motion tokens | Worktree ownership and graph semantics |
 
