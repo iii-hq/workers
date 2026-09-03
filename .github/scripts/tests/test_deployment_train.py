@@ -402,7 +402,6 @@ def test_matrix_is_exactly_the_descriptor_build_units_windows_included(
     selected = rust_descriptor("smoke", "a" * 40, [
         "x86_64-unknown-linux-gnu",
         "x86_64-pc-windows-msvc",
-        "i686-pc-windows-msvc",
         "aarch64-pc-windows-msvc",
     ])
     descriptor_path = tmp_path / "deployment-descriptor.json"
@@ -421,12 +420,6 @@ def test_matrix_is_exactly_the_descriptor_build_units_windows_included(
             "unit": "smoke-x86_64-pc-windows-msvc",
             "kind": "rust-binary",
             "target": "x86_64-pc-windows-msvc",
-            "runner": "windows-latest",
-        },
-        {
-            "unit": "smoke-i686-pc-windows-msvc",
-            "kind": "rust-binary",
-            "target": "i686-pc-windows-msvc",
             "runner": "windows-latest",
         },
         {

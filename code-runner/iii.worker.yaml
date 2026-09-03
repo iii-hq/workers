@@ -19,7 +19,6 @@ dependencies:
 # Its explicit target list below keeps the release matrix on the supported
 # Unix triples while avoiding those platform-restricted shards.
 targets:
-  - x86_64-apple-darwin
   - aarch64-apple-darwin
   - x86_64-unknown-linux-gnu
   - x86_64-unknown-linux-musl

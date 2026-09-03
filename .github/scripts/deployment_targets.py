@@ -6,7 +6,6 @@ from collections.abc import Iterable
 
 
 UNIX_TARGETS = [
-    "x86_64-apple-darwin",
     "aarch64-apple-darwin",
     "x86_64-unknown-linux-gnu",
     "x86_64-unknown-linux-musl",
@@ -16,24 +15,28 @@ UNIX_TARGETS = [
 
 WINDOWS_TARGETS = [
     "x86_64-pc-windows-msvc",
-    "i686-pc-windows-msvc",
     "aarch64-pc-windows-msvc",
 ]
 
-# Every worker that published Windows binaries before the deployment cutover
-# ships all three msvc triples, so the default matrix carries them: a worker
-# without Windows is the exception and must say so in its catalog entry.
+# Every worker that publishes Windows binaries ships both supported msvc
+# triples, so the default matrix carries them: a worker without Windows is
+# the exception and must say so in its catalog entry.
+#
+# Dropped on 2026-09-03: `i686-pc-windows-msvc`, because 64-bit Windows runs
+# 32-bit binaries through WOW64 and Windows 11 has no 32-bit edition; and
+# `x86_64-apple-darwin`, which was the only consumer of the paid
+# `workers-release-macos-12core` pool. Removing a triple here makes it an
+# unknown target, so a catalog entry that still names it fails the compile
+# instead of silently publishing a narrower set of binaries.
 DEFAULT_TARGETS = [*UNIX_TARGETS, *WINDOWS_TARGETS]
 
 TARGET_RUNNERS = {
-    "x86_64-apple-darwin": "macos-latest",
     "aarch64-apple-darwin": "macos-latest",
     "x86_64-unknown-linux-gnu": "ubuntu-22.04",
     "x86_64-unknown-linux-musl": "ubuntu-latest",
     "aarch64-unknown-linux-gnu": "ubuntu-22.04",
     "armv7-unknown-linux-gnueabihf": "ubuntu-22.04",
     "x86_64-pc-windows-msvc": "windows-latest",
-    "i686-pc-windows-msvc": "windows-latest",
     "aarch64-pc-windows-msvc": "windows-latest",
 }
 
@@ -41,9 +44,7 @@ TARGET_RUNNERS = {
 # Keep the execution label alongside the target-to-OS policy so every
 # Release Control path uses the same isolated GitHub-hosted capacity.
 TARGET_LARGER_RUNNERS = {
-    "x86_64-apple-darwin": "workers-release-macos-12core",
-    # Build Apple Silicon artifacts on a dedicated native M2 pool. This keeps
-    # the Intel and ARM macOS targets independently schedulable.
+    # macOS ships Apple Silicon only, built on a dedicated native M2 pool.
     "aarch64-apple-darwin": "workers-release-macos-arm-5core",
     "x86_64-unknown-linux-gnu": "workers-release-linux-8core",
     "x86_64-unknown-linux-musl": "workers-release-linux-8core",
@@ -52,7 +53,6 @@ TARGET_LARGER_RUNNERS = {
     # Windows has no self-hosted pool; GitHub-hosted capacity keeps these
     # targets schedulable without competing for the release runners.
     "x86_64-pc-windows-msvc": "windows-latest",
-    "i686-pc-windows-msvc": "windows-latest",
     "aarch64-pc-windows-msvc": "windows-latest",
 }
 
