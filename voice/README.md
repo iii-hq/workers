@@ -131,7 +131,9 @@ the `openai` backend with an empty `api_key`.
 | `voice::doctor` | Backends, model state, open sessions. |
 
 Triggers: `voice::transcript`, `voice::session-started`,
-`voice::session-stopped`, `voice::model-progress`.
+`voice::session-stopped`, `voice::model-progress`, `voice::speech-ended`
+(host playback finished: `ended`, `stopped` or `failed`; filter with
+`speech_id`).
 
 ## Limits
 

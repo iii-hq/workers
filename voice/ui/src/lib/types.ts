@@ -164,8 +164,7 @@ export interface DoctorResponse {
     backend: 'host' | 'openai' | 'router' | 'off'
     command?: string
     available: boolean
-    /** Utterances currently playing on this backend, polled to detect an
-        ended `host`-backend speech (never poll it faster than every 2s). */
+    /** Host playbacks still running; their end arrives on `voice::speech-ended`. */
     playing: number
   }
   sessions: number
@@ -192,6 +191,13 @@ export interface SessionStartedEvent {
 export interface SessionStoppedEvent {
   session_id: string
   reason: string
+  timestamp_ms: number
+}
+
+/** `voice::speech-ended`: a host playback is over (`ended`, `stopped` or `failed`). */
+export interface SpeechEndedEvent {
+  speech_id: string
+  reason: 'ended' | 'stopped' | 'failed' | string
   timestamp_ms: number
 }
 

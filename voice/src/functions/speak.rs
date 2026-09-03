@@ -11,8 +11,9 @@ use crate::tts::Spoken;
 
 pub const ID: &str = "voice::speak";
 pub const DESC: &str = "Read text aloud. On the host backend playback starts on the machine running \
-                        the worker and the call returns at once with a speech_id; on the openai and \
-                        router backends the audio comes back base64 for the caller to play.";
+                        the worker and the call returns at once with a speech_id and voice::speech-ended \
+                        fires when it is over; on the openai and router backends the audio comes back \
+                        base64 for the caller to play.";
 
 pub const STOP_ID: &str = "voice::speak::stop";
 pub const STOP_DESC: &str =

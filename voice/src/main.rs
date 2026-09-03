@@ -139,7 +139,7 @@ async fn main() -> anyhow::Result<()> {
         emitter.clone(),
         cell.clone(),
     ));
-    let speaker = Arc::new(Speaker::new());
+    let speaker = Arc::new(Speaker::new(emitter.clone()));
     let state = Arc::new(AppState {
         iii: iii.clone(),
         cfg: cell.clone(),

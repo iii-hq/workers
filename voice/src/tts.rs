@@ -8,13 +8,16 @@
 //! Child processes are tracked so `voice::speak::stop` can end them.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use tokio::process::{Child, Command};
-use tokio::sync::Mutex;
+use tokio::sync::{oneshot, Mutex};
 
 use crate::config::{TtsBackend, WorkerConfig};
+use crate::events::{Emitter, EventKind, SpeechEndedEvent};
+use crate::session::now_ms;
 
 /// The host command this platform speaks with, if any.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,20 +123,57 @@ pub struct Spoken {
 }
 
 pub struct Speaker {
-    children: Mutex<HashMap<String, Child>>,
-}
-
-impl Default for Speaker {
-    fn default() -> Self {
-        Self::new()
-    }
+    /// Live host playbacks by speech id; sending on the channel stops one.
+    playing: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
+    emitter: Arc<Emitter>,
 }
 
 impl Speaker {
-    pub fn new() -> Self {
+    pub fn new(emitter: Arc<Emitter>) -> Self {
         Self {
-            children: Mutex::new(HashMap::new()),
+            playing: Arc::new(Mutex::new(HashMap::new())),
+            emitter,
         }
+    }
+
+    /// Own the child until it exits or is told to stop, then drop it from the
+    /// live set and announce `voice::speech-ended` with why.
+    fn watch(&self, speech_id: String, mut child: Child) {
+        let (stop_tx, stop_rx) = oneshot::channel::<()>();
+        let playing = self.playing.clone();
+        let emitter = self.emitter.clone();
+        let ended_id = speech_id.clone();
+        tokio::spawn(async move {
+            let reason = tokio::select! {
+                status = child.wait() => match status {
+                    Ok(status) if status.success() => "ended",
+                    Ok(_) => "failed",
+                    Err(_) => "failed",
+                },
+                _ = stop_rx => {
+                    let _ = child.kill().await;
+                    "stopped"
+                }
+            };
+            playing.lock().await.remove(&ended_id);
+            emitter
+                .emit(
+                    EventKind::SpeechEnded,
+                    Some(&ended_id),
+                    &SpeechEndedEvent {
+                        speech_id: ended_id.clone(),
+                        reason: reason.to_string(),
+                        timestamp_ms: now_ms(),
+                    },
+                )
+                .await;
+        });
+        // A stop that arrives before the watcher polls the channel still
+        // lands: the sender is stored, the receiver is awaited above.
+        let playing = self.playing.clone();
+        tokio::spawn(async move {
+            playing.lock().await.insert(speech_id, stop_tx);
+        });
     }
 
     /// Speak `text` on the configured backend.
@@ -176,8 +216,7 @@ impl Speaker {
                         .map_err(|e| format!("write to {}: {e}", command.program))?;
                     stdin.shutdown().await.ok();
                 }
-                self.reap().await;
-                self.children.lock().await.insert(speech_id.clone(), child);
+                self.watch(speech_id.clone(), child);
                 Ok(Spoken {
                     backend: "host".into(),
                     speech_id,
@@ -204,20 +243,19 @@ impl Speaker {
 
     /// Stop every host playback (or one, by id). Returns how many were live.
     pub async fn stop(&self, speech_id: Option<&str>) -> usize {
-        let mut children = self.children.lock().await;
+        let mut playing = self.playing.lock().await;
         let ids: Vec<String> = match speech_id {
-            Some(id) => children
+            Some(id) => playing
                 .contains_key(id)
                 .then(|| id.to_string())
                 .into_iter()
                 .collect(),
-            None => children.keys().cloned().collect(),
+            None => playing.keys().cloned().collect(),
         };
         let mut stopped = 0;
         for id in ids {
-            if let Some(mut child) = children.remove(&id) {
-                if child.try_wait().ok().flatten().is_none() {
-                    let _ = child.kill().await;
+            if let Some(stop) = playing.remove(&id) {
+                if stop.send(()).is_ok() {
                     stopped += 1;
                 }
             }
@@ -225,21 +263,9 @@ impl Speaker {
         stopped
     }
 
-    /// `true` while any host playback is still running.
+    /// How many host playbacks are still running.
     pub async fn playing(&self) -> usize {
-        self.reap().await;
-        self.children.lock().await.len()
-    }
-
-    async fn reap(&self) {
-        let mut children = self.children.lock().await;
-        let done: Vec<String> = children
-            .iter_mut()
-            .filter_map(|(id, child)| child.try_wait().ok().flatten().map(|_| id.clone()))
-            .collect();
-        for id in done {
-            children.remove(&id);
-        }
+        self.playing.lock().await.len()
     }
 }
 
@@ -305,6 +331,11 @@ async fn remote_speech(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::events::{NoopDeliverer, TriggerSets};
+
+    fn test_emitter() -> Arc<Emitter> {
+        Arc::new(Emitter::new(TriggerSets::new(), Arc::new(NoopDeliverer)))
+    }
 
     #[test]
     fn host_args_follow_each_command() {
@@ -328,7 +359,7 @@ mod tests {
 
     #[tokio::test]
     async fn stop_with_nothing_playing_is_zero() {
-        let speaker = Speaker::new();
+        let speaker = Speaker::new(test_emitter());
         assert_eq!(speaker.stop(None).await, 0);
         assert_eq!(speaker.playing().await, 0);
     }
@@ -337,7 +368,7 @@ mod tests {
     async fn off_backend_refuses() {
         let mut cfg = WorkerConfig::default();
         cfg.tts.backend = TtsBackend::Off;
-        let err = Speaker::new()
+        let err = Speaker::new(test_emitter())
             .speak(&cfg, "hello", None, None)
             .await
             .unwrap_err();

@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from 'react'
 import { speak, speakStop } from '../lib/client'
 import { errorMessage } from '../lib/format'
 import { SpeakerIcon, StopIcon } from '../lib/icons'
+import { useSpeechEnded } from '../lib/playback'
 import type { DoctorResponse } from '../lib/types'
 import { Fact, Facts, SectionCard } from './shared'
 
@@ -24,23 +25,22 @@ export function ReadAloudSection({ host, report }: { host: Host; report: DoctorR
   const [text, setText] = useState(SAMPLE)
   const [state, setState] = useState<SpeakState>({ phase: 'idle' })
   const audioRef = useRef<HTMLAudioElement | null>(null)
-  const timerRef = useRef<number | null>(null)
   const speechIdRef = useRef<string | undefined>(undefined)
   const { tts } = report
+  useSpeechEnded(host, (event) => {
+    if (!speechIdRef.current || speechIdRef.current === event.speech_id) speechIdRef.current = undefined
+    setState((current) =>
+      current.phase === 'speaking' && (!current.speechId || current.speechId === event.speech_id)
+        ? { phase: 'idle' }
+        : current,
+    )
+  })
   const disabled = tts.backend === 'off' || !tts.available
-
-  const clearTimer = () => {
-    if (timerRef.current !== null) {
-      window.clearTimeout(timerRef.current)
-      timerRef.current = null
-    }
-  }
 
   useEffect(
     () => () => {
       audioRef.current?.pause()
       audioRef.current = null
-      if (timerRef.current !== null) window.clearTimeout(timerRef.current)
       const speechId = speechIdRef.current
       speechIdRef.current = undefined
       if (speechId) speakStop(host.iii, { speech_id: speechId }).catch(() => {})
@@ -64,15 +64,6 @@ export function ReadAloudSection({ host, report }: { host: Host; report: DoctorR
       } else if (res.played) {
         setState({ phase: 'speaking', speechId: res.speech_id })
         speechIdRef.current = res.speech_id
-        const words = body.split(/\s+/).length
-        clearTimer()
-        timerRef.current = window.setTimeout(
-          () => {
-            speechIdRef.current = undefined
-            setState({ phase: 'idle' })
-          },
-          Math.min(60_000, Math.max(1500, (words / 150) * 60_000)),
-        )
       } else {
         setState({ phase: 'idle' })
       }
@@ -84,7 +75,6 @@ export function ReadAloudSection({ host, report }: { host: Host; report: DoctorR
   const onStop = () => {
     audioRef.current?.pause()
     audioRef.current = null
-    clearTimer()
     const speechId = state.phase === 'speaking' ? state.speechId : undefined
     speechIdRef.current = undefined
     speakStop(host.iii, speechId ? { speech_id: speechId } : {}).catch(() => {})
