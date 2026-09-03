@@ -287,8 +287,15 @@ pub async fn transcribe(
     cache: &ScaffoldCache,
     req: TranscribeRequest,
 ) -> Result<TranscribeResponse, Error> {
+    let encoded = req.audio_base64.trim();
+    if encoded.len() > MAX_AUDIO_BYTES / 3 * 4 + 4 {
+        return Err(Error::Handler(format!(
+            "provider/invalid_input: audio_base64 is {} characters, more than a {MAX_AUDIO_BYTES}-byte file encodes to",
+            encoded.len()
+        )));
+    }
     let audio = base64::engine::general_purpose::STANDARD
-        .decode(req.audio_base64.trim())
+        .decode(encoded)
         .map_err(|e| {
             Error::Handler(format!(
                 "provider/invalid_input: audio_base64 is not base64: {e}"
