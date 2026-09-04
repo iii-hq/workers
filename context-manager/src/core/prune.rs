@@ -140,6 +140,28 @@ fn set_result_content(
     }
 }
 
+fn replacement_saves_enclosing_message(
+    message: &AgentMessage,
+    location: ResultLocation,
+    function_id: &str,
+    tokens: u64,
+    estimator: &dyn Estimator,
+) -> bool {
+    let mut proposed = [message.clone()];
+    let proposed_location = match location {
+        ResultLocation::Message(_) => ResultLocation::Message(0),
+        ResultLocation::Inline { block, .. } => ResultLocation::Inline { message: 0, block },
+    };
+    set_result_content(
+        &mut proposed,
+        proposed_location,
+        vec![ContentBlock::Text {
+            text: placeholder(function_id, tokens),
+        }],
+    );
+    estimator.message(&proposed[0]) < estimator.message(message)
+}
+
 /// Rewrite verbose outputs in place. Returns the stats; `messages` is
 /// mutated only when the pass actually runs (the `min_free_tokens`
 /// guard fires before any rewrite).
@@ -202,15 +224,24 @@ fn prune_impl(
                 let decay_enabled = params.decay_user_turns > 0;
                 let aged = decay_enabled && user_turns >= params.decay_user_turns;
                 let already_pruned = decay_enabled && is_prune_placeholder(content, function_id);
-                let age_only_saves_tokens =
-                    !aged || verbose || tokens > estimator.text(&placeholder(function_id, tokens));
-                if window_tokens > params.protect_recent_tokens
-                    && !already_pruned
-                    && (verbose || aged)
-                    && age_only_saves_tokens
+                if window_tokens <= params.protect_recent_tokens
+                    || already_pruned
+                    || (!verbose && !aged)
                 {
-                    queue.push((location, tokens, function_id.to_owned()));
+                    return;
                 }
+                if !verbose
+                    && !replacement_saves_enclosing_message(
+                        message,
+                        location,
+                        function_id,
+                        tokens,
+                        estimator,
+                    )
+                {
+                    return;
+                }
+                queue.push((location, tokens, function_id.to_owned()));
             };
 
         match message {
@@ -905,6 +936,78 @@ mod tests {
         let equal_stats = prune(&mut equal, &p, &EqualCostEstimator);
         assert_eq!(equal_stats.pruned_parts, 0);
         assert_eq!(text_of(equal[1].content()).len(), 40);
+    }
+
+    #[test]
+    fn age_only_message_with_escaped_function_id_does_not_expand() {
+        let function_id = "\\".repeat(500);
+        let mut messages = vec![
+            text_result(&function_id, "x".repeat(700), 1),
+            user("one", 2),
+            user("two", 3),
+            user("three", 4),
+            user("four", 5),
+        ];
+        let original = messages.clone();
+        let mut sizes = sizes_of(&messages);
+        let original_sizes = sizes.clone();
+        let mut p = params();
+        p.protect_recent_tokens = 0;
+        p.max_output_chars = 2_000;
+        p.decay_user_turns = 4;
+
+        let stats = prune_with_sizes(&mut messages, &mut sizes, &p, &HeuristicEstimator);
+
+        assert_eq!(stats.scanned_parts, 1);
+        assert_eq!(stats.pruned_parts, 0);
+        assert_eq!(stats.pruned_tokens, 0);
+        assert_eq!(messages, original);
+        assert_eq!(sizes, original_sizes);
+        assert_eq!(sizes, sizes_of(&messages));
+    }
+
+    #[test]
+    fn age_only_inline_result_with_escaped_function_id_does_not_expand() {
+        let function_id = "\\".repeat(500);
+        let mut messages: Vec<AgentMessage> = serde_json::from_value(json!([
+            {
+                "role": "assistant",
+                "content": [{
+                    "type": "function_call", "id": "c1", "function_id": function_id,
+                    "arguments": {}
+                }],
+                "stop_reason": "function_call", "model": "m", "provider": "p", "timestamp": 1
+            },
+            {
+                "role": "user",
+                "content": [{
+                    "type": "function_result", "function_call_id": "c1",
+                    "content": [{ "type": "text", "text": "x".repeat(700) }]
+                }],
+                "timestamp": 2
+            },
+            { "role": "user", "content": [{ "type": "text", "text": "one" }], "timestamp": 3 },
+            { "role": "user", "content": [{ "type": "text", "text": "two" }], "timestamp": 4 },
+            { "role": "user", "content": [{ "type": "text", "text": "three" }], "timestamp": 5 },
+            { "role": "user", "content": [{ "type": "text", "text": "four" }], "timestamp": 6 }
+        ]))
+        .unwrap();
+        let original = messages.clone();
+        let mut sizes = sizes_of(&messages);
+        let original_sizes = sizes.clone();
+        let mut p = params();
+        p.protect_recent_tokens = 0;
+        p.max_output_chars = 2_000;
+        p.decay_user_turns = 4;
+
+        let stats = prune_with_sizes(&mut messages, &mut sizes, &p, &HeuristicEstimator);
+
+        assert_eq!(stats.scanned_parts, 1);
+        assert_eq!(stats.pruned_parts, 0);
+        assert_eq!(stats.pruned_tokens, 0);
+        assert_eq!(messages, original);
+        assert_eq!(sizes, original_sizes);
+        assert_eq!(sizes, sizes_of(&messages));
     }
 
     #[test]

@@ -214,8 +214,9 @@ needed]`. No LLM, no state, no removal.
 
 By default the two most recent user turns are exempt, independent of the token
 window. Age counts subsequent user messages, excluding wrappers that carry
-inline function results. The pass is idempotent and never replaces an output
-with a more expensive placeholder.
+inline function results. The pass is idempotent. Age-only eligibility never
+replaces an output when the enclosing message would estimate larger; legacy
+verbosity eligibility retains its existing behavior.
 
 ### `context::compact` — summarise the head, keep a tail
 
