@@ -138,6 +138,16 @@
     0 0 0 1px var(--iii-ui-lift-edge),
     0 1px 1px -0.5px var(--iii-ui-lift-drop),
     0 3px 3px -1.5px var(--iii-ui-lift-drop);
+  /* `keycap` is the lift turned upside down — the lit edge along the bottom,
+     the drops cast upward — so a key cap reads as a key set into the surface
+     rather than a card floating on it. Same ingredients, so the dark block
+     re-tints it with `lift`. The shared `Kbd` component is its one consumer. */
+  --shadow-keycap:
+    inset 0 -1px 0 0 var(--iii-ui-lift-highlight),
+    inset 0 0 0 1px var(--iii-ui-lift-ring),
+    0 0 0 1px var(--iii-ui-lift-edge),
+    0 -1px 1px -0.5px var(--iii-ui-lift-drop),
+    0 -3px 3px -1.5px var(--iii-ui-lift-drop);
 
   /* ── Motion ─────────────────────────────────────────────────────────── */
   --motion-duration-instant: 0ms;
@@ -605,7 +615,8 @@
 
 /* Discoverability nudge on the workspace edge add-panel zones: the `+`
    panel sliver shakes for ~0.8s once every 10s until the user adds a panel
-   through a zone for the first time; the resting `+` remains afterwards. */
+   through a zone for the first time; afterwards the sliver is gone and the
+   edge stays bare until a dwell reveals the split preview (below). */
 @keyframes edge-nudge {
   0%,
   8%,
@@ -630,6 +641,83 @@
   .edge-nudge {
     animation: none;
   }
+}
+
+/* The split preview a workspace edge reveals: a pane-shaped card sliding in
+   from that edge (and back out on dismissal) with the panel motion tokens,
+   like the real pane it stands for. Its solid new-column rectangle arrives a
+   beat after the card. Reduced motion is handled by the global rule above:
+   durations and delays collapse, so each keyframe lands on its final frame. */
+@keyframes split-preview-enter-left {
+  from {
+    opacity: 0;
+    transform: translateX(-0.75rem);
+  }
+}
+
+@keyframes split-preview-enter-right {
+  from {
+    opacity: 0;
+    transform: translateX(0.75rem);
+  }
+}
+
+@keyframes split-preview-exit-left {
+  to {
+    opacity: 0;
+    transform: translateX(-0.5rem);
+  }
+}
+
+@keyframes split-preview-exit-right {
+  to {
+    opacity: 0;
+    transform: translateX(0.5rem);
+  }
+}
+
+@keyframes split-preview-column-left {
+  from {
+    opacity: 0;
+    transform: translateX(-0.375rem);
+  }
+}
+
+@keyframes split-preview-column-right {
+  from {
+    opacity: 0;
+    transform: translateX(0.375rem);
+  }
+}
+
+@utility split-preview-enter-left {
+  animation: split-preview-enter-left var(--motion-duration-panel)
+    var(--motion-ease-enter) both;
+}
+
+@utility split-preview-enter-right {
+  animation: split-preview-enter-right var(--motion-duration-panel)
+    var(--motion-ease-enter) both;
+}
+
+@utility split-preview-exit-left {
+  animation: split-preview-exit-left var(--motion-duration-fast)
+    var(--motion-ease-exit) both;
+}
+
+@utility split-preview-exit-right {
+  animation: split-preview-exit-right var(--motion-duration-fast)
+    var(--motion-ease-exit) both;
+}
+
+@utility split-preview-column-left {
+  animation: split-preview-column-left var(--motion-duration-panel)
+    var(--motion-ease-enter) 80ms both;
+}
+
+@utility split-preview-column-right {
+  animation: split-preview-column-right var(--motion-duration-panel)
+    var(--motion-ease-enter) 80ms both;
 }
 
 /* sanctioned exception to the no-gradients rule: a soft sweep across the */

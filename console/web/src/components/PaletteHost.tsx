@@ -36,6 +36,7 @@ type WorkspaceActionId = Extract<
   KeybindingActionId,
   | 'workspace.create'
   | 'panel.split'
+  | 'panel.splitLeft'
   | 'panel.next'
   | 'panel.previous'
   | 'workspace.next'
@@ -49,6 +50,7 @@ const WORKSPACE_ACTIONS: ReadonlyArray<{
 }> = [
   { id: 'workspace.create', detail: 'Open an empty workspace' },
   { id: 'panel.split', detail: 'Add an empty panel on the right' },
+  { id: 'panel.splitLeft', detail: 'Add an empty panel on the left' },
   { id: 'panel.next', detail: 'Move the keyboard to the panel on the right' },
   {
     id: 'panel.previous',
@@ -187,6 +189,7 @@ export function PaletteHost({
     const workspaceRun: Record<WorkspaceActionId, () => void> = {
       'workspace.create': workspace.create,
       'panel.split': () => workspace.split('right'),
+      'panel.splitLeft': () => workspace.split('left'),
       'panel.next': () => workspace.focusPane(1),
       'panel.previous': () => workspace.focusPane(-1),
       'workspace.next': () => workspace.step(1),
@@ -199,15 +202,21 @@ export function PaletteHost({
         workspace.tabs[0],
     )
     const offered = (id: WorkspaceActionId): boolean => {
-      if (id === 'workspace.create' || id === 'panel.split') return true
+      if (
+        id === 'workspace.create' ||
+        id === 'panel.split' ||
+        id === 'panel.splitLeft'
+      ) {
+        return true
+      }
       if (id === 'panel.next' || id === 'panel.previous') return panes > 1
       return several
     }
     const workspaceActions: PaletteEntry[] = WORKSPACE_ACTIONS.filter(
       ({ id }) => offered(id),
-    ).flatMap(({ id, detail }) => {
+    ).map(({ id, detail }): PaletteEntry => {
       const definition = keybinding(id)
-      const entry: PaletteEntry = {
+      return {
         id: `action:${id}`,
         kind: 'action',
         title: definition.title,
@@ -216,19 +225,6 @@ export function PaletteHost({
         shortcut: bindingsFor(id, platform)[0],
         run: workspaceRun[id],
       }
-      if (id !== 'panel.split') return [entry]
-      return [
-        {
-          ...entry,
-          id: 'action:panel.split-left',
-          title: 'Split left',
-          detail: 'Add an empty panel on the left',
-          keywords: [...(entry.keywords ?? []), 'left'],
-          shortcut: undefined,
-          run: () => workspace.split('left'),
-        },
-        entry,
-      ]
     })
 
     // A worker-level command needs its page registered (the worker is here);

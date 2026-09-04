@@ -1,5 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { useState } from 'react'
+import { KeyCombo } from '@/components/ui/KeyCombo'
+import { bindingsFor } from '@/lib/keybindings/registry'
 import { moveItem } from '@/lib/reorder'
 import {
   adjacentTabId,
@@ -75,7 +77,12 @@ function LiveStrip({ initial, width = 720 }: LiveStripProps) {
       <p className="font-sans text-[12px] text-ink-faint">
         Arrow keys move between workspaces, Delete closes the focused one, a
         middle click closes the one under the pointer, double-click renames.
-        Next with <kbd className="font-mono">]</kbd>:{' '}
+        Next with{' '}
+        <KeyCombo
+          binding={bindingsFor('workspace.next', 'mac')[0]}
+          platform="mac"
+        />
+        :{' '}
         <button
           type="button"
           className="underline"

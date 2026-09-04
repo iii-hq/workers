@@ -116,6 +116,41 @@ describe('lookup', () => {
     expect(bindingsFor('panel.previous', 'other')).toEqual(['Alt+{'])
   })
 
+  it('splits with the brackets, unshifted, and steps workspaces with the arrows', () => {
+    expect(bindingsFor('panel.split', 'mac')).toEqual(['Ctrl+]'])
+    expect(bindingsFor('panel.splitLeft', 'mac')).toEqual(['Ctrl+['])
+    expect(bindingsFor('panel.splitLeft', 'other')).toEqual(['Alt+['])
+    expect(hoverTitle('Split left', 'panel.splitLeft', 'mac')).toBe(
+      'Split left (⌃ [)',
+    )
+    expect(bindingsFor('workspace.next', 'mac')).toEqual([
+      'Ctrl+Shift+ArrowRight',
+    ])
+    expect(bindingsFor('workspace.previous', 'other')).toEqual([
+      'Alt+Shift+ArrowLeft',
+    ])
+    expect(hoverTitle('Next', 'workspace.next', 'mac')).toBe('Next (⌃ ⇧ →)')
+    // The bracket splits; its shifted twin, the brace, moves focus instead.
+    const bracket = {
+      key: ']',
+      metaKey: false,
+      ctrlKey: true,
+      altKey: false,
+      shiftKey: false,
+    }
+    expect(matchesKeybinding('panel.split', bracket, 'mac')).toBe(true)
+    expect(matchesKeybinding('panel.next', bracket, 'mac')).toBe(false)
+    const brace = { ...bracket, key: '}', shiftKey: true }
+    expect(matchesKeybinding('panel.next', brace, 'mac')).toBe(true)
+    expect(matchesKeybinding('panel.split', brace, 'mac')).toBe(false)
+    // An arrow keeps its name under Shift; without Shift it is not a chord.
+    const arrow = { ...bracket, key: 'ArrowRight', shiftKey: true }
+    expect(matchesKeybinding('workspace.next', arrow, 'mac')).toBe(true)
+    expect(
+      matchesKeybinding('workspace.next', { ...arrow, shiftKey: false }, 'mac'),
+    ).toBe(false)
+  })
+
   it('lists the chords of a go-to sequence, and none for a plain chord', () => {
     expect(sequencesFor('page.workers', 'mac')).toEqual([['Ctrl+G', 'W']])
     expect(sequencesFor('page.workers', 'other')).toEqual([['Alt+G', 'W']])

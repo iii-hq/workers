@@ -25,9 +25,10 @@ or the selection/motion rules change.
 - Selection: neutral `surface-selected` + `ink`, with an optional neutral
   `edge`. Accent is reserved for primary actions, form focus, live activity,
   and semantic domain data.
-- Elevation: `--shadow-raised` (cards), `--shadow-floating` (overlays), and
+- Elevation: `--shadow-raised` (cards), `--shadow-floating` (overlays),
   `--shadow-lift` (crisp-edged instrument surfaces such as the chat composer)
-  are the only shadows; each is a complete theme-aware value used alone.
+  and `--shadow-keycap` (key caps) are the only shadows; each is a complete
+  theme-aware value used alone.
 - Motion: public duration/easing tokens and motion recipes; no transition on
   streaming, rapidly updating, dragged, resized, or pointer-following values;
   reduced motion resolves immediately.

@@ -135,11 +135,12 @@ and `--motion-duration-*`/`--motion-ease-*` for transitions. Dark mode is a
 variable flip on `html[data-theme]`, so token-based styles theme for free.
 Never hardcode theme colors.
 
-Elevation is three shared tokens, never a hand-rolled stack:
+Elevation is four shared tokens, never a hand-rolled stack:
 `--shadow-raised` for a card sitting on a panel, `--shadow-floating` for
-menus, popovers, and sheets, and `--shadow-lift` for an instrument surface
-that must read as lifted off the canvas with a crisp edge — the chat composer
-is the reference. Each token is a complete `box-shadow` value (inset top
+menus, popovers, and sheets, `--shadow-lift` for an instrument surface that
+must read as lifted off the canvas with a crisp edge — the chat composer is
+the reference — and `--shadow-keycap` for a key cap, the lift turned upside
+down so the key reads as set into the surface. Each token is a complete `box-shadow` value (inset top
 highlight, inset ring, 1 px edge, and drops for `lift`) whose ingredients
 (`--iii-ui-lift-*`) are re-tinted by the dark theme, so worker CSS writes
 `box-shadow: var(--shadow-lift);` and nothing else: no border or extra drop

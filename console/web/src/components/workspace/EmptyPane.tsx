@@ -142,7 +142,7 @@ export function EmptyPane({
               onKeyDown={onSearchKeyDown}
               // This box opens focused, so without these the workspace keys
               // spell themselves into the query instead of moving anywhere.
-              data-keybindings-allow="workspace.selectByIndex panel.split"
+              data-keybindings-allow="workspace.selectByIndex panel.split panel.splitLeft"
               placeholder="search pages…"
               aria-label="search pages"
               role="combobox"

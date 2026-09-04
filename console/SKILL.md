@@ -114,13 +114,15 @@ generic dashboard with too many panels.
 - Build hierarchy with surfaces, not boxes: sidebar, panel, raised toolbar,
   hover/selected wash. Reserve 1 px edges for structural or tabular
   separation; avoid borders, shadows, or a card around every section.
-- Elevation is three shared tokens, never a hand-rolled stack:
+- Elevation is four shared tokens, never a hand-rolled stack:
   `--shadow-raised` for a card sitting on a panel, `--shadow-floating` for
-  menus, popovers, and sheets, and `--shadow-lift` for an instrument surface
+  menus, popovers, and sheets, `--shadow-lift` for an instrument surface
   that must read as lifted off the canvas with a crisp edge (the chat
-  composer). Each is a complete, theme-aware `box-shadow` value — write
-  `box-shadow: var(--shadow-lift)` and nothing else: no border, ring, or
-  extra drop beside it, and never a literal shadow color.
+  composer), and `--shadow-keycap` for a key cap (the lift turned upside
+  down, so the key reads as set into the surface). Each is a complete,
+  theme-aware `box-shadow` value — write `box-shadow: var(--shadow-lift)`
+  and nothing else: no border, ring, or extra drop beside it, and never a
+  literal shadow color.
 - Use a restrained scale: 4/6/8 px for internal gaps, 12/14/20/24 px for
   section spacing, and the system 6 px radius. Oversized padding makes these
   dense operator tools look like marketing pages.

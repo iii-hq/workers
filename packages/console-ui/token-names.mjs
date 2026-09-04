@@ -51,6 +51,7 @@ export const tokenNames = Object.freeze([
   '--shadow-raised',
   '--shadow-floating',
   '--shadow-lift',
+  '--shadow-keycap',
   '--motion-duration-instant',
   '--motion-duration-fast',
   '--motion-duration-control',
