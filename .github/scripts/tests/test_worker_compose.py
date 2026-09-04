@@ -118,7 +118,14 @@ def test_claude_code_release_installs_its_shared_ui_workspace():
 def test_worker_bundle_start_commands_target_packaged_entrypoints():
     document = yaml.safe_load(CATALOG.read_text(encoding="utf-8"))
 
-    for worker_id in ("claude-code", "opencode", "opengantry", "openwiki"):
+    for worker_id in (
+        "claude-code",
+        "cursor",
+        "opencode",
+        "opengantry",
+        "openwiki",
+        "vscode",
+    ):
         worker = document["workers"][worker_id]
         manifest = yaml.safe_load(
             (ROOT / worker["source"]["path"] / "iii.worker.yaml").read_text(

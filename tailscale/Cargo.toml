@@ -25,7 +25,7 @@ serde_json = "1"
 serde_yaml = "0.9"
 schemars = "0.8"
 anyhow = "1"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 qrcode = "0.14"
