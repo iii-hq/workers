@@ -69,11 +69,14 @@ fn is_prune_placeholder(blocks: &[ContentBlock], function_id: &str) -> bool {
         return false;
     };
     let prefix = format!("[output of {function_id} pruned: was ~");
-    text.strip_prefix(&prefix)
+    let Some(tokens) = text
+        .strip_prefix(&prefix)
         .and_then(|rest| rest.strip_suffix(" tokens; re-call it if still needed]"))
-        .is_some_and(|tokens| {
-            !tokens.is_empty() && tokens.bytes().all(|byte| byte.is_ascii_digit())
-        })
+        .and_then(|tokens| tokens.parse::<u64>().ok())
+    else {
+        return false;
+    };
+    placeholder(function_id, tokens) == *text
 }
 
 fn text_of(blocks: &[ContentBlock]) -> String {
@@ -695,6 +698,16 @@ mod tests {
         .unwrap()
     }
 
+    fn text_result(function_id: &str, text: String, ts: i64) -> AgentMessage {
+        serde_json::from_value(json!({
+            "role": "function_result", "function_call_id": format!("c{ts}"),
+            "function_id": function_id,
+            "content": [{ "type": "text", "text": text }],
+            "timestamp": ts
+        }))
+        .unwrap()
+    }
+
     fn params() -> PruneParams {
         PruneParams {
             protect_recent_tokens: 100,
@@ -923,6 +936,52 @@ mod tests {
         assert_eq!(stats.pruned_parts, 1);
         assert_eq!(messages[1], canonical_before);
         assert!(text_of(messages[2].content()).starts_with("[output of shell::run pruned"));
+    }
+
+    #[test]
+    fn noncanonical_leading_zero_marker_is_pruned() {
+        let marker = format!(
+            "[output of shell::run pruned: was ~{}1 tokens; re-call it if still needed]",
+            "0".repeat(256)
+        );
+        let mut messages = vec![
+            user("first", 1),
+            text_result("shell::run", marker.clone(), 2),
+            user("second", 3),
+        ];
+        let mut p = params();
+        p.protect_recent_tokens = 0;
+        p.max_output_chars = 0;
+        p.decay_user_turns = 1;
+        p.protected_user_turns = 0;
+
+        let stats = prune(&mut messages, &p, &HeuristicEstimator);
+
+        assert_eq!(stats.pruned_parts, 1);
+        assert_ne!(text_of(messages[1].content()), marker);
+    }
+
+    #[test]
+    fn noncanonical_overflow_marker_is_pruned() {
+        let marker = format!(
+            "[output of shell::run pruned: was ~{} tokens; re-call it if still needed]",
+            "9".repeat(10_000)
+        );
+        let mut messages = vec![
+            user("first", 1),
+            text_result("shell::run", marker.clone(), 2),
+            user("second", 3),
+        ];
+        let mut p = params();
+        p.protect_recent_tokens = 0;
+        p.max_output_chars = 0;
+        p.decay_user_turns = 1;
+        p.protected_user_turns = 0;
+
+        let stats = prune(&mut messages, &p, &HeuristicEstimator);
+
+        assert_eq!(stats.pruned_parts, 1);
+        assert_ne!(text_of(messages[1].content()), marker);
     }
 
     #[test]
