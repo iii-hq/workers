@@ -126,7 +126,7 @@ async fn main() -> Result<()> {
                 async move { put_object::handle(&st, req).await.map_err(Error::from) }
             })
             .description(
-                "Write a small object inline as base64 (10 MiB hard limit). This buffers and inflates the payload; use presignPost or a presignUrl PUT for files and large objects.",
+                "Upload a small object inline as base64 (10 MiB hard limit). This buffers and inflates the payload; use presignPost or a presignUrl PUT for files and large objects.",
             ),
         );
     }
@@ -138,7 +138,7 @@ async fn main() -> Result<()> {
                 let st = st.clone();
                 async move { get_object::handle(&st, req).await.map_err(Error::from) }
             })
-            .description("Read a small object inline as base64 (10 MiB hard limit). This buffers and inflates the payload; use a GET URL from presignUrl for files and large objects."),
+            .description("Download a small object inline as base64 (10 MiB hard limit). This buffers and inflates the payload; use a presignUrl GET for files and large objects."),
         );
     }
     {
@@ -150,7 +150,7 @@ async fn main() -> Result<()> {
                 async move { presign_post::handle(&st, req).await.map_err(Error::from) }
             })
             .description(
-                "Issue a short-lived multipart/form-data POST for direct browser upload without buffering the file in the engine or worker RPC path.",
+                "Issue a short-lived multipart/form-data POST for direct browser upload. The file never buffers in the engine or worker RPC path.",
             ),
         );
     }

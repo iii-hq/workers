@@ -63,7 +63,7 @@ pub const COMPACT_DESC: &str =
 
 pub const NTH_ID: &str = "fp::nth";
 pub const NTH_DESC: &str =
-    "Element at index n; negative n counts from the end (lodash _.nth). Out of bounds \
+    "Return array element n (negative counts from the end, lodash _.nth). Out of bounds \
      errors naming the length.";
 
 pub const GET_OR_ID: &str = "fp::getOr";
@@ -91,19 +91,19 @@ pub const SUM_DESC: &str =
 
 pub const MEAN_ID: &str = "fp::mean";
 pub const MEAN_DESC: &str =
-    "Arithmetic mean of an array of numbers (lodash _.mean/_.meanBy); `path` plucks from \
-     each element first. Deviates from lodash: an EMPTY array errors instead of yielding \
+    "Average an array of numbers (lodash _.mean/_.meanBy); `path` plucks from each \
+     element first. Deviates from lodash: an EMPTY array errors instead of yielding \
      NaN.";
 
 pub const MIN_ID: &str = "fp::min";
 pub const MIN_DESC: &str =
-    "Smallest number in an array (lodash _.min/_.minBy); `path` plucks from each element \
-     first. Returns the NUMBER, not the element holding it. An empty array errors.";
+    "Find the smallest number in an array (lodash _.min/_.minBy); `path` plucks from \
+     each element first. Returns the NUMBER, not the element. An empty array errors.";
 
 pub const MAX_ID: &str = "fp::max";
 pub const MAX_DESC: &str =
-    "Largest number in an array (lodash _.max/_.maxBy); `path` plucks from each element \
-     first. Returns the NUMBER, not the element holding it. An empty array errors.";
+    "Find the largest number in an array (lodash _.max/_.maxBy); `path` plucks from \
+     each element first. Returns the NUMBER, not the element. An empty array errors.";
 
 pub const GROUP_BY_ID: &str = "fp::groupBy";
 pub const GROUP_BY_DESC: &str =

@@ -203,7 +203,7 @@ export function registerAuth(
     },
     {
       description:
-        'Which providers a pi terminal on this host can use, and by what kind of credential: a subscription login or an API key. Read from `pi auth check` on the terminal host; never returns the credential itself.',
+        'Check which providers a pi terminal on this host can use. Reports the credential kind, a subscription login or an API key, read from `pi auth check`; never returns the credential itself.',
       request_format: { type: 'object', properties: {} },
       response_format: {
         type: 'object',

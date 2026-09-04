@@ -1,5 +1,5 @@
 {
-  "description": "Move a bank's folder into the store's .trash (recoverable by hand); never destroys data.",
+  "description": "Delete a memory bank: the folder moves to the store's .trash, recoverable by hand.",
   "function_id": "memory::bank::delete",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

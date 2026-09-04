@@ -1,6 +1,6 @@
 {
   "function_id": "browser::screenshot",
-  "description": "Capture the session viewport as a viewable JPEG. Use browser::snapshot for machine-readable structure; screenshot when layout or rendering matters.",
+  "description": "Screenshot the session's current page as a JPEG. Use browser::snapshot for machine-readable structure; screenshot when layout or rendering matters.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "ScreenshotInput",

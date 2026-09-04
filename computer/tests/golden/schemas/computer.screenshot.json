@@ -1,5 +1,5 @@
 {
-  "description": "Capture the desktop as a viewable image. This is how you see the screen before acting; the coordinate space of computer::act is this image's pixels (top-left origin).",
+  "description": "Take a screenshot of the desktop screen. This is how you see the screen before acting; the coordinate space of computer::act is this image's pixels (top-left origin).",
   "function_id": "computer::screenshot",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

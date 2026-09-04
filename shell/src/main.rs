@@ -582,13 +582,14 @@ fn register_fs(iii: &iii_sdk::IIIClient, state: &AppState) {
         fs_ls,
         fs::LsRequest,
         fs::LsResponse,
-        "List directory contents. Errors return { code, message }; common: S210 bad path, \
+        "List the files and subdirectories of a directory on the filesystem. Errors return \
+         { code, message }; common: S210 bad path, \
          S211 not found or not accessible, S212 not a directory, S215 jail escape. For \
          paginated or recursive listings prefer coder::list-folder / coder::tree."
     );
     fs_fn!("shell::fs::stat", fs_stat, fs::StatRequest, fs::StatResponse,
-        "Stat a single path (jail-relative when fs.host_roots are set). Returns the entry's type, size, \
-         mode, and mtime. Errors return { code, message }; common: S211 not found or not accessible, \
+        "Stat one file or directory: its type, size, mode, and mtime (paths jail-relative \
+         when fs.host_roots are set). Errors return { code, message }; common: S211 not found or not accessible, \
          S215 jail escape. coder::read-file with stat: true additionally reports total_lines.");
     fs_fn!("shell::fs::mkdir", fs_mkdir, fs::MkdirRequest, fs::MkdirResponse,
         "Create a directory. `mode` is an octal string like \"0755\". `parents: true` creates missing \
@@ -599,23 +600,30 @@ fn register_fs(iii: &iii_sdk::IIIClient, state: &AppState) {
         fs_rm,
         fs::RmRequest,
         fs::RmResponse,
-        "Remove a path. `recursive: true` is required to delete a non-empty directory. \
+        "Delete a file or directory. `recursive: true` is required for a non-empty directory. \
          Returns { removed, path, was_present }. Errors return { code, message }; common: \
          S211 not found or not accessible, S214 dir not empty, S215 jail escape. \
          coder::delete-file removes several paths per call."
     );
-    fs_fn!("shell::fs::chmod", fs_chmod, fs::ChmodRequest, fs::ChmodResponse,
-        "Change permissions. `mode` is an octal string like \"0644\". `uid`/`gid` optionally chown. \
-         `recursive: true` walks the tree (symlinks skipped). Returns { entries_changed, path, recursive }. \
+    fs_fn!(
+        "shell::fs::chmod",
+        fs_chmod,
+        fs::ChmodRequest,
+        fs::ChmodResponse,
+        "Change a file or directory's permissions. `mode` is an octal string like \"0644\". \
+         `uid`/`gid` optionally chown. `recursive: true` walks the tree (symlinks skipped). \
+         Returns { entries_changed, path, recursive }. \
          Errors return { code, message }; common: S210 bad mode, S211 not found or not accessible, \
-         S215 jail escape.");
+         S215 jail escape."
+    );
     fs_fn!(
         "shell::fs::mv",
         fs_mv,
         fs::MvRequest,
         fs::MvResponse,
-        "Move/rename a path. `overwrite: true` allows replacing an existing dst. Returns \
-         { moved, src, dst, overwrote }. Errors return { code, message }; common: S211 \
+        "Move or rename a file or directory. `overwrite: true` allows replacing an existing \
+         dst. Returns { moved, src, dst, overwrote }. Errors return { code, message }; \
+         common: S211 \
          src not found or not accessible, S213 dst exists, S215 jail escape. coder::move \
          moves several paths per call."
     );
@@ -624,7 +632,7 @@ fn register_fs(iii: &iii_sdk::IIIClient, state: &AppState) {
         fs_grep,
         fs::GrepRequest,
         fs::GrepResponse,
-        "Search file contents. `pattern` is a Rust regex (RE2-like); \
+        "Search file contents for a pattern (Rust regex, RE2-like); \
          `include_glob`/`exclude_glob` filter paths. Returns { matches, truncated }. \
          Errors return { code, message }; common: S217 bad regex, S215 jail escape. \
          coder::search adds context lines and noise filtering."

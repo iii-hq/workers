@@ -71,10 +71,10 @@ pub const SESSIONS_STOP_DESC: &str =
      already-stopped session succeeds with was_running=false.";
 pub const SESSIONS_ATTACH_ID: &str = "browser::sessions::attach";
 pub const SESSIONS_ATTACH_DESC: &str =
-    "Attach a session to an already-running browser over CDP (Chrome started with \
-     --remote-debugging-port): opens a fresh tab the session owns, or adopts a user tab by URL \
-     substring and releases it untouched on stop. Reaches the real profile and its logins; \
-     requires allow_attach in config.";
+    "Attach a session to an already-running browser over CDP. Opens a fresh tab the session \
+     owns, or adopts a user tab by URL substring and releases it untouched on stop. Reaches \
+     the real profile and its logins; needs Chrome started with --remote-debugging-port and \
+     allow_attach in config.";
 pub const TABS_LIST_ID: &str = "browser::tabs::list";
 pub const TABS_LIST_DESC: &str =
     "List the open tabs of a running browser reachable at a CDP endpoint (url, title, and \
@@ -91,7 +91,7 @@ pub const SNAPSHOT_DESC: &str =
      browser::screenshot; it is cheaper and machine-readable.";
 pub const SCREENSHOT_ID: &str = "browser::screenshot";
 pub const SCREENSHOT_DESC: &str =
-    "Capture the session viewport as a viewable JPEG. Use browser::snapshot for \
+    "Screenshot the session's current page as a JPEG. Use browser::snapshot for \
      machine-readable structure; screenshot when layout or rendering matters.";
 pub const ACT_ID: &str = "browser::act";
 pub const ACT_DESC: &str =
@@ -110,7 +110,7 @@ pub const EXECUTE_DESC: &str =
      returns { result, logs, state }.";
 pub const DOCTOR_ID: &str = "browser::doctor";
 pub const DOCTOR_DESC: &str =
-    "Read-only environment diagnostics: which Chromium the worker would launch, its version, \
+    "Diagnose the browser environment: which Chromium the worker would launch, its version, \
      session capacity, and any degraded capability with how to enable it. Never starts a \
      browser.";
 pub const HANDOFF_ID: &str = "browser::handoff";
@@ -161,9 +161,9 @@ pub const FRAME_DESC: &str =
      capture round-trip; poll fast. Not an agent function.";
 pub const RECORDING_START_ID: &str = "browser::recording::start";
 pub const RECORDING_START_DESC: &str =
-    "Record a session's live viewport to a video file (webm or mp4) by piping the screencast \
-     through ffmpeg. Turns screencast on if needed. Requires ffmpeg on PATH; browser::doctor \
-     reports whether it is available.";
+    "Record a session's live viewport to a video file (webm or mp4). Turns the screencast on \
+     if needed and pipes it through ffmpeg, which must be on PATH; browser::doctor reports \
+     whether it is available.";
 pub const RECORDING_STOP_ID: &str = "browser::recording::stop";
 pub const RECORDING_STOP_DESC: &str =
     "Stop a session's recording, finalize the file, and return its path, duration, and frame \
@@ -196,32 +196,31 @@ pub const ZOOM_DESC: &str =
      belongs to the loaded document and resets on navigation.";
 pub const PDF_ID: &str = "browser::pdf";
 pub const PDF_DESC: &str =
-    "Print the page to a PDF (the browser's Print -> Save as PDF) and return it base64 with \
-     a file name from the title.";
+    "Print the page to a PDF (the browser's Print -> Save as PDF). Returns it base64 with a \
+     file name from the title.";
 pub const HISTORY_LIST_ID: &str = "browser::history::list";
 pub const HISTORY_LIST_DESC: &str =
-    "The session's visited pages, newest first, for a history panel or address-bar \
-     suggestions. Filter with query. Distinct from browser::history, which moves back / \
-     forward / reloads.";
+    "List the pages this session visited, newest first, for a history panel or address-bar \
+     suggestions. Filter with query. browser::history moves back / forward / reloads instead.";
 pub const CLEAR_DATA_ID: &str = "browser::clear-data";
 pub const CLEAR_DATA_DESC: &str =
     "Clear the session's browsing data (cookies, cache, storage), like the browser's Clear \
      browsing data. Scoped to this session's browser context.";
 pub const DOWNLOADS_LIST_ID: &str = "browser::downloads::list";
 pub const DOWNLOADS_LIST_DESC: &str =
-    "The files this session downloaded (name, url, size, state), newest first. Downloads are \
-     allowed and named per session; read one with browser::download.";
+    "List the files this session downloaded (name, url, size, state), newest first. Read one \
+     with browser::download.";
 pub const DOWNLOAD_ID: &str = "browser::download";
 pub const DOWNLOAD_DESC: &str =
-    "Read one downloaded file's bytes by guid (from browser::downloads::list), base64, for \
-     saving or attaching to the chat.";
+    "Read a downloaded file's bytes for saving or attaching to the chat. Base64; guid from \
+     browser::downloads::list.";
 pub const DOWNLOAD_REMOVE_ID: &str = "browser::download::remove";
 pub const DOWNLOAD_REMOVE_DESC: &str =
     "Forget a download and delete its file from the session's download dir.";
 pub const UPLOAD_ID: &str = "browser::upload";
 pub const UPLOAD_DESC: &str =
-    "Attach up to eight base64 files to exactly one input[type=file] selected by CSS. Files are \
-     staged privately for the session and removed when it stops.";
+    "Upload up to eight base64 files to exactly one input[type=file] selected by CSS. Files \
+     are staged privately for the session and removed when it stops.";
 pub const RESIZE_ID: &str = "browser::resize";
 pub const RESIZE_DESC: &str =
     "Set the session's live viewport size (CSS pixels). The console calls this as its browser \
@@ -229,7 +228,7 @@ pub const RESIZE_DESC: &str =
      1:1; the device toolbar calls it with a preset. Clamped 200..4000.";
 pub const COOKIES_LIST_ID: &str = "browser::cookies::list";
 pub const COOKIES_LIST_DESC: &str =
-    "The cookies visible to the session's current page (name, value, domain, path, flags).";
+    "List the cookies on the session's current page (name, value, domain, path, flags).";
 pub const COOKIES_SET_ID: &str = "browser::cookies::set";
 pub const COOKIES_SET_DESC: &str =
     "Set cookies on the session, like importing a cookie file. A cookie without a domain is \

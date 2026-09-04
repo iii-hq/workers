@@ -20,8 +20,8 @@ use crate::config::WorkerConfig;
 use crate::source::{describe_error, to_parser_page, to_wire_page, PdfSource};
 
 pub const ID: &str = "pdf::extract-regions";
-pub const DESC: &str = "Extract the real text, or a markdown table, from inside bounding boxes on \
-                        given pages. Built for the hybrid path where a vision model locates a \
+pub const DESC: &str = "Extract the text inside bounding boxes on given pages, as text or a \
+                        markdown table. Built for the hybrid path where a vision model locates a \
                         region and the exact characters come from the document rather than from a \
                         transcription. Coordinates are PDF points with a top-left origin.";
 

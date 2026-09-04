@@ -157,7 +157,7 @@ pub fn register(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         iii,
         deps,
         "slack::files::upload",
-        "Upload a file (reserve URL, upload bytes, finalize) and optionally share it to a channel.",
+        "Upload a file to Slack and optionally share it to a channel.",
         |d, req: UploadReq| async move { upload(&d, req).await },
     );
 }

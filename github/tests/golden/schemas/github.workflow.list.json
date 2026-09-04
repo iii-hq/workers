@@ -1,5 +1,5 @@
 {
-  "description": "List workflows in a repo: { repo: \"owner/name\", all? } -> { value: [{id, name, path, state}] }. all includes disabled workflows.",
+  "description": "List the workflow definitions (.github/workflows files) in a repository. all includes disabled workflows.",
   "function_id": "github::workflow::list",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

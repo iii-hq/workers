@@ -1,6 +1,6 @@
 {
   "function_id": "browser::find-similar",
-  "description": "Structural auto-match: given one example element, return it plus similar elements.",
+  "description": "Find elements structurally similar to one example element, plus that element.",
   "request_schema": {
     "type": "object",
     "properties": {

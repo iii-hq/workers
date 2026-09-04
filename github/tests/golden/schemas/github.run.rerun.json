@@ -1,5 +1,5 @@
 {
-  "description": "Rerun a workflow run: { repo, run_id, failed? } -> { output }. failed reruns only the failed jobs.",
+  "description": "Rerun a workflow run. failed reruns only the failed jobs.",
   "function_id": "github::run::rerun",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

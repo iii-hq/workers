@@ -1,5 +1,5 @@
 {
-  "description": "Search repositories: { query, limit? } -> { value: [{fullName, description, url, visibility, stargazersCount, language, updatedAt, ...}] }. GitHub search syntax (e.g. \"language:rust stars:>100 topic:cli\").",
+  "description": "Search GitHub for repositories matching a query. GitHub search syntax (e.g. \"language:rust stars:>100 topic:cli\").",
   "function_id": "github::search::repos",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

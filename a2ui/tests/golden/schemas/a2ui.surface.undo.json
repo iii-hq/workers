@@ -1,5 +1,5 @@
 {
-  "description": "Restore an A2UI surface from a prior revision while creating a new monotonic revision.",
+  "description": "Undo edits to an A2UI surface by restoring a prior revision as a new monotonic revision.",
   "function_id": "a2ui::surface::undo",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

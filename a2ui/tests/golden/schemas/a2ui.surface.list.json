@@ -1,5 +1,5 @@
 {
-  "description": "List compact summaries of the durable A2UI surfaces owned by the current Harness session, newest first.",
+  "description": "List the A2UI surfaces owned by the current Harness session, newest first, as compact summaries.",
   "function_id": "a2ui::surface::list",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

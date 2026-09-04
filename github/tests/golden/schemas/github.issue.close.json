@@ -1,5 +1,5 @@
 {
-  "description": "Close an issue: { repo, number, comment?, reason?: completed|not-planned } -> { output }.",
+  "description": "Close an issue, optionally with a closing comment and a completed / not-planned reason.",
   "function_id": "github::issue::close",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

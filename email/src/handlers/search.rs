@@ -88,10 +88,10 @@ pub fn register(iii: &Arc<IIIClient>, pool: &Arc<crate::provider::imap::ImapPool
             }
         })
         .description(
-            "Stream search results from an account's IMAP folder. `query` is IMAP SEARCH \
-             syntax (RFC 9051), e.g. 'FROM alice@x SINCE 1-Jan-2026'. Frames \
+            "Search an account's emails by subject, sender, date, or text. `query` is IMAP \
+             SEARCH syntax (RFC 9051), e.g. 'FROM alice@x SINCE 1-Jan-2026'. Frames \
              { uid, message_id, from, subject, snippet, ts, seen, flagged } stream as NDJSON \
-             on the response channel, which closes when the search completes.",
+             on the response channel, which closes at completion.",
         ),
     );
 }

@@ -286,7 +286,7 @@ export class CursorWorker {
       'cursor::stop',
       async (payload: unknown) => this.stop(SessionIdSchema.parse(payload ?? {}).session_id),
       {
-        description: 'Request cancellation of the active Cursor run for a session.',
+        description: 'Stop the active Cursor run for a session.',
         request_format: jsonSchema(SessionIdSchema),
         response_format: jsonSchema(StopResponseSchema),
       },
@@ -296,7 +296,7 @@ export class CursorWorker {
       'cursor::status',
       async (payload: unknown) => this.status(SessionIdSchema.parse(payload ?? {}).session_id),
       {
-        description: 'Read durable local ACP or Bridge-reported status for a Cursor session.',
+        description: 'Check the status of a Cursor session (local ACP or Bridge).',
         request_format: jsonSchema(SessionIdSchema),
         response_format: jsonSchema(StatusResponseSchema),
       },
@@ -334,8 +334,7 @@ export class CursorWorker {
       'cursor::usage',
       async (payload: unknown) => this.usage(UsageRequestSchema.parse(payload ?? {})),
       {
-        description:
-          'Read Bridge-reported token usage and optional billed cost for a cloud Cursor session.',
+        description: 'Read token usage and billed cost for a cloud Cursor session.',
         request_format: jsonSchema(UsageRequestSchema),
         response_format: jsonSchema(UsageResponseSchema),
       },

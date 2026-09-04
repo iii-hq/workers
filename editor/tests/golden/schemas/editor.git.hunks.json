@@ -1,5 +1,5 @@
 {
-  "description": "What changed in one file: the rendered patch plus its line ranges. Compares the working tree against the index, the index against HEAD, or the working tree against HEAD — so it shows an edit made by anything, including an agent that never called this worker.",
+  "description": "Show what changed in one file: a patch plus its line ranges. Compares the working tree against the index, the index against HEAD, or the working tree against HEAD — so it shows an edit made by anything, including an agent that never called this worker.",
   "function_id": "editor::git::hunks",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

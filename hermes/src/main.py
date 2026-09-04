@@ -168,10 +168,7 @@ def main() -> None:
     iii.register_function(
         "hermes::send",
         handlers["send"],
-        description=(
-            "Deliver a message to a Hermes gateway platform (telegram, discord, slack, "
-            "and 27+ others). Outbound omnichannel."
-        ),
+        description="Send a message to a Hermes gateway platform: telegram, discord, slack, and 27+ others.",
         request_format=SEND_REQUEST_FORMAT,
         response_format=SEND_RESPONSE_FORMAT,
     )
@@ -185,7 +182,7 @@ def main() -> None:
     iii.register_function(
         "hermes::status",
         handlers["status"],
-        description="Point-in-time status of a Hermes session: live flag and stored record.",
+        description="Check a Hermes session's status: live flag and stored record.",
         request_format=SESSION_ID_FORMAT,
         response_format=STATUS_RESPONSE_FORMAT,
     )

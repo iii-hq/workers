@@ -1,5 +1,5 @@
 {
-  "description": "Edit an issue's title/body/labels/assignees: { repo, number, title?, body?, add_labels?, remove_labels?, add_assignees? } -> { output }.",
+  "description": "Edit an issue's title, body, labels, or assignees.",
   "function_id": "github::issue::edit",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

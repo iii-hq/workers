@@ -1,6 +1,6 @@
 {
   "function_id": "browser::dynamic-fetch",
-  "description": "Playwright/Chromium fetch: JS render, waits, XHR capture, CDP; extraction + bulk.",
+  "description": "Scrape a JS-rendered URL with Playwright/Chromium: waits, XHR capture, CDP.",
   "request_schema": {
     "type": "object",
     "properties": {

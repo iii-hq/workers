@@ -1,5 +1,5 @@
 {
-  "description": "Extract the real text, or a markdown table, from inside bounding boxes on given pages. Built for the hybrid path where a vision model locates a region and the exact characters come from the document rather than from a transcription. Coordinates are PDF points with a top-left origin.",
+  "description": "Extract the text inside bounding boxes on given pages, as text or a markdown table. Built for the hybrid path where a vision model locates a region and the exact characters come from the document rather than from a transcription. Coordinates are PDF points with a top-left origin.",
   "function_id": "pdf::extract-regions",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

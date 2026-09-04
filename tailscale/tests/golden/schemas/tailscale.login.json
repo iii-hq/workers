@@ -1,5 +1,5 @@
 {
-  "description": "Start a Tailscale sign-in for this node (`tailscale login`) and return the browser URL a person completes it at; call connect afterwards.",
+  "description": "Sign in to Tailscale on this node (`tailscale login`). Returns the browser URL a person completes it at; call connect afterwards.",
   "function_id": "tailscale::login",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

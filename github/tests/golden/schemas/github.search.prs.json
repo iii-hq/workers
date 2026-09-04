@@ -1,5 +1,5 @@
 {
-  "description": "Search pull requests across repositories: { query, limit? } -> { value }. Use qualifiers like \"repo:o/r is:open review:required\".",
+  "description": "Search pull requests across GitHub repositories. Use qualifiers like \"repo:o/r is:open review:required\".",
   "function_id": "github::search::prs",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

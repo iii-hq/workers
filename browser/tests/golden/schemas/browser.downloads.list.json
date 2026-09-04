@@ -1,6 +1,6 @@
 {
   "function_id": "browser::downloads::list",
-  "description": "The files this session downloaded (name, url, size, state), newest first. Downloads are allowed and named per session; read one with browser::download.",
+  "description": "List the files this session downloaded (name, url, size, state), newest first. Read one with browser::download.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "DownloadsListInput",

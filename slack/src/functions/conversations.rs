@@ -157,7 +157,7 @@ slack_method!(
     open,
     "slack::conversations::open",
     "conversations.open",
-    "Open/return a DM or MPIM channel.",
+    "Open a direct message (DM) or group DM channel with users.",
     OpenReq
 );
 slack_method!(

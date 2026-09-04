@@ -1,5 +1,5 @@
 {
-  "description": "Apply batched line ops (1-based, inclusive, applied bottom-up) then regex replace ops to one or more files; each file commits atomically. To replace a large region use two short anchors joined by .*? with dot_matches_newline: true instead of quoting it. Paths: relative to the primary root or absolute inside an allowed root (see coder::info).",
+  "description": "Edit one or more files: batched line ops (1-based, inclusive, applied bottom-up), then regex replace ops; each file commits atomically. To replace a large region use two short anchors joined by .*? with dot_matches_newline: true instead of quoting it. Paths: relative to the primary root or absolute inside an allowed root (see coder::info).",
   "function_id": "coder::update-file",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

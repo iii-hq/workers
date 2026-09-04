@@ -1,5 +1,5 @@
 {
-  "description": "Create a release: { repo, tag, title?, notes?, generate_notes?, draft?, prerelease?, target? } -> { output: <release url> }. generate_notes autogenerates from merged PRs.",
+  "description": "Create a GitHub release for a tag, optionally as a draft or prerelease. generate_notes autogenerates notes from merged PRs.",
   "function_id": "github::release::create",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

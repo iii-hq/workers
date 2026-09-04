@@ -1,5 +1,5 @@
 {
-  "description": "Paginated single-folder listing sorted by name. Entries carry only name; entry path = response path + '/' + name. Non-accessible entries are listed with non_accessible: true. Paths: relative to the primary root or absolute inside an allowed root (see coder::info).",
+  "description": "List one folder, paginated and sorted by name. Entries carry only name; entry path = response path + '/' + name. Non-accessible entries are listed with non_accessible: true. Paths: relative to the primary root or absolute inside an allowed root (see coder::info).",
   "function_id": "coder::list-folder",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

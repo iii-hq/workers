@@ -1,5 +1,5 @@
 {
-  "description": "Merge properties into one element of a freeform canvas by element id (move it, recolor it, change its text). Unknown ids error and name the canvas. The open console canvas streams the change live.",
+  "description": "Update one element of a freeform canvas by element id: move it, recolor it, change its text. Properties are merged; unknown ids error and name the canvas. The open canvas streams the change live.",
   "function_id": "canvas::element::update",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

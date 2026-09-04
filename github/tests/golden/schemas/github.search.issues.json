@@ -1,5 +1,5 @@
 {
-  "description": "Search issues across repositories: { query, limit? } -> { value: [{number, title, state, url, repository, author, labels, commentsCount, ...}] }. Use qualifiers like \"repo:o/r is:open label:bug\".",
+  "description": "Search issues across GitHub repositories. Use qualifiers like \"repo:o/r is:open label:bug\".",
   "function_id": "github::search::issues",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

@@ -1,5 +1,5 @@
 {
-  "description": "Edit a pull request's title/body/base/labels: { repo, number, title?, body?, base?, add_labels?, remove_labels? } -> { output }.",
+  "description": "Edit a pull request's title, body, base branch, or labels.",
   "function_id": "github::pr::edit",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

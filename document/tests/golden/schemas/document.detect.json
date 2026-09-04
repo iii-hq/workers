@@ -1,5 +1,5 @@
 {
-  "description": "Identify a document's format from its bytes (falling back to the file name for CSV, which carries no signature), and report which family it belongs to and whether this worker can convert it. Microseconds, and no conversion.",
+  "description": "Identify a document's file format from its bytes. Reports the family it belongs to and whether this worker can convert it, falling back to the file name for CSV, which carries no signature. Microseconds, and no conversion.",
   "function_id": "document::detect",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

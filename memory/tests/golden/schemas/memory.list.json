@@ -1,5 +1,5 @@
 {
-  "description": "Page through a bank's memories, newest first. `include_superseded` shows history too.",
+  "description": "List a bank's memories page by page, newest first. `include_superseded` shows history too.",
   "function_id": "memory::list",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",

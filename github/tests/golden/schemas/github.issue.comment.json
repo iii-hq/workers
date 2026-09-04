@@ -1,5 +1,5 @@
 {
-  "description": "Comment on an issue: { repo, number, body } -> { output: <comment url> }.",
+  "description": "Comment on an issue. Returns the URL of the new comment.",
   "function_id": "github::issue::comment",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
