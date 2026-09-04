@@ -81,9 +81,10 @@ interface Outcome {
   durationMs: number
   body: string
   error?: string
-  // The endpoint answered with a cross-origin redirect. The browser will not
-  // reveal the target or the redirect's status code (302 etc.), so this is the
-  // honest ceiling: the trigger fired and redirected, we just can't read where.
+  // The endpoint answered with a redirect. Under `redirect: 'manual'` the
+  // browser returns it opaque — no target, no status code (302 etc.), same
+  // origin or not — so this is the honest ceiling: the trigger fired and
+  // redirected, we just can't read where.
   redirected?: boolean
 }
 
@@ -165,8 +166,8 @@ export function HttpTester({
     const started = performance.now()
     try {
       const response = await fetch(url, init)
-      // A cross-origin redirect comes back opaque: status 0, body unreadable.
-      // Report it as the redirect it is, not a failure.
+      // A redirect comes back opaque under `manual`: status 0, body
+      // unreadable. Report it as the redirect it is, not a failure.
       if (response.type === 'opaqueredirect') {
         setOutcome({
           ok: true,
@@ -346,9 +347,9 @@ export function HttpTester({
       ) : null}
       {outcome?.redirected ? (
         <Note>
-          The endpoint answered with a redirect to another origin. The browser
-          hides the target and its status code, so the response cannot be read
-          here, but the trigger fired and redirected as intended.
+          The endpoint answered with a redirect. The browser hides a redirect's
+          target and status code here, so the response cannot be read, but the
+          trigger fired and redirected as intended.
         </Note>
       ) : null}
       {outcome && !outcome.error && !outcome.redirected ? (
