@@ -157,7 +157,9 @@ pub struct UnsubscribeResponse {
 /// `once`, no `lifecycle`, no `conditions`, `function_id` required).
 pub const REGISTER_TOOL_DESC: &str =
     "Subscribe the current harness session to a iii trigger: omit function_id to be \
-     notified in this session, or name a non-harness function to call with the event.";
+     notified in this session, or name a non-harness function to call with the event. \
+     Returns `subscription_id`, effective `once`, and optional `note` advisories; call-target \
+     results do not return to this session.";
 pub const UNREGISTER_TOOL_DESC: &str =
     "Remove a trigger subscription owned by the current harness session.";
 
@@ -685,14 +687,6 @@ async fn handle(
         standing_binding_advisory(&req, once),
         state_catchall_advisory(&req),
         armed_wake_advisory(&req, once),
-        (binding.target.function_id != crate::functions::SEND_ID).then(|| {
-            format!(
-                "note: this binding dispatches `{}` — its result reaches nobody and cannot wake \
-                 you. Anything that must reach this chat writes state you watch with a plain \
-                 notify (no `function_id`).",
-                binding.target.function_id
-            )
-        }),
     ]
     .into_iter()
     .flatten()
@@ -1026,9 +1020,8 @@ async fn register_post_turn_hook(
         subscription_id,
         once: false,
         note: Some(format!(
-            "post-turn validator bound to THIS session only ({session_id}): every completing \
-             turn must pass {function_id} or it is re-prompted, bounded by \
-             max_validation_retries. STANDING — unregister with this id when the goal is met."
+            "post-turn validator bound to THIS session only ({session_id}); unregister with this \
+             id when the goal is met."
         )),
     })
 }
@@ -1968,6 +1961,24 @@ mod tests {
             expose: Default::default(),
         }));
         assert!(native_control_tools(&walled).is_empty());
+    }
+
+    #[test]
+    fn register_control_tool_contract_has_compact_return_guidance() {
+        let expected = "Subscribe the current harness session to a iii trigger: omit function_id to be \
+                        notified in this session, or name a non-harness function to call with the event. \
+                        Returns `subscription_id`, effective `once`, and optional `note` advisories; call-target \
+                        results do not return to this session.";
+        let (description, _) = control_contract(REGISTER_TRIGGER_ID)
+            .expect("register_trigger should expose a public control contract");
+        assert_eq!(description, expected);
+
+        let tool = native_control_tools(&policy_allowing(&[REGISTER_TRIGGER_ID]))
+            .into_iter()
+            .next()
+            .expect("register_trigger should be present on the native control surface");
+        assert_eq!(tool.name, REGISTER_TRIGGER_ID);
+        assert_eq!(tool.description, expected);
     }
 
     fn policy_allowing(allow: &[&str]) -> CompiledPolicy {

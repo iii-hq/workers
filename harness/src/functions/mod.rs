@@ -44,7 +44,7 @@ pub const SPAWN_ID: &str = "harness::spawn";
 pub const SPAWN_DESC: &str =
     "Spawn a sub-agent in a child session (never a trigger target) and return \
      { child_session_id, child_turn_id } immediately; the child's outcome reaches you only \
-     through whatever destination its task names. Children are leaves unless \
+     through whatever destination its task names. Check `harness::status` for child health; children are leaves unless \
      options.orchestrator is true.";
 
 pub const TURN_ID: &str = "harness::turn";
@@ -428,4 +428,20 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
     );
 
     tracing::info!("all harness::* functions registered");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SPAWN_DESC;
+
+    #[test]
+    fn spawn_tool_description_includes_a_one_shot_child_health_cue() {
+        assert_eq!(
+            SPAWN_DESC,
+            "Spawn a sub-agent in a child session (never a trigger target) and return \
+             { child_session_id, child_turn_id } immediately; the child's outcome reaches you only \
+             through whatever destination its task names. Check `harness::status` for child health; children are leaves unless \
+             options.orchestrator is true."
+        );
+    }
 }
