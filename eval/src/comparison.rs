@@ -185,6 +185,7 @@ pub async fn compare(
                     "harness::status",
                     StatusRequest {
                         session_id: session_id.clone(),
+                        verbose: false,
                     },
                 ),
                 trigger::<_, SessionMetricsResponseV1>(

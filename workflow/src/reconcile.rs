@@ -111,7 +111,7 @@ pub async fn reconcile_run(
             .iii
             .trigger(iii_sdk::protocol::TriggerRequest {
                 function_id: "harness::status".into(),
-                payload: json!({ "session_id": session_id }),
+                payload: json!({ "session_id": session_id, "verbose": true }),
                 action: None,
                 timeout_ms: Some(timeout_ms),
             })
