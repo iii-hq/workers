@@ -16,7 +16,7 @@ name = "tailscale"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = "=0.22.1-alpha.25"
+iii-sdk = "=0.23.0"
 iii-console-ui = { path = "../crates/console-ui" }
 arc-swap = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "signal", "time", "io-util", "sync"] }
