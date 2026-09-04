@@ -587,7 +587,7 @@ mod tests {
     #[tokio::test]
     async fn rebind_starts_new_port_before_stopping_old_listener() {
         let (old_port, new_port) = two_free_ports();
-        let state = AppState::new(Arc::new("ws://127.0.0.1:1".to_string()), None, None);
+        let state = AppState::new(Arc::new("ws://127.0.0.1:1".to_string()), None, None, None);
         let handle = server::start(old_port, state.clone()).await.unwrap();
         let port = new_port_cell(old_port);
 
@@ -610,7 +610,7 @@ mod tests {
         let occupied = tokio::net::TcpListener::bind(("0.0.0.0", occupied_port))
             .await
             .unwrap();
-        let state = AppState::new(Arc::new("ws://127.0.0.1:1".to_string()), None, None);
+        let state = AppState::new(Arc::new("ws://127.0.0.1:1".to_string()), None, None, None);
         let handle = server::start(old_port, state.clone()).await.unwrap();
         let port = new_port_cell(old_port);
 
