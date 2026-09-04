@@ -158,8 +158,8 @@ pub struct UnsubscribeResponse {
 pub const REGISTER_TOOL_DESC: &str =
     "Subscribe the current harness session to a iii trigger: omit function_id to be \
      notified in this session, or name a non-harness function to call with the event. \
-     Returns `subscription_id`, effective `once`, and optional `note` advisories; call-target \
-     results do not return to this session.";
+     Returns `{ subscription_id, once }`; a `note` means registration succeeded but its wiring \
+     looks suspicious. Call-target results are discarded and do not return to this session.";
 pub const UNREGISTER_TOOL_DESC: &str =
     "Remove a trigger subscription owned by the current harness session.";
 
@@ -1967,8 +1967,8 @@ mod tests {
     fn register_control_tool_contract_has_compact_return_guidance() {
         let expected = "Subscribe the current harness session to a iii trigger: omit function_id to be \
                         notified in this session, or name a non-harness function to call with the event. \
-                        Returns `subscription_id`, effective `once`, and optional `note` advisories; call-target \
-                        results do not return to this session.";
+                        Returns `{ subscription_id, once }`; a `note` means registration succeeded but its wiring \
+                        looks suspicious. Call-target results are discarded and do not return to this session.";
         let (description, _) = control_contract(REGISTER_TRIGGER_ID)
             .expect("register_trigger should expose a public control contract");
         assert_eq!(description, expected);
