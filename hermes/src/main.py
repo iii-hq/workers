@@ -168,10 +168,7 @@ def main() -> None:
     iii.register_function(
         "hermes::send",
         handlers["send"],
-        description=(
-            "Send a message to a Hermes gateway platform: telegram, discord, slack, "
-            "and 27+ others."
-        ),
+        description="Send a message to a Hermes gateway platform: telegram, discord, slack, and 27+ others.",
         request_format=SEND_REQUEST_FORMAT,
         response_format=SEND_RESPONSE_FORMAT,
     )
