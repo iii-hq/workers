@@ -33,6 +33,7 @@ export const componentNames = [
   'DialogDescription',
   'DialogTitle',
   'DialogTrigger',
+  'DirectoryPicker',
   'DropdownMenu',
   'DropdownMenuContent',
   'DropdownMenuItem',
@@ -95,6 +96,7 @@ export const componentNames = [
   'TooltipContent',
   'TooltipTrigger',
   'WorkerConfigurationDialog',
+  'Wordmark',
 ]
 
 export default componentNames

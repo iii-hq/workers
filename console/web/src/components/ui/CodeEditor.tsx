@@ -35,6 +35,19 @@ export interface CodeEditorProps {
       the editor stays prose-quiet) and registers a completion provider for
       the current `language` offering these words. Disposed on unmount. */
   completions?: readonly string[]
+  /** Fill the container and own vertical scrolling instead of growing with
+      content. The default grows so a short field reads like a textarea; a
+      file of thousands of lines needs the editor to virtualize its own
+      viewport — with `fill` only visible lines are rendered. Decided at
+      mount. */
+  fill?: boolean
+  /** Show the line-number gutter, folding and current-line highlight — the
+      code-file presentation. Off by default (prose fields). */
+  lineNumbers?: boolean
+  /** Soft-wrap long lines. Default true. */
+  wordWrap?: boolean
+  /** Render the minimap; only meaningful together with `fill`. */
+  minimap?: boolean
 }
 
 /* The pre-Monaco fallback (and permanent degraded mode if the editor chunk
@@ -42,6 +55,43 @@ export interface CodeEditorProps {
    with, so the swap-in doesn't reflow the text. */
 const EDITOR_TYPOGRAPHY =
   'm-0 whitespace-pre-wrap break-words px-3 py-2 text-left font-code text-[12.5px] leading-[19px]'
+
+/** Presentation knobs that map straight onto Monaco options. Applied at
+    mount and again whenever the props change. */
+function presentationOptions({
+  fill,
+  lineNumbers,
+  wordWrap,
+  minimap,
+}: {
+  fill: boolean
+  lineNumbers: boolean
+  wordWrap: boolean
+  minimap: boolean
+}): monacoNs.editor.IEditorOptions {
+  return {
+    wordWrap: wordWrap ? 'on' : 'off',
+    lineNumbers: lineNumbers ? 'on' : 'off',
+    folding: lineNumbers,
+    lineDecorationsWidth: lineNumbers ? 10 : 12,
+    lineNumbersMinChars: lineNumbers ? 3 : 0,
+    renderLineHighlight: lineNumbers ? 'line' : 'none',
+    minimap: { enabled: fill && minimap },
+    scrollbar: fill
+      ? {
+          vertical: 'auto',
+          horizontal: 'auto',
+          alwaysConsumeMouseWheel: true,
+          useShadows: false,
+        }
+      : {
+          vertical: 'hidden',
+          horizontal: 'hidden',
+          alwaysConsumeMouseWheel: false,
+          useShadows: false,
+        },
+  }
+}
 
 const MONACO_OPTIONS: monacoNs.editor.IStandaloneEditorConstructionOptions = {
   automaticLayout: true,
@@ -106,6 +156,10 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
       'aria-label': ariaLabel,
       onKeyDown,
       completions,
+      fill = false,
+      lineNumbers = false,
+      wordWrap = true,
+      minimap = false,
     },
     ref,
   ) => {
@@ -129,7 +183,8 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
       editor.setPosition({ lineNumber, column: Math.max(1, column) })
       editor.revealLineInCenter(lineNumber)
       const host = hostRef.current
-      const scroller = scrollParentOf(host)
+      // A filled editor scrolls itself; the outer pane has nothing to move.
+      const scroller = latest.current.fill ? null : scrollParentOf(host)
       if (host && scroller) {
         const hostTop =
           host.getBoundingClientRect().top -
@@ -157,8 +212,24 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
     }, [])
 
     // The mount effect runs once; it reads mount-time props through here.
-    const latest = React.useRef({ value, language, autoFocus })
-    latest.current = { value, language, autoFocus }
+    const latest = React.useRef({
+      value,
+      language,
+      autoFocus,
+      fill,
+      lineNumbers,
+      wordWrap,
+      minimap,
+    })
+    latest.current = {
+      value,
+      language,
+      autoFocus,
+      fill,
+      lineNumbers,
+      wordWrap,
+      minimap,
+    }
     const onChangeRef = React.useRef(onChange)
     onChangeRef.current = onChange
 
@@ -175,8 +246,10 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
       void import('@/lib/monaco')
         .then(({ monaco, CONSOLE_THEME, codeFontFamily }) => {
           if (disposed || !hostRef.current) return
+          const filled = latest.current.fill
           const editor = monaco.editor.create(hostRef.current, {
             ...MONACO_OPTIONS,
+            ...presentationOptions(latest.current),
             value: latest.current.value,
             language: latest.current.language,
             theme: CONSOLE_THEME,
@@ -185,8 +258,11 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
           editorRef.current = editor
           editor.getModel()?.updateOptions({ tabSize: 2, insertSpaces: true })
 
+          // Growing mode sizes the host to the content so the OUTER pane
+          // scrolls; filled mode leaves the host at the container's height
+          // and lets Monaco virtualize the viewport.
           const fitHeight = () => {
-            if (hostRef.current)
+            if (hostRef.current && !filled)
               hostRef.current.style.height = `${editor.getContentHeight()}px`
           }
           editor.onDidChangeModelContent(() => {
@@ -195,7 +271,7 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
             // re-bound below on every render via this stable dispatcher.
             onChangeRef.current(editor.getValue())
           })
-          editor.onDidContentSizeChange(fitHeight)
+          if (!filled) editor.onDidContentSizeChange(fitHeight)
           fitHeight()
           if (latest.current.autoFocus) editor.focus()
           setReady(true)
@@ -238,6 +314,15 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
           monaco.editor.setModelLanguage(model, language)
       })
     }, [ready, language])
+
+    React.useEffect(() => {
+      if (!ready) return
+      const editor = editorRef.current
+      if (!editor) return
+      editor.updateOptions(
+        presentationOptions({ fill, lineNumbers, wordWrap, minimap }),
+      )
+    }, [ready, fill, lineNumbers, wordWrap, minimap])
 
     React.useEffect(() => {
       if (!ready) return
@@ -329,6 +414,7 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
         inert={disabled || undefined}
         className={cn(
           'relative bg-bg',
+          fill && 'h-full min-h-0 overflow-hidden',
           disabled && 'pointer-events-none opacity-40',
           className,
         )}
@@ -355,12 +441,13 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
       >
         <div
           ref={hostRef}
-          className={
+          className={cn(
             // Until the swap, the host hides under the in-flow fallback
             // textarea (which is what sizes the wrapper) — `invisible`
             // keeps its box measurable for Monaco's initial layout.
-            ready ? undefined : 'invisible absolute inset-0 overflow-hidden'
-          }
+            ready ? undefined : 'invisible absolute inset-0 overflow-hidden',
+            ready && fill && 'h-full',
+          )}
         />
         {!ready ? (
           <textarea
@@ -380,7 +467,8 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
             rows={Math.max(1, value.split('\n').length)}
             className={cn(
               EDITOR_TYPOGRAPHY,
-              'relative block w-full resize-none overflow-hidden',
+              'relative block w-full resize-none',
+              fill ? 'h-full overflow-auto' : 'overflow-hidden',
               'bg-transparent text-ink caret-ink',
               'placeholder:text-ink-ghost focus:outline-none',
             )}

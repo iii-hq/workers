@@ -93,6 +93,14 @@ export interface PageRenderProps {
    */
   tabId: string
   /**
+   * Stable id of the pane (column) hosting this render inside that tab —
+   * two panes of the same page in one tab get different ids, so state a
+   * page keeps per instance (its own folder, its own terminals) keys on
+   * this. Persists with the workspace. Empty string outside a workspace
+   * tab.
+   */
+  paneId: string
+  /**
    * Close the pane hosting this page (a split drops the column; a
    * single-column tab detaches back to the attach affordance). Pass it to
    * `PageHeader`'s `onClose` — every page header carries the standard ✕.
@@ -515,7 +523,8 @@ export interface Host {
     selectConversation?(sessionId: string): void
     /**
      * Ask the mounted conversation to adopt a validated working directory.
-     * Call this only from an explicit user action such as "Use for chat".
+     * Call this only from an explicit user action, such as the user picking
+     * a folder in a page that sits beside the chat.
      */
     requestWorkingDirectoryChange?(request: {
       sessionId: string

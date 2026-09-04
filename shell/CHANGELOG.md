@@ -37,6 +37,15 @@
 - **Compare with…** — the working copy of a file against any branch, tag,
   recent commit or typed revision, from the editor header, the tabs or the
   explorer menu.
+- **A diff tab says why it shows nothing.** No line changes, only
+  whitespace changed (with a button that shows it), an image, a binary, a
+  turn that never touched the file or whose record is gone: each takes the
+  same notice shape as a file that could not be opened — icon, title, path,
+  one line and the way out (open the file, try again) — instead of a bare
+  line of text. A caveat above a diff that still renders (compared against
+  the last commit, showing the working copy, absent at the revision) is the
+  console's status row, warn-tinted when the diff shows more than the
+  source promises.
 - **The chat composer's folder picker, in the header and the empty pane.**
   The console now shares `DirectoryPicker` (remembered projects first, a
   level-by-level browse to add one, every pick validated by this worker),

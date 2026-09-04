@@ -439,6 +439,8 @@ async fn generate_step(
                 &record.turn_id,
                 record.parent.as_ref(),
                 record.display_parent_session_id.as_deref(),
+                record.message_preview.as_deref(),
+                record.depth,
             )
             .await;
         if let Err(reason) = deps.hooks.run_pre_turn(&record, payload.step).await {

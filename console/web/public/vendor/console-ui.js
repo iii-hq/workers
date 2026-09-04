@@ -30,6 +30,7 @@ export const {
   DialogDescription,
   DialogTitle,
   DialogTrigger,
+  DirectoryPicker,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -92,5 +93,6 @@ export const {
   TooltipContent,
   TooltipTrigger,
   WorkerConfigurationDialog,
+  Wordmark,
 } = api.components
 export default api

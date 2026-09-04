@@ -1652,6 +1652,7 @@ function ScreenBody({
         pageId={extId}
         panelSide={panelSide}
         tabId={tabId}
+        paneId={paneId}
         onRequestClose={onClose}
         setDirty={setDirty}
         commands={commands}

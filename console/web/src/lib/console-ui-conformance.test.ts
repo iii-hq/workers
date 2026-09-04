@@ -22,6 +22,7 @@ import componentNames from '@iii-dev/console-ui/component-names'
 import tokenNames from '@iii-dev/console-ui/token-names'
 import uiClasses, { uiClassNames } from '@iii-dev/console-ui/ui-classes'
 import { describe, expect, it } from 'vitest'
+import { DirectoryPicker } from '@/components/chat/DirectoryPicker'
 import { ModelPicker } from '@/components/chat/ModelPicker'
 import { AnnotationLayer, AnnotationList } from '@/components/ui/Annotations'
 import { AnsiText } from '@/components/ui/AnsiText'
@@ -110,6 +111,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/Tooltip'
+import { Wordmark } from '@/components/ui/Wordmark'
 import { components } from '@/lib/console-api'
 import { Markdown } from '@/lib/markdown'
 import { CodeHighlight, JsonHighlight } from '@/lib/syntax'
@@ -205,6 +207,8 @@ const conformance: {
   TooltipContent: typeof ConsoleUi.TooltipContent
   TooltipTrigger: typeof ConsoleUi.TooltipTrigger
   WorkerConfigurationDialog: typeof ConsoleUi.WorkerConfigurationDialog
+  DirectoryPicker: typeof ConsoleUi.DirectoryPicker
+  Wordmark: typeof ConsoleUi.Wordmark
 } = {
   AnnotationLayer,
   AnnotationList,
@@ -290,6 +294,8 @@ const conformance: {
   TooltipContent,
   TooltipTrigger,
   WorkerConfigurationDialog,
+  DirectoryPicker,
+  Wordmark,
 }
 
 const workerBadgeProps: ConsoleUi.BadgeProps = { variant: 'ok' }

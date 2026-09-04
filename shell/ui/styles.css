@@ -4711,6 +4711,13 @@
   flex: 1;
   min-height: 0;
 }
+/* A caveat above a diff that still renders (compared against the last
+   commit, showing the working copy, absent at the revision): the console's
+   StatusPanel row, kept off the diff's edges. */
+[data-iii-ui="shell"] .shui-diff-note {
+  flex: none;
+  margin: 8px 10px 0;
+}
 [data-iii-ui="shell"] .shui-agent-tag {
   display: inline-flex;
   align-items: center;

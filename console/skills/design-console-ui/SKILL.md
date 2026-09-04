@@ -318,7 +318,8 @@ older Console versions.
   `PageShell` and `PageHeader`; wire `onRequestClose`; use `PageBody`,
   `PageSidebar`, and `PageMain` when their structure fits.
 - Page render props: use `panelSide` only to place wide navigation on the
-  outside edge; key per-tab state by `tabId`; react to live `workingDir`; use
+  outside edge; key per-pane state by `paneId` (`tabId` on older consoles,
+  and the same page may be open twice in one tab); react to live `workingDir`; use
   `conversationId` for exact session subscriptions; treat `panelContext` as
   ephemeral JSON navigation context.
 - `host.panels?.open`: place or reuse a registered contextual page beside

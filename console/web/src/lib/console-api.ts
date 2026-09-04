@@ -12,6 +12,7 @@
 
 import tokenNames from '@iii-dev/console-ui/token-names'
 import sharedUiClasses from '@iii-dev/console-ui/ui-classes'
+import { DirectoryPicker } from '@/components/chat/DirectoryPicker'
 import { ModelPicker } from '@/components/chat/ModelPicker'
 import { AnnotationLayer, AnnotationList } from '@/components/ui/Annotations'
 import { AnsiText } from '@/components/ui/AnsiText'
@@ -100,6 +101,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/Tooltip'
+import { Wordmark } from '@/components/ui/Wordmark'
 import { useTheme } from '@/hooks/use-theme'
 import type { IiiClient } from '@/lib/iii-client'
 import { Markdown } from '@/lib/markdown'
@@ -201,6 +203,8 @@ export const components: ConsoleApi['components'] = {
   // `configurationId`; the Console supplies the PageHeader action and opens
   // the worker inside global Settings.
   WorkerConfigurationDialog,
+  DirectoryPicker,
+  Wordmark,
 }
 
 /** Public token/recipe inventories are canonicalized in the workspace package. */

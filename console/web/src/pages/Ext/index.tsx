@@ -42,6 +42,11 @@ interface ExtPageProps {
    */
   tabId?: string
   /**
+   * Stable id of the hosting pane inside that tab — forwarded so a page
+   * opened twice in one tab keys per-instance state. Empty outside a tab.
+   */
+  paneId?: string
+  /**
    * Close the hosting pane — forwarded so the page's `PageHeader` ✕ works.
    * Absent when rendered outside a closable pane.
    */
@@ -62,6 +67,7 @@ export function ExtPage({
   pageId: pageIdProp,
   panelSide = 'left',
   tabId = '',
+  paneId = '',
   onRequestClose,
   workingDir,
   conversationId,
@@ -104,6 +110,7 @@ export function ExtPage({
       <Body
         panelSide={panelSide}
         tabId={tabId}
+        paneId={paneId}
         onRequestClose={onRequestClose}
         workingDir={workingDir}
         panelContext={panelContext}

@@ -130,7 +130,7 @@ describe('loadTurnDiff', () => {
     })
     const out = await loadTurnDiff(host, '/r', 'src/a.ts', turn([record({ path: '/r/src/a.ts', before: { truncated: true } })]))
     expect(out.oldContents).toBe('committed')
-    expect(out.note).toContain('last commit')
+    expect(out.note?.headline).toContain('last commit')
   })
 
   it('reports nothing to diff for an unknown file or an uncommitted lost pre-image', async () => {

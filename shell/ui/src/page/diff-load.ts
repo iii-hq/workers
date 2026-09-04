@@ -7,17 +7,32 @@
 
 import type { Host } from '@iii-dev/console-ui'
 import { coderReadFile, joinPath } from './coder'
-import type { DiffSource } from './diff-source'
+import { type DiffSource, diffSourceLabel } from './diff-source'
 import { gitHeadBaseline } from './git'
 import { EDITOR_FULL_READ_BUDGET } from './large-file'
 import { imageMimeFromPath } from './file-kinds'
 import { fetchSessionTurn, relativeToRoot, type SessionTurn, type TurnFileRecord, type TurnPreImage } from './turns'
 
+/** What a diff tab says above the diff, or instead of it: a headline in
+    plain words, one line on what that means for the reader, and whether it
+    warns (the diff shows more or less than the source promises) or merely
+    informs. */
+export interface DiffNote {
+  headline: string
+  detail?: string
+  tone?: 'neutral' | 'warn'
+}
+
+const IMAGE_NOTE: DiffNote = {
+  headline: 'This is an image',
+  detail: 'Images have no text diff. Open the file to view it.',
+}
+
 export interface DiffContents {
   oldContents: string
   newContents: string
-  /** A caveat worth a line above the diff. */
-  note?: string
+  /** A caveat worth a row above the diff, or the reason there is none. */
+  note?: DiffNote
   /** Neither side can be shown as text. */
   binary?: boolean
   /** The old side is not available at all: nothing to diff. */
@@ -77,7 +92,7 @@ export async function worktreeSide(
 
 function imageOrText(path: string, oldSide: string | null, newSide: string | null, extra: Partial<DiffContents> = {}): DiffContents {
   if (imageMimeFromPath(path) !== null) {
-    return { oldContents: '', newContents: '', binary: true, note: 'binary image: open the file to view it', ...extra }
+    return { oldContents: '', newContents: '', binary: true, note: IMAGE_NOTE, ...extra }
   }
   return { oldContents: oldSide ?? '', newContents: newSide ?? '', ...extra }
 }
@@ -105,12 +120,20 @@ export async function loadTurnDiff(
 ): Promise<DiffContents> {
   const file = turnFileFor(turn, root, rel)
   if (file === null) {
-    return { oldContents: '', newContents: '', noBaseline: true, note: 'this turn has no record for the file' }
+    return {
+      oldContents: '',
+      newContents: '',
+      noBaseline: true,
+      note: {
+        headline: 'This turn did not touch the file',
+        detail: 'The turn kept no record of this path, so there is nothing to compare.',
+      },
+    }
   }
   if (imageMimeFromPath(rel) !== null) {
-    return { oldContents: '', newContents: '', binary: true, note: 'binary image: open the file to view it' }
+    return { oldContents: '', newContents: '', binary: true, note: IMAGE_NOTE }
   }
-  let note: string | undefined
+  let note: DiffNote | undefined
   let oldSide: string | null
   if (file.before == null && file.kind === 'created') {
     // A creation the watcher saw: no stored pre-image, but the file did
@@ -125,10 +148,23 @@ export async function loadTurnDiff(
       const cwd = slash === -1 ? root : joinPath(root, rel.slice(0, slash))
       const committed = await gitHeadBaseline(host, cwd, slash === -1 ? rel : rel.slice(slash + 1))
       if (committed === null) {
-        return { oldContents: '', newContents: '', noBaseline: true, note: 'the body before this turn was not kept and the file is not committed' }
+        return {
+          oldContents: '',
+          newContents: '',
+          noBaseline: true,
+          note: {
+            headline: 'Nothing to compare against',
+            detail: 'The body before this turn was not kept and the file is not committed, so the old side is gone.',
+            tone: 'warn',
+          },
+        }
       }
       oldSide = committed
-      note = 'compared against the last commit: the body before this turn was not kept'
+      note = {
+        headline: 'Compared against the last commit',
+        detail: 'The body before this turn was not kept, so edits made since the commit but before the turn show up here too.',
+        tone: 'warn',
+      }
     }
   }
   let newSide: string | null
@@ -141,7 +177,11 @@ export async function loadTurnDiff(
       const current = await worktreeSide(host, root, rel)
       newSide = current.contents
       worktreeRevision = current.revision
-      note = note ?? 'the body after this turn was not kept: showing the working copy'
+      note = note ?? {
+        headline: 'Showing the working copy',
+        detail: 'The body after this turn was not kept, so edits made since the turn show up here too.',
+        tone: 'warn',
+      }
     }
   } else {
     const current = await worktreeSide(host, root, rel)
@@ -188,17 +228,41 @@ export async function loadDiffContents(
       const [ref, current] = await Promise.all([gitSide(host, root, `${source.ref}:./${path}`), worktreeSide(host, root, path)])
       return imageOrText(path, ref, current.contents, {
         worktreeRevision: current.revision,
-        note: ref === null ? `${path} does not exist at ${source.ref}; the whole working copy reads as added` : undefined,
+        note:
+          ref === null
+            ? {
+                headline: `Not in ${diffSourceLabel(source)}`,
+                detail: 'The file does not exist at that revision, so the whole working copy reads as added.',
+              }
+            : undefined,
       })
     }
     case 'turn': {
       const turn = await turns.get(source.turnId)
-      if (turn === null) return { oldContents: '', newContents: '', noBaseline: true, note: 'this turn is no longer in the change history' }
+      if (turn === null) {
+        return {
+          oldContents: '',
+          newContents: '',
+          noBaseline: true,
+          note: {
+            headline: 'This turn is no longer in the change history',
+            detail: 'Its record could not be read from the worker: it may have been pruned, or the read failed.',
+            tone: 'warn',
+          },
+        }
+      }
       return loadTurnDiff(host, root, path, turn)
     }
     case 'change': {
       const out = await host.iii.trigger<ChangeDiffResponse>('coder::change-diff', { change_id: source.changeId })
-      if (out.is_binary) return { oldContents: '', newContents: '', binary: true, note: 'binary file: no text diff' }
+      if (out.is_binary) {
+        return {
+          oldContents: '',
+          newContents: '',
+          binary: true,
+          note: { headline: 'This is a binary file', detail: 'There is no text diff to show.' },
+        }
+      }
       return { oldContents: out.old_contents ?? '', newContents: out.new_contents ?? '' }
     }
   }

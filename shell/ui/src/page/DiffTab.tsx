@@ -4,7 +4,10 @@
    source, the +/- totals, the display options and the verbs that fit
    the source: stage / unstage / discard for the index, revert for a
    turn, a revision picker for compare, and "open the file" everywhere.
-   Read-only: editing happens in the file tab. */
+   Read-only: editing happens in the file tab. What the body says when it
+   has no diff to show takes the pane's one notice shape (`PaneNotice`); a
+   caveat above a diff that still renders is the console's `StatusPanel`
+   row. */
 
 import {
   Button,
@@ -16,27 +19,35 @@ import {
   FileDiff,
   IconButton,
   Selector,
+  StatusPanel,
 } from '@iii-dev/console-ui'
 import {
+  Binary,
   Check,
   CircleAlert,
+  Equal,
+  FileImage,
+  FileQuestionMark,
   FileStack,
   FileSymlink,
   FileX,
+  Info,
   Minus,
   MoreHorizontal,
   Plus,
   RefreshCw,
   Space,
+  TriangleAlert,
   Undo2,
   WholeWord,
   WrapText,
 } from 'lucide-react'
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { Breadcrumbs } from './Breadcrumbs'
-import type { DiffContents } from './diff-load'
+import type { DiffContents, DiffNote } from './diff-load'
 import { type DiffSource, diffSourceLabel, diffSourceSides } from './diff-source'
 import { diffLines, diffTotals } from './diff'
+import { imageMimeFromPath } from './file-kinds'
 import { firstChangedLine, gutterLineFromPath, resolveEditorLine } from './open-line'
 import { PaneNotice } from './PaneNotice'
 import { type WholeFileChange, wholeFileChange, wholeFileLabel } from './review-split'
@@ -145,7 +156,24 @@ export function DiffTab({
     actions.openFile(path, resolveEditorLine(ops, target))
   }
 
-  const canOpen = actions.openFile !== undefined && contents !== null && !contents.binary
+  // An image opens in the editor's preview; other binaries have nowhere to go.
+  const isImage = imageMimeFromPath(path) !== null
+  const canOpen = actions.openFile !== undefined && contents !== null && (!contents.binary || isImage)
+  const openButton = canOpen ? (
+    <Button type="button" variant="ghost" size="sm" onClick={() => actions.openFile?.(path)}>
+      <FileSymlink aria-hidden="true" />
+      Open the file
+    </Button>
+  ) : null
+  const retryButton = (
+    <Button type="button" variant="ghost" size="sm" onClick={onReload}>
+      <RefreshCw aria-hidden="true" />
+      Try again
+    </Button>
+  )
+  const empty = totals !== null && totals.add === 0 && totals.del === 0
+  // Hiding whitespace can empty a diff that is not empty; say so, with the way back.
+  const whitespaceOnly = empty && options.hideWhitespace && contents !== null && contents.oldContents !== contents.newContents
   return (
     <div className="shui-main-pane shui-diff-tab" data-source={source.type}>
       <div className="shui-editor-head">
@@ -199,7 +227,7 @@ export function DiffTab({
         ) : null}
         {canOpen ? (
           <IconButton
-            label="Open the file (or click a line number)"
+            label={ops ? 'Open the file (or click a line number)' : 'Open the file'}
             onClick={() => actions.openFile?.(path, ops ? firstChangedLine(ops) : undefined)}
           >
             <FileSymlink aria-hidden />
@@ -253,7 +281,7 @@ export function DiffTab({
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: the keyboard path is the "open the file" button in the header */}
       <div ref={bodyRef} className="shui-editor-body shui-diff-body" data-keybindings-standdown="" onClick={openFromGutter}>
         {state.phase === 'loading' ? (
-          <div className="shui-side-note">loading diff</div>
+          <div className="shui-side-note">loading diff…</div>
         ) : state.phase === 'error' ? (
           <PaneNotice
             Icon={CircleAlert}
@@ -261,20 +289,56 @@ export function DiffTab({
             title="This diff could not be loaded"
             path={path}
             detail={state.message}
+            actions={retryButton}
+          />
+        ) : contents === null ? null : contents.binary || contents.noBaseline ? (
+          <PaneNotice
+            Icon={contents.binary ? (isImage ? FileImage : Binary) : FileQuestionMark}
+            tone={contents.note?.tone ?? 'neutral'}
+            title={contents.note?.headline ?? (contents.binary ? 'This is a binary file' : 'Nothing to compare')}
+            path={path}
+            detail={contents.note?.detail}
             actions={
-              <Button type="button" variant="ghost" size="sm" onClick={onReload}>
-                <RefreshCw aria-hidden="true" />
-                Try again
-              </Button>
+              openButton || contents.note?.tone === 'warn' ? (
+                <>
+                  {contents.note?.tone === 'warn' ? retryButton : null}
+                  {openButton}
+                </>
+              ) : undefined
             }
           />
-        ) : contents === null ? null : (
+        ) : (
           <>
-            {contents.note ? <div className="shui-review-message">{contents.note}</div> : null}
-            {contents.noBaseline || contents.binary ? null : totals && totals.add === 0 && totals.del === 0 ? (
-              <div className="shui-review-message">
-                no line changes between {sides.old} and {sides.new}
-              </div>
+            {contents.note ? <DiffNoteRow note={contents.note} /> : null}
+            {whitespaceOnly ? (
+              <PaneNotice
+                Icon={Space}
+                title="Only whitespace changed"
+                path={path}
+                detail="Hide whitespace is on, so the diff has nothing to show."
+                actions={
+                  <>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => onOptionsChange({ ...options, hideWhitespace: false })}
+                    >
+                      <Space aria-hidden="true" />
+                      Show whitespace
+                    </Button>
+                    {openButton}
+                  </>
+                }
+              />
+            ) : empty ? (
+              <PaneNotice
+                Icon={Equal}
+                title="No line changes"
+                path={path}
+                detail={`Nothing differs between ${sides.old} and ${sides.new}.`}
+                actions={openButton}
+              />
             ) : options.diffStyle === 'split' && wholeFile !== null ? (
               <WholeFileSplit change={wholeFile} lines={wholeFile === 'deleted' ? (totals?.del ?? 0) : (totals?.add ?? 0)}>
                 <FileDiff
@@ -308,6 +372,21 @@ export function DiffTab({
         )}
       </div>
     </div>
+  )
+}
+
+/** A caveat above a diff that still renders: the console's status row,
+    warn when the diff shows more or less than the source promises. */
+function DiffNoteRow({ note }: { note: DiffNote }) {
+  const warn = note.tone === 'warn'
+  return (
+    <StatusPanel
+      className="shui-diff-note"
+      variant={warn ? 'warn' : 'info'}
+      icon={warn ? <TriangleAlert className="w-full h-full" /> : <Info className="w-full h-full" />}
+      headline={note.headline}
+      detail={note.detail}
+    />
   )
 }
 
