@@ -283,6 +283,15 @@ fn observable_compose_mutations_register_a_terminal_wake_before_starting() {
     assert!(out.contains("applies only to `add`, `update`, and `remove`"));
     assert!(out.contains("unregister the wake with its"));
     assert!(out.contains("compose::operation { operation_id: \"<operation-id>\" }"));
+    assert!(out.contains(
+        "[if the snapshot is terminal, unregister the subscription and process the result]"
+    ));
+    assert!(out.contains(
+        "[otherwise end the turn; the terminal `compose-operation` event wakes this session]"
+    ));
+    assert!(
+        !out.contains("[ends the turn; the terminal `compose-operation` event wakes this session]")
+    );
     assert!(out.contains("Do not poll"));
     assert!(out.contains("terminal: true"));
     assert!(!out.contains("The call waits until newly declared workers are ready"));
