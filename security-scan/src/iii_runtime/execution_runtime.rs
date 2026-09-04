@@ -144,7 +144,7 @@ impl ExecutionRuntime for IiiRuntime {
         let existing = self
             .call(
                 "harness::status",
-                json!({ "session_id": plan.session_id }),
+                json!({ "session_id": plan.session_id, "verbose": true }),
                 None,
                 Some(RPC_TIMEOUT_MS),
             )

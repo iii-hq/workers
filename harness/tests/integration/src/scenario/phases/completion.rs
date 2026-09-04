@@ -179,7 +179,7 @@ impl ScenarioRunner<'_> {
                     .client()
                     .call_with_deadline(
                         "harness::status",
-                        json!({ "session_id": session_id }),
+                        json!({ "session_id": session_id, "verbose": true }),
                         status_deadline,
                         DEFAULT_CALL_TIMEOUT_MS,
                     )
@@ -264,7 +264,7 @@ impl ScenarioRunner<'_> {
             .client()
             .call_with_deadline(
                 "harness::status",
-                json!({ "session_id": self.session_id }),
+                json!({ "session_id": self.session_id, "verbose": true }),
                 evidence_deadline,
                 DEFAULT_CALL_TIMEOUT_MS,
             )

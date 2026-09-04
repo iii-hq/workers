@@ -475,14 +475,14 @@ wait_for_terminal_turns() {
   ((${#session_ids[@]} == 2)) \
     || die "browser evidence must contain exactly two unique session ids"
 
-  log_command "iii trigger harness::status --port $engine_port --json '{\"session_id\":\"<console-session>\"}'"
+  log_command "iii trigger harness::status --port $engine_port --json '{\"session_id\":\"<console-session>\",\"verbose\":true}'"
   for session_id in "${session_ids[@]}"; do
     log "Verifying the durable terminal turn for session $session_id"
     response=''
     completed=0
     for ((attempt = 0; attempt < wait_seconds; attempt++)); do
       response=$("$iii_bin" trigger harness::status --port "$engine_port" \
-        --json "{\"session_id\":\"$session_id\"}" 2>>"$log_dir/terminal-status.log" || true)
+        --json "{\"session_id\":\"$session_id\",\"verbose\":true}" 2>>"$log_dir/terminal-status.log" || true)
       if jq -e '.status == "completed" and (.expects_wake // false) == false' \
         <<<"$response" >/dev/null 2>&1; then
         statuses=$(jq -c \
@@ -512,11 +512,11 @@ verify_first_capability() {
     || die "first capability browser evidence has no session id"
 
   log "Verifying the first capability for session $session_id"
-  log_command "iii trigger harness::status --port $engine_port --json '{\"session_id\":\"<capability-session>\"}'"
+  log_command "iii trigger harness::status --port $engine_port --json '{\"session_id\":\"<capability-session>\",\"verbose\":true}'"
   response=''
   for ((attempt = 0; attempt < wait_seconds; attempt++)); do
     response=$("$iii_bin" trigger harness::status --port "$engine_port" \
-      --json "{\"session_id\":\"$session_id\"}" \
+      --json "{\"session_id\":\"$session_id\",\"verbose\":true}" \
       2>>"$log_dir/first-capability-terminal.log" || true)
     if jq -e '.status == "completed" and (.expects_wake // false) == false' \
       <<<"$response" >/dev/null 2>&1; then

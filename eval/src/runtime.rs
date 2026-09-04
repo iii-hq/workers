@@ -805,6 +805,7 @@ async fn harness_status(
         "harness::status",
         StatusRequest {
             session_id: session_id.into(),
+            verbose: true,
         },
         job.request.limits.execution.invocation_timeout_seconds,
     )

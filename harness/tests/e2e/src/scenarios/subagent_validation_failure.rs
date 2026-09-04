@@ -123,7 +123,10 @@ fn evaluate<'a>(
     Box::pin(async move {
         let child = child_session(run_id);
         let child_status = context
-            .trigger_value("harness::status", json!({ "session_id": child }))
+            .trigger_value(
+                "harness::status",
+                json!({ "session_id": child, "verbose": false }),
+            )
             .await
             .ok()
             .and_then(|status| {

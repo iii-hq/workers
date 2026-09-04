@@ -451,7 +451,7 @@ impl IiiRuntime {
         let response = self
             .call(
                 "harness::status",
-                json!({ "session_id": harness.session_id }),
+                json!({ "session_id": harness.session_id, "verbose": true }),
                 None,
                 Some(RPC_TIMEOUT_MS),
             )
