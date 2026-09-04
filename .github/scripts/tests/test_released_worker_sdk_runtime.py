@@ -18,17 +18,11 @@ def test_opengantry_uses_current_sdk_release() -> None:
     assert package["dependencies"]["iii-sdk"] == "0.23.0"
 
 
-def test_scrapling_install_does_not_replace_current_sdk_with_vendor_copy() -> None:
-    import yaml
-    manifest = yaml.safe_load(
-        (REPO_ROOT / "scrapling" / "iii.worker.yaml").read_text(encoding="utf-8")
-    )
-    install = manifest["scripts"]["install"]
-
-    assert "vendor/iii_sdk" not in install
-    assert "vendor/iii_helpers" not in install
-
+def test_scrapling_uses_current_sdk_release() -> None:
     pyproject = tomllib.loads(
         (REPO_ROOT / "scrapling" / "pyproject.toml").read_text(encoding="utf-8")
     )
-    assert "iii-sdk==0.22.1a25" in pyproject["project"]["dependencies"]
+    dependencies = pyproject["project"]["dependencies"]
+
+    assert "iii-sdk==0.23.0" in dependencies
+    assert "iii-helpers==0.23.0" in dependencies

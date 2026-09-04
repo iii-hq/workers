@@ -94,7 +94,7 @@ def test_release_toolchains_and_bundle_locks_are_explicit():
         else:
             assert artifact["runtime"] == {"name": "python", "version": "3.12.3"}
             assert artifact["package_manager"] == {"name": "uv", "version": "0.12.5"}
-    assert bundles == 15
+    assert bundles == 14
 
 
 def test_claude_code_release_installs_its_shared_ui_workspace():
@@ -131,11 +131,16 @@ def test_worker_bundle_start_commands_target_packaged_entrypoints():
         assert start.removeprefix("node ./") in worker["artifact"]["include"], worker_id
 
 
-def test_scrapling_release_bundle_vendors_dependencies():
+def test_scrapling_release_image_supports_both_linux_architectures():
     document = yaml.safe_load(CATALOG.read_text(encoding="utf-8"))
-    scrapling = document["workers"]["scrapling"]
-    assert "dist/site-packages.tar.gz" in scrapling["artifact"]["include"]
-    assert scrapling["artifact"]["install_command"][-1] == "--no-install-project"
+    artifact = document["workers"]["scrapling"]["artifact"]
+
+    assert artifact == {
+        "kind": "oci-image",
+        "context": ".",
+        "dockerfile": "Dockerfile",
+        "platforms": ["linux/amd64", "linux/arm64"],
+    }
 
 
 def test_every_rust_worker_ships_windows_or_justifies_its_absence():
