@@ -70,14 +70,25 @@ fn validate(method: &str, path: &str) -> Result<String, String> {
 }
 
 fn bad_request(message: impl Into<String>) -> Response {
-    (StatusCode::BAD_REQUEST, Json(json!({ "error": message.into() }))).into_response()
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({ "error": message.into() })),
+    )
+        .into_response()
 }
 
 fn upstream_error(message: impl Into<String>) -> Response {
-    (StatusCode::BAD_GATEWAY, Json(json!({ "error": message.into() }))).into_response()
+    (
+        StatusCode::BAD_GATEWAY,
+        Json(json!({ "error": message.into() })),
+    )
+        .into_response()
 }
 
-pub async fn probe_handler(State(state): State<AppState>, Json(req): Json<ProbeRequest>) -> Response {
+pub async fn probe_handler(
+    State(state): State<AppState>,
+    Json(req): Json<ProbeRequest>,
+) -> Response {
     let Some(iii) = state.iii.clone() else {
         return upstream_error("probe is unavailable: no engine client");
     };
@@ -114,7 +125,7 @@ pub async fn probe_handler(State(state): State<AppState>, Json(req): Json<ProbeR
         builder = builder.body(body);
     }
 
-    let response = match builder.send().await {
+    let mut response = match builder.send().await {
         Ok(response) => response,
         Err(error) => return upstream_error(format!("request to {url} failed: {error}")),
     };
@@ -130,10 +141,21 @@ pub async fn probe_handler(State(state): State<AppState>, Json(req): Json<ProbeR
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
-    let mut body = response.text().await.unwrap_or_default();
-    if body.len() > MAX_BODY_BYTES {
-        body.truncate(MAX_BODY_BYTES);
+    // Read chunk by chunk and stop at the cap, so a large or fast upstream
+    // cannot exhaust console memory. `from_utf8_lossy` decodes the bounded
+    // buffer safely even when the cap lands inside a multibyte character.
+    // End of body, or a mid-stream read error, ends the loop: a partial body
+    // is an acceptable probe result — the status is what the panel needs.
+    let mut bytes: Vec<u8> = Vec::new();
+    while let Ok(Some(chunk)) = response.chunk().await {
+        let room = MAX_BODY_BYTES - bytes.len();
+        if chunk.len() >= room {
+            bytes.extend_from_slice(&chunk[..room]);
+            break;
+        }
+        bytes.extend_from_slice(&chunk);
     }
+    let body = String::from_utf8_lossy(&bytes).into_owned();
 
     Json(json!({
         "status": status,
@@ -170,7 +192,10 @@ async fn resolve_http_base(
         let Some(port) = value.get("port").and_then(Value::as_u64) else {
             continue;
         };
-        let host = value.get("host").and_then(Value::as_str).unwrap_or("127.0.0.1");
+        let host = value
+            .get("host")
+            .and_then(Value::as_str)
+            .unwrap_or("127.0.0.1");
         // The console runs beside the HTTP worker, so a wildcard/loopback bind
         // is always reachable at 127.0.0.1 — and that sidesteps the LAN
         // hostname rewrite the browser needed when it made the call itself.
