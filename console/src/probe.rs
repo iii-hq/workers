@@ -29,6 +29,13 @@ use crate::server::AppState;
 /// is built.
 const ALLOWED_METHODS: &[&str] = &["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"];
 
+/// Request headers this interface will forward. The panel only sets a content
+/// type; the rest are non-credential, non-sensitive request headers a tester
+/// might reasonably add. Anything outside this set is rejected rather than
+/// forwarded — a caller must never be able to push `Authorization`, `Cookie`,
+/// or the like over the plaintext hop to the HTTP worker.
+const ALLOWED_HEADERS: &[&str] = &["content-type", "accept", "accept-language"];
+
 /// Matches the HTTP worker's own `default_timeout`.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -69,6 +76,19 @@ fn validate(method: &str, path: &str) -> Result<String, String> {
     Ok(method)
 }
 
+/// Turn a configured bind host into a URL authority host. The console runs
+/// beside the HTTP worker, so a wildcard/loopback bind (v4 or v6) is always
+/// reachable at 127.0.0.1 — and that sidesteps the LAN hostname rewrite the
+/// browser needed when it made the call itself. A real IPv6 literal must be
+/// bracketed to be a valid URL authority.
+fn normalize_host(host: &str) -> String {
+    match host {
+        "0.0.0.0" | "localhost" | "" | "::" | "::1" => "127.0.0.1".to_string(),
+        other if other.contains(':') => format!("[{other}]"),
+        other => other.to_string(),
+    }
+}
+
 fn bad_request(message: impl Into<String>) -> Response {
     (
         StatusCode::BAD_REQUEST,
@@ -97,6 +117,11 @@ pub async fn probe_handler(
         Ok(method) => method,
         Err(message) => return bad_request(message),
     };
+    for name in req.headers.keys() {
+        if !ALLOWED_HEADERS.contains(&name.to_ascii_lowercase().as_str()) {
+            return bad_request(format!("header not allowed on this interface: {name}"));
+        }
+    }
 
     let base = match resolve_http_base(&iii, state.namespace.as_deref()).await {
         Ok(base) => base,
@@ -196,21 +221,26 @@ async fn resolve_http_base(
             .get("host")
             .and_then(Value::as_str)
             .unwrap_or("127.0.0.1");
-        // The console runs beside the HTTP worker, so a wildcard/loopback bind
-        // is always reachable at 127.0.0.1 — and that sidesteps the LAN
-        // hostname rewrite the browser needed when it made the call itself.
-        let host = match host {
-            "0.0.0.0" | "localhost" | "" => "127.0.0.1",
-            other => other,
-        };
-        return Ok(format!("http://{host}:{port}"));
+        return Ok(format!("http://{}:{port}", normalize_host(host)));
     }
     Err("no http worker configuration with a port found".to_string())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::validate;
+    use super::{normalize_host, validate};
+
+    #[test]
+    fn normalizes_hosts_for_url_authorities() {
+        for wildcard in ["0.0.0.0", "localhost", "", "::", "::1"] {
+            assert_eq!(normalize_host(wildcard), "127.0.0.1");
+        }
+        // A real IPv6 literal is bracketed so `http://<host>:<port>` parses.
+        assert_eq!(normalize_host("fe80::1"), "[fe80::1]");
+        // A plain v4 or hostname is passed through untouched.
+        assert_eq!(normalize_host("10.0.0.4"), "10.0.0.4");
+        assert_eq!(normalize_host("http.internal"), "http.internal");
+    }
 
     #[test]
     fn accepts_catalog_methods_and_normal_paths() {
