@@ -53,3 +53,24 @@ export function reactivateSelectedFile(
   activate(clickedPath)
   return true
 }
+
+export interface TreeItemRef {
+  path: string
+  kind: 'file' | 'directory'
+}
+
+/** The nearest tree row under an event, file or folder, from the
+    composed path across the shadow root. Directory paths keep the
+    model's trailing slash. */
+export function treeItemFromEvent(event: TreeRowEvent): TreeItemRef | null {
+  const path = event.nativeEvent?.composedPath?.() ?? event.composedPath?.() ?? []
+  for (const entry of path) {
+    if (typeof entry !== 'object' || entry == null) continue
+    const carrier = entry as TreeRowPathCarrier
+    const itemPath = readTreeData(carrier, 'itemPath', 'data-item-path')
+    if (itemPath == null || itemPath.length === 0) continue
+    const itemType = readTreeData(carrier, 'itemType', 'data-item-type')
+    return { path: itemPath, kind: itemType === 'directory' ? 'directory' : 'file' }
+  }
+  return null
+}

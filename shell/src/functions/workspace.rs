@@ -261,3 +261,186 @@ mod tests {
         );
     }
 }
+
+// ── shell::workspace::read-bytes ──────────────────────────────────────
+//
+// The explorer's image preview. `coder::read-file` returns a whole file
+// as one base64 string, which for a 10 MiB picture is a 14 MiB JSON frame
+// through the engine socket. This reads one bounded byte range at a
+// time so the page can stream chunks into a Blob and never hold the
+// whole encoding twice. Jailed through the same resolver as `coder::*`.
+
+/// Largest raw byte range one call returns; longer requests are clamped.
+pub const READ_BYTES_MAX_CHUNK: u64 = 4 * 1024 * 1024;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct WorkspaceReadBytesRequest {
+    /// Absolute path, or relative to the primary root (same rules as
+    /// coder::read-file).
+    pub path: String,
+    /// First byte of the range (default 0).
+    #[serde(default)]
+    pub offset: u64,
+    /// Bytes to return; omitted or over the cap = `READ_BYTES_MAX_CHUNK`.
+    #[serde(default)]
+    pub length: Option<u64>,
+}
+
+#[derive(Debug, Serialize, JsonSchema, PartialEq, Eq)]
+pub struct WorkspaceReadBytesResponse {
+    /// Canonical absolute path.
+    pub path: String,
+    /// Size of the whole file in bytes.
+    pub size: u64,
+    /// Offset the returned range starts at.
+    pub offset: u64,
+    /// Raw bytes in this chunk (before base64).
+    pub length: u64,
+    /// The chunk, base64 (standard alphabet, padded).
+    pub content: String,
+    /// Last-modified time as a Unix epoch in seconds.
+    pub mtime: i64,
+    /// True when `offset + length` reached the end of the file.
+    pub eof: bool,
+}
+
+pub fn read_workspace_bytes(
+    req: WorkspaceReadBytesRequest,
+    resolver: &crate::code::path::PathResolver,
+) -> Result<WorkspaceReadBytesResponse, crate::code::error::CoderError> {
+    use base64::Engine as _;
+    use std::io::{Read, Seek, SeekFrom};
+
+    use crate::code::error::CoderError;
+
+    let abs = resolver.require_writable_scope(None, &req.path)?;
+    let md = std::fs::metadata(&abs).map_err(|e| CoderError::io_for_path(e, &req.path))?;
+    if !md.is_file() {
+        return Err(CoderError::BadInput(format!(
+            "not a regular file: {}",
+            req.path
+        )));
+    }
+    let size = md.len();
+    let offset = req.offset.min(size);
+    let length = req
+        .length
+        .unwrap_or(READ_BYTES_MAX_CHUNK)
+        .min(READ_BYTES_MAX_CHUNK)
+        .min(size - offset);
+    let mut file = std::fs::File::open(&abs).map_err(|e| CoderError::io_for_path(e, &req.path))?;
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|e| CoderError::Io(format!("seek {}: {e}", req.path)))?;
+    let mut bytes = vec![0u8; length as usize];
+    file.read_exact(&mut bytes)
+        .map_err(|e| CoderError::Io(format!("read {}: {e}", req.path)))?;
+    let mtime = md
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    Ok(WorkspaceReadBytesResponse {
+        path: abs.display().to_string(),
+        size,
+        offset,
+        length,
+        content: base64::engine::general_purpose::STANDARD.encode(&bytes),
+        mtime,
+        eof: offset + length >= size,
+    })
+}
+
+#[cfg(test)]
+mod read_bytes_tests {
+    use super::*;
+    use crate::code::config::CoderConfig;
+    use crate::code::path::PathResolver;
+    use base64::Engine as _;
+
+    fn resolver_for(tmp: &tempfile::TempDir) -> PathResolver {
+        let cfg = CoderConfig {
+            base_paths: vec![tmp.path().to_path_buf()],
+            ..CoderConfig::default()
+        };
+        PathResolver::new(&cfg).unwrap()
+    }
+
+    #[test]
+    fn chunks_cover_the_file_in_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("blob.bin");
+        let body: Vec<u8> = (0..10_000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&path, &body).unwrap();
+        let resolver = resolver_for(&tmp);
+        let mut got = Vec::new();
+        let mut offset = 0;
+        loop {
+            let out = read_workspace_bytes(
+                WorkspaceReadBytesRequest {
+                    path: path.display().to_string(),
+                    offset,
+                    length: Some(4_096),
+                },
+                &resolver,
+            )
+            .unwrap();
+            assert_eq!(out.size, body.len() as u64);
+            assert_eq!(out.offset, offset);
+            got.extend(
+                base64::engine::general_purpose::STANDARD
+                    .decode(out.content.as_bytes())
+                    .unwrap(),
+            );
+            offset += out.length;
+            if out.eof {
+                break;
+            }
+        }
+        assert_eq!(got, body);
+    }
+
+    #[test]
+    fn offset_past_the_end_is_an_empty_eof_chunk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("small.txt");
+        std::fs::write(&path, b"abc").unwrap();
+        let out = read_workspace_bytes(
+            WorkspaceReadBytesRequest {
+                path: path.display().to_string(),
+                offset: 99,
+                length: None,
+            },
+            &resolver_for(&tmp),
+        )
+        .unwrap();
+        assert_eq!(out.offset, 3);
+        assert_eq!(out.length, 0);
+        assert!(out.eof);
+        assert_eq!(out.content, "");
+    }
+
+    #[test]
+    fn directories_and_outside_paths_are_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let resolver = resolver_for(&tmp);
+        let dir = read_workspace_bytes(
+            WorkspaceReadBytesRequest {
+                path: tmp.path().display().to_string(),
+                offset: 0,
+                length: None,
+            },
+            &resolver,
+        );
+        assert!(dir.is_err());
+        let outside = read_workspace_bytes(
+            WorkspaceReadBytesRequest {
+                path: "/etc/hosts".into(),
+                offset: 0,
+                length: None,
+            },
+            &resolver,
+        );
+        assert!(outside.is_err());
+    }
+}

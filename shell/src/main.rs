@@ -409,11 +409,11 @@ async fn main() -> Result<()> {
     // The workspace change feed: a system-level directory watch behind the
     // shell::changed trigger type — subscribers name the directory in their
     // binding config.
-    events::register_changed_trigger(&iii, watch_resolver);
+    events::register_changed_trigger(&iii, watch_resolver.clone());
 
     // Durable per-session change history: harness hooks on shell/coder
     // writes, read back by shell::turns::list / shell::turns::get.
-    let _turn_log = turns::register(&iii, &cfg.turns);
+    let _turn_log = turns::register(&iii, &cfg.turns, watch_resolver);
 
     // Background reaper: time-based eviction of finished JobRecords. Without
     // it, an agent that uses exec_bg + status-polling (and never calls
@@ -518,6 +518,35 @@ fn register_workspace(iii: &iii_sdk::IIIClient, state: &AppState) {
                 "Console-only workspace picker control plane: list child directories under an \
                  existing host directory. Returns canonical paths and never returns files.",
             ),
+        );
+    }
+    {
+        let st = state.clone();
+        iii.register_function(
+            "shell::workspace::read-bytes",
+            RegisterFunction::new_async(
+                move |req: functions::workspace::WorkspaceReadBytesRequest| {
+                    let st = st.clone();
+                    telemetry::record_call("shell::workspace::read-bytes", async move {
+                        let cells = st
+                            .code_cells
+                            .clone()
+                            .ok_or_else(|| Error::Handler("code surface unavailable".into()))?;
+                        let resolver = cells.resolver.read().await.clone();
+                        tokio::task::spawn_blocking(move || {
+                            functions::workspace::read_workspace_bytes(req, &resolver)
+                                .map_err(|e| Error::Handler(code::error::err_to_string(e)))
+                        })
+                        .await
+                        .map_err(|e| Error::Handler(format!("read task join failed: {e}")))?
+                    })
+                },
+            )
+            .description(
+                "Console-only: one bounded byte range of a file, base64 (at most 4 MiB raw per \
+                 call), so a page can stream a large image without one oversized frame.",
+            )
+            .metadata(serde_json::json!({ "internal": true })),
         );
     }
 }

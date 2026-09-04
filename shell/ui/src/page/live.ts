@@ -3,10 +3,11 @@
  * type: a system-level directory watch (FSEvents/inotify) the worker runs
  * for each binding, so EVERY change streams — agent calls, `shell::exec`
  * side effects, and edits made outside the engine entirely. The page
- * binds one watch per open tab on the browsed root (the `iii::` prefix
- * keeps per-event invocations span-suppressed; the binding is GC'd with
- * the tab, and re-binds when the root changes). No polling, and no
- * dependency on any other worker.
+ * binds one watch per pane on the browsed root, through a function named
+ * after the pane so two panes of one tab never hear each other's folder
+ * (the `iii::` prefix keeps per-event invocations span-suppressed; the
+ * binding is GC'd with the pane, and re-binds when the root changes). No
+ * polling, and no dependency on any other worker.
  */
 
 import { useEffect, useRef } from 'react'
@@ -34,13 +35,16 @@ export function useWorkspaceChanges(
   host: Host,
   root: string | null,
   onEvent: (e: WorkspaceChangedEvent) => void,
+  /** The pane's function-id segment (`paneScopeToken`). */
+  scope: string,
 ) {
   const handlerRef = useRef(onEvent)
   handlerRef.current = onEvent
   useEffect(() => {
     if (!root) return
+    const functionId = `${EVENTS_FN}::${scope}`
     const offHandler = host.iii.on<WorkspaceChangedEvent>(
-      EVENTS_FN,
+      functionId,
       (event) => {
         if (
           typeof event?.path !== 'string' ||
@@ -54,12 +58,12 @@ export function useWorkspaceChanges(
     )
     const offTrigger = host.iii.registerTrigger({
       type: 'shell::changed',
-      function_id: `${EVENTS_FN}::${host.iii.browserId}`,
+      function_id: `${functionId}::${host.iii.browserId}`,
       config: { path: root },
     })
     return () => {
       offTrigger()
       offHandler()
     }
-  }, [host, root])
+  }, [host, root, scope])
 }

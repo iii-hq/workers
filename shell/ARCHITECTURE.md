@@ -35,6 +35,32 @@ out of the console SPA; the console's `first-party/shell` family is gone).
 The explorer acts through the worker's own functions: `coder::tree/read-file/
 create-file/search` and `shell::exec` (git, argv form, `cwd`-scoped).
 
+The explorer is shaped like VS Code so it needs no learning: an activity
+bar (Explorer, Search, Source control, Timeline) on the sidebar's outer
+edge, one tab strip for everything the main pane shows, breadcrumbs,
+right-click menus on files, folders and tabs, and inline create/rename
+rows. A tab is a file (real content, editable) or a diff of one file
+against one source; what a click opens is decided by the view it comes
+from: Explorer opens files, Source control opens index diffs (a file can
+be open twice, staged and unstaged), Timeline opens the diff of one turn.
+Its structure, one module per concern under `ui/src/page/`:
+
+| Module | Owns |
+|---|---|
+| `tabs.ts` + `diff-source.ts` | Tab identity and semantics: `file:<path>` and `diff:<source>:<path>` ids, preview/pin rules, the five diff sources (staged, unstaged, turn, compare, change) and which of them persist. |
+| `diff-load.ts` + `DiffTab.tsx` | The two sides of a diff tab, per source (`git show` for HEAD/index/revisions, `coder::read-file` for the working copy, `shell::turns::get` for a turn's pre-image and the body it left behind, `coder::change-diff` for a recorded change), and the read-only diff pane with the verbs that fit the source. Only the active diff loads; contents are cached per tab and re-read when the disk moved. |
+| `use-workspace-tree.ts` + `tree-model.ts` | The file tree as a value: a shallow first listing (`coder::tree`, depth 3), a per-folder fetch when a folder is expanded, and watcher bursts (`shell::changed`) patched in place. |
+| `FilesTab.tsx` | The Explorer view over `@pierre/trees` (virtualized rows): context menus, F2 rename, inline new file/folder, delete with confirmation, Git letters per row. |
+| `SearchTab.tsx` + `search-model.ts` | Search as you type over `coder::search` (`respect_gitignore`), results grouped by file with the hit highlighted inside a short window of its line, keyboard-walkable, virtualized (`VirtualList.tsx`). |
+| `SourceControlTab.tsx` + `use-source-control.ts` + `git-actions.ts` | Staged / Changes sections with stage, unstage, discard (confirmed) and commit, over `shell::exec` git in argv form. |
+| `TimelineTab.tsx` + `turn-revert.ts` + `use-turn-summary.ts` | Every Harness turn of the chat, newest first, as a folder-like group named after the message that started it (the harness `turn-started` event's `message_preview`), holding the files it changed — sub-agent work included, tagged with the agent. A turn or a file rolls back through `shell::turns::revert`; the newest turn feeds the chat footer pill. |
+| `EditorPane.tsx` + `large-file.ts` + `file-bytes.ts` | The shared Monaco `CodeEditor` in `fill` mode, an 8 MiB read budget with a read-only line window past it, raster images streamed in 1 MiB chunks over `shell::workspace::read-bytes`. A read that finds the file gone becomes the "no longer here" state; a loaded buffer whose file goes away stays editable so a save puts it back, and reloads by itself when the file returns. |
+| `EditorTabs.tsx`, `Breadcrumbs.tsx`, `ContextMenu.tsx`, `ActivityBar.tsx`, `ViewHeader.tsx` | Chrome. |
+| `nav-history.ts` | Back/forward across opened tabs (`Shift+Alt+←/→`); the recently opened list the empty pane offers. |
+| `pane-scope.ts` + `persist.ts` + `root-memory.ts` | One page instance per pane: its state key (`paneId`, `tabId` on older consoles), the `shell-ui` configuration entry it persists to (folder, pinned or not, view, options, terminal layout), and what was open per folder so switching folders and back finds the tabs again. The load that seeds a pane retries on transient failure (a pane that boots believing nothing was stored would save its defaults over the stored state); the worker seeds the entry only when nothing is stored (`src/ui.rs`), since `configuration::register` replaces the value whenever a seed is present. The terminal leases and the pane's live trigger functions (`shell::changed`, the harness turn events) are keyed the same way, so two panes of one tab never share a terminal or hear each other's folder. |
+| `missing-files.ts` + `PaneNotice.tsx` + `load-error.ts` | Tabs that outlive their files: the set of open file paths the page knows are gone (fed by a stat probe after a restore, the editor's own read, and the live feed; cleared when the file comes back or the tab closes), the one shape every "cannot show content" state takes (icon, title, path, one line, the verbs out), and the worker's `C211` read failure told apart from the rest. |
+| `ShellLauncher.tsx` | The empty pane: the wordmark, the folder sentence with the console's `DirectoryPicker` (the chat composer's, also the header's picker), one card per surface with its key and what is behind it (change and turn counts, the last turn's name), the files opened last. |
+
 Building the worker therefore needs Node + pnpm on PATH: `build.rs` runs
 `pnpm install && pnpm build` in `ui/` when `ui/dist/` is missing or stale and
 `include_str!`s the outputs (`SKIP_UI_BUILD=1` uses existing `ui/dist/`
@@ -161,6 +187,33 @@ let resp: ReadResponse = iii.trigger("shell::fs::read", json!({
 let reader = ChannelReader::new(iii.address(), &resp.content);
 let bytes = reader.read_all().await?;
 ```
+
+## Console-only functions
+
+Registered with `internal: true` (or documented as control plane) — the
+explorer page calls them; agents should not need them.
+
+| Function | Purpose |
+|---|---|
+| `shell::workspace::read-bytes` | One bounded byte range of a file, base64, at most 4 MiB raw per call: `{ path, offset?, length? }` → `{ path, size, offset, length, content, mtime, eof }`. The page streams a large image chunk by chunk instead of asking `coder::read-file` for one 14 MiB frame. Jailed through the `coder::*` resolver. |
+| `shell::turns::get` | Now also carries, per file, `agent` (the sub-agent session and display name when a child made the change) and `after` (the body the turn left behind: the first later turn's pre-image of the same path, inflated from the blob store; absent when the working copy is the after side). Turns carry `title`, the `message_preview` from the harness `turn-started` event. |
+| `shell::turns::revert` | Undo one turn's recorded changes from the pre-image blob store: `{ session_id, turn_id, paths? }` → per-file `{ path, kind, action, success, error? }` plus `reverted` / `failed` counts. Created files are removed, modified and deleted files get their stored body back, moved files return to their source path. Bodies the hooks never stored (over 64 KiB, binary, watcher-observed) are reported as `unavailable`, never guessed. Paths pass the operator denylist and non-accessible globs; containment is not re-checked because the paths are the worker's own records. |
+
+**Sub-agent changes are recorded under the spawning turn.** The harness
+stamps `parent_session_id` / `parent_turn_id` into a child session's turn
+metadata, which reaches the shell's pre/post-trigger hooks as `metadata`,
+and its `turn-started` event carries `parent`. `TurnLog` keeps a
+child → parent map from both, resolves every hooked or watcher-observed
+change to the top-level ancestor's turn (`resolve_root`), and records
+the child as the file's `agent`. Child sessions keep no record of their
+own; a child's `turn-completed` closes nothing.
+
+`coder::search` grew two flags the page relies on: `respect_gitignore`
+(walk with `.gitignore`/`.ignore` rules inside a repository) and
+`fuzzy_paths` (quick-open ranking of path matches, best first). Content
+scanning runs the regex over each file's bytes and fans files out across
+a small thread pool while results are consumed in walk order, so caps and
+budgets cut at the same place every time.
 
 ## Troubleshooting
 

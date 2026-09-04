@@ -1,17 +1,25 @@
 import type { Host } from '@iii-dev/console-ui'
 import type { GitFileStatus } from './git'
-import type { ReviewEntry } from './review'
+
+export interface TurnAgentRef {
+  session_id: string
+  name?: string | null
+}
 
 export interface TurnFileHead {
   path: string
   kind: string
   root?: string | null
+  /** The sub-agent that made the change, when it was not the turn's own. */
+  agent?: TurnAgentRef | null
 }
 
 export interface SessionTurnSummary {
   turn_id: string
   started_at: number
   ended_at?: number | null
+  /** First characters of the message that started the turn. */
+  title?: string | null
   file_count: number
   files: TurnFileHead[]
 }
@@ -31,12 +39,16 @@ export interface TurnFileRecord extends TurnFileHead {
   from?: string | null
   before?: TurnPreImage | null
   after_revision?: string | null
+  /** The body the turn left behind, when a later turn kept it. Absent
+      means the working copy is the after side. */
+  after?: TurnPreImage | null
 }
 
 export interface SessionTurn {
   turn_id: string
   started_at: number
   ended_at?: number | null
+  title?: string | null
   files: TurnFileRecord[]
 }
 
@@ -72,7 +84,13 @@ export function turnLabel(turn: { started_at: number; file_count: number }): str
   return `${time} · ${files}`
 }
 
-function statusFor(kind: string): GitFileStatus {
+/** What a timeline calls a turn: its message preview, else its ordinal. */
+export function turnTitle(turn: { title?: string | null }, ordinal: number): string {
+  const title = turn.title?.trim()
+  return title ? title : `Turn ${ordinal}`
+}
+
+export function statusFor(kind: string): GitFileStatus {
   switch (kind) {
     case 'created':
       return 'added'
@@ -102,155 +120,4 @@ export function baselineFor(before: TurnPreImage | null | undefined): string | n
   if (before.missing) return ''
   if (before.binary || before.truncated) return null
   return typeof before.content === 'string' ? before.content : null
-}
-
-export interface TurnEntries {
-  entries: ReadonlyMap<string, ReviewEntry>
-  /** Files the turn changed outside the browsed root. */
-  outside: number
-  outsideRoot: string | null
-}
-
-export interface SessionActivitySummary {
-  inside: number
-  outside: number
-  outsideRoot: string | null
-}
-
-function hasNoDurableChange(file: TurnFileRecord): boolean {
-  if (file.before?.missing && file.kind === 'deleted') return true
-  return (
-    typeof file.before?.revision === 'string' &&
-    file.before.revision === file.after_revision
-  )
-}
-
-export function reviewEntriesFromTurn(turn: SessionTurn, root: string): TurnEntries {
-  const entries = new Map<string, ReviewEntry>()
-  const outsidePaths: string[] = []
-  for (const file of turn.files) {
-    if (hasNoDurableChange(file)) continue
-    const rel = relativeToRoot(file.path, root)
-    if (rel === null) {
-      outsidePaths.push(file.path)
-      continue
-    }
-    const from = file.from ? relativeToRoot(file.from, root) : null
-    const status = statusFor(file.kind)
-    const entry: ReviewEntry = {
-      path: rel,
-      change: {
-        path: rel,
-        status,
-        staged: false,
-        ...(from ? { from } : {}),
-      },
-      // An observed creation has no stored pre-image, but its true
-      // baseline is known anyway: the file did not exist before the turn.
-      baseline:
-        file.before == null && file.kind === 'created'
-          ? ''
-          : baselineFor(file.before),
-    }
-    entries.set(rel, entry)
-  }
-  return {
-    entries,
-    outside: new Set(outsidePaths).size,
-    outsideRoot: sharedFolder([...new Set(outsidePaths)]),
-  }
-}
-
-function parentPath(path: string): string | null {
-  const normalized = path.replace(/\/+$/, '')
-  const separator = normalized.lastIndexOf('/')
-  if (separator <= 0) return null
-  return normalized.slice(0, separator)
-}
-
-function sharedFolder(paths: readonly string[]): string | null {
-  const parents = paths.map(parentPath).filter((path): path is string => path !== null)
-  if (parents.length !== paths.length || parents.length === 0) return null
-  const parts = parents.map((path) => path.split('/').filter(Boolean))
-  const common: string[] = []
-  for (let index = 0; index < parts[0].length; index += 1) {
-    const segment = parts[0][index]
-    if (parts.some((path) => path[index] !== segment)) break
-    common.push(segment)
-  }
-  return common.length >= 2 ? `/${common.join('/')}` : null
-}
-
-export function summarizeSessionActivity(
-  turns: readonly SessionTurnSummary[],
-  root: string,
-): SessionActivitySummary {
-  const paths = new Set(turns.flatMap((turn) => turn.files.map((file) => file.path)))
-  const outsidePaths = [...paths].filter((path) => relativeToRoot(path, root) === null)
-  return {
-    inside: paths.size - outsidePaths.length,
-    outside: outsidePaths.length,
-    outsideRoot: sharedFolder(outsidePaths),
-  }
-}
-
-export function reviewEntriesFromSession(
-  turns: readonly SessionTurn[],
-  root: string,
-): TurnEntries {
-  const chronological = [...turns].sort((left, right) => left.started_at - right.started_at)
-  const history = new Map<
-    string,
-    { first: TurnFileRecord; latest: TurnFileRecord }
-  >()
-  const outside = new Set<string>()
-
-  for (const turn of chronological) {
-    for (const file of turn.files) {
-      if (hasNoDurableChange(file)) continue
-      if (relativeToRoot(file.path, root) === null) {
-        outside.add(file.path)
-        continue
-      }
-      const previous = history.get(file.path)
-      history.set(file.path, {
-        first: previous?.first ?? file,
-        latest: file,
-      })
-    }
-  }
-
-  const entries = new Map<string, ReviewEntry>()
-  for (const [path, { first, latest }] of history) {
-    const rel = relativeToRoot(path, root)
-    if (rel === null) continue
-    const firstBaseline =
-      first.before == null && first.kind === 'created'
-        ? ''
-        : baselineFor(first.before)
-    if (firstBaseline === '' && latest.kind === 'deleted') continue
-
-    const status: GitFileStatus =
-      latest.kind === 'deleted'
-        ? 'deleted'
-        : firstBaseline === ''
-          ? 'added'
-          : statusFor(latest.kind)
-    const from = latest.from ? relativeToRoot(latest.from, root) : null
-    entries.set(rel, {
-      path: rel,
-      change: {
-        path: rel,
-        status,
-        staged: false,
-        ...(from ? { from } : {}),
-      },
-      baseline: firstBaseline,
-    })
-  }
-  return {
-    entries,
-    outside: outside.size,
-    outsideRoot: sharedFolder([...outside]),
-  }
 }

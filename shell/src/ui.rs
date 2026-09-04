@@ -31,6 +31,8 @@ use iii_sdk::IIIClient;
 
 pub const PAGE_PATH: &str = "shell/page.js";
 pub const STYLES_PATH: &str = "shell/styles.css";
+/// Mirrored by `ui/src/page/persist.ts` (`UI_STATE_CONFIG_ID`).
+const UI_STATE_CONFIG_ID: &str = "shell-ui";
 
 /// Built by `build.rs` (esbuild over `ui/`).
 const PAGE_JS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/dist/page.js"));
@@ -54,25 +56,38 @@ pub fn register(iii: &IIIClient) {
     register_ui_state_entry(iii.clone());
 }
 
-/// The `shell-ui` configuration entry backs the explorer page's per-
-/// console-tab UI state (browsed root, open editor tabs, expanded
-/// folders): `{ tabs: { [workspaceTabId]: {...} } }`, read-modify-written
-/// by the page over `configuration::get`/`set`. Registered so the entry
-/// exists before the first `set` and survives engine restarts;
-/// `configuration::register` preserves any stored value. Fire-and-forget:
-/// a missing configuration worker degrades the page to non-persistent,
-/// never blocks the worker.
+/// The `shell-ui` configuration entry backs the explorer page's per-pane
+/// UI state (browsed folder, open editor tabs, expanded folders):
+/// `{ tabs: { [paneId]: {...} } }`, read-modify-written by the page over
+/// `configuration::get`/`set`. Registered so the entry exists before the
+/// first `set`.
+///
+/// The `{}` seed is installed ONLY when nothing is stored yet (entry
+/// missing or value null): `configuration::register` replaces the stored
+/// value whenever `initial_value` is present, not only on first
+/// registration, so an unconditional seed erased every pane's folder and
+/// tabs on each worker restart. If the probe itself fails the entry is
+/// registered without a seed — never clobber what may be there.
+/// Fire-and-forget: a missing configuration worker degrades the page to
+/// non-persistent, never blocks the worker.
 fn register_ui_state_entry(iii: IIIClient) {
     tokio::spawn(async move {
-        let payload = serde_json::json!({
-            "id": "shell-ui",
+        let mut payload = serde_json::json!({
+            "id": UI_STATE_CONFIG_ID,
             "name": "Shell UI",
-            "description": "Per-console-tab state for the shell explorer page \
-                            (open files, expanded folders). Managed by the page; \
-                            not intended for hand-editing.",
+            "description": "Per-pane state for the shell explorer page \
+                            (browsed folder, open files, expanded folders). \
+                            Managed by the page; not intended for hand-editing.",
             "schema": { "type": "object", "additionalProperties": true },
-            "initial_value": {},
         });
+        match crate::configuration::stored_value_absent_for(&iii, UI_STATE_CONFIG_ID).await {
+            Ok(true) => payload["initial_value"] = serde_json::json!({}),
+            Ok(false) => {}
+            Err(e) => tracing::warn!(
+                error = %e,
+                "could not probe the shell-ui configuration entry; registering it without a seed"
+            ),
+        }
         if let Err(e) = crate::configuration::trigger_configuration_with_retry(
             &iii,
             "configuration::register",

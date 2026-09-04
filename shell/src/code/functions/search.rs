@@ -74,6 +74,16 @@ pub struct SearchInput {
     /// Search file paths (default true).
     #[serde(default = "default_true")]
     pub search_paths: bool,
+    /// Honour `.gitignore`/`.ignore` rules (inside a Git repository) while
+    /// walking, the way an editor's search does; default false keeps every
+    /// non-excluded file searchable.
+    #[serde(default)]
+    pub respect_gitignore: bool,
+    /// Rank path matches by fuzzy subsequence score (quick-open style)
+    /// instead of substring/regex matching; `path_matches` then comes back
+    /// best first. Content matching is unaffected.
+    #[serde(default)]
+    pub fuzzy_paths: bool,
     /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
@@ -167,7 +177,7 @@ pub async fn handle(
 }
 
 fn inner(
-    resolver: &PathResolver,
+    resolver: &Arc<PathResolver>,
     cfg: &CoderConfig,
     req: SearchInput,
 ) -> Result<SearchOutput, CoderError> {
@@ -217,12 +227,21 @@ fn inner(
     let exclude = build_globset(&req.exclude_globs)?;
 
     let content_matcher = if req.search_content {
-        Some(build_matcher(&req.query, req.regex, req.ignore_case)?)
+        Some(build_content_matcher(
+            &req.query,
+            req.regex,
+            req.ignore_case,
+        )?)
     } else {
         None
     };
     let path_matcher = if req.search_paths {
-        Some(build_matcher(&req.query, req.regex, req.ignore_case)?)
+        Some(build_path_matcher(
+            &req.query,
+            req.regex,
+            req.ignore_case,
+            req.fuzzy_paths,
+        )?)
     } else {
         None
     };
@@ -246,22 +265,52 @@ fn inner(
     let mut budget_remaining: u64 = cfg.search_response_budget_bytes;
     let mut budget_exhausted = false;
 
-    let walker = walkdir::WalkDir::new(&walk_root).follow_links(false);
+    // The walk itself is sequential and name-sorted, so the file order — and
+    // therefore every cap and budget cutoff below — is deterministic. Content
+    // scanning of the collected files fans out across threads afterwards
+    // (see `scan_files_in_order`) while results are still consumed in walk
+    // order.
+    let mut walker = ignore::WalkBuilder::new(&walk_root);
+    walker
+        .follow_links(false)
+        // Dot entries stay searchable, as they always were; `.gitignore`
+        // rules apply only on request.
+        .hidden(false)
+        .parents(req.respect_gitignore)
+        .ignore(req.respect_gitignore)
+        .git_ignore(req.respect_gitignore)
+        .git_global(req.respect_gitignore)
+        .git_exclude(req.respect_gitignore)
+        .require_git(true)
+        .sort_by_file_name(|a, b| a.cmp(b));
     // Suppress descent into default-excluded DIRECTORIES at the dir
     // boundary (dir-companion set; files merely NAMED like an excluded
     // directory are unaffected). Excluded FILES are skipped in the loop
     // body below.
-    let entries = walker.into_iter().filter_entry(|e| {
+    let filter_resolver = resolver.clone();
+    walker.filter_entry(move |e| {
         !(use_default_excludes
-            && e.file_type().is_dir()
-            && resolver.is_default_excluded_dir(e.path()))
+            && e.file_type().is_some_and(|t| t.is_dir())
+            && filter_resolver.is_default_excluded_dir(e.path()))
     });
-    for entry in entries.filter_map(|e| e.ok()) {
+
+    // Files that survive every filter, in walk order, for content scanning.
+    let mut content_files: Vec<(std::path::PathBuf, String)> = Vec::new();
+    // Fuzzy path ranking needs the complete candidate set before it can
+    // order anything, so it collects (bounded to the top `max_matches`)
+    // and charges the budget after the walk.
+    let mut fuzzy_candidates: std::collections::BinaryHeap<std::cmp::Reverse<FuzzyCandidate>> =
+        std::collections::BinaryHeap::new();
+    let mut fuzzy_seen: usize = 0;
+
+    for entry in walker.build().filter_map(|e| e.ok()) {
         // Directories participate in PATH matching (a folder is findable
         // by name); only files go on to content matching. Symlinks and
         // special files stay out of both lists, as before.
-        let is_dir = entry.file_type().is_dir();
-        if !entry.file_type().is_file() && !is_dir {
+        let file_type = entry.file_type();
+        let is_dir = file_type.is_some_and(|t| t.is_dir());
+        let is_file = file_type.is_some_and(|t| t.is_file());
+        if !is_file && !is_dir {
             continue;
         }
         let abs = entry.path();
@@ -301,21 +350,38 @@ fn inner(
         let abs_wire = abs.display().to_string();
 
         if let Some(matcher) = &path_matcher {
-            if matcher.is_match(&rel) {
-                if path_matches.len() >= max_matches {
-                    truncated = true;
-                } else if charge(&mut budget_remaining, abs_wire.len()) {
-                    path_matches.push(PathMatch {
-                        path: abs_wire.clone(),
-                        kind: if is_dir {
-                            PathMatchKind::Dir
+            match matcher {
+                PathMatcher::Fuzzy(query) => {
+                    if let Some(score) = fuzzy_path_score(query, &rel) {
+                        fuzzy_seen += 1;
+                        fuzzy_candidates.push(std::cmp::Reverse(FuzzyCandidate {
+                            score,
+                            path: abs_wire.clone(),
+                            is_dir,
+                        }));
+                        if fuzzy_candidates.len() > max_matches {
+                            fuzzy_candidates.pop();
+                        }
+                    }
+                }
+                PathMatcher::Exact(matcher) => {
+                    if matcher.is_match(&rel) {
+                        if path_matches.len() >= max_matches {
+                            truncated = true;
+                        } else if charge(&mut budget_remaining, abs_wire.len()) {
+                            path_matches.push(PathMatch {
+                                path: abs_wire.clone(),
+                                kind: if is_dir {
+                                    PathMatchKind::Dir
+                                } else {
+                                    PathMatchKind::File
+                                },
+                            });
                         } else {
-                            PathMatchKind::File
-                        },
-                    });
-                } else {
-                    truncated = true;
-                    budget_exhausted = true;
+                            truncated = true;
+                            budget_exhausted = true;
+                        }
+                    }
                 }
             }
         }
@@ -325,77 +391,68 @@ fn inner(
         if is_dir {
             continue;
         }
+        if content_matcher.is_some() {
+            content_files.push((abs.to_path_buf(), abs_wire));
+        }
+    }
 
-        if let Some(matcher) = &content_matcher {
-            // Skip files larger than max_read_bytes during a search — we
-            // don't want to load multi-GB blobs into memory by accident.
-            if let Ok(md) = std::fs::metadata(abs) {
-                if md.len() > cfg.max_read_bytes {
-                    continue;
-                }
-            }
-            let bytes = match std::fs::read(abs) {
-                Ok(b) => b,
-                Err(_) => continue,
-            };
-            // Cheap binary heuristic: presence of any NUL byte. Skip
-            // binary files so the response stays human-readable.
-            if bytes.contains(&0) {
-                continue;
-            }
-            let text = String::from_utf8_lossy(&bytes);
-            // The file is fully in memory already; collecting the lines
-            // lets context slices index into the same file (and ONLY the
-            // same file — context never crosses file boundaries).
-            let lines: Vec<&str> = text.lines().collect();
-            for (line_idx, line) in lines.iter().enumerate() {
-                let truncated_line = clip_line(line, max_line_bytes);
-                // Only the FIRST match per line is reported (one content
-                // match per matching line) — long-standing wire behavior.
-                if let Some(m) = matcher.find(truncated_line) {
-                    if content_matches.len() >= max_matches {
-                        truncated = true;
-                        break;
-                    }
-                    // Context slices over the collected lines, clipped at
-                    // the file edges; overlap between adjacent matches is
-                    // duplicated, not merged. Same per-line truncation as
-                    // the matched text.
-                    let before: Vec<String> = lines[line_idx.saturating_sub(ctx_before)..line_idx]
-                        .iter()
-                        .map(|l| clip_line(l, max_line_bytes).to_string())
-                        .collect();
-                    let after_end = (line_idx + 1).saturating_add(ctx_after).min(lines.len());
-                    let after: Vec<String> = lines[line_idx + 1..after_end]
-                        .iter()
-                        .map(|l| clip_line(l, max_line_bytes).to_string())
-                        .collect();
-                    let cost = abs_wire.len()
-                        + truncated_line.len()
-                        + before.iter().map(String::len).sum::<usize>()
-                        + after.iter().map(String::len).sum::<usize>();
-                    if !charge(&mut budget_remaining, cost) {
-                        truncated = true;
-                        budget_exhausted = true;
-                        break;
-                    }
-                    content_matches.push(ContentMatch {
-                        path: abs_wire.clone(),
-                        line: (line_idx as u32) + 1,
-                        column: (m.start as u32) + 1,
-                        text: truncated_line.to_string(),
-                        // None when empty so the wire omits the field
-                        // (schema-wire consistency: nullable, not
-                        // required-but-sometimes-absent).
-                        before: (!before.is_empty()).then_some(before),
-                        after: (!after.is_empty()).then_some(after),
-                    });
-                }
-            }
-            if truncated {
+    if !fuzzy_candidates.is_empty() {
+        let mut ranked: Vec<FuzzyCandidate> = fuzzy_candidates
+            .into_iter()
+            .map(|std::cmp::Reverse(candidate)| candidate)
+            .collect();
+        // Best first; equal scores keep the walk's name order.
+        ranked.sort_by(|a, b| b.cmp(a));
+        if fuzzy_seen > ranked.len() {
+            truncated = true;
+        }
+        for candidate in ranked {
+            if !budget_exhausted && charge(&mut budget_remaining, candidate.path.len()) {
+                path_matches.push(PathMatch {
+                    path: candidate.path,
+                    kind: if candidate.is_dir {
+                        PathMatchKind::Dir
+                    } else {
+                        PathMatchKind::File
+                    },
+                });
+            } else {
+                truncated = true;
+                budget_exhausted = true;
                 break;
             }
         }
+    }
+
+    if let (Some(matcher), false) = (&content_matcher, budget_exhausted) {
+        let scan = ScanOptions {
+            max_line_bytes,
+            ctx_before,
+            ctx_after,
+            max_read_bytes: cfg.max_read_bytes,
+            // One more than the cap tells a full file from a capped one
+            // without letting a single pathological file flood memory.
+            per_file_cap: max_matches.saturating_add(1),
+        };
+        let mut consume = |file_matches: Vec<ContentMatch>| -> bool {
+            for m in file_matches {
+                if content_matches.len() >= max_matches {
+                    truncated = true;
+                    return false;
+                }
+                let cost = m.path.len()
+                    + m.text.len()
+                    + m.before.iter().flatten().map(String::len).sum::<usize>()
+                    + m.after.iter().flatten().map(String::len).sum::<usize>();
+                if !charge(&mut budget_remaining, cost) {
+                    truncated = true;
+                    return false;
+                }
+                content_matches.push(m);
+            }
+            true
+        };
+        scan_files_in_order(&content_files, matcher, &scan, &mut consume);
     }
 
     Ok(SearchOutput {
@@ -405,6 +462,316 @@ fn inner(
     })
 }
 
+/// Per-file scan knobs shared by every worker thread.
+struct ScanOptions {
+    max_line_bytes: usize,
+    ctx_before: usize,
+    ctx_after: usize,
+    max_read_bytes: u64,
+    per_file_cap: usize,
+}
+
+/// Scan `files` for `matcher` across a small thread pool, handing each
+/// file's matches to `consume` IN FILE ORDER. `consume` returns false to stop
+/// early (a cap or the budget was hit): later files are then skipped and the
+/// pool winds down, so the cutoff is a pure function of the ordered results —
+/// the same input always truncates at the same place, threads or not.
+fn scan_files_in_order(
+    files: &[(std::path::PathBuf, String)],
+    matcher: &regex::bytes::Regex,
+    options: &ScanOptions,
+    consume: &mut dyn FnMut(Vec<ContentMatch>) -> bool,
+) {
+    use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::mpsc;
+
+    if files.is_empty() {
+        return;
+    }
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .clamp(1, 8)
+        .min(files.len());
+    let next = AtomicUsize::new(0);
+    let stop = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let (tx, rx) = mpsc::channel::<(usize, Vec<ContentMatch>)>();
+        for _ in 0..threads {
+            let tx = tx.clone();
+            let next = &next;
+            let stop = &stop;
+            scope.spawn(move || loop {
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                let index = next.fetch_add(1, Ordering::Relaxed);
+                let Some((abs, abs_wire)) = files.get(index) else {
+                    break;
+                };
+                let matches = scan_file(abs, abs_wire, matcher, options);
+                if tx.send((index, matches)).is_err() {
+                    break;
+                }
+            });
+        }
+        drop(tx);
+
+        let mut pending: BTreeMap<usize, Vec<ContentMatch>> = BTreeMap::new();
+        let mut expected = 0usize;
+        'receive: for (index, matches) in rx {
+            pending.insert(index, matches);
+            while let Some(matches) = pending.remove(&expected) {
+                expected += 1;
+                if !consume(matches) {
+                    stop.store(true, Ordering::Relaxed);
+                    break 'receive;
+                }
+            }
+        }
+        // Dropping `rx` here fails every later `send`, so workers exit as
+        // soon as their current file is done.
+    });
+}
+
+/// Content matches of one file: first match per line, in line order, with
+/// context slices from the same buffer. The whole file is matched as one
+/// byte string so the regex engine scans it with its fastest strategy
+/// instead of restarting per line.
+fn scan_file(
+    abs: &std::path::Path,
+    abs_wire: &str,
+    matcher: &regex::bytes::Regex,
+    options: &ScanOptions,
+) -> Vec<ContentMatch> {
+    // Skip files larger than max_read_bytes during a search — we don't
+    // want to load multi-GB blobs into memory by accident.
+    match std::fs::metadata(abs) {
+        Ok(md) if md.len() > options.max_read_bytes => return Vec::new(),
+        Ok(_) => {}
+        Err(_) => return Vec::new(),
+    }
+    let Ok(bytes) = std::fs::read(abs) else {
+        return Vec::new();
+    };
+    // Cheap binary heuristic: presence of any NUL byte. Skip binary files
+    // so the response stays human-readable.
+    if bytes.contains(&0) {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    // The buffer-wide scan only nominates lines: `\s` and friends can reach
+    // across a newline in multi-line mode, so every candidate is confirmed
+    // against its own (clipped) line, which keeps the per-line contract —
+    // one match per line, column inside the reported text — exactly.
+    let mut pos = 0usize;
+    while pos <= bytes.len() {
+        let Some(m) = matcher.find_at(&bytes, pos) else {
+            break;
+        };
+        let line_start = line_start_at(&bytes, m.start());
+        let line_end = line_end_at(&bytes, m.start());
+        let text = clip_line(
+            &lossy_line(&bytes[line_start..line_end]),
+            options.max_line_bytes,
+        )
+        .to_string();
+        if let Some(lm) = matcher.find(text.as_bytes()) {
+            // Context slices over the same buffer, clipped at the file edges;
+            // overlap between adjacent matches is duplicated, not merged. Same
+            // per-line truncation as the matched text.
+            let before = context_before(
+                &bytes,
+                line_start,
+                options.ctx_before,
+                options.max_line_bytes,
+            );
+            let after = context_after(&bytes, line_end, options.ctx_after, options.max_line_bytes);
+            out.push(ContentMatch {
+                path: abs_wire.to_string(),
+                line: count_lines_before(&bytes, line_start) + 1,
+                column: lm.start() as u32 + 1,
+                text,
+                // None when empty so the wire omits the field (schema-wire
+                // consistency: nullable, not required-but-sometimes-absent).
+                before: (!before.is_empty()).then_some(before),
+                after: (!after.is_empty()).then_some(after),
+            });
+            if out.len() >= options.per_file_cap {
+                break;
+            }
+        }
+        // Only the FIRST match per line is reported (one content match per
+        // matching line) — long-standing wire behavior: resume on the
+        // next line.
+        pos = line_end + 1;
+    }
+    out
+}
+
+fn line_start_at(bytes: &[u8], offset: usize) -> usize {
+    bytes[..offset]
+        .iter()
+        .rposition(|&b| b == b'\n')
+        .map(|i| i + 1)
+        .unwrap_or(0)
+}
+
+fn line_end_at(bytes: &[u8], offset: usize) -> usize {
+    bytes[offset..]
+        .iter()
+        .position(|&b| b == b'\n')
+        .map(|i| offset + i)
+        .unwrap_or(bytes.len())
+}
+
+/// 1-based line numbers count newline bytes before the line start; kept as
+/// a running scan per match, which stays cheap because matches are
+/// reported once per line and files are bounded by max_read_bytes.
+fn count_lines_before(bytes: &[u8], line_start: usize) -> u32 {
+    bytes[..line_start].iter().filter(|&&b| b == b'\n').count() as u32
+}
+
+/// A line body as text, without its `\r` terminator (mirrors `str::lines`).
+fn lossy_line(line: &[u8]) -> String {
+    let line = line.strip_suffix(b"\r").unwrap_or(line);
+    String::from_utf8_lossy(line).into_owned()
+}
+
+fn context_before(
+    bytes: &[u8],
+    line_start: usize,
+    count: usize,
+    max_line_bytes: usize,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut end = line_start;
+    while lines.len() < count && end > 0 {
+        // `end` sits just past the previous line's '\n'.
+        let prev_end = end - 1;
+        let prev_start = line_start_at(bytes, prev_end);
+        lines
+            .push(clip_line(&lossy_line(&bytes[prev_start..prev_end]), max_line_bytes).to_string());
+        end = prev_start;
+    }
+    lines.reverse();
+    lines
+}
+
+fn context_after(
+    bytes: &[u8],
+    line_end: usize,
+    count: usize,
+    max_line_bytes: usize,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut start = line_end;
+    while lines.len() < count && start < bytes.len() {
+        // `start` sits on the current line's '\n'.
+        start += 1;
+        if start >= bytes.len() {
+            break;
+        }
+        let end = line_end_at(bytes, start);
+        lines.push(clip_line(&lossy_line(&bytes[start..end]), max_line_bytes).to_string());
+        start = end;
+    }
+    lines
+}
+
+/// A ranked quick-open candidate. Ordering is score first, then the
+/// lexically earlier path, so the bounded heap keeps the best entries and
+/// ties resolve the way the sorted walk produced them.
+#[derive(Debug, PartialEq, Eq)]
+struct FuzzyCandidate {
+    score: i32,
+    path: String,
+    is_dir: bool,
+}
+
+impl Ord for FuzzyCandidate {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.score
+            .cmp(&other.score)
+            .then_with(|| other.path.cmp(&self.path))
+    }
+}
+
+impl PartialOrd for FuzzyCandidate {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// A lowercase query prepared once per search.
+pub(crate) struct FuzzyQuery {
+    chars: Vec<char>,
+    text: String,
+}
+
+fn is_path_separator(c: char) -> bool {
+    matches!(c, '/' | '\\' | '-' | '_' | '.' | ' ')
+}
+
+/// Quick-open style subsequence scoring: every query character must appear
+/// in order; contiguous runs, segment starts and a basename hit score
+/// higher, long paths score slightly lower. `None` when the query is not a
+/// subsequence of the path.
+pub(crate) fn fuzzy_path_score(query: &FuzzyQuery, rel: &str) -> Option<i32> {
+    if query.chars.is_empty() {
+        return None;
+    }
+    let lower = rel.to_lowercase();
+    let hay: Vec<char> = lower.chars().collect();
+    let basename_start = lower.rfind('/').map(|i| i + 1).unwrap_or(0);
+    let basename_start_chars = lower[..basename_start].chars().count();
+    let mut score: i32 = 0;
+    let mut qi = 0usize;
+    let mut last: Option<usize> = None;
+    for (i, &c) in hay.iter().enumerate() {
+        if qi >= query.chars.len() {
+            break;
+        }
+        if c != query.chars[qi] {
+            continue;
+        }
+        score += 10;
+        match last {
+            Some(prev) if prev + 1 == i => score += 8,
+            Some(prev) => score -= ((i - prev - 1) as i32).min(10),
+            None => {}
+        }
+        if i == 0 || is_path_separator(hay[i - 1]) {
+            score += 8;
+        }
+        if i >= basename_start_chars {
+            // A character matched inside the file name outweighs one that
+            // merely hit a folder above it.
+            score += 6;
+        }
+        last = Some(i);
+        qi += 1;
+    }
+    if qi < query.chars.len() {
+        return None;
+    }
+    let basename = &lower[basename_start..];
+    if basename.contains(query.text.as_str()) {
+        score += 60;
+        if basename.starts_with(query.text.as_str()) {
+            score += 20;
+        }
+    } else if lower.contains(query.text.as_str()) {
+        score += 25;
+    } else if last.is_some_and(|end| end >= basename_start_chars) {
+        // Matches that end inside the basename read as "this file", not a
+        // folder somewhere above it.
+        score += 10;
+    }
+    score -= (hay.len() as i32) / 8;
+    Some(score)
+}
 /// Per-request cap on `context_lines_before` / `context_lines_after`.
 /// Larger windows belong to `coder::read-file` line windows, not search.
 const CONTEXT_LINES_CAP: u32 = 10;
@@ -479,35 +846,73 @@ fn build_globset(patterns: &[String]) -> Result<Option<globset::GlobSet>, CoderE
     Ok(Some(set))
 }
 
-/// Lightweight matcher abstraction — wraps either a `Regex` or a literal
-/// substring search. Both report a 0-based column for the first match
-/// position so the wire `column` can be 1-based.
+/// Path matching: a substring/regex test per path, or quick-open style
+/// fuzzy ranking over the whole candidate set.
+enum PathMatcher {
+    Exact(Matcher),
+    Fuzzy(FuzzyQuery),
+}
+
+fn build_path_matcher(
+    query: &str,
+    regex: bool,
+    ignore_case: bool,
+    fuzzy: bool,
+) -> Result<PathMatcher, CoderError> {
+    if fuzzy {
+        let text = query.to_lowercase();
+        return Ok(PathMatcher::Fuzzy(FuzzyQuery {
+            chars: text.chars().collect(),
+            text,
+        }));
+    }
+    build_matcher(query, regex, ignore_case).map(PathMatcher::Exact)
+}
+
+/// Content matching runs over the raw file bytes with one compiled regex —
+/// a literal query is escaped into the same engine, so both paths get its
+/// prefilter/SIMD acceleration and the Unicode-aware case folding the
+/// per-line lowercase compare used to approximate.
+fn build_content_matcher(
+    query: &str,
+    regex: bool,
+    ignore_case: bool,
+) -> Result<regex::bytes::Regex, CoderError> {
+    let pattern = if regex {
+        query.to_string()
+    } else {
+        regex::escape(query)
+    };
+    regex::bytes::RegexBuilder::new(&pattern)
+        .case_insensitive(ignore_case)
+        // `^`/`$` bind to line boundaries: the buffer is scanned whole, but
+        // the contract is per line.
+        .multi_line(true)
+        // Bytes mode: invalid UTF-8 (lossy on the way out) must not abort
+        // a scan of an otherwise-readable file.
+        .unicode(true)
+        .build()
+        .map_err(|e| CoderError::BadInput(format!("bad regex {query:?}: {e}")))
+}
+
+/// Lightweight path matcher — a `Regex` or a literal substring test.
 enum Matcher {
     Regex(regex::Regex),
     Literal { needle: String, ignore_case: bool },
 }
 
-struct Match {
-    start: usize,
-}
-
 impl Matcher {
     fn is_match(&self, hay: &str) -> bool {
-        self.find(hay).is_some()
-    }
-    fn find(&self, hay: &str) -> Option<Match> {
         match self {
-            Matcher::Regex(re) => re.find(hay).map(|m| Match { start: m.start() }),
+            Matcher::Regex(re) => re.is_match(hay),
             Matcher::Literal {
                 needle,
                 ignore_case,
             } => {
                 if *ignore_case {
-                    let hay_l = hay.to_lowercase();
-                    let needle_l = needle.to_lowercase();
-                    hay_l.find(&needle_l).map(|s| Match { start: s })
+                    hay.to_lowercase().contains(&needle.to_lowercase())
                 } else {
-                    hay.find(needle.as_str()).map(|s| Match { start: s })
+                    hay.contains(needle.as_str())
                 }
             }
         }
@@ -529,7 +934,6 @@ fn build_matcher(query: &str, regex: bool, ignore_case: bool) -> Result<Matcher,
         })
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -592,6 +996,8 @@ mod tests {
                 use_default_excludes: true,
                 search_content: true,
                 search_paths: true,
+                respect_gitignore: false,
+                fuzzy_paths: false,
                 fs_scope: None,
             },
         )
@@ -638,6 +1044,8 @@ mod tests {
                 use_default_excludes: true,
                 search_content: true,
                 search_paths: false,
+                respect_gitignore: false,
+                fuzzy_paths: false,
                 fs_scope: None,
             },
         )
@@ -683,6 +1091,8 @@ mod tests {
                 use_default_excludes: true,
                 search_content: true,
                 search_paths: false,
+                respect_gitignore: false,
+                fuzzy_paths: false,
                 fs_scope: None,
             },
         )
@@ -732,6 +1142,8 @@ mod tests {
                 use_default_excludes: true,
                 search_content: true,
                 search_paths: false,
+                respect_gitignore: false,
+                fuzzy_paths: false,
                 fs_scope: None,
             },
         )
@@ -763,6 +1175,8 @@ mod tests {
                 use_default_excludes: true,
                 search_content: false,
                 search_paths: true,
+                respect_gitignore: false,
+                fuzzy_paths: false,
                 fs_scope: None,
             },
         )
@@ -795,6 +1209,8 @@ mod tests {
                 use_default_excludes: true,
                 search_content: true,
                 search_paths: true,
+                respect_gitignore: false,
+                fuzzy_paths: false,
                 fs_scope: None,
             },
         )
@@ -833,6 +1249,8 @@ mod tests {
                 use_default_excludes: true,
                 search_content: true,
                 search_paths: false,
+                respect_gitignore: false,
+                fuzzy_paths: false,
                 fs_scope: None,
             },
         )
@@ -876,6 +1294,8 @@ mod tests {
                 use_default_excludes: true,
                 search_content: true,
                 search_paths: false,
+                respect_gitignore: false,
+                fuzzy_paths: false,
                 fs_scope: None,
             },
         )
@@ -905,6 +1325,8 @@ mod tests {
                 use_default_excludes: true,
                 search_content: true,
                 search_paths: true,
+                respect_gitignore: false,
+                fuzzy_paths: false,
                 fs_scope: None,
             },
         )
@@ -937,6 +1359,8 @@ mod tests {
                 use_default_excludes: true,
                 search_content: false,
                 search_paths: false,
+                respect_gitignore: false,
+                fuzzy_paths: false,
                 fs_scope: None,
             },
         )
@@ -966,6 +1390,8 @@ mod tests {
                 use_default_excludes: true,
                 search_content: true,
                 search_paths: false,
+                respect_gitignore: false,
+                fuzzy_paths: false,
                 fs_scope: None,
             },
         )
@@ -995,6 +1421,8 @@ mod tests {
                 use_default_excludes: true,
                 search_content: true,
                 search_paths: false,
+                respect_gitignore: false,
+                fuzzy_paths: false,
                 fs_scope: None,
             },
         )
@@ -1025,6 +1453,8 @@ mod tests {
                 use_default_excludes: true,
                 search_content: true,
                 search_paths: false,
+                respect_gitignore: false,
+                fuzzy_paths: false,
                 fs_scope: None,
             },
         )
@@ -1059,6 +1489,8 @@ mod tests {
             use_default_excludes: true,
             search_content: true,
             search_paths: false,
+            respect_gitignore: false,
+            fuzzy_paths: false,
             fs_scope: None,
         }
     }
@@ -1623,5 +2055,187 @@ mod tests {
         assert_eq!(out.content_matches.len(), 1);
         assert!(out.content_matches[0].path.ends_with("ok.txt"));
         assert!(out.path_matches.is_empty());
+    }
+
+    // ------------------------------------------------------------------
+    // Scanner rewrite regressions: byte-wise matching, ordered fan-out.
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn results_come_back_in_sorted_walk_order_across_many_files() {
+        let (tmp, r, c) = setup();
+        for i in 0..40 {
+            write(&tmp, &format!("dir{}/f{:02}.txt", i % 4, i), "needle\n");
+        }
+        let out = handle(r, c, base_input("needle")).await.unwrap();
+        assert_eq!(out.content_matches.len(), 40);
+        let paths: Vec<&str> = out
+            .content_matches
+            .iter()
+            .map(|m| m.path.as_str())
+            .collect();
+        let mut sorted = paths.clone();
+        sorted.sort();
+        assert_eq!(
+            paths, sorted,
+            "matches must arrive in name-sorted walk order"
+        );
+    }
+
+    #[tokio::test]
+    async fn cap_cuts_deterministically_across_files() {
+        let (tmp, r, c) = setup();
+        for i in 0..12 {
+            write(&tmp, &format!("f{:02}.txt", i), "needle a\nneedle b\n");
+        }
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                max_matches: Some(5),
+                ..base_input("needle")
+            },
+        )
+        .await
+        .unwrap();
+        assert!(out.truncated);
+        assert_eq!(out.content_matches.len(), 5);
+        assert_eq!(out.content_matches[0].path, abs(&tmp, "f00.txt"));
+        assert_eq!(out.content_matches[4].path, abs(&tmp, "f02.txt"));
+        assert_eq!(out.content_matches[4].line, 1);
+    }
+
+    #[tokio::test]
+    async fn crlf_lines_lose_their_carriage_return_and_keep_line_numbers() {
+        let (tmp, r, c) = setup();
+        write(&tmp, "a.txt", "one\r\ntwo needle\r\nthree\r\n");
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                context_lines_before: Some(1),
+                context_lines_after: Some(1),
+                ..base_input("needle")
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.content_matches.len(), 1);
+        let m = &out.content_matches[0];
+        assert_eq!(m.line, 2);
+        assert_eq!(m.column, 5);
+        assert_eq!(m.text, "two needle");
+        assert_eq!(m.before.as_deref(), Some(&["one".to_string()][..]));
+        assert_eq!(m.after.as_deref(), Some(&["three".to_string()][..]));
+    }
+
+    #[tokio::test]
+    async fn last_line_without_newline_still_matches() {
+        let (tmp, r, c) = setup();
+        write(&tmp, "a.txt", "first\nlast needle");
+        let out = handle(r, c, base_input("needle")).await.unwrap();
+        assert_eq!(out.content_matches.len(), 1);
+        assert_eq!(out.content_matches[0].line, 2);
+        assert_eq!(out.content_matches[0].text, "last needle");
+        assert!(out.content_matches[0].after.is_none());
+    }
+
+    #[tokio::test]
+    async fn ignore_case_literal_uses_unicode_folding() {
+        let (tmp, r, c) = setup();
+        write(&tmp, "a.txt", "ÉCOLE needle\n");
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                ignore_case: true,
+                ..base_input("école")
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.content_matches.len(), 1);
+        assert_eq!(out.content_matches[0].column, 1);
+    }
+
+    #[tokio::test]
+    async fn respect_gitignore_hides_ignored_files_inside_a_repository() {
+        let (tmp, r, c) = setup();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        write(&tmp, ".gitignore", "build/\n");
+        write(&tmp, "build/out.txt", "needle built");
+        write(&tmp, "src/in.txt", "needle source");
+        let out = handle(
+            r.clone(),
+            c.clone(),
+            SearchInput {
+                respect_gitignore: true,
+                search_paths: true,
+                ..base_input("needle")
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.content_matches.len(), 1);
+        assert_eq!(out.content_matches[0].path, abs(&tmp, "src/in.txt"));
+        assert!(out.path_matches.iter().all(|m| !m.path.contains("build")));
+        // Off by default: the ignored file is still searched.
+        let out = handle(r, c, base_input("needle")).await.unwrap();
+        assert_eq!(out.content_matches.len(), 2);
+    }
+
+    #[test]
+    fn fuzzy_score_prefers_basename_hits_and_segment_starts() {
+        let q = FuzzyQuery {
+            chars: "fltab".chars().collect(),
+            text: "fltab".into(),
+        };
+        let exact = fuzzy_path_score(&q, "ui/src/page/FilesTab.tsx").unwrap();
+        let scattered = fuzzy_path_score(&q, "fixtures/lib/tables/abc.rs").unwrap();
+        assert!(exact > scattered, "{exact} <= {scattered}");
+        assert!(fuzzy_path_score(&q, "src/main.rs").is_none());
+        let short = fuzzy_path_score(&q, "filetab.ts").unwrap();
+        let long = fuzzy_path_score(&q, "a/very/long/nested/folder/filetab.ts").unwrap();
+        assert!(short > long);
+    }
+
+    #[tokio::test]
+    async fn fuzzy_paths_rank_best_first_and_report_overflow() {
+        let (tmp, r, c) = setup();
+        write(&tmp, "src/page/FilesTab.tsx", "x");
+        write(&tmp, "src/lib/format.ts", "x");
+        write(&tmp, "fixtures/tabular.txt", "x");
+        let out = handle(
+            r.clone(),
+            c.clone(),
+            SearchInput {
+                search_content: false,
+                search_paths: true,
+                fuzzy_paths: true,
+                ..base_input("filestab")
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.path_matches[0].path, abs(&tmp, "src/page/FilesTab.tsx"));
+        assert!(!out.truncated);
+        let out = handle(
+            r,
+            c,
+            SearchInput {
+                search_content: false,
+                search_paths: true,
+                fuzzy_paths: true,
+                max_matches: Some(1),
+                ..base_input("t")
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.path_matches.len(), 1);
+        assert!(
+            out.truncated,
+            "more candidates than the cap must flag truncation"
+        );
     }
 }

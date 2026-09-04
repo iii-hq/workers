@@ -45,6 +45,11 @@
         },
         "type": "array"
       },
+      "fuzzy_paths": {
+        "default": false,
+        "description": "Rank path matches by fuzzy subsequence score (quick-open style) instead of substring/regex matching; `path_matches` then comes back best first. Content matching is unaffected.",
+        "type": "boolean"
+      },
       "ignore_case": {
         "default": false,
         "type": "boolean"
@@ -88,6 +93,11 @@
       },
       "regex": {
         "default": false,
+        "type": "boolean"
+      },
+      "respect_gitignore": {
+        "default": false,
+        "description": "Honour `.gitignore`/`.ignore` rules (inside a Git repository) while walking, the way an editor's search does; default false keeps every non-excluded file searchable.",
         "type": "boolean"
       },
       "search_content": {

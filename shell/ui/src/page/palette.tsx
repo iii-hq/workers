@@ -24,12 +24,18 @@ export function registerShellPalette(host: Host): void {
     async search(query, { workingDir, signal }) {
       const base = workingDir ?? (await coderInfo(host)).primary_root
       if (signal.aborted) return []
+      // Quick-open ranking: the worker scores every path by fuzzy
+      // subsequence match and returns the best first, skipping what
+      // .gitignore hides.
       const out = await coderSearch(host, {
         query,
         regex: false,
         ignoreCase: true,
         path: base,
         searchContent: false,
+        fuzzyPaths: true,
+        respectGitignore: true,
+        maxMatches: FILE_ROWS * 2,
       })
       if (signal.aborted) return []
       return out.path_matches

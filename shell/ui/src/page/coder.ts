@@ -45,6 +45,7 @@ export interface ReadFileResponse {
   content?: string | null
   is_utf8?: boolean | null
   more_lines?: boolean | null
+  lines_returned?: number | null
   total_lines?: number | null
   size?: number | null
   /** Unix permission bits, lower 9 bits of st_mode. */
@@ -100,31 +101,70 @@ export function workspaceValidate(
   )
 }
 
+/** How deep the first listing of a root goes. Shallow on purpose: the
+    explorer fetches a folder's children when it is expanded, so a
+    workspace of any size opens with one small response. */
+export const TREE_INITIAL_DEPTH = 3
+/** Depth of a lazy folder fetch: the folder's children plus one level
+    below, so the next expansion is usually instant. */
+export const TREE_EXPAND_DEPTH = 2
+export const TREE_PER_FOLDER_LIMIT = 500
+
 export function coderTree(
   host: Host,
   path: string,
   includeHidden: boolean,
+  maxDepth: number = TREE_INITIAL_DEPTH,
 ): Promise<TreeResponse> {
   return host.iii.trigger<TreeResponse>('coder::tree', {
     path,
-    // Deep enough for real repos; the worker's per-folder limit and
-    // output budget still bound the response (truncated stubs carry
-    // hints the Files tab surfaces).
-    max_depth: 25,
+    max_depth: maxDepth,
     // The worker default (50) fills with dot entries in home-shaped
     // folders — byte order sorts them first. 500 matches the editor
     // worker's browse call.
-    per_folder_limit: 500,
+    per_folder_limit: TREE_PER_FOLDER_LIMIT,
     use_default_excludes: true,
     include_hidden: includeHidden,
   })
 }
 
+export interface ReadFileOptions {
+  /** Per-call full-read budget (bytes); the worker clamps it to its
+      max_read_bytes. Omit for the worker default (128 KiB). */
+  maxOutputBytes?: number
+}
+
 export function coderReadFile(
   host: Host,
   path: string,
+  options: ReadFileOptions = {},
 ): Promise<ReadFileResponse> {
-  return host.iii.trigger<ReadFileResponse>('coder::read-file', { path })
+  return host.iii.trigger<ReadFileResponse>('coder::read-file', {
+    path,
+    ...(options.maxOutputBytes !== undefined
+      ? { max_output_bytes: options.maxOutputBytes }
+      : {}),
+  })
+}
+
+/** A line window of a file — the read-only view of a file too large for
+    the editor budget. */
+export function coderReadWindow(
+  host: Host,
+  path: string,
+  lineFrom: number,
+  lineTo: number,
+): Promise<ReadFileResponse> {
+  return host.iii.trigger<ReadFileResponse>('coder::read-file', {
+    path,
+    line_from: lineFrom,
+    line_to: lineTo,
+  })
+}
+
+/** Metadata only: size, mode, mtime, total_lines, is_utf8. */
+export function coderStat(host: Host, path: string): Promise<ReadFileResponse> {
+  return host.iii.trigger<ReadFileResponse>('coder::read-file', { path, stat: true })
 }
 
 /** Best-effort batch snapshot used to capture pre-change baselines for a
@@ -236,11 +276,37 @@ export interface SearchParams {
   path: string
   /** Default true; false asks for path matches only (quick open). */
   searchContent?: boolean
+  /** Default true. */
+  searchPaths?: boolean
+  /** Root-relative globs the paths must match, e.g. every TypeScript file. */
+  includeGlobs?: readonly string[]
+  excludeGlobs?: readonly string[]
+  maxMatches?: number
+  /** Skip files `.gitignore` rules hide, like an editor's search. */
+  respectGitignore?: boolean
+  /** Rank path matches by fuzzy score, best first (quick open). */
+  fuzzyPaths?: boolean
+  contextLinesBefore?: number
+  contextLinesAfter?: number
 }
 
 export function coderSearch(
   host: Host,
-  { query, regex, ignoreCase, path, searchContent = true }: SearchParams,
+  {
+    query,
+    regex,
+    ignoreCase,
+    path,
+    searchContent = true,
+    searchPaths = true,
+    includeGlobs,
+    excludeGlobs,
+    maxMatches,
+    respectGitignore,
+    fuzzyPaths,
+    contextLinesBefore,
+    contextLinesAfter,
+  }: SearchParams,
 ): Promise<SearchResponse> {
   return host.iii.trigger<SearchResponse>('coder::search', {
     query,
@@ -248,8 +314,53 @@ export function coderSearch(
     ignore_case: ignoreCase,
     path,
     search_content: searchContent,
-    search_paths: true,
+    search_paths: searchPaths,
+    ...(includeGlobs && includeGlobs.length > 0 ? { include_globs: includeGlobs } : {}),
+    ...(excludeGlobs && excludeGlobs.length > 0 ? { exclude_globs: excludeGlobs } : {}),
+    ...(maxMatches !== undefined ? { max_matches: maxMatches } : {}),
+    ...(respectGitignore ? { respect_gitignore: true } : {}),
+    ...(fuzzyPaths ? { fuzzy_paths: true } : {}),
+    ...(contextLinesBefore ? { context_lines_before: contextLinesBefore } : {}),
+    ...(contextLinesAfter ? { context_lines_after: contextLinesAfter } : {}),
   })
+}
+
+export interface DeleteResult {
+  path: string
+  success: boolean
+  removed: boolean
+  error?: { code: string; message: string } | null
+}
+
+/** Remove files or folders; folders need `recursive` when non-empty. */
+export async function coderDelete(
+  host: Host,
+  paths: readonly string[],
+  recursive: boolean,
+): Promise<DeleteResult[]> {
+  const out = await host.iii.trigger<{ results?: DeleteResult[] }>('coder::delete-file', {
+    paths,
+    recursive,
+  })
+  return out.results ?? []
+}
+
+export interface MoveResult {
+  from: string
+  to: string
+  success: boolean
+  error?: { code: string; message: string } | null
+}
+
+/** Rename or move one entry; refuses to overwrite an existing target. */
+export async function coderMove(host: Host, from: string, to: string): Promise<MoveResult> {
+  const out = await host.iii.trigger<{ results?: MoveResult[] }>('coder::move', {
+    files: [{ from, to, overwrite: false, parents: true }],
+  })
+  const result = out.results?.[0]
+  if (!result) throw new Error('coder::move returned no result')
+  if (!result.success) throw new Error(result.error?.message ?? `could not move ${from}`)
+  return result
 }
 
 /* ── path helpers ───────────────────────────────────────────────────── */
@@ -277,12 +388,26 @@ export interface FlatTree {
   kinds: Map<string, TreeNode['kind']>
   /** Truncation hints, for the "partial listing" note. */
   truncations: TreeTruncation[]
+  /** Slash-less dirs whose children the snapshot actually listed. A dir
+      absent here was cut off (depth, node budget, default exclude) and
+      needs its own fetch when expanded. */
+  loaded: Set<string>
+}
+
+/** Whether a listed node's children are known in full or in part. Depth
+    and budget cuts leave the folder unlisted; a per-folder cap still
+    listed a first page, which is all the explorer can show anyway. */
+function childrenListed(node: TreeNode): boolean {
+  if (node.children == null) return false
+  const reason = node.truncated?.reason
+  return reason !== 'max_depth' && reason !== 'max_nodes' && reason !== 'default_exclude'
 }
 
 export function flattenTree(root: TreeNode): FlatTree {
   const paths: string[] = []
   const kinds = new Map<string, TreeNode['kind']>()
   const truncations: TreeTruncation[] = []
+  const loaded = new Set<string>()
 
   const walk = (node: TreeNode, prefix: string) => {
     if (node.truncated) truncations.push(node.truncated)
@@ -290,11 +415,12 @@ export function flattenTree(root: TreeNode): FlatTree {
       const childPath = prefix === '' ? child.name : `${prefix}/${child.name}`
       paths.push(child.kind === 'dir' ? `${childPath}/` : childPath)
       kinds.set(childPath, child.kind)
+      if (child.kind === 'dir' && childrenListed(child)) loaded.add(childPath)
       walk(child, childPath)
     }
   }
   // The ROOT node's own name is never joined — child path = prefix + name.
   walk(root, '')
 
-  return { paths, kinds, truncations }
+  return { paths, kinds, truncations, loaded }
 }
