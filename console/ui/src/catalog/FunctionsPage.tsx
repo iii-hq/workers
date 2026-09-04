@@ -3,7 +3,12 @@
  * function on the bus — each row led by the `ƒ` tile, grouped by the worker
  * that registered it — and a workspace that is always present: a hero when
  * nothing is selected, the function document (breadcrumb, identity head,
- * overview/invoke/input/output/triggers/activity tabs) when one is.
+ * overview/invoke/triggers/activity tabs) when one is.
+ *
+ * The document opens on the overview, and the overview is the contract:
+ * input schema, output schema, metadata. Selecting a function used to land
+ * on the invoke editor, which showed a name, a description, and a JSON box —
+ * nothing about the fields that box wanted.
  *
  * Live, never polled. `engine::functions-available` fires whenever functions
  * are registered or unregistered, so a worker connecting or dying is visible
@@ -380,12 +385,12 @@ export function FunctionsPage({
             body="select a function from the sidebar to understand its contract, test it, and follow its recent calls. the catalog updates whenever workers connect or disconnect."
             items={[
               {
-                label: 'overview',
-                value: 'ownership, runtime, triggers, and metadata',
+                label: 'contract',
+                value: 'input and output schemas in a readable field table',
               },
               {
-                label: 'contracts',
-                value: 'input and output schemas in a readable field table',
+                label: 'bindings',
+                value: 'the triggers that fire it, and who registered it',
               },
               {
                 label: 'test',
@@ -421,11 +426,14 @@ function FunctionDocument({
     [host, functionId],
   )
   const detail = useResource(load)
-  const [tab, setTab] = useState('invoke')
+  // Selecting a function opens on its contract, not on the editor: the first
+  // question an operator has is what the function takes and returns, and a
+  // JSON box answers neither. `run function` is one click away in the head.
+  const [tab, setTab] = useState('overview')
   const [prefill, setPrefill] = useState<{ value: unknown; nonce: number }>()
 
   useEffect(() => {
-    setTab('invoke')
+    setTab('overview')
     setPrefill(undefined)
   }, [functionId])
 
@@ -512,8 +520,6 @@ function FunctionDocument({
             <TabsList>
               <TabsTrigger value="overview">Overview</TabsTrigger>
               <TabsTrigger value="invoke">Trigger</TabsTrigger>
-              <TabsTrigger value="input">Input</TabsTrigger>
-              <TabsTrigger value="output">Output</TabsTrigger>
               <TabsTrigger value="triggers">
                 Triggers
                 {detail.data.registered_triggers.length > 0 ? (
@@ -534,18 +540,6 @@ function FunctionDocument({
                 label="run function"
                 runningLabel="running…"
                 runRef={invokeRunRef}
-              />
-            </TabsContent>
-            <TabsContent value="input">
-              <SchemaTable
-                schema={detail.data.request_schema}
-                empty="This function registered no input schema."
-              />
-            </TabsContent>
-            <TabsContent value="output">
-              <SchemaTable
-                schema={detail.data.response_schema}
-                empty="This function registered no output schema."
               />
             </TabsContent>
             <TabsContent value="triggers">
@@ -677,9 +671,13 @@ function FunctionContext({
 }
 
 /**
- * Function identity and contract facts already live in the contextual rail.
- * The overview is reserved for extra metadata so it never repeats that same
- * fact sheet in the main work surface.
+ * The function's contract, which is what the operator came to read: the input
+ * fields a caller must supply, then the shape that comes back, then whatever
+ * metadata the worker attached.
+ *
+ * Identity facts (id, worker, language) stay in the contextual rail so this
+ * surface never repeats them. The rail's "input schema: defined" line is a
+ * yes/no; this is the answer to what those fields actually are.
  */
 function FunctionOverview({ detail }: { detail: FunctionDetail }) {
   const hasMetadata =
@@ -689,17 +687,29 @@ function FunctionOverview({ detail }: { detail: FunctionDetail }) {
       Array.isArray(detail.metadata) ||
       Object.keys(detail.metadata).length > 0)
 
-  return hasMetadata ? (
+  return (
     <div className="console-catalog-overview">
-      <span className="console-catalog-field-label">Metadata</span>
-      <JsonHighlight
-        code={pretty(detail.metadata)}
-        className="console-catalog-json"
-        wrap
+      <span className="console-catalog-field-label">Input schema</span>
+      <SchemaTable
+        schema={detail.request_schema}
+        empty="This function registered no input schema."
       />
+      <span className="console-catalog-field-label">Output schema</span>
+      <SchemaTable
+        schema={detail.response_schema}
+        empty="This function registered no output schema."
+      />
+      {hasMetadata ? (
+        <>
+          <span className="console-catalog-field-label">Metadata</span>
+          <JsonHighlight
+            code={pretty(detail.metadata)}
+            className="console-catalog-json"
+            wrap
+          />
+        </>
+      ) : null}
     </div>
-  ) : (
-    <Note>This function registered no additional metadata.</Note>
   )
 }
 
