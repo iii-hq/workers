@@ -81,6 +81,10 @@ interface Outcome {
   durationMs: number
   body: string
   error?: string
+  // The endpoint answered with a cross-origin redirect. The browser will not
+  // reveal the target or the redirect's status code (302 etc.), so this is the
+  // honest ceiling: the trigger fired and redirected, we just can't read where.
+  redirected?: boolean
 }
 
 export function HttpTester({
@@ -142,7 +146,9 @@ export function HttpTester({
       setOutcome(null)
       return
     }
-    const init: RequestInit = { method }
+    // `manual` so a redirect returns an opaque response instead of the browser
+    // following it cross-origin and throwing an unreadable "Failed to fetch".
+    const init: RequestInit = { method, redirect: 'manual' }
     if (BODY_METHODS.has(method)) {
       try {
         JSON.parse(body)
@@ -159,6 +165,18 @@ export function HttpTester({
     const started = performance.now()
     try {
       const response = await fetch(url, init)
+      // A cross-origin redirect comes back opaque: status 0, body unreadable.
+      // Report it as the redirect it is, not a failure.
+      if (response.type === 'opaqueredirect') {
+        setOutcome({
+          ok: true,
+          status: null,
+          durationMs: performance.now() - started,
+          body: '',
+          redirected: true,
+        })
+        return
+      }
       const text = await response.text()
       const contentType = response.headers.get('content-type') ?? ''
       setOutcome({
@@ -317,7 +335,8 @@ export function HttpTester({
               outcome.ok ? 'console-catalog-ok' : 'console-catalog-invalid'
             }
           >
-            {outcome.status ?? 'failed'} · {Math.round(outcome.durationMs)}ms
+            {outcome.redirected ? 'redirected' : (outcome.status ?? 'failed')} ·{' '}
+            {Math.round(outcome.durationMs)}ms
           </span>
         ) : null}
       </div>
@@ -325,7 +344,14 @@ export function HttpTester({
       {outcome?.error ? (
         <div className="console-catalog-error">{outcome.error}</div>
       ) : null}
-      {outcome && !outcome.error ? (
+      {outcome?.redirected ? (
+        <Note>
+          The endpoint answered with a redirect to another origin. The browser
+          hides the target and its status code, so the response cannot be read
+          here, but the trigger fired and redirected as intended.
+        </Note>
+      ) : null}
+      {outcome && !outcome.error && !outcome.redirected ? (
         <JsonHighlight
           code={outcome.body || '(empty response)'}
           className="console-catalog-result"
