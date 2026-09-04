@@ -62,11 +62,10 @@ Feature: context::assemble — the model-ready context pipeline
     And the response messages equal the request history
     And the summariser was never invoked
 
-  # Prevents: aged verbose outputs riding in context until the window
-  # overflows — the evidence session re-sent one 85k-token result on ~35
-  # consecutive calls. Prune is age-based now: under budget, outputs
-  # outside the protected window are still placeholdered.
-  Scenario: aged verbose outputs are pruned even under budget
+  # Prevents: old verbose outputs riding in context until the window
+  # overflows. Under budget, verbose outputs outside the protected window
+  # are still placeholdered even when decay is disabled.
+  Scenario: old verbose outputs are pruned even under budget
     Given the router knows model "big" with context window 200000 and max output 8000
     And config "protect_recent_tokens" is 0
     And config "min_free_tokens" is 1
@@ -80,6 +79,23 @@ Feature: context::assemble — the model-ready context pipeline
     And the response field "applied.pruned" is true
     And the response field "token_count" does not exceed 172000
     And response message 2 text is "[output of shell::run pruned: was ~5000 tokens; re-call it if still needed]"
+
+  Scenario: assemble reads decay controls from the worker config
+    Given the router knows model "big" with context window 200000 and max output 8000
+    And config "protect_recent_tokens" is 0
+    And config "min_free_tokens" is 1
+    And config "max_output_chars" is 10000
+    And config "decay_user_turns" is 2
+    And config "protected_user_turns" is 0
+    And a user message "task"
+    And an assistant function call "c1" to "shell::run"
+    And a function result for call "c1" from "shell::run" of ~100 tokens
+    And a user message "next"
+    And a user message "done"
+    When I assemble the history with model "big"
+    Then the call succeeds
+    And the response field "applied.pruned" is true
+    And response message 2 text is "[output of shell::run pruned: was ~100 tokens; re-call it if still needed]"
 
   # Prevents: the always-on trigger swallowing the allow_prune switch.
   # This is the only scenario that fails if prune fires when explicitly

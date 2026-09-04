@@ -365,6 +365,8 @@ pub async fn handle(deps: &Deps, req: AssembleRequest) -> Result<AssembleRespons
     if options.allow_prune.unwrap_or(true) {
         let params = PruneParams {
             protect_recent_tokens: config.protect_recent_tokens,
+            decay_user_turns: config.decay_user_turns,
+            protected_user_turns: config.protected_user_turns,
             min_free_tokens: config.min_free_tokens,
             max_output_chars: config.max_output_chars,
             protected_functions: options.protected_functions.clone().unwrap_or_default(),

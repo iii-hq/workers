@@ -42,6 +42,8 @@ mod tests {
             "reserved_pct",
             "tail_turns",
             "protect_recent_tokens",
+            "decay_user_turns",
+            "protected_user_turns",
             "min_free_tokens",
             "max_output_chars",
             "max_result_tokens",
