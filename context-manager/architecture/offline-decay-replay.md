@@ -39,7 +39,7 @@ CONTEXT_REPLAY_DIR=/home/anderson/.iii/data/session-manager \
 ```
 
 The measured production range was base `629647d91447a63298d11bf1c37fb636fcec0254`
-through `9550cbeb07faab4a2fe332d350c1850929cedbb3`. Re-run after any later
+through `eca84b17b53dccb90f8b4bcb35b6edc894b4b720`. Re-run after any later
 production change before comparing results.
 
 ## 2026-09-04 corpus result
@@ -52,6 +52,8 @@ All 36 sessions had zero decay savings. Aggregate final totals were 54,990
 tokens with both settings (0 saved, 0.00%). Over the 39 last-quarter endpoints,
 the totals were 98,381 tokens with both settings (0 saved, 0.00%); each mean
 was 2,522.59 tokens. The three multi-turn sessions also had zero savings.
+These totals were re-measured at the production revision above after adding
+the age-only enclosing-message savings guard; the result remained zero.
 
 This corpus is mostly single-turn and is not evidence about a long,
 steady-state conversation. The synthetic long-history test uses 130 actual
