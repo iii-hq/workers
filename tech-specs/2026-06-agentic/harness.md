@@ -970,30 +970,45 @@ type StopResponse = { stopping: boolean };
 - Invocation: **sync**
 
 ```typescript
-type StatusRequest = { session_id: string };
+type StatusRequest = {
+  session_id: string;
+  verbose?: boolean;                   // default false
+};
 type StatusResponse = {
   session_id: string;
   turn_id: string | null;
   status: TurnStatus;
   step: number;
   turn_count: number;
-  max_turns: number;
-  validation_retries: number;
-  max_validation_retries: number;
-  transient_resumes: number;
-  max_transient_resumes: number;
-  partial_result_available: boolean;
-  depth: number;                      // 0 for top-level turns; >0 for sub-agents
-  pending_function_calls: string[];   // function_call ids awaiting results (incl. parked children)
-  children: Array<{                   // live spawned children of the current turn
+  expects_wake: boolean;
+  result_error?: string | null;        // null when absent in lean mode; omitted when absent in verbose mode
+  children: Array<{                    // spawned children of the current turn; IDs only
     function_call_id: string;
     session_id: string;
     turn_id: string;
   }>;
-  result?: unknown;                   // output-contract result (terminal turns)
-  result_error?: string;
-} | null;                          // null for unknown sessions
+  result?: unknown;                    // output-contract result (terminal turns)
+
+  // verbose: true only
+  max_turns?: number;
+  validation_retries?: number;
+  max_validation_retries?: number;
+  transient_resumes?: number;
+  max_transient_resumes?: number;
+  partial_result_available?: boolean;
+  depth?: number;                      // 0 for top-level turns; >0 for sub-agents
+  pending_function_calls?: string[];   // present even when empty
+  armed_wakes?: ArmedWake[];           // omitted when empty
+  queued?: QueuedMessage[];            // omitted when empty
+} | null;                              // null for unknown sessions
 ```
+
+The default response contains exactly the common fields above. `result` keeps its original JSON
+type and value when its compact JSON serialization is at most 600 Unicode scalar characters. A
+longer result becomes a string containing the first 600 characters followed by
+` …(truncated; use verbose: true for the full result)`. Pass `verbose: true` for the complete
+runtime report and unmodified result; this preserves the legacy response's field and empty-value
+omission behavior.
 
 The transcript also records user-visible lifecycle entries. `recovery` entries identify the
 interruption reason and attempt budget; `error` entries carry a stable code, phase, retryability,

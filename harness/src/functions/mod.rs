@@ -65,7 +65,9 @@ pub const STOP_DESC: &str =
     "Request cancellation of an in-flight turn (cascades to spawned children).";
 
 pub const STATUS_ID: &str = "harness::status";
-pub const STATUS_DESC: &str = "Read the current turn status for a session.";
+pub const STATUS_DESC: &str =
+    "Read a session's current turn. Returns a lean summary by default; pass verbose: true for the \
+     full runtime report and untruncated result.";
 
 pub const SYSTEM_PROMPT_ID: &str = "harness::system-prompt::get";
 pub const SYSTEM_PROMPT_DESC: &str =
