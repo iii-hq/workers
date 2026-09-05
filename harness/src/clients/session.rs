@@ -419,7 +419,8 @@ impl SessionClient {
     }
 
     /// Strict evidence reader for evaluation metrics. Unlike [`Self::messages`],
-    /// malformed entries fail the read instead of being skipped.
+    /// malformed entries fail the read instead of being skipped. Custom entries
+    /// are included so metrics can count durable compaction records.
     pub async fn messages_strict(
         &self,
         session_id: &str,
@@ -432,7 +433,7 @@ impl SessionClient {
         loop {
             let mut payload = json!({
                 "session_id": session_id,
-                "include_custom": false,
+                "include_custom": true,
                 "limit": PAGE_LIMIT,
             });
             if let Some(value) = &cursor {

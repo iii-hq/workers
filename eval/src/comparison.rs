@@ -578,6 +578,7 @@ mod tests {
                 turns,
                 function_calls: 0,
                 function_call_errors: 0,
+                context_compactions: 0,
                 input_tokens: input,
                 output_tokens: output,
                 cache_read_tokens: None,
