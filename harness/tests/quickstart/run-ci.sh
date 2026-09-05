@@ -607,11 +607,12 @@ assert_secret_safe_artifacts() {
 }
 
 # Declares one worker (and everything the registry resolves for it) in the
-# compose file, then lets the daemon restart the project. The call is
-# synchronous: it returns after installs finish and every container reports
-# ready, so it carries the old `worker add` timeout.
+# compose file, then waits for the daemon to finish reconciling the project.
+# Older Compose releases answer synchronously with status "ok". Newer releases
+# admit the mutation with status "accepted" and expose its terminal snapshot
+# through compose::operation.
 run_compose_add() {
-  local spec=$1 payload response
+  local spec=$1 payload response status operation_id terminal_snapshot
   payload=$(jq -cn --arg file "$compose_file" --arg worker "$spec" \
     '{file: $file, worker: $worker}')
   # `iii trigger` waits only 30s for the invocation result by default, far
@@ -628,10 +629,33 @@ run_compose_add() {
       --timeout-ms "$((add_timeout_seconds * 1000))" --json "$payload")
   fi
   printf '%s\n' "$response"
-  # A container that failed to start comes back as JSON with status "failed",
-  # not as a non-zero exit; the exit code alone proves nothing.
-  jq -e '.status == "ok"' <<<"$response" >/dev/null 2>&1 \
-    || die "compose::add $spec did not report ok"
+  status=$(jq -r '.status // empty' <<<"$response" 2>/dev/null || true)
+  case "$status" in
+    ok)
+      # Legacy synchronous response: every declared worker is already ready.
+      return 0
+      ;;
+    accepted)
+      operation_id=$(jq -r '.operation_id // empty' <<<"$response" 2>/dev/null || true)
+      [[ -n "$operation_id" ]] \
+        || die "compose::add $spec was accepted without an operation_id"
+      log_command "iii trigger compose::operation --port $engine_port --json '{\"operation_id\":\"$operation_id\"}' (until terminal)"
+      if ! terminal_snapshot=$(python3 "$script_dir/wait_for_compose_operation.py" \
+        --iii-bin "$iii_bin" \
+        --engine-port "$engine_port" \
+        --operation-id "$operation_id" \
+        --timeout-seconds "$add_timeout_seconds"); then
+        [[ -z "$terminal_snapshot" ]] || printf '%s\n' "$terminal_snapshot"
+        die "compose::add $spec operation did not succeed"
+      fi
+      printf '%s\n' "$terminal_snapshot"
+      ;;
+    *)
+      # A synchronous lifecycle failure is JSON with status "failed", not a
+      # non-zero CLI exit. Unexpected or missing statuses are equally unsafe.
+      die "compose::add $spec returned status ${status:-missing}"
+      ;;
+  esac
 }
 
 run_compose_restart() {

@@ -85,3 +85,14 @@ def test_quickstart_enforces_latest_and_applies_provider_environment():
     assert 'router::provider::list' in script
     assert "unset ANTHROPIC_API_KEY OPENAI_API_KEY" in script
     assert 'ANTHROPIC_API_KEY="$anthropic_api_key" OPENAI_API_KEY="$openai_api_key"' in script
+
+
+def test_quickstart_waits_for_admitted_compose_add_operations():
+    script = (ROOT / "harness" / "tests" / "quickstart" / "run-ci.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "ok)" in script
+    assert "accepted)" in script
+    assert ".operation_id // empty" in script
+    assert 'wait_for_compose_operation.py"' in script
+    assert '--operation-id "$operation_id"' in script

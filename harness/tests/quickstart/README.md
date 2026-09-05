@@ -14,7 +14,10 @@ iii trigger compose::add --json '{"file":"worker-compose.yaml","worker":"console
 The validator seeds a minimal `worker-compose.yaml` (`namespace: default`,
 empty `containers:`); each `compose::add` resolves the worker's registry
 graph, pins every container to an exact version in the file, and restarts
-the project.
+the project. It accepts the legacy synchronous `status: ok` response and, for
+newer CLIs, follows an admitted `status: accepted` operation through
+`compose::operation` until it succeeds. A failed, cancelled, or timed-out
+operation stops the quickstart before it inspects a partially reconciled stack.
 
 It verifies that:
 
