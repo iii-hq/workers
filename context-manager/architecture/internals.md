@@ -18,7 +18,7 @@ in tests.
 | [src/main.rs](../src/main.rs) | Boot: CLI (`--config` seed, `--url`, `--manifest`), engine connect, **register the config schema (+ optional seed) with the `configuration` worker and fetch the authoritative value** (boot-fatal on failure), build adapters from it, `register_all`, then bind the `configuration` hot-reload trigger; Ctrl+C → `shutdown_async`. |
 | [src/lib.rs](../src/lib.rs) | Module tree only. |
 | [src/types.rs](../src/types.rs) | Wire contracts shared with the agentic family: `Role`, `ContentBlock` (5 variants), `AgentMessage` (4 roles), `ModelInput`, `ModelLimits`, `Model`, `ThinkingLevel`, `AgentFunction`. Serde renames keep the JSON byte-compatible with the TypeScript spec and session-manager's Rust copy. |
-| [src/config.rs](../src/config.rs) | `WorkerConfig` (11 budget/prune/cap/lease knobs incl. `lease_dir`, `~/`-expanded via `resolved_lease_dir`), each with a serde default; `deny_unknown_fields` so a typo'd key fails loudly. Also the JSON-Schema source (`json_schema`/`to_json`/`from_json`, derived `JsonSchema`) and the env-expanding seed parser (`from_file`/`from_yaml`); `boot_signature` names the one structural field (`lease_dir`). |
+| [src/config.rs](../src/config.rs) | `WorkerConfig` (13 budget/prune/cap/lease knobs incl. `lease_dir`, `~/`-expanded via `resolved_lease_dir`), each with a serde default; `deny_unknown_fields` so a typo'd key fails loudly. Also the JSON-Schema source (`json_schema`/`to_json`/`from_json`, derived `JsonSchema`) and the env-expanding seed parser (`from_file`/`from_yaml`); `boot_signature` names the one structural field (`lease_dir`). |
 | [src/configuration.rs](../src/configuration.rs) | The `configuration` worker client: `register_config` (schema + seed), `fetch_config` (authoritative, env-expanded), the `ConfigCell` snapshot + `apply_config`, the `FsLeaseStore` rebuild-and-swap on a `lease_dir` change, and the `context::on-config-change` trigger handler. |
 | [src/error.rs](../src/error.rs) | `ContextError` → `code: message` on the bus (`context/invalid_request`, `context/model_unresolved`, `context/state`). The two spec strings are kept verbatim. |
 | [src/ports.rs](../src/ports.rs) | The four seams: `ModelResolver`, `Summarizer`, `LeaseStore`, `Clock`, plus the `Deps` struct every handler receives. |
@@ -204,39 +204,45 @@ tail is "the last little bit kept raw", not a second copy of the window.
 ## 6. Pruning
 
 [core/prune.rs](../src/core/prune.rs). One pass, newest-to-oldest, that
-rewrites verbose `function_result` outputs to `[output of {function_id}
+rewrites eligible old `function_result` outputs to `[output of {function_id}
 pruned: was ~N tokens; re-call it if still needed]` and **never removes
 anything** — the message, its `function_call_id`, and the ordering all
 survive (the structural invariant providers depend on).
 
 Eligibility, applied while scanning from the newest message backward:
 
-1. **The two most recent user turns are always exempt** (`PROTECTED_USER_TURNS
-   = 2`, a hard prior-art constant, not operator-tunable): the scan counts
-   `user` messages and skips everything until it has passed two of them.
-2. **Protected token window:** accumulate each scanned output's tokens into
+1. **Protected user turns:** the scan counts subsequent `user` messages and
+   skips outputs in the newest `protected_user_turns` (default `2`). User
+   wrappers carrying inline function results do not increment age. `0`
+   disables only this exemption.
+2. **`protected_functions`** (by `function_id`) are never pruned and never even
+   counted as scanned.
+3. **Protected token window:** accumulate each scanned output's tokens into
    `window_tokens`; while `window_tokens <= protect_recent_tokens` the output
    is inside the newest window and kept. Because the scan is newest-first, the
    freshest outputs fill the window and push older ones out of it.
-3. **`protected_functions`** (by `function_id`) are never pruned and never even
-   counted as scanned.
-4. **Verbosity threshold:** an output whose text is `<= max_output_chars` is
-   not "verbose" — pruning it would free almost nothing — so it stays.
+4. **Size or age eligibility:** outside the token window, an output is eligible
+   when it exceeds `max_output_chars` or its age is at least
+   `decay_user_turns`. `decay_user_turns = 0` disables age eligibility. An
+   age-only candidate is kept unless its placeholder actually estimates
+   smaller. Exact placeholders produced by this pass are not aged again.
 5. **`min_free_tokens` guard:** sum what the eligible outputs *would* free; if
    that total is below `min_free_tokens`, **nothing is rewritten at all**. A
    no-op beats a destroyed-but-still-over context. This guard fires before any
    mutation, so a skipped pass leaves `messages` untouched.
 
 `PruneStats { pruned_tokens, pruned_parts, scanned_parts }` distinguishes
-"examined" from "rewritten". The pass is idempotent: a second run sees only the
-tiny placeholders, which are under `max_output_chars`, so nothing is verbose
-(`prune.feature` "pruning twice is idempotent"). On the assemble path the same
+"examined" from "rewritten". The pass is idempotent: exact placeholders it
+produced are excluded from decay eligibility (`prune.feature` "pruning twice
+is idempotent"). On the assemble path the same
 `core::prune::prune` runs with config-derived params plus the call's
-`protected_functions`.
+`protected_functions`; the two decay controls come from the same live config
+snapshot. Direct `context::prune` calls may override both, where absent or
+`null` inherits config and explicit `0` disables that control.
 
 The same file also holds the **cap pass** (`cap_results_with_sizes`) — a
-different kind of pass. Prune is policy: age window, `protected_functions`,
-`min_free_tokens` hysteresis. Cap is an unconditional ceiling with no
+different kind of pass. Prune is policy: size/age eligibility,
+`protected_functions`, `min_free_tokens` hysteresis. Cap is an unconditional ceiling with no
 exemptions beyond a `details` payload carrying `"status": "denied"` (which
 keeps its `details` even though its `content` is still capped). Any single
 result estimating over `max_result_tokens` (config default `20000`; `0`
@@ -486,8 +492,10 @@ reserved_tokens_cap: 20000     # default reserve = min(cap, reserved_pct% of con
 reserved_pct: 10
 tail_turns: 2                  # user+assistant pairs kept verbatim by compaction
 protect_recent_tokens: 40000   # newest function-output tokens never pruned
+decay_user_turns: 0            # prune after this many subsequent user turns; 0 disables decay
+protected_user_turns: 2        # recent user turns exempt from normal pruning; 0 disables this guard
 min_free_tokens: 20000         # skip pruning when it would free less
-max_output_chars: 2000         # outputs at/under this are not "verbose"; also the summariser truncation cap
+max_output_chars: 2000         # larger outputs immediately eligible; smaller ones may decay; also summariser cap
 max_result_tokens: 20000       # per-result ceiling for assemble's unconditional cap pass; 0 disables
 lease_ttl_secs: 300            # compaction mutual-exclusion lease TTL
 allow_fallback_limits: true    # conservative 8192/1024 when limits can't resolve

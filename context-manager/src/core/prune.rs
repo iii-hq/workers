@@ -8,11 +8,11 @@
 //! single text placeholder carrying the freed size.
 //!
 //! Eligibility (ported from harness `context-compaction/prune.ts`):
-//! - the most recent two user turns are never touched;
+//! - the configured number of most recent user turns are never touched;
 //! - outputs inside the newest `protect_recent_tokens` window are kept;
 //! - `protected_functions` are never pruned;
-//! - outputs whose text is at or under `max_output_chars` are not
-//!   "verbose" and stay (pruning them frees almost nothing);
+//! - outputs outside that window are eligible when they exceed
+//!   `max_output_chars` or have reached `decay_user_turns` age;
 //! - when everything prunable frees under `min_free_tokens`, nothing is
 //!   touched at all. `context::assemble` may subsequently use the
 //!   unconditional emergency pass to enforce its hard budget.
@@ -22,10 +22,6 @@ use crate::types::{AgentMessage, ContentBlock, Role};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-
-/// Recent user turns that are always exempt, independent of the token
-/// window (prior-art constant, not operator-tunable).
-const PROTECTED_USER_TURNS: usize = 2;
 
 /// Maximum number of Unicode scalar values copied from an oversized
 /// result into its emergency reference.
@@ -38,9 +34,13 @@ const EMERGENCY_RETRIEVAL_HINT: &str =
 pub struct PruneParams {
     /// Newest function-output tokens kept verbatim.
     pub protect_recent_tokens: u64,
+    /// Prune outputs after this many subsequent user turns; `0` disables decay.
+    pub decay_user_turns: usize,
+    /// Most recent user turns exempt from pruning; `0` disables this exemption.
+    pub protected_user_turns: usize,
     /// Skip the whole pass when it would free less than this.
     pub min_free_tokens: u64,
-    /// Outputs at or under this many chars are not considered verbose.
+    /// Larger outputs are immediately eligible outside protection.
     pub max_output_chars: usize,
     /// `function_id`s whose outputs are never pruned.
     pub protected_functions: Vec<String>,
@@ -62,6 +62,21 @@ pub struct PruneStats {
 /// the full result, but the model-facing view does not.
 pub fn placeholder(function_id: &str, tokens: u64) -> String {
     format!("[output of {function_id} pruned: was ~{tokens} tokens; re-call it if still needed]")
+}
+
+fn is_prune_placeholder(blocks: &[ContentBlock], function_id: &str) -> bool {
+    let [ContentBlock::Text { text }] = blocks else {
+        return false;
+    };
+    let prefix = format!("[output of {function_id} pruned: was ~");
+    let Some(tokens) = text
+        .strip_prefix(&prefix)
+        .and_then(|rest| rest.strip_suffix(" tokens; re-call it if still needed]"))
+        .and_then(|tokens| tokens.parse::<u64>().ok())
+    else {
+        return false;
+    };
+    placeholder(function_id, tokens) == *text
 }
 
 fn text_of(blocks: &[ContentBlock]) -> String {
@@ -125,6 +140,28 @@ fn set_result_content(
     }
 }
 
+fn replacement_saves_enclosing_message(
+    message: &AgentMessage,
+    location: ResultLocation,
+    function_id: &str,
+    tokens: u64,
+    estimator: &dyn Estimator,
+) -> bool {
+    let mut proposed = [message.clone()];
+    let proposed_location = match location {
+        ResultLocation::Message(_) => ResultLocation::Message(0),
+        ResultLocation::Inline { block, .. } => ResultLocation::Inline { message: 0, block },
+    };
+    set_result_content(
+        &mut proposed,
+        proposed_location,
+        vec![ContentBlock::Text {
+            text: placeholder(function_id, tokens),
+        }],
+    );
+    estimator.message(&proposed[0]) < estimator.message(message)
+}
+
 /// Rewrite verbose outputs in place. Returns the stats; `messages` is
 /// mutated only when the pass actually runs (the `min_free_tokens`
 /// guard fires before any rewrite).
@@ -167,28 +204,45 @@ fn prune_impl(
             user_turns += 1;
             continue;
         }
-        if user_turns < PROTECTED_USER_TURNS {
+        if user_turns < params.protected_user_turns {
             continue;
         }
-        let mut consider = |location: ResultLocation,
-                            function_id: &str,
-                            content: &[ContentBlock]| {
-            if params
-                .protected_functions
-                .iter()
-                .any(|protected| protected == function_id)
-            {
-                return;
-            }
-            let text = text_of(content);
-            let tokens = result_tokens(content, estimator);
-            scanned += 1;
-            window_tokens = window_tokens.saturating_add(tokens);
-            if window_tokens > params.protect_recent_tokens && text.len() > params.max_output_chars
-            {
+        let mut consider =
+            |location: ResultLocation, function_id: &str, content: &[ContentBlock]| {
+                if params
+                    .protected_functions
+                    .iter()
+                    .any(|protected| protected == function_id)
+                {
+                    return;
+                }
+                let text = text_of(content);
+                let tokens = result_tokens(content, estimator);
+                scanned += 1;
+                window_tokens = window_tokens.saturating_add(tokens);
+                let verbose = text.len() > params.max_output_chars;
+                let decay_enabled = params.decay_user_turns > 0;
+                let aged = decay_enabled && user_turns >= params.decay_user_turns;
+                let already_pruned = decay_enabled && is_prune_placeholder(content, function_id);
+                if window_tokens <= params.protect_recent_tokens
+                    || already_pruned
+                    || (!verbose && !aged)
+                {
+                    return;
+                }
+                if !verbose
+                    && !replacement_saves_enclosing_message(
+                        message,
+                        location,
+                        function_id,
+                        tokens,
+                        estimator,
+                    )
+                {
+                    return;
+                }
                 queue.push((location, tokens, function_id.to_owned()));
-            }
-        };
+            };
 
         match message {
             AgentMessage::FunctionResult {
@@ -675,9 +729,21 @@ mod tests {
         .unwrap()
     }
 
+    fn text_result(function_id: &str, text: String, ts: i64) -> AgentMessage {
+        serde_json::from_value(json!({
+            "role": "function_result", "function_call_id": format!("c{ts}"),
+            "function_id": function_id,
+            "content": [{ "type": "text", "text": text }],
+            "timestamp": ts
+        }))
+        .unwrap()
+    }
+
     fn params() -> PruneParams {
         PruneParams {
             protect_recent_tokens: 100,
+            decay_user_turns: 0,
+            protected_user_turns: 2,
             min_free_tokens: 1,
             max_output_chars: 100,
             protected_functions: vec![],
@@ -696,23 +762,474 @@ mod tests {
     }
 
     #[test]
-    fn prunes_old_verbose_output_and_keeps_recent_turns() {
+    fn decay_disabled_preserves_legacy_literal_output_and_stats() {
         let mut messages = history();
         let stats = prune(&mut messages, &params(), &HeuristicEstimator);
-        assert_eq!(stats.pruned_parts, 1);
-        // Net of the placeholder written back: 2000 minus the tokens of
-        // "[output of shell::run pruned: was ~2000 tokens; re-call it if
-        // still needed]" (75 chars / 4 = 18).
-        assert_eq!(stats.pruned_tokens, 1_982);
-        // Oldest output replaced...
+        assert_eq!(
+            stats,
+            PruneStats {
+                pruned_tokens: 1_982,
+                pruned_parts: 1,
+                scanned_parts: 1,
+            }
+        );
         assert_eq!(
             messages[1].content(),
             &[ContentBlock::Text {
-                text: placeholder("shell::run", 2_000)
+                text: "[output of shell::run pruned: was ~2000 tokens; re-call it if still needed]"
+                    .into()
             }]
         );
-        // ...the one inside the last two user turns untouched.
         assert_eq!(text_of(messages[3].content()).len(), 8_000);
+    }
+
+    #[test]
+    fn decay_prunes_at_the_configured_age_not_one_turn_before() {
+        let mut messages = vec![
+            user("first", 1),
+            result("shell::run", 400, 2),
+            user("second", 3),
+        ];
+        let mut p = params();
+        p.protect_recent_tokens = 0;
+        p.max_output_chars = 10_000;
+        p.decay_user_turns = 2;
+        p.protected_user_turns = 0;
+
+        let before_boundary = prune(&mut messages, &p, &HeuristicEstimator);
+        assert_eq!(before_boundary.pruned_parts, 0);
+        assert_eq!(text_of(messages[1].content()).len(), 400);
+
+        messages.push(user("third", 4));
+        let at_boundary = prune(&mut messages, &p, &HeuristicEstimator);
+        assert_eq!(at_boundary.pruned_parts, 1);
+        assert_eq!(
+            text_of(messages[1].content()),
+            "[output of shell::run pruned: was ~100 tokens; re-call it if still needed]"
+        );
+    }
+
+    #[test]
+    fn decay_applies_below_and_at_the_verbose_threshold() {
+        let mut messages = vec![
+            user("first", 1),
+            result("below", 396, 2),
+            result("at", 400, 3),
+            user("second", 4),
+            user("third", 5),
+        ];
+        let mut p = params();
+        p.protect_recent_tokens = 0;
+        p.max_output_chars = 400;
+        p.decay_user_turns = 2;
+        p.protected_user_turns = 0;
+
+        let stats = prune(&mut messages, &p, &HeuristicEstimator);
+
+        assert_eq!(stats.pruned_parts, 2);
+        assert!(text_of(messages[1].content()).starts_with("[output of below pruned"));
+        assert!(text_of(messages[2].content()).starts_with("[output of at pruned"));
+    }
+
+    #[test]
+    fn decay_still_honors_the_newest_token_window() {
+        let mut messages = vec![
+            user("first", 1),
+            result("older", 400, 2),
+            result("newer", 400, 3),
+            user("second", 4),
+            user("third", 5),
+        ];
+        let mut p = params();
+        p.protect_recent_tokens = 100;
+        p.max_output_chars = 10_000;
+        p.decay_user_turns = 2;
+        p.protected_user_turns = 0;
+
+        let stats = prune(&mut messages, &p, &HeuristicEstimator);
+
+        assert_eq!(stats.pruned_parts, 1);
+        assert!(text_of(messages[1].content()).starts_with("[output of older pruned"));
+        assert_eq!(text_of(messages[2].content()).len(), 400);
+    }
+
+    #[test]
+    fn zero_protected_turns_removes_only_the_turn_exemption() {
+        let original = vec![user("first", 1), result("shell::run", 8_000, 2)];
+        let mut protected = original.clone();
+        let mut p = params();
+        p.protect_recent_tokens = 0;
+        let protected_stats = prune(&mut protected, &p, &HeuristicEstimator);
+        assert_eq!(protected_stats.scanned_parts, 0);
+        assert_eq!(protected, original);
+
+        p.protected_user_turns = 0;
+        let mut unprotected = original;
+        let unprotected_stats = prune(&mut unprotected, &p, &HeuristicEstimator);
+        assert_eq!(unprotected_stats.pruned_parts, 1);
+        assert!(text_of(unprotected[1].content()).starts_with("[output of shell::run pruned"));
+    }
+
+    #[test]
+    fn decay_honors_protected_functions_and_minimum_free_tokens() {
+        let original = vec![
+            user("first", 1),
+            result("keep::me", 400, 2),
+            user("second", 3),
+        ];
+        let mut p = params();
+        p.protect_recent_tokens = 0;
+        p.max_output_chars = 10_000;
+        p.decay_user_turns = 1;
+        p.protected_user_turns = 0;
+        p.protected_functions = vec!["keep::me".into()];
+
+        let mut protected = original.clone();
+        let protected_stats = prune(&mut protected, &p, &HeuristicEstimator);
+        assert_eq!(protected_stats.scanned_parts, 0);
+        assert_eq!(protected, original);
+
+        p.protected_functions.clear();
+        p.min_free_tokens = 1_000;
+        let mut below_minimum = original.clone();
+        let minimum_stats = prune(&mut below_minimum, &p, &HeuristicEstimator);
+        assert_eq!(minimum_stats.scanned_parts, 1);
+        assert_eq!(minimum_stats.pruned_parts, 0);
+        assert_eq!(minimum_stats.pruned_tokens, 0);
+        assert_eq!(below_minimum, original);
+    }
+
+    #[test]
+    fn decay_does_not_expand_tiny_or_equal_cost_outputs() {
+        let mut tiny = vec![user("first", 1), result("tiny", 1, 2), user("second", 3)];
+        let mut p = params();
+        p.protect_recent_tokens = 0;
+        p.max_output_chars = 10_000;
+        p.decay_user_turns = 1;
+        p.protected_user_turns = 0;
+        p.min_free_tokens = 0;
+
+        let tiny_stats = prune(&mut tiny, &p, &HeuristicEstimator);
+        assert_eq!(tiny_stats.pruned_parts, 0);
+        assert_eq!(text_of(tiny[1].content()), "x");
+
+        struct EqualCostEstimator;
+        impl Estimator for EqualCostEstimator {
+            fn kind(&self) -> crate::core::estimate::EstimatorKind {
+                crate::core::estimate::EstimatorKind::Heuristic
+            }
+
+            fn message(&self, _message: &AgentMessage) -> u64 {
+                10
+            }
+
+            fn text(&self, _text: &str) -> u64 {
+                10
+            }
+
+            fn function(&self, _function: &crate::types::AgentFunction) -> u64 {
+                0
+            }
+        }
+
+        let mut equal = vec![user("first", 1), result("equal", 40, 2), user("second", 3)];
+        let equal_stats = prune(&mut equal, &p, &EqualCostEstimator);
+        assert_eq!(equal_stats.pruned_parts, 0);
+        assert_eq!(text_of(equal[1].content()).len(), 40);
+    }
+
+    #[test]
+    fn age_only_message_with_escaped_function_id_does_not_expand() {
+        let function_id = "\\".repeat(500);
+        let mut messages = vec![
+            text_result(&function_id, "x".repeat(700), 1),
+            user("one", 2),
+            user("two", 3),
+            user("three", 4),
+            user("four", 5),
+        ];
+        let original = messages.clone();
+        let mut sizes = sizes_of(&messages);
+        let original_sizes = sizes.clone();
+        let mut p = params();
+        p.protect_recent_tokens = 0;
+        p.max_output_chars = 2_000;
+        p.decay_user_turns = 4;
+
+        let stats = prune_with_sizes(&mut messages, &mut sizes, &p, &HeuristicEstimator);
+
+        assert_eq!(stats.scanned_parts, 1);
+        assert_eq!(stats.pruned_parts, 0);
+        assert_eq!(stats.pruned_tokens, 0);
+        assert_eq!(messages, original);
+        assert_eq!(sizes, original_sizes);
+        assert_eq!(sizes, sizes_of(&messages));
+    }
+
+    #[test]
+    fn age_only_inline_result_with_escaped_function_id_does_not_expand() {
+        let function_id = "\\".repeat(500);
+        let mut messages: Vec<AgentMessage> = serde_json::from_value(json!([
+            {
+                "role": "assistant",
+                "content": [{
+                    "type": "function_call", "id": "c1", "function_id": function_id,
+                    "arguments": {}
+                }],
+                "stop_reason": "function_call", "model": "m", "provider": "p", "timestamp": 1
+            },
+            {
+                "role": "user",
+                "content": [{
+                    "type": "function_result", "function_call_id": "c1",
+                    "content": [{ "type": "text", "text": "x".repeat(700) }]
+                }],
+                "timestamp": 2
+            },
+            { "role": "user", "content": [{ "type": "text", "text": "one" }], "timestamp": 3 },
+            { "role": "user", "content": [{ "type": "text", "text": "two" }], "timestamp": 4 },
+            { "role": "user", "content": [{ "type": "text", "text": "three" }], "timestamp": 5 },
+            { "role": "user", "content": [{ "type": "text", "text": "four" }], "timestamp": 6 }
+        ]))
+        .unwrap();
+        let original = messages.clone();
+        let mut sizes = sizes_of(&messages);
+        let original_sizes = sizes.clone();
+        let mut p = params();
+        p.protect_recent_tokens = 0;
+        p.max_output_chars = 2_000;
+        p.decay_user_turns = 4;
+
+        let stats = prune_with_sizes(&mut messages, &mut sizes, &p, &HeuristicEstimator);
+
+        assert_eq!(stats.scanned_parts, 1);
+        assert_eq!(stats.pruned_parts, 0);
+        assert_eq!(stats.pruned_tokens, 0);
+        assert_eq!(messages, original);
+        assert_eq!(sizes, original_sizes);
+        assert_eq!(sizes, sizes_of(&messages));
+    }
+
+    #[test]
+    fn decay_skips_only_exact_canonical_prune_placeholders() {
+        let canonical = placeholder("shell::run", 1_000);
+        let marker_like = format!("{canonical} ordinary trailing output {}", "x".repeat(100));
+        let mut messages: Vec<AgentMessage> = serde_json::from_value(json!([
+            { "role": "user", "content": [{ "type": "text", "text": "first" }], "timestamp": 1 },
+            {
+                "role": "function_result", "function_call_id": "c1", "function_id": "shell::run",
+                "content": [{ "type": "text", "text": canonical }], "timestamp": 2
+            },
+            {
+                "role": "function_result", "function_call_id": "c2", "function_id": "shell::run",
+                "content": [{ "type": "text", "text": marker_like }], "timestamp": 3
+            },
+            { "role": "user", "content": [{ "type": "text", "text": "second" }], "timestamp": 4 }
+        ]))
+        .unwrap();
+        let canonical_before = messages[1].clone();
+        let mut p = params();
+        p.protect_recent_tokens = 0;
+        p.max_output_chars = 10_000;
+        p.decay_user_turns = 1;
+        p.protected_user_turns = 0;
+
+        let stats = prune(&mut messages, &p, &HeuristicEstimator);
+
+        assert_eq!(stats.pruned_parts, 1);
+        assert_eq!(messages[1], canonical_before);
+        assert!(text_of(messages[2].content()).starts_with("[output of shell::run pruned"));
+    }
+
+    #[test]
+    fn noncanonical_leading_zero_marker_is_pruned() {
+        let marker = format!(
+            "[output of shell::run pruned: was ~{}1 tokens; re-call it if still needed]",
+            "0".repeat(256)
+        );
+        let mut messages = vec![
+            user("first", 1),
+            text_result("shell::run", marker.clone(), 2),
+            user("second", 3),
+        ];
+        let mut p = params();
+        p.protect_recent_tokens = 0;
+        p.max_output_chars = 0;
+        p.decay_user_turns = 1;
+        p.protected_user_turns = 0;
+
+        let stats = prune(&mut messages, &p, &HeuristicEstimator);
+
+        assert_eq!(stats.pruned_parts, 1);
+        assert_ne!(text_of(messages[1].content()), marker);
+    }
+
+    #[test]
+    fn noncanonical_overflow_marker_is_pruned() {
+        let marker = format!(
+            "[output of shell::run pruned: was ~{} tokens; re-call it if still needed]",
+            "9".repeat(10_000)
+        );
+        let mut messages = vec![
+            user("first", 1),
+            text_result("shell::run", marker.clone(), 2),
+            user("second", 3),
+        ];
+        let mut p = params();
+        p.protect_recent_tokens = 0;
+        p.max_output_chars = 0;
+        p.decay_user_turns = 1;
+        p.protected_user_turns = 0;
+
+        let stats = prune(&mut messages, &p, &HeuristicEstimator);
+
+        assert_eq!(stats.pruned_parts, 1);
+        assert_ne!(text_of(messages[1].content()), marker);
+    }
+
+    #[test]
+    fn inline_result_wrappers_do_not_increment_age_and_keep_siblings() {
+        let original: Vec<AgentMessage> = serde_json::from_value(json!([
+            {
+                "role": "assistant",
+                "content": [{
+                    "type": "function_call", "id": "c1", "function_id": "shell::run",
+                    "arguments": { "command": "status" }
+                }],
+                "stop_reason": "function_call", "model": "m", "provider": "p", "timestamp": 1
+            },
+            {
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": "before" },
+                    {
+                        "type": "function_result", "function_call_id": "c1", "is_error": true,
+                        "content": [{ "type": "text", "text": "x".repeat(400) }]
+                    },
+                    { "type": "text", "text": "after" }
+                ],
+                "timestamp": 2
+            },
+            { "role": "user", "content": [{ "type": "text", "text": "next" }], "timestamp": 3 },
+            { "role": "user", "content": [{ "type": "text", "text": "again" }], "timestamp": 4 }
+        ]))
+        .unwrap();
+        let mut p = params();
+        p.protect_recent_tokens = 0;
+        p.max_output_chars = 10_000;
+        p.protected_user_turns = 0;
+        p.decay_user_turns = 3;
+
+        let mut too_young = original.clone();
+        assert_eq!(
+            prune(&mut too_young, &p, &HeuristicEstimator).pruned_parts,
+            0
+        );
+        assert_eq!(too_young, original);
+
+        p.decay_user_turns = 2;
+        let mut at_age = original;
+        let stats = prune(&mut at_age, &p, &HeuristicEstimator);
+        assert_eq!(stats.pruned_parts, 1);
+        assert_eq!(text_of(&at_age[1].content()[0..1]), "before");
+        assert_eq!(text_of(&at_age[1].content()[2..3]), "after");
+        let ContentBlock::FunctionResult {
+            function_call_id,
+            content,
+            is_error,
+        } = &at_age[1].content()[1]
+        else {
+            panic!("inline result block changed kind");
+        };
+        assert_eq!(function_call_id, "c1");
+        assert_eq!(*is_error, Some(true));
+        assert!(text_of(content).starts_with("[output of shell::run pruned"));
+    }
+
+    #[test]
+    fn decay_preserves_message_metadata_and_keeps_size_memo_exact() {
+        let mut messages: Vec<AgentMessage> = serde_json::from_value(json!([
+            { "role": "user", "content": [{ "type": "text", "text": "first" }], "timestamp": 1 },
+            {
+                "role": "function_result", "function_call_id": "call-7", "function_id": "fs::read",
+                "content": [{ "type": "text", "text": "x".repeat(400) }],
+                "details": { "path": "/tmp/example", "line": 7 }, "is_error": true, "timestamp": 2
+            },
+            { "role": "user", "content": [{ "type": "text", "text": "second" }], "timestamp": 3 }
+        ]))
+        .unwrap();
+        let mut sizes = sizes_of(&messages);
+        let mut p = params();
+        p.protect_recent_tokens = 0;
+        p.max_output_chars = 10_000;
+        p.decay_user_turns = 1;
+        p.protected_user_turns = 0;
+
+        let stats = prune_with_sizes(&mut messages, &mut sizes, &p, &HeuristicEstimator);
+
+        assert_eq!(stats.pruned_parts, 1);
+        let AgentMessage::FunctionResult {
+            function_call_id,
+            function_id,
+            details,
+            is_error,
+            timestamp,
+            ..
+        } = &messages[1]
+        else {
+            panic!("message result changed kind");
+        };
+        assert_eq!(function_call_id, "call-7");
+        assert_eq!(function_id, "fs::read");
+        assert_eq!(details, &json!({ "path": "/tmp/example", "line": 7 }));
+        assert!(*is_error);
+        assert_eq!(*timestamp, 2);
+        assert_eq!(sizes, sizes_of(&messages));
+    }
+
+    #[test]
+    fn synthetic_long_session_saves_medium_results_with_decay_four() {
+        let mut history = Vec::new();
+        let mut timestamp = 0;
+        for turn in 0..10 {
+            timestamp += 1;
+            history.push(user(&format!("turn {turn}"), timestamp));
+            timestamp += 1;
+            history.push(result("medium::lookup", 2_400, timestamp));
+            if turn == 0 {
+                timestamp += 1;
+                history.push(result("keep::me", 2_400, timestamp));
+            }
+        }
+
+        let mut off = history.clone();
+        let mut off_sizes = sizes_of(&off);
+        let mut off_params = params();
+        off_params.protect_recent_tokens = 600;
+        off_params.max_output_chars = 10_000;
+        off_params.protected_user_turns = 2;
+        off_params.decay_user_turns = 0;
+        off_params.protected_functions = vec!["keep::me".into()];
+        let off_stats =
+            prune_with_sizes(&mut off, &mut off_sizes, &off_params, &HeuristicEstimator);
+
+        let mut decayed = history.clone();
+        let mut decayed_sizes = sizes_of(&decayed);
+        let mut decay_params = off_params;
+        decay_params.decay_user_turns = 4;
+        let decay_stats = prune_with_sizes(
+            &mut decayed,
+            &mut decayed_sizes,
+            &decay_params,
+            &HeuristicEstimator,
+        );
+
+        assert_eq!(off_stats.pruned_parts, 0);
+        assert!(decay_stats.pruned_parts > 0);
+        assert!(decayed_sizes.iter().sum::<u64>() < off_sizes.iter().sum::<u64>());
+        assert_eq!(decayed[2], history[2]);
+        assert_eq!(decayed.last(), history.last());
+        assert_eq!(decayed_sizes, sizes_of(&decayed));
     }
 
     #[test]
@@ -1434,6 +1951,8 @@ mod tests {
         let shipped = crate::config::WorkerConfig::default();
         let defaults = PruneParams {
             protect_recent_tokens: shipped.protect_recent_tokens,
+            decay_user_turns: shipped.decay_user_turns,
+            protected_user_turns: shipped.protected_user_turns,
             min_free_tokens: shipped.min_free_tokens,
             max_output_chars: shipped.max_output_chars,
             protected_functions: vec![],

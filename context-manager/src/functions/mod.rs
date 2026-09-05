@@ -38,7 +38,7 @@ pub const COMPACT_DESC: &str =
 
 pub const PRUNE_ID: &str = "context::prune";
 pub const PRUNE_DESC: &str =
-    "Replace verbose function outputs with placeholders without summarising. \
+    "Replace eligible old function outputs with placeholders without summarising. \
      A cheaper first pass before compaction.";
 
 pub const COUNT_TOKENS_ID: &str = "context::count-tokens";
