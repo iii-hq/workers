@@ -387,6 +387,7 @@ impl SessionClient {
         const PAGE_LIMIT: u64 = 500;
         let mut out: Vec<LoadedEntry> = Vec::new();
         let mut cursor: Option<String> = None;
+        let mut seen_cursors = BTreeSet::new();
         loop {
             let mut payload = json!({
                 "session_id": session_id,
@@ -411,7 +412,14 @@ impl SessionClient {
                 }
             }
             match resp.get("next_cursor").and_then(Value::as_str) {
-                Some(next) if !next.is_empty() => cursor = Some(next.to_string()),
+                Some(next) if !next.is_empty() => {
+                    if !seen_cursors.insert(next.to_string()) {
+                        return Err(HarnessError::Dependency(format!(
+                            "session::messages repeated cursor while loading {session_id}"
+                        )));
+                    }
+                    cursor = Some(next.to_string());
+                }
                 _ => break,
             }
         }
@@ -490,6 +498,7 @@ impl SessionClient {
         const PAGE_LIMIT: u64 = 500;
         let mut out: Vec<LoadedEntry> = Vec::new();
         let mut cursor: Option<String> = None;
+        let mut seen_cursors = BTreeSet::new();
         loop {
             let mut payload = json!({
                 "session_id": session_id,
@@ -523,7 +532,14 @@ impl SessionClient {
                 }
             }
             match resp.get("next_cursor").and_then(Value::as_str) {
-                Some(next) if !next.is_empty() => cursor = Some(next.to_string()),
+                Some(next) if !next.is_empty() => {
+                    if !seen_cursors.insert(next.to_string()) {
+                        return Err(HarnessError::Dependency(format!(
+                            "session::messages repeated cursor while loading entries after {after_entry_id} in {session_id}"
+                        )));
+                    }
+                    cursor = Some(next.to_string());
+                }
                 _ => break,
             }
         }

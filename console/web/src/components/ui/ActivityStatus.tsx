@@ -14,31 +14,26 @@ export type ActivityStatusMotion = 'none' | 'pulse' | 'spin'
 
 const toneClasses: Record<
   ActivityStatusTone,
-  { badge: BadgeVariant; dot: string; icon: string }
+  { badge: BadgeVariant; icon: string }
 > = {
   positive: {
     badge: 'ok',
-    dot: 'bg-ok',
     icon: 'stroke-ok',
   },
   neutral: {
     badge: 'default',
-    dot: 'bg-trigger-running',
     icon: 'stroke-trigger-running',
   },
   accent: {
     badge: 'accent',
-    dot: 'bg-accent',
     icon: 'stroke-accent',
   },
   warning: {
     badge: 'warn',
-    dot: 'bg-warn',
     icon: 'stroke-warn',
   },
   danger: {
     badge: 'alert',
-    dot: 'bg-alert',
     icon: 'stroke-alert',
   },
 }
@@ -52,7 +47,11 @@ export interface ActivityStatusProps
   motion?: ActivityStatusMotion
 }
 
-/** Shared live-status treatment used by prominent Console activity widgets. */
+/**
+ * Shared live-status treatment used by prominent Console activity widgets.
+ * One flag per widget: the badge carries the state and its tone, and the
+ * optional detail line is plain caption text — no second status marker.
+ */
 export function ActivityStatus({
   label,
   detail,
@@ -86,12 +85,8 @@ export function ActivityStatus({
           <span className="truncate">{label}</span>
         </Badge>
         {detail ? (
-          <div className="flex min-w-0 items-center gap-1.5 pt-1 font-sans text-base text-ink-ghost sm:text-xs">
-            <span
-              aria-hidden
-              className={cn('size-2 shrink-0 rounded-full', classes.dot)}
-            />
-            <span className="truncate tabular-nums">{detail}</span>
+          <div className="min-w-0 truncate pt-1 font-sans text-base text-ink-ghost tabular-nums sm:text-xs">
+            {detail}
           </div>
         ) : null}
       </div>

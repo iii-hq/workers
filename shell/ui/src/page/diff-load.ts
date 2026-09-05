@@ -62,6 +62,11 @@ async function gitSide(host: Host, root: string, spec: string): Promise<string |
     if (/exists on disk, but not in|does not exist in|exists in the index, but not at|but not in the index/.test(detail)) {
       return null
     }
+    // An index spec (`:./path`) names no revision, and git skips its
+    // "not in the index" diagnosis for it: the leading `:.` reads as
+    // pathspec magic, so an absent entry (untracked, or deleted in the
+    // index) comes back as the generic "ambiguous argument".
+    if (spec.startsWith(':') && /ambiguous argument/.test(detail)) return null
     if (/invalid object name|unknown revision|bad revision|not a valid object|ambiguous argument/i.test(detail)) {
       throw new Error(`unknown revision: ${spec.split(':')[0]}`)
     }

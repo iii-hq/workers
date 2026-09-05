@@ -2,11 +2,14 @@ import { ArrowUpRight } from 'lucide-react'
 import type * as React from 'react'
 import { cn } from '@/lib/utils'
 
-/** Visual action label for a widget whose surrounding control owns the click. */
+/** Visual action label for a widget whose surrounding control owns the click.
+    Children replace the default "Open details" copy when the destination
+    is more specific (a sub-agent card opens the child's chat). */
 export type OpenDetailsAffordanceProps = React.HTMLAttributes<HTMLSpanElement>
 
 export function OpenDetailsAffordance({
   className,
+  children = 'Open details',
   ...props
 }: OpenDetailsAffordanceProps) {
   return (
@@ -18,7 +21,7 @@ export function OpenDetailsAffordance({
       {...props}
     >
       <ArrowUpRight aria-hidden className="size-4 h-lh shrink-0" />
-      Open details
+      {children}
     </span>
   )
 }

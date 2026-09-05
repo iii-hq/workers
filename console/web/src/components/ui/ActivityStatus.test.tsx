@@ -5,20 +5,14 @@ import { ActivityStatus } from './ActivityStatus'
 
 describe('ActivityStatus', () => {
   it.each([
-    ['positive', 'ok', 'bg-ok-muted', 'stroke-ok', 'bg-ok'],
-    [
-      'neutral',
-      'default',
-      'bg-surface',
-      'stroke-trigger-running',
-      'bg-trigger-running',
-    ],
-    ['accent', 'accent', 'bg-accent-muted', 'stroke-accent', 'bg-accent'],
-    ['warning', 'warn', 'bg-warn-muted', 'stroke-warn', 'bg-warn'],
-    ['danger', 'alert', 'bg-alert-muted', 'stroke-alert', 'bg-alert'],
+    ['positive', 'ok', 'bg-ok-muted', 'stroke-ok'],
+    ['neutral', 'default', 'bg-surface', 'stroke-trigger-running'],
+    ['accent', 'accent', 'bg-accent-muted', 'stroke-accent'],
+    ['warning', 'warn', 'bg-warn-muted', 'stroke-warn'],
+    ['danger', 'alert', 'bg-alert-muted', 'stroke-alert'],
   ] as const)(
-    'applies the %s tone to the badge, icon, and activity dot',
-    (tone, variant, badge, icon, dot) => {
+    'applies the %s tone to the badge and icon only',
+    (tone, variant, badge, icon) => {
       const html = renderToStaticMarkup(
         <ActivityStatus
           label="Active"
@@ -32,9 +26,10 @@ describe('ActivityStatus', () => {
       expect(html).toContain(`data-badge-variant="${variant}"`)
       expect(html).toContain(badge)
       expect(html).toContain(icon)
-      expect(html).toContain(dot)
       expect(html).toContain('role="status"')
       expect(html).toContain('Active for 5m')
+      // The badge is the one status flag; the detail line carries no dot.
+      expect(html).not.toContain('size-2 shrink-0 rounded-full')
     },
   )
 

@@ -362,6 +362,33 @@ describe('@iii-dev/console-ui surface', () => {
     expect(recipe).toContain('background: var(--color-card-highlight);')
   })
 
+  it('publishes the navigation tree recipe with glyph tones in both themes', () => {
+    const themeCss = readFileSync(
+      new URL('../index.css', import.meta.url),
+      'utf8',
+    )
+    const recipesCss = readFileSync(
+      new URL('../styles/ui-recipes.css', import.meta.url),
+      'utf8',
+    )
+    for (const tone of ['blue', 'purple', 'teal', 'green', 'amber', 'rose']) {
+      expect(
+        themeCss.match(new RegExp(`--color-glyph-${tone}:`, 'g')),
+        tone,
+      ).toHaveLength(2)
+      expect(recipesCss).toContain(
+        `.iii-ui-tree-item__icon[data-color="${tone}"]`,
+      )
+    }
+    const row = recipesCss.match(/\.iii-ui-tree-item\s*\{([^}]*)\}/)?.[1]
+    expect(row).toContain('var(--iii-ui-tree-depth, 0)')
+    expect(row).toContain('font-size: 0.8125rem;')
+    expect(row).toContain('font-weight: 500;')
+    expect(recipesCss).toContain(
+      '.iii-ui-tree-item__caret[aria-expanded="true"] > svg',
+    )
+  })
+
   it('publishes the lift elevation as one composed token tinted per theme', () => {
     const themeCss = readFileSync(
       new URL('../index.css', import.meta.url),

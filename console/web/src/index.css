@@ -98,6 +98,18 @@
      fill, a border, or body text. */
   --color-workdir: #0ea5e9;
   --color-workdir-muted: rgba(14, 165, 233, 0.12);
+  /* ── Glyph tones ──────────────────────────────────────────────────────
+     Identity tints for a 16px glyph beside a label — the agent-profile
+     color in the conversation tree, a folder or scope mark in a worker's
+     navigation tree. Deliberately vivid, and each one holds at least 3:1
+     against the sidebar in its theme so the glyph stays legible. A tone
+     is never a fill, a border, a selection state, or text. */
+  --color-glyph-blue: #2563eb;
+  --color-glyph-purple: #7c3aed;
+  --color-glyph-teal: #0d9488;
+  --color-glyph-green: #15803d;
+  --color-glyph-amber: #b7791f;
+  --color-glyph-rose: #e11d48;
 
   --color-ring: color-mix(in oklab, var(--foreground) 5%, transparent);
 
@@ -245,6 +257,14 @@
   --color-ok-muted: rgba(54, 201, 143, 0.12);
   --color-workdir: #0ea5e9;
   --color-workdir-muted: rgba(14, 165, 233, 0.14);
+  /* Glyph tones brighten on near-black so the tint reads as strongly as
+     it does on cream. */
+  --color-glyph-blue: #3b82f6;
+  --color-glyph-purple: #8b5cf6;
+  --color-glyph-teal: #14b8a6;
+  --color-glyph-green: #22c55e;
+  --color-glyph-amber: #eab308;
+  --color-glyph-rose: #f43f5e;
 }
 
 @layer base {

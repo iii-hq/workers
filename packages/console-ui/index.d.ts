@@ -484,7 +484,7 @@ export interface Host {
      * drop or a paste would, and put the caret there. Files become
      * attachments. Absent on older consoles; feature-detect.
      */
-    compose?(draft: { text?: string; files?: File[] }): void
+    compose?(draft: { text?: string; files?: File[]; inline?: boolean }): void
     registerSessionChip(chip: SessionChipRegistration): () => void
     /** Optional on consoles that predate the footer turn-summary slot. */
     registerTurnSummary?(summary: SessionTurnSummaryRegistration): () => void
@@ -525,6 +525,14 @@ export interface UiClasses {
   readonly listItemTitle: 'iii-ui-list-item__title'
   readonly listItemDescription: 'iii-ui-list-item__description'
   readonly listItemMeta: 'iii-ui-list-item__meta'
+  readonly tree: 'iii-ui-tree'
+  readonly treeItem: 'iii-ui-tree-item'
+  readonly treeItemIcon: 'iii-ui-tree-item__icon'
+  readonly treeItemLabel: 'iii-ui-tree-item__label'
+  readonly treeItemCaret: 'iii-ui-tree-item__caret'
+  readonly treeItemTrailing: 'iii-ui-tree-item__trailing'
+  readonly treeItemMeta: 'iii-ui-tree-item__meta'
+  readonly treeItemAction: 'iii-ui-tree-item__action'
   readonly card: 'iii-ui-card'
   readonly cardHeader: 'iii-ui-card__header'
   readonly cardBody: 'iii-ui-card__body'
@@ -1352,6 +1360,25 @@ export interface CodeEditorHandle {
       the editor so the line sits centered, and focus. Before the editor
       mounts the request is kept and replayed once it does. */
   revealLine(line: number, column?: number): void
+  /** Select whole lines `from`..`to` (1-based, inclusive, clamped), scroll
+      them into view and focus — how a `#file(path:from-to)` reference opens.
+      Absent at runtime on older consoles; guard the call. */
+  revealLines(from: number, to: number): void
+}
+/** A non-empty selection in the editor, 1-based like the gutter. */
+export interface CodeEditorSelection {
+  startLine: number
+  startColumn: number
+  endLine: number
+  endColumn: number
+  text: string
+}
+/** An action offered on a selection, in a small floating bar by its end. */
+export interface CodeEditorSelectionAction {
+  id: string
+  label: string
+  icon?: React.ReactNode
+  run(selection: CodeEditorSelection): void
 }
 export interface CodeEditorProps {
   value: string
@@ -1386,6 +1413,9 @@ export interface CodeEditorProps {
   wordWrap?: boolean
   /** Render the minimap; only meaningful together with `fill`. */
   minimap?: boolean
+  /** Actions shown in a discreet floating bar whenever text is selected
+      ("Reference in chat", …). Empty or absent: no bar. */
+  selectionActions?: readonly CodeEditorSelectionAction[]
 }
 /** The console's Monaco-backed code editor — the one editor for every code
     or long-text editing surface, themed by the console's design tokens in

@@ -37,12 +37,25 @@ function bufferedBus<T>() {
   }
 }
 
-type ComposerInsertListener = (text: string) => void
+export interface ComposerInsert {
+  text: string
+  /**
+   * Append at the end of the draft's last line (with a separating space)
+   * instead of as a paragraph of its own — for a token such as a file
+   * reference that belongs inside the sentence being written.
+   */
+  inline?: boolean
+}
 
-const inserts = bufferedBus<string>()
+type ComposerInsertListener = (insert: ComposerInsert) => void
 
-export function insertIntoComposer(text: string): void {
-  inserts.publish(text)
+const inserts = bufferedBus<ComposerInsert>()
+
+export function insertIntoComposer(
+  text: string,
+  options: { inline?: boolean } = {},
+): void {
+  inserts.publish({ text, inline: options.inline === true })
 }
 
 export function onComposerInsert(listener: ComposerInsertListener): () => void {

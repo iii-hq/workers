@@ -18,35 +18,49 @@ import {
   type SerializedLexicalNode,
   type Spread,
 } from 'lexical'
-import { type JSX, type RefObject, useEffect, useRef } from 'react'
+import { File, FolderOpen } from 'lucide-react'
+import { type JSX, type RefObject, useContext, useEffect, useRef } from 'react'
+import {
+  formatFileMention,
+  formatFileMentionInner,
+  formatLineRange,
+  type LineRange,
+  parseFileMentionInner,
+} from '@/lib/file-mention-token'
 import { cn } from '@/lib/utils'
+import { ComposerMentionContext } from './mention-context'
 
 export type SerializedFileMentionNode = Spread<
-  { path: string },
+  { path: string; range?: LineRange },
   SerializedLexicalNode
 >
 
 /**
- * An inline pill representing a `#file(<path>)` mention. Rendered through
- * Lexical's `decorate()` so React owns the visuals (file glyph + relative
- * path + panel background), while `getTextContent()` returns the plain-text
- * `#file(<path>)` form so the existing OnChange lift in LexicalShell keeps
- * working. The markdown renderer detects the same `#file(<path>)` token and
- * reuses the presentational pill (`FileMentionPill`) below.
+ * An inline pill representing a `#file(<path>[:<from>-<to>])` mention.
+ * Rendered through Lexical's `decorate()` so React owns the visuals (file
+ * glyph + relative path + line window + panel background), while
+ * `getTextContent()` returns the plain-text token so the existing OnChange
+ * lift in LexicalShell keeps working. The markdown renderer detects the same
+ * token and reuses the presentational pill (`FileMentionPill`) below.
  */
 export class FileMentionNode extends DecoratorNode<JSX.Element> {
   __path: string
+  __range: LineRange | null
 
   static getType(): string {
     return 'file-mention'
   }
 
   static clone(node: FileMentionNode): FileMentionNode {
-    return new FileMentionNode(node.__path, node.__key)
+    return new FileMentionNode(
+      node.__path,
+      node.__range ?? undefined,
+      node.__key,
+    )
   }
 
   static importJSON(serialized: SerializedFileMentionNode): FileMentionNode {
-    return $createFileMentionNode(serialized.path)
+    return $createFileMentionNode(serialized.path, serialized.range)
   }
 
   /* Recreate the pill on HTML paste (cross-editor or external apps).
@@ -66,9 +80,10 @@ export class FileMentionNode extends DecoratorNode<JSX.Element> {
     }
   }
 
-  constructor(path: string, key?: NodeKey) {
+  constructor(path: string, range?: LineRange, key?: NodeKey) {
     super(key)
     this.__path = path
+    this.__range = range ?? null
   }
 
   exportJSON(): SerializedFileMentionNode {
@@ -76,13 +91,14 @@ export class FileMentionNode extends DecoratorNode<JSX.Element> {
       type: FileMentionNode.getType(),
       version: 1,
       path: this.__path,
+      ...(this.__range ? { range: this.__range } : {}),
     }
   }
 
   exportDOM(): DOMExportOutput {
     const element = document.createElement('span')
     element.setAttribute('data-lexical-file-mention', 'true')
-    element.setAttribute('data-file-path', this.__path)
+    element.setAttribute('data-file-path', this.getInner())
     element.textContent = this.getTextContent()
     return { element }
   }
@@ -107,27 +123,50 @@ export class FileMentionNode extends DecoratorNode<JSX.Element> {
     return true
   }
 
+  /** `src/a.ts:12-40` — the text inside the token's parens. */
+  getInner(): string {
+    return formatFileMentionInner({
+      path: this.__path,
+      range: this.__range ?? undefined,
+    })
+  }
+
   getTextContent(): string {
-    return `#file(${this.__path})`
+    return formatFileMention({
+      path: this.__path,
+      range: this.__range ?? undefined,
+    })
   }
 
   getPath(): string {
     return this.__path
   }
 
+  getRange(): LineRange | null {
+    return this.__range
+  }
+
   decorate(): JSX.Element {
-    return <EditableFileMentionPill path={this.__path} nodeKey={this.__key} />
+    return (
+      <EditableFileMentionPill
+        path={this.__path}
+        range={this.__range ?? undefined}
+        nodeKey={this.__key}
+      />
+    )
   }
 }
 
 function convertFileMentionElement(el: HTMLElement): DOMConversionOutput {
-  const path = el.getAttribute('data-file-path') ?? ''
-  if (!path) return { node: null }
-  return { node: $createFileMentionNode(path) }
+  const inner = el.getAttribute('data-file-path') ?? ''
+  if (!inner) return { node: null }
+  const ref = parseFileMentionInner(inner)
+  return { node: $createFileMentionNode(ref.path, ref.range) }
 }
 
 interface PillProps {
   path: string
+  range?: LineRange
   /** Visible-selected state. Defaults to false; only the Lexical decorator
       wrapper passes a real value. Markdown renders never set this. */
   selected?: boolean
@@ -135,67 +174,66 @@ interface PillProps {
       `CLICK_COMMAND` handler can scope hit-tests to the pill). Markdown
       renders leave this unset and the pill behaves as pure decoration. */
   pillRef?: RefObject<HTMLSpanElement | null>
+  /** Set when a click opens the file somewhere: the pill says so. */
+  openable?: boolean
 }
 
 /**
- * Hairline glyph for a mention path: folder tab-outline when the path ends
- * in `/`, rectangle-with-corner-fold otherwise. Shared by the pill and the
- * `#` typeahead menu.
+ * Glyph for a mention path: Lucide `FolderOpen` when the path ends in `/`,
+ * Lucide `File` otherwise. Shared by the pill and the typeahead menus; 14 px
+ * with a lighter stroke so it sits level with 13 px monospace text.
  */
 export function PathGlyph({ path }: { path: string }) {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 10 12"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1"
-      aria-hidden="true"
-    >
-      {path.endsWith('/') ? (
-        <path d="M1 2.5H4L5.5 4H9V10H1V2.5Z" />
-      ) : (
-        <>
-          <path d="M1 1H6L9 4V11H1V1Z" />
-          <path d="M6 1V4H9" />
-        </>
-      )}
-    </svg>
-  )
+  const Icon = path.endsWith('/') ? FolderOpen : File
+  return <Icon size={14} strokeWidth={1.75} aria-hidden />
 }
 
 /**
- * The inserted-token visual. Hairline file glyph in accent, relative path in
- * ink, on a panel background. Rectilinear; no rounded corners; monospace;
- * tight inline-block sizing so it flows with text. When `selected` is true
- * the border swaps to accent and the surface lifts one step to `paper-2` —
- * same 1px footprint, no layout shift. No DOM-level click handler lives
- * here; the Lexical wrapper drives selection via `CLICK_COMMAND` so the pill
- * stays a static, accessible inline element in both editor and markdown.
+ * The inserted-token visual. File or folder glyph in accent, relative path
+ * in ink, the line window (when there is one) in faint ink after it, on a
+ * panel background. Rectilinear; no rounded corners; monospace; tight
+ * inline-block sizing so it flows with text. When `selected` is true the
+ * surface lifts one step — same 1px footprint, no layout shift. No
+ * DOM-level click handler lives here; the Lexical wrapper drives selection
+ * and opening via `CLICK_COMMAND` so the pill stays a static, accessible
+ * inline element in both editor and markdown.
  */
-export function FileMentionPill({ path, selected, pillRef }: PillProps) {
+export function FileMentionPill({
+  path,
+  range,
+  selected,
+  pillRef,
+  openable,
+}: PillProps) {
   return (
     <span
       ref={pillRef}
       contentEditable={false}
-      data-file-path={path}
+      data-file-path={formatFileMentionInner({ path, range })}
+      title={openable ? `open ${path} in the shell` : undefined}
       className={cn(
         'inline-flex items-center gap-1 px-1.5 h-[20px] -mt-[2px] rounded-xs align-middle font-mono text-[13px] text-ink select-none transition-colors',
         selected ? 'bg-surface-selected cursor-pointer' : 'bg-surface',
         pillRef && 'cursor-pointer',
+        openable && 'hover:bg-surface-hover',
       )}
     >
       <span aria-hidden className="text-accent leading-none shrink-0">
         <PathGlyph path={path} />
       </span>
       <span className="leading-none truncate max-w-[280px]">{path}</span>
+      {range ? (
+        <span className="leading-none text-ink-faint tabular-nums shrink-0">
+          :{formatLineRange(range)}
+        </span>
+      ) : null}
     </span>
   )
 }
 
 interface EditablePillProps {
   path: string
+  range?: LineRange
   nodeKey: NodeKey
 }
 
@@ -203,14 +241,18 @@ interface EditablePillProps {
  * Lexical-decorator wrapper: tracks selection via `useLexicalNodeSelection`
  * and listens for `CLICK_COMMAND` / `KEY_BACKSPACE_COMMAND` /
  * `KEY_DELETE_COMMAND` so the user can select the pill, then cut/copy/paste
- * or delete it. Click-with-shift toggles the selection; plain click replaces
- * the current selection.
+ * or delete it. When the composer can open files, a plain click opens the
+ * mentioned file (on its lines) and shift-click selects the pill; without
+ * that, a plain click selects and shift-click toggles, as before. Folder
+ * mentions only ever select.
  */
-function EditableFileMentionPill({ path, nodeKey }: EditablePillProps) {
+function EditableFileMentionPill({ path, range, nodeKey }: EditablePillProps) {
   const [editor] = useLexicalComposerContext()
   const [isSelected, setSelected, clearSelection] =
     useLexicalNodeSelection(nodeKey)
   const pillRef = useRef<HTMLSpanElement | null>(null)
+  const { openFile } = useContext(ComposerMentionContext)
+  const openable = Boolean(openFile) && !path.endsWith('/')
 
   useEffect(() => {
     const removeIfSelected = (event: KeyboardEvent): boolean => {
@@ -238,7 +280,11 @@ function EditableFileMentionPill({ path, nodeKey }: EditablePillProps) {
              host; Lexical would otherwise place selection just before/after
              the pill and fight our node selection. */
           event.preventDefault()
-          if (event.shiftKey) {
+          if (openable && openFile && !event.shiftKey) {
+            openFile({ path, range })
+            return true
+          }
+          if (event.shiftKey && !openable) {
             setSelected(!isSelected)
           } else {
             clearSelection()
@@ -259,13 +305,34 @@ function EditableFileMentionPill({ path, nodeKey }: EditablePillProps) {
         COMMAND_PRIORITY_LOW,
       ),
     )
-  }, [editor, nodeKey, isSelected, setSelected, clearSelection])
+  }, [
+    editor,
+    nodeKey,
+    isSelected,
+    setSelected,
+    clearSelection,
+    openFile,
+    openable,
+    path,
+    range,
+  ])
 
-  return <FileMentionPill path={path} selected={isSelected} pillRef={pillRef} />
+  return (
+    <FileMentionPill
+      path={path}
+      range={range}
+      selected={isSelected}
+      pillRef={pillRef}
+      openable={openable}
+    />
+  )
 }
 
-export function $createFileMentionNode(path: string): FileMentionNode {
-  return new FileMentionNode(path)
+export function $createFileMentionNode(
+  path: string,
+  range?: LineRange,
+): FileMentionNode {
+  return new FileMentionNode(path, range)
 }
 
 export function $isFileMentionNode(

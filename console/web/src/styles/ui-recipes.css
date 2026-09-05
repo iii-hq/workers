@@ -125,6 +125,240 @@ a.iii-ui-list-item,
   line-height: 1rem;
 }
 
+/* ── Navigation tree ──────────────────────────────────────────────────
+   Compact sidebar rows for a hierarchy — conversations and their
+   sub-agents, folders, scopes. One row is 28px tall in 13px/500 sans,
+   opens with a 16px glyph tinted by `data-color`, puts the disclosure
+   caret right after the label, and keeps quiet metadata plus a
+   hover-revealed action on the trailing edge. Each row sets
+   `--iii-ui-tree-depth`; the indent is padding, so hover and selection
+   span the full row at every level. The container owns the
+   measurements; a page overrides them on `.iii-ui-tree` when its content
+   needs a different rhythm, and sets `data-narrow` when the pane is a
+   phone-sized drill-in so rows and controls grow to touch size. */
+.iii-ui-tree {
+  --iii-ui-tree-row: 1.75rem;
+  --iii-ui-tree-inset: 10px;
+  --iii-ui-tree-gap: 10px;
+  --iii-ui-tree-indent: 14px;
+  --iii-ui-tree-trailing: 12px;
+  --iii-ui-tree-control: 1.25rem;
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.iii-ui-tree[data-narrow] {
+  --iii-ui-tree-row: 2.75rem;
+  --iii-ui-tree-control: 2.5rem;
+}
+
+.iii-ui-tree-item {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: var(--iii-ui-tree-row);
+  align-items: center;
+  padding: 0 var(--iii-ui-tree-trailing) 0
+    calc(
+      var(--iii-ui-tree-inset) +
+      var(--iii-ui-tree-depth, 0) *
+      var(--iii-ui-tree-indent)
+    );
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-ink-faint);
+  font-family: var(--font-sans);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.25rem;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--motion-duration-control) var(--motion-ease-standard),
+    color var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+button.iii-ui-tree-item,
+a.iii-ui-tree-item {
+  width: 100%;
+}
+
+.iii-ui-tree-item:hover,
+.iii-ui-tree-item[data-highlighted="true"] {
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
+}
+
+.iii-ui-tree-item[data-selected="true"],
+.iii-ui-tree-item[aria-selected="true"],
+.iii-ui-tree-item[aria-current="true"],
+.iii-ui-tree-item[aria-current="page"] {
+  background: var(--color-surface-selected);
+  color: var(--color-ink);
+}
+
+.iii-ui-tree-item:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--color-ink) 55%, transparent);
+  outline-offset: 1px;
+}
+
+.iii-ui-tree-item__icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: 1rem;
+  height: 1rem;
+  margin-right: var(--iii-ui-tree-gap);
+  align-items: center;
+  justify-content: center;
+  color: var(--color-ink-ghost);
+}
+
+.iii-ui-tree-item__icon > svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.iii-ui-tree-item__icon[data-color="blue"] {
+  color: var(--color-glyph-blue);
+}
+
+.iii-ui-tree-item__icon[data-color="purple"] {
+  color: var(--color-glyph-purple);
+}
+
+.iii-ui-tree-item__icon[data-color="teal"] {
+  color: var(--color-glyph-teal);
+}
+
+.iii-ui-tree-item__icon[data-color="green"] {
+  color: var(--color-glyph-green);
+}
+
+.iii-ui-tree-item__icon[data-color="amber"] {
+  color: var(--color-glyph-amber);
+}
+
+.iii-ui-tree-item__icon[data-color="rose"] {
+  color: var(--color-glyph-rose);
+}
+
+.iii-ui-tree-item__label {
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.iii-ui-tree-item__caret,
+.iii-ui-tree-item__action {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: var(--iii-ui-tree-control);
+  height: var(--iii-ui-tree-control);
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-ink-ghost);
+  cursor: pointer;
+  transition:
+    background-color var(--motion-duration-control) var(--motion-ease-standard),
+    color var(--motion-duration-control) var(--motion-ease-standard),
+    opacity var(--motion-duration-control) var(--motion-ease-standard);
+}
+
+.iii-ui-tree-item__caret > svg,
+.iii-ui-tree-item__action > svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.iii-ui-tree-item__caret:hover,
+.iii-ui-tree-item__action:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
+}
+
+.iii-ui-tree-item__caret:focus-visible,
+.iii-ui-tree-item__action:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--color-ink) 55%, transparent);
+  outline-offset: 1px;
+}
+
+/* The caret hugs the label it discloses and turns rather than swapping. */
+.iii-ui-tree-item__caret {
+  margin-left: 0.125rem;
+}
+
+.iii-ui-tree-item__caret > svg {
+  transition: transform var(--motion-duration-control)
+    var(--motion-ease-standard);
+}
+
+.iii-ui-tree-item__caret[aria-expanded="true"] > svg {
+  transform: rotate(90deg);
+}
+
+.iii-ui-tree-item__trailing {
+  display: inline-flex;
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding-left: 0.5rem;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.iii-ui-tree-item__meta {
+  flex: 0 0 auto;
+  color: var(--color-ink-ghost);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  line-height: 1rem;
+}
+
+/* The row action (remove, pin) appears on hover or keyboard focus and
+   stays visible wherever hover does not exist. */
+.iii-ui-tree-item__action {
+  opacity: 0;
+}
+
+.iii-ui-tree-item:hover .iii-ui-tree-item__action,
+.iii-ui-tree-item:focus-within .iii-ui-tree-item__action,
+.iii-ui-tree[data-narrow] .iii-ui-tree-item__action {
+  opacity: 1;
+}
+
+.iii-ui-tree-item__action[data-tone="alert"]:hover {
+  color: var(--color-alert);
+}
+
+@media (hover: none) {
+  .iii-ui-tree-item__action {
+    opacity: 1;
+  }
+}
+
+@media (pointer: coarse) {
+  .iii-ui-tree-item__caret::before,
+  .iii-ui-tree-item__action::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: max(100%, 3rem);
+    height: max(100%, 3rem);
+    transform: translate(-50%, -50%);
+  }
+}
+
 .iii-ui-card,
 .iii-ui-panel {
   min-width: 0;
@@ -1290,6 +1524,13 @@ a.iii-ui-list-item,
   }
 
   .iii-ui-motion-picker-page {
+    transition: none;
+  }
+
+  .iii-ui-tree-item,
+  .iii-ui-tree-item__caret,
+  .iii-ui-tree-item__caret > svg,
+  .iii-ui-tree-item__action {
     transition: none;
   }
 }

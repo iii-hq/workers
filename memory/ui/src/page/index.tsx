@@ -232,7 +232,6 @@ export function MemoryPage({
           id: 'reload',
           title: 'Reload from disk',
           detail: 'Re-read every bank — picks up hand-edited files',
-          shortcut: 'R',
           enabled: () => !loading && !busy,
           run: () => void act(() => reloadStore(host)),
         },
@@ -240,7 +239,6 @@ export function MemoryPage({
           id: 'new-bank',
           title: 'New bank',
           detail: 'Create a named memory scope',
-          shortcut: 'N',
           run: () => {
             if (narrow && drilled) backToBanks()
             window.requestAnimationFrame(() => {

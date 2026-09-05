@@ -25,6 +25,7 @@ mod triggers;
 mod turn_observe;
 mod turns;
 mod ui;
+mod ui_state;
 
 use configuration::AppState;
 use functions::types::{KillRequest, StatusRequest};
@@ -405,6 +406,17 @@ async fn main() -> Result<()> {
     // Injected console UI: the explorer page + shell::* trigger renderers
     // (assets embedded from ui/dist; see src/ui.rs).
     ui::register(&iii);
+
+    // The explorer page's per-pane state (browsed folder, open tabs,
+    // terminal layout) lives under data/shell/ui-state — developer-local
+    // runtime state, never the committable `configuration` store. The
+    // one-time import of the legacy `shell-ui` entry runs BEFORE the
+    // functions exist, so no pane can read an empty store and save its
+    // defaults over state that was about to be imported.
+    let ui_state = ui_state::UiStateStore::open_default();
+    tracing::info!(dir = %ui_state.dir().display(), "explorer pane state store");
+    ui_state.migrate_legacy(&iii).await;
+    ui_state::register(&iii, ui_state);
 
     // The workspace change feed: a system-level directory watch behind the
     // shell::changed trigger type — subscribers name the directory in their

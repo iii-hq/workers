@@ -179,7 +179,9 @@ available width changes.
   `Chip`, `IconButton`, semantic `Table` parts, line `Tabs`, and
   `SegmentedControl` primitives before adding local structure. Use stable
   `uiClasses` recipes when a worker needs semantic markup without another
-  React wrapper.
+  React wrapper; a compact sidebar hierarchy is the `uiClasses.tree*` recipe
+  (28 px rows, glyph tinted by `data-color`, caret after the label,
+  hover-revealed X to remove).
 - Build simple tables as `TableViewport` → `TableFrame` → `Table`, with the
   shared semantic sections, rows, headings, and cells. Use natural-case sans
   headers, horizontal dividers, comfortable page density or compact chat

@@ -57,7 +57,7 @@ Its structure, one module per concern under `ui/src/page/`:
 | `EditorPane.tsx` + `large-file.ts` + `file-bytes.ts` | The shared Monaco `CodeEditor` in `fill` mode, an 8 MiB read budget with a read-only line window past it, raster images streamed in 1 MiB chunks over `shell::workspace::read-bytes`. A read that finds the file gone becomes the "no longer here" state; a loaded buffer whose file goes away stays editable so a save puts it back, and reloads by itself when the file returns. |
 | `EditorTabs.tsx`, `Breadcrumbs.tsx`, `ContextMenu.tsx`, `ActivityBar.tsx`, `ViewHeader.tsx` | Chrome. |
 | `nav-history.ts` | Back/forward across opened tabs (`Shift+Alt+←/→`); the recently opened list the empty pane offers. |
-| `pane-scope.ts` + `persist.ts` + `root-memory.ts` | One page instance per pane: its state key (`paneId`, `tabId` on older consoles), the `shell-ui` configuration entry it persists to (folder, pinned or not, view, options, terminal layout), and what was open per folder so switching folders and back finds the tabs again. The load that seeds a pane retries on transient failure (a pane that boots believing nothing was stored would save its defaults over the stored state); the worker seeds the entry only when nothing is stored (`src/ui.rs`), since `configuration::register` replaces the value whenever a seed is present. The terminal leases and the pane's live trigger functions (`shell::changed`, the harness turn events) are keyed the same way, so two panes of one tab never share a terminal or hear each other's folder. |
+| `pane-scope.ts` + `persist.ts` + `root-memory.ts` | One page instance per pane: its state key (`paneId`, `tabId` on older consoles), the state it persists (folder, pinned or not, view, options, terminal layout) through `shell::ui-state::get`/`set` — one JSON file per pane under the worker's data directory (`src/ui_state.rs`, below) — and what was open per folder so switching folders and back finds the tabs again. The load that seeds a pane retries on any failure (a pane that boots believing nothing was stored would save its defaults over the stored state); only a clean "nothing stored" is final. The terminal leases and the pane's live trigger functions (`shell::changed`, the harness turn events) are keyed the same way, so two panes of one tab never share a terminal or hear each other's folder. |
 | `missing-files.ts` + `PaneNotice.tsx` + `load-error.ts` | Tabs that outlive their files: the set of open file paths the page knows are gone (fed by a stat probe after a restore, the editor's own read, and the live feed; cleared when the file comes back or the tab closes), the one shape every "cannot show content" state takes (icon, title, path, one line, the verbs out), and the worker's `C211` read failure told apart from the rest. |
 | `ShellLauncher.tsx` | The empty pane: the wordmark, the folder sentence with the console's `DirectoryPicker` (the chat composer's, also the header's picker), one card per surface with its key and what is behind it (change and turn counts, the last turn's name), the files opened last. |
 
@@ -198,6 +198,23 @@ explorer page calls them; agents should not need them.
 | `shell::workspace::read-bytes` | One bounded byte range of a file, base64, at most 4 MiB raw per call: `{ path, offset?, length? }` → `{ path, size, offset, length, content, mtime, eof }`. The page streams a large image chunk by chunk instead of asking `coder::read-file` for one 14 MiB frame. Jailed through the `coder::*` resolver. |
 | `shell::turns::get` | Now also carries, per file, `agent` (the sub-agent session and display name when a child made the change) and `after` (the body the turn left behind: the first later turn's pre-image of the same path, inflated from the blob store; absent when the working copy is the after side). Turns carry `title`, the `message_preview` from the harness `turn-started` event. |
 | `shell::turns::revert` | Undo one turn's recorded changes from the pre-image blob store: `{ session_id, turn_id, paths? }` → per-file `{ path, kind, action, success, error? }` plus `reverted` / `failed` counts. Created files are removed, modified and deleted files get their stored body back, moved files return to their source path. Bodies the hooks never stored (over 64 KiB, binary, watcher-observed) are reported as `unavailable`, never guessed. Paths pass the operator denylist and non-accessible globs; containment is not re-checked because the paths are the worker's own records. |
+| `shell::ui-state::get` / `shell::ui-state::set` | The explorer page's per-pane state (browsed folder, open tabs, expanded folders, view, options, terminal layout): `get { key, legacy_key? }` → `{ key, state \| null }`, `set { key, state }` → `{ key, bytes }`; `key` is the console pane id, `legacy_key` the workspace tab id older saves were keyed by. Both `trace_hidden`. |
+
+**Where the pane state lives** (`src/ui_state.rs`): one JSON file per
+pane key under `data/shell/ui-state/panes/` (resolved against
+`III_COMPOSE_DIR` like `turns.data_dir`; the key is percent-encoded into
+the file name). It is developer-local runtime state, so it sits in the
+gitignored `data/` tree — NOT in the engine's `configuration` store, which
+persists into the project's committable `config/` folder. A `set` writes
+only that pane's file (temp + rename, under one store-wide mutex): panes
+never clobber each other, two writers of one pane serialize, and a reader
+never sees a torn document. A missing or unparsable file reads as
+"nothing stored". Until 0.12.x the page read-modify-wrote one `shell-ui`
+configuration entry holding every pane; at boot, before these functions
+are exposed, the worker imports whatever that entry still holds (files
+already present win) and blanks the entry, so `config/shell-ui.yaml` can
+be deleted. Files for panes that no longer exist are not pruned (the
+entry never pruned them either).
 
 **Sub-agent changes are recorded under the spawning turn.** The harness
 stamps `parent_session_id` / `parent_turn_id` into a child session's turn

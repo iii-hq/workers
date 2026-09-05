@@ -1,26 +1,27 @@
 /* Per-pane persistence for the explorer's UI state (browsed root, open
-   editor tabs, expanded folders), stored in the engine's `configuration`
-   worker under the worker-registered `shell-ui` entry (src/ui.rs
-   registers it with `initial_value: {}`).
+   editor tabs, expanded folders, view, options, terminal layout), stored
+   by the worker under its data directory (`data/shell/ui-state/panes/
+   <pane key>.json`, `src/ui_state.rs`) through two console-only
+   functions: `shell::ui-state::get { key, legacy_key }` → `{ state }` and
+   `shell::ui-state::set { key, state }`.
 
-   The entry's value is one JSON object shared by every browser:
-   `{ tabs: { [paneKey]: TabUiState } }`, the key being the console's pane
-   id (`pane-scope.ts`; older saves sit under the workspace tab id and
-   are read as a fallback). `configuration::set`
-   replaces the WHOLE value, so writes are read-modify-write and
-   debounced; concurrent tabs are last-write-wins (the console's own
-   config transport accepts the same trade-off). A missing configuration
-   worker degrades to non-persistent silently.
+   The key is the console's pane id (`pane-scope.ts`); saves made before
+   panes had ids sit under the workspace tab id, which the worker reads
+   as a fallback (`legacy_key`). One file per pane means a save touches
+   only this pane's state: panes never clobber each other, and the worker
+   serializes writers of one pane (its later state wins). Nothing here is
+   read-modify-write any more — the state used to be one `shell-ui`
+   configuration entry holding every pane, which two panes saving at once
+   could lose each other's slice of, and which the engine persisted into
+   the project's committable `config/` folder.
 
    The read that seeds a pane matters more than any write: a pane that
    boots believing nothing was stored replaces the stored state with its
-   defaults on its first save. So a load that fails for any reason other
-   than "nothing there" (the worker or the entry missing) is retried a
-   few times before the pane gives up and boots fresh — an engine that is
-   still coming up after a restart answers within that window. The worker
-   side has the matching care: `src/ui.rs` seeds the entry only when
-   nothing is stored, because `configuration::register` replaces the
-   value whenever a seed is present. */
+   defaults on its first save. So a load that fails for any reason — the
+   engine still coming up after a restart, the worker not yet registered
+   (`function_not_found`), a transport error — is retried a few times
+   before the pane gives up and boots fresh. Only a clean "nothing stored"
+   answer is final. */
 
 import type { Host } from '@iii-dev/console-ui'
 import type { DiffOptions } from './DiffTab'
@@ -31,7 +32,8 @@ import {
   type TerminalWorkspaceState,
 } from './terminal-layout'
 
-export const UI_STATE_CONFIG_ID = 'shell-ui'
+export const UI_STATE_GET_FN = 'shell::ui-state::get'
+export const UI_STATE_SET_FN = 'shell::ui-state::set'
 
 export type TerminalDock = 'bottom' | 'right' | 'editor'
 
@@ -64,43 +66,22 @@ export interface TabUiState {
   terminalWorkspace?: TerminalWorkspaceState
 }
 
-function messageOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
-}
-
-/** No configuration worker on this engine: nothing will ever persist. */
-function isWorkerMissing(err: unknown): boolean {
-  return /function[_ ]not[_ ]found/i.test(messageOf(err))
-}
-
-/** The `shell-ui` entry is not registered (yet): nothing stored, and a
-    write has to wait for the worker to register it. */
-function isEntryMissing(err: unknown): boolean {
-  return !isWorkerMissing(err) && /not[_ ]found/i.test(messageOf(err))
-}
-
-/** The stored value as an object, `{}` when the entry holds nothing
-    usable, null when the worker or the entry is missing. Any other
-    failure (the engine still coming up, a transport error) throws so the
-    caller can tell "nothing there" from "could not ask". The read is
-    `raw`: the page's state carries no `${ENV}` templates, and a raw read
-    also survives a null value the schema would otherwise reject. */
-async function fetchWholeValue(
+/** The stored object for the pane (or its legacy key), null when the
+    worker has nothing for either. Any failure throws so the caller can
+    tell "nothing there" from "could not ask". */
+async function fetchStoredState(
   host: Host,
+  key: string,
+  legacyKey?: string,
 ): Promise<Record<string, unknown> | null> {
-  try {
-    const resp = await host.iii.trigger<{ value?: unknown }>(
-      'configuration::get',
-      { id: UI_STATE_CONFIG_ID, raw: true },
-    )
-    const value = resp?.value
-    return value && typeof value === 'object' && !Array.isArray(value)
-      ? (value as Record<string, unknown>)
-      : {}
-  } catch (err) {
-    if (isWorkerMissing(err) || isEntryMissing(err)) return null
-    throw err instanceof Error ? err : new Error(String(err))
-  }
+  const resp = await host.iii.trigger<{ state?: unknown }>(UI_STATE_GET_FN, {
+    key,
+    legacy_key: legacyKey && legacyKey !== '' ? legacyKey : undefined,
+  })
+  const state = resp?.state
+  return state && typeof state === 'object' && !Array.isArray(state)
+    ? (state as Record<string, unknown>)
+    : null
 }
 
 /** Delays between load attempts: about four seconds in all, invisible
@@ -109,16 +90,18 @@ export const LOAD_RETRY_DELAYS_MS: readonly number[] = [300, 1000, 3000]
 
 const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms))
 
-/** `fetchWholeValue` with retries on transient failure; null once the
-    retries are spent (the pane then boots fresh, the best it can do). */
-async function fetchWholeValueWithRetry(
+/** `fetchStoredState` with retries on failure; null once the retries are
+    spent (the pane then boots fresh, the best it can do). */
+async function fetchStoredStateWithRetry(
   host: Host,
+  key: string,
+  legacyKey: string | undefined,
   delays: readonly number[],
   wait: (ms: number) => Promise<void>,
 ): Promise<Record<string, unknown> | null> {
   for (let attempt = 0; ; attempt += 1) {
     try {
-      return await fetchWholeValue(host)
+      return await fetchStoredState(host, key, legacyKey)
     } catch (err) {
       const delay = delays[attempt]
       if (delay === undefined) {
@@ -130,16 +113,10 @@ async function fetchWholeValueWithRetry(
   }
 }
 
-function entryFor(tabs: Record<string, unknown>, key: string): Record<string, unknown> | null {
-  if (key === '') return null
-  const entry = tabs[key]
-  return entry && typeof entry === 'object' && !Array.isArray(entry) ? (entry as Record<string, unknown>) : null
-}
-
-/** The persisted state for one pane; null = none stored (or the
-    configuration worker is unavailable — callers can't tell, and don't
-    need to). `legacyKey` is the workspace tab id: saves made before
-    state was keyed by pane are read from there once. */
+/** The persisted state for one pane; null = none stored (or the worker
+    could not be reached — callers can't tell, and don't need to).
+    `legacyKey` is the workspace tab id: saves made before state was keyed
+    by pane are read from there. */
 export async function loadTabUiState(
   host: Host,
   key: string,
@@ -147,10 +124,13 @@ export async function loadTabUiState(
   retry: { delays?: readonly number[]; wait?: (ms: number) => Promise<void> } = {},
 ): Promise<TabUiState | null> {
   if (key === '') return null
-  const whole = await fetchWholeValueWithRetry(host, retry.delays ?? LOAD_RETRY_DELAYS_MS, retry.wait ?? sleep)
-  const tabs = whole?.tabs
-  if (!tabs || typeof tabs !== 'object' || Array.isArray(tabs)) return null
-  const raw = entryFor(tabs as Record<string, unknown>, key) ?? (legacyKey ? entryFor(tabs as Record<string, unknown>, legacyKey) : null)
+  const raw = await fetchStoredStateWithRetry(
+    host,
+    key,
+    legacyKey,
+    retry.delays ?? LOAD_RETRY_DELAYS_MS,
+    retry.wait ?? sleep,
+  )
   if (raw === null) return null
   const root = typeof raw.root === 'string' ? raw.root : undefined
   const terminalOpen =
@@ -208,8 +188,9 @@ export async function loadTabUiState(
 }
 
 /* One debounced writer per (page-instance, pane key): the trailing state
-   wins, writes are chained so a slow set can't interleave with the next
-   read-modify-write. */
+   wins, and writes are chained so a slow set can't overtake the next one
+   and land an older state last. A failed write is not final: the worker
+   may be restarting, and the next state change tries again. */
 const DEBOUNCE_MS = 600
 
 export interface TabUiStateSaver {
@@ -220,46 +201,29 @@ export interface TabUiStateSaver {
 
 export function createTabUiStateSaver(
   host: Host,
-  tabId: string,
+  key: string,
 ): TabUiStateSaver {
   let timer: number | null = null
   let pending: TabUiState | null = null
   let chain: Promise<void> = Promise.resolve()
-  let unavailable = false
 
   const flush = () => {
     timer = null
     const state = pending
     pending = null
-    if (!state || unavailable) return
+    if (!state) return
     chain = chain.then(async () => {
       try {
-        const whole = (await fetchWholeValue(host)) ?? {}
-        const tabs =
-          whole.tabs &&
-          typeof whole.tabs === 'object' &&
-          !Array.isArray(whole.tabs)
-            ? (whole.tabs as Record<string, unknown>)
-            : {}
-        await host.iii.trigger('configuration::set', {
-          id: UI_STATE_CONFIG_ID,
-          value: { ...whole, tabs: { ...tabs, [tabId]: state } },
-        })
+        await host.iii.trigger(UI_STATE_SET_FN, { key, state })
       } catch (err) {
-        if (isWorkerMissing(err)) {
-          unavailable = true
-          return
-        }
-        // The entry not being registered yet (a worker still booting) is
-        // not final: the next state change tries again.
-        if (!isEntryMissing(err)) console.warn('[shell-ui] failed to persist tab state', err)
+        console.warn('[shell-ui] failed to persist pane state', err)
       }
     })
   }
 
   return {
     save(state) {
-      if (tabId === '' || unavailable) return
+      if (key === '') return
       pending = state
       if (timer != null) window.clearTimeout(timer)
       timer = window.setTimeout(flush, DEBOUNCE_MS)

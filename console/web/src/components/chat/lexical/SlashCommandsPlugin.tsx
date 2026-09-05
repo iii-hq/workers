@@ -8,18 +8,27 @@ import {
   type LexicalEditor,
   type TextNode,
 } from 'lexical'
-import { useCallback, useMemo, useRef, useState } from 'react'
+import {
+  type RefObject,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { createPortal } from 'react-dom'
 import { listSkills } from '@/lib/backend/directory-prompts'
 import { getIiiClient } from '@/lib/iii-client'
 import {
   fuzzyFilterSlash,
   mergeSlashEntries,
-  SLASH_COMMANDS,
   type SlashCommand,
   setDynamicSlashEntries,
+  slashCommandLabel,
 } from '@/lib/slash-commands'
 import { FlipMenu } from './FlipMenu'
+import { MentionRow } from './MentionRow'
+import { $createSlashCommandNode } from './SlashCommandNode'
 
 class SlashCommandOption extends MenuOption {
   entry: SlashCommand
@@ -30,36 +39,32 @@ class SlashCommandOption extends MenuOption {
 }
 
 interface SlashCommandsPluginProps {
-  /** True while the menu is open so SubmitOnEnter yields Enter to the typeahead. */
+  /** True while the menu shows options so SubmitOnEnter yields Enter to the typeahead. */
   menuOpenRef?: React.RefObject<boolean>
+  /** The composer card the menu aligns to. */
+  frameRef?: RefObject<HTMLElement | null>
 }
 
-// Anchored at column 0 so `/` mid-sentence ("either/or") doesn't fire. The
-// query is either a plain built-in slug or the `/skill:<id>` form (ids are
-// `/`-separated paths) — a bare second `/`
-// ("/home/…") disarms the palette at once instead of shadowing a typed path.
-const SLASH_PATTERN = /^\/(skill:[\w./-]*|[\w-]*)$/
+/* `/` after a start-of-line, whitespace or `(` — the same boundary as `@`
+   — so a command can be picked mid-sentence while "either/or" never fires.
+   The query is a plain slug or the `/skill:<id>` form (ids are
+   `/`-separated paths); a bare second `/` ("/home/…") disarms the palette
+   at once instead of shadowing a typed path. */
+const SLASH_PATTERN = /(^|\s|\()(\/(skill:[\w./-]*|[\w-]*))$/
 
 export function slashTriggerFn(text: string, _editor: LexicalEditor) {
-  const match = text.match(SLASH_PATTERN)
+  const match = SLASH_PATTERN.exec(text)
   if (!match) return null
-  const query = match[1] ?? ''
-  if (
-    !query.startsWith('skill:') &&
-    !SLASH_COMMANDS.some((command) =>
-      command.command.slice(1).startsWith(query),
-    )
-  )
-    return null
   return {
-    leadOffset: 0,
-    matchingString: query,
-    replaceableString: match[0],
+    leadOffset: match.index + match[1].length,
+    matchingString: match[2].slice(1),
+    replaceableString: match[2],
   }
 }
 
 export function SlashCommandsPlugin({
   menuOpenRef,
+  frameRef,
 }: SlashCommandsPluginProps = {}) {
   const [query, setQuery] = useState<string | null>(null)
 
@@ -95,6 +100,19 @@ export function SlashCommandsPlugin({
     [query, dynamic],
   )
 
+  /* The trigger fires on any `/slug`, so the typeahead counts as open on
+     text that matches nothing ("hello /foo"). Only a menu that actually
+     shows options may claim Enter — otherwise the message could never be
+     sent — so the flag follows the option count, not the trigger. A list
+     that fills in after the fetch lands flips it on without a keystroke. */
+  const openRef = useRef(false)
+  useEffect(() => {
+    if (menuOpenRef) menuOpenRef.current = openRef.current && options.length > 0
+  }, [options, menuOpenRef])
+
+  /* The typeahead plugin wraps this callback in editor.update() and passes us
+     the TextNode currently holding "/<query>". We replace it with the command
+     pill and append a trailing space so the caret lands cleanly after it. */
   const onSelectOption = useCallback(
     (
       option: SlashCommandOption,
@@ -102,9 +120,11 @@ export function SlashCommandsPlugin({
       closeMenu: () => void,
     ) => {
       if (textNodeContainingQuery) {
-        const replacement = $createTextNode(`${option.entry.command} `)
-        textNodeContainingQuery.replace(replacement)
-        replacement.selectEnd()
+        const command = $createSlashCommandNode(option.entry.command)
+        const trailing = $createTextNode(' ')
+        textNodeContainingQuery.replace(command)
+        command.insertAfter(trailing)
+        trailing.selectEnd()
       }
       closeMenu()
     },
@@ -117,10 +137,12 @@ export function SlashCommandsPlugin({
       onQueryChange={setQuery}
       onSelectOption={onSelectOption}
       onOpen={() => {
-        if (menuOpenRef) menuOpenRef.current = true
+        openRef.current = true
+        if (menuOpenRef) menuOpenRef.current = options.length > 0
         void loadDynamic()
       }}
       onClose={() => {
+        openRef.current = false
         if (menuOpenRef) menuOpenRef.current = false
       }}
       triggerFn={slashTriggerFn}
@@ -131,6 +153,7 @@ export function SlashCommandsPlugin({
         return createPortal(
           <FlipMenu
             anchorEl={anchorElementRef.current}
+            frameEl={frameRef?.current ?? null}
             header="commands"
             options={options}
             selectedIndex={props.selectedIndex}
@@ -138,22 +161,11 @@ export function SlashCommandsPlugin({
             setHighlightedIndex={props.setHighlightedIndex}
             getOptionKey={(opt) => opt.entry.command}
             renderOption={(opt) => (
-              <>
-                <span
-                  aria-hidden="true"
-                  className="text-accent font-semibold leading-none w-3 text-center shrink-0"
-                >
-                  /
-                </span>
-                <div className="min-w-0 flex flex-col">
-                  <span className="font-mono text-[13px] text-ink truncate">
-                    {opt.entry.command}
-                  </span>
-                  <span className="font-mono text-[11px] text-ink-faint truncate lowercase">
-                    {opt.entry.description}
-                  </span>
-                </div>
-              </>
+              <MentionRow
+                icon={<span className="font-semibold leading-none">/</span>}
+                name={slashCommandLabel(opt.entry.command)}
+                detail={opt.entry.description}
+              />
             )}
           />,
           anchorElementRef.current,

@@ -220,7 +220,6 @@ export function EvalPage({ host, panelSide = 'left', panelContext, commands }: {
           title: 'New evaluation',
           detail: 'Start a prompt comparison',
           keywords: ['experiment', 'compare prompts'],
-          shortcut: 'N',
           run: () => {
             setSurface('experiments')
             setCreating(true)
@@ -230,7 +229,6 @@ export function EvalPage({ host, panelSide = 'left', panelContext, commands }: {
           id: 'refresh-history',
           title: 'Refresh evaluation history',
           keywords: ['reload'],
-          shortcut: 'R',
           enabled: () => surface === 'experiments',
           run: () => void loadHistory(),
         },

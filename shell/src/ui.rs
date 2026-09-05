@@ -16,7 +16,10 @@
 //! Message-path trigger per asset, `III_SHELL_UI_WATCH` hot-reload
 //! watcher) lives in the shared `iii-console-ui` crate (path-linked from
 //! `workers/crates/console-ui`); this module only names the assets and
-//! embeds their bytes.
+//! embeds their bytes. The page's per-pane state (browsed folder, open
+//! tabs, terminal layout) is served by `ui_state.rs` from the worker's
+//! data directory — it used to live in a `shell-ui` configuration entry,
+//! which the worker no longer registers.
 //!
 //! The assets are compiled from `ui/` by esbuild (react +
 //! @iii-dev/console-ui external — they resolve through the console's
@@ -31,8 +34,6 @@ use iii_sdk::IIIClient;
 
 pub const PAGE_PATH: &str = "shell/page.js";
 pub const STYLES_PATH: &str = "shell/styles.css";
-/// Mirrored by `ui/src/page/persist.ts` (`UI_STATE_CONFIG_ID`).
-const UI_STATE_CONFIG_ID: &str = "shell-ui";
 
 /// Built by `build.rs` (esbuild over `ui/`).
 const PAGE_JS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/dist/page.js"));
@@ -53,54 +54,6 @@ fn console_ui() -> ConsoleUi {
 /// so the Arc is built here rather than rippling through main.
 pub fn register(iii: &IIIClient) {
     console_ui().register(&std::sync::Arc::new(iii.clone()));
-    register_ui_state_entry(iii.clone());
-}
-
-/// The `shell-ui` configuration entry backs the explorer page's per-pane
-/// UI state (browsed folder, open editor tabs, expanded folders):
-/// `{ tabs: { [paneId]: {...} } }`, read-modify-written by the page over
-/// `configuration::get`/`set`. Registered so the entry exists before the
-/// first `set`.
-///
-/// The `{}` seed is installed ONLY when nothing is stored yet (entry
-/// missing or value null): `configuration::register` replaces the stored
-/// value whenever `initial_value` is present, not only on first
-/// registration, so an unconditional seed erased every pane's folder and
-/// tabs on each worker restart. If the probe itself fails the entry is
-/// registered without a seed — never clobber what may be there.
-/// Fire-and-forget: a missing configuration worker degrades the page to
-/// non-persistent, never blocks the worker.
-fn register_ui_state_entry(iii: IIIClient) {
-    tokio::spawn(async move {
-        let mut payload = serde_json::json!({
-            "id": UI_STATE_CONFIG_ID,
-            "name": "Shell UI",
-            "description": "Per-pane state for the shell explorer page \
-                            (browsed folder, open files, expanded folders). \
-                            Managed by the page; not intended for hand-editing.",
-            "schema": { "type": "object", "additionalProperties": true },
-        });
-        match crate::configuration::stored_value_absent_for(&iii, UI_STATE_CONFIG_ID).await {
-            Ok(true) => payload["initial_value"] = serde_json::json!({}),
-            Ok(false) => {}
-            Err(e) => tracing::warn!(
-                error = %e,
-                "could not probe the shell-ui configuration entry; registering it without a seed"
-            ),
-        }
-        if let Err(e) = crate::configuration::trigger_configuration_with_retry(
-            &iii,
-            "configuration::register",
-            payload,
-        )
-        .await
-        {
-            tracing::warn!(
-                error = %e,
-                "shell-ui configuration entry not registered (explorer UI state won't persist)"
-            );
-        }
-    });
 }
 
 #[cfg(test)]

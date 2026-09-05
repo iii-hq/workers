@@ -473,7 +473,7 @@ interface PageCommand {
   title: string              // the palette row reads "Shell: Open file…"
   detail?: string
   keywords?: string[]
-  shortcut?: string | { mac: string[]; other: string[] }   // 'Mod+S', 'G L'
+  shortcut?: string | { mac: string[]; other: string[] }   // 'Mod+S', 'Ctrl+Q L'
   firesWhileTyping?: boolean // default false: the caret in a field wins
   enabled?: () => boolean    // asked when the palette opens and before run
   run: () => void
@@ -488,22 +488,22 @@ registration when the worker's assets go. `run` usually calls
 context. Keys are **not** honoured here: the console's global keymap stays
 the console's.
 
-**Typing surfaces that are not form fields must stand down the bare keys.**
+**Typing surfaces that are not form fields must stand down the page keys.**
 The dispatcher already yields to a caret in an `input`, `textarea`, `select`,
 or contentEditable node. Anything else that consumes raw keystrokes — a code
 editor's gutters and widgets, a read-mode diff, a drawing surface — gives the
-dispatcher a plain element as the event target, and a bare page binding
-(a `t`, a digit) fires mid-thought. Declare the surface:
+dispatcher a plain element as the event target, and a page binding the
+surface also answers (`Alt+Z` in an editor) fires twice. Declare the surface:
 
 ```tsx
 <div className="my-editor-body" data-keybindings-standdown="">…</div>
 ```
 
 Every keystroke originating inside a `data-keybindings-standdown` element
-counts as typing: bindings without `firesWhileTyping` stand down, modifier
-chords still work. Put it on the smallest container that holds the whole
-interactive surface (the editor body, the diff card), never on the page root —
-the page chrome around it should keep answering the navigation keys.
+counts as typing: bindings without `firesWhileTyping` stand down. Put it on
+the smallest container that holds the whole interactive surface (the editor
+body, the diff card), never on the page root — the page chrome around it
+should keep answering the navigation keys.
 
 **`PageRenderProps.commands.register(commands)`** — render time, page
 level. Lives while the page is mounted in a pane. Keys are honoured and
@@ -515,8 +515,8 @@ function Page({ commands }: PageRenderProps) {
   useEffect(
     () =>
       commands?.register([
-        { id: 'open', title: 'Open file…', shortcut: 'P', run: openQuickOpen },
-        { id: 'find', title: 'Search in files', shortcut: 'F', run: focusSearch },
+        { id: 'open', title: 'Open file…', run: openQuickOpen },
+        { id: 'next', title: 'Next tab', shortcut: 'Alt+ArrowRight', run: nextTab },
         { id: 'save', title: 'Save', shortcut: 'Mod+S', firesWhileTyping: true,
           enabled: () => dirty, run: save },
       ]),
@@ -525,16 +525,23 @@ function Page({ commands }: PageRenderProps) {
 }
 ```
 
-Keys a page may take: anything the console does not already use. The
-console keeps `Mod+K` and its modifier chords (Ctrl on a Mac, Alt elsewhere:
-`Ctrl+T`, `Ctrl+W`, `Ctrl+[`/`]`, `Ctrl+{`/`}`, `Ctrl+1`-`9`, `Ctrl+\`,
+Keys a page may take: a modifier chord or a named key the console does not
+already use. **A key that types a character is refused**: a bare letter,
+digit or punctuation key, with or without Shift, and a sequence that starts
+with one (`Q L`). Such keys fired from any surface whose focus target was
+not literally a field and collided with what a page's own widgets do with
+the same letter (a terminal's tab keys, an editor's bindings), so they are
+gone everywhere; a command without a chord is still a `⌘K` row. Named keys
+(`Escape`, `Enter`, `End`, `F2`, the arrows) may stay bare, because they type
+nothing. The console keeps `Mod+K` and its modifier chords (Ctrl on a Mac,
+Alt elsewhere: `Ctrl+T`, `Ctrl+W`, `Ctrl+[`/`]`, `Ctrl+{`/`}`, `Ctrl+1`-`9`,
 `Ctrl+,`, and the `Ctrl+G` go-to prefix), and the browser owns its own
-(`Mod+W`, `Mod+T`, `Mod+1`…); those are refused at registration with a
-`console.warn` and the row stays, without a key. Bare single letters, digits
-and chords (`Q L`) are the page's to take; the typing guard keeps them out
-of fields unless the command says `firesWhileTyping`, a
-`data-keybindings-standdown` surface swallows them entirely, and a field can
-hand specific commands back with `data-keybindings-allow="<pageId>.<id>"`.
+(`Mod+W`, `Mod+T`, `Mod+P`, `Mod+1`…); all of these are refused at
+registration with a `console.warn` and the row stays, without a key. The
+typing guard keeps a page's chords out of fields unless the command says
+`firesWhileTyping`, a `data-keybindings-standdown` surface swallows them
+entirely, and a field can hand specific commands back with
+`data-keybindings-allow="<pageId>.<id>"`.
 
 Focus follows the keyboard: opening a page from `⌘K`, a go-to chord or
 `host.panels.open` moves focus into its pane — the first `[data-autofocus]`

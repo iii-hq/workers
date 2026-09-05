@@ -86,7 +86,7 @@ export function EditorTabs({
       const hasRight = index !== -1 && index < tabs.tabs.length - 1
       const path = tab.target.path
       return [
-        { id: 'close', label: 'Close', shortcut: 'W', onSelect: () => onClose(tab.id) },
+        { id: 'close', label: 'Close', onSelect: () => onClose(tab.id) },
         { id: 'close-others', label: 'Close others', disabled: tabs.tabs.length < 2, onSelect: () => onCloseOthers(tab.id) },
         { id: 'close-right', label: 'Close to the right', disabled: !hasRight, onSelect: () => onCloseRight(tab.id) },
         { id: 'close-saved', label: 'Close saved', onSelect: onCloseSaved },
@@ -99,7 +99,7 @@ export function EditorTabs({
         { id: 'copy-path', label: 'Copy path', onSelect: () => onCopyPath(path, true) },
         { id: 'copy-rel', label: 'Copy relative path', onSelect: () => onCopyPath(path, false) },
         { type: 'separator', id: 's2' },
-        { id: 'reveal', label: 'Reveal in explorer', shortcut: 'R', onSelect: () => onReveal(path) },
+        { id: 'reveal', label: 'Reveal in explorer', onSelect: () => onReveal(path) },
         { id: 'compare', label: 'Compare with', onSelect: () => onCompare(path) },
       ]
     },

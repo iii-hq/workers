@@ -17,11 +17,12 @@ import {
   Button,
   CodeEditor,
   type CodeEditorHandle,
+  type CodeEditorSelection,
   type Host,
   IconButton,
 } from '@iii-dev/console-ui'
-import { CircleAlert, Code, Eye, FileDiff, FileX, FolderOpen, Hash, RefreshCw, X } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { CircleAlert, Code, Eye, FileDiff, FileX, FolderOpen, Hash, MessageSquareQuote, RefreshCw, X } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { errorMessage, formatBytes } from '../lib/format'
 import { Breadcrumbs } from './Breadcrumbs'
 import {
@@ -42,6 +43,7 @@ import { isMissingFileError, loadErrorMessage } from './load-error'
 import { imageMimeFromPath, monacoLangFromPath } from './file-kinds'
 import { PaneNotice } from './PaneNotice'
 import { dirname } from './paths'
+import { type LineRange, selectionLines } from './reference'
 import { isRichPreviewPath, richPreviewNode } from './rich-preview'
 
 export { imageMimeFromPath, monacoLangFromPath } from './file-kinds'
@@ -90,9 +92,9 @@ interface EditorPaneProps {
   /** Global review-pane preference; the header toggle overrides it per file. */
   richPreview?: boolean
   wordWrap?: boolean
-  /** Land the cursor on a line once the file is loaded; `seq` distinguishes
-      repeated requests for the same line. */
-  reveal?: { line: number; column?: number; seq: number } | null
+  /** Land the cursor on a line — or select `line`..`endLine` — once the
+      file is loaded; `seq` distinguishes repeated requests for the same line. */
+  reveal?: { line: number; column?: number; endLine?: number; seq: number } | null
   /** Bumps when the page asks for the go-to-line box. */
   goToLineSeq?: number
   onRevealDir: (dir: string) => void
@@ -105,6 +107,9 @@ interface EditorPaneProps {
   onMissing?: (relPath: string, missing: boolean) => void
   /** Close this tab (the way out of a file that is gone). */
   onClose?: () => void
+  /** Offer "Reference in chat" on a selection: the chosen lines go to the
+      composer as a `#file(path:from-to)` mention. Absent = no offer. */
+  onReferenceInChat?: (relPath: string, range: LineRange) => void
 }
 
 export function EditorPane({
@@ -125,6 +130,7 @@ export function EditorPane({
   missing = false,
   onMissing,
   onClose,
+  onReferenceInChat,
 }: EditorPaneProps) {
   const absPath = joinPath(root, relPath)
   const editorRef = useRef<CodeEditorHandle>(null)
@@ -258,8 +264,30 @@ export function EditorPane({
   const ready = pane.phase === 'ready'
   useEffect(() => {
     if (!reveal || !ready) return
-    editorRef.current?.revealLine(reveal.line, reveal.column)
+    const editor = editorRef.current
+    if (!editor) return
+    // A referenced range is selected so the lines read as the citation
+    // they are; a console that predates `revealLines` lands on the line.
+    if (reveal.endLine !== undefined && reveal.endLine > reveal.line && editor.revealLines) {
+      editor.revealLines(reveal.line, reveal.endLine)
+    } else {
+      editor.revealLine(reveal.line, reveal.column)
+    }
   }, [reveal, ready])
+  const selectionActions = useMemo(
+    () =>
+      onReferenceInChat
+        ? [
+            {
+              id: 'reference-in-chat',
+              label: 'Reference in chat',
+              icon: <MessageSquareQuote aria-hidden />,
+              run: (selection: CodeEditorSelection) => onReferenceInChat(relPath, selectionLines(selection)),
+            },
+          ]
+        : undefined,
+    [onReferenceInChat, relPath],
+  )
   useEffect(() => {
     if (goToLineSeq === 0) return
     setGotoOpen(true)
@@ -393,7 +421,7 @@ export function EditorPane({
             <button
               type="button"
               className="shui-goto-btn"
-              title="Go to line (L)"
+              title="Go to line"
               onClick={() => {
                 setGotoOpen(true)
               }}
@@ -476,6 +504,7 @@ export function EditorPane({
             fill
             lineNumbers
             wordWrap={wordWrap}
+            selectionActions={selectionActions}
           />
         )}
       </div>

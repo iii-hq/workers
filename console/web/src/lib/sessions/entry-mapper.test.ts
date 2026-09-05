@@ -109,6 +109,10 @@ describe('entrySegments', () => {
             type: 'text',
             text: '<attached-file path="gone.txt" error="not found" />',
           },
+          {
+            type: 'text',
+            text: '<attached-file path="src/b.rs" lines="3-4" size="900">\nb\n</attached-file>',
+          },
         ],
         timestamp: 1,
       },
@@ -128,6 +132,12 @@ describe('entrySegments', () => {
           id: 'mention-gone.txt',
           name: 'gone.txt (not found)',
           size: 0,
+          type: 'text/x-file-mention',
+        },
+        {
+          id: 'mention-src/b.rs:3-4',
+          name: 'src/b.rs:3-4',
+          size: 900,
           type: 'text/x-file-mention',
         },
       ],

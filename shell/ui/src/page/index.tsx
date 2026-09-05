@@ -12,7 +12,8 @@
  * The sidebar hugs the pane's OUTER edge (`panelSide`), and the UI state
  * (browsed root, open tabs per folder, expanded folders, view, diff
  * options, terminal layout) persists per pane (`paneId`, `pane-scope.ts`)
- * in the `shell-ui` configuration entry. The same page can be open
+ * under the worker's data directory (`shell::ui-state::get`/`set`,
+ * `persist.ts`). The same page can be open
  * several times in one workspace tab, each pane on its own folder with
  * its own terminals and its own live triggers.
  */
@@ -84,6 +85,7 @@ import {
 } from './nav-history'
 import { paneScopeToken, paneStateKey } from './pane-scope'
 import { parseShellPanelContext } from './panel-context'
+import { formatFileReference, type LineRange, mentionPathFor } from './reference'
 import { dirname, isUnder } from './paths'
 import { createTabUiStateSaver, loadTabUiState, type TabUiState, type TerminalDock } from './persist'
 import { useShellReviewSummaryBridge } from './review-summary-store'
@@ -300,6 +302,7 @@ export function ShellExplorerPage({
     path: string
     line: number
     column?: number
+    endLine?: number
     seq: number
   } | null>(null)
   const historyRef = useRef<NavHistory>(EMPTY_HISTORY)
@@ -547,7 +550,7 @@ export function ShellExplorerPage({
   }, [])
 
   const openFileTab = useCallback(
-    (relPath: string, options: { pin?: boolean; line?: number; column?: number } = {}) => {
+    (relPath: string, options: { pin?: boolean; line?: number; column?: number; endLine?: number } = {}) => {
       showTab((s) => (options.pin ? openPinned(s, fileTarget(relPath)) : openPreview(s, fileTarget(relPath))))
       if (options.line !== undefined) {
         const line = options.line
@@ -555,6 +558,7 @@ export function ShellExplorerPage({
           path: relPath,
           line,
           column: options.column,
+          endLine: options.endLine,
           seq: (previous?.seq ?? 0) + 1,
         }))
       }
@@ -1324,7 +1328,7 @@ export function ShellExplorerPage({
   // stripped from the URL) immediately, then applied once the root has
   // resolved — re-rooting to the file's own folder when it lives outside
   // the browsed one; the effect refires on the new root and opens it.
-  const pendingOpenRef = useRef<{ abs: string; line?: number } | null>(null)
+  const pendingOpenRef = useRef<{ abs: string; line?: number; endLine?: number } | null>(null)
   const pendingOpenCaptureSeqRef = useRef(0)
   const pendingOpenRequestSeqRef = useRef(0)
   const pendingOpenRootRequestRef = useRef<{ target: string; token: ScopedRequestToken } | null>(null)
@@ -1333,10 +1337,10 @@ export function ShellExplorerPage({
   const pendingOpenRetryTimerRef = useRef<number | null>(null)
   const [pendingOpenError, setPendingOpenError] = useState<string | null>(null)
   const [openBump, setOpenBump] = useState(0)
-  const requestOpen = useCallback((abs: string, line?: number) => {
+  const requestOpen = useCallback((abs: string, line?: number, endLine?: number) => {
     if (rootRef.current !== null) rootResolveSeqRef.current += 1
     pendingOpenCaptureSeqRef.current += 1
-    pendingOpenRef.current = { abs, line }
+    pendingOpenRef.current = { abs, line, endLine }
     pendingOpenRootRequestRef.current = null
     pendingOpenWaitingForRetryRef.current = false
     pendingOpenRetryRef.current = 0
@@ -1381,7 +1385,7 @@ export function ShellExplorerPage({
       pendingOpenWaitingForRetryRef.current = false
       pendingOpenRetryRef.current = 0
       setPendingOpenError(null)
-      openFileTab(pending.abs.slice(prefix.length), { pin: true, line: pending.line })
+      openFileTab(pending.abs.slice(prefix.length), { pin: true, line: pending.line, endLine: pending.endLine })
     } else if (pending.abs !== root) {
       const target = deepLinkRootTarget(pending.abs, workingDirRef.current)
       if (pendingOpenWaitingForRetryRef.current || pendingOpenRootRequestRef.current?.target === target) return
@@ -1448,22 +1452,37 @@ export function ShellExplorerPage({
 
   // ── panel context from other surfaces ──
   const openContextFile = useCallback(
-    (path: string): boolean => {
+    (path: string, line?: number, endLine?: number): boolean => {
       if (root === null) return false
       setSideTab('files')
       setCollapsed(false)
       if (!path.startsWith('/')) {
-        openFileTab(path, { pin: true })
+        openFileTab(path, { pin: true, line, endLine })
         return true
       }
       // Reuse the validated deep-link pipeline for contextual panel
       // requests. It safely re-roots when the file lives outside the current
       // workspace and preserves the same retry/error behavior.
-      requestOpen(path)
+      requestOpen(path, line, endLine)
       return true
     },
     [root, openFileTab, requestOpen],
   )
+
+  // "Reference in chat" from a selection: a `#file(path:from-to)` token
+  // appended to the composer's draft. The path is relative to the chat's
+  // folder when the file lives under it, absolute otherwise, so the send
+  // path can read it back whichever folder this pane happens to browse.
+  const composeInChat = host.chat?.compose
+  const referenceInChat = useMemo(() => {
+    if (!composeInChat) return undefined
+    return (relPath: string, range: LineRange) => {
+      const base = rootRef.current
+      if (base === null) return
+      const path = mentionPathFor(joinPath(base, relPath), workingDirRef.current)
+      composeInChat({ text: formatFileReference(path, range), inline: true })
+    }
+  }, [composeInChat])
 
   const appliedContextRef = useRef(0)
   useEffect(() => {
@@ -1474,7 +1493,7 @@ export function ShellExplorerPage({
     // root necessarily resolves. Leave file events unapplied until the safe
     // open pipeline can accept them.
     if (context.type === 'file') {
-      if (!openContextFile(context.path)) return
+      if (!openContextFile(context.path, context.line, context.endLine)) return
       appliedContextRef.current = panelContext.id
       return
     }
@@ -1571,7 +1590,6 @@ export function ShellExplorerPage({
           title: 'Open file…',
           detail: 'Find a file by name',
           keywords: ['quick open', 'go to file', 'path'],
-          shortcut: 'P',
           run: () => host.palette?.open({ query: '#' }),
         },
         {
@@ -1579,7 +1597,6 @@ export function ShellExplorerPage({
           title: 'Search in files',
           detail: 'Find text across the working directory',
           keywords: ['grep', 'find', 'text'],
-          shortcut: 'F',
           run: () => {
             setSideTab('search')
             setCollapsed(false)
@@ -1593,7 +1610,6 @@ export function ShellExplorerPage({
           title: 'Show the explorer',
           detail: 'The file tree sidebar',
           keywords: ['explorer', 'tree', 'sidebar', 'files'],
-          shortcut: 'E',
           run: () => {
             setSideTab('files')
             setCollapsed(false)
@@ -1604,7 +1620,6 @@ export function ShellExplorerPage({
           title: 'Show source control',
           detail: 'Staged and unstaged changes',
           keywords: ['git', 'scm', 'staged', 'commit', 'changes'],
-          shortcut: 'S',
           run: () => {
             setSideTab('scm')
             setCollapsed(false)
@@ -1615,7 +1630,6 @@ export function ShellExplorerPage({
           title: 'Show the timeline',
           detail: 'Every turn of this chat and what it changed',
           keywords: ['history', 'turns', 'rollback', 'revert'],
-          shortcut: 'H',
           run: () => {
             setSideTab('timeline')
             setCollapsed(false)
@@ -1626,7 +1640,6 @@ export function ShellExplorerPage({
           title: 'Toggle the sidebar',
           detail: 'Hide or show the sidebar',
           keywords: ['collapse', 'explorer'],
-          shortcut: 'B',
           run: () => setCollapsed((current) => !current),
         },
         {
@@ -1634,7 +1647,6 @@ export function ShellExplorerPage({
           title: 'Toggle the terminal',
           detail: 'Open or close the terminal for this directory',
           keywords: ['pty', 'console', 'command line'],
-          shortcut: '`',
           run: toggleTerminal,
         },
         {
@@ -1657,7 +1669,6 @@ export function ShellExplorerPage({
           id: 'close-tab',
           title: 'Close the tab',
           keywords: ['tab', 'file', 'close'],
-          shortcut: 'W',
           enabled: () => tabsRef.current.active !== null,
           run: () => {
             const active = tabsRef.current.active
@@ -1668,7 +1679,6 @@ export function ShellExplorerPage({
           id: 'reveal-active',
           title: 'Reveal the active file in the explorer',
           keywords: ['explorer', 'tree', 'locate'],
-          shortcut: 'R',
           enabled: () => tabsRef.current.active !== null,
           run: () => {
             const active = activeTabOf(tabsRef.current)
@@ -1679,7 +1689,6 @@ export function ShellExplorerPage({
           id: 'go-to-line',
           title: 'Go to line…',
           keywords: ['line', 'jump'],
-          shortcut: 'L',
           enabled: () => activeTabOf(tabsRef.current)?.target.kind === 'file',
           run: () => setGoToLineSeq((value) => value + 1),
         },
@@ -1705,7 +1714,6 @@ export function ShellExplorerPage({
           title: 'Next change',
           detail: 'Open the next changed file as a diff',
           keywords: ['diff', 'change', 'git', 'turn'],
-          shortcut: 'J',
           run: () => stepChange(1),
         },
         {
@@ -1713,7 +1721,6 @@ export function ShellExplorerPage({
           title: 'Previous change',
           detail: 'Open the previous changed file as a diff',
           keywords: ['diff', 'change', 'git', 'turn'],
-          shortcut: 'K',
           run: () => stepChange(-1),
         },
         {
@@ -2177,6 +2184,7 @@ export function ShellExplorerPage({
                 missing={missingPaths.has(activeFilePath)}
                 onMissing={onFileMissing}
                 onClose={() => closeTabId(fileTabId(activeFilePath))}
+                onReferenceInChat={referenceInChat}
               />
             ) : activeDiff !== null ? (
               <DiffTab

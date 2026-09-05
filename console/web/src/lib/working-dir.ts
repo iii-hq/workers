@@ -6,6 +6,7 @@
  * chats are pre-filled with so files land where the user is working).
  */
 
+import { listHarnessProjects } from '@/lib/backend/projects'
 import { getIiiClient } from '@/lib/iii-client'
 import type { WorkingDirScope } from '@/types/chat'
 
@@ -135,6 +136,27 @@ export function fetchDefaultWorkingDir(): Promise<string | null> {
     defaultWorkingDirPromise = resolveDefaultWorkingDir()
   }
   return defaultWorkingDirPromise
+}
+
+/**
+ * The working directory a NEW chat is pre-filled with: the most recently
+ * used harness project (`data/harness-projects.json`, bumped on every pick),
+ * shell-validated; when the catalog is empty, unreachable, or its top entry
+ * no longer validates, the stack default from `fetchDefaultWorkingDir`.
+ * Not cached: the last-used project moves with every selection.
+ */
+export async function fetchNewChatWorkingDir(): Promise<string | null> {
+  try {
+    const [latest] = await listHarnessProjects()
+    if (latest) {
+      const validated = await validateWorkspaceDir(latest.path)
+      if (validated.ok) return validated.path
+    }
+  } catch {
+    // Older harness without the projects catalog, or a transient failure:
+    // fall through to the stack default.
+  }
+  return fetchDefaultWorkingDir()
 }
 
 async function resolveDefaultWorkingDir(): Promise<string | null> {

@@ -296,7 +296,6 @@ export function TriggersPage({
           title: 'Search triggers',
           detail: 'Focus the trigger search field',
           keywords: ['find', 'filter'],
-          shortcut: '/',
           run: () => searchInputRef.current?.focus(),
         },
         {
@@ -304,7 +303,6 @@ export function TriggersPage({
           title: 'Refresh triggers',
           detail: 'Reload the trigger catalog',
           keywords: ['reload'],
-          shortcut: 'R',
           run: () => catalog.reload(),
         },
       ]),

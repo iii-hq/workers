@@ -110,7 +110,6 @@ export function WorktreesPage({
           title: 'Refresh worktrees',
           detail: 'Re-read the worktree registry',
           keywords: ['reload'],
-          shortcut: 'R',
           run: refresh,
         },
         {

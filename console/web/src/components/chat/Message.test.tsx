@@ -110,3 +110,36 @@ describe('SpawnTaskMessage', () => {
     expect(html).toContain('Compare the available rendering approaches.')
   })
 })
+
+describe('UserMessage', () => {
+  it('shows a skill invocation as a command pill in the prose, not as a repeated chip', () => {
+    const message: UserMessage = {
+      id: 'user-skill',
+      role: 'user',
+      content: 'tighten the loop with /skill:coder/index please',
+      attachments: [
+        {
+          id: 'slash-/skill:coder/index',
+          name: '/skill:coder/index',
+          size: 7,
+          type: 'text/x-skill',
+        },
+        // Not in the text (shouldn't happen): the strip keeps it, namespace hidden.
+        {
+          id: 'slash-/skill:other',
+          name: '/skill:other',
+          size: 7,
+          type: 'text/x-skill',
+        },
+      ],
+      createdAt: 0,
+    }
+    const html = renderToStaticMarkup(<Message message={message} />)
+
+    expect(html).toContain('data-slash-command="/skill:coder/index"')
+    // The data attribute and the visible label only — no chip repeating it.
+    expect(html.match(/coder\/index/g)).toHaveLength(2)
+    expect(html).not.toContain('skill:coder/index</span>')
+    expect(html).toContain('>/other</span>')
+  })
+})

@@ -6,6 +6,7 @@ import { errorOnFcall } from './error-on-fcall'
 import { fastTokens } from './fast-tokens'
 import { happyAgent } from './happy-agent'
 import { happyAsk } from './happy-ask'
+import { harnessSpawn } from './harness-spawn'
 import { longMarkdown } from './long-markdown'
 import { markdownStress } from './markdown-stress'
 import { multiFunctionAgent } from './multi-function-agent'
@@ -101,6 +102,14 @@ export const SCENARIOS: PlaygroundScenario[] = [
       'three sequential function triggers before the assistant body — surfaces fcall pointer reuse.',
     group: 'agent',
     backend: multiFunctionAgent,
+  },
+  {
+    id: 'harness-spawn',
+    label: 'harness · spawn',
+    description:
+      'gated harness::spawn (approve → child session created → live sub-agent card), then a spawn_depth_exceeded error.',
+    group: 'agent',
+    backend: harnessSpawn,
   },
   {
     id: 'sandbox-lifecycle',

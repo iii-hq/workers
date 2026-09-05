@@ -17,6 +17,7 @@
 //! replay; the delivery hop's claim makes any double-fire a no-op.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -53,6 +54,7 @@ pub struct TimerTriggerConfig {
 }
 
 struct Armed {
+    generation: u64,
     handle: tokio::task::JoinHandle<()>,
 }
 
@@ -70,6 +72,7 @@ pub struct TimerBus {
     iii: Arc<IIIClient>,
     dispatch_timeout_ms: u64,
     armed: Arc<Mutex<HashMap<String, Armed>>>,
+    next_generation: Arc<AtomicU64>,
 }
 
 impl TimerBus {
@@ -78,6 +81,7 @@ impl TimerBus {
             iii,
             dispatch_timeout_ms,
             armed: Arc::new(Mutex::new(HashMap::new())),
+            next_generation: Arc::new(AtomicU64::new(1)),
         }
     }
 
@@ -89,6 +93,7 @@ impl TimerBus {
         metadata: Option<Value>,
         at: i64,
     ) {
+        let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
         let bus = self.clone();
         let task_id = id.clone();
         let handle = tokio::spawn(async move {
@@ -97,18 +102,24 @@ impl TimerBus {
             tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
             bus.fire(&task_id, &function_id, namespace, metadata, at)
                 .await;
-            bus.armed
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .remove(&task_id);
+            bus.retire_if_current(&task_id, generation);
         });
         // Replacing an existing entry drops it, which aborts the old task.
         self.armed
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .insert(id, Armed { handle });
+            .insert(id, Armed { generation, handle });
     }
 
+    fn retire_if_current(&self, id: &str, generation: u64) {
+        let mut armed = self.armed.lock().unwrap_or_else(|p| p.into_inner());
+        if armed
+            .get(id)
+            .is_some_and(|entry| entry.generation == generation)
+        {
+            armed.remove(id);
+        }
+    }
     pub fn cancel(&self, id: &str) {
         self.armed
             .lock()
@@ -279,5 +290,42 @@ mod tests {
             AgentMessage::now_ms() + 60_000,
         );
         assert_eq!(bus.armed_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn stale_timer_cleanup_preserves_replacement_generation() {
+        let iii = Arc::new(IIIClient::new("ws://127.0.0.1:0"));
+        let bus = TimerBus::new(iii, 1_000);
+        let deadline = AgentMessage::now_ms() + 60_000;
+        bus.arm("same".into(), "noop::fn".into(), None, None, deadline);
+        let old_generation = bus
+            .armed
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get("same")
+            .unwrap()
+            .generation;
+        bus.arm("same".into(), "noop::fn".into(), None, None, deadline);
+        let new_generation = bus
+            .armed
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get("same")
+            .unwrap()
+            .generation;
+        assert_ne!(old_generation, new_generation);
+
+        bus.retire_if_current("same", old_generation);
+        assert_eq!(bus.armed_count(), 1, "stale cleanup removed replacement");
+        assert_eq!(
+            bus.armed
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get("same")
+                .unwrap()
+                .generation,
+            new_generation
+        );
+        bus.cancel("same");
     }
 }

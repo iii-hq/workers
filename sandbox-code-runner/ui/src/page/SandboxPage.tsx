@@ -127,7 +127,6 @@ export function SandboxPage({
           title: 'New sandbox',
           detail: 'Create a sandbox from a catalog image',
           keywords: ['create', 'microvm'],
-          shortcut: 'N',
           enabled: () => !state.daemonAbsent,
           run: () => setCreateOpen(true),
         },
@@ -136,7 +135,6 @@ export function SandboxPage({
           title: 'Run code',
           detail: 'Run a snippet against a sandbox',
           keywords: ['exec', 'code'],
-          shortcut: 'C',
           run: () => setRunOpen(true),
         },
         {
@@ -144,7 +142,6 @@ export function SandboxPage({
           title: 'Refresh the fleet',
           detail: 'Re-read sandboxes, runtimes and the catalog',
           keywords: ['reload'],
-          shortcut: 'R',
           run: refresh,
         },
       ]),

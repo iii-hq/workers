@@ -415,6 +415,16 @@ The full design-token stylesheet — drop this in as your global CSS entrypoint:
   --color-ok: #356f3d;
   --color-ok-muted: rgba(53, 111, 61, 0.12);
 
+  /* glyph tones: the tint of one 16px identity glyph beside a label; each
+     holds 3:1 against the sidebar in its theme. Never a fill, a border,
+     a selection state, or text. */
+  --color-glyph-blue: #2563eb;
+  --color-glyph-purple: #7c3aed;
+  --color-glyph-teal: #0d9488;
+  --color-glyph-green: #15803d;
+  --color-glyph-amber: #b7791f;
+  --color-glyph-rose: #e11d48;
+
   /* ── Radii ────────────────────────────────────────────────────────────
      One radius everywhere: every step of the Tailwind scale resolves to
      6px, so badges, buttons, cards, panels, and modals share the same
@@ -488,6 +498,12 @@ The full design-token stylesheet — drop this in as your global CSS entrypoint:
   --color-warn-muted: rgba(245, 165, 36, 0.12);
   --color-ok: #36c98f;
   --color-ok-muted: rgba(54, 201, 143, 0.12);
+  --color-glyph-blue: #3b82f6;
+  --color-glyph-purple: #8b5cf6;
+  --color-glyph-teal: #14b8a6;
+  --color-glyph-green: #22c55e;
+  --color-glyph-amber: #eab308;
+  --color-glyph-rose: #f43f5e;
 }
 
 @layer base {
@@ -796,6 +812,19 @@ trigger bolt (`warn`) and the registration tower (`ok`). Its `-muted` fill
 tints the glyph tile in the expanded row. Never a border, a body text color,
 or a selection state.
 
+### Glyph tones
+
+`glyph-blue`, `glyph-purple`, `glyph-teal`, `glyph-green`, `glyph-amber`,
+`glyph-rose` — the identity tints an operator picks for an agent profile or
+a sub-agent, and the only place a strong hue sits beside ordinary ink. Each
+one tints exactly one 16 px Lucide glyph at the head of a row (the
+conversation tree is the canonical use, through `data-color` on the tree
+recipe's icon slot) and is deliberately vivid: a saturated 600-step on cream,
+the 500-step on near-black, every value holding at least 3:1 against
+`sidebar`. `neutral` means no tone — the glyph keeps `ink-ghost`. A tone is
+never a fill, a border, a text color, or a selection or status state; status
+still arrives through `accent`/`ok`/`warn`/`alert` on a dot or a mark.
+
 ### Dark theme
 
 Override the same tokens inside a `[data-theme="dark"]` block (see §0). Dark
@@ -1010,32 +1039,38 @@ Workspace tabs behave like this everywhere:
 - **Overflow** scrolls the strip. Fades mark the hidden side, the active tab
   is kept in view, and an "All workspaces" menu lists every tab with its
   digit. The `+` and the menu stay visible outside the scrolled region.
-- **Keyboard:** `1`–`9` select by position, `⇧←` / `⇧→` step, `t` creates,
-  `Shift+W` closes, `[` / `]` split left / right (`{` / `}`, the same keys
-  with Shift, move the keyboard between panes), `G then C` / `W` / `T` go
-  to chat, workers or traces (a sequence binding is chords separated by a
-  space in the registry; the prefix arms a 1.5 s pending state and never
-  acts alone, so a new place costs one more letter rather than one more
-  reserved key). Key caps print
-  uppercase. Inside the strip, arrow keys, Home and End
+- **Keyboard:** every console key is a modifier chord on the free tier,
+  Ctrl on a Mac and Alt elsewhere (`⌃` below; bare keys kept firing under
+  people's hands from any surface whose focus target was not a field):
+  `⌃1`–`⌃9` select by position, `⌃⇧←` / `⌃⇧→` step, `⌃T` creates, `⌃W`
+  closes, `⌃[` / `⌃]` split left / right (`⌃{` / `⌃}`, the same keys with
+  Shift, move the keyboard between panes), `⌃G then C` / `W` / `T` go to
+  chat, workers or traces (a sequence binding is chords separated by a space
+  in the registry; the prefix arms a 1.5 s pending state and never acts
+  alone, so a new place costs one more letter rather than one more reserved
+  key). Key caps print uppercase. Inside the strip, arrow keys, Home and End
   move between tabs and Delete closes the focused one. Nothing fires while
   the caret is in a field (`useKeybindings`). There is no key to memorise
   first: every action and every open workspace is a row in `⌘K`, each
   showing its key, and hovering a control spells the same key
   (`hoverTitle`), so the keys are learned in passing. The full list is a
-  `⌘K` row, not a key of its own. `{` / `}` move the keyboard between
-  panes, and opening a page from `⌘K`, a chord or `panels.open` lands focus
-  inside it (`lib/pane-focus.ts`).
+  `⌘K` row, not a key of its own. Opening a page from `⌘K`, a chord or
+  `panels.open` lands focus inside it (`lib/pane-focus.ts`).
 - **Page commands:** a page contributes rows to `⌘K` and keys to its own
   pane through `PageRenderProps.commands` (render time, pane-scoped keys)
   or `host.commands` (setup time, rows only). They live in
   `lib/page-commands.ts` and die with the worker, so a worker that is not
   attached has no rows and no keys. The dispatcher runs the console's keys
   first, then the focused pane's; a page can never shadow a console chord
-  (`shortcutClaimReason`). Chat is the first consumer: `I` composer, `J`/`K`
-  walk the transcript, `A`/`D` approve or deny the pending call, `O` expand
-  and `Y` copy the focused message, `End` latest, `M` model, `Escape` stop,
-  `N` new chat, `/` search conversations.
+  (`shortcutClaimReason`), and no page may bind a key that types a
+  character: a bare letter, digit or punctuation key, with or without
+  Shift, is refused at registration (`isBareKey`) because it fired under
+  people's hands from any surface whose focus target is not a field and
+  collided with what the page's own widgets do with the same letter. A
+  page key is a modifier chord or a named key (`Escape`, `End`); everything
+  else is a `⌘K` row without a key. Chat is the first consumer: `End`
+  latest, `Escape` stop; the composer, transcript walking, approve or deny,
+  expand, copy, model and new chat are rows.
 - **Palette sources, prefixes, recents:** a worker registers a live source
   (`host.palette.registerSource`, `lib/palette/providers.ts`): rows
   computed per query, asked debounced with an abort signal, shown under the
@@ -1880,6 +1915,41 @@ loading/empty/error/validation states, free-form creation when declared, and
 combobox/listbox keyboard semantics. `Select` remains the finite,
 non-searchable choice control. Shared portalled components carry the injected
 worker's `data-iii-ui` scope automatically.
+
+### Navigation tree rows
+
+`uiClasses.tree` / `treeItem` / `treeItemIcon` / `treeItemLabel` /
+`treeItemCaret` / `treeItemTrailing` / `treeItemMeta` / `treeItemAction` are
+the compact sidebar hierarchy — the conversation tree (chats and their
+sub-agents), a worker's folders or scopes. The comfortable `ListItem` stays
+the list/detail row; the tree is denser and reads as one column of marks:
+
+- **Row:** 28 px tall, 13 px / 500 sans, `ink-faint` at rest and `ink` on
+  hover or selection, 6 px radius, `surface-hover` / `surface-selected`
+  washes that span the full row width at every depth. Selection is neutral
+  (`data-selected="true"` or `aria-current`), never accent.
+- **Rhythm:** the row's own inset is 10 px, the glyph-to-label gap 10 px, the
+  trailing edge 12 px, and each nesting level adds 14 px of padding — the
+  row sets `--iii-ui-tree-depth` and the recipe derives the indent. The page
+  supplies the gutter around the tree (the console sidebar uses 8 px, so
+  every glyph sits on one 18 px column with the heading above it).
+- **Glyph:** one 16 px Lucide mark in `treeItemIcon`, `ink-ghost` by default
+  and tinted through `data-color="blue|purple|teal|green|amber|rose"` with
+  the glyph tones (§3). Every row carries a mark so labels align; a plain
+  chat shows a quiet message glyph.
+- **Caret:** the disclosure caret sits right after the label, not at the row
+  edge — `treeItemCaret` with `aria-expanded`; a `ChevronRight` turns 90°
+  when open instead of swapping icons. Rows without children render no caret.
+- **Trailing:** `treeItemTrailing` collects a status dot, `treeItemMeta`
+  (11 px tabular `ink-ghost` timestamps) and `treeItemAction` — the X
+  (Lucide `X`, never a trash can) that removes the row, revealed on hover or
+  focus-within, always visible where hover does not exist. `data-tone="alert"`
+  on the action warms it to `alert` on hover.
+- **Narrow panes:** `data-narrow` on the tree lifts rows to 44 px, grows the
+  caret and action to 40 px, and keeps the action visible; coarse pointers
+  get a 48 px hit area on both controls without changing the layout.
+- **Motion:** the row wash, caret turn and action reveal use
+  `--motion-duration-control`; reduced motion makes them immediate.
 
 ### Simple tables
 

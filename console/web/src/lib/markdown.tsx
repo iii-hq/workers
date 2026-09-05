@@ -3,6 +3,7 @@ import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { FileMentionPill } from '@/components/chat/lexical/FileMentionNode'
 import { FunctionMentionPill } from '@/components/chat/lexical/FunctionMentionNode'
+import { SlashCommandPill } from '@/components/chat/lexical/SlashCommandNode'
 import {
   Table,
   TableBody,
@@ -15,6 +16,8 @@ import {
   TableRow,
   TableViewport,
 } from '@/components/ui/Table'
+import { parseFileMentionInner } from '@/lib/file-mention-token'
+import { SKILL_PREFIX, SKILL_TOKEN_SOURCE } from '@/lib/slash-commands'
 import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
 
@@ -23,19 +26,24 @@ interface MarkdownProps {
   className?: string
 }
 
-/* Matches `@fn(<id>)` (id excludes whitespace and `)`) or `#file(<path>)`
-   (path excludes `)` — file names may carry spaces). Tolerates trailing
-   punctuation outside the parens. The pattern is intentionally defensive:
-   we never accept arbitrary content inside the parens, so the pill can't
-   be smuggled into otherwise-safe markdown. */
-const MENTION_RE = /@fn\(([^)\s]+)\)|#file\(([^)]+)\)/g
+/* Matches `@fn(<id>)` (id excludes whitespace and `)`), `#file(<path>)`
+   (path excludes `)` — file names may carry spaces) or a `/skill:<id>`
+   invocation (the composer's own token shape, see `slash-commands`).
+   Tolerates trailing punctuation outside the parens / after the id. The
+   pattern is intentionally defensive: we never accept arbitrary content
+   inside the parens, so the pill can't be smuggled into otherwise-safe
+   markdown. */
+const MENTION_RE = new RegExp(
+  String.raw`@fn\(([^)\s]+)\)|#file\(([^)]+)\)|${SKILL_TOKEN_SOURCE}`,
+  'g',
+)
 
 /* Inline rehype plugin: walks the hast tree and splits any `text` node that
-   contains `@fn(<id>)` or `#file(<path>)` into a mix of leftover text + a
-   marker `span` element carrying the mention payload. The actual pill
-   rendering happens in the `span` component override below. Code / pre
-   subtrees are skipped so literal mentions inside fenced blocks stay
-   verbatim. */
+   contains `@fn(<id>)`, `#file(<path>)` or `/skill:<id>` into a mix of
+   leftover text + a marker `span` element carrying the mention payload. The
+   actual pill rendering happens in the `span` component override below.
+   Code / pre subtrees are skipped so literal mentions inside fenced blocks
+   stay verbatim. */
 function rehypeFnMention() {
   return (tree: Root) => walk(tree)
 }
@@ -74,7 +82,13 @@ function hasLanguageJson(node: Element): boolean {
 }
 
 function splitMention(value: string): Array<Text | Element> {
-  if (!value.includes('@fn(') && !value.includes('#file(')) return []
+  if (
+    !value.includes('@fn(') &&
+    !value.includes('#file(') &&
+    !value.includes(SKILL_PREFIX)
+  ) {
+    return []
+  }
   const out: Array<Text | Element> = []
   let last = 0
   /* matchAll iterates with stateless semantics on a /g regex, so we don't
@@ -84,15 +98,19 @@ function splitMention(value: string): Array<Text | Element> {
     if (index > last) {
       out.push({ type: 'text', value: value.slice(last, index) })
     }
-    /* Group 1 = `@fn` id, group 2 = `#file` path (the alternation makes
-       exactly one of them defined per match). */
+    /* Group 1 = `@fn` id, group 2 = `#file` path, group 3 = skill id (the
+       alternation makes exactly one of them defined per match). */
+    const className =
+      m[1] !== undefined
+        ? 'fn-mention'
+        : m[2] !== undefined
+          ? 'file-mention'
+          : 'skill-mention'
     out.push({
       type: 'element',
       tagName: 'span',
-      properties: {
-        className: [m[1] !== undefined ? 'fn-mention' : 'file-mention'],
-      },
-      children: [{ type: 'text', value: m[1] ?? m[2] }],
+      properties: { className: [className] },
+      children: [{ type: 'text', value: m[1] ?? m[2] ?? m[3] }],
     })
     last = index + m[0].length
   }
@@ -262,18 +280,25 @@ const components: Components = {
   span: ({ className, children, ...rest }) => {
     const cls = typeof className === 'string' ? className : ''
     const classes = cls.split(/\s+/)
-    if (classes.includes('fn-mention') || classes.includes('file-mention')) {
+    if (
+      classes.includes('fn-mention') ||
+      classes.includes('file-mention') ||
+      classes.includes('skill-mention')
+    ) {
       const payload =
         typeof children === 'string'
           ? children
           : Array.isArray(children) && typeof children[0] === 'string'
             ? children[0]
             : ''
-      return classes.includes('fn-mention') ? (
-        <FunctionMentionPill functionId={payload} />
-      ) : (
-        <FileMentionPill path={payload} />
-      )
+      if (classes.includes('fn-mention')) {
+        return <FunctionMentionPill functionId={payload} />
+      }
+      if (classes.includes('skill-mention')) {
+        return <SlashCommandPill command={`${SKILL_PREFIX}${payload}`} />
+      }
+      const ref = parseFileMentionInner(payload)
+      return <FileMentionPill path={ref.path} range={ref.range} />
     }
     return (
       <span className={className} {...rest}>

@@ -11,6 +11,7 @@ import {
   $createParagraphNode,
   $createTextNode,
   $getRoot,
+  $isElementNode,
   CLEAR_EDITOR_COMMAND,
   COMMAND_PRIORITY_LOW,
   KEY_ARROW_DOWN_COMMAND,
@@ -18,20 +19,33 @@ import {
   KEY_ENTER_COMMAND,
   type LexicalEditor,
 } from 'lexical'
-import { useEffect, useLayoutEffect, useMemo, useRef } from 'react'
+import {
+  type RefObject,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+} from 'react'
 import { onComposerFocusRequest, onComposerInsert } from '@/lib/composer-insert'
+import type { FileMentionRef } from '@/lib/file-mention-token'
+import type { FileSearchFn } from '@/lib/file-search'
 import type { FunctionEntry } from '@/lib/functions'
 import {
   type ComposerEditorSize,
   classifyComposerResize,
 } from './composer-resize'
+import { $appendComposerText } from './lexical/composer-text'
 import { FileMentionNode } from './lexical/FileMentionNode'
 import { FileMentionsPlugin } from './lexical/FileMentionsPlugin'
 import { FileMentionTransformPlugin } from './lexical/FileMentionTransformPlugin'
 import { FunctionMentionNode } from './lexical/FunctionMentionNode'
 import { FunctionMentionTransformPlugin } from './lexical/FunctionMentionTransformPlugin'
 import { MentionsPlugin } from './lexical/MentionsPlugin'
+import { ComposerMentionContext } from './lexical/mention-context'
+import { PillArrowNavPlugin } from './lexical/PillArrowNavPlugin'
+import { SlashCommandNode } from './lexical/SlashCommandNode'
 import { SlashCommandsPlugin } from './lexical/SlashCommandsPlugin'
+import { SlashCommandTransformPlugin } from './lexical/SlashCommandTransformPlugin'
 
 interface LexicalShellProps {
   onChange: (text: string) => void
@@ -47,7 +61,7 @@ const baseConfig = {
   /* no theme classes — surface inherits Inter from <body> */
   theme: {},
   /* Decorator nodes must be registered up-front so importJSON/restore work. */
-  nodes: [FunctionMentionNode, FileMentionNode],
+  nodes: [FunctionMentionNode, FileMentionNode, SlashCommandNode],
   onError(error: Error) {
     console.error(error)
   },
@@ -114,7 +128,7 @@ function loadEditorText(editor: LexicalEditor, text: string) {
     const root = $getRoot()
     root.clear()
     const paragraph = $createParagraphNode()
-    if (text.length > 0) paragraph.append($createTextNode(text))
+    $appendComposerText(paragraph, text)
     root.append(paragraph)
     paragraph.selectEnd()
   })
@@ -180,17 +194,36 @@ function ClearOnDemandPlugin({ token }: { token: number }) {
 
 /**
  * Drains the composer-insert bus (see `lib/composer-insert`) into the
- * editor: appended as its own paragraph with the caret at the end, so a
- * picked browser element lands ready to send or annotate. Replaces the
- * content when the editor holds only whitespace to avoid a leading blank
- * line.
+ * editor. A block insert is appended as its own paragraph with the caret at
+ * the end, so a picked browser element lands ready to send or annotate
+ * (replacing the content when the editor holds only whitespace, to avoid a
+ * leading blank line). An inline insert — a file reference from the shell,
+ * say — goes at the end of the last line, separated by a space and followed
+ * by one, so it reads as part of the sentence being written; the text node
+ * transforms then turn a `#file(…)` token into its pill.
  */
 function ExternalInsertPlugin() {
   const [editor] = useLexicalComposerContext()
   useEffect(() => {
-    return onComposerInsert((text) => {
+    return onComposerInsert(({ text, inline }) => {
       editor.update(() => {
         const root = $getRoot()
+        if (inline) {
+          const lastChild = root.getLastChild()
+          const last = $isElementNode(lastChild)
+            ? lastChild
+            : $createParagraphNode()
+          if (last !== lastChild) root.append(last)
+          const tail = last.getTextContent()
+          if (tail.length > 0 && !/\s$/.test(tail)) {
+            last.append($createTextNode(' '))
+          }
+          last.append($createTextNode(text))
+          const trailing = $createTextNode(' ')
+          last.append(trailing)
+          trailing.selectEnd()
+          return
+        }
         if (root.getTextContent().trim().length === 0) root.clear()
         const paragraph = $createParagraphNode()
         paragraph.append($createTextNode(text))
@@ -399,8 +432,15 @@ interface LexicalShellExtendedProps extends LexicalShellProps {
   /** Optional one-shot initializer that runs once on mount inside the editor. */
   initialContent?: (editor: LexicalEditor) => void
   functionEntries?: FunctionEntry[]
-  /** Enables the `#` file-mention typeahead, scoped to this directory. */
-  workingDir?: string | null
+  /**
+   * File search under the conversation's working directory. Enables files
+   * in the `@` menu and the `#` file-only menu; absent = functions only.
+   */
+  searchFiles?: FileSearchFn
+  /** Where a clicked file pill opens; absent = clicking only selects it. */
+  onOpenFileMention?: (ref: FileMentionRef) => void
+  /** The composer card the typeahead menus align to (width and left edge). */
+  menuFrameRef?: RefObject<HTMLElement | null>
   /** Up/Down browse a message history: return text to load ('' clears), or null. */
   onHistoryNav?: (direction: 'up' | 'down') => string | null
 }
@@ -414,7 +454,9 @@ export function LexicalShell({
   clearToken,
   initialContent,
   functionEntries,
-  workingDir,
+  searchFiles,
+  onOpenFileMention,
+  menuFrameRef,
   onHistoryNav,
 }: LexicalShellExtendedProps) {
   /* LexicalComposer reads initialConfig once on mount; lock it behind useMemo
@@ -431,50 +473,69 @@ export function LexicalShell({
      (the consumer) so we can suppress submit when the typeahead is up. */
   const menuOpenRef = useRef(false)
   const { editorRef, frameRef } = useAnimatedComposerHeight()
+  const mentionActions = useMemo(
+    () => ({ openFile: onOpenFileMention }),
+    [onOpenFileMention],
+  )
   return (
     <LexicalComposer initialConfig={initialConfig}>
-      <div ref={frameRef} className="relative">
-        <PlainTextPlugin
-          contentEditable={
-            <ContentEditable
-              ref={editorRef}
-              aria-label="message composer"
-              aria-placeholder={placeholder}
-              placeholder={
-                <div className="composer-placeholder px-3 py-2">
-                  {placeholder}
-                </div>
-              }
-              className="composer-editor px-3 py-2"
-            />
-          }
-          ErrorBoundary={LexicalErrorBoundary}
-        />
-      </div>
-      <HistoryPlugin />
-      <ClearEditorPlugin />
-      <ClearOnDemandPlugin token={clearToken} />
-      <ChangePlugin onChange={onChange} />
-      <SubmitOnEnterPlugin onSubmit={onSubmit} menuOpenRef={menuOpenRef} />
-      <HistoryNavPlugin onNav={onHistoryNav} menuOpenRef={menuOpenRef} />
-      <ExternalInsertPlugin />
-      {/* Opening a session is a request to write in it, so the first
+      {/* The pills render through a portal from inside the editor, so the
+          provider has to sit inside the composer for them to see it. */}
+      <ComposerMentionContext.Provider value={mentionActions}>
+        <div ref={frameRef} className="relative">
+          <PlainTextPlugin
+            contentEditable={
+              <ContentEditable
+                ref={editorRef}
+                aria-label="message composer"
+                aria-placeholder={placeholder}
+                placeholder={
+                  <div className="composer-placeholder px-3 py-2">
+                    {placeholder}
+                  </div>
+                }
+                className="composer-editor px-3 py-2"
+              />
+            }
+            ErrorBoundary={LexicalErrorBoundary}
+          />
+        </div>
+        <HistoryPlugin />
+        <ClearEditorPlugin />
+        <ClearOnDemandPlugin token={clearToken} />
+        <ChangePlugin onChange={onChange} />
+        <SubmitOnEnterPlugin onSubmit={onSubmit} menuOpenRef={menuOpenRef} />
+        <PillArrowNavPlugin />
+        <HistoryNavPlugin onNav={onHistoryNav} menuOpenRef={menuOpenRef} />
+        <ExternalInsertPlugin />
+        {/* Opening a session is a request to write in it, so the first
           keystroke should land in the message rather than be spent aiming.
           Lexical's own plugin waits for the editable node, which a bare
           focus() call on mount does not. */}
-      {autoFocus === true && disabled !== true ? <AutoFocusPlugin /> : null}
-      <FocusOnRequestPlugin enabled={disabled !== true} />
-      <EditablePlugin disabled={disabled} />
-      <MentionsPlugin
-        menuOpenRef={menuOpenRef}
-        functionEntries={functionEntries}
-      />
-      {workingDir ? (
-        <FileMentionsPlugin menuOpenRef={menuOpenRef} workingDir={workingDir} />
-      ) : null}
-      <SlashCommandsPlugin menuOpenRef={menuOpenRef} />
-      <FunctionMentionTransformPlugin />
-      <FileMentionTransformPlugin />
+        {autoFocus === true && disabled !== true ? <AutoFocusPlugin /> : null}
+        <FocusOnRequestPlugin enabled={disabled !== true} />
+        <EditablePlugin disabled={disabled} />
+        <MentionsPlugin
+          menuOpenRef={menuOpenRef}
+          functionEntries={functionEntries}
+          searchFiles={searchFiles}
+          frameRef={menuFrameRef}
+        />
+        {searchFiles ? (
+          <FileMentionsPlugin
+            menuOpenRef={menuOpenRef}
+            searchFiles={searchFiles}
+            frameRef={menuFrameRef}
+          />
+        ) : null}
+        <SlashCommandsPlugin
+          menuOpenRef={menuOpenRef}
+          frameRef={menuFrameRef}
+        />
+        <FunctionMentionTransformPlugin />
+        <FileMentionTransformPlugin />
+        <SlashCommandTransformPlugin />
+      </ComposerMentionContext.Provider>
     </LexicalComposer>
   )
 }

@@ -1,7 +1,7 @@
 import type { FunctionTriggerMessage, FunctionTriggerRenderer, Host } from '@iii-dev/console-ui'
 import { ErrorDisplayView } from '../lib/errors'
 import { FileChangesCard } from './FileChangesCard'
-import { diffPanelRequest, filePanelRequest, isFileChangesResponse, summarizeFileChanges } from './file-changes'
+import { diffPanelRequest, isFileChangesResponse, summarizeFileChanges } from './file-changes'
 import { parseShellErrorDisplay, unwrapEnvelope } from './parsers'
 
 const CREATE_ID = 'coder::create-file'
@@ -26,7 +26,6 @@ function render(host: Host, message: FunctionTriggerMessage): React.ReactNode | 
         summary={summary}
         running={!!message.running}
         onOpenDiff={host.panels ? (row) => host.panels?.open(diffPanelRequest(row)) : undefined}
-        onOpenFile={host.panels ? (row) => host.panels?.open(filePanelRequest(row)) : undefined}
       />
     )
   }

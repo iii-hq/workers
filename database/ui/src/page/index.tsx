@@ -377,7 +377,6 @@ export function DatabasePage({
           title: 'Focus the SQL editor',
           detail: 'Switch to the SQL panel and start typing a statement',
           keywords: ['sql', 'query', 'editor'],
-          shortcut: 'S',
           enabled: () => !!activeDb,
           run: () => {
             pickMode('sql')
@@ -389,7 +388,6 @@ export function DatabasePage({
           title: 'Refresh',
           detail: 'Reload databases, tables and the active panel',
           keywords: ['reload'],
-          shortcut: 'R',
           run: refresh,
         },
         {
@@ -397,7 +395,6 @@ export function DatabasePage({
           title: 'Focus the table filter',
           detail: 'Jump to the table list and start typing to filter it',
           keywords: ['tables', 'filter', 'schema'],
-          shortcut: '/',
           enabled: () => !!activeDb,
           run: () => {
             if (narrow) setDrilled(false)

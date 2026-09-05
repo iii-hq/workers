@@ -705,14 +705,12 @@ export function CollectionBrowser({
       {
         id: 'new-entry',
         title: `New ${adapter.noun}`,
-        shortcut: 'N',
         enabled: () => !!adapter.create,
         run: startCreate,
       },
       {
         id: 'filter',
         title: `Filter ${adapter.noun}s`,
-        shortcut: '/',
         run: () => searchRef.current?.focus(),
       },
       {

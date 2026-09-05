@@ -140,6 +140,14 @@ generic dashboard with too many panels.
 - Make list rows full-width targets with one strong primary line and at most
   one or two quieter supporting lines. Indicate selection with a surface wash,
   stronger ink, and an optional 2 px neutral edge—never accent color alone.
+- Build a compact sidebar hierarchy (sessions and their sub-agents, folders,
+  scopes) on the `uiClasses.tree*` recipe rather than a private row: 28 px
+  rows in 13 px/500 sans, one 16 px glyph tinted through `data-color` with
+  the shared glyph tones, 14 px of indent per level set as
+  `--iii-ui-tree-depth` on the row, the disclosure caret right after the
+  label, quiet metadata and a hover-revealed X (Lucide `X`, never a trash
+  can) on the trailing edge. Set `data-narrow` on the tree when the pane is a
+  phone-sized drill-in so rows and controls grow to touch size.
 - Keep page actions in `PageHeader`; put resource actions in the identity
   masthead and work actions in the nearest toolbar. Show one clear primary
   action at the point of work; move rare actions into a menu.
@@ -235,7 +243,8 @@ status/empty/loading components; Markdown and JSON renderers; the terminal atoms
 `TerminalStream`, `TerminalCommandLine`); `CodeEditor`, `FileDiff`; and
 settings primitives (`SettingsSection`, `SettingsList`, `SettingsRow`,
 `SettingsField`, `RawValueInput`, `SettingsDeck`, `Switch`). It also exports the stable `uiClasses` recipes
-and canonical `tokens` inventory. Read `packages/console-ui/index.d.ts` for
+(list, navigation tree, card, panel, chip, table, tabs, field, settings and
+motion) and the canonical `tokens` inventory. Read `packages/console-ui/index.d.ts` for
 the authoritative names and props.
 
 Use `Selector` for searchable single-choice input, including grouped or
@@ -472,7 +481,9 @@ tokens. The main roles are:
 
 Use `--color-bg/sidebar/panel/panel-raised/surface*` for hierarchy,
 `--color-ink/ink-faint/ink-ghost` for text, `--color-alert/warn/ok` and their
-muted variants for status, `--color-edge/rule-focus` for structure,
+muted variants for status, `--color-glyph-*` for the tint of one 16 px
+identity glyph beside a label (never a fill, border, or text),
+`--color-edge/rule-focus` for structure,
 `--shadow-raised/floating/lift` for elevation, and
 `--font-sans`/`--font-mono`/`--font-code` by semantic role. Accent is not a
 selected-state token.

@@ -17,6 +17,7 @@ import {
   conflictIdentity,
   digitFromEvent,
   formatBinding,
+  isBareKey,
   isBrowserReserved,
   isSequence,
   type KeyEventLike,
@@ -310,15 +311,17 @@ export function hoverTitle(
 }
 
 /**
- * Why a page may not take `binding` for itself, or null when it may: the
- * console's global keys, every digit, a sequence prefix and the chords the
- * browser owns stay the console's. Pages bind what is left.
+ * Why a page may not take `binding` for itself, or null when it may: a key
+ * that types a character (no modifier, or Shift alone), the console's global
+ * keys, every digit, a sequence prefix and the chords the browser owns are
+ * all refused. Pages bind what is left: a modifier chord, or a named key.
  */
 export function shortcutClaimReason(
   binding: string,
   platform: Platform = shortcutPlatform(),
 ): string | null {
   if (!parseSequence(binding)) return 'it does not parse'
+  if (isBareKey(binding)) return 'it has no modifier'
   if (isBrowserReserved(binding, platform)) return 'the browser owns it'
   const identity = conflictIdentity(binding, platform)
   const head = conflictIdentity(splitSequence(binding)[0] ?? binding, platform)

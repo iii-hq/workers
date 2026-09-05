@@ -1,3 +1,4 @@
+import uiClasses from '@iii-dev/console-ui/ui-classes'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Input } from '@/components/ui/Input'
 import { filterConversations } from '@/lib/conversation-filter'
@@ -11,7 +12,7 @@ import { ConversationRow } from './ConversationRow'
 interface ConversationSidebarProps {
   conversations: Conversation[]
   activeId: string | null
-  /** Larger row actions when the list is the whole narrow page. */
+  /** Touch-sized rows and always-visible actions when the list is the whole narrow page. */
   narrow?: boolean
   onSelect: (id: string) => void
   onRename: (id: string, title: string) => void
@@ -87,10 +88,12 @@ export function ConversationSidebar({
     )
   }, [conversations, collapsedNodes, query])
 
+  /* The 8px gutter plus the tree row's own 10px inset puts every glyph,
+     the heading and the empty copy on one 18px column. */
   return (
     <>
-      <div className="space-y-2 px-3 py-2">
-        <h2 className="font-sans text-base font-medium text-ink sm:text-sm">
+      <div className="flex flex-col gap-2 px-2 pt-2 pb-1">
+        <h2 className="px-[10px] font-sans text-base font-medium text-ink-faint sm:text-[13px]">
           Conversations
         </h2>
         <Input
@@ -101,36 +104,37 @@ export function ConversationSidebar({
           placeholder="Search conversations"
           aria-label="search conversations"
           data-conversation-search=""
-          className="h-12 font-sans text-base normal-case sm:h-9 sm:text-sm"
+          className="h-12 font-sans text-base normal-case sm:h-8 sm:text-[13px]"
           onKeyDown={(e) => {
             if (e.key === 'Escape') setQuery('')
           }}
         />
       </div>
 
-      <div className="flex-1 space-y-px overflow-y-auto px-2 py-1">
+      <div className="min-h-0 flex-1 overflow-y-auto px-2 py-1">
         {rows.length === 0 ? (
-          <div className="px-3 py-6 font-sans text-base text-ink-ghost sm:text-sm">
+          <div className="px-[10px] py-6 font-sans text-base text-ink-ghost sm:text-[13px]">
             {query.trim()
               ? 'No matches.'
               : 'No conversations yet. Start one above.'}
           </div>
         ) : (
-          rows.map(({ conversation: c, depth, hasChildren }) => (
-            <ConversationRow
-              key={c.id}
-              conversation={c}
-              active={c.id === activeId}
-              narrow={narrow}
-              depth={depth}
-              hasChildren={hasChildren}
-              treeCollapsed={collapsedNodes.has(c.id)}
-              onToggleTree={() => toggleNode(c.id)}
-              onSelect={() => onSelect(c.id)}
-              onRename={(title) => onRename(c.id, title)}
-              onRemove={() => onRemove(c.id)}
-            />
-          ))
+          <div className={uiClasses.tree} data-narrow={narrow || undefined}>
+            {rows.map(({ conversation: c, depth, hasChildren }) => (
+              <ConversationRow
+                key={c.id}
+                conversation={c}
+                active={c.id === activeId}
+                depth={depth}
+                hasChildren={hasChildren}
+                treeCollapsed={collapsedNodes.has(c.id)}
+                onToggleTree={() => toggleNode(c.id)}
+                onSelect={() => onSelect(c.id)}
+                onRename={(title) => onRename(c.id, title)}
+                onRemove={() => onRemove(c.id)}
+              />
+            ))}
+          </div>
         )}
       </div>
     </>

@@ -1,25 +1,18 @@
-import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext'
-import { useLexicalNodeSelection } from '@lexical/react/useLexicalNodeSelection'
 import {
-  $getNodeByKey,
-  CLICK_COMMAND,
-  COMMAND_PRIORITY_LOW,
   DecoratorNode,
   type DOMConversion,
   type DOMConversionMap,
   type DOMConversionOutput,
   type DOMExportOutput,
   type EditorConfig,
-  KEY_BACKSPACE_COMMAND,
-  KEY_DELETE_COMMAND,
   type LexicalNode,
-  mergeRegister,
   type NodeKey,
   type SerializedLexicalNode,
   type Spread,
 } from 'lexical'
-import { type JSX, type RefObject, useEffect, useRef } from 'react'
+import type { JSX, RefObject } from 'react'
 import { cn } from '@/lib/utils'
+import { usePillSelection } from './use-pill-selection'
 
 export type SerializedFunctionMentionNode = Spread<
   { functionId: string },
@@ -186,69 +179,15 @@ interface EditablePillProps {
 }
 
 /**
- * Lexical-decorator wrapper: tracks selection via `useLexicalNodeSelection`
- * and listens for `CLICK_COMMAND` / `KEY_BACKSPACE_COMMAND` /
- * `KEY_DELETE_COMMAND` so the user can select the pill, then cut/copy/paste
- * or delete it. Click-with-shift toggles the selection; plain click replaces
- * the current selection.
+ * Lexical-decorator wrapper: `usePillSelection` makes the pill selectable
+ * (click; shift-click toggles) and removable (Backspace / Delete while
+ * selected), so it can be cut, copied, pasted or deleted as one token.
  */
 function EditableFunctionMentionPill({
   functionId,
   nodeKey,
 }: EditablePillProps) {
-  const [editor] = useLexicalComposerContext()
-  const [isSelected, setSelected, clearSelection] =
-    useLexicalNodeSelection(nodeKey)
-  const pillRef = useRef<HTMLSpanElement | null>(null)
-
-  useEffect(() => {
-    const removeIfSelected = (event: KeyboardEvent): boolean => {
-      if (!isSelected) return false
-      event.preventDefault()
-      editor.update(() => {
-        const node = $getNodeByKey(nodeKey)
-        if (node) node.remove()
-      })
-      return true
-    }
-    return mergeRegister(
-      editor.registerCommand(
-        CLICK_COMMAND,
-        (event: MouseEvent) => {
-          const target = event.target as Node | null
-          if (
-            !pillRef.current ||
-            !target ||
-            !pillRef.current.contains(target)
-          ) {
-            return false
-          }
-          /* preventDefault keeps the caret from landing inside the decorator
-             host; Lexical would otherwise place selection just before/after
-             the pill and fight our node selection. */
-          event.preventDefault()
-          if (event.shiftKey) {
-            setSelected(!isSelected)
-          } else {
-            clearSelection()
-            setSelected(true)
-          }
-          return true
-        },
-        COMMAND_PRIORITY_LOW,
-      ),
-      editor.registerCommand(
-        KEY_BACKSPACE_COMMAND,
-        removeIfSelected,
-        COMMAND_PRIORITY_LOW,
-      ),
-      editor.registerCommand(
-        KEY_DELETE_COMMAND,
-        removeIfSelected,
-        COMMAND_PRIORITY_LOW,
-      ),
-    )
-  }, [editor, nodeKey, isSelected, setSelected, clearSelection])
+  const { pillRef, isSelected } = usePillSelection(nodeKey)
 
   return (
     <FunctionMentionPill

@@ -92,6 +92,19 @@
 
 ### Changed
 
+- **The explorer's per-pane state moved out of the `configuration` store
+  and into the worker's data directory.** What a developer has open in a
+  console pane (browsed folder, open tabs, expanded folders, view, diff
+  options, terminal layout) used to be one `shell-ui` configuration entry,
+  which the engine persists into the project's `config/` folder — the one
+  meant to be committed. It is developer-local runtime state, so it now
+  lives as one JSON file per pane under `data/shell/ui-state/panes/`
+  (gitignored, next to the `turns` store), served by two console-only
+  functions, `shell::ui-state::get` and `shell::ui-state::set`. On its
+  first boot the worker imports whatever the old entry still holds (a pane
+  that already has a file keeps it) and blanks the entry; the worker no
+  longer registers it, and `config/shell-ui.yaml` can be deleted.
+
 - **The review scope picker is gone.** Uncommitted / unstaged / staged /
   commit / branch / turn / session scopes, the review toolbar, the inline
   diff editing with its save barrier and the browser-side pre-turn snapshot
@@ -117,6 +130,16 @@
 
 ### Fixed
 
+- **Two panes saving at once could lose each other's state.** Every pane
+  used to read the whole `shell-ui` map, put its own slice in and write
+  the whole map back, so two saves in flight at the same time (a split
+  view, two browsers) ended with whichever landed last, missing the
+  other's tabs. A save now writes only that pane's file, atomically
+  (temp + rename) and serialized in the worker, so panes cannot clobber
+  each other and a reader never sees a half-written document. The read
+  that seeds a pane now retries on any failure — the worker still coming
+  up (`function_not_found`) included — and a failed save is retried on the
+  next change instead of switching persistence off for the page.
 - **The explorer forgot everything on a worker restart.** The worker
   registered its `shell-ui` configuration entry with an `initial_value` of
   `{}` on every boot, and `configuration::register` replaces the stored

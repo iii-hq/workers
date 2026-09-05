@@ -3,6 +3,7 @@ import {
   bindingMatchesEvent,
   conflictIdentity,
   formatBinding,
+  isBareKey,
   isBrowserReserved,
   isSequence,
   type KeyEventLike,
@@ -204,7 +205,7 @@ describe('isBrowserReserved', () => {
     expect(isBrowserReserved('Mod+,', 'other')).toBe(false)
   })
 
-  it('leaves bare keys alone, which is why the console uses them', () => {
+  it('leaves bare keys alone', () => {
     for (const binding of ['1', 't', ',', '\\', '?']) {
       expect({ binding, mac: isBrowserReserved(binding, 'mac') }).toEqual({
         binding,
@@ -244,5 +245,53 @@ describe('sequences', () => {
 
   it('has an identity per chord', () => {
     expect(conflictIdentity('G C', 'mac')).toBe('++++G ++++C')
+  })
+})
+
+describe('isBareKey', () => {
+  it('flags a key that would type a character', () => {
+    for (const binding of [
+      't',
+      'T',
+      '7',
+      '/',
+      '`',
+      '?',
+      'Shift+W',
+      'Shift+/',
+    ]) {
+      expect([binding, isBareKey(binding)]).toEqual([binding, true])
+    }
+  })
+
+  it('lets a named key stay bare', () => {
+    for (const binding of [
+      'Escape',
+      'Enter',
+      'End',
+      'F2',
+      'ArrowDown',
+      'Shift+Tab',
+    ]) {
+      expect([binding, isBareKey(binding)]).toEqual([binding, false])
+    }
+  })
+
+  it('accepts any real modifier', () => {
+    for (const binding of [
+      'Mod+K',
+      'Cmd+P',
+      'Ctrl+J',
+      'Alt+Z',
+      'Ctrl+Shift+ArrowRight',
+    ]) {
+      expect([binding, isBareKey(binding)]).toEqual([binding, false])
+    }
+  })
+
+  it('judges a sequence by its first chord', () => {
+    expect(isBareKey('Q L')).toBe(true)
+    expect(isBareKey('Ctrl+G C')).toBe(false)
+    expect(isBareKey('Hyper+Q')).toBe(false)
   })
 })

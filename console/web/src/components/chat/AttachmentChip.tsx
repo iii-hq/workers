@@ -5,12 +5,22 @@ import {
   ImageViewer,
   useImageViewer,
 } from '@/components/ui/ImageViewer'
+import { slashCommandLabel } from '@/lib/slash-commands'
 import { cn } from '@/lib/utils'
 import type { Attachment } from '@/types/chat'
 
 function chipIcon(type: string) {
   if (type === 'text/x-skill') return Blocks
   return File
+}
+
+/* A skill chip reads `/coder/index`: the `skill:` namespace stays hidden
+   here as it is in the command pill and the palette. */
+function chipName(attachment: Attachment): string {
+  if (attachment.type === 'text/x-skill') {
+    return `/${slashCommandLabel(attachment.name)}`
+  }
+  return attachment.name
 }
 
 interface AttachmentChipProps {
@@ -72,7 +82,7 @@ export function AttachmentChip({
       ) : (
         <Icon size={16} aria-hidden className="text-ink-faint shrink-0" />
       )}
-      <span className="truncate min-w-0">{attachment.name}</span>
+      <span className="truncate min-w-0">{chipName(attachment)}</span>
       <span className="text-ink-ghost tabular-nums shrink-0">
         {formatSize(attachment.size)}
       </span>

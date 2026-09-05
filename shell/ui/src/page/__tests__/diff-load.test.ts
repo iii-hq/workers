@@ -55,6 +55,36 @@ describe('loadDiffContents', () => {
     })
   })
 
+  it('reads an untracked file as added: git calls an absent `:./path` "ambiguous"', async () => {
+    const { host } = hostWith({
+      'shell::exec': ({ args }) =>
+        exec({
+          exit_code: 128,
+          stderr: `fatal: ambiguous argument '${(args as string[])[1]}': unknown revision or path not in the working tree.\nUse '--' to separate paths from revisions, like this:\n'git <command> [<revision>...] -- [<file>...]'`,
+        }),
+      'coder::read-file': () => ({ content: 'new body', revision: 'r1' }),
+    })
+    expect(await loadDiffContents(host, '/r', 'src/new.ts', { type: 'unstaged' }, noTurns)).toEqual({
+      oldContents: '',
+      newContents: 'new body',
+      worktreeRevision: 'r1',
+    })
+  })
+
+  it('reads a staged deletion as removed: HEAD has the body, the index answers "ambiguous"', async () => {
+    const { host } = hostWith({
+      'shell::exec': ({ args }) => {
+        const spec = (args as string[])[1]
+        if (spec.startsWith('HEAD:')) return exec({ stdout: 'was here\n' })
+        return exec({ exit_code: 128, stderr: `fatal: ambiguous argument '${spec}': unknown revision or path not in the working tree.` })
+      },
+    })
+    expect(await loadDiffContents(host, '/r', 'gone.ts', { type: 'staged' }, noTurns)).toEqual({
+      oldContents: 'was here\n',
+      newContents: '',
+    })
+  })
+
   it('treats a deleted working copy as an empty new side', async () => {
     const { host } = hostWith({
       'shell::exec': () => exec({ stdout: 'old' }),

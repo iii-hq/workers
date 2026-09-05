@@ -1,24 +1,58 @@
 import {
   LexicalTypeaheadMenuPlugin,
   MenuOption,
-  useBasicTypeaheadTriggerMatch,
 } from '@lexical/react/LexicalTypeaheadMenuPlugin'
 import {
   $createTextNode,
   COMMAND_PRIORITY_NORMAL,
+  type LexicalEditor,
   type TextNode,
 } from 'lexical'
-import { useCallback, useMemo, useRef, useState } from 'react'
+import {
+  type RefObject,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from 'react'
 import { createPortal } from 'react-dom'
-import { fetchFileIndex, fuzzyFilterFiles } from '@/lib/file-index'
-import { $createFileMentionNode, PathGlyph } from './FileMentionNode'
+import type { FileSearchFn } from '@/lib/file-search'
+import {
+  type MentionCandidate,
+  mentionDetail,
+  mentionKey,
+  mentionName,
+  paginateMentions,
+  rankMentions,
+} from '@/lib/mention-search'
+import { $createFileMentionNode } from './FileMentionNode'
 import { FlipMenu } from './FlipMenu'
+import { FileGlyph, MentionRow, MoreRow } from './MentionRow'
+import { useFileSearch } from './use-file-search'
+
+type FileRowModel =
+  | { kind: 'candidate'; candidate: MentionCandidate }
+  | { kind: 'more'; remaining: number }
 
 class FileMentionOption extends MenuOption {
-  path: string
-  constructor(path: string) {
-    super(path)
-    this.path = path
+  row: FileRowModel
+  constructor(row: FileRowModel) {
+    super(row.kind === 'more' ? 'more' : mentionKey(row.candidate))
+    this.row = row
+  }
+}
+
+/* `#` needs at least one character so markdown headings (`# foo` — the
+   space ends the match) never flash the menu; the rest mirrors `@`. */
+const HASH_PATTERN = /(^|\s|\()(#([^\s#()]{1,200}))$/
+
+export function hashTriggerFn(text: string, _editor: LexicalEditor) {
+  const match = HASH_PATTERN.exec(text)
+  if (!match) return null
+  return {
+    leadOffset: match.index + match[1].length,
+    matchingString: match[3],
+    replaceableString: match[2],
   }
 }
 
@@ -26,48 +60,42 @@ interface FileMentionsPluginProps {
   /** When set, this ref is flipped to true while the typeahead is visible
       so a sibling SubmitOnEnter plugin can skip its Enter handler. */
   menuOpenRef?: React.MutableRefObject<boolean>
-  /** Jail anchor for the file index; the menu is inert without one. */
-  workingDir: string
+  /** Files under the conversation's working directory. */
+  searchFiles: FileSearchFn
+  /** The composer card the menu aligns to. */
+  frameRef?: RefObject<HTMLElement | null>
 }
 
 /**
- * `#` typeahead over the working directory's files and folders (folders
- * carry a trailing `/` in the index). The index is fetched
- * lazily on first open (and re-used through file-index's TTL cache), so a
- * conversation that never mentions files never walks the repo. `minLength: 1`
- * keeps markdown headings (`# foo` — the space ends the match) from flashing
- * the menu.
+ * `#` typeahead over the working directory's files and folders only — the
+ * files half of the `@` menu, for people who reach for the old prefix.
+ * Same worker search, same rows, same paging.
  */
 export function FileMentionsPlugin({
   menuOpenRef,
-  workingDir,
+  searchFiles,
+  frameRef,
 }: FileMentionsPluginProps) {
   const [query, setQuery] = useState<string | null>(null)
-  const [index, setIndex] = useState<string[]>([])
-  /* Guards a slow fetch resolving after the working dir changed. */
-  const workingDirRef = useRef(workingDir)
-  workingDirRef.current = workingDir
+  const [page, setPage] = useState(0)
+  const { files, loading } = useFileSearch(searchFiles, query)
 
-  const triggerFn = useBasicTypeaheadTriggerMatch('#', { minLength: 1 })
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new query starts over at the first page.
+  useEffect(() => {
+    setPage(0)
+  }, [query])
 
-  const options = useMemo(
-    () =>
-      fuzzyFilterFiles(index, query ?? '').map(
-        (path) => new FileMentionOption(path),
-      ),
-    [index, query],
-  )
-
-  const loadIndex = useCallback(() => {
-    const dir = workingDir
-    fetchFileIndex(dir)
-      .then((paths) => {
-        if (workingDirRef.current === dir) setIndex(paths)
-      })
-      .catch(() => {
-        /* Worker away or dir invalid: the menu simply stays empty. */
-      })
-  }, [workingDir])
+  const options = useMemo(() => {
+    const ranked = rankMentions(query ?? '', [], files)
+    const { visible, remaining } = paginateMentions(ranked, page)
+    const rows = visible.map(
+      (candidate) => new FileMentionOption({ kind: 'candidate', candidate }),
+    )
+    if (remaining > 0) {
+      rows.push(new FileMentionOption({ kind: 'more', remaining }))
+    }
+    return rows
+  }, [files, query, page])
 
   const onSelectOption = useCallback(
     (
@@ -75,8 +103,12 @@ export function FileMentionsPlugin({
       textNodeContainingQuery: TextNode | null,
       closeMenu: () => void,
     ) => {
-      if (textNodeContainingQuery) {
-        const mention = $createFileMentionNode(option.path)
+      if (option.row.kind === 'more') {
+        setPage((current) => current + 1)
+        return
+      }
+      if (textNodeContainingQuery && option.row.candidate.kind === 'file') {
+        const mention = $createFileMentionNode(option.row.candidate.path)
         const trailing = $createTextNode(' ')
         textNodeContainingQuery.replace(mention)
         mention.insertAfter(trailing)
@@ -94,12 +126,11 @@ export function FileMentionsPlugin({
       onSelectOption={onSelectOption}
       onOpen={() => {
         if (menuOpenRef) menuOpenRef.current = true
-        loadIndex()
       }}
       onClose={() => {
         if (menuOpenRef) menuOpenRef.current = false
       }}
-      triggerFn={triggerFn}
+      triggerFn={hashTriggerFn}
       /* Run the typeahead's KEY_ENTER_COMMAND (and arrows/tab/escape) at NORMAL
          so it consumes Enter before our SubmitOnEnter handler at LOW. */
       commandPriority={COMMAND_PRIORITY_NORMAL}
@@ -108,25 +139,41 @@ export function FileMentionsPlugin({
         return createPortal(
           <FlipMenu
             anchorEl={anchorElementRef.current}
+            frameEl={frameRef?.current ?? null}
             header="files & folders"
+            footer={
+              loading && files.length === 0 ? 'searching files…' : undefined
+            }
             options={options}
             selectedIndex={props.selectedIndex}
             selectOptionAndCleanUp={props.selectOptionAndCleanUp}
             setHighlightedIndex={props.setHighlightedIndex}
-            getOptionKey={(opt) => opt.path}
-            renderOption={(opt) => (
-              <>
-                <span
-                  aria-hidden="true"
-                  className="text-accent leading-none w-3 flex justify-center shrink-0"
-                >
-                  <PathGlyph path={opt.path} />
-                </span>
-                <span className="min-w-0 font-mono text-[13px] text-ink truncate">
-                  {opt.path}
-                </span>
-              </>
-            )}
+            getOptionKey={(opt) => opt.key}
+            renderOption={(opt) =>
+              opt.row.kind === 'more' ? (
+                <MoreRow remaining={opt.row.remaining} />
+              ) : (
+                <MentionRow
+                  icon={
+                    <FileGlyph
+                      path={
+                        opt.row.candidate.kind === 'file'
+                          ? opt.row.candidate.path
+                          : ''
+                      }
+                    />
+                  }
+                  name={
+                    mentionName(opt.row.candidate) +
+                    (opt.row.candidate.kind === 'file' &&
+                    opt.row.candidate.isDir
+                      ? '/'
+                      : '')
+                  }
+                  detail={mentionDetail(opt.row.candidate)}
+                />
+              )
+            }
           />,
           anchorElementRef.current,
         )

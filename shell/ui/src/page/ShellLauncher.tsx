@@ -19,8 +19,6 @@ interface LauncherCard {
   id: string
   title: string
   detail: string
-  /** The key that does the same while the pane has the focus. */
-  shortcut?: string
   Icon: ComponentType<{ 'aria-hidden'?: boolean; className?: string }>
   onSelect: () => void
 }
@@ -94,7 +92,6 @@ export function ShellLauncher({
       id: 'open',
       title: 'Open a file',
       detail: 'Find any file by name',
-      shortcut: 'P',
       Icon: FileSearch,
       onSelect: onQuickOpen,
     },
@@ -102,7 +99,6 @@ export function ShellLauncher({
       id: 'search',
       title: 'Search in files',
       detail: 'Text across the folder, with context around each hit',
-      shortcut: 'F',
       Icon: Search,
       onSelect: onSearch,
     },
@@ -110,7 +106,6 @@ export function ShellLauncher({
       id: 'browse',
       title: 'Browse the folder',
       detail: 'The tree, with a context menu on every file and folder',
-      shortcut: 'E',
       Icon: FolderOpen,
       onSelect: onOpenFiles,
     },
@@ -118,7 +113,6 @@ export function ShellLauncher({
       id: 'scm',
       title: 'Source control',
       detail: sourceControlDetail(git),
-      shortcut: 'S',
       Icon: GitCompareArrows,
       onSelect: onOpenChanges,
     },
@@ -126,7 +120,6 @@ export function ShellLauncher({
       id: 'timeline',
       title: 'Timeline',
       detail: timelineDetail(turns, hasSession, turnRunning),
-      shortcut: 'H',
       Icon: History,
       onSelect: onOpenTimeline,
     },
@@ -134,7 +127,6 @@ export function ShellLauncher({
       id: 'terminal',
       title: 'Terminal',
       detail: `A shell in ${folder}`,
-      shortcut: '`',
       Icon: SquareTerminal,
       onSelect: onOpenTerminal,
     },
@@ -163,15 +155,10 @@ export function ShellLauncher({
           </p>
         ) : null}
         <div className="shui-launcher-grid">
-          {cards.map(({ id, title, detail, shortcut, Icon, onSelect }) => (
+          {cards.map(({ id, title, detail, Icon, onSelect }) => (
             <button key={id} type="button" className="shui-launcher-card" onClick={onSelect}>
               <span className="shui-launcher-card-head">
                 <Icon aria-hidden className="shui-launcher-icon" />
-                {shortcut ? (
-                  <kbd className="shui-launcher-key" title={`Press ${shortcut} while this pane has the focus`}>
-                    {shortcut}
-                  </kbd>
-                ) : null}
               </span>
               <span className="shui-launcher-card-title">{title}</span>
               <span className="shui-launcher-card-detail">{detail}</span>
@@ -194,8 +181,8 @@ export function ShellLauncher({
         ) : null}
         <p className="shui-launcher-hint">
           Keys work while this pane has the focus. <kbd className="shui-launcher-key">Shift+Alt+←</kbd>{' '}
-          <kbd className="shui-launcher-key">Shift+Alt+→</kbd> walk the files you visited, <kbd className="shui-launcher-key">W</kbd>{' '}
-          closes a tab.
+          <kbd className="shui-launcher-key">Shift+Alt+→</kbd> walk the files you visited, <kbd className="shui-launcher-key">Alt+←</kbd>{' '}
+          <kbd className="shui-launcher-key">Alt+→</kbd> step between tabs. Everything else is a row in the palette.
         </p>
       </div>
     </div>

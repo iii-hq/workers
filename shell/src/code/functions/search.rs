@@ -33,7 +33,9 @@ use crate::code::path::PathResolver;
 #[schemars(example = "example_search_input")]
 pub struct SearchInput {
     /// Pattern to search for. Treated as a regex when `regex: true`,
-    /// otherwise as a literal substring.
+    /// otherwise as a literal substring. May be empty only when
+    /// `search_content` is false: a path-only search with no query lists
+    /// every path (with `fuzzy_paths`, shallow and short paths first).
     pub query: String,
     /// Folder to search (default `.`); globs match relative to its root, result
     /// paths are absolute.
@@ -84,6 +86,10 @@ pub struct SearchInput {
     /// best first. Content matching is unaffected.
     #[serde(default)]
     pub fuzzy_paths: bool,
+    /// Walk dot-files and dot-folders (`.github`, `.env`, …); default true.
+    /// `false` leaves them out, the way an editor's quick open does.
+    #[serde(default = "default_true")]
+    pub include_hidden: bool,
     /// Internal harness filesystem scope; omitted from published schema.
     #[serde(default)]
     #[schemars(skip)]
@@ -181,7 +187,7 @@ fn inner(
     cfg: &CoderConfig,
     req: SearchInput,
 ) -> Result<SearchOutput, CoderError> {
-    if req.query.is_empty() {
+    if req.query.is_empty() && req.search_content {
         return Err(CoderError::BadInput("query must not be empty".into()));
     }
     if !req.search_content && !req.search_paths {
@@ -273,9 +279,9 @@ fn inner(
     let mut walker = ignore::WalkBuilder::new(&walk_root);
     walker
         .follow_links(false)
-        // Dot entries stay searchable, as they always were; `.gitignore`
-        // rules apply only on request.
-        .hidden(false)
+        // Dot entries stay searchable unless the caller opts out;
+        // `.gitignore` rules apply only on request.
+        .hidden(!req.include_hidden)
         .parents(req.respect_gitignore)
         .ignore(req.respect_gitignore)
         .git_ignore(req.respect_gitignore)
@@ -720,7 +726,11 @@ fn is_path_separator(c: char) -> bool {
 /// subsequence of the path.
 pub(crate) fn fuzzy_path_score(query: &FuzzyQuery, rel: &str) -> Option<i32> {
     if query.chars.is_empty() {
-        return None;
+        // List mode: nothing to match against, so rank by where a person
+        // looks first — shallow, short paths ahead of deep, long ones.
+        let depth = rel.matches('/').count() as i32;
+        let len = rel.chars().count().min(999) as i32;
+        return Some(-(depth * 1000) - len);
     }
     let lower = rel.to_lowercase();
     let hay: Vec<char> = lower.chars().collect();
@@ -998,6 +1008,7 @@ mod tests {
                 search_paths: true,
                 respect_gitignore: false,
                 fuzzy_paths: false,
+                include_hidden: true,
                 fs_scope: None,
             },
         )
@@ -1046,6 +1057,7 @@ mod tests {
                 search_paths: false,
                 respect_gitignore: false,
                 fuzzy_paths: false,
+                include_hidden: true,
                 fs_scope: None,
             },
         )
@@ -1093,6 +1105,7 @@ mod tests {
                 search_paths: false,
                 respect_gitignore: false,
                 fuzzy_paths: false,
+                include_hidden: true,
                 fs_scope: None,
             },
         )
@@ -1144,6 +1157,7 @@ mod tests {
                 search_paths: false,
                 respect_gitignore: false,
                 fuzzy_paths: false,
+                include_hidden: true,
                 fs_scope: None,
             },
         )
@@ -1177,6 +1191,7 @@ mod tests {
                 search_paths: true,
                 respect_gitignore: false,
                 fuzzy_paths: false,
+                include_hidden: true,
                 fs_scope: None,
             },
         )
@@ -1211,6 +1226,7 @@ mod tests {
                 search_paths: true,
                 respect_gitignore: false,
                 fuzzy_paths: false,
+                include_hidden: true,
                 fs_scope: None,
             },
         )
@@ -1251,6 +1267,7 @@ mod tests {
                 search_paths: false,
                 respect_gitignore: false,
                 fuzzy_paths: false,
+                include_hidden: true,
                 fs_scope: None,
             },
         )
@@ -1296,6 +1313,7 @@ mod tests {
                 search_paths: false,
                 respect_gitignore: false,
                 fuzzy_paths: false,
+                include_hidden: true,
                 fs_scope: None,
             },
         )
@@ -1327,6 +1345,7 @@ mod tests {
                 search_paths: true,
                 respect_gitignore: false,
                 fuzzy_paths: false,
+                include_hidden: true,
                 fs_scope: None,
             },
         )
@@ -1361,6 +1380,7 @@ mod tests {
                 search_paths: false,
                 respect_gitignore: false,
                 fuzzy_paths: false,
+                include_hidden: true,
                 fs_scope: None,
             },
         )
@@ -1392,6 +1412,7 @@ mod tests {
                 search_paths: false,
                 respect_gitignore: false,
                 fuzzy_paths: false,
+                include_hidden: true,
                 fs_scope: None,
             },
         )
@@ -1423,6 +1444,7 @@ mod tests {
                 search_paths: false,
                 respect_gitignore: false,
                 fuzzy_paths: false,
+                include_hidden: true,
                 fs_scope: None,
             },
         )
@@ -1455,6 +1477,7 @@ mod tests {
                 search_paths: false,
                 respect_gitignore: false,
                 fuzzy_paths: false,
+                include_hidden: true,
                 fs_scope: None,
             },
         )
@@ -1491,6 +1514,7 @@ mod tests {
             search_paths: false,
             respect_gitignore: false,
             fuzzy_paths: false,
+            include_hidden: true,
             fs_scope: None,
         }
     }
@@ -2199,6 +2223,64 @@ mod tests {
         assert!(short > long);
     }
 
+    /// A bare `@` in the console composer lists the workspace: an empty
+    /// query is a path-only search, ranked shallow-and-short first.
+    #[tokio::test]
+    async fn empty_query_lists_paths_shallow_first() {
+        let (tmp, r, c) = setup();
+        write(&tmp, "a/very/deep/nested/file.txt", "x");
+        write(&tmp, "README.md", "x");
+        write(&tmp, "src/main.rs", "x");
+        let out = handle(
+            r.clone(),
+            c.clone(),
+            SearchInput {
+                search_content: false,
+                search_paths: true,
+                fuzzy_paths: true,
+                ..base_input("")
+            },
+        )
+        .await
+        .unwrap();
+        let position = |suffix: &str| {
+            out.path_matches
+                .iter()
+                .position(|m| m.path.ends_with(suffix))
+                .unwrap_or_else(|| panic!("{suffix} missing from {:?}", out.path_matches))
+        };
+        assert!(position("README.md") < position("src/main.rs"));
+        assert!(position("src/main.rs") < position("nested/file.txt"));
+        assert!(!out.truncated);
+        // Content search still needs something to look for.
+        let err = handle(r, c, base_input("")).await.unwrap_err();
+        assert!(err.contains("query must not be empty"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn include_hidden_false_skips_dot_entries() {
+        let (tmp, r, c) = setup();
+        write(&tmp, ".github/workflows/ci.yml", "x");
+        write(&tmp, ".hidden.txt", "x");
+        write(&tmp, "shown.txt", "x");
+        let list = |include_hidden: bool| SearchInput {
+            search_content: false,
+            search_paths: true,
+            fuzzy_paths: true,
+            include_hidden,
+            ..base_input("")
+        };
+        let out = handle(r.clone(), c.clone(), list(false)).await.unwrap();
+        let paths: Vec<&str> = out.path_matches.iter().map(|m| m.path.as_str()).collect();
+        assert_eq!(paths, vec![abs(&tmp, "shown.txt")]);
+        let out = handle(r, c, list(true)).await.unwrap();
+        assert!(out.path_matches.iter().any(|m| m.path.ends_with("ci.yml")));
+        assert!(out
+            .path_matches
+            .iter()
+            .any(|m| m.path.ends_with(".hidden.txt")));
+    }
+
     #[tokio::test]
     async fn fuzzy_paths_rank_best_first_and_report_overflow() {
         let (tmp, r, c) = setup();
@@ -2212,6 +2294,7 @@ mod tests {
                 search_content: false,
                 search_paths: true,
                 fuzzy_paths: true,
+                include_hidden: true,
                 ..base_input("filestab")
             },
         )
@@ -2226,6 +2309,7 @@ mod tests {
                 search_content: false,
                 search_paths: true,
                 fuzzy_paths: true,
+                include_hidden: true,
                 max_matches: Some(1),
                 ..base_input("t")
             },

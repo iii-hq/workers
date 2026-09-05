@@ -14,7 +14,7 @@ iii trigger compose::add worker=vscode
 
 ## Quickstart
 
-Open **VS Code** from the Console navigation, or press `⌘K` and run `Open VS Code`. The page starts a server for the chat's working directory and shows the Workbench; with no working directory it lists the Console's recent folders. Page commands: `R` reloads the Workbench, `O` opens it in a browser tab, `X` stops the server.
+Open **VS Code** from the Console navigation, or press `⌘K` and run `Open VS Code`. The page starts a server for the chat's working directory and shows the Workbench; with no working directory it lists the Console's recent folders. Its `⌘K` rows reload the Workbench, open it in a browser tab, and stop the server.
 
 The same lifecycle is one function call away:
 

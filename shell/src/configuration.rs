@@ -238,16 +238,7 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&ShellConfig>) -> Res
 /// (MOT-4252). `raw` skips validation (and env expansion, which is fine: only
 /// nullness is inspected here).
 async fn stored_value_absent(iii: &IIIClient) -> Result<bool, String> {
-    stored_value_absent_for(iii, config_id()).await
-}
-
-/// The same probe for any configuration entry this worker owns — `ui.rs`
-/// gates the `shell-ui` seed on it, because `configuration::register`
-/// replaces the stored value whenever `initial_value` is present, and an
-/// ungated `{}` seed wiped every console pane's explorer state (open tabs,
-/// browsed folder) on each worker restart.
-pub(crate) async fn stored_value_absent_for(iii: &IIIClient, id: &str) -> Result<bool, String> {
-    match try_get_value(iii, id, true).await? {
+    match try_get_value(iii, config_id(), true).await? {
         None => Ok(true),
         Some(value) => Ok(value.is_null()),
     }
@@ -297,7 +288,14 @@ async fn try_get_config_value(iii: &IIIClient, raw: bool) -> Result<Option<Value
     try_get_value(iii, config_id(), raw).await
 }
 
-async fn try_get_value(iii: &IIIClient, id: &str, raw: bool) -> Result<Option<Value>, String> {
+/// The stored value of any configuration entry: `Ok(None)` when the entry
+/// (or the configuration worker) is missing, `Ok(Some(value))` otherwise.
+/// Also `ui_state.rs`'s read of the legacy `shell-ui` entry at boot.
+pub(crate) async fn try_get_value(
+    iii: &IIIClient,
+    id: &str,
+    raw: bool,
+) -> Result<Option<Value>, String> {
     match trigger_configuration_with_retry(
         iii,
         "configuration::get",
@@ -518,8 +516,8 @@ where
     }
 }
 
-/// Shared by the config bootstrap here and `ui.rs`'s `shell-ui`
-/// UI-state entry registration.
+/// Shared by the config bootstrap here and `ui_state.rs`'s one-time
+/// migration off the legacy `shell-ui` entry.
 pub(crate) async fn trigger_configuration_with_retry(
     iii: &IIIClient,
     function_id: &str,

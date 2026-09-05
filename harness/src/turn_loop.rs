@@ -2409,7 +2409,7 @@ pub async fn fail_turn(
     session_id: &str,
     turn_id: &str,
     reason: &str,
-) -> TurnStepResult {
+) -> Result<TurnStepResult, HarnessError> {
     let cfg = deps.cfg().await;
     let session = deps.session().await;
     // Serialize with stop/resolve/sweep like every other turn-record writer
@@ -2417,17 +2417,12 @@ pub async fn fail_turn(
     // guard is gone. Lock-free, this finalize could interleave with
     // harness::stop's under-lock "stopping" ack and strand the session status.
     let _guard = deps.locks.guard(session_id).await;
-    let record = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms)
-        .await
-        .ok()
-        .flatten();
+    let record = crate::state::get_turn(&deps.iii, session_id, cfg.session_timeout_ms).await?;
     match record {
         Some(mut rec) if rec.turn_id == turn_id && !rec.status.is_terminal() => {
-            finalize_failed(deps, &session, &mut rec, reason, INTERNAL_FAILURE)
-                .await
-                .unwrap_or_else(|_| skipped(session_id))
+            finalize_failed(deps, &session, &mut rec, reason, INTERNAL_FAILURE).await
         }
-        _ => skipped(session_id),
+        _ => Ok(skipped(session_id)),
     }
 }
 

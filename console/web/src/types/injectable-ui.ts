@@ -514,9 +514,11 @@ export interface Host {
     /**
      * Hand text and files to the active conversation's composer, the way a
      * drop or a paste would, and put the caret there. Files become
-     * attachments.
+     * attachments. `inline` appends the text to the end of the draft's
+     * last line (a `#file(path:from-to)` reference, say) instead of
+     * starting a paragraph of its own.
      */
-    compose(draft: { text?: string; files?: File[] }): void
+    compose(draft: { text?: string; files?: File[]; inline?: boolean }): void
     registerSessionChip(chip: SessionChipRegistration): () => void
     registerTurnSummary(summary: SessionTurnSummaryRegistration): () => void
     /** Jump the sidebar to this session. Feature-detect on older consoles. */

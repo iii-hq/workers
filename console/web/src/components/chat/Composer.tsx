@@ -1,9 +1,4 @@
-import {
-  $createParagraphNode,
-  $createTextNode,
-  $getRoot,
-  type LexicalEditor,
-} from 'lexical'
+import { $createParagraphNode, $getRoot, type LexicalEditor } from 'lexical'
 import {
   ArrowUp,
   ChevronDown,
@@ -23,6 +18,8 @@ import {
   onComposerInsert,
   requestComposerFocus,
 } from '@/lib/composer-insert'
+import type { FileMentionRef } from '@/lib/file-mention-token'
+import type { FileSearchFn } from '@/lib/file-search'
 import type { FunctionEntry } from '@/lib/functions'
 import { cn } from '@/lib/utils'
 import type {
@@ -38,6 +35,7 @@ import { ChatSettingsSheet } from './ChatSettingsSheet'
 import { composerCardClass, toolbarIconButtonClass } from './composer-chrome'
 import { DirectoryPicker, type WorktreePickerOptions } from './DirectoryPicker'
 import { LexicalShell } from './LexicalShell'
+import { $appendComposerText } from './lexical/composer-text'
 import { ModelPicker } from './ModelPicker'
 import { nextHistoryTarget } from './queue-history'
 import { useFileDrop } from './use-file-drop'
@@ -157,6 +155,17 @@ interface ComposerProps {
   initialAttachments?: Attachment[]
   functionEntries?: FunctionEntry[]
   /**
+   * File search under `workingDir` for the `@` / `#` menus. Absent (mock
+   * backends, no shell) = the menus offer functions only.
+   */
+  searchFiles?: FileSearchFn
+  /**
+   * Open a mentioned file where it can be read (the shell explorer, on the
+   * referenced lines) when its pill is clicked. Absent = clicking a pill
+   * only selects it.
+   */
+  onOpenFileMention?: (ref: FileMentionRef) => void
+  /**
    * Queued messages the composer can browse+edit with ↑/↓, oldest→newest.
    * Non-destructive: browsing just loads a message; the change is committed on
    * submit (see `onEditQueued`). When set alongside `onEditQueued`, ↑/↓ cycle.
@@ -212,6 +221,8 @@ export function Composer({
   onTextChange,
   initialAttachments,
   functionEntries,
+  searchFiles,
+  onOpenFileMention,
   queuedForEdit,
   onEditQueued,
   onBrowseChange,
@@ -254,7 +265,7 @@ export function Composer({
       const root = $getRoot()
       root.clear()
       const paragraph = $createParagraphNode()
-      paragraph.append($createTextNode(text))
+      $appendComposerText(paragraph, text)
       root.append(paragraph)
     }
   }, [])
@@ -393,6 +404,8 @@ export function Composer({
   // `use-file-drop`. A drop onto the transcript, where people actually let go
   // of a screenshot, lands here too, and the editor never gets to eat it.
   const shell = useRef<HTMLDivElement>(null)
+  // The typeahead menus take the card's width and hang above it.
+  const card = useRef<HTMLDivElement>(null)
   const dragging = useFileDrop({
     anchorRef: shell,
     disabled: Boolean(inputDisabled),
@@ -488,6 +501,7 @@ export function Composer({
 
       <div
         id={cardId}
+        ref={card}
         hidden={cardHidden}
         className={cn(
           'composer-card relative z-10 transition-shadow',
@@ -535,7 +549,9 @@ export function Composer({
             autoFocus={autoFocus}
             initialContent={resolvedInitialContent}
             functionEntries={functionEntries}
-            workingDir={workingDir}
+            searchFiles={searchFiles}
+            onOpenFileMention={onOpenFileMention}
+            menuFrameRef={card}
             onHistoryNav={onEditQueued ? handleHistoryNav : undefined}
           />
         </div>

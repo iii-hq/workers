@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
   diffPanelRequest,
-  filePanelRequest,
   isFileChangesResponse,
   summarizeFileChanges,
 } from '../file-changes'
@@ -150,10 +149,6 @@ describe('summarizeFileChanges', () => {
         path: '/repo/src/a.ts',
         canViewFile: true,
       },
-    })
-    expect(filePanelRequest(row)).toEqual({
-      pageId: 'shell',
-      context: { type: 'file', path: '/repo/src/a.ts' },
     })
     expect(diffPanelRequest({ ...row, status: 'deleted' })).toMatchObject({
       context: { canViewFile: false },
