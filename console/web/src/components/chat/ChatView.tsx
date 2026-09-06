@@ -63,7 +63,11 @@ import {
 } from '@/lib/trace-links'
 import { turnAnchorMessageId } from '@/lib/turn-anchor'
 import { SEND_FAILED_CODE } from '@/lib/turn-failure'
-import { useExtSessionChips, useExtSessionTurnSummaries } from '@/lib/ui-slots'
+import {
+  useExtComposerActions,
+  useExtSessionChips,
+  useExtSessionTurnSummaries,
+} from '@/lib/ui-slots'
 import {
   activateWorkingDir,
   fetchDefaultWorkingDir,
@@ -806,6 +810,21 @@ export function ChatView({
       )
     })
   }, [extSessionTurnSummaries, conversation.id, streamingIndicator])
+
+  const extComposerActions = useExtComposerActions()
+  const composerActions = useMemo(() => {
+    if (extComposerActions.length === 0) return null
+    return [...extComposerActions].sort(compareChips).map((action) => {
+      const Action = action.render
+      return (
+        <Action
+          key={action.id}
+          sessionId={conversation.id}
+          isStreaming={streamingIndicator}
+        />
+      )
+    })
+  }, [extComposerActions, conversation.id, streamingIndicator])
 
   /* Shared live region: SR announcements for auto-accept, stop-reason
    * notices, and compaction markers route through this hook. Sighted
@@ -2436,6 +2455,7 @@ export function ChatView({
             }
             initialText={composerInitialText}
             onTextChange={handleComposerTextChange}
+            composerActions={composerActions}
             onSubmit={handleSubmit}
             onStop={handleStop}
             stopping={stopping}

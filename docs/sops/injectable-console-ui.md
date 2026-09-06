@@ -1023,6 +1023,27 @@ fetch their own data over `host.iii` (subscribe to your worker's triggers,
 hydrate with a function call on mount); the host passes identity only.
 Feature-detect on older consoles: `host.chat?.registerSessionChip`.
 
+### `host.chat.registerComposerAction({ id, render })`
+
+An icon-sized action in the composer's toolbar, rendered just before the
+attach button on every composer layout (the narrow row and the wide right
+cluster). Use it for input affordances that belong next to the caret:
+dictation, a snippet picker, a template. Your component receives:
+
+```ts
+interface ComposerActionProps {
+  sessionId: string | null  // null while the conversation has no session yet
+  isStreaming: boolean      // the session is producing a turn
+}
+```
+
+Render a single `IconButton` (16 px glyph, `label` as the accessible name)
+sized to match the attach button; hand text back through
+`host.chat.compose({ text })` and never submit on the user's behalf.
+Duplicate ids: last registration wins. Feature-detect on older consoles:
+`host.chat?.registerComposerAction`, and fall back to a session chip when it
+is absent.
+
 ### `host.chat` conversation helpers
 
 Newer Consoles expose two optional, non-rendering helpers on the same
@@ -1244,10 +1265,10 @@ its own board: the registry refuses to disable it.
 ## Status: shipped vs spec
 
 The implementation covers the spec's protocol, loader, and runtime slot
-registry. The spec's composer slot (`host.composer`) shipped later as
-`host.chat.registerSessionChip` — chips render in the chat header's right
-cluster, not the composer toolbar. Not shipped yet (don't design against
-them):
+registry. The spec's composer slot (`host.composer`) shipped in two parts:
+`host.chat.registerSessionChip` for status chips in the chat header's right
+cluster, and `host.chat.registerComposerAction` for icon actions in the
+composer toolbar itself. Not shipped yet (don't design against them):
 
 | Spec item | Status |
 |---|---|

@@ -450,6 +450,27 @@ export interface SessionTurnSummaryRegistration {
 }
 
 /**
+ * Props a composer action receives. The host supplies the active session
+ * and its live turn state; the action owns everything else and hands text
+ * back through `host.chat.compose`.
+ */
+export interface ComposerActionProps {
+  /** Active session id, or `null` while the conversation has none yet. */
+  sessionId: string | null
+  isStreaming: boolean
+}
+
+/**
+ * An icon-sized action rendered in the composer's toolbar, beside the
+ * attach button. Duplicate `id`: last registration wins.
+ */
+export interface ComposerActionRegistration {
+  /** kebab-case; convention `<worker>-<name>`. */
+  id: string
+  render: React.ComponentType<ComposerActionProps>
+}
+
+/**
  * What `setup(host)` receives. Every registrar returns an unregister fn AND
  * is auto-tracked: the loader runs all of them on dispose.
  */
@@ -511,6 +532,7 @@ export interface Host {
     compose(draft: { text?: string; files?: File[] }): void
     registerSessionChip(chip: SessionChipRegistration): () => void
     registerTurnSummary(summary: SessionTurnSummaryRegistration): () => void
+    registerComposerAction(action: ComposerActionRegistration): () => void
     /** Jump the sidebar to this session. Feature-detect on older consoles. */
     selectConversation?(sessionId: string): void
     /**
