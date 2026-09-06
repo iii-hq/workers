@@ -119,13 +119,16 @@ async fn boot() -> Option<Harness> {
     match worker_log {
         // tracing writes to stdout; keep stderr too for panics.
         Some(file) => {
-            let err = file.try_clone().ok().map(Stdio::from).unwrap_or(Stdio::null());
+            let err = file
+                .try_clone()
+                .ok()
+                .map(Stdio::from)
+                .unwrap_or(Stdio::null());
             worker_cmd.env("RUST_LOG", "debug").stdout(file).stderr(err)
         }
         None => worker_cmd.stdout(Stdio::null()).stderr(Stdio::null()),
     };
-    let worker = match worker_cmd.spawn()
-    {
+    let worker = match worker_cmd.spawn() {
         Ok(w) => w,
         Err(_) => {
             // The Harness Drop that reaps `iii` never runs (it was never
@@ -411,7 +414,9 @@ async fn tabs_incognito_soft_errors_and_clear_browser_data() {
     .await;
     assert_eq!(dead["ok"], false, "{dead}");
     assert!(
-        dead["error"].as_str().is_some_and(|e| e.starts_with("net::ERR_")),
+        dead["error"]
+            .as_str()
+            .is_some_and(|e| e.starts_with("net::ERR_")),
         "{dead}"
     );
     let evaluated = call(
@@ -452,7 +457,10 @@ async fn tabs_incognito_soft_errors_and_clear_browser_data() {
     )
     .await;
     assert_eq!(back["moved"], true, "{back}");
-    assert!(back["url"].as_str().unwrap_or_default().contains("one"), "{back}");
+    assert!(
+        back["url"].as_str().unwrap_or_default().contains("one"),
+        "{back}"
+    );
 
     // Clearing everything closes the pages and the browser; the regular tab
     // stays listed asleep, the private one is gone for good.
@@ -555,7 +563,12 @@ async fn live_frames_keep_flowing_across_tabs() {
         );
     }
 
-    let first = call("browser::sessions::start", json!({ "url": page_url }), 60_000).await;
+    let first = call(
+        "browser::sessions::start",
+        json!({ "url": page_url }),
+        60_000,
+    )
+    .await;
     let first_id = first["session_id"].as_str().expect("id").to_string();
     client
         .register_trigger(RegisterTriggerInput::new(
@@ -588,10 +601,18 @@ async fn live_frames_keep_flowing_across_tabs() {
         "the pump stalled: frame_seq went {before} -> {after} in 1s"
     );
     let pushed = pushes.load(Ordering::Relaxed);
-    assert!(pushed >= 8, "only {pushed} frames reached the frame subscriber");
+    assert!(
+        pushed >= 8,
+        "only {pushed} frames reached the frame subscriber"
+    );
 
     // A second tab, watched too: the first must keep rendering.
-    let second = call("browser::sessions::start", json!({ "url": page_url }), 60_000).await;
+    let second = call(
+        "browser::sessions::start",
+        json!({ "url": page_url }),
+        60_000,
+    )
+    .await;
     let second_id = second["session_id"].as_str().expect("id").to_string();
     call(
         "browser::screencast::start",
@@ -617,7 +638,12 @@ async fn live_frames_keep_flowing_across_tabs() {
     assert!(second_seq > 0, "second tab produced no frames");
 
     for id in [first_id, second_id] {
-        call("browser::sessions::stop", json!({ "session_id": id }), 30_000).await;
+        call(
+            "browser::sessions::stop",
+            json!({ "session_id": id }),
+            30_000,
+        )
+        .await;
     }
     let _ = std::fs::remove_dir_all(pages_dir);
     client.shutdown_async().await;

@@ -1648,7 +1648,7 @@ impl TurnLog {
         // in the same turn lands back in its original place with its
         // original body.
         let mut files = turn.files;
-        files.sort_by(|a, b| b.last_seen.cmp(&a.last_seen));
+        files.sort_by_key(|file| std::cmp::Reverse(file.last_seen));
         let mut results = Vec::new();
         for file in files {
             if wanted

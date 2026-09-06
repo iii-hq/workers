@@ -774,9 +774,7 @@ fn register_navigate(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 session.clear_navigation_error();
 
                 let allow_http = cfg.allowed_schemes.iter().any(|s| s == "http");
-                let navigation = session
-                    .navigate_like_a_browser(&req.url, allow_http)
-                    .await;
+                let navigation = session.navigate_like_a_browser(&req.url, allow_http).await;
                 if let Some(policy_error) = session.take_navigation_error() {
                     return Err(handler_err(policy_error));
                 }

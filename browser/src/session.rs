@@ -622,7 +622,11 @@ impl Tab {
             read_only: self.read_only,
             created_ms: self.created_ms,
             ttl_ms: self.ttl_ms,
-            history: self.history.lock().unwrap_or_else(|p| p.into_inner()).clone(),
+            history: self
+                .history
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone(),
             nav: self.nav.lock().unwrap_or_else(|p| p.into_inner()).clone(),
         }
     }
@@ -657,7 +661,12 @@ impl SharedBrowser {
             }
         }
         let _ = browser.wait().await;
-        if let Some(handler) = self.handler.lock().unwrap_or_else(|p| p.into_inner()).take() {
+        if let Some(handler) = self
+            .handler
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
             handler.abort();
         }
     }
@@ -1143,7 +1152,9 @@ impl Sessions {
         let path = self.store_path();
         let tmp = path.with_extension("json.tmp");
         let result = std::fs::create_dir_all(&self.data_dir)
-            .and_then(|_| std::fs::write(&tmp, serde_json::to_vec_pretty(&store).unwrap_or_default()))
+            .and_then(|_| {
+                std::fs::write(&tmp, serde_json::to_vec_pretty(&store).unwrap_or_default())
+            })
             .and_then(|_| std::fs::rename(&tmp, &path));
         if let Err(e) = result {
             tracing::warn!(path = %path.display(), error = %e, "saving tabs failed");
@@ -1254,7 +1265,12 @@ impl Sessions {
         let mut open_error = None;
         if let Some(url) = request.url.as_deref() {
             session.clear_navigation_error();
-            let allow_http = self.config.load().allowed_schemes.iter().any(|s| s == "http");
+            let allow_http = self
+                .config
+                .load()
+                .allowed_schemes
+                .iter()
+                .any(|s| s == "http");
             let navigation = session.navigate_like_a_browser(url, allow_http).await;
             if let Some(policy_error) = session.take_navigation_error() {
                 self.stop(&id, "stopped").await;
@@ -2275,6 +2291,12 @@ fn build_browser_config(
 /// profile's singleton lock; the next launch hands off to that orphan and
 /// times out. When the lock names a process that is running on THIS profile,
 /// kill it so the caller can launch again. Nothing else is ever touched.
+#[cfg(not(unix))]
+fn reap_orphan_chromium(_profile: &std::path::Path) -> bool {
+    false
+}
+
+#[cfg(unix)]
 fn reap_orphan_chromium(profile: &std::path::Path) -> bool {
     let Ok(lock) = std::fs::read_link(profile.join("SingletonLock")) else {
         return false;
@@ -2679,7 +2701,10 @@ async fn spawn_event_pumps(
     // channel — latest frame wins — so a slow bus never stalls the pump or
     // builds a backlog of stale pictures; the viewer always gets the newest
     // frame the engine can take.
-    if let Ok(mut events) = page.event_listener::<cdp_page::EventScreencastFrame>().await {
+    if let Ok(mut events) = page
+        .event_listener::<cdp_page::EventScreencastFrame>()
+        .await
+    {
         let (frame_tx, mut frame_rx) = tokio::sync::watch::channel::<Option<LatestFrame>>(None);
         {
             let s = session.clone();
@@ -2719,8 +2744,8 @@ async fn spawn_event_pumps(
             let mut held: Option<(Arc<ScreencastFrameEvent>, Vec<u8>)> = None;
             loop {
                 let wait = std::time::Duration::from_millis(
-                    (FRAME_MIN_INTERVAL_MS - (now_ms() - last_push_ms)).clamp(0, FRAME_MIN_INTERVAL_MS)
-                        as u64,
+                    (FRAME_MIN_INTERVAL_MS - (now_ms() - last_push_ms))
+                        .clamp(0, FRAME_MIN_INTERVAL_MS) as u64,
                 );
                 let next = tokio::select! {
                     event = events.next() => match event {
@@ -3220,7 +3245,10 @@ mod tests {
         // drops the forward branch.
         nav.set_pending(0);
         nav.commit("https://d.test/");
-        assert_eq!(nav.urls, ["https://a.test/", "https://b.test/", "https://d.test/"]);
+        assert_eq!(
+            nav.urls,
+            ["https://a.test/", "https://b.test/", "https://d.test/"]
+        );
         assert_eq!(nav.index, 2);
         assert!(nav.neighbour(false).is_none());
     }
@@ -3277,7 +3305,11 @@ mod fallback_tests {
             Some("http://app.localhost:8443/".to_string())
         );
         assert!(http_fallback_url("https://example.com/", "net::ERR_SSL_PROTOCOL_ERROR").is_none());
-        assert!(http_fallback_url("https://localhost:3000/", "net::ERR_NAME_NOT_RESOLVED").is_none());
-        assert!(http_fallback_url("http://localhost:3000/", "net::ERR_SSL_PROTOCOL_ERROR").is_none());
+        assert!(
+            http_fallback_url("https://localhost:3000/", "net::ERR_NAME_NOT_RESOLVED").is_none()
+        );
+        assert!(
+            http_fallback_url("http://localhost:3000/", "net::ERR_SSL_PROTOCOL_ERROR").is_none()
+        );
     }
 }

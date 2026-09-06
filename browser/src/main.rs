@@ -77,7 +77,8 @@ async fn main() -> Result<()> {
                 name: "browser".to_string(),
                 os: std::env::consts::OS.to_string(),
                 description: Some(
-                    "A browser on the iii bus (browser::*): tabs agents and people share.".to_string(),
+                    "A browser on the iii bus (browser::*): tabs agents and people share."
+                        .to_string(),
                 ),
                 pid: Some(std::process::id()),
                 telemetry: None,
