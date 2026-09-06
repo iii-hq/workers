@@ -21,6 +21,7 @@ import {
 import { useEffect, useState } from 'react'
 import { modelsList } from '../lib/client'
 import { DEFAULTS, NONE, numberAt, setPath, stringAt } from '../lib/config'
+import { routerModelOptions, useRouterSpeechModels } from '../lib/router'
 import type { ModelInfo } from '../lib/types'
 
 function describeModel(m: ModelInfo): string {
@@ -85,6 +86,8 @@ export function createVoiceConfigForm(host: Host) {
     const liveModel = stringAt(value, ['stt', 'model'], DEFAULTS.model)
     const offline = (models ?? []).filter((m) => m.kind === 'offline_nemo_transducer')
     const streaming = (models ?? []).filter((m) => m.kind === 'streaming_transducer')
+    const routerStt = useRouterSpeechModels(host.iii, 'stt', sttBackend === 'router')
+    const routerTts = useRouterSpeechModels(host.iii, 'tts', ttsBackend === 'router')
 
     return (
       <>
@@ -95,7 +98,7 @@ export function createVoiceConfigForm(host: Host) {
           <SettingsList>
             <SettingsField
               label="Engine"
-              description="Local models, or any server that speaks the OpenAI audio API (a local whisper server counts)."
+              description="Local models, a speech provider registered with llm-router (ElevenLabs, OpenAI, ...), or any server that speaks the OpenAI audio API (a local whisper server counts)."
               renderControl={(c) => (
                 <Select
                   id={c.id}
@@ -103,11 +106,41 @@ export function createVoiceConfigForm(host: Host) {
                   onChange={(next) => set(['stt', 'backend'], next)}
                   options={[
                     { value: 'local', label: 'Local models on this machine' },
+                    { value: 'router', label: 'A speech provider through llm-router' },
                     { value: 'openai', label: 'OpenAI-compatible endpoint' },
                   ]}
                 />
               )}
             />
+            {sttBackend === 'router' ? (
+              <>
+                <SettingsField
+                  label="Model"
+                  description="A speech-to-text model the router lists; its provider's key lives in the router's own settings. Empty lets the router pick."
+                  renderControl={(c) => (
+                    <Select
+                      id={c.id}
+                      value={stringAt(value, ['stt', 'router', 'model'])}
+                      onChange={(next) => set(['stt', 'router', 'model'], next)}
+                      aria-busy={routerStt.models === null}
+                      options={routerModelOptions(routerStt.models, stringAt(value, ['stt', 'router', 'model']))}
+                    />
+                  )}
+                />
+                <SettingsField
+                  label="Language hint"
+                  description="BCP-47 tag sent with each request, for example en or hi. Empty lets the model detect it."
+                  controlSize="compact"
+                  renderControl={(c) => (
+                    <Input
+                      id={c.id}
+                      value={stringAt(value, ['stt', 'router', 'language'])}
+                      onChange={(raw) => set(['stt', 'router', 'language'], raw)}
+                    />
+                  )}
+                />
+              </>
+            ) : null}
             {sttBackend === 'local' ? (
               <>
                 <SettingsField
@@ -202,7 +235,8 @@ export function createVoiceConfigForm(host: Host) {
                   )}
                 />
               </>
-            ) : (
+            ) : null}
+            {sttBackend === 'openai' ? (
               <>
                 <SettingsField
                   label="Base URL"
@@ -253,7 +287,7 @@ export function createVoiceConfigForm(host: Host) {
                   )}
                 />
               </>
-            )}
+            ) : null}
           </SettingsList>
         </SettingsSection>
 
@@ -261,7 +295,7 @@ export function createVoiceConfigForm(host: Host) {
           <SettingsList>
             <SettingsField
               label="Engine"
-              description="The host command plays on the machine running the worker (say on macOS, espeak-ng on Linux). An OpenAI-compatible endpoint returns audio to the browser."
+              description="The host command plays on the machine running the worker (say on macOS, espeak-ng on Linux). A router speech provider or an OpenAI-compatible endpoint returns audio to the browser."
               renderControl={(c) => (
                 <Select
                   id={c.id}
@@ -269,12 +303,59 @@ export function createVoiceConfigForm(host: Host) {
                   onChange={(next) => set(['tts', 'backend'], next)}
                   options={[
                     { value: 'host', label: "This machine's speech command" },
+                    { value: 'router', label: 'A speech provider through llm-router' },
                     { value: 'openai', label: 'OpenAI-compatible endpoint' },
                     { value: 'off', label: 'Off' },
                   ]}
                 />
               )}
             />
+            {ttsBackend === 'router' ? (
+              <>
+                <SettingsField
+                  label="Model"
+                  description="A text-to-speech model the router lists. Empty lets the router pick."
+                  renderControl={(c) => (
+                    <Select
+                      id={c.id}
+                      value={stringAt(value, ['tts', 'router', 'model'])}
+                      onChange={(next) => set(['tts', 'router', 'model'], next)}
+                      aria-busy={routerTts.models === null}
+                      options={routerModelOptions(routerTts.models, stringAt(value, ['tts', 'router', 'model']))}
+                    />
+                  )}
+                />
+                <SettingsField
+                  label="Voice"
+                  description="A voice id or name as the provider knows it (for ElevenLabs, a voice on the account such as George). Empty uses the provider's default."
+                  renderControl={(c) => (
+                    <Input
+                      id={c.id}
+                      value={stringAt(value, ['tts', 'router', 'voice'])}
+                      onChange={(raw) => set(['tts', 'router', 'voice'], raw)}
+                      preserveCase
+                    />
+                  )}
+                />
+                <SettingsField
+                  label="Audio format"
+                  description="What the browser receives. mp3 works everywhere."
+                  controlSize="compact"
+                  renderControl={(c) => (
+                    <Select
+                      id={c.id}
+                      value={stringAt(value, ['tts', 'router', 'format'], DEFAULTS.routerFormat)}
+                      onChange={(next) => set(['tts', 'router', 'format'], next)}
+                      options={[
+                        { value: 'mp3', label: 'mp3' },
+                        { value: 'wav', label: 'wav' },
+                        { value: 'opus', label: 'opus' },
+                      ]}
+                    />
+                  )}
+                />
+              </>
+            ) : null}
             {ttsBackend === 'host' ? (
               <>
                 <SettingsField

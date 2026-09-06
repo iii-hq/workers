@@ -669,6 +669,10 @@ impl Engine {
         language: Option<&str>,
     ) -> Result<(Transcript, &'static str, String), String> {
         match cfg.stt.backend {
+            SttBackend::Router => Err(
+                "the router engine is served by voice::transcribe, not the local engine"
+                    .to_string(),
+            ),
             SttBackend::Local => {
                 let loaded = self.ensure_loaded(cfg, None).await?;
                 let refiner = self.ensure_final_loaded(cfg, None).await?;

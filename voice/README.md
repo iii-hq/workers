@@ -99,18 +99,20 @@ endpointing change reloads the recognizer on next use.
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `models_dir` | `data/voice/models` | Where models live (relative to the project directory). |
-| `stt.backend` | `local` | `local` (bundled recognizer) or `openai` (any `/v1/audio/transcriptions` server). |
-| `stt.model` | `zipformer-en-20m` | Streaming model id from `voice::models::list` (live partial text). |
+| `stt.backend` | `local` | `local` (bundled recognizer), `openai` (any `/v1/audio/transcriptions` server), or `router` (llm-router's `router::transcribe`, any registered speech provider). |
+| `stt.model` | `zipformer-en-20m` | Streaming model for live words and sentence boundaries: `zipformer-en-20m` (44 MB, fastest) or `zipformer-en-large` (73 MB, fewer misheard words in the preview). |
 | `stt.final_model` | `parakeet-tdt-0.6b-v2` | Second-pass model that re-decodes each utterance for the final text. Empty disables the second pass. |
 | `stt.num_threads` | `2` | Decoder threads. |
 | `stt.silence_after_speech_secs` | `0.8` | Trailing silence that commits an utterance. |
 | `stt.silence_without_speech_secs` | `2.4` | Trailing silence that ends an empty segment. |
 | `stt.max_utterance_secs` | `20` | Longest utterance before a forced commit. |
 | `stt.openai.base_url`, `api_key`, `model`, `language` | OpenAI defaults | The remote transcription endpoint. `api_key` accepts `${OPENAI_API_KEY}`. |
-| `tts.backend` | `host` | `host` (`say` on macOS, `espeak-ng` on Linux), `openai` (`/v1/audio/speech`, audio returned to the caller), or `off`. |
+| `stt.router.model`, `language` | empty | Router model (`provider::model`) for `voice::transcribe` and for the second pass of every dictated sentence; empty lets the router pick. Keys live in the router's Settings, not here. |
+| `tts.backend` | `host` | `host` (`say` on macOS, `espeak-ng` on Linux), `openai` (`/v1/audio/speech`, audio returned to the caller), `router` (llm-router's `router::speak`, any registered speech provider, audio returned to the caller), or `off`. |
 | `tts.voice`, `tts.rate_wpm` | system default | Host voice and speaking rate. |
 | `tts.max_speak_chars` | `4000` | Longest text one `voice::speak` call reads. |
 | `tts.openai.base_url`, `api_key`, `model`, `voice` | OpenAI defaults | The remote speech endpoint. |
+| `tts.router.model`, `voice`, `format` | empty, empty, `mp3` | Router model, voice id or name, and container for `voice::speak`. |
 | `max_audio_bytes` | `10485760` | Largest inline (`audio_base64`) file for `voice::transcribe`. |
 | `max_sessions` | `8` | Open dictation sessions across all callers. |
 | `session_idle_secs` | `120` | Idle time before a session is closed. |
@@ -129,7 +131,9 @@ the `openai` backend with an empty `api_key`.
 | `voice::doctor` | Backends, model state, open sessions. |
 
 Triggers: `voice::transcript`, `voice::session-started`,
-`voice::session-stopped`, `voice::model-progress`.
+`voice::session-stopped`, `voice::model-progress`, `voice::speech-ended`
+(host playback finished: `ended`, `stopped` or `failed`; filter with
+`speech_id`).
 
 ## Limits
 

@@ -20,6 +20,7 @@ import type {
   ModelsListResponse,
   ModelsRemoveRequest,
   ModelsRemoveResponse,
+  RouterModelsListResponse,
   SpeakRequest,
   SpeakResponse,
   SpeakStopRequest,
@@ -73,4 +74,9 @@ export function modelsRemove(iii: ExtensionIii, req: ModelsRemoveRequest): Promi
 
 export function doctor(iii: ExtensionIii): Promise<DoctorResponse> {
   return iii.trigger<DoctorResponse>('voice::doctor', {})
+}
+
+/** Speech models llm-router knows for one family; empty when no speech provider is registered. */
+export function routerSpeechModels(iii: ExtensionIii, modality: 'stt' | 'tts'): Promise<RouterModelsListResponse> {
+  return iii.trigger<RouterModelsListResponse>('router::models::list', { modality })
 }

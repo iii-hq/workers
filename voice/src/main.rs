@@ -133,9 +133,15 @@ async fn main() -> anyhow::Result<()> {
     let sets = events::register_trigger_types(&iii);
     let emitter = Arc::new(Emitter::new(sets, Arc::new(IiiDeliverer::new(iii.clone()))));
     let engine = Arc::new(Engine::new());
-    let sessions = Arc::new(Sessions::new(engine.clone(), emitter.clone(), cell.clone()));
-    let speaker = Arc::new(Speaker::new());
+    let sessions = Arc::new(Sessions::new(
+        iii.clone(),
+        engine.clone(),
+        emitter.clone(),
+        cell.clone(),
+    ));
+    let speaker = Arc::new(Speaker::new(emitter.clone()));
     let state = Arc::new(AppState {
+        iii: iii.clone(),
         cfg: cell.clone(),
         engine: engine.clone(),
         sessions: sessions.clone(),

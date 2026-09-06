@@ -19,11 +19,18 @@ pub struct Request {}
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct SttReport {
-    /// `local` or `openai`.
+    /// `local`, `router` or `openai`.
     pub backend: String,
+    /// The model that writes final text: the local accurate model, the
+    /// router model, or the endpoint model.
     pub model: String,
     pub installed: bool,
     pub loaded: bool,
+    /// The local streaming model that shows live words and finds sentence
+    /// ends while dictating, whatever the engine.
+    pub live_model: String,
+    pub live_installed: bool,
+    pub live_loaded: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub load_ms: Option<u64>,
     pub models_dir: String,
@@ -62,12 +69,18 @@ pub async fn handle(state: &AppState, _req: Request) -> Result<Response, String>
     let dir = cfg.models_path();
     let spec = models::find(&cfg.stt.model);
     let loaded = state.engine.loaded_for(&cfg).await;
+    let live_model = cfg.stt.model.clone();
+    let live_installed = spec.is_some_and(|s| s.is_installed(&dir));
+    let live_loaded = loaded.is_some();
     let stt = match cfg.stt.backend {
         SttBackend::Local => SttReport {
             backend: "local".into(),
             model: cfg.stt.model.clone(),
-            installed: spec.is_some_and(|s| s.is_installed(&dir)),
-            loaded: loaded.is_some(),
+            installed: live_installed,
+            loaded: live_loaded,
+            live_model: live_model.clone(),
+            live_installed,
+            live_loaded,
             load_ms: loaded.as_ref().map(|l| l.load_ms as u64),
             models_dir: dir.to_string_lossy().into_owned(),
             problem: spec
@@ -81,11 +94,33 @@ pub async fn handle(state: &AppState, _req: Request) -> Result<Response, String>
                 .await
                 .map(|l| l.load_ms as u64),
         },
+        SttBackend::Router => SttReport {
+            backend: "router".into(),
+            model: if cfg.stt.router.model.trim().is_empty() {
+                "router picks".into()
+            } else {
+                cfg.stt.router.model.clone()
+            },
+            installed: true,
+            loaded: true,
+            live_model: live_model.clone(),
+            live_installed,
+            live_loaded,
+            load_ms: None,
+            models_dir: dir.to_string_lossy().into_owned(),
+            problem: crate::router::problem(&state.iii, "stt").await,
+            final_model: String::new(),
+            final_state: FinalState::Off,
+            final_load_ms: None,
+        },
         SttBackend::Openai => SttReport {
             backend: "openai".into(),
             model: cfg.stt.openai.model.clone(),
             installed: true,
             loaded: true,
+            live_model: live_model.clone(),
+            live_installed,
+            live_loaded,
             load_ms: None,
             models_dir: dir.to_string_lossy().into_owned(),
             problem: cfg
@@ -114,6 +149,12 @@ pub async fn handle(state: &AppState, _req: Request) -> Result<Response, String>
             backend: "openai".into(),
             command: None,
             available: !cfg.tts.openai.base_url.trim().is_empty(),
+            playing: 0,
+        },
+        TtsBackend::Router => TtsReport {
+            backend: "router".into(),
+            command: crate::router::problem(&state.iii, "tts").await,
+            available: crate::router::problem(&state.iii, "tts").await.is_none(),
             playing: 0,
         },
         TtsBackend::Off => TtsReport {

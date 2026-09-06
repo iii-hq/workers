@@ -5,7 +5,7 @@ description: Speech in and out for iii — transcribe audio files to timestamped
 
 # voice
 
-Local speech-to-text and read-aloud on the iii bus. Nothing leaves the machine by default: a small streaming recognizer produces live text and a large second-pass model re-decodes each finished utterance with punctuation and casing, both with models the worker downloads once. An OpenAI-compatible audio endpoint can replace either half through configuration.
+Local speech-to-text and read-aloud on the iii bus. Nothing leaves the machine by default: a small streaming recognizer produces live text and a large second-pass model re-decodes each finished utterance with punctuation and casing, both with models the worker downloads once. An OpenAI-compatible audio endpoint, or any speech provider registered with llm-router (`stt.backend` / `tts.backend` set to `router`), can replace either half through configuration.
 
 ## When to Use
 

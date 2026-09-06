@@ -55,8 +55,8 @@ def test_rust_frontends_are_explicit_workspace_locked_builds():
         for worker in document["workers"].values()
         for frontend in worker["artifact"].get("frontends", [])
     ]
-    assert sum(bool(worker["artifact"].get("frontends")) for worker in document["workers"].values()) == 41
-    assert len(frontends) == 44
+    assert sum(bool(worker["artifact"].get("frontends")) for worker in document["workers"].values()) == 42
+    assert len(frontends) == 45
     for frontend in frontends:
         assert set(frontend) == {
             "workspace_root", "source_path", "runtime", "package_manager", "lockfile",

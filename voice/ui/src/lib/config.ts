@@ -83,6 +83,7 @@ export const DEFAULTS = {
   maxSpeakChars: 4000,
   openaiTtsModel: 'tts-1',
   openaiTtsVoice: 'alloy',
+  routerFormat: 'mp3',
   modelsDir: 'data/voice/models',
   maxAudioBytes: 10 * 1024 * 1024,
   maxSessions: 8,

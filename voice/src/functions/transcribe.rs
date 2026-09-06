@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::AppState;
 use crate::audio;
+use crate::config::SttBackend;
 use crate::engine::Segment;
 
 pub const ID: &str = "voice::transcribe";
@@ -36,7 +37,7 @@ pub struct Response {
     pub segments: Vec<Segment>,
     pub duration_secs: f32,
     pub model: String,
-    /// `local` or `openai`.
+    /// `local`, `openai`, or `router`.
     pub backend: String,
 }
 
@@ -80,10 +81,17 @@ pub async fn handle(state: &AppState, req: Request) -> Result<Response, String> 
     if decoded.samples.is_empty() {
         return Err("the file holds no audio samples".to_string());
     }
-    let (transcript, backend, model) = state
-        .engine
-        .transcribe(&cfg, decoded.samples, req.language.as_deref())
-        .await?;
+    let (transcript, backend, model) = if cfg.stt.backend == SttBackend::Router {
+        let (transcript, model) =
+            crate::router::transcribe(&state.iii, &cfg, &decoded.samples, req.language.as_deref())
+                .await?;
+        (transcript, "router", model)
+    } else {
+        state
+            .engine
+            .transcribe(&cfg, decoded.samples, req.language.as_deref())
+            .await?
+    };
     Ok(Response {
         text: transcript.text,
         segments: transcript.segments,
