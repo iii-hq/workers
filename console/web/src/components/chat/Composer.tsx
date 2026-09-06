@@ -605,7 +605,9 @@ export function Composer({
             disabled={inputDisabled}
             className={toolbarIconButtonClass}
           />
-          <ComposerActionsSlot layout="narrow">{composerActions}</ComposerActionsSlot>
+          <ComposerActionsSlot layout="narrow">
+            {composerActions}
+          </ComposerActionsSlot>
           <button
             type="button"
             onClick={() => setMobileSettingsOpen(true)}
@@ -644,7 +646,9 @@ export function Composer({
               disabled={inputDisabled}
               className={toolbarIconButtonClass}
             />
-            <ComposerActionsSlot layout="wide">{composerActions}</ComposerActionsSlot>
+            <ComposerActionsSlot layout="wide">
+              {composerActions}
+            </ComposerActionsSlot>
             {showMemoryBank && onMemoryBankChange ? (
               <BankPicker
                 value={memoryBank ?? null}
