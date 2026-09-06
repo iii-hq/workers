@@ -157,6 +157,7 @@ fn map_models(mut remote: Vec<CodexModel>) -> Vec<Model> {
                 supports_structured_output: None,
                 thinking_budgets: None,
                 pricing: None,
+                speech: None,
             }
         })
         .collect()

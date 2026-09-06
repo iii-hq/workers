@@ -130,6 +130,26 @@ pub async fn register_router(iii: IIIClient) -> Result<RouterRefs, Error> {
             .metadata(internal_meta()),
     );
     iii.register_function(
+        surface::TRANSCRIBE_ID,
+        RegisterFunction::new_async(crate::speech::make_transcribe(
+            iii.clone(),
+            registry.clone(),
+            catalog.clone(),
+        ))
+        .description(surface::TRANSCRIBE_DESC)
+        .metadata(internal_meta()),
+    );
+    iii.register_function(
+        surface::SPEAK_ID,
+        RegisterFunction::new_async(crate::speech::make_speak(
+            iii.clone(),
+            registry.clone(),
+            catalog.clone(),
+        ))
+        .description(surface::SPEAK_DESC)
+        .metadata(internal_meta()),
+    );
+    iii.register_function(
         surface::COUNT_TOKENS_ID,
         RegisterFunction::new_async(crate::count_tokens::make_count_tokens(
             iii.clone(),

@@ -70,6 +70,7 @@ pub fn enrich(id: &str) -> Model {
                     cache_read: Some(cached),
                     cache_write: None, // automatic caching, no write surcharge
                 }),
+                speech: None,
                 ..base(id)
             }
         }
@@ -100,6 +101,7 @@ fn base(id: &str) -> Model {
         supports_structured_output: Some(false),
         thinking_budgets: None, // toggle + effort enum, not token budgets
         pricing: None,
+        speech: None,
     }
 }
 

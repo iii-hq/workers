@@ -396,6 +396,24 @@ export interface SessionTurnSummaryRegistration {
   render: React.ComponentType<SessionTurnSummaryProps>
 }
 
+/** Props a composer toolbar action receives. */
+export interface ComposerActionProps {
+  /** Active session id, or `null` while the conversation has none yet. */
+  sessionId: string | null
+  /** Whether this session is currently producing a turn. */
+  isStreaming: boolean
+}
+
+/**
+ * An icon-sized action rendered in the composer's toolbar, beside the
+ * attach button. Duplicate `id`: last registration wins.
+ */
+export interface ComposerActionRegistration {
+  /** kebab-case; convention `<worker>-<name>`. */
+  id: string
+  render: React.ComponentType<ComposerActionProps>
+}
+
 /** Props for a worker-owned annotation detail rendered in the transcript. */
 export interface TranscriptAnnotationProps {
   version: number
@@ -488,6 +506,8 @@ export interface Host {
     registerSessionChip(chip: SessionChipRegistration): () => void
     /** Optional on consoles that predate the footer turn-summary slot. */
     registerTurnSummary?(summary: SessionTurnSummaryRegistration): () => void
+    /** Optional on consoles that predate the composer toolbar slot. */
+    registerComposerAction?(action: ComposerActionRegistration): () => void
     registerTranscriptRenderer?(renderer: TranscriptRendererRegistration): () => void
     /** Optional on consoles that predate worker-driven conversation switching. */
     selectConversation?(sessionId: string): void

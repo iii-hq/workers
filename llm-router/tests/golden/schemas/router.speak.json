@@ -1,0 +1,108 @@
+{
+  "description": "Text to speech through provider::<id>::speak: {model?, provider?, text, voice?, format?} to {provider, model, audio_base64, mime}. Resolves the provider from the catalog's tts models when none is named.",
+  "function_id": "router::speak",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "format": {
+        "default": null,
+        "description": "Audio container wanted: `mp3` (default), `wav`, `pcm16`, `opus`. Providers answer with what they can and say so in `mime`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "language": {
+        "default": null,
+        "description": "BCP-47 language hint for multilingual voices.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "model": {
+        "default": null,
+        "description": "Text-to-speech model id (a `tts` model from `router::models::list`); the provider's default when omitted.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "provider": {
+        "default": null,
+        "description": "Provider id; resolved from the model's catalog owner when omitted.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "speed": {
+        "default": null,
+        "description": "Speaking-rate multiplier; 1.0 is the voice's own pace.",
+        "format": "double",
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "text": {
+        "description": "Text to speak.",
+        "type": "string"
+      },
+      "voice": {
+        "default": null,
+        "description": "Voice id or name as the provider knows it; the provider's default when omitted.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "text"
+    ],
+    "title": "RouterSpeakRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "audio_base64": {
+        "description": "The audio, base64.",
+        "type": "string"
+      },
+      "duration_secs": {
+        "format": "double",
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "mime": {
+        "description": "MIME type of the audio, e.g. `audio/mpeg`.",
+        "type": "string"
+      },
+      "model": {
+        "type": "string"
+      },
+      "provider": {
+        "type": "string"
+      },
+      "voice": {
+        "description": "Voice the provider used.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "audio_base64",
+      "mime",
+      "model",
+      "provider"
+    ],
+    "title": "RouterSpeakResponse",
+    "type": "object"
+  }
+}

@@ -25,7 +25,8 @@ WINDOWS_TARGETS = [
 # Dropped on 2026-09-03: `i686-pc-windows-msvc`, because 64-bit Windows runs
 # 32-bit binaries through WOW64 and Windows 11 has no 32-bit edition; and
 # `x86_64-apple-darwin`, which was the only consumer of the paid
-# `workers-release-macos-12core` pool. Removing a triple here makes it an
+# `workers-release-macos-12core` pool, since retired with it. Removing a
+# triple here makes it an
 # unknown target, so a catalog entry that still names it fails the compile
 # instead of silently publishing a narrower set of binaries.
 DEFAULT_TARGETS = [*UNIX_TARGETS, *WINDOWS_TARGETS]

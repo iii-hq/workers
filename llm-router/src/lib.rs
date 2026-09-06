@@ -14,6 +14,7 @@ pub mod register;
 pub mod registry;
 pub mod routing;
 pub mod settings;
+pub mod speech;
 pub mod state;
 pub mod surface;
 pub mod testkit;

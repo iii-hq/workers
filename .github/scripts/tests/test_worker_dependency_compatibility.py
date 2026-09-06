@@ -49,6 +49,10 @@ WORKER_DEPENDENCY_RANGE_OVERRIDES: dict[str, dict[str, str]] = {
     # with no login shell around it; other consumers stay on 0.11.9.
     "claude-code": {"shell": "^0.12.0"},
     "pi": {"shell": "^0.12.0"},
+    # Speech providers need the router that carries router::transcribe and
+    # router::speak and filters speech models out of chat listings; an
+    # older router would offer their models to chat pickers.
+    "provider-elevenlabs": {"llm-router": "^1.4.16"},
 }
 
 

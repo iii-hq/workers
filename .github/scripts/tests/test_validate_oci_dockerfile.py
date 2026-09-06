@@ -8,7 +8,15 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def test_release_oci_dockerfile_has_only_immutable_inputs() -> None:
-    validate(REPO_ROOT / "hermes" / "Dockerfile")
+    for worker in ("hermes", "scrapling"):
+        validate(REPO_ROOT / worker / "Dockerfile")
+
+
+def test_scrapling_browser_runtime_uses_playwright_non_root_user() -> None:
+    dockerfile = (REPO_ROOT / "scrapling" / "Dockerfile").read_text(encoding="utf-8")
+
+    assert "chown -R pwuser:pwuser /app/data" in dockerfile
+    assert "\nUSER pwuser\n" in dockerfile
 
 
 @pytest.mark.parametrize(

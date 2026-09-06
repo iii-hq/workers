@@ -4,17 +4,24 @@ This check exercises the published installation path in an isolated temporary
 home and project:
 
 ```bash
+iii project init quickstart --template quickstart
+cd quickstart
 printf 'workers: []\n' > config.yaml
 iii -c config.yaml
-iii compose --namespace default   # serves compose::* against the engine
+iii compose --engine ws://127.0.0.1:49134 --namespace default \
+  --file worker-compose.yaml --up
 iii trigger compose::add --json '{"file":"worker-compose.yaml","worker":"harness"}'
 iii trigger compose::add --json '{"file":"worker-compose.yaml","worker":"console"}'
 ```
 
-The validator seeds a minimal `worker-compose.yaml` (`namespace: default`,
-empty `containers:`); each `compose::add` resolves the worker's registry
-graph, pins every container to an exact version in the file, and restarts
-the project.
+The `quickstart` project template seeds `worker-compose.yaml` with the
+namespace, engine URL, and empty `containers: {}`. Each `compose::add` then
+resolves the worker's registry graph, pins every container to an exact version
+in the file, and restarts the project. It accepts the legacy synchronous
+`status: ok` response and, for newer CLIs, follows an admitted `status: accepted`
+operation through
+`compose::operation` until it succeeds. A failed, cancelled, or timed-out
+operation stops the quickstart before it inspects a partially reconciled stack.
 
 It verifies that:
 

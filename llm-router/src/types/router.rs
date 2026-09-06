@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use crate::types::credential::Credential;
 use crate::types::events::{ErrorKind, StopReason, Usage};
 use crate::types::messages::{AgentMessage, AssistantMessage};
-use crate::types::model::{AgentFunction, Model, ThinkingLevel};
+use crate::types::model::{AgentFunction, ModalityFilter, Model, ThinkingLevel};
 use iii_sdk::channel::StreamChannelRef;
 
 // ── consumer surface ────────────────────────────────────────────────────────
@@ -317,6 +317,9 @@ pub struct ModelsListRequest {
     /// Keep only models that support this capability flag (optional).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capability: Option<String>,
+    /// Model family: `chat` (default), `stt`, `tts`, or `any`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modality: Option<ModalityFilter>,
 }
 
 /// Output of `router::models::list`.

@@ -643,8 +643,12 @@ export function ModelPickerPanel({
         matchesFilter(option, group.label),
       ),
     })),
+    // A provider with no chat models is listed only while it still needs
+    // setup: a configured one without chat models serves another modality
+    // (speech, embeddings) and has nothing to offer this picker.
     ...presentIds
       .filter((id) => !grouped.has(id))
+      .filter((id) => providerById.get(id)?.configured !== true)
       .map((id) => ({ label: id, options: [] })),
   ]
     .filter((group) => filterWords.length === 0 || group.options.length > 0)

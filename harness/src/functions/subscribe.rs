@@ -16,11 +16,13 @@
 //! forever — MOT: console-04e02cb7 postmortem, `fires: 0` while the watched
 //! state key was written) and a fire would resolve `harness::trigger::deliver`
 //! in `default`, where this harness never registers. The channel path stamps
-//! the connection's namespace on both ends and the SDK replays it on
-//! reconnect. Durability across HARNESS restarts moved with it: the engine's
-//! trigger registry is in-memory, so the durable thing was always the binding
-//! record — startup now re-arms engine triggers from the store
-//! ([`crate::bindings::gc::run`]).
+//! the connection's namespace on both ends for normal triggers. The
+//! `compose-operation` provider is the exception: it is selected with the
+//! supervisor's namespace while the target stays in the harness namespace.
+//! The SDK replays both forms on reconnect. Durability across HARNESS restarts
+//! moved with it: the engine's trigger registry is in-memory, so the durable
+//! thing was always the binding record — startup now re-arms engine triggers
+//! from the store ([`crate::bindings::gc::run`]).
 
 use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::TriggerAction;
@@ -48,6 +50,11 @@ pub const REGISTER_TRIGGER_ID: &str = "engine::register_trigger";
 /// Side-effect-free "what would the gate decide" probe. Absent when the
 /// deployment runs no approval worker — see [`approval_allows_unattended`].
 const APPROVAL_EVALUATE_ID: &str = "approval::evaluate";
+
+/// Compose owns this trigger in the supervisor namespace, not in the project
+/// namespace where the harness worker runs.
+const COMPOSE_OPERATION_TRIGGER: &str = "compose-operation";
+const COMPOSE_NAMESPACE_ENV: &str = "III_COMPOSE_NAMESPACE";
 
 /// The engine function the agent calls to unsubscribe. The harness intercepts it
 /// so it resolves the caller's subscription, enforces ownership, and unregisters
@@ -1178,24 +1185,53 @@ fn is_function_absent(error: &str) -> bool {
 /// unregister closure is held in [`crate::bindings::TriggerHandles`].
 pub const SDK_TRIGGER_ID_PREFIX: &str = "sdk:";
 
-/// The channel registration for a binding's delivery trigger. `namespace` and
-/// `trigger_namespace` are deliberately left unset: the SDK stamps this
-/// worker's namespace on the target (so the fire resolves
-/// `harness::trigger::deliver` where THIS harness registered it, `default`
-/// included when un-namespaced), and an unset provider namespace resolves
-/// home-first with the engine's `default` as fallback. Hardcoding either here
-/// would break one of the two deployment shapes.
+/// The channel registration for a binding's delivery trigger. `namespace` is
+/// left unset so the SDK stamps this worker's namespace on the target and the
+/// fire resolves `harness::trigger::deliver` where THIS harness registered it.
+/// The provider also resolves home-first with `default` as fallback, except
+/// for `compose-operation`: Compose provides it in the supervisor namespace.
 fn delivery_registration_input(
     trigger_type: &str,
     config: &Value,
     binding_id: &str,
 ) -> iii_sdk::protocol::RegisterTriggerInput {
-    iii_sdk::protocol::RegisterTriggerInput::new(
+    let compose_namespace = std::env::var(COMPOSE_NAMESPACE_ENV).ok();
+    delivery_registration_input_for_namespace(
+        trigger_type,
+        config,
+        binding_id,
+        compose_provider_namespace(trigger_type, compose_namespace.as_deref()),
+    )
+}
+
+fn delivery_registration_input_for_namespace(
+    trigger_type: &str,
+    config: &Value,
+    binding_id: &str,
+    provider_namespace: Option<&str>,
+) -> iii_sdk::protocol::RegisterTriggerInput {
+    let input = iii_sdk::protocol::RegisterTriggerInput::new(
         trigger_type,
         crate::functions::trigger_deliver::DELIVER_ID,
         config.clone(),
     )
-    .with_metadata(json!({ "__binding": binding_id }))
+    .with_metadata(json!({ "__binding": binding_id }));
+    match provider_namespace {
+        Some(namespace) => input.in_trigger_namespace(namespace),
+        None => input,
+    }
+}
+
+fn compose_provider_namespace<'a>(
+    trigger_type: &str,
+    compose_namespace: Option<&'a str>,
+) -> Option<&'a str> {
+    if trigger_type != COMPOSE_OPERATION_TRIGGER {
+        return None;
+    }
+    compose_namespace
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
 }
 
 /// Register a binding's engine trigger over the worker channel and record its
@@ -1226,13 +1262,12 @@ pub fn register_delivery_trigger(
 /// Fail-open: probe errors produce no note; only definitive NOT_FOUND in every
 /// checked namespace warns.
 async fn provider_presence_note(deps: &Deps, trigger_type: &str) -> Option<String> {
-    let mut namespaces: Vec<String> = Vec::new();
-    if let Some(own) = deps.iii.namespace() {
-        namespaces.push(own);
-    }
-    if !namespaces.iter().any(|ns| ns == "default") {
-        namespaces.push("default".to_string());
-    }
+    let compose_namespace = std::env::var(COMPOSE_NAMESPACE_ENV).ok();
+    let namespaces = provider_probe_namespaces(
+        trigger_type,
+        compose_namespace.as_deref(),
+        deps.iii.namespace().as_deref(),
+    );
     let timeout_ms = deps.cfg().await.dispatch_timeout_ms;
     for ns in &namespaces {
         let probe = deps
@@ -1257,6 +1292,25 @@ async fn provider_presence_note(deps: &Deps, trigger_type: &str) -> Option<Strin
          provider should be running (e.g. the state worker for `state`), start it.",
         namespaces.join(", ")
     ))
+}
+
+fn provider_probe_namespaces(
+    trigger_type: &str,
+    compose_namespace: Option<&str>,
+    own_namespace: Option<&str>,
+) -> Vec<String> {
+    if let Some(namespace) = compose_provider_namespace(trigger_type, compose_namespace) {
+        return vec![namespace.to_string()];
+    }
+
+    let mut namespaces = own_namespace
+        .map(str::to_string)
+        .into_iter()
+        .collect::<Vec<_>>();
+    if !namespaces.iter().any(|namespace| namespace == "default") {
+        namespaces.push("default".to_string());
+    }
+    namespaces
 }
 
 /// Best-effort engine-side teardown; `true` when the engine accepted it, so
@@ -1314,14 +1368,10 @@ fn error_result(msg: String) -> ResultData {
 mod tests {
     use super::*;
 
-    /// The delivery trigger must ride the worker channel with BOTH namespace
-    /// fields unset: the SDK then stamps this worker's namespace on the target
-    /// and resolves the provider home-first. The retired function-dispatch
-    /// path pinned target, home, and provider to `default`, which parked every
-    /// binding registered from a namespaced deployment as PENDING forever
-    /// (console-04e02cb7 postmortem: `fires: 0` while the watched key was
-    /// written) and would have fired into a `default`-namespace hop this
-    /// harness never registers.
+    /// An ordinary delivery trigger rides the worker channel with both
+    /// namespace fields unset. The SDK then stamps this worker's namespace on
+    /// the target and resolves the provider home-first. Compose has a separate
+    /// test below because its provider is in the supervisor namespace.
     #[test]
     fn delivery_registration_rides_the_channel_namespace() {
         let input = delivery_registration_input(
@@ -1341,6 +1391,66 @@ mod tests {
         );
         assert!(input.namespace.is_none());
         assert!(input.trigger_namespace.is_none());
+    }
+
+    #[test]
+    fn compose_operation_uses_the_supervisor_as_trigger_provider() {
+        let input = delivery_registration_input_for_namespace(
+            COMPOSE_OPERATION_TRIGGER,
+            &json!({
+                "operation_id": "compose:test",
+                "terminal_only": true,
+            }),
+            "sub_compose",
+            Some("compose-host"),
+        );
+
+        assert_eq!(input.namespace, None);
+        assert_eq!(input.trigger_namespace.as_deref(), Some("compose-host"));
+        assert_eq!(
+            input.function_id,
+            crate::functions::trigger_deliver::DELIVER_ID
+        );
+        assert_eq!(
+            input.config,
+            json!({
+                "operation_id": "compose:test",
+                "terminal_only": true,
+            })
+        );
+        assert_eq!(input.metadata, Some(json!({ "__binding": "sub_compose" })));
+    }
+
+    #[test]
+    fn only_compose_operation_uses_the_supervisor_provider() {
+        assert_eq!(
+            compose_provider_namespace(COMPOSE_OPERATION_TRIGGER, Some(" compose-host ")),
+            Some("compose-host")
+        );
+        assert_eq!(
+            compose_provider_namespace("state", Some("compose-host")),
+            None
+        );
+        assert_eq!(
+            compose_provider_namespace(COMPOSE_OPERATION_TRIGGER, Some("  ")),
+            None
+        );
+    }
+
+    #[test]
+    fn compose_provider_probe_is_strictly_scoped_to_the_supervisor() {
+        assert_eq!(
+            provider_probe_namespaces(
+                COMPOSE_OPERATION_TRIGGER,
+                Some("compose-host"),
+                Some("project")
+            ),
+            vec!["compose-host"]
+        );
+        assert_eq!(
+            provider_probe_namespaces("state", Some("compose-host"), Some("project")),
+            vec!["project", "default"]
+        );
     }
 
     /// `sdk:` ids belong to the handle map; with the handle gone (a record

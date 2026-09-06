@@ -1,13 +1,11 @@
 # CI (.github/scripts/validate_worker.py) requires name/language/deploy/manifest
-# and reads the release version from `manifest`. `deploy: bundle` ships a source
-# tarball built by .github/workflows/_bundle.yml. The engine's bundle validator
-# rejects scripts.setup and non-preset runtime.base_image; scripts.install runs
-# once inside the sandbox (guarded by the /var/.iii-prepared marker), then
-# scripts.start runs every boot.
+# and reads the release version from `manifest`. The OCI image includes the
+# browser binaries and system libraries that cannot be installed in a bundle
+# sandbox at runtime.
 iii: v1
 name: scrapling
 language: python
-deploy: bundle
+deploy: image
 manifest: pyproject.toml
 license: Apache-2.0
 tags: [scraping, browser, crawler, anti-bot, extraction, http]
@@ -19,11 +17,9 @@ description: >-
 dependencies:
   configuration: "0.x"
 
-# Must name an engine-preset image ref verbatim: bundle workers may not pull
-# arbitrary base images, and this is how a non-node bundle picks its rootfs
-# (runtime.kind is deprecated).
 runtime:
-  base_image: docker.io/iiidev/python:latest
+  language: python
+  entry: src/main.py
 
 # Browsers (Camoufox / Chromium) + long-lived sessions are RAM-hungry.
 resources:
@@ -31,7 +27,5 @@ resources:
   cpus: 2
 
 scripts:
-  # Runs once (first boot): deps + browsers (`scrapling install` downloads the
-  # Camoufox/Chromium used by stealthy-fetch / dynamic-fetch / screenshot).
-  install: "pip install -e . && scrapling install"
+  install: "pip install ."
   start: "python -m src.main"

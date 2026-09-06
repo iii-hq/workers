@@ -7,7 +7,16 @@ import {
   MoreHorizontal,
   Square,
 } from 'lucide-react'
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react'
 import { PermissionModePicker } from '@/components/permissions/PermissionModePicker'
 import { MOBILE_LAYOUT_QUERY, useMediaQuery } from '@/hooks/use-media-query'
 import { attachmentsFromFiles } from '@/lib/attachments/from-files'
@@ -39,6 +48,43 @@ import { $appendComposerText } from './lexical/composer-text'
 import { ModelPicker } from './ModelPicker'
 import { nextHistoryTarget } from './queue-history'
 import { useFileDrop } from './use-file-drop'
+
+const WIDE_TOOLBAR_QUERY = '(min-width: 640px)'
+
+function subscribeWideToolbar(onChange: () => void): () => void {
+  if (typeof window.matchMedia !== 'function') return () => {}
+  const query = window.matchMedia(WIDE_TOOLBAR_QUERY)
+  query.addEventListener('change', onChange)
+  return () => query.removeEventListener('change', onChange)
+}
+
+function readWideToolbar(): boolean {
+  if (typeof window.matchMedia !== 'function') return true
+  return window.matchMedia(WIDE_TOOLBAR_QUERY).matches
+}
+
+/**
+ * Injected composer actions are stateful components (a microphone holds a
+ * capture session), so they must mount once. The two toolbar layouts are
+ * both in the DOM and only CSS hides one, so this slot mounts its children
+ * in the layout that is currently visible and nothing in the other.
+ */
+function ComposerActionsSlot({
+  layout,
+  children,
+}: {
+  layout: 'narrow' | 'wide'
+  children: ReactNode
+}) {
+  const wide = useSyncExternalStore(
+    subscribeWideToolbar,
+    readWideToolbar,
+    () => true,
+  )
+  if (!children) return null
+  const visible = wide ? layout === 'wide' : layout === 'narrow'
+  return visible ? <>{children}</> : null
+}
 
 export interface ComposerSubmitPayload {
   text: string
@@ -153,6 +199,11 @@ interface ComposerProps {
   onTextChange?: (text: string) => void
   /** Initial attachment chips (applied once on mount). */
   initialAttachments?: Attachment[]
+  /**
+   * Injected toolbar actions rendered beside the attach button (the
+   * `host.chat.registerComposerAction` slot), already built by the host.
+   */
+  composerActions?: ReactNode
   functionEntries?: FunctionEntry[]
   /**
    * File search under `workingDir` for the `@` / `#` menus. Absent (mock
@@ -220,6 +271,7 @@ export function Composer({
   initialText,
   onTextChange,
   initialAttachments,
+  composerActions,
   functionEntries,
   searchFiles,
   onOpenFileMention,
@@ -569,6 +621,9 @@ export function Composer({
             disabled={inputDisabled}
             className={toolbarIconButtonClass}
           />
+          <ComposerActionsSlot layout="narrow">
+            {composerActions}
+          </ComposerActionsSlot>
           <button
             type="button"
             onClick={() => setMobileSettingsOpen(true)}
@@ -607,6 +662,9 @@ export function Composer({
               disabled={inputDisabled}
               className={toolbarIconButtonClass}
             />
+            <ComposerActionsSlot layout="wide">
+              {composerActions}
+            </ComposerActionsSlot>
             {showMemoryBank && onMemoryBankChange ? (
               <BankPicker
                 value={memoryBank ?? null}

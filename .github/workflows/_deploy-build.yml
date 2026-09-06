@@ -114,7 +114,7 @@ jobs:
               sudo apt-get install -y musl-tools
               ;;
             aarch64-unknown-linux-gnu)
-              sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+              sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross
               ;;
             armv7-unknown-linux-gnueabihf)
               sudo apt-get install -y gcc-arm-linux-gnueabihf libc6-dev-armhf-cross

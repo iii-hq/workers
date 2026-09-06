@@ -8,6 +8,7 @@
 
 import { useMemo, useSyncExternalStore } from 'react'
 import type {
+  ComposerActionRegistration,
   ConfigFormLayout,
   ConfigFormProps,
   FunctionTriggerRenderer,
@@ -64,6 +65,11 @@ export interface RegisteredSessionChip extends SessionChipRegistration {
 
 export interface RegisteredSessionTurnSummary
   extends SessionTurnSummaryRegistration {
+  scope: string
+  path: string
+}
+
+export interface RegisteredComposerAction extends ComposerActionRegistration {
   scope: string
   path: string
 }
@@ -138,6 +144,7 @@ const configFormsStore = createStore<RegisteredConfigForm>()
 const providerConfigFormsStore = createStore<RegisteredProviderConfigForm>()
 const sessionChipsStore = createStore<RegisteredSessionChip>()
 const sessionTurnSummariesStore = createStore<RegisteredSessionTurnSummary>()
+const composerActionsStore = createStore<RegisteredComposerAction>()
 const uiAssetsStatusStore = createValueStore<UiAssetsStatus>('unavailable')
 
 /**
@@ -224,6 +231,22 @@ export function registerExtSessionTurnSummary(
     )
   }
   return sessionTurnSummariesStore.add(entry)
+}
+
+/** Duplicate action id: last registration wins in the composer toolbar. */
+export function registerExtComposerAction(
+  entry: RegisteredComposerAction,
+): () => void {
+  const duplicate = composerActionsStore
+    .get()
+    .find((action) => action.id === entry.id)
+  if (duplicate && duplicate.path !== entry.path) {
+    console.warn(
+      `[iii-ui] duplicate composer action id '${entry.id}' - ` +
+        `'${entry.path}' overrides '${duplicate.path}'`,
+    )
+  }
+  return composerActionsStore.add(entry)
 }
 
 export function getExtPages(): readonly RegisteredPage[] {
@@ -363,6 +386,28 @@ export function useExtSessionTurnSummaries(): readonly RegisteredSessionTurnSumm
     () => EMPTY,
   )
   return useMemo(() => dedupeSessionTurnSummaries(summaries), [summaries])
+}
+
+function dedupeComposerActions(
+  actions: readonly RegisteredComposerAction[],
+): readonly RegisteredComposerAction[] {
+  const byId = new Map<string, RegisteredComposerAction>()
+  for (const action of actions) byId.set(action.id, action)
+  return [...byId.values()]
+}
+
+/** Composer toolbar actions deduplicated by id; last registration wins. */
+export function getExtComposerActions(): readonly RegisteredComposerAction[] {
+  return dedupeComposerActions(composerActionsStore.get())
+}
+
+export function useExtComposerActions(): readonly RegisteredComposerAction[] {
+  const actions = useSyncExternalStore(
+    composerActionsStore.subscribe,
+    composerActionsStore.get,
+    () => EMPTY,
+  )
+  return useMemo(() => dedupeComposerActions(actions), [actions])
 }
 
 /** The injected form override for one configuration id (last wins). */

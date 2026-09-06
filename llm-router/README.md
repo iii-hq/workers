@@ -54,10 +54,12 @@ partial content, so consumers never hang on a half-open stream.
 | `router::complete` | Non-streaming convenience over the same pipeline; returns the final message. |
 | `router::abort` | Cancel an in-flight turn by `request_id`. |
 | `router::route` | Read-only routing preview: `{model, provider?}` → `{provider, candidates}`, same rules and error codes as `router::chat`. Pin the result as the explicit `provider` on the chat call when you need the provider before streaming. |
-| `router::models::list` | List catalog models, filterable by `provider` / `capability`. |
+| `router::models::list` | List catalog models, filterable by `provider` / `capability` / `modality` (`chat` by default, `stt`, `tts`, `any`). |
 | `router::models::get` | Fetch one model record (`null` when unknown). |
 | `router::models::supports` | Check one capability flag for one model. |
 | `router::embed` | Batch text embeddings through the first embed-capable provider in the registry (`{model?, provider?, input[]}` → `{provider, model, embeddings[][]}`); providers without an embed surface are skipped. |
+| `router::transcribe` | Speech to text: `{model?, provider?, audio_base64, mime?, language?, prompt?}` → `{provider, model, text, segments[]?, language?, duration_secs?}`. The provider comes from the named `provider`, else from the catalog owner of the `stt` model, else the first provider that declared one. |
+| `router::speak` | Text to speech: `{model?, provider?, text, voice?, format?, language?, speed?}` → `{provider, model, audio_base64, mime, voice?, duration_secs?}`. Same resolution over `tts` models. |
 | `router::count_tokens` | Count prompt tokens: `{model, provider?, system_prompt?, tools?, messages}` → `{provider, model, tokens, estimator}`, resolved with the same routing rules as `router::chat` and forwarded to `provider::<id>::count_tokens`. Never runs the model and costs nothing; `estimator` is `provider` (metering API) or `tiktoken` (local tokenizer). A provider without the surface is a typed `router/no_token_counter` error, so callers can fall back to their own estimate. |
 | `router::provider::list` | Registered providers with `configured` / `available` status. |
 
@@ -92,8 +94,10 @@ registration token, and every later protocol call must present it.
 | `router::models::reconcile` | Replace the provider's catalog slice in one write. |
 
 The provider worker itself exposes `provider::<id>::stream` and, when
-capable, `provider::<id>::refresh_models` (model discovery) and
-`provider::<id>::count_tokens` (prompt token counting).
+capable, `provider::<id>::refresh_models` (model discovery),
+`provider::<id>::count_tokens` (prompt token counting),
+`provider::<id>::embed` (embeddings), and the speech pair
+`provider::<id>::transcribe` / `provider::<id>::speak`.
 
 ## Configuration
 
@@ -223,6 +227,30 @@ system_prompt?, tools?, messages}` → `{model, tokens, estimator}`) to serve
 (`estimator: "provider"`) or a local tokenizer estimate (`estimator:
 "tiktoken"`). Providers without it simply make `router::count_tokens` return
 a typed `router/no_token_counter` error for that provider.
+
+### Speech providers
+
+A speech provider is the same kind of worker with no chat stream: it
+declares its models with a `speech` block and serves one or both speech
+surfaces. `router::models::list` hides speech models from chat pickers
+unless asked (`modality: "stt" | "tts" | "any"`), and `router::chat`
+refuses them with a message that names the right door.
+
+```json
+{ "id": "scribe-v1", "provider": "elevenlabs", "context_window": 0, "max_output_tokens": 0,
+  "speech": { "modality": "stt", "languages": ["en", "hi"], "streaming": true } }
+```
+
+| Function | Request | Response |
+|---|---|---|
+| `provider::<id>::transcribe` | `{model?, audio_base64, mime, language?, prompt?}` | `{model, text, segments[{text, start_secs?, end_secs?}]?, language?, duration_secs?}` |
+| `provider::<id>::speak` | `{model?, text, voice?, format, language?, speed?}` | `{model, audio_base64, mime, voice?, duration_secs?}` |
+
+`model` arrives as the id the caller named, or `null` for the provider's
+default. `format` is what the caller asked for (`mp3`, `wav`, `pcm16`,
+`opus`); answer with the container you produced and say so in `mime`.
+Credentials resolve through `router::provider::resolve` exactly as for
+chat providers.
 
 The first real provider implementing this protocol is
 [`provider-anthropic/`](https://github.com/iii-hq/workers/tree/main/provider-anthropic) — useful as a reference

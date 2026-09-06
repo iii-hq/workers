@@ -28,8 +28,13 @@ pub fn make_models_list(
     move |req: ModelsListRequest| {
         let catalog = catalog.clone();
         Box::pin(async move {
-            let models =
-                models_list(&catalog, req.provider.as_deref(), req.capability.as_deref()).await;
+            let models = models_list(
+                &catalog,
+                req.provider.as_deref(),
+                req.capability.as_deref(),
+                req.modality.unwrap_or_default(),
+            )
+            .await;
             Ok(ModelsListResponse { models })
         })
     }

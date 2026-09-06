@@ -1,0 +1,13 @@
+iii: v1
+name: provider-elevenlabs
+language: rust
+deploy: binary
+manifest: Cargo.toml
+license: Apache-2.0
+bin: provider-elevenlabs
+tags: [speech, elevenlabs, stt, tts, provider]
+description: ElevenLabs speech provider worker; implements provider::elevenlabs::transcribe and provider::elevenlabs::speak behind llm-router's router::transcribe and router::speak.
+
+dependencies:
+  state: "^0.22.2"
+  llm-router: "^1.4.16"

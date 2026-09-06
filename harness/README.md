@@ -108,10 +108,12 @@ the only contract.
 **3. Need a capability that is not registered?**
 - `directory::registry::workers::list { search: "<capability>" }`
 - `directory::registry::workers::info { name }` to judge fit
-- `compose::add { worker: "<name>" }` to declare and start it
-- confirm with `engine::functions::list { prefix: "<worker>::" }` and fetch each contract
+- choose an operation id and register a one-shot `compose-operation` wake with
+  `{ "operation_id": "<operation-id>", "terminal_only": true }`
+- call `compose::add { worker: "<name>", operation_id: "<operation-id>" }` with the same id
+- read `compose::operation` once for race recovery, then confirm the functions after the terminal event
 
-**4. Worker lifecycle.** `compose::status`, `compose::add`, `compose::up`, `compose::down`, `compose::restart`, `compose::update`, and `compose::remove`. Fetch their contracts with `compose::schema { function_id: "compose::<operation>" }`. The harness routes `compose::*` to its supervising daemon and scopes each call to its own compose file.
+**4. Worker lifecycle.** `compose::status`, `compose::add`, `compose::up`, `compose::down`, `compose::restart`, `compose::update`, and `compose::remove`. `add`, `update`, and `remove` use the same `compose-operation` wake flow above; the other operations return their final result directly. `add`, `update`, and `remove` accept a `workers` list for one batch, while their singular `worker` field remains compatible. Fetch their contracts with `compose::schema { function_id: "compose::<operation>" }`. The harness routes `compose::*` to its supervising daemon and scopes each call to its own compose file.
 
 **5. Triggers, not polling.** To react to events (HTTP, schedule, webhook, file change), bind a trigger instead of polling. Discover the type with `engine::triggers::list`, copy config from its schema, and confirm the binding fires with a real call (e.g. `web::fetch` to its local URL).
 
@@ -226,6 +228,20 @@ defaults. Which agent profile a spawn names is the prompt's decision — the pro
 body steers it, nothing gates it. Spawning
 with `agent` into an already RUNNING session of the caller's own tree merges
 the task like any reuse and does not re-apply the profile.
+
+The harness ships one profile of its own, `worker-builder`
+([`agents/worker-builder.md`](agents/worker-builder.md)): an identity that
+extends the bundled `iii` base and takes a new worker for this repository from
+scope to scaffold, CI gates, live verification on the bus, pull request, and an
+experimental registry release, asking before every irreversible step. It is
+published in the harness skills payload as `agents/worker-builder.md`, which
+`directory::skills::download { worker: "harness" }` routes into the
+directory's `agents_folder`; copying the file there by hand works the same.
+Its skill filter names the six knowledge skills from
+[`iii-hq/iii/skills`](https://github.com/iii-hq/iii/tree/main/skills)
+(`npx skills add iii-hq/iii/skills`); missing ones are warnings, not
+failures. Then `harness::send { options: { agent: "worker-builder" } }` (or
+the console's agent picker) runs it.
 
 New sessions also freeze a names-and-descriptions-only skill index into the
 system-prompt prefix. `options.skills` on `harness::send` or `harness::spawn`
