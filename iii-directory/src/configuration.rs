@@ -7,9 +7,10 @@
 //! `configuration:updated` event re-fetches and applies the change.
 //!
 //! Tunable fields (`registry_url`, `download_timeout_ms`,
-//! `registry_cache_ttl_ms`, `filter_unregistered`) hot-reload in place;
+//! `registry_cache_ttl_ms`, `filter_unregistered`, `function_search_mode`) hot-reload in place;
 //! topology fields (`skills_folder`, `local_skills_folder`, `agents_folder`,
-//! `agents_skills_folder`, `auto_download`) are refused with a "restart
+//! `agents_skills_folder`, `auto_download`, `function_search_model_path`,
+//! `function_search_model_download`) are refused with a "restart
 //! required" log because they define on-disk roots and boot-time task
 //! wiring.
 
@@ -99,7 +100,8 @@ pub async fn register_config(iii: &IIIClient, seed: Option<&SkillsConfig>) -> Re
         "name": "iii-directory",
         "description": "Skills and agent-skills folders, workers-registry URL, download timeouts, \
                         skill-visibility filters, and the function-search knobs \
-                        (inject_hint, hint_min_workers, registry_search) for the \
+                        (inject_hint, hint_min_workers, registry_search, function_search_mode, \
+                        function_search_model_path) for the \
                         iii-directory worker.",
         "schema": SkillsConfig::json_schema(),
         "metadata": { "ui_form": DEFAULT_CONFIG_ID },
@@ -230,12 +232,19 @@ async fn on_config_change(iii: &IIIClient, state: &SharedState) {
     if cfg.topology() != state.boot_topology {
         tracing::warn!(
             "configuration change alters topology (skills_folder, local_skills_folder, \
-             agents_folder, agents_skills_folder, or auto_download); a restart is required \
+             agents_folder, agents_skills_folder, auto_download, \
+             function_search_model_path, or function_search_model_download); a restart is required \
              to apply it — keeping previous configuration"
         );
         return;
     }
     let inject_hint = cfg.inject_hint;
+    crate::config::warn_if_search_mode_lacks_model(
+        cfg.function_search_mode,
+        cfg.resolved_function_search_model_path()
+            .as_deref()
+            .is_some_and(crate::functions::search_semantic::bundle_complete),
+    );
     apply_config(state, cfg).await;
     // Reconcile the pre-generate hook binding with the reloaded knob (hot,
     // no restart): on → bind once; off → unregister.

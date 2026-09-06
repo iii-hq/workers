@@ -21,6 +21,20 @@ function call(id: string): FunctionTriggerMessage {
   }
 }
 
+function triggerRegistration(id: string): FunctionTriggerMessage {
+  return {
+    id,
+    role: 'function-trigger',
+    functionId: 'engine::register_trigger',
+    input: {
+      trigger_type: 'state',
+      config: { key: 'build', scope: 'ops' },
+    },
+    output: { subscription_id: `subscription-${id}` },
+    createdAt: 0,
+  }
+}
+
 function assistant(
   id: string,
   content: string,
@@ -52,6 +66,21 @@ function transcript(): Message[] {
 }
 
 describe('MessageList function-trigger groups', () => {
+  it('keeps trigger registration visible with its antenna marker when collapsed', () => {
+    const html = renderToStaticMarkup(
+      <MessageList
+        messages={[triggerRegistration('registration'), call('c1')]}
+      />,
+    )
+
+    expect(html).toContain('data-message-row="registration"')
+    expect(html).toContain('data-timeline-activity-kind="trigger-registration"')
+    expect(html).toContain('lucide-radio-tower')
+    expect(html).toContain('stroke-ok')
+    expect(html).toContain('data-timeline-activity-kind="function"')
+    expect(html).not.toContain('data-function-display-slot=""')
+  })
+
   it('keeps lightweight call shells while mounting only the latest calls', () => {
     const html = renderToStaticMarkup(<MessageList messages={transcript()} />)
 
@@ -62,7 +91,7 @@ describe('MessageList function-trigger groups', () => {
     expect(
       html.match(/class="chat-activity-item" data-visible="false"/g),
     ).toHaveLength(2)
-    expect(html).toContain('3 triggers')
+    expect(html).toContain('Agent triggered 3 functions')
     expect(html).toContain('show all')
     expect(html).toContain('data-active="false" aria-hidden="true"')
     expect(html).toContain(
@@ -135,8 +164,8 @@ describe('MessageList function-trigger groups', () => {
 
     expect(html.match(/data-function-trigger-group=""/g)).toHaveLength(1)
     expect(html).toContain('data-function-trigger-count="4"')
-    expect(html).toContain('4 triggers')
-    expect(html).not.toContain('2 triggers')
+    expect(html).toContain('Agent triggered 4 functions')
+    expect(html).not.toContain('Agent triggered 2 functions')
   })
 
   it('reveals a hidden wake pair when the landing targets its notification', () => {

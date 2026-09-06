@@ -228,22 +228,26 @@ Full reference (discovery buckets, interface boot smoke, e2e workflows):
 Release Control is the only supported release interface. For each source SHA,
 [`deploy-descriptor-index.yml`](.github/workflows/deploy-descriptor-index.yml)
 uses the repository-owned compiler to join `.deploy/workers.yaml`, the public
-manifest, and the package manifest exactly once. Release
-Control selects those immutable bytes and dispatches the bounded phases:
+manifest, and the package manifest exactly once.
 
-1. [`deploy-prepare.yml`](.github/workflows/deploy-prepare.yml) validates the
-   selected descriptor and source, then builds one
-   independent job per build unit through
-   [`_deploy-build.yml`](.github/workflows/_deploy-build.yml).
-2. [`deploy-publish.yml`](.github/workflows/deploy-publish.yml) publishes the
-   exact immutable target and CASes the requested `@next` or `@latest` channel,
-   including a digest-pinned OCI image and alias when applicable.
-3. [`deploy-verify.yml`](.github/workflows/deploy-verify.yml) verifies the
-   selected channel and all public surfaces.
+This repository only builds. [`build.yml`](.github/workflows/build.yml) takes
+one worker and one exact source SHA, validates the selected descriptor, builds
+one independent job per build unit through
+[`_deploy-build.yml`](.github/workflows/_deploy-build.yml), captures the
+registered interface, and uploads only immutable, content-addressed bytes:
 
-Every phase uploads `deployment-result.json` and posts the same bytes to Release
-Control. The target version is selected independently from package-manifest
-metadata; no phase rebuilds or rereads the catalog after prepare.
+- release assets under the shared `build-<source_sha>` prerelease, uploaded
+  once and never overwritten (an existing asset with different bytes fails the
+  job);
+- an OCI index tagged `build-<source_sha>` when the descriptor declares an
+  image;
+- an attested `build-manifest` artifact naming every asset by URL and SHA-256,
+  the image digest, the descriptor and the captured interface.
+
+Release Control reads that manifest and publishes the Registry version, moves
+the `@next` or `@latest` channel by compare-and-swap, creates the versioned
+GitHub release and tags the image. No workflow here knows a version, a channel
+or a Release Control endpoint.
 
 Step-by-step (variants, troubleshooting, rollback):
 [`docs/sops/release.md`](docs/sops/release.md).

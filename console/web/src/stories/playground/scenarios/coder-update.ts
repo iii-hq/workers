@@ -12,7 +12,7 @@ import {
 
 export const coderUpdate = makeBackend(
   'coder-update',
-  async function* (_prompt, _mode, _model, opts) {
+  async function* (_prompt, _model, opts) {
     const signal = opts?.signal
     yield* streamThought('locating the discovery section in SKILL.md…', {
       signal,

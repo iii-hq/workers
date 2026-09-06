@@ -31,6 +31,7 @@ import type {
   FunctionTriggerMessage,
   Message,
   SystemMessage,
+  SystemNoticeFailure,
   SystemNoticeTechnicalDetails,
   TriggerFiredData,
   UserMessage,
@@ -264,12 +265,27 @@ function lifecycleNotice(
         ? `Automatic recovery stopped after ${attempted} of ${maxAttempts ?? attempted} attempts.`
         : undefined,
     ].filter((part): part is string => Boolean(part))
+    const failure: SystemNoticeFailure = {
+      summary: publicSummary,
+      ...(typeof d.retryable === 'boolean' ? { retryable: d.retryable } : {}),
+      ...(partial ? { partialResultAvailable: true } : {}),
+      ...(attempted > 0
+        ? {
+            recoveryAttempted: attempted,
+            ...(maxAttempts !== undefined
+              ? { recoveryMaxAttempts: maxAttempts }
+              : {}),
+          }
+        : {}),
+      ...(typeof d.phase === 'string' ? { phase: d.phase } : {}),
+    }
     return {
       id: entryId,
       role: 'system',
-      kind: 'notice',
+      kind: 'turn-failure',
       content: parts.join(' '),
       tone: 'error',
+      failure,
       ...(nextActions.length > 0 ? { nextActions } : {}),
       ...(hasTechnicalDetails ? { technicalDetails } : {}),
       createdAt,

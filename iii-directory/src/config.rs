@@ -93,6 +93,56 @@ fn default_auto_download() -> bool {
     true
 }
 
+/// The pinned MiniLM search bundle lives here unless configured otherwise:
+/// embedding files at the root, reranker files under `reranker/`.
+pub fn default_function_search_model_path() -> Option<String> {
+    Some(format!(
+        "~/.cache/iii/all-MiniLM-L6-v2-{}",
+        crate::functions::search_semantic::MINILM_REVISION
+    ))
+}
+
+fn default_function_search_model_download() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FunctionSearchMode {
+    Lexical,
+    #[default]
+    Hybrid,
+}
+
+/// `hybrid` needs a local semantic model; without a complete
+/// bundle at `function_search_model_path` every search silently runs
+/// BM25-only, which is easy to mistake for the model being active. Say so
+/// once, loudly. `model_ready` is "the path is set and the bundle verifies".
+pub fn warn_if_search_mode_lacks_model(mode: FunctionSearchMode, model_ready: bool) {
+    if mode != FunctionSearchMode::Lexical && !model_ready {
+        tracing::warn!(
+            ?mode,
+            "function_search_mode needs a local semantic model but no complete bundle is \
+             available at function_search_model_path (unset, missing, or failed \
+             verification/download); directory::search_functions runs BM25-only until the \
+             bundle is in place and iii-directory restarts"
+        );
+    }
+}
+
+fn deserialize_model_path<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    if value.as_deref().is_some_and(|path| path.trim().is_empty()) {
+        return Err(serde::de::Error::custom(
+            "function_search_model_path must not be empty",
+        ));
+    }
+    Ok(value)
+}
+
 #[derive(Deserialize, Serialize, Debug, Clone, JsonSchema)]
 pub struct SkillsConfig {
     /// Folder that backs every read (`directory::skills::list`,
@@ -199,13 +249,38 @@ pub struct SkillsConfig {
     #[serde(default = "default_hint_min_workers")]
     pub hint_min_workers: usize,
 
-    /// Also search the public worker registry (verified authors only) on
+    /// Also search the private workers registry (every listed worker) on
     /// every `directory::search_functions` call and return matching
     /// NOT-installed workers as an `installable` section alongside the
     /// installed results. Fail-open: a registry error just omits the
     /// section.
     #[serde(default = "default_registry_search")]
     pub registry_search: bool,
+
+    /// Installed-function search lane. Hybrid (BM25 fused with the local
+    /// MiniLM model) is the default; lexical is BM25 only. Hybrid needs the bundle at
+    /// `function_search_model_path` (downloaded on first run by default) and
+    /// serves BM25 until it is ready.
+    #[serde(default)]
+    pub function_search_mode: FunctionSearchMode,
+
+    /// Local semantic model directory: the pinned MiniLM bundle (embedding
+    /// files at the root, reranker files under `reranker/`). Defaults to `~/.cache/iii/all-MiniLM-L6-v2-<revision>`;
+    /// `null` disables the semantic lane. Changing it requires a restart.
+    #[serde(
+        default = "default_function_search_model_path",
+        deserialize_with = "deserialize_model_path"
+    )]
+    pub function_search_model_path: Option<String>,
+
+    /// When a semantic mode is configured and the bundle at
+    /// `function_search_model_path` is missing or incomplete at boot, download
+    /// the pinned files from Hugging Face once, verifying every file by byte
+    /// length and SHA-256 before use. Set `false` for air-gapped stacks; the
+    /// worker then stays BM25-only until the bundle is provisioned by hand.
+    /// Read once at boot: changing it requires a restart.
+    #[serde(default = "default_function_search_model_download")]
+    pub function_search_model_download: bool,
 }
 
 fn default_inject_hint() -> bool {
@@ -237,6 +312,9 @@ impl Default for SkillsConfig {
             inject_hint: default_inject_hint(),
             hint_min_workers: default_hint_min_workers(),
             registry_search: default_registry_search(),
+            function_search_mode: FunctionSearchMode::default(),
+            function_search_model_path: default_function_search_model_path(),
+            function_search_model_download: default_function_search_model_download(),
         }
     }
 }
@@ -303,10 +381,16 @@ impl SkillsConfig {
         self.registry_url.trim_end_matches('/')
     }
 
+    pub fn resolved_function_search_model_path(&self) -> Option<PathBuf> {
+        self.function_search_model_path
+            .as_deref()
+            .map(iii_worker_paths::resolve_path)
+    }
+
     /// Restart-requiring fields. A `configuration:updated` reload that
     /// changes any of these is refused (logged "restart required"):
     /// `skills_folder` / `local_skills_folder` / `agents_folder` /
-    /// `agents_skills_folder` are the on-disk read/write roots baked into
+    /// `agents_skills_folder`, `function_search_model_path` and `function_search_model_download` are baked into
     /// running tasks (and the fs-watch root set), and `auto_download` wires
     /// the `worker`-trigger subscription + boot reconcile at startup — none
     /// can be re-wired safely in place.
@@ -317,6 +401,8 @@ impl SkillsConfig {
             agents_folder: self.agents_folder.clone(),
             agents_skills_folder: self.agents_skills_folder.clone(),
             auto_download: self.auto_download,
+            function_search_model_path: self.resolved_function_search_model_path(),
+            function_search_model_download: self.function_search_model_download,
         }
     }
 
@@ -375,6 +461,8 @@ pub struct Topology {
     pub agents_folder: String,
     pub agents_skills_folder: String,
     pub auto_download: bool,
+    pub function_search_model_path: Option<PathBuf>,
+    pub function_search_model_download: bool,
 }
 
 pub fn load_config(path: &str) -> Result<SkillsConfig> {
@@ -390,6 +478,14 @@ mod tests {
     #[test]
     fn defaults_from_empty_yaml() {
         let cfg: SkillsConfig = serde_yaml::from_str("{}").unwrap();
+        assert_eq!(cfg.function_search_mode, FunctionSearchMode::Hybrid);
+        assert_eq!(
+            cfg.function_search_model_path.as_deref(),
+            Some("~/.cache/iii/all-MiniLM-L6-v2-c9745ed1d9f207416be6d2e6f8de32d1f16199bf")
+        );
+        assert!(cfg.function_search_model_download);
+        let disabled = SkillsConfig::from_yaml("function_search_model_path: null\n").unwrap();
+        assert_eq!(disabled.function_search_model_path, None);
         assert_eq!(cfg.skills_folder, default_skills_folder());
         assert_eq!(cfg.local_skills_folder, default_local_skills_folder());
         assert_eq!(cfg.agents_folder, default_agents_folder());
@@ -399,6 +495,19 @@ mod tests {
         assert_eq!(cfg.registry_cache_ttl_ms, 60_000);
         assert!(cfg.filter_unregistered);
         assert!(cfg.auto_download);
+    }
+
+    #[test]
+    fn function_search_modes_parse_and_invalid_values_fail() {
+        for (name, expected) in [
+            ("lexical", FunctionSearchMode::Lexical),
+            ("hybrid", FunctionSearchMode::Hybrid),
+        ] {
+            let cfg = SkillsConfig::from_yaml(&format!("function_search_mode: {name}\n")).unwrap();
+            assert_eq!(cfg.function_search_mode, expected);
+        }
+        assert!(SkillsConfig::from_yaml("function_search_mode: remote\n").is_err());
+        assert!(SkillsConfig::from_yaml("function_search_model_path: ''\n").is_err());
     }
 
     #[test]
@@ -603,6 +712,9 @@ auto_download: false
             "registry_cache_ttl_ms",
             "filter_unregistered",
             "auto_download",
+            "function_search_mode",
+            "function_search_model_path",
+            "function_search_model_download",
         ] {
             assert!(props.contains_key(field), "schema missing {field}");
         }
@@ -647,6 +759,7 @@ auto_download: false
             download_timeout_ms: 1,
             registry_cache_ttl_ms: 2,
             filter_unregistered: !base.filter_unregistered,
+            function_search_mode: FunctionSearchMode::Hybrid,
             ..base.clone()
         };
         assert_eq!(base.topology(), tuned.topology());
@@ -675,10 +788,20 @@ auto_download: false
             auto_download: !base.auto_download,
             ..base.clone()
         };
+        let model = SkillsConfig {
+            function_search_model_path: Some("/models/minilm".into()),
+            ..base.clone()
+        };
+        let download = SkillsConfig {
+            function_search_model_download: !base.function_search_model_download,
+            ..base.clone()
+        };
+        assert_ne!(base.topology(), download.topology());
         assert_ne!(base.topology(), folder.topology());
         assert_ne!(base.topology(), local.topology());
         assert_ne!(base.topology(), agents.topology());
         assert_ne!(base.topology(), profiles.topology());
         assert_ne!(base.topology(), auto.topology());
+        assert_ne!(base.topology(), model.topology());
     }
 }

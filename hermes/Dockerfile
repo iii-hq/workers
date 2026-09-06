@@ -8,6 +8,7 @@ ARG TARGETARCH
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    UV_CACHE_DIR=/tmp/uv-cache \
     UV_FROZEN=1 \
     UV_LINK_MODE=copy \
     UV_PYTHON=/usr/local/bin/python3.11 \
@@ -23,7 +24,11 @@ ADD --checksum=sha256:8710e0017792e78369a7da3d96c16141f0787374285f1a6cf6f80d29b7
 RUN mkdir -p /opt/hermes-agent \
     && tar -xzf /tmp/hermes-agent.tar.gz --strip-components=1 -C /opt/hermes-agent \
     && uv sync --project /opt/hermes-agent --frozen --no-dev \
-    && test -x /opt/hermes-agent/.venv/bin/hermes
+    && test -x /opt/hermes-agent/.venv/bin/hermes \
+    && find /opt/hermes-agent/.venv -path '*.dist-info/uv_cache.json' -delete \
+    && find /opt/hermes-agent/.venv -path '*.dist-info/RECORD' -exec sed -i '/uv_cache\.json,/d' {} + \
+    && rm -rf /tmp/uv-cache \
+    && find /opt/hermes-agent -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
 
 # Download the exact iii release asset for the BuildKit target architecture,
 # validate its reviewed checksum, and install only the binary from the archive.
@@ -43,7 +48,10 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 COPY src/ src/
 RUN UV_PROJECT_ENVIRONMENT=/app/.venv uv sync --frozen --no-dev --no-editable \
-    && find /opt/hermes-agent /app -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
+    && find /app/.venv -path '*.dist-info/uv_cache.json' -delete \
+    && find /app/.venv -path '*.dist-info/RECORD' -exec sed -i '/uv_cache\.json,/d' {} + \
+    && rm -rf /tmp/uv-cache \
+    && find /app -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
 
 ENV PATH="/app/.venv/bin:/opt/hermes-agent/.venv/bin:${PATH}"
 

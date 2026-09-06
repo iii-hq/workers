@@ -20,6 +20,32 @@ const INDEX_DESCRIPTION_BYTES: usize = 160;
 pub(crate) const EXCLUDED_NAMESPACE_PREFIXES: [&str; 1] = ["engine::"];
 /// The search's own id: never searchable, never operating evidence.
 pub(crate) const SEARCH_FN: &str = "directory::search_functions";
+/// Exact function ids hidden from search regardless of their worker: infra
+/// primitives an agent must never be handed as a capability (they fail the
+/// agent's dispatch policy if returned). `state::claim-namespace` is a
+/// worker-lifecycle claim, not a task capability.
+pub(crate) const EXCLUDED_FUNCTION_IDS: [&str; 1] = ["state::claim-namespace"];
+/// Function-id suffixes that are internal by convention. `<worker>::on-config-change`
+/// is the configuration-reload handler every worker registers (see the
+/// `iii-config-client` crate). Every in-repo registration now carries the
+/// `internal: true` metadata the catalog filter keys on; this rule guards
+/// against a future hand-rolled registration that forgets it.
+pub(crate) const EXCLUDED_FUNCTION_SUFFIXES: [&str; 1] = ["::on-config-change"];
+
+/// Whether a function id must be kept out of every search lane: the search's
+/// own id, an excluded namespace prefix, an explicitly excluded id, or an
+/// internal-by-convention suffix. Functions that do carry
+/// `metadata.internal: true` are dropped earlier, when the catalog is built.
+pub(crate) fn excluded_from_search(id: &str) -> bool {
+    id == SEARCH_FN
+        || EXCLUDED_NAMESPACE_PREFIXES
+            .iter()
+            .any(|prefix| id.starts_with(prefix))
+        || EXCLUDED_FUNCTION_IDS.contains(&id)
+        || EXCLUDED_FUNCTION_SUFFIXES
+            .iter()
+            .any(|suffix| id.ends_with(suffix))
+}
 
 /// One catalog entry: the contract fields search runs on.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -188,21 +214,11 @@ impl Bm25Index {
             // term frequency (BM25-saturated by K1) is what lets the
             // relative function floor prune same-worker family members
             // that match only the namespace token plus a generic word.
-            let mut text = format!("{0} {0} {0} {1}", tool.name, tool.description);
+            let mut text = format!("{0} {0} {1}", tool.name, searchable_text(tool));
             if tool.name == "browser::fetch" {
                 text.push_str(
                     " default static web page webpage website RSS Atom API content scrape scraping",
                 );
-            }
-            if let Some(properties) = tool
-                .parameters
-                .get("properties")
-                .and_then(serde_json::Value::as_object)
-            {
-                for key in properties.keys() {
-                    text.push(' ');
-                    text.push_str(key);
-                }
             }
             let mut terms: HashMap<String, u32> = HashMap::new();
             for term in bm25_terms(&text) {
@@ -350,6 +366,25 @@ pub(crate) fn slim_description(description: &str) -> String {
     truncate(sentence.trim_end().to_string(), INDEX_DESCRIPTION_BYTES)
 }
 
+/// Canonical text shared by lexical and semantic search: id, first
+/// description sentence, then request-property names in stable order.
+pub(crate) fn searchable_text(tool: &ToolSchema) -> String {
+    let mut text = format!("{} {}", tool.name, slim_description(&tool.description));
+    if let Some(properties) = tool
+        .parameters
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+    {
+        let mut keys: Vec<&String> = properties.keys().collect();
+        keys.sort_unstable();
+        for key in keys {
+            text.push(' ');
+            text.push_str(key);
+        }
+    }
+    text
+}
+
 fn slim_parameters(parameters: &serde_json::Value) -> serde_json::Value {
     let mut slim = serde_json::Map::new();
     slim.insert("type".into(), serde_json::Value::String("object".into()));
@@ -380,12 +415,7 @@ pub(crate) fn canonical_tools(tools: &[ToolSchema]) -> Vec<ToolSchema> {
         // The engine control plane is not a selectable "worker", and the
         // search must never rank itself: excluding both keeps results to
         // capabilities a task can actually be built from.
-        .filter(|tool| {
-            tool.name != SEARCH_FN
-                && EXCLUDED_NAMESPACE_PREFIXES
-                    .iter()
-                    .all(|prefix| !tool.name.starts_with(prefix))
-        })
+        .filter(|tool| !excluded_from_search(&tool.name))
         .map(|tool| ToolSchema {
             name: tool.name.clone(),
             description: slim_description(&tool.description),

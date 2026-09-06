@@ -197,7 +197,7 @@ def language_of(spec: _lib.WorkerSpec) -> str | None:
         "rust-binary": "rust",
         "javascript-bundle": "node",
         "python-bundle": "python",
-        # The only first-party OCI worker currently uses a Python package.
+        # First-party OCI workers currently use Python packages.
         "oci-image": "python",
     }.get(spec.artifact_kind)
 

@@ -114,6 +114,13 @@ generic dashboard with too many panels.
 - Build hierarchy with surfaces, not boxes: sidebar, panel, raised toolbar,
   hover/selected wash. Reserve 1 px edges for structural or tabular
   separation; avoid borders, shadows, or a card around every section.
+- Elevation is three shared tokens, never a hand-rolled stack:
+  `--shadow-raised` for a card sitting on a panel, `--shadow-floating` for
+  menus, popovers, and sheets, and `--shadow-lift` for an instrument surface
+  that must read as lifted off the canvas with a crisp edge (the chat
+  composer). Each is a complete, theme-aware `box-shadow` value — write
+  `box-shadow: var(--shadow-lift)` and nothing else: no border, ring, or
+  extra drop beside it, and never a literal shadow color.
 - Use a restrained scale: 4/6/8 px for internal gaps, 12/14/20/24 px for
   section spacing, and the system 6 px radius. Oversized padding makes these
   dense operator tools look like marketing pages.
@@ -462,7 +469,8 @@ tokens. The main roles are:
 
 Use `--color-bg/sidebar/panel/panel-raised/surface*` for hierarchy,
 `--color-ink/ink-faint/ink-ghost` for text, `--color-alert/warn/ok` and their
-muted variants for status, `--color-edge/rule-focus` for structure, and
+muted variants for status, `--color-edge/rule-focus` for structure,
+`--shadow-raised/floating/lift` for elevation, and
 `--font-sans`/`--font-mono`/`--font-code` by semantic role. Accent is not a
 selected-state token.
 

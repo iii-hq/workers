@@ -41,7 +41,6 @@ const assistantComplete: AssistantMessage = {
   id: 'a1',
   role: 'assistant',
   model: 'anthropic::claude-opus-4-7',
-  mode: 'agent',
   content: `## the plan
 
 three small steps, each independently revertible:
@@ -62,7 +61,6 @@ const assistantStreaming: AssistantMessage = {
   id: 'a2',
   role: 'assistant',
   model: 'openai::gpt-5',
-  mode: 'ask',
   content:
     'sure — a btree-backed index gives you both `O(log n)` lookups and cheap range',
   streaming: true,
@@ -73,7 +71,6 @@ const assistantThinking: AssistantMessage = {
   id: 'a3',
   role: 'assistant',
   model: 'anthropic::claude-opus-4-7',
-  mode: 'agent',
   content: '',
   streaming: true,
   createdAt: Date.now(),
@@ -162,6 +159,182 @@ const triggerManuallyRemoved: SystemMessage = {
   createdAt: 1_785_949_099_879,
 }
 
+const HARNESS_DIR = '/Users/sergio/Documents/workspaces/iii/workers/harness'
+const WORKERS_DIR = '/Users/sergio/Documents/workspaces/iii/workers'
+
+const workingDirChanged: SystemMessage = {
+  id: 's_wd_changed',
+  role: 'system',
+  kind: 'working-dir',
+  tone: 'info',
+  content: `working directory changed to ${HARNESS_DIR} — applies to the messages that follow`,
+  scope: { path: HARNESS_DIR, previousPath: WORKERS_DIR, cause: 'selected' },
+  createdAt: 1_785_949_000_000,
+}
+
+const workingDirRecovered: SystemMessage = {
+  id: 's_wd_recovered',
+  role: 'system',
+  kind: 'working-dir',
+  tone: 'info',
+  content: `working directory changed to ${WORKERS_DIR} because /private/tmp/iii-harness-9f3c is no longer available — applies to the messages that follow`,
+  scope: {
+    path: WORKERS_DIR,
+    previousPath: '/private/tmp/iii-harness-9f3c',
+    cause: 'recovered',
+  },
+  createdAt: 1_785_949_000_000,
+}
+
+const workingDirUnavailable: SystemMessage = {
+  id: 's_wd_unavailable',
+  role: 'system',
+  kind: 'working-dir',
+  tone: 'info',
+  content:
+    'working directory /private/tmp/iii-harness-9f3c is no longer available; this session is now unscoped — applies to the messages that follow',
+  scope: {
+    path: null,
+    previousPath: '/private/tmp/iii-harness-9f3c',
+    cause: 'unavailable',
+  },
+  createdAt: 1_785_949_000_000,
+}
+
+const failureCredentials: SystemMessage = {
+  id: 'e_t1_error',
+  role: 'system',
+  kind: 'turn-failure',
+  tone: 'error',
+  content: 'The provider authentication needs attention.',
+  failure: {
+    summary: 'The provider authentication needs attention.',
+    retryable: false,
+    phase: 'execution',
+  },
+  nextActions: [
+    'Update the provider credentials in LLM Router settings.',
+    'Retry the turn after the credentials are updated.',
+  ],
+  technicalDetails: {
+    code: 'router/provider_auth_expired',
+    class: 'llm.auth_expired',
+    detail:
+      'remote error (router/provider_auth_expired): 401 invalid_api_key — Incorrect API key provided: sk-proj-****Xk2. You can find your API key at https://platform.openai.com/account/api-keys.',
+    provider: 'openai',
+    model: 'gpt-5.4',
+  },
+  createdAt: 1_785_949_000_000,
+}
+
+const failureBilling: SystemMessage = {
+  id: 'e_t2_error',
+  role: 'system',
+  kind: 'turn-failure',
+  tone: 'error',
+  content: 'The provider rejected this request.',
+  failure: {
+    summary: 'The provider rejected this request.',
+    retryable: false,
+    phase: 'execution',
+  },
+  nextActions: [
+    'Review the selected model and provider settings, then try again.',
+  ],
+  technicalDetails: {
+    code: 'router/provider_rejected',
+    class: 'llm.permanent',
+    detail:
+      'anthropic messages: 400 invalid_request_error — Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.',
+    provider: 'anthropic',
+    model: 'claude-opus-4-7',
+  },
+  createdAt: 1_785_949_000_000,
+}
+
+const failureConnection: SystemMessage = {
+  id: 'e_t3_error',
+  role: 'system',
+  kind: 'turn-failure',
+  tone: 'error',
+  content:
+    'The provider disconnected before completing the response. A partial response was preserved in this conversation and may be incomplete. Automatic recovery stopped after 1 of 1 attempts.',
+  failure: {
+    summary: 'The provider disconnected before completing the response.',
+    retryable: true,
+    partialResultAvailable: true,
+    recoveryAttempted: 1,
+    recoveryMaxAttempts: 1,
+    phase: 'execution',
+  },
+  nextActions: ['Retry the turn to continue.'],
+  technicalDetails: {
+    code: 'router/stream_incomplete',
+    class: 'llm.transient',
+    detail: 'stream ended without a terminal frame',
+    provider: 'zai',
+    model: 'glm-5',
+  },
+  createdAt: 1_785_949_000_000,
+}
+
+const failureInternal: SystemMessage = {
+  id: 'e_t4_error',
+  role: 'system',
+  kind: 'turn-failure',
+  tone: 'error',
+  content: 'The turn could not be completed.',
+  failure: { summary: 'The turn could not be completed.', retryable: false },
+  nextActions: [
+    'Inspect the failure details.',
+    'Retry only after correcting the dependency or request.',
+  ],
+  technicalDetails: {
+    code: 'harness.turn_internal',
+    class: 'llm.permanent',
+    detail: 'state::put_turn failed: store unavailable (S503)',
+    provider: 'openai',
+    model: 'gpt-5.4',
+  },
+  createdAt: 1_785_949_000_000,
+}
+
+const noticeInfo: SystemMessage = {
+  id: 's_notice_info',
+  role: 'system',
+  kind: 'notice',
+  tone: 'info',
+  content: 'worktree feature/notices landed onto main (9f3c2a1b)',
+  createdAt: 1_785_949_000_000,
+}
+
+const noticeWarn: SystemMessage = {
+  id: 's_notice_warn',
+  role: 'system',
+  kind: 'notice',
+  tone: 'warn',
+  content: 'could not attach spec.pdf — file exceeds the 20 MB limit',
+  createdAt: 1_785_949_000_000,
+}
+
+const noticeError: SystemMessage = {
+  id: 's_notice_error',
+  role: 'system',
+  kind: 'notice',
+  tone: 'error',
+  content:
+    'could not unregister the trigger — subscription sub_00000000000000000000000000000001 not found',
+  createdAt: 1_785_949_000_000,
+}
+
+const noticeCompacting: SystemMessage = {
+  id: 's_notice_compacting',
+  role: 'system',
+  tone: 'info',
+  content: 'compacting session…',
+  createdAt: 1_785_949_000_000,
+}
+
 const meta = {
   title: 'Chat/Message',
   component: Message,
@@ -235,4 +408,76 @@ export const TriggerFiredOnceConsumed: Story = {
 export const TriggerBindingManuallyRemoved: Story = {
   name: 'system, trigger binding · manually removed',
   args: { message: triggerManuallyRemoved },
+}
+
+export const WorkingDirChanged: Story = {
+  name: 'system, working directory · changed',
+  args: { message: workingDirChanged },
+}
+
+export const WorkingDirRecovered: Story = {
+  name: 'system, working directory · recovered to default',
+  args: { message: workingDirRecovered },
+}
+
+export const WorkingDirUnavailable: Story = {
+  name: 'system, working directory · unavailable',
+  args: { message: workingDirUnavailable },
+}
+
+export const TurnFailureCredentials: Story = {
+  name: 'system, turn failure · credentials rejected (user)',
+  args: { message: failureCredentials },
+}
+
+export const TurnFailureBilling: Story = {
+  name: 'system, turn failure · credit exhausted (user)',
+  args: { message: failureBilling },
+}
+
+export const TurnFailureConnection: Story = {
+  name: 'system, turn failure · connection dropped (transient)',
+  args: { message: failureConnection },
+}
+
+export const TurnFailureInternal: Story = {
+  name: 'system, turn failure · iii internal',
+  args: { message: failureInternal },
+}
+
+export const NoticeInfo: Story = {
+  name: 'system, notice · info',
+  args: { message: noticeInfo },
+}
+
+export const NoticeWarn: Story = {
+  name: 'system, notice · warn',
+  args: { message: noticeWarn },
+}
+
+export const NoticeError: Story = {
+  name: 'system, notice · error',
+  args: { message: noticeError },
+}
+
+/** Every system presentation in one transcript-shaped stack. */
+export const SystemNoticesStack: Story = {
+  name: 'system, all presentations · stack',
+  args: { message: noticeCompacting },
+  render: () => (
+    <div className="flex flex-col gap-y-8">
+      <Message message={userPlain} />
+      <Message message={workingDirChanged} />
+      <Message message={noticeCompacting} />
+      <Message message={noticeInfo} />
+      <Message message={noticeWarn} />
+      <Message message={noticeError} />
+      <Message message={failureConnection} />
+      <Message message={failureCredentials} />
+      <Message message={failureBilling} />
+      <Message message={failureInternal} />
+      <Message message={workingDirRecovered} />
+      <Message message={workingDirUnavailable} />
+    </div>
+  ),
 }

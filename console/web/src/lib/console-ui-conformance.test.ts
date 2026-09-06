@@ -356,6 +356,22 @@ describe('@iii-dev/console-ui surface', () => {
     expect(recipe).toContain('background: var(--color-card-highlight);')
   })
 
+  it('publishes the lift elevation as one composed token tinted per theme', () => {
+    const themeCss = readFileSync(
+      new URL('../index.css', import.meta.url),
+      'utf8',
+    )
+    // One composed value, declared once…
+    expect(themeCss.match(/--shadow-lift:/g)).toHaveLength(1)
+    // …over ingredients each theme declares for itself.
+    for (const ingredient of ['highlight', 'ring', 'edge', 'drop']) {
+      expect(
+        themeCss.match(new RegExp(`--iii-ui-lift-${ingredient}:`, 'g')),
+        ingredient,
+      ).toHaveLength(2)
+    }
+  })
+
   it('publishes the collapsible card transition with shared motion tokens', () => {
     const themeCss = readFileSync(
       new URL('../index.css', import.meta.url),

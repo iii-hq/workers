@@ -51,8 +51,7 @@ pub struct ResolvedAgent {
     /// Frozen onto `TurnOptions.agent`.
     pub identity: AgentIdentity,
     /// The profile's resolved system prompt, verbatim — the whole identity
-    /// of a session running as this agent (the mode paragraph is the only
-    /// layer the harness puts in front of it).
+    /// of a session running as this agent (nothing built-in underneath).
     pub prompt: String,
     /// `None` when the profile filters nothing (every skill).
     pub skills: Option<Vec<String>>,

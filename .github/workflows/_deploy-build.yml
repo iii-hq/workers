@@ -114,7 +114,7 @@ jobs:
               sudo apt-get install -y musl-tools
               ;;
             aarch64-unknown-linux-gnu)
-              sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+              sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross
               ;;
             armv7-unknown-linux-gnueabihf)
               sudo apt-get install -y gcc-arm-linux-gnueabihf libc6-dev-armhf-cross
@@ -227,6 +227,20 @@ jobs:
         with:
           version: v0.36.1
           driver-opts: image=moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+
+      # iii-directory links a pinned static ONNX Runtime on targets that have one
+      # (see iii-directory/build.rs). ort-sys downloads it at build time itself;
+      # pre-provisioning the x86_64 Linux archive here keeps that unit offline-safe.
+      # aarch64 Linux relies on the ort-sys download; musl/armv7 build BM25-only.
+      - name: Provision static ONNX Runtime (iii-directory, x86_64 linux gnu)
+        if: inputs.kind == 'rust-binary' && inputs.worker == 'iii-directory' && inputs.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          set -euo pipefail
+          root="$(ORT_LIB_PATH="$RUNNER_TEMP/onnxruntime" "$GITHUB_WORKSPACE/iii-directory/scripts/provision-onnxruntime.sh")"
+          {
+            echo "ORT_LIB_PATH=$root"
+            echo "ORT_PREFER_DYNAMIC_LINK=0"
+          } >> "$GITHUB_ENV"
 
       - name: Build immutable artifact
         env:

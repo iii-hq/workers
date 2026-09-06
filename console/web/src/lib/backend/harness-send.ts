@@ -37,11 +37,6 @@ export type HarnessOutputContract =
   | { type: 'text' }
   | { type: 'json'; schema?: unknown }
 
-/** Operating mode — the harness prepends a short paragraph before the
- * identity prompt. In `ask` mode the harness also caps `functions` at its
- * read-only baseline server-side, whatever policy we send. */
-export type HarnessSendMode = 'ask' | 'agent'
-
 /** Per-send options frozen onto the turn record. */
 export interface HarnessSendOptions {
   /** Directory agent profile id the session runs as, resolved server-side
@@ -56,7 +51,6 @@ export interface HarnessSendOptions {
    * `enrich` (harness default) appends it; `override` replaces it
    * verbatim. Snake_case values travel on the wire as-is. */
   system_prompt_strategy?: 'enrich' | 'override'
-  mode?: HarnessSendMode
   max_turns?: number
   thinking_level?: HarnessThinkingLevel
   /** Provider-native options, namespaced by provider id. */

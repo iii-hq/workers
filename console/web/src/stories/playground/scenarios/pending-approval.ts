@@ -12,7 +12,7 @@ the expected ack. nothing else to do here.`
  */
 export const pendingApproval = makeBackend(
   'pending-approval',
-  async function* (_prompt, _mode, _model, opts) {
+  async function* (_prompt, _model, opts) {
     const signal = opts?.signal
     yield* streamFcall({
       functionId: 'trigger::run',

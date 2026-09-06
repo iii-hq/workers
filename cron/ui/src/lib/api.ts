@@ -227,7 +227,6 @@ export async function createSchedule(
       metadata: SCHEDULE_SESSION_METADATA,
     },
     options: {
-      mode: 'agent',
       max_turns: 6,
       functions: {
         allow: ['engine::register_trigger', 'engine::unregister_trigger'],

@@ -5,6 +5,61 @@ import { copyTextToClipboard } from '@/lib/clipboard'
 import { JsonHighlight } from '@/lib/syntax'
 import { cn } from '@/lib/utils'
 
+/*
+ * Shared vocabulary for trigger detail surfaces (registration details and
+ * fired/retired activity). Every piece follows the function-call card chrome
+ * it sits inside: `label-caps-sm` eyebrows in mono, sans copy, machine values
+ * in mono, one 16 px Lucide glyph on a 32 px neutral tile, and accent reserved
+ * for live activity.
+ */
+
+/** The card chrome's `function` / `request` / `response` eyebrow recipe. */
+export const TRIGGER_EYEBROW_CLASS =
+  'font-mono text-[11px] font-medium tracking-[0.06em] text-ink-faint uppercase'
+
+export function TriggerEyebrow({
+  className,
+  children,
+}: {
+  className?: string
+  children: ReactNode
+}) {
+  return <div className={cn(TRIGGER_EYEBROW_CLASS, className)}>{children}</div>
+}
+
+export type TriggerGlyphTone = 'neutral' | 'accent' | 'warn'
+
+const glyphTone: Record<TriggerGlyphTone, string> = {
+  neutral: 'bg-surface [&_svg]:stroke-ink-faint',
+  accent: 'bg-accent-muted [&_svg]:stroke-accent',
+  warn: 'bg-warn-muted [&_svg]:stroke-warn',
+}
+
+/** 32 px tile holding one 16 px glyph. Neutral by default; `accent` marks
+ * live activity and `warn` a failed or skipped outcome. */
+export function TriggerGlyph({
+  tone = 'neutral',
+  className,
+  children,
+}: {
+  tone?: TriggerGlyphTone
+  className?: string
+  children: ReactNode
+}) {
+  return (
+    <div
+      aria-hidden
+      className={cn(
+        'flex size-8 shrink-0 items-center justify-center rounded-md [&_svg]:size-4 [&_svg]:shrink-0',
+        glyphTone[tone],
+        className,
+      )}
+    >
+      {children}
+    </div>
+  )
+}
+
 export function TriggerTrace({
   when,
   then,
@@ -28,12 +83,15 @@ export function TriggerTraceNode({
   icon,
   label,
   title,
+  mono = false,
   children,
 }: {
   kind: 'when' | 'then'
   icon: ReactNode
   label: string
   title: string
+  /** The title is a machine identifier (trigger type, function id). */
+  mono?: boolean
   children?: ReactNode
 }) {
   return (
@@ -41,15 +99,20 @@ export function TriggerTraceNode({
       className="flex min-w-0 items-start gap-3 p-3 @xl:p-4"
       data-trigger-flow-card={kind}
     >
-      <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-accent-muted [&_svg]:size-5 [&_svg]:shrink-0 [&_svg]:stroke-accent">
-        {icon}
-      </div>
+      <TriggerGlyph>{icon}</TriggerGlyph>
       <div className="flex min-w-0 flex-1 flex-col gap-2">
-        <div className="font-mono text-base tracking-wide text-ink-ghost uppercase sm:text-xs">
-          {label}
-        </div>
-        <div className="font-sans text-base font-medium break-all text-ink sm:text-sm">
-          {title}
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <TriggerEyebrow>{label}</TriggerEyebrow>
+          <div
+            className={cn(
+              'min-w-0 break-all text-ink',
+              mono
+                ? 'font-mono text-[13px]'
+                : 'font-sans text-base font-medium sm:text-sm',
+            )}
+          >
+            {title}
+          </div>
         </div>
         {children}
       </div>
@@ -57,11 +120,15 @@ export function TriggerTraceNode({
   )
 }
 
-export function TriggerStats({
-  items,
-}: {
-  items: readonly { label: string; value: string }[]
-}) {
+export interface TriggerStat {
+  label: string
+  value: string
+  /** Machine-produced value (id, path): mono, and truncated with the full
+   * value in `title` instead of orphaning its tail on a narrow pane. */
+  mono?: boolean
+}
+
+export function TriggerStats({ items }: { items: readonly TriggerStat[] }) {
   return (
     <dl className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
       {items.map((item, index) => (
@@ -75,10 +142,18 @@ export function TriggerStats({
               ·
             </span>
           ) : null}
-          <dt className="font-mono text-base font-medium tracking-wide text-ink-faint uppercase sm:text-xs">
+          <dt className={cn('shrink-0', TRIGGER_EYEBROW_CLASS)}>
             {item.label}
           </dt>
-          <dd className="min-w-0 font-sans text-base wrap-break-word text-ink-ghost tabular-nums sm:text-sm">
+          <dd
+            className={cn(
+              'min-w-0 text-ink tabular-nums',
+              item.mono
+                ? 'truncate font-mono text-[13px]'
+                : 'wrap-anywhere font-sans text-base sm:text-sm',
+            )}
+            title={item.mono ? item.value : undefined}
+          >
             {item.value}
           </dd>
         </div>
@@ -87,16 +162,18 @@ export function TriggerStats({
   )
 }
 
+/** Sits on the WHEN/THEN tiles' axis: under the tile when stacked, level
+ * with the tile centre in the wide two-column layout. */
 function TriggerTraceConnector() {
   return (
     <div
       aria-hidden
-      className="flex h-8 min-w-0 items-center px-3 @xl:h-auto @xl:px-0"
+      className="flex min-w-0 items-center px-3 @xl:items-start @xl:px-0 @xl:pt-4"
     >
-      <div className="flex size-10 shrink-0 items-center justify-center @xl:hidden">
+      <div className="flex size-8 shrink-0 items-center justify-center @xl:hidden">
         <ArrowDown className="size-4 shrink-0 stroke-ink-ghost" />
       </div>
-      <div className="hidden min-w-0 flex-1 items-center @xl:flex">
+      <div className="hidden h-8 min-w-0 flex-1 items-center @xl:flex">
         <span className="h-px min-w-0 flex-1 border-t border-dashed border-edge" />
         <ArrowRight className="size-4 shrink-0 stroke-ink-ghost" />
         <span className="h-px min-w-0 flex-1 border-t border-dashed border-edge" />

@@ -602,7 +602,7 @@ describe('engine::register_trigger', () => {
         output: { error: { message: 'forbidden' } },
       }),
     )
-    expect(html).toContain('trigger registration failed')
+    expect(html).toContain('Trigger registration failed')
     expect(html).not.toContain('trigger registered</span>')
   })
 

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use harness::functions::metrics::SessionMetricsResponseV1;
-use harness::prompt::{Mode, SystemPromptStrategy};
+use harness::prompt::SystemPromptStrategy;
 use harness::types::model::ThinkingLevel;
 use harness::types::output::OutputContract;
 use harness::types::turn::FunctionPolicy;
@@ -89,8 +89,6 @@ pub struct EvalModelConfigV1 {
     pub provider: Option<String>,
     #[serde(default)]
     pub system_prompt_strategy: SystemPromptStrategy,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode: Option<Mode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_level: Option<ThinkingLevel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -495,7 +493,6 @@ mod tests {
                 model: "model".into(),
                 provider: Some("provider".into()),
                 system_prompt_strategy: SystemPromptStrategy::Override,
-                mode: Some(Mode::Agent),
                 thinking_level: None,
                 provider_options: None,
             },

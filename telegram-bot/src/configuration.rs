@@ -150,7 +150,8 @@ pub fn register_config_trigger(
         })
         .description(
             "Internal: reload telegram-bot configuration from the authoritative store on change.",
-        ),
+        )
+        .metadata(json!({ "internal": true })),
     );
 
     iii.register_trigger(RegisterTriggerInput::new(

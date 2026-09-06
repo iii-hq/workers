@@ -292,7 +292,6 @@ mod tests {
                 model: "model".into(),
                 provider: None,
                 system_prompt_strategy: SystemPromptStrategy::Override,
-                mode: None,
                 thinking_level: None,
                 provider_options: None,
             },

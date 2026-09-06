@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::types::errors::{RouterCode, RouterError};
-use crate::types::router::{ProviderRegisterRequest, ProviderRegisterResponse};
+use crate::types::router::{accepted_icon_svg, ProviderRegisterRequest, ProviderRegisterResponse};
 use futures::future::BoxFuture;
 use iii_sdk::{errors::Error, IIIClient};
 use serde_json::{json, Value};
@@ -72,7 +72,9 @@ pub fn make_provider_register(
             events.clone(),
         );
         Box::pin(async move {
-            let declaration = input.declaration;
+            let mut declaration = input.declaration;
+            // A malformed or oversized mark is cosmetic: drop it, keep the provider.
+            declaration.icon_svg = accepted_icon_svg(declaration.icon_svg.as_deref());
 
             if !valid_id(&declaration.id) {
                 return Err(RouterError::new(

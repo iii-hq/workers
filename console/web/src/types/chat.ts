@@ -1,7 +1,5 @@
 import type { SystemPromptState } from '@/components/chat/system-prompt-selection'
 
-export type Mode = 'ask' | 'agent'
-
 /** Composite `provider::<catalog_model_id>` (matches harness models-catalog). */
 export const CATALOG_MODEL_KEY_SEP = '::' as const
 
@@ -25,13 +23,6 @@ export interface ReasoningEffortOption {
   effort: string
   description?: string
 }
-
-export const MODES: { id: Mode; label: string }[] = [
-  { id: 'ask', label: 'ask' },
-  { id: 'agent', label: 'agent' },
-]
-
-export const DEFAULT_MODE: Mode = 'agent'
 
 /** Model-selected reasoning effort. `default` omits every effort override. */
 export type ThinkingLevel = string
@@ -109,7 +100,6 @@ export interface AssistantMessage extends BaseMessage {
    */
   agent?: string
   model?: ModelId
-  mode?: Mode
   streaming?: boolean
   /**
    * Why the provider ended this assistant entry. `function_call` marks an
@@ -251,11 +241,27 @@ export interface SystemMessage extends BaseMessage {
   role: 'system'
   content: string
   tone?: 'info' | 'warn' | 'error'
-  kind?: 'notice' | 'compaction' | 'trigger-fired'
+  /**
+   * `notice` is the one-line operational status (compaction progress, an
+   * attachment that could not be read, a worktree that landed). `turn-failure`
+   * is a turn the provider or iii could not finish and renders as the
+   * diagnosis card. `working-dir` marks a session scope change in the same
+   * activity-row grammar as function calls and trigger fires.
+   */
+  kind?:
+    | 'notice'
+    | 'compaction'
+    | 'trigger-fired'
+    | 'turn-failure'
+    | 'working-dir'
   /** User-facing remediation supplied by a structured lifecycle record. */
   nextActions?: string[]
   /** Diagnostic context kept behind a collapsed disclosure. */
   technicalDetails?: SystemNoticeTechnicalDetails
+  /** Structured facts about a failed turn (`kind: 'turn-failure'`). */
+  failure?: SystemNoticeFailure
+  /** The scope change behind a `kind: 'working-dir'` marker. */
+  scope?: WorkingDirScope
   /**
    * Live-only fallback for a durable transcript entry with the same id.
    * It may fill a delivery gap, but must never replace the transcript-backed
@@ -276,6 +282,34 @@ export interface SystemNoticeTechnicalDetails {
   model?: string
 }
 
+/**
+ * What the harness recorded about a failed turn, separated from the prose
+ * so the failure card can lay each fact out on its own line. `content` stays
+ * the full sentence for exports, announcements, and plain-text fallbacks.
+ */
+export interface SystemNoticeFailure {
+  /** The one-sentence public summary (the harness's `summary`). */
+  summary?: string
+  retryable?: boolean
+  /** The assistant output above the notice is preserved but incomplete. */
+  partialResultAvailable?: boolean
+  recoveryAttempted?: number
+  recoveryMaxAttempts?: number
+  phase?: string
+}
+
+/**
+ * A session working-directory change. `path: null` means the session is now
+ * unscoped. `cause` says why the scope moved: the user picked a folder, the
+ * console recovered to the harness default because the saved folder vanished,
+ * or the saved folder vanished with nothing to fall back to.
+ */
+export interface WorkingDirScope {
+  path: string | null
+  previousPath?: string | null
+  cause: 'selected' | 'recovered' | 'unavailable'
+}
+
 export type Message =
   | UserMessage
   | AssistantMessage
@@ -292,7 +326,6 @@ export interface MessagePatch {
   content?: string
   attachments?: Attachment[]
   model?: ModelId
-  mode?: Mode
   streaming?: boolean
   durationMs?: number
   running?: boolean
@@ -308,9 +341,11 @@ export interface MessagePatch {
   }
   /** SystemMessage variant. */
   tone?: 'info' | 'warn' | 'error'
-  kind?: 'notice' | 'compaction'
+  kind?: 'notice' | 'compaction' | 'turn-failure' | 'working-dir'
   nextActions?: string[]
   technicalDetails?: SystemNoticeTechnicalDetails
+  failure?: SystemNoticeFailure
+  scope?: WorkingDirScope
   summaryText?: string
   tokensBefore?: number
 }
@@ -323,7 +358,6 @@ export interface ConversationMetadataEdits {
   titleManual?: boolean
   model?: ModelId | null
   thinkingLevel?: ThinkingLevel
-  mode?: Mode
   workingDir?: string | null
   memoryBank?: string | null
   systemPrompt?: SystemPromptState
@@ -390,7 +424,6 @@ export interface Conversation {
    * it from the most recently chosen effort, just like `model`.
    */
   thinkingLevel?: ThinkingLevel
-  mode: Mode
   /**
    * Per-session filesystem scope root. Confines this chat's shell/coder
    * operations to one project directory. Chosen explicitly (no silent default),

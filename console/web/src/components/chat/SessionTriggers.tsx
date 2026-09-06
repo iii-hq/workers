@@ -1,6 +1,7 @@
-import { Check, ChevronDown, ChevronRight, Copy, Trash2 } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { Check, ChevronRight, Copy, Loader2, Trash2, X } from 'lucide-react'
+import { useEffect, useId, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/Button'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import {
   Dialog,
   DialogContent,
@@ -11,6 +12,8 @@ import { TriggerIcon } from '@/components/ui/TriggerIcon'
 import type { SessionTriggerInfo } from '@/lib/backend/triggers'
 import { copyTextToClipboard } from '@/lib/clipboard'
 import { JsonHighlight } from '@/lib/syntax'
+import { cn } from '@/lib/utils'
+import { composerCardClass, toolbarIconButtonClass } from './composer-chrome'
 
 interface SessionTriggersProps {
   triggers: SessionTriggerInfo[]
@@ -22,6 +25,8 @@ interface SessionTriggersProps {
     scope: string | undefined,
     key: string,
   ) => Promise<boolean | null>
+  /** Start with the rows shown (stories, tests); the user's toggle still wins. */
+  defaultExpanded?: boolean
 }
 
 /**
@@ -113,6 +118,23 @@ export function lifecycleNote(trigger: SessionTriggerInfo): string | null {
   return parts.length > 0 ? parts.join(' · ') : null
 }
 
+/**
+ * What "clear all" is about to do, from the counts alone. Live bindings are
+ * torn down on the backend; inactive ghosts only leave this view.
+ */
+export function clearAllDescription(live: number, inactive: number): string {
+  const parts: string[] = []
+  if (live > 0)
+    parts.push(
+      `${live} ${live === 1 ? 'trigger' : 'triggers'} will be unregistered — nothing will notify this chat afterwards.`,
+    )
+  if (inactive > 0)
+    parts.push(
+      `${inactive} inactive ${inactive === 1 ? 'row' : 'rows'} will be dismissed.`,
+    )
+  return parts.join(' ')
+}
+
 function isEmptyConfig(config: unknown): boolean {
   if (config === null || config === undefined) return true
   if (typeof config === 'object')
@@ -127,6 +149,18 @@ function formatJson(value: unknown): string {
     return String(value)
   }
 }
+
+/**
+ * A full-width text row that owns the click (expand, open detail). Quiet
+ * until hovered, the composer toolbar's height on either breakpoint, and its
+ * leading icon lands on the same 16px inset as the composer's paperclip. The
+ * hover shape nests concentrically inside the card (12px radius − 4px gutter).
+ */
+const rowButtonClass = cn(
+  'flex h-12 min-w-0 flex-1 items-center gap-2 rounded-lg pr-2 pl-3 text-left font-sans',
+  'hover:bg-surface-hover sm:h-8',
+  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus',
+)
 
 /** FCM-style labeled JSON section: tracked header row + wrapped highlight. */
 function JsonSection({ label, value }: { label: string; value: unknown }) {
@@ -180,6 +214,11 @@ interface TriggerRowProps {
   stateNote?: string | null
 }
 
+/**
+ * One subscription: name, then the source-generic facts as a quiet suffix.
+ * An inactive ghost keeps the same shape a step fainter — never dimmed with
+ * opacity, so its hover and focus still read at full strength.
+ */
 function TriggerRow({
   trigger,
   busy,
@@ -187,66 +226,85 @@ function TriggerRow({
   onUnregister,
   stateNote,
 }: TriggerRowProps) {
-  const name = trigger.label ?? null
-  const title = name ?? trigger.triggerType
+  const inactive = Boolean(trigger.fired)
+  const title = trigger.label ?? trigger.triggerType
   const summary = stateNote ?? summarizeTriggerConfig(trigger.config)
-  const lifecycle = lifecycleNote(trigger)
+  const meta = [
+    title === trigger.triggerType ? null : trigger.triggerType,
+    deliveryLabel(trigger),
+    summary,
+    lifecycleNote(trigger),
+  ].filter((part): part is string => part !== null)
   return (
-    <div
-      className={`flex items-center gap-2 border-b border-rule-2 px-3 py-1.5 text-[12px] last:border-b-0${trigger.fired ? ' opacity-55' : ''}`}
-    >
-      <TriggerIcon size={16} className="shrink-0 fill-ink-ghost" aria-hidden />
+    <li className="flex min-w-0 items-center gap-1">
       <button
         type="button"
         onClick={onOpen}
-        className="min-w-0 flex-1 truncate text-left hover:text-ink transition-colors"
         title="show subscription detail"
+        className={cn(rowButtonClass, 'text-sm sm:text-[12px]')}
       >
-        {title}
-        <span className="text-ink-ghost">
-          {title !== trigger.triggerType ? ` · ${trigger.triggerType}` : ''}
-          {` · ${deliveryLabel(trigger)}`}
-          {summary ? ` · ${summary}` : ''}
-          {lifecycle ? ` · ${lifecycle}` : ''}
+        <TriggerIcon
+          size={16}
+          className={cn(
+            'shrink-0',
+            inactive ? 'fill-ink-ghost' : 'fill-ink-faint',
+          )}
+          aria-hidden
+        />
+        <span className="min-w-0 flex-1 truncate">
+          <span className={inactive ? 'text-ink-faint' : 'text-ink'}>
+            {title}
+          </span>
+          <span className={inactive ? 'text-ink-ghost' : 'text-ink-faint'}>
+            {meta.map((part) => ` · ${part}`).join('')}
+          </span>
         </span>
       </button>
       <button
         type="button"
         disabled={busy}
         onClick={onUnregister}
-        className="shrink-0 lowercase text-ink-ghost hover:text-ink transition-colors disabled:opacity-50"
-        aria-label={`${trigger.fired ? 'dismiss' : 'unregister'} ${title}`}
-        title={trigger.fired ? 'dismiss' : 'unregister'}
+        className={toolbarIconButtonClass}
+        aria-label={`${inactive ? 'dismiss' : 'unregister'} ${title}`}
+        title={inactive ? 'dismiss' : 'unregister'}
       >
-        {busy ? '…' : '✕'}
+        {busy ? (
+          <Loader2 aria-hidden className="size-4 shrink-0 animate-spin" />
+        ) : (
+          <X aria-hidden className="size-4 shrink-0" />
+        )}
       </button>
-    </div>
+    </li>
   )
 }
 
 /**
  * The conversation's registered trigger subscriptions, stacked above the
- * composer next to the queued-messages strip. Collapsed by default to a
- * count header; expanding shows one generic row per subscription — event
- * source, delivery, config summary, lifecycle — straight from the harness's
- * binding rows, with no source- or target-specific interpretation. Click a
- * row for the full detail dialog; ✕ (or the dialog button) tears the
- * subscription down.
+ * composer next to the queued-messages strip, in the composer's own material
+ * (see `composer-chrome`) so the footer reads as one instrument. Collapsed by
+ * default to a one-line count; expanding unfolds one generic row per
+ * subscription — event source, delivery, config summary, lifecycle — straight
+ * from the harness's binding rows, with no source- or target-specific
+ * interpretation. A row opens the detail dialog; its ✕ (or the dialog button)
+ * tears the subscription down; the trash at the edge clears everything after
+ * a confirmation.
  */
 export function SessionTriggers({
   triggers,
   onUnregister,
   onClearAll,
   checkStateKey,
+  defaultExpanded = false,
 }: SessionTriggersProps) {
-  const [expanded, setExpanded] = useState(false)
+  const [expanded, setExpanded] = useState(defaultExpanded)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
-  const [clearArming, setClearArming] = useState(false)
+  const [confirmingClear, setConfirmingClear] = useState(false)
   const [clearing, setClearing] = useState(false)
   // Inactive ghost rows the user dismissed — local per-tab view state; they
   // resurrect from the transcript on reload, so no persistence needed.
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set())
+  const listId = useId()
 
   const visibleTriggers = useMemo(
     () => triggers.filter((t) => !dismissed.has(t.id)),
@@ -325,106 +383,114 @@ export function SessionTriggers({
       setSelectedId(null)
     } finally {
       setClearing(false)
-      setClearArming(false)
     }
   }
 
   return (
     <>
       <section
-        className="mb-1 border border-rule bg-bg"
+        className={cn('mb-1', composerCardClass)}
         aria-label="registered triggers"
       >
-        {clearArming ? (
-          <div className="flex items-center gap-2 px-3 py-1.5 text-[12px]">
-            <Trash2 size={16} className="shrink-0 text-alert" aria-hidden />
-            <span className="min-w-0 flex-1 truncate">
-              unregister all {registeredCount} triggers?
-              <span className="text-ink-ghost">
-                {' '}
-                nothing will notify this chat afterwards.
-              </span>
-            </span>
-            <button
-              type="button"
-              onClick={() => void clearAll()}
-              disabled={clearing}
-              className="shrink-0 lowercase text-alert hover:text-alert/80 transition-colors disabled:opacity-50"
-            >
-              {clearing ? 'clearing…' : 'clear all'}
-            </button>
-            <button
-              type="button"
-              onClick={() => setClearArming(false)}
-              disabled={clearing}
-              className="shrink-0 lowercase text-ink-ghost hover:text-ink transition-colors disabled:opacity-50"
-            >
-              cancel
-            </button>
-          </div>
-        ) : (
-          <div className="flex items-center">
-            <button
-              type="button"
-              onClick={() => setExpanded((current) => !current)}
-              aria-expanded={expanded}
-              className="flex min-w-0 flex-1 items-center gap-2 py-1.5 pl-3 text-[12px] hover:text-ink transition-colors"
-            >
-              <TriggerIcon
-                size={16}
-                className="shrink-0 fill-ink-ghost"
-                aria-hidden
-              />
-              <span className="min-w-0 flex-1 truncate text-left">
-                {registeredCount} trigger{registeredCount === 1 ? '' : 's'}{' '}
-                registered
-                <span className="text-ink-ghost">
-                  {inactiveCount > 0 ? ` · ${inactiveCount} inactive` : ''}
+        {/* Header: the count is the disclosure (chevron rides with the text,
+            as on the model picker); the trash sits at the edge, where the
+            composer keeps its action button. */}
+        <div className="flex min-w-0 items-center gap-1 p-1">
+          <button
+            type="button"
+            onClick={() => setExpanded((current) => !current)}
+            aria-expanded={expanded}
+            aria-controls={listId}
+            className={cn(rowButtonClass, 'text-sm sm:text-[13px]')}
+          >
+            <TriggerIcon
+              size={16}
+              className="shrink-0 fill-ink-faint"
+              aria-hidden
+            />
+            <span className="min-w-0 truncate">
+              {/* The noun rides only where it fits: on a phone the icon
+                  says "triggers" and the line keeps both counts instead. */}
+              <span className="font-medium text-ink">
+                {registeredCount}{' '}
+                <span className="hidden sm:inline">
+                  trigger{registeredCount === 1 ? '' : 's'}{' '}
                 </span>
+                registered
               </span>
-            </button>
-            {onClearAll ? (
-              <div className="flex shrink-0 items-center gap-1 pr-1 font-mono text-[11px] uppercase tracking-[0.06em]">
-                <button
-                  type="button"
-                  onClick={() => setClearArming(true)}
-                  className="flex items-center gap-1 px-2 py-1.5 text-ink-faint hover:text-alert transition-colors"
-                  title="unregister every trigger"
-                >
-                  <Trash2 size={16} aria-hidden />
-                  clear all
-                </button>
-              </div>
-            ) : null}
+              {inactiveCount > 0 ? (
+                <span className="text-ink-ghost">
+                  {' '}
+                  · {inactiveCount} inactive
+                </span>
+              ) : null}
+            </span>
+            <ChevronRight
+              aria-hidden
+              className={cn(
+                'size-4 shrink-0 text-ink-ghost transition-transform duration-(--motion-duration-control) ease-(--motion-ease-standard)',
+                expanded && 'rotate-90',
+              )}
+            />
+          </button>
+          {onClearAll ? (
             <button
               type="button"
-              onClick={() => setExpanded((current) => !current)}
-              aria-label={expanded ? 'collapse triggers' : 'expand triggers'}
-              className="shrink-0 px-2 py-1.5 text-ink-ghost hover:text-ink transition-colors"
+              onClick={() => setConfirmingClear(true)}
+              disabled={clearing}
+              aria-label="clear all triggers"
+              title="clear all triggers"
+              className={toolbarIconButtonClass}
             >
-              {expanded ? (
-                <ChevronDown size={16} aria-hidden />
+              {clearing ? (
+                <Loader2 aria-hidden className="size-4 shrink-0 animate-spin" />
               ) : (
-                <ChevronRight size={16} aria-hidden />
+                <Trash2 aria-hidden className="size-4 shrink-0" />
               )}
             </button>
+          ) : null}
+        </div>
+
+        {/* The rows unfold like the composer's editor grows: a tracked
+            height, not a pop. They stay mounted while folded (the probe
+            effect above is what gates the network), inert so nothing
+            hidden takes a tab stop. */}
+        <div
+          id={listId}
+          className={cn(
+            'grid transition-[grid-template-rows] duration-(--motion-duration-panel) ease-(--motion-ease-standard)',
+            expanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]',
+          )}
+        >
+          <div
+            className="min-h-0 overflow-hidden"
+            inert={expanded ? undefined : true}
+          >
+            <ul className="px-1 pb-1">
+              {visibleTriggers.map((trigger) => (
+                <TriggerRow
+                  key={trigger.id}
+                  trigger={trigger}
+                  stateNote={stateNote(trigger)}
+                  busy={busyId === trigger.id}
+                  onOpen={() => setSelectedId(trigger.id)}
+                  onUnregister={() => rowAction(trigger)}
+                />
+              ))}
+            </ul>
           </div>
-        )}
-        {expanded ? (
-          <div className="border-t border-rule-2">
-            {visibleTriggers.map((trigger) => (
-              <TriggerRow
-                key={trigger.id}
-                trigger={trigger}
-                stateNote={stateNote(trigger)}
-                busy={busyId === trigger.id}
-                onOpen={() => setSelectedId(trigger.id)}
-                onUnregister={() => rowAction(trigger)}
-              />
-            ))}
-          </div>
-        ) : null}
+        </div>
       </section>
+
+      <ConfirmDialog
+        open={confirmingClear}
+        onOpenChange={setConfirmingClear}
+        title="Clear all triggers?"
+        description={clearAllDescription(registeredCount, inactiveCount)}
+        confirmLabel="Clear all"
+        cancelLabel="Keep them"
+        onConfirm={() => void clearAll()}
+      />
 
       <Dialog
         open={selected !== null}

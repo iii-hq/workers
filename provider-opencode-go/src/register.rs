@@ -36,6 +36,11 @@ pub fn declaration() -> ProviderDeclaration {
         supports_model_listing: Some(true),
         models: None,
         worker_id: Some("provider-opencode-go".into()),
+        // The mark the console paints beside this provider's models; the
+        // router carries it verbatim in `router::provider::list`.
+        icon_svg: Some(
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icon.svg")).into(),
+        ),
     }
 }
 

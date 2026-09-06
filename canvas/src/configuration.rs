@@ -129,7 +129,8 @@ pub fn register_config_trigger(iii: &IIIClient, cell: ConfigCell) -> Result<(), 
         .description(
             "Internal: hot-reload the canvas worker from the authoritative configuration when \
              it changes, swapping the per-call snapshot.",
-        ),
+        )
+        .metadata(json!({ "internal": true })),
     );
 
     iii.register_trigger(RegisterTriggerInput::new(

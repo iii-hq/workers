@@ -81,8 +81,13 @@ containers:
     worker: path://../iii-directory
     environment:
       RUST_LOG: info
+      ORT_PREFER_DYNAMIC_LINK: "0"
     scripts:
-      run: cargo run --locked --bin iii-directory
+      # iii-directory links the pinned static ONNX Runtime: ort-sys downloads and
+      # verifies it for the build target. Offline hosts export ORT_LIB_PATH first
+      # (see ../iii-directory/scripts/provision-onnxruntime.sh for Linux x86_64).
+      run: >-
+        cargo run --locked --bin iii-directory
 
   cron:
     worker: path://../cron
@@ -124,3 +129,4 @@ containers:
       RUST_LOG: info
     scripts:
       run: cargo run --locked --bin harness
+  # added by compose::add

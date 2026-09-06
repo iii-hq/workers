@@ -525,9 +525,10 @@ describe('entrySegments', () => {
     })
     expect(err).toMatchObject({
       role: 'system',
-      kind: 'notice',
+      kind: 'turn-failure',
       tone: 'error',
       content: 'The response could not be completed.',
+      failure: { summary: 'The response could not be completed.' },
       technicalDetails: { detail: 'provider zai unavailable' },
     })
     const [notice] = entrySegments({
@@ -698,6 +699,13 @@ describe('entrySegments', () => {
       detail: 'stream ended without a terminal frame',
       provider: 'zai',
       model: 'glm-5',
+    })
+    expect(notice.kind).toBe('turn-failure')
+    expect(notice.failure).toMatchObject({
+      summary: 'The response was interrupted.',
+      partialResultAvailable: true,
+      recoveryAttempted: 1,
+      recoveryMaxAttempts: 1,
     })
   })
 

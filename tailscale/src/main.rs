@@ -18,7 +18,7 @@ struct Cli {
     #[arg(long)]
     config: Option<String>,
     /// iii engine WebSocket address.
-    #[arg(long, default_value = "ws://127.0.0.1:49134")]
+    #[arg(long, env = "III_URL", default_value = "ws://127.0.0.1:49134")]
     url: String,
     /// Print the registry manifest as JSON and exit without connecting.
     #[arg(long)]
@@ -116,4 +116,22 @@ async fn main() -> Result<()> {
     tracing::info!("tailscale worker shutting down");
     iii.shutdown_async().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory;
+
+    use super::Cli;
+
+    #[test]
+    fn url_should_accept_the_release_engine_environment() {
+        let command = Cli::command();
+        let url = command
+            .get_arguments()
+            .find(|argument| argument.get_id() == "url")
+            .expect("url argument should exist");
+
+        assert_eq!(url.get_env(), Some(std::ffi::OsStr::new("III_URL")));
+    }
 }

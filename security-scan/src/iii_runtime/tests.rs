@@ -223,7 +223,9 @@ mod tests {
             "/isolated/repo"
         );
         assert!(plan.unattended);
-        assert_eq!(request["options"]["mode"], "agent");
+        // The harness dropped the ask/agent `mode` option; the request must
+        // not carry it any more.
+        assert!(request["options"].get("mode").is_none());
         assert_eq!(request["options"]["output"]["type"], "json");
         assert!(request.get("permission_mode").is_none());
         let allow = request["options"]["functions"]["allow"]

@@ -12,6 +12,10 @@
 
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 import {
+  listHarnessProjects,
+  recentHarnessProjectPaths,
+} from '@/lib/backend/projects'
+import {
   attachToComposer,
   insertIntoComposer,
   requestComposerFocus,
@@ -22,7 +26,6 @@ import { requestPaletteOpen } from '@/lib/palette/open-request'
 import { registerPaletteSource } from '@/lib/palette/providers'
 import { PaneConfigurationProvider } from '@/lib/pane-configuration'
 import { requestPanelOpen } from '@/lib/panel-context'
-import { loadRecentProjects } from '@/lib/storage'
 import { ExtensionScopeProvider } from '@/lib/ui-scope'
 import {
   registerExtConfigForm,
@@ -166,7 +169,7 @@ function makeHost(
     },
     workspace: {
       recentDirectories() {
-        return loadRecentProjects()
+        return recentHarnessProjectPaths()
       },
     },
     palette: {
@@ -293,6 +296,9 @@ export function startUiLoader(
   let active = true
   let receivedInitialSync = false
   setUiAssetsStatus('loading')
+  // Keep the synchronous injected-UI compatibility view backed by the same
+  // durable harness catalog as the first-party project picker.
+  void listHarnessProjects(client).catch(() => undefined)
   // Asset URLs resolve against the DOCUMENT base (the console supports
   // arbitrary subpath mounting); the loader itself lives in a Vite chunk
   // under assets/, so module-relative resolution would be wrong.

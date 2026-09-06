@@ -363,9 +363,19 @@ function useAnimatedComposerHeight() {
     })
     frameObserver.observe(frame)
 
+    // On a narrow screen the blurred editor collapses to one line (see
+    // `.composer-shell:not(:focus-within)` in index.css). Park it on the
+    // first line so the strip shows the start of the draft rather than a
+    // half-cut line wherever the caret happened to be.
+    const parkOnFirstLine = () => {
+      if (window.matchMedia('(max-width: 639px)').matches) editor.scrollTop = 0
+    }
+    editor.addEventListener('blur', parkOnFirstLine)
+
     return () => {
       mutationObserver.disconnect()
       frameObserver.disconnect()
+      editor.removeEventListener('blur', parkOnFirstLine)
       if (resizeFrame !== null) window.cancelAnimationFrame(resizeFrame)
       if (instantResetFrame !== null) {
         window.cancelAnimationFrame(instantResetFrame)

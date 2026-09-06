@@ -82,7 +82,6 @@ function childMessage(
         role: 'assistant',
         content: entry.content,
         model: MODEL_ID,
-        mode: 'agent',
         createdAt: now,
       }
     case 'function-trigger':
@@ -106,7 +105,6 @@ function rootConversation(status: Conversation['status']): Conversation {
     id: SESSION_ID,
     title: ROOT_TITLE,
     model: MODEL_ID,
-    mode: 'agent',
     messages: [],
     depth: 0,
     status,
@@ -211,7 +209,6 @@ export function usePlayer(active: boolean, loop = true): PlayerState {
               id,
               title,
               model: MODEL_ID,
-              mode: 'agent',
               parentId: SESSION_ID,
               depth: 1,
               spawnedBy: 'agent',
@@ -266,7 +263,6 @@ export function usePlayer(active: boolean, loop = true): PlayerState {
                   role: 'assistant',
                   content: result,
                   model: MODEL_ID,
-                  mode: 'agent',
                   createdAt: now,
                 },
               ],
@@ -487,7 +483,6 @@ export function usePlayer(active: boolean, loop = true): PlayerState {
                 role: 'assistant',
                 content: '',
                 model: MODEL_ID,
-                mode: 'agent',
                 streaming: true,
                 createdAt: Date.now(),
               }

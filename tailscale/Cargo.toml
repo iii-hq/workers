@@ -16,7 +16,7 @@ name = "tailscale"
 path = "src/main.rs"
 
 [dependencies]
-iii-sdk = "=0.22.1-alpha.25"
+iii-sdk = "=0.23.0"
 iii-console-ui = { path = "../crates/console-ui" }
 arc-swap = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "signal", "time", "io-util", "sync"] }
@@ -25,7 +25,7 @@ serde_json = "1"
 serde_yaml = "0.9"
 schemars = "0.8"
 anyhow = "1"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 qrcode = "0.14"

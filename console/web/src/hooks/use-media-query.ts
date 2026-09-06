@@ -7,6 +7,9 @@ import { useEffect, useState } from 'react'
  */
 export const DESKTOP_POINTER_QUERY = '(hover: hover) and (pointer: fine)'
 
+/** The single-column phone layout: everything below the `sm` breakpoint. */
+export const MOBILE_LAYOUT_QUERY = '(max-width: 639px)'
+
 export function useMediaQuery(query: string): boolean {
   const [matches, setMatches] = useState(() =>
     typeof window === 'undefined' || typeof window.matchMedia !== 'function'

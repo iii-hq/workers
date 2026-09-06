@@ -12,6 +12,7 @@ import {
   resolveCursorAcpModelId,
 } from './cli.js';
 import { type Config, cursorCliLaunchOptions } from './config.js';
+import { CURSOR_ICON_SVG } from './provider-icon.js';
 import { jsonSchema } from './schema.js';
 import type { CursorModel } from './types.js';
 
@@ -111,6 +112,7 @@ export function cursorProviderDeclaration(): JsonObject {
     defaults: { max_tokens: FALLBACK_MAX_OUTPUT_TOKENS },
     supports_model_listing: true,
     worker_id: 'cursor',
+    icon_svg: CURSOR_ICON_SVG,
   };
 }
 

@@ -135,6 +135,18 @@ and `--motion-duration-*`/`--motion-ease-*` for transitions. Dark mode is a
 variable flip on `html[data-theme]`, so token-based styles theme for free.
 Never hardcode theme colors.
 
+Elevation is three shared tokens, never a hand-rolled stack:
+`--shadow-raised` for a card sitting on a panel, `--shadow-floating` for
+menus, popovers, and sheets, and `--shadow-lift` for an instrument surface
+that must read as lifted off the canvas with a crisp edge — the chat composer
+is the reference. Each token is a complete `box-shadow` value (inset top
+highlight, inset ring, 1 px edge, and drops for `lift`) whose ingredients
+(`--iii-ui-lift-*`) are re-tinted by the dark theme, so worker CSS writes
+`box-shadow: var(--shadow-lift);` and nothing else: no border or extra drop
+beside it, and never a literal shadow color. Promote a new elevation by adding
+a token to `console/web/src/index.css` and `packages/console-ui/token-names.mjs`,
+not by copying a stack into a worker sheet.
+
 For related content that needs emphasis inside an existing card, use
 `CardHighlight` or `uiClasses.cardHighlight`. It uses
 `--color-card-highlight` and is always borderless and shadowless. It is not a

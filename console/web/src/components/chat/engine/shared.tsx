@@ -40,13 +40,16 @@ interface FilterChipProps {
   value: ReactNode
 }
 
+/** `LABEL value` chip. The label stays on the first line and the value wraps
+ * anywhere, so a long id (scope, path) never leaves the label floating beside
+ * a two-line block. */
 export function FilterChip({ label, value }: FilterChipProps) {
   return (
-    <Chip>
-      <span className="text-ink-faint uppercase tracking-[0.06em]">
+    <Chip className="items-baseline">
+      <span className="shrink-0 text-ink-faint uppercase tracking-[0.06em]">
         {label}
       </span>
-      <span className="ml-1 text-ink">{value}</span>
+      <span className="ml-1 min-w-0 wrap-anywhere text-ink">{value}</span>
     </Chip>
   )
 }

@@ -14,8 +14,10 @@
   },
   "devDependencies": {
     "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
     "esbuild": "^0.25.0",
     "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "typescript": "^5.9.2",
     "vitest": "^4.1.6"
   }
