@@ -20,8 +20,10 @@ use tokio::sync::{oneshot, Mutex};
 use tokio::task::{AbortHandle, JoinHandle};
 use tower_http::set_header::SetResponseHeaderLayer;
 
+use iii_sdk::IIIClient;
+
 use crate::ui_assets::UiRegistry;
-use crate::{assets, proxy};
+use crate::{assets, probe, proxy};
 
 /// Grace period before a superseded listener is hard-aborted. Graceful
 /// shutdown is the primary path; the abort only bounds how long a stuck
@@ -70,6 +72,9 @@ pub struct AppState {
     pub engine_url: Arc<String>,
     pub namespace: Option<String>,
     pub ui: Option<Arc<UiRegistry>>,
+    /// Engine client used by `POST /probe` to resolve the HTTP worker's
+    /// address. `None` in unit tests, which do not mount `/probe`.
+    pub iii: Option<Arc<IIIClient>>,
 }
 
 impl AppState {
@@ -77,11 +82,13 @@ impl AppState {
         engine_url: Arc<String>,
         namespace: Option<String>,
         ui: Option<Arc<UiRegistry>>,
+        iii: Option<Arc<IIIClient>>,
     ) -> Self {
         Self {
             engine_url,
             namespace,
             ui,
+            iii,
         }
     }
 }
@@ -104,6 +111,14 @@ pub fn router(state: AppState) -> Router {
         .route("/assets/*path", get(assets::asset_handler))
         .route("/runtime", get(runtime_handler))
         .route("/ws", get(proxy::ws_proxy));
+
+    // `/probe` runs the trigger-catalog test request server-side so the panel
+    // can read a redirect's real status (302 etc.) — a browser `fetch` cannot.
+    // Only mounted when an engine client is present; the target host is derived
+    // server-side, never taken from the request, so it cannot be an SSRF lever.
+    if state.iii.is_some() {
+        router = router.route("/probe", axum::routing::post(probe::probe_handler));
+    }
 
     if state.ui.is_some() {
         router = router
@@ -312,6 +327,7 @@ mod tests {
                 Arc::new("ws://127.0.0.1:1".to_string()),
                 Some("project-a".to_string()),
                 Some(ui.clone()),
+                None,
             ),
             ui,
         )
@@ -400,7 +416,7 @@ mod tests {
 
     #[tokio::test]
     async fn kill_switch_removes_ui_routes() {
-        let state = AppState::new(Arc::new("ws://127.0.0.1:1".to_string()), None, None);
+        let state = AppState::new(Arc::new("ws://127.0.0.1:1".to_string()), None, None, None);
         let response = get_response(router(state.clone()), "/ui", &[]).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let response = get_response(router(state), "/vendor/react.js", &[]).await;
@@ -409,7 +425,7 @@ mod tests {
 
     #[tokio::test]
     async fn every_http_response_carries_defensive_browser_headers() {
-        let state = AppState::new(Arc::new("ws://127.0.0.1:1".to_string()), None, None);
+        let state = AppState::new(Arc::new("ws://127.0.0.1:1".to_string()), None, None, None);
         for uri in ["/", "/missing"] {
             let response = get_response(router(state.clone()), uri, &[]).await;
             assert_eq!(
