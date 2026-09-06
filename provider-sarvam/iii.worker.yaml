@@ -1,0 +1,13 @@
+iii: v1
+name: provider-sarvam
+language: rust
+deploy: binary
+manifest: Cargo.toml
+license: Apache-2.0
+bin: provider-sarvam
+tags: [llm, speech, sarvam, indic, chat-completions, stt, tts, provider]
+description: Sarvam AI provider worker; implements provider::sarvam::stream for the Sarvam chat models plus provider::sarvam::transcribe (Saaras) and provider::sarvam::speak (Bulbul) behind llm-router.
+
+dependencies:
+  state: "^0.22.2"
+  llm-router: "^1.4.16"

@@ -1,0 +1,115 @@
+{
+  "description": "Speech to text on Sarvam Saaras behind router::transcribe: base64 audio in, text with timed segments and the detected language out; 22 Indian languages and English.",
+  "function_id": "provider::sarvam::transcribe",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "audio_base64": {
+        "description": "The audio, base64. WAV, MP3, AAC, OGG, OPUS, FLAC, M4A, WebM.",
+        "type": "string"
+      },
+      "language": {
+        "default": null,
+        "description": "Language hint (`hi`, `hi-IN`, ...); detected when omitted.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "mime": {
+        "default": null,
+        "description": "MIME type of the audio; `audio/wav` when omitted.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "model": {
+        "default": null,
+        "description": "Speech-to-text model id; `saaras:v3` when omitted.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "prompt": {
+        "default": null,
+        "description": "Accepted for the shared contract; Saaras takes no prompt.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "audio_base64"
+    ],
+    "title": "TranscribeRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "TranscriptSegment": {
+        "properties": {
+          "end_secs": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "start_secs": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "duration_secs": {
+        "format": "double",
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "language": {
+        "description": "Language Saaras detected or was told, as `hi-IN`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "model": {
+        "type": "string"
+      },
+      "segments": {
+        "description": "Sentences, cut at punctuation or a pause, with word timings.",
+        "items": {
+          "$ref": "#/definitions/TranscriptSegment"
+        },
+        "type": "array"
+      },
+      "text": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "model",
+      "text"
+    ],
+    "title": "TranscribeResponse",
+    "type": "object"
+  }
+}
