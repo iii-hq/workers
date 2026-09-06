@@ -24,6 +24,7 @@ pub const CREDENTIAL_ENV_VAR: &str = "SARVAM_API_KEY";
 
 pub fn declaration() -> ProviderDeclaration {
     ProviderDeclaration {
+        icon_svg: None,
         id: PROVIDER_ID.into(),
         display_name: Some("Sarvam AI".into()),
         credential_env_var: Some(CREDENTIAL_ENV_VAR.into()),
