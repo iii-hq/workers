@@ -205,6 +205,7 @@ fn glm_53_coding_model() -> Model {
         supports_structured_output: Some(false),
         thinking_budgets: None,
         pricing: None,
+        speech: None,
     }
 }
 
@@ -236,6 +237,7 @@ fn to_model(r: &Row) -> Model {
             cache_read: Some(cached),
             cache_write: None,
         }),
+        speech: None,
     }
 }
 

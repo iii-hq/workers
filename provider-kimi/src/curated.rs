@@ -167,6 +167,7 @@ pub fn enrich(id: &str) -> Model {
             supports_structured_output: Some(true), // json_object mode
             thinking_budgets: None,
             pricing: Some(meta.pricing),
+            speech: None,
         },
         None => Model {
             id: id.into(),
@@ -184,6 +185,7 @@ pub fn enrich(id: &str) -> Model {
             supports_structured_output: None,
             thinking_budgets: None,
             pricing: None,
+            speech: None,
         },
     }
 }

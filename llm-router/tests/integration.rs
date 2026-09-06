@@ -2588,3 +2588,148 @@ async fn complete_fails_fast_when_the_provider_worker_is_gone() {
     consumer.shutdown();
     router_iii.shutdown();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn speech_surfaces_forward_to_the_provider_and_stay_out_of_the_chat_list() {
+    let engine = engine_or_skip!();
+    let router_iii = register_worker(&engine.url, test_init_options());
+    register_router(router_iii.clone())
+        .await
+        .expect("router boots");
+
+    // A speech provider on its own connection: one stt and one tts model,
+    // both surfaces, no chat stream at all.
+    let provider = register_worker(&engine.url, test_init_options());
+    provider.register_function(
+        "provider::speech::transcribe",
+        RegisterFunction::new_async(|input: Value| async move {
+            let heard = input["audio_base64"].as_str().map(str::len).unwrap_or(0);
+            Ok::<Value, Error>(json!({
+                "model": input["model"],
+                "text": format!("heard {heard} chars of {}", input["mime"].as_str().unwrap_or("?")),
+                "segments": [{ "text": "heard", "start_secs": 0.0, "end_secs": 1.0 }],
+                "language": input["language"],
+            }))
+        }),
+    );
+    provider.register_function(
+        "provider::speech::speak",
+        RegisterFunction::new_async(|input: Value| async move {
+            let model = input["model"].as_str().unwrap_or("say-1");
+            Ok::<Value, Error>(json!({
+                "model": model,
+                "audio_base64": "AAAA",
+                "mime": if input["format"] == json!("wav") { "audio/wav" } else { "audio/mpeg" },
+                "voice": input["voice"],
+            }))
+        }),
+    );
+    let declared = call(
+        &provider,
+        "router::provider::register",
+        json!({
+            "id": "speech",
+            "models": [
+                { "id": "listen-1", "provider": "speech", "context_window": 0, "max_output_tokens": 0,
+                  "speech": { "modality": "stt", "languages": ["en"], "streaming": false } },
+                { "id": "say-1", "provider": "speech", "context_window": 0, "max_output_tokens": 0,
+                  "speech": { "modality": "tts", "languages": ["en"] } }
+            ]
+        }),
+    )
+    .await
+    .expect("speech provider declares");
+    assert_eq!(declared["ok"], json!(true));
+
+    // Default listing is chat only; the speech families list on request.
+    let chat = call(&router_iii, "router::models::list", json!({}))
+        .await
+        .expect("chat list");
+    assert_eq!(chat["models"], json!([]));
+    let stt = call(
+        &router_iii,
+        "router::models::list",
+        json!({ "modality": "stt" }),
+    )
+    .await
+    .expect("stt list");
+    assert_eq!(stt["models"][0]["id"], json!("listen-1"));
+    assert_eq!(stt["models"][0]["speech"]["modality"], json!("stt"));
+    let any = call(
+        &router_iii,
+        "router::models::list",
+        json!({ "modality": "any" }),
+    )
+    .await
+    .expect("any list");
+    assert_eq!(any["models"].as_array().map(Vec::len), Some(2));
+    let supports = call(
+        &router_iii,
+        "router::models::supports",
+        json!({ "id": "say-1", "capability": "tts" }),
+    )
+    .await
+    .expect("supports");
+    assert_eq!(supports["supported"], json!(true));
+
+    // transcribe finds the provider from the model id and forwards the audio.
+    let heard = call(
+        &router_iii,
+        "router::transcribe",
+        json!({ "model": "listen-1", "audio_base64": "UklGRg==", "language": "en" }),
+    )
+    .await
+    .expect("transcribe");
+    assert_eq!(heard["provider"], json!("speech"));
+    assert_eq!(heard["model"], json!("listen-1"));
+    assert_eq!(heard["text"], json!("heard 8 chars of audio/wav"));
+    assert_eq!(heard["segments"][0]["text"], json!("heard"));
+    assert_eq!(heard["language"], json!("en"));
+
+    // speak by provider alone picks that provider's tts model.
+    let said = call(
+        &router_iii,
+        "router::speak",
+        json!({ "provider": "speech", "text": "hello", "voice": "v1", "format": "wav" }),
+    )
+    .await
+    .expect("speak");
+    assert_eq!(said["provider"], json!("speech"));
+    assert_eq!(said["model"], json!("say-1"));
+    assert_eq!(said["mime"], json!("audio/wav"));
+    assert_eq!(said["voice"], json!("v1"));
+
+    // The wrong family and an absent surface are typed errors, not silence.
+    let wrong = call(
+        &router_iii,
+        "router::transcribe",
+        json!({ "model": "say-1", "audio_base64": "UklGRg==" }),
+    )
+    .await
+    .expect_err("a tts model cannot transcribe");
+    assert_eq!(remote_code(&wrong), "router/invalid_request");
+    let empty = call(
+        &router_iii,
+        "router::speak",
+        json!({ "provider": "speech", "text": "  " }),
+    )
+    .await
+    .expect_err("empty text is refused");
+    assert_eq!(remote_code(&empty), "router/invalid_request");
+
+    // A speech model is not a chat target.
+    let refused = call(
+        &router_iii,
+        "router::complete",
+        json!({
+            "model": "listen-1",
+            "messages": [{ "role": "user", "content": [{ "type": "text", "text": "hi" }] }]
+        }),
+    )
+    .await
+    .expect_err("speech models do not chat");
+    assert_eq!(remote_code(&refused), "router/invalid_request");
+
+    provider.shutdown();
+    router_iii.shutdown();
+}

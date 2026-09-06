@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use crate::types::errors::{RouterCode, RouterError};
 use crate::types::events::{AssistantMessageEvent, ErrorKind, StopReason};
+use crate::types::model::SpeechModality;
 use crate::types::router::{ChatResponse, ErrorShape};
 use iii_helpers::observability::opentelemetry::trace::FutureExt as _;
 use iii_sdk::channel::StreamChannelRef;
@@ -21,7 +22,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::catalog::queries::{effective_model_ref, model_supports};
+use crate::catalog::queries::{effective_model_ref, model_supports, models_get};
 use crate::catalog::store::CatalogStore;
 use crate::channels::create_router_channel;
 use crate::config::state::{snapshot, ConfigCell};
@@ -374,6 +375,33 @@ impl ChatPipeline {
             call.model = model;
         }
         let call = call; // frozen: nothing below mutates the normalized pair
+
+        // Speech models live in the same catalog so callers can list and
+        // pick them, but they answer router::transcribe / router::speak, not
+        // chat. Refuse before routing so the message names the right door
+        // instead of a provider stream failing on an unknown model.
+        if let Some(modality) = models_get(&self.catalog, call.provider.as_deref(), &call.model)
+            .await
+            .and_then(|meta| meta.speech_modality())
+        {
+            let door = match modality {
+                SpeechModality::Stt => "router::transcribe",
+                SpeechModality::Tts => "router::speak",
+            };
+            return Err(fail_with_terminal(
+                sink.as_ref(),
+                None,
+                &call.model,
+                "",
+                RouterCode::InvalidRequest,
+                format!(
+                    "Model \"{}\" is a speech model; call {door} instead of chat.",
+                    call.model
+                ),
+                pre_stream_error_kind(RouterCode::InvalidRequest),
+                None,
+            ));
+        }
 
         // A pre-stream failure must still leave exactly one terminal frame on
         // the sink. Without it, `router::complete`'s drain blocks for its full

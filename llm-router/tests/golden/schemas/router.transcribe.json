@@ -1,0 +1,129 @@
+{
+  "description": "Speech to text through provider::<id>::transcribe: {model?, provider?, audio_base64, mime?, language?} to {provider, model, text, segments?}. Resolves the provider from the catalog's stt models when none is named.",
+  "function_id": "router::transcribe",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "audio_base64": {
+        "description": "The audio, base64. WAV unless `mime` says otherwise.",
+        "type": "string"
+      },
+      "language": {
+        "default": null,
+        "description": "BCP-47 language hint; the model detects the language when omitted.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "mime": {
+        "default": null,
+        "description": "MIME type of the audio: `audio/wav` (default), `audio/mpeg`, `audio/webm`, `audio/ogg`, `audio/flac`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "model": {
+        "default": null,
+        "description": "Speech-to-text model id (an `stt` model from `router::models::list`); the provider's default when omitted.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "prompt": {
+        "default": null,
+        "description": "Vocabulary or context hint for the recognizer, when the provider takes one.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "provider": {
+        "default": null,
+        "description": "Provider id; resolved from the model's catalog owner when omitted.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "audio_base64"
+    ],
+    "title": "RouterTranscribeRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "TranscriptSegment": {
+        "description": "One timed span of a transcript; times are absent when the provider gives none.",
+        "properties": {
+          "end_secs": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "start_secs": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "duration_secs": {
+        "format": "double",
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "language": {
+        "description": "Language the provider detected or was told (BCP-47).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "model": {
+        "type": "string"
+      },
+      "provider": {
+        "type": "string"
+      },
+      "segments": {
+        "description": "Timed spans when the provider produces them.",
+        "items": {
+          "$ref": "#/definitions/TranscriptSegment"
+        },
+        "type": "array"
+      },
+      "text": {
+        "description": "The whole transcript.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "model",
+      "provider",
+      "text"
+    ],
+    "title": "RouterTranscribeResponse",
+    "type": "object"
+  }
+}

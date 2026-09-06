@@ -1,0 +1,11 @@
+# Agent permissions for the provider-elevenlabs worker.
+# Spec: tech-specs/2026-06-agentic/llm-router.md § Security.
+version: 1
+
+rules:
+  # Direct provider calls bypass the router's accounting and credential
+  # handling; agents go through router::transcribe / router::speak.
+  - '!provider::elevenlabs::transcribe'
+  - '!provider::elevenlabs::speak'
+  - '!provider::elevenlabs::refresh_models'
+  - '!provider::elevenlabs::on_router_ready'

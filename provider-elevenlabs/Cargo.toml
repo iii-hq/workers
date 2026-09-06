@@ -1,0 +1,33 @@
+[workspace]
+
+[package]
+name = "provider-elevenlabs"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+description = "ElevenLabs speech provider worker behind llm-router: speech to text with Scribe, text to speech with the Eleven voices."
+
+[[bin]]
+name = "provider-elevenlabs"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+llm-router = { path = "../llm-router", default-features = false }
+# Must match llm-router's pin (one iii-sdk per graph).
+iii-sdk = "=0.22.1-alpha.25"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Must stay on the same schemars major as iii-sdk so the derived
+# request/response schemas match what the SDK emits at registration.
+schemars = "0.8"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
+futures = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
+base64 = "0.22"
+clap = { version = "4", features = ["derive", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }

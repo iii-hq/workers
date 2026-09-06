@@ -80,6 +80,7 @@ pub fn model_from_row(row: &Value) -> Option<Model> {
         thinking_budgets: None,
         // Subscription metering (premium requests), not per-token pricing.
         pricing: None,
+        speech: None,
     })
 }
 

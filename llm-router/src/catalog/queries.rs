@@ -1,5 +1,5 @@
 //! models::list / get / supports semantics (spec § Capability strings).
-use crate::types::model::Model;
+use crate::types::model::{ModalityFilter, Model, SpeechModality};
 
 use super::store::CatalogStore;
 
@@ -14,6 +14,9 @@ pub fn model_supports(model: &Model, capability: &str) -> bool {
             model.supports_thinking == Some(true)
         }
         "thinking:xhigh" => model.supports_xhigh == Some(true),
+        "stt" => model.speech_modality() == Some(SpeechModality::Stt),
+        "tts" => model.speech_modality() == Some(SpeechModality::Tts),
+        "streaming" => model.speech.as_ref().is_some_and(|s| s.streaming),
         _ => false,
     }
 }
@@ -22,6 +25,7 @@ pub async fn models_list(
     store: &CatalogStore,
     provider: Option<&str>,
     capability: Option<&str>,
+    modality: ModalityFilter,
 ) -> Vec<Model> {
     let mut models = match provider {
         Some(p) => {
@@ -41,6 +45,7 @@ pub async fn models_list(
     if let Some(cap) = capability {
         models.retain(|m| model_supports(m, cap));
     }
+    models.retain(|m| m.matches_modality(modality));
     models
 }
 
@@ -157,7 +162,46 @@ mod tests {
             supports_structured_output: None,
             thinking_budgets: None,
             pricing: None,
+            speech: None,
         }
+    }
+
+    fn scribe() -> Model {
+        Model {
+            id: "scribe".into(),
+            provider: "elevenlabs".into(),
+            context_window: 0,
+            max_output_tokens: 0,
+            supports_thinking: None,
+            supports_xhigh: None,
+            supports_tools: None,
+            supports_vision: None,
+            speech: Some(crate::types::model::SpeechModel {
+                modality: SpeechModality::Stt,
+                languages: vec!["en".into()],
+                streaming: true,
+            }),
+            ..sonnet()
+        }
+    }
+
+    #[test]
+    fn speech_capability_strings_and_modality_filters() {
+        let stt = scribe();
+        assert!(model_supports(&stt, "stt"));
+        assert!(!model_supports(&stt, "tts"));
+        assert!(model_supports(&stt, "streaming"));
+        assert!(!model_supports(&stt, "tools"));
+        assert!(stt.matches_modality(ModalityFilter::Stt));
+        assert!(stt.matches_modality(ModalityFilter::Any));
+        assert!(!stt.matches_modality(ModalityFilter::Chat));
+        assert!(!stt.matches_modality(ModalityFilter::Tts));
+        let chat = sonnet();
+        assert!(!model_supports(&chat, "stt"));
+        assert!(!model_supports(&chat, "streaming"));
+        assert!(chat.matches_modality(ModalityFilter::Chat));
+        assert!(!chat.matches_modality(ModalityFilter::Stt));
+        assert_eq!(ModalityFilter::default(), ModalityFilter::Chat);
     }
 
     // Provider-less models::get: unique ids resolve (context-manager budgets

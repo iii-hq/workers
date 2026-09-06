@@ -102,6 +102,7 @@ mod tests {
             supports_structured_output: Some(false),
             thinking_budgets: None,
             pricing: None,
+            speech: None,
         }
     }
 

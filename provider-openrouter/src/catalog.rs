@@ -122,6 +122,7 @@ pub fn model_from_row(row: &Value) -> Option<Model> {
         supports_structured_output: Some(supports(row, "structured_outputs")),
         thinking_budgets: None,
         pricing: if has_pricing { Some(pricing) } else { None },
+        speech: None,
     })
 }
 

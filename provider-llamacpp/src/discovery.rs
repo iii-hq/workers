@@ -91,6 +91,7 @@ fn enrich(id: &str, model_context_length: Option<u64>, props: &Props) -> Model {
         supports_structured_output: Some(true),
         thinking_budgets: None,
         pricing: None, // self-hosted
+        speech: None,
     }
 }
 

@@ -42,6 +42,7 @@ pub fn model_from_row(row: &Value) -> Option<Model> {
         supports_structured_output: None,
         thinking_budgets: None,
         pricing: None,
+        speech: None,
     })
 }
 

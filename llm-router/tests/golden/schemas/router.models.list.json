@@ -1,8 +1,20 @@
 {
-  "description": "List catalog models, optionally filtered by provider and/or a capability flag.",
+  "description": "List catalog models, optionally filtered by provider, a capability flag, and modality (chat by default; stt, tts, or any).",
   "function_id": "router::models::list",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ModalityFilter": {
+        "description": "Model family selector for `router::models::list`. `chat` is the default so pickers built before speech models existed keep listing only what `router::chat` can run.",
+        "enum": [
+          "chat",
+          "stt",
+          "tts",
+          "any"
+        ],
+        "type": "string"
+      }
+    },
     "description": "Input of `router::models::list`.",
     "properties": {
       "capability": {
@@ -11,6 +23,17 @@
           "string",
           "null"
         ]
+      },
+      "modality": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ModalityFilter"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Model family: `chat` (default), `stt`, `tts`, or `any`."
       },
       "provider": {
         "description": "Filter to a single provider id (optional).",
@@ -77,6 +100,17 @@
               "array",
               "null"
             ]
+          },
+          "speech": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/SpeechModel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set on speech models only; see [`SpeechModel`]."
           },
           "supports_cache": {
             "type": [
@@ -182,6 +216,49 @@
         },
         "required": [
           "effort"
+        ],
+        "type": "object"
+      },
+      "SpeechModality": {
+        "description": "What a speech model does. Chat models carry no `speech` block.",
+        "oneOf": [
+          {
+            "description": "Speech to text, served through `router::transcribe`.",
+            "enum": [
+              "stt"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Text to speech, served through `router::speak`.",
+            "enum": [
+              "tts"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "SpeechModel": {
+        "description": "Facts about a speech model. Present only on models served through `router::transcribe` / `router::speak`; such models report `context_window` and `max_output_tokens` as 0.",
+        "properties": {
+          "languages": {
+            "description": "BCP-47 tags of the languages the model handles; empty when the provider does not say.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "modality": {
+            "$ref": "#/definitions/SpeechModality"
+          },
+          "streaming": {
+            "default": false,
+            "description": "Realtime input (stt) or streamed audio output (tts) is available.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "modality"
         ],
         "type": "object"
       }
