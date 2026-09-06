@@ -6,7 +6,6 @@ import type {
   Conversation,
   Message,
   MessagePatch,
-  Mode,
   ModelId,
   ModelOption,
   ThinkingLevel,
@@ -24,13 +23,12 @@ const PLAYGROUND_MODEL_OPTIONS: ModelOption[] = [
 
 import { EventLog, type EventLogHandle } from './EventLog'
 
-function makeConvo(mode: Mode): Conversation {
+function makeConvo(): Conversation {
   const now = Date.now()
   return {
     id: uid(),
     title: 'playground',
     model: PLAYGROUND_MODEL_OPTIONS[0].id,
-    mode,
     messages: [],
     createdAt: now,
     updatedAt: now,
@@ -44,8 +42,8 @@ function tapBackend(
 ): ChatBackend {
   return {
     id: `${source.id}:tapped`,
-    async *stream(prompt, mode, model, opts) {
-      for await (const event of source.stream(prompt, mode, model, opts)) {
+    async *stream(prompt, model, opts) {
+      for await (const event of source.stream(prompt, model, opts)) {
         onEvent(event)
         yield event
       }
@@ -58,8 +56,6 @@ export interface PlaygroundHarnessProps {
   backend: ChatBackend
   /** Human label shown in the harness top bar. */
   label?: string
-  /** Mode the chat surface should start in so the scenario reads right. */
-  preferredMode?: Mode
   /** Render the live event-log rail (default true). */
   showEventLog?: boolean
 }
@@ -75,12 +71,9 @@ export interface PlaygroundHarnessProps {
 export function PlaygroundHarness({
   backend,
   label,
-  preferredMode = 'agent',
   showEventLog = true,
 }: PlaygroundHarnessProps) {
-  const [convo, setConvo] = useState<Conversation>(() =>
-    makeConvo(preferredMode),
-  )
+  const [convo, setConvo] = useState<Conversation>(() => makeConvo())
   const [logOpen, setLogOpen] = useState(true)
   const eventLogRef = useRef<EventLogHandle>(null)
 
@@ -90,12 +83,8 @@ export function PlaygroundHarness({
   )
 
   const handleReset = useCallback(() => {
-    setConvo(makeConvo(preferredMode))
+    setConvo(makeConvo())
     eventLogRef.current?.clear()
-  }, [preferredMode])
-
-  const setMode = useCallback((_id: string, mode: Mode) => {
-    setConvo((c) => ({ ...c, mode, updatedAt: Date.now() }))
   }, [])
 
   const setModel = useCallback((_id: string, model: ModelId) => {
@@ -164,7 +153,6 @@ export function PlaygroundHarness({
           modelOptions={PLAYGROUND_MODEL_OPTIONS}
           onUpdateModel={setModel}
           onUpdateThinkingLevel={setThinkingLevel}
-          onUpdateMode={setMode}
           onUpdateWorkingDir={() => {}}
           onAppendMessage={appendMessage}
           onPatchMessage={updateMessage}

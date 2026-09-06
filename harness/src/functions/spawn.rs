@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::deps::Deps;
 use crate::error::HarnessError;
 use crate::functions::send::MessageInput;
-use crate::prompt::{Mode, SystemPromptStrategy};
+use crate::prompt::SystemPromptStrategy;
 use crate::types::model::ThinkingLevel;
 use crate::types::output::OutputContract;
 use crate::types::turn::FunctionPolicy;
@@ -61,8 +61,6 @@ pub struct SpawnOptions {
     /// How `system_prompt` combines with the built-in prompt.
     #[serde(default)]
     pub system_prompt_strategy: SystemPromptStrategy,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode: Option<Mode>,
     /// Turn cap for the child, capped at the parent's remaining budget; omit
     /// unless required (small values strand the child).
     #[serde(default, skip_serializing_if = "Option::is_none")]

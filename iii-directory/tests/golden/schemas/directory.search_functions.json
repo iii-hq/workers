@@ -116,7 +116,7 @@
         "type": "string"
       },
       "installable": {
-        "description": "Matching registry workers from verified authors. Their functions are NOT callable until the worker is installed.",
+        "description": "Matching workers from the private registry. Their functions are NOT callable until the worker is installed.",
         "items": {
           "$ref": "#/definitions/InstallableWorker"
         },

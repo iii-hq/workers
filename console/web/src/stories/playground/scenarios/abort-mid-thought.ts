@@ -11,7 +11,7 @@ implementation actually meets the requirements before we add complexity.`
  */
 export const abortMidThought = makeBackend(
   'abort-mid-thought',
-  async function* (_prompt, _mode, _model, opts) {
+  async function* (_prompt, _model, opts) {
     yield* streamThought(THOUGHT, {
       signal: opts?.signal,
       meanDelayMs: 18,

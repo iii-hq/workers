@@ -8,7 +8,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::prompt::Mode;
 use crate::types::model::ThinkingLevel;
 use crate::types::output::OutputContract;
 
@@ -121,8 +120,6 @@ pub struct TurnOptions {
     /// Absence identifies a durable legacy session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skill_context: Option<SkillContext>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mode: Option<Mode>,
     pub max_turns: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u64>,
@@ -421,7 +418,6 @@ mod tests {
                 system_prompt: None,
                 skills_prompt: None,
                 skill_context: None,
-                mode: None,
                 max_turns: 16,
                 max_output_tokens: None,
                 max_total_tokens: None,

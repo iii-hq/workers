@@ -62,11 +62,12 @@ import {
   useChatMessageFocus,
 } from '@/lib/trace-links'
 import { turnAnchorMessageId } from '@/lib/turn-anchor'
+import { SEND_FAILED_CODE } from '@/lib/turn-failure'
 import { useExtSessionChips, useExtSessionTurnSummaries } from '@/lib/ui-slots'
 import {
   activateWorkingDir,
   fetchDefaultWorkingDir,
-  workingDirRecoveryNotice,
+  workingDirScopeNotice,
 } from '@/lib/working-dir'
 import { onWorkingDirectoryChangeRequest } from '@/lib/working-directory-request'
 import {
@@ -90,7 +91,6 @@ import {
   type FunctionTriggerMessage,
   type Message,
   type MessagePatch,
-  type Mode,
   type ModelId,
   type ModelOption,
   type SystemMessage,
@@ -98,6 +98,7 @@ import {
   type ThoughtMessage,
   type TriggerFiredData,
   type UserMessage,
+  type WorkingDirScope,
 } from '@/types/chat'
 import type { PageCommandsApi } from '@/types/injectable-ui'
 import { ActiveSubagentChips } from './ActiveSubagentChips'
@@ -143,6 +144,16 @@ function makeSystemNotice(
   return { id: uid(), role: 'system', content, tone, createdAt: Date.now() }
 }
 
+/** The scope-change row: the plain sentence plus the structured before/after. */
+function makeWorkingDirNotice(scope: WorkingDirScope): SystemMessage {
+  const notice = workingDirScopeNotice(scope)
+  return {
+    ...makeSystemNotice(notice.content),
+    kind: 'working-dir',
+    scope: notice.scope,
+  }
+}
+
 function formatCompactResult(result: CompactResult): string {
   switch (result.status) {
     case 'ok':
@@ -186,7 +197,6 @@ interface ChatViewProps {
   onBack?: () => void
   onUpdateModel: (id: string, model: ModelId) => void
   onUpdateThinkingLevel: (id: string, level: ThinkingLevel) => void
-  onUpdateMode: (id: string, mode: Mode) => void
   onUpdateWorkingDir: (id: string, dir: string | null) => void
   onAppendMessage: (id: string, message: Message) => void
   onPatchMessage: (id: string, messageId: string, patch: MessagePatch) => void
@@ -205,7 +215,6 @@ export function ChatView({
   onBack,
   onUpdateModel,
   onUpdateThinkingLevel,
-  onUpdateMode,
   onUpdateWorkingDir,
   onAppendMessage,
   onPatchMessage,
@@ -993,7 +1002,11 @@ export function ChatView({
             ) {
               onAppendMessage(
                 conversation.id,
-                makeSystemNotice(workingDirRecoveryNotice(dir, next)),
+                makeWorkingDirNotice({
+                  path: next,
+                  previousPath: dir,
+                  cause: next === null ? 'unavailable' : 'recovered',
+                }),
               )
             }
           }
@@ -1402,7 +1415,6 @@ export function ChatView({
         try {
           await backend.queueMessage(
             payload.text || '(attachments only)',
-            conversation.mode,
             model,
             {
               sessionId,
@@ -1452,7 +1464,6 @@ export function ChatView({
       try {
         for await (const event of backend.stream(
           payload.text || '(attachments only)',
-          conversation.mode,
           model,
           {
             signal: controller.signal,
@@ -1608,7 +1619,6 @@ export function ChatView({
                   role: 'assistant',
                   content: '',
                   model,
-                  mode: conversation.mode,
                   streaming: true,
                   createdAt: Date.now(),
                 }
@@ -1664,12 +1674,26 @@ export function ChatView({
                 noticeContent +=
                   ' Partial output above was preserved and may be incomplete.'
               }
+              // A failed turn renders as the diagnosis card even before the
+              // transcript's structured record lands; the summary is all the
+              // live event carries, so the card classifies from that.
+              const failed = event.reason === 'error'
               const notice: SystemMessage = {
                 id: event.entryId ?? uid(),
                 role: 'system',
-                kind: 'notice',
+                kind: failed ? 'turn-failure' : 'notice',
                 content: noticeContent,
-                tone: event.reason === 'error' ? 'error' : 'warn',
+                tone: failed ? 'error' : 'warn',
+                ...(failed
+                  ? {
+                      failure: {
+                        ...(event.message ? { summary: event.message } : {}),
+                        ...(event.partialResultAvailable
+                          ? { partialResultAvailable: true }
+                          : {}),
+                      },
+                    }
+                  : {}),
                 // The transcript owns the authoritative lifecycle notice under
                 // this id. Trigger delivery is unordered, so a late live
                 // fallback may fill a gap but must not overwrite that record.
@@ -1709,9 +1733,11 @@ export function ChatView({
           const notice: SystemMessage = {
             id: uid(),
             role: 'system',
-            kind: 'notice',
+            kind: 'turn-failure',
             content: noticeContent,
             tone: 'error',
+            failure: { summary: 'The message could not be sent.' },
+            technicalDetails: { code: SEND_FAILED_CODE, detail },
             createdAt: Date.now(),
           }
           onAppendMessage(conversationId, notice)
@@ -1744,7 +1770,6 @@ export function ChatView({
     [
       conversation.id,
       conversation.agentProfile,
-      conversation.mode,
       conversation.model,
       conversation.skills,
       conversation.workingDir,
@@ -1954,9 +1979,11 @@ export function ChatView({
       if (!conversation.draft && next !== prev) {
         onAppendMessage(
           id,
-          makeSystemNotice(
-            `working directory changed to ${next} — applies to the messages that follow`,
-          ),
+          makeWorkingDirNotice({
+            path: next,
+            previousPath: prev,
+            cause: 'selected',
+          }),
         )
       }
     },
@@ -2177,7 +2204,7 @@ export function ChatView({
       ref={viewRef}
       data-chat-session-id={conversation.id}
       data-chat-session-hydrated={conversation.hydrated}
-      className="flex-1 flex flex-col min-w-0 min-h-0"
+      className="@container flex-1 flex flex-col min-w-0 min-h-0"
     >
       <PageHeader
         className={headerPad}
@@ -2374,7 +2401,6 @@ export function ChatView({
             </div>
           ) : null}
           <Composer
-            mode={conversation.mode}
             model={effectiveModel}
             modelOptions={modelOptions}
             catalogLoading={catalogLoading}
@@ -2386,7 +2412,6 @@ export function ChatView({
             showPermissionMode={approvalEnabled}
             thinkingLevel={thinkingLevel}
             onThinkingLevelChange={handleThinkingLevelChange}
-            onModeChange={(next) => onUpdateMode(conversation.id, next)}
             onModelChange={(next) => onUpdateModel(conversation.id, next)}
             showWorkingDir={workingDirEnabled}
             workingDir={conversation.workingDir ?? null}

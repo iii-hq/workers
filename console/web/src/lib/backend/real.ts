@@ -1,9 +1,8 @@
 /**
  * iii-browser-sdk + harness turn kickoff. Deployment permission rules live in
  * the `approval-gate` configuration entry; the console derives the harness
- * structural floor from those rules on each send. Operating mode is passed to
- * the harness, which assembles the provider-specific identity prompt when
- * `system_prompt` is omitted.
+ * structural floor from those rules on each send. The harness assembles the
+ * identity prompt when `system_prompt` is omitted.
  *
  * Transcript content (tokens, message snapshots, function-trigger cards, results)
  * renders from session-manager events reconciled by the conversations layer
@@ -19,7 +18,7 @@ import { newMessageId, newSessionId } from '@/lib/session-id'
 import { appendCustomEntry, fetchTranscript } from '@/lib/sessions/api'
 import { COMPACTION_CUSTOM_TYPE } from '@/lib/sessions/entry-mapper'
 import type { AgentMessage } from '@/lib/sessions/types'
-import type { Mode, ModelId } from '@/types/chat'
+import type { ModelId } from '@/types/chat'
 import type { PendingApprovalRecord } from '@/types/iii-agent-event'
 import {
   acceptPendingApprovalRevision,
@@ -173,7 +172,6 @@ function buildMessageInput(
  */
 async function buildSendRequest(
   prompt: string,
-  mode: Mode,
   model: ModelId,
   sessionId: string,
   messageId: string,
@@ -209,7 +207,6 @@ async function buildSendRequest(
     idempotency_key: messageId,
     session: { metadata: { surface: 'console' } },
     options: {
-      mode,
       functions: functionPolicy,
       ...(opts?.agent ? { agent: opts.agent } : {}),
       ...toSystemPromptOptions(opts?.systemPrompt),
@@ -229,21 +226,13 @@ async function buildSendRequest(
  */
 async function realQueueMessage(
   prompt: string,
-  mode: Mode,
   model: ModelId,
   opts?: ChatStreamOptions,
 ): Promise<void> {
   const client = await getIiiClient()
   const sessionId = opts?.sessionId ?? newSessionId()
   const messageId = opts?.messageId ?? newMessageId()
-  const req = await buildSendRequest(
-    prompt,
-    mode,
-    model,
-    sessionId,
-    messageId,
-    opts,
-  )
+  const req = await buildSendRequest(prompt, model, sessionId, messageId, opts)
   await sendTurn(client, req)
 }
 
@@ -321,7 +310,6 @@ function realWatchApprovals(
 
 async function* realStream(
   prompt: string,
-  mode: Mode,
   model: ModelId,
   opts?: ChatStreamOptions,
 ): AsyncGenerator<StreamEvent> {
@@ -417,7 +405,6 @@ async function* realStream(
     // folds the message in (merge/queue) rather than rejecting — no busy error.
     const sendRequest = await buildSendRequest(
       prompt,
-      mode,
       model,
       sessionId,
       messageId,

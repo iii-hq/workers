@@ -684,7 +684,6 @@ fn send_options(job: &EvalJobRecordV1, variant: &crate::contract::EvalVariantV1)
         } else {
             Some(job.request.model.system_prompt_strategy)
         },
-        mode: job.request.model.mode,
         max_turns: Some(job.request.limits.execution.max_turns),
         max_output_tokens: Some(job.request.limits.execution.max_output_tokens_per_call),
         max_total_tokens: job.request.limits.execution.max_total_tokens,

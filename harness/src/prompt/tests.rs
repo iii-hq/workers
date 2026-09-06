@@ -1,13 +1,7 @@
-use super::{
-    build_system_prompt, resolve_system_prompt, variants, Mode, SystemPromptOpts,
-    SystemPromptStrategy,
-};
+use super::{resolve_system_prompt, variants, SystemPromptStrategy};
 
 fn default_prompt() -> String {
-    build_system_prompt(SystemPromptOpts {
-        mode: None,
-        identity: variants::DEFAULT,
-    })
+    variants::DEFAULT.to_string()
 }
 
 #[test]
@@ -16,7 +10,6 @@ fn resolve_non_empty_override_returns_verbatim() {
         resolve_system_prompt(
             Some("custom".into()),
             SystemPromptStrategy::Override,
-            Some(Mode::Ask),
             variants::DEFAULT
         ),
         Some("custom".into())
@@ -28,7 +21,6 @@ fn resolve_empty_override_falls_through_to_builtin() {
     let out = resolve_system_prompt(
         Some(String::new()),
         SystemPromptStrategy::Override,
-        None,
         variants::DEFAULT,
     )
     .expect("built-in prompt");
@@ -37,19 +29,14 @@ fn resolve_empty_override_falls_through_to_builtin() {
 
 #[test]
 fn resolve_missing_override_uses_embedded_default() {
-    let out = resolve_system_prompt(
-        None,
-        SystemPromptStrategy::Override,
-        None,
-        variants::DEFAULT,
-    )
-    .expect("built-in prompt");
+    let out = resolve_system_prompt(None, SystemPromptStrategy::Override, variants::DEFAULT)
+        .expect("built-in prompt");
     assert_eq!(out, variants::DEFAULT);
 }
 
 #[test]
 fn resolve_enrich_without_a_custom_prompt_uses_embedded_default() {
-    let out = resolve_system_prompt(None, SystemPromptStrategy::Enrich, None, variants::DEFAULT)
+    let out = resolve_system_prompt(None, SystemPromptStrategy::Enrich, variants::DEFAULT)
         .expect("built-in prompt");
     assert_eq!(out, variants::DEFAULT);
 }
@@ -59,7 +46,6 @@ fn resolve_enrich_appends_custom_to_builtin() {
     let out = resolve_system_prompt(
         Some("Speak only in haiku.".into()),
         SystemPromptStrategy::Enrich,
-        None,
         variants::DEFAULT,
     )
     .expect("enriched prompt");
@@ -74,15 +60,10 @@ fn resolve_enrich_with_empty_custom_falls_through_to_builtin() {
     let out = resolve_system_prompt(
         Some(String::new()),
         SystemPromptStrategy::Enrich,
-        None,
         variants::DEFAULT,
     )
     .expect("built-in prompt");
-    let built_in = build_system_prompt(SystemPromptOpts {
-        mode: None,
-        identity: variants::DEFAULT,
-    });
-    assert_eq!(out, built_in);
+    assert_eq!(out, default_prompt());
 }
 
 #[test]
@@ -91,7 +72,6 @@ fn resolve_disabled_omits_system_prompt() {
         resolve_system_prompt(
             Some("ignored".into()),
             SystemPromptStrategy::Disabled,
-            Some(Mode::Agent),
             variants::DEFAULT,
         ),
         None
@@ -107,29 +87,35 @@ fn identity_line_and_agent_trigger_preserved() {
 }
 
 #[test]
-fn default_discovery_fallback_yields_to_injected_assist() {
+fn default_discovery_prefers_search_functions_then_falls_back() {
     let out = default_prompt().replace('\n', " ");
     let step_one = out
         .find("Step 1. Find the function id through exactly one task-capability discovery path")
         .expect("prompt makes discovery paths mutually exclusive at Step 1");
+    let default_path = out[step_one..]
+        .find("The default path is `directory::search_functions`")
+        .expect("prompt makes directory::search_functions the default discovery path");
     let assist = out[step_one..]
-        .find("If `<discovery_assist>` is present, follow it and do not use `engine::functions::list` to discover task-capability IDs")
+        .find("If `<discovery_assist>` is present, follow it instead of searching")
         .expect("prompt gives injected discovery guidance precedence at Step 1");
-    let inventory = out[step_one..]
-        .find("Fixed-prefix inventory checks for a documented surface or after an install still apply")
-        .expect("prompt keeps inventory verification distinct from capability discovery");
     let fallback = out[step_one..]
-        .find("Only when `<discovery_assist>` is absent, call `engine::functions::list`")
-        .expect("prompt keeps engine discovery as the explicit fallback");
+        .find("Only when `directory::search_functions` is itself unavailable")
+        .expect("prompt keeps engine::functions::list as the explicit fallback");
+    let inventory = out[step_one..]
+        .find("Fixed-prefix inventory checks for a documented surface or after an install use `engine::functions::list")
+        .expect("prompt keeps inventory verification distinct from capability discovery");
+    assert!(default_path < assist);
     assert!(assist < fallback);
-    assert!(inventory < fallback);
+    assert!(fallback < inventory);
     assert!(out.contains("First check what already exists through the active discovery path"));
     assert!(out.contains(
-        "When `<discovery_assist>` is absent and no registered function fits, search the public registry"
+        "`directory::search_functions` surfaces installable registry workers alongside installed"
     ));
-    assert!(out.contains("uses the active discovery path from Step 1 and finds `shell::fs::ls`"));
+    assert!(out.contains(
+        "calls directory::search_functions { capabilities: [\"list files in a directory\"] } and finds `shell::fs::ls`"
+    ));
     assert!(out.contains("Find the replacement through the active discovery path from Step 1"));
-    assert!(out.contains("This fallback example applies only when `<discovery_assist>` is absent"));
+    assert!(out.contains("This example installs a worker that is not yet present"));
     assert!(!out.contains("calls engine::functions::list { search: \"ls\" }"));
 
     let checklist = out
@@ -138,7 +124,7 @@ fn default_discovery_fallback_yields_to_injected_assist() {
         .1;
     assert!(checklist.contains("the active discovery path"));
     assert!(checklist.contains("`<discovery_assist>` when present"));
-    assert!(checklist.contains("otherwise `engine::functions::list`"));
+    assert!(checklist.contains("otherwise `directory::search_functions`"));
     assert!(!checklist.contains("Did I find the id with `engine::functions::list`?"));
 }
 
@@ -203,7 +189,7 @@ fn registry_allowlist_invariant() {
     assert!(out.contains("directory::registry::workers::info"));
     for id in extract_directory_ids(&out) {
         assert!(
-            id.starts_with("directory::registry::workers::"),
+            id.starts_with("directory::registry::workers::") || id == "directory::search_functions",
             "unexpected directory id: {id}"
         );
     }
@@ -259,11 +245,56 @@ fn registry_flow() {
     let out = default_prompt();
     assert!(out.contains("directory::registry::workers::list { search: \"<capability>\" }"));
     assert!(out.contains("directory::registry::workers::info { name: \"<name>\" }"));
-    assert!(out.contains("compose::add { worker: \"<name>\" }"));
+    assert!(out.contains("compose::add { worker: \"<name>\", operation_id: \"<operation-id>\" }"));
     assert!(out.contains("say what you are about to install and why"));
     assert!(out.contains("confirm the new function ids appear"));
     assert!(out.contains("engine::functions::list { prefix: \"<worker>::\" }"));
     assert!(out.contains("a preview, not the contract"));
+}
+
+#[test]
+fn observable_compose_mutations_register_a_terminal_wake_before_starting() {
+    let out = default_prompt();
+    let registration = out
+        .find("engine::register_trigger { trigger_type: \"compose-operation\"")
+        .expect("compose-operation registration");
+    let add = out[registration..]
+        .find("compose::add { worker: \"<name>\", operation_id: \"<operation-id>\" }")
+        .map(|index| registration + index)
+        .expect("compose::add with correlated operation id");
+
+    assert!(registration < add);
+    assert!(out.contains("operation_id: \"<operation-id>\", terminal_only: true"));
+    assert!(
+        out.contains("compose::update { worker: \"<name>\", operation_id: \"<operation-id>\" }")
+    );
+    assert!(
+        out.contains("compose::remove { worker: \"<name>\", operation_id: \"<operation-id>\" }")
+    );
+    assert!(out.contains(
+        "compose::add { workers: [\"<name>\", \"<name>\"], operation_id: \"<operation-id>\" }"
+    ));
+    assert!(out.contains(
+        "compose::update { workers: [\"<name>\", \"<name>\"], operation_id: \"<operation-id>\" }"
+    ));
+    assert!(out.contains(
+        "compose::remove { workers: [\"<name>\", \"<name>\"], operation_id: \"<operation-id>\" }"
+    ));
+    assert!(out.contains("applies only to `add`, `update`, and `remove`"));
+    assert!(out.contains("unregister the wake with its"));
+    assert!(out.contains("compose::operation { operation_id: \"<operation-id>\" }"));
+    assert!(out.contains(
+        "[if the snapshot is terminal, unregister the subscription and process the result]"
+    ));
+    assert!(out.contains(
+        "[otherwise end the turn; the terminal `compose-operation` event wakes this session]"
+    ));
+    assert!(
+        !out.contains("[ends the turn; the terminal `compose-operation` event wakes this session]")
+    );
+    assert!(out.contains("Do not poll"));
+    assert!(out.contains("terminal: true"));
+    assert!(!out.contains("The call waits until newly declared workers are ready"));
 }
 
 #[test]
@@ -332,56 +363,11 @@ fn prompt_injection_defense() {
 }
 
 #[test]
-fn mode_ask_prepends_before_identity() {
-    let out = build_system_prompt(SystemPromptOpts {
-        mode: Some(Mode::Ask),
-        identity: variants::DEFAULT,
-    });
-    assert!(out.contains("operating in ask mode"));
-    assert!(out.find("operating in ask mode") < out.find("You are an iii agent worker"));
-}
-
-#[test]
-fn mode_agent_prepends_before_identity() {
-    let out = build_system_prompt(SystemPromptOpts {
-        mode: Some(Mode::Agent),
-        identity: variants::DEFAULT,
-    });
-    assert!(out.contains("operating in agent mode"));
-    assert!(out.find("operating in agent mode") < out.find("You are an iii agent worker"));
-}
-
-#[test]
-fn mode_agent_matches_the_requested_scope_and_detail() {
-    let out = super::paragraph(Mode::Agent);
-    assert!(out.contains("Match the user's requested scope and level of detail"));
-    assert!(out.contains("do not expand the task"));
-}
-
-#[test]
-fn mode_prepends_before_embedded_identity() {
-    let out = build_system_prompt(SystemPromptOpts {
-        mode: Some(Mode::Ask),
-        identity: variants::DEFAULT,
-    });
-    assert!(out.starts_with("You are operating in ask mode"));
-    assert!(out.ends_with(variants::DEFAULT));
-}
-
-#[test]
-fn omitting_mode_starts_with_identity() {
+fn default_prompt_starts_with_identity() {
     let out = default_prompt();
     assert!(out.starts_with("You are an iii agent worker"));
     assert!(!out.contains("operating in ask mode"));
     assert!(!out.contains("operating in agent mode"));
-}
-
-#[test]
-fn removed_plan_mode_is_rejected_not_silently_accepted() {
-    // Hard removal (intentional, no compat shim): `"plan"` is not a valid mode.
-    // Pinned so a future refactor doesn't silently make `Mode` lenient again —
-    // a stale client or pre-upgrade record carrying `"plan"` fails loudly.
-    assert!(serde_json::from_value::<Mode>(serde_json::json!("plan")).is_err());
 }
 
 #[test]
@@ -488,7 +474,7 @@ fn default_variant_invariants() {
     assert!(out.contains("<example>"));
     for id in extract_directory_ids(out) {
         assert!(
-            id.starts_with("directory::registry::workers::"),
+            id.starts_with("directory::registry::workers::") || id == "directory::search_functions",
             "bad directory id {id}"
         );
     }
@@ -499,7 +485,7 @@ fn capability_ladder_ordering() {
     let out = variants::DEFAULT;
     assert!(out.find("directory::registry::workers::list") < out.find("registerWorker"));
     assert!(out.find("coder::") < out.find("registerWorker"));
-    assert!(out.contains("compose::add { worker: \"<name>\" }"));
+    assert!(out.contains("compose::add { worker: \"<name>\", operation_id: \"<operation-id>\" }"));
     assert!(out.contains("compose::schema { function_id: \"compose::<operation>\" }"));
     assert!(!out.contains("worker::add { source:"));
 }

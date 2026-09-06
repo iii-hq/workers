@@ -1,0 +1,356 @@
+namespace: minilm-production
+startup_timeout: 30m
+stop_timeout: 10s
+
+engine:
+  url: ws://127.0.0.1:49234
+
+containers:
+  state:
+    worker: path://../state
+    config_name: state-minilm-production
+    config_override:
+      adapter:
+        name: kv
+        config: { store_method: in_memory }
+      triggers_enabled: true
+    scripts: { run: cargo run --locked --bin state }
+  queue:
+    worker: path://../queue
+    config_name: queue-minilm-production
+    config_override:
+      adapter:
+        name: builtin
+        config: { store_method: in_memory }
+      queue_configs: {}
+    scripts: { run: cargo run --locked --bin queue }
+  session-manager:
+    worker: path://../session-manager
+    scripts: { run: cargo run --locked --bin session-manager }
+  llm-router:
+    worker: path://../llm-router
+    start_after: [state]
+    config_name: llm-router-minilm-production
+    config_override: {}
+    environment: &catalog_only_provider_environment
+      ANTHROPIC_API_KEY: ""
+      COMMAND_CODE_API_KEY: ""
+      DEEPSEEK_API_KEY: ""
+      GITHUB_COPILOT_OAUTH_TOKEN: ""
+      GITHUB_COPILOT_TOKEN: ""
+      LLAMACPP_API_KEY: ""
+      MOONSHOT_API_KEY: ""
+      OPENCODE_GO_API_KEY: ""
+      OPENAI_API_KEY: ""
+      OPENROUTER_API_KEY: ""
+      XAI_API_KEY: ""
+      ZAI_API_KEY: ""
+      CLAUDE_CONFIG_DIR: /nonexistent/iii-catalog-only/claude
+      CODEX_HOME: /nonexistent/iii-catalog-only/codex
+      GITHUB_COPILOT_NO_LOCAL_IMPORT: "1"
+    scripts: { run: cargo run --locked --bin llm-router }
+  a2ui:
+    worker: path://../a2ui
+    scripts: { run: cargo run --locked --bin a2ui }
+  browser:
+    worker: path://../browser
+    scripts: { run: cargo run --locked --bin browser }
+  claude-code:
+    worker: path://../claude-code
+    start_after: [state]
+    scripts: { run: pnpm install --frozen-lockfile --ignore-workspace --ignore-scripts && pnpm run dev }
+  codex:
+    worker: path://../codex
+    scripts: { run: cargo run --locked --bin codex }
+  compose-ui:
+    worker: path://../compose-ui
+    scripts: { run: pnpm install --frozen-lockfile --ignore-workspace --ignore-scripts && pnpm build:bundle && node dist/bundle/index.mjs }
+  cursor:
+    worker: path://../cursor
+    start_after: [state, llm-router]
+    scripts: { run: pnpm install --frozen-lockfile --ignore-workspace --ignore-scripts && pnpm run dev }
+  approval-gate:
+    worker: path://../approval-gate
+    start_after: [state, session-manager]
+    scripts: { run: cargo run --locked --bin approval-gate }
+  canvas:
+    worker: path://../canvas
+    start_after: [state]
+    scripts: { run: cargo run --locked --bin canvas }
+  code-runner:
+    worker: path://../code-runner
+    scripts: { run: cargo run --locked --bin code-runner }
+  context-manager:
+    worker: path://../context-manager
+    start_after: [llm-router]
+    scripts: { run: cargo run --locked --bin context-manager }
+  cron:
+    worker: path://../cron
+    scripts: { run: cargo run --locked --bin cron }
+  database:
+    worker: path://../database
+    scripts: { run: cargo run --locked --bin database }
+  devin:
+    worker: path://../devin
+    scripts: { run: cargo run --locked --bin devin }
+  document:
+    worker: path://../document
+    scripts: { run: cargo run --locked --bin document }
+  editor:
+    worker: path://../editor
+    start_after: [shell, state]
+    scripts: { run: cargo run --locked --bin editor }
+  email:
+    worker: path://../email
+    start_after: [state]
+    scripts: { run: cargo run --locked --bin email }
+  eval:
+    worker: path://../eval
+    start_after: [state, queue, cron]
+    scripts: { run: cargo run --locked --bin eval }
+  fp:
+    worker: path://../fp
+    scripts: { run: cargo run --locked --bin fp }
+  github:
+    worker: path://../github
+    scripts: { run: cargo run --locked --bin github }
+  grok:
+    worker: path://../grok
+    scripts: { run: cargo run --locked --bin grok }
+  hermes:
+    worker: path://../hermes
+    scripts: { run: uv run --isolated --no-project --with . python -m src.main }
+  iii-directory:
+    worker: path://../iii-directory
+    config_name: iii-directory-minilm-production
+    config_override:
+      function_search_mode: hybrid
+      function_search_model_path: "~/.cache/iii/all-MiniLM-L6-v2-c9745ed1d9f207416be6d2e6f8de32d1f16199bf"
+      # Provisioned ahead of time; this stack makes no remote model calls.
+      function_search_model_download: false
+    environment:
+      RUST_LOG: info
+      ORT_PREFER_DYNAMIC_LINK: "0"
+    scripts:
+      run: >-
+        cargo run --locked --bin iii-directory
+  image-resize:
+    worker: path://../image-resize
+    scripts: { run: cargo run --locked --bin image-resize }
+  memory:
+    worker: path://../memory
+    start_after: [state, queue, session-manager, llm-router]
+    config_name: memory-minilm-production
+    config_override:
+      data_dir: target/minilm-production/memory
+      inject_rules: false
+      inject_memories: false
+      extraction_enabled: false
+      rule_learning_enabled: false
+      embeddings_enabled: false
+    scripts: { run: cargo run --locked --bin memory }
+  mcp:
+    worker: path://../mcp
+    scripts: { run: cargo run --locked --bin mcp }
+  opencode:
+    worker: path://../opencode
+    start_after: [state]
+    scripts: { run: pnpm install --frozen-lockfile --ignore-workspace && pnpm run dev }
+  opengantry:
+    worker: path://../opengantry
+    scripts: { run: pnpm install --frozen-lockfile --ignore-workspace && node ./index.mjs }
+  pdf:
+    worker: path://../pdf
+    scripts: { run: cargo run --locked --bin pdf }
+  pi:
+    worker: path://../pi
+    start_after: [state]
+    scripts: { run: pnpm install --frozen-lockfile --ignore-workspace && pnpm run dev }
+  provider-github-copilot:
+    worker: path://../provider-github-copilot
+    start_after: [state, llm-router]
+    environment: *catalog_only_provider_environment
+    scripts: { run: cargo run --locked --bin provider-github-copilot }
+  provider-kimi:
+    worker: path://../provider-kimi
+    start_after: [state, llm-router]
+    environment: *catalog_only_provider_environment
+    scripts: { run: cargo run --locked --bin provider-kimi }
+  provider-llamacpp:
+    worker: path://../provider-llamacpp
+    start_after: [state, llm-router]
+    environment: *catalog_only_provider_environment
+    scripts: { run: cargo run --locked --bin provider-llamacpp }
+  provider-openrouter:
+    worker: path://../provider-openrouter
+    start_after: [state, llm-router]
+    environment: *catalog_only_provider_environment
+    scripts: { run: cargo run --locked --bin provider-openrouter }
+  pubsub:
+    worker: path://../pubsub
+    scripts: { run: cargo run --locked --bin pubsub }
+  shell:
+    worker: path://../shell
+    scripts: { run: cargo run --locked --bin shell }
+  sandbox-code-runner:
+    worker: path://../sandbox-code-runner
+    scripts: { run: cargo run --locked --bin sandbox-code-runner }
+  storage:
+    worker: path://../storage
+    scripts: { run: cargo run --locked --bin storage }
+  tailscale:
+    worker: path://../tailscale
+    scripts: { run: 'cargo run --locked --bin tailscale -- --url "$III_URL"' }
+  vscode:
+    worker: path://../vscode
+    scripts: { run: pnpm install --frozen-lockfile --ignore-workspace && pnpm build:bundle && node dist/bundle/index.mjs }
+  web:
+    worker: path://../web
+    scripts: { run: cargo run --locked --bin web }
+  workflow:
+    worker: path://../workflow
+    start_after: [state, queue, cron]
+    scripts: { run: cargo run --locked --bin workflow }
+  worktree:
+    worker: path://../worktree
+    start_after: [shell, state]
+    scripts: { run: cargo run --locked --bin worktree }
+  acp:
+    worker: path://../acp
+    scripts: { run: "while :; do sleep 3600; done | cargo run --locked --bin iii-acp" }
+  bridge:
+    worker: path://../bridge
+    config_name: bridge-minilm-production
+    config_override: { url: "ws://127.0.0.1:1", expose: [], forward: [] }
+    scripts: { run: cargo run --locked --bin bridge }
+  computer:
+    worker: path://../computer
+    start_after: [state]
+    scripts: { run: 'cargo run --locked --bin computer -- --url "$III_URL"' }
+  console:
+    worker: path://../console
+    config_name: console-minilm-production
+    config_override: { http_port: 0, injectable_ui: true }
+    scripts: { run: cargo run --locked --bin console }
+  harness:
+    worker: path://../harness
+    start_after: [state, queue, session-manager, llm-router, provider-openai-codex, provider-openai, provider-anthropic, context-manager, iii-directory, cron, console, shell]
+    config_name: harness-minilm-production
+    config_override: {}
+    scripts: { run: cargo run --locked --bin harness }
+  kanban:
+    worker: path://../kanban
+    start_after: [console, state, harness, worktree]
+    scripts: { run: pnpm install --frozen-lockfile --ignore-workspace --ignore-scripts && pnpm build:bundle && node dist/bundle/index.mjs }
+  http:
+    worker: path://../http
+    config_name: http-minilm-production
+    config_override: { port: 0, host: 127.0.0.1, default_timeout: 30000, concurrency_request_limit: 1, cors: null, middleware: [] }
+    scripts: { run: cargo run --locked --bin http }
+  memory-consolidate:
+    worker: path://../memory-consolidate
+    start_after: [memory, state, cron, http]
+    config_name: memory-consolidate-minilm-production
+    config_override:
+      enabled: false
+      interval_hours: 24
+      dry_run: true
+      banks: []
+      max_supersedes_per_run: 0
+      llm_assist_enabled: false
+      llm_model: ""
+      promote_corroboration_threshold: 4
+    scripts: { run: cargo run --locked --bin memory-consolidate }
+  lsp:
+    worker: path://../lsp
+    scripts: { run: "while :; do sleep 3600; done | cargo run --locked --bin lsp" }
+  openwiki:
+    worker: path://../openwiki
+    start_after: [state, cron, llm-router]
+    config_name: openwiki-minilm-production
+    config_override: { model: "", max_parallel: 1, refresh_default: "off" }
+    environment:
+      OPENWIKI_DATA: ../harness/target/minilm-production/openwiki
+    scripts: { run: pnpm install --frozen-lockfile --ignore-workspace --ignore-scripts && pnpm run start }
+  provider-anthropic:
+    worker: path://../provider-anthropic
+    start_after: [state, llm-router]
+    environment: *catalog_only_provider_environment
+    scripts: { run: cargo run --locked --bin provider-anthropic }
+  provider-claude-code:
+    worker: path://../provider-claude-code
+    start_after: [state, llm-router]
+    environment: *catalog_only_provider_environment
+    scripts: { run: cargo run --locked --bin provider-claude-code }
+  provider-command-code:
+    worker: path://../provider-command-code
+    start_after: [state, llm-router]
+    environment: *catalog_only_provider_environment
+    scripts: { run: cargo run --locked --bin provider-command-code }
+  provider-deepseek:
+    worker: path://../provider-deepseek
+    start_after: [state, llm-router]
+    environment: *catalog_only_provider_environment
+    scripts: { run: cargo run --locked --bin provider-deepseek }
+  provider-openai:
+    worker: path://../provider-openai
+    start_after: [state, llm-router]
+    environment: *catalog_only_provider_environment
+    scripts: { run: cargo run --locked --bin provider-openai }
+  provider-openai-codex:
+    worker: path://../provider-openai-codex
+    start_after: [state, llm-router]
+    environment: *catalog_only_provider_environment
+    scripts: { run: cargo run --locked --bin provider-openai-codex }
+  provider-opencode-go:
+    worker: path://../provider-opencode-go
+    start_after: [state, llm-router]
+    environment: *catalog_only_provider_environment
+    scripts: { run: cargo run --locked --bin provider-opencode-go }
+  provider-xai:
+    worker: path://../provider-xai
+    start_after: [state, llm-router]
+    environment: *catalog_only_provider_environment
+    scripts: { run: cargo run --locked --bin provider-xai }
+  provider-zai:
+    worker: path://../provider-zai
+    start_after: [state, llm-router]
+    environment: *catalog_only_provider_environment
+    scripts: { run: cargo run --locked --bin provider-zai }
+  rbac-proxy:
+    worker: path://../rbac-proxy
+    config_name: rbac-proxy-minilm-production
+    config_override: { host: 127.0.0.1, port: 0, engine_url: "ws://127.0.0.1:49234", middleware_function_id: null, expose_worker_internals: false, rbac: {} }
+    scripts: { run: cargo run --locked --bin rbac-proxy }
+  scrapling:
+    # Run from source on the host. Pointing at the bundle root asks current
+    # Compose to prepare its publishing manifest as a VM before this explicit
+    # run command is considered.
+    worker: path://../scrapling/src
+    working_dir: ../scrapling
+    start_after: [harness]
+    scripts: { run: uv run --isolated --no-project --with . python -m src.main }
+  security-scan:
+    worker: path://../security-scan
+    start_after: [github, harness, cron, state, queue, worktree, storage]
+    config_name: security-scan-minilm-production
+    config_override:
+      repositories: []
+      analysis: { model: "", max_turns: 1, max_output_tokens: 1, max_total_tokens: 1, max_cost_usd: null }
+      archive: null
+    scripts: { run: cargo run --locked --bin security-scan }
+  slack:
+    worker: path://../slack
+    start_after: [state, harness, session-manager]
+    config_name: slack-minilm-production
+    config_override:
+      bot_token: "collect:interface-collection-token"
+    scripts: { run: cargo run --locked --bin slack }
+  telegram-bot:
+    worker: path://../telegram-bot
+    start_after: [state, queue, session-manager, harness]
+    config_name: telegram-bot-minilm-production
+    config_override:
+      bot_token: "collect:interface-collection-token"
+      updates: { name: polling, config: {} }
+    scripts: { run: cargo run --locked --bin telegram-bot }

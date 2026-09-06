@@ -2,8 +2,9 @@
  * A JSON Schema as a field table: name, type, required, default, and the
  * schema's own description, nested objects indented under their parent.
  *
- * The raw schema stays one tab away for the cases this cannot express
- * (`oneOf` unions, `$ref` chains, custom keywords). This view exists because
+ * A schema this cannot flatten into fields (`oneOf` unions, `$ref` chains,
+ * custom keywords) falls back to the raw draft-07 JSON rather than to an
+ * empty table — see the `rows.length === 0` branch. This view exists because
  * an operator reading "what does this function take" should not have to parse
  * draft-07 by eye — the same reason the registry site renders functions as
  * docs rather than as JSON.

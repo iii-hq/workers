@@ -27,7 +27,6 @@ function baseConversation(messages: Message[] = []): Conversation {
     id: 'conv-12345678-abcd',
     title: 'Test session',
     model: 'openai::gpt-5',
-    mode: 'agent',
     messages,
     createdAt: Date.UTC(2025, 0, 1, 12, 0, 0),
     updatedAt: Date.UTC(2025, 0, 1, 12, 30, 0),
@@ -40,7 +39,6 @@ describe('conversationToMarkdown', () => {
     expect(out).toMatch(/^# Session: Test session/)
     expect(out).toContain('- ID: `conv-12345678-abcd`')
     expect(out).toContain('- Model: `openai::gpt-5`')
-    expect(out).toContain('- Mode: `agent`')
     expect(out).toContain('- Message count: 0')
     expect(out).toContain('_(no messages)_')
   })
@@ -57,7 +55,6 @@ describe('conversationToMarkdown', () => {
       role: 'assistant',
       content: 'world',
       model: 'openai::gpt-5',
-      mode: 'agent',
       createdAt: 2,
     }
     const thought: ThoughtMessage = {
@@ -103,7 +100,7 @@ describe('conversationToMarkdown', () => {
     )
 
     expect(out).toContain('## User\nhello')
-    expect(out).toContain('## Assistant (openai::gpt-5, agent)\nworld')
+    expect(out).toContain('## Assistant (openai::gpt-5)\nworld')
     expect(out).toContain('## Thought\nthinking…')
     expect(out).toContain('## Trigger — search')
     expect(out).toContain('"query": "foo"')

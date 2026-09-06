@@ -15,7 +15,7 @@ sl   o   w
 
 export const slowTokens = makeBackend(
   'slow-tokens',
-  async function* (_prompt, _mode, _model, opts) {
+  async function* (_prompt, _model, opts) {
     yield* streamAssistant(BODY, { signal: opts?.signal, meanDelayMs: 200 })
   },
 )

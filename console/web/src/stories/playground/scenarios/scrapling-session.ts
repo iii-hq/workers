@@ -13,7 +13,7 @@ import {
 
 export const scraplingSession = makeBackend(
   'scrapling-session',
-  async function* (_prompt, _mode, _model, opts) {
+  async function* (_prompt, _model, opts) {
     const signal = opts?.signal
     yield* streamThought(
       'opening a stealth session, reusing it across fetches, then closing it…',

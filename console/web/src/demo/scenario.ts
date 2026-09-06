@@ -1072,7 +1072,6 @@ function spawnInput(child: ChildSpec) {
     session_id: child.sessionId,
     parent_session_id: SESSION_ID,
     options: {
-      mode: 'agent',
       max_turns: 12,
       output: { type: 'text' },
       functions: { allow: child.allow, deny: ['compose::*', 'worker::remove'] },

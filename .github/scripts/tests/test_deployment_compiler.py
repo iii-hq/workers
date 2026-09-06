@@ -83,6 +83,7 @@ def test_kanban_bundle_install_uses_its_pnpm_build_policy():
         "install",
         "--frozen-lockfile",
     ]
+    assert descriptor["runtime"]["start"] == "node ./dist/bundle/index.mjs"
     policy = deployment_compiler.read_yaml(
         ROOT / descriptor["artifact"]["workspace_root"] / "pnpm-workspace.yaml"
     )["allowBuilds"]

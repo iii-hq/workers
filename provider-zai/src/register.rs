@@ -43,6 +43,11 @@ pub fn declaration() -> ProviderDeclaration {
         models: None,
         // Self-reported; availability mapping only, never authorization.
         worker_id: Some("provider-zai".into()),
+        // The mark the console paints beside this provider's models; the
+        // router carries it verbatim in `router::provider::list`.
+        icon_svg: Some(
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icon.svg")).into(),
+        ),
     }
 }
 

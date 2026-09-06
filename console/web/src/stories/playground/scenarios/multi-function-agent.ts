@@ -28,7 +28,7 @@ ready for the next instruction.`
  */
 export const multiFunctionAgent = makeBackend(
   'multi-function-agent',
-  async function* (_prompt, _mode, _model, opts) {
+  async function* (_prompt, _model, opts) {
     const signal = opts?.signal
     yield* streamThought(THOUGHT, { signal })
     yield* streamFcall({

@@ -58,7 +58,6 @@ function renderMessage(message: Message): string {
     case 'assistant': {
       const meta: string[] = []
       if (message.model) meta.push(message.model)
-      if (message.mode) meta.push(message.mode)
       const header =
         meta.length > 0 ? `## Assistant (${meta.join(', ')})` : '## Assistant'
       return `${header}\n${message.content || '_(empty)_'}`
@@ -71,7 +70,14 @@ function renderMessage(message: Message): string {
     }
     case 'system': {
       const tone = message.tone ? ` — ${message.tone}` : ''
-      const kind = message.kind === 'compaction' ? ' (compaction)' : ''
+      const kind =
+        message.kind === 'compaction'
+          ? ' (compaction)'
+          : message.kind === 'turn-failure'
+            ? ' (turn failure)'
+            : message.kind === 'working-dir'
+              ? ' (working directory)'
+              : ''
       return `## System${tone}${kind}\n${message.content || '_(empty)_'}`
     }
   }
@@ -176,7 +182,6 @@ export function conversationToMarkdown(
     `- Created: ${formatTimestamp(conversation.createdAt)}`,
     `- Updated: ${formatTimestamp(conversation.updatedAt)}`,
     `- Model: \`${conversation.model}\``,
-    `- Mode: \`${conversation.mode}\``,
     `- Message count: ${conversation.messages.length}`,
     ...(workers !== undefined ? renderWorkersBlock(workers) : []),
     ...(subagentCount !== undefined

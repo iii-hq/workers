@@ -784,9 +784,13 @@ export function CollectionBrowser({
       r.description.toLowerCase().includes(needle),
   )
 
-  // Narrow: one pane at a time — the list, or the opened entry.
-  const showSide = !narrow || selected === null
-  const showDoc = !narrow || selected !== null || creating
+  // Narrow: one pane at a time — the list, an existing entry, or the
+  // creation form. Creation intentionally has no selected key yet.
+  const { showSide, showDoc } = resolveBrowserPaneVisibility({
+    narrow,
+    selected,
+    creating,
+  })
 
   const docKey = loaded?.key ?? selected
   const docSegments = docKey ? docKey.split('/') : []
@@ -1325,6 +1329,21 @@ export function CollectionBrowser({
       ) : null}
     </div>
   )
+}
+
+export function resolveBrowserPaneVisibility({
+  narrow,
+  selected,
+  creating,
+}: {
+  narrow: boolean
+  selected: string | null
+  creating: boolean
+}): { showSide: boolean; showDoc: boolean } {
+  return {
+    showSide: !narrow || (selected === null && !creating),
+    showDoc: !narrow || selected !== null || creating,
+  }
 }
 
 function formatKb(bytes: number): string {

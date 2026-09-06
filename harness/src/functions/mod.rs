@@ -8,6 +8,7 @@ pub mod function_resolve;
 pub mod function_trigger;
 pub mod metrics;
 pub mod on_session_deleted;
+pub mod projects;
 pub mod send;
 pub mod session_tree;
 pub mod spawn;
@@ -106,6 +107,18 @@ pub const FILESYSTEM_REVOKE_DESC: &str =
 pub const FILESYSTEM_INFO_ID: &str = "harness::filesystem::info";
 pub const FILESYSTEM_INFO_DESC: &str =
     "Internal control-plane: the default working-directory root new sessions are scoped to.";
+
+pub const PROJECTS_LIST_ID: &str = "harness::projects::list";
+pub const PROJECTS_LIST_DESC: &str =
+    "Internal control-plane: list the operator's durable project catalog.";
+
+pub const PROJECTS_UPSERT_ID: &str = "harness::projects::upsert";
+pub const PROJECTS_UPSERT_DESC: &str =
+    "Internal control-plane: remember, touch, or rename a project directory.";
+
+pub const PROJECTS_DELETE_ID: &str = "harness::projects::delete";
+pub const PROJECTS_DELETE_DESC: &str =
+    "Internal control-plane: remove a project directory from the durable catalog.";
 
 /// Register one typed handler under `id`, mapping `HarnessError` into the bus
 /// error shape (`code: message`).
@@ -370,6 +383,30 @@ pub fn register_all(iii: &Arc<IIIClient>, deps: &Arc<Deps>) {
         FILESYSTEM_INFO_ID,
         FILESYSTEM_INFO_DESC,
         |d, r| async move { filesystem::info(&d, r).await },
+    );
+
+    // Operator project catalog — trusted console control-plane, durable in the
+    // harness-owned private state namespace and absent from the agent catalog.
+    register_internal(
+        iii,
+        deps,
+        PROJECTS_LIST_ID,
+        PROJECTS_LIST_DESC,
+        |d, r| async move { projects::list(&d, r).await },
+    );
+    register_internal(
+        iii,
+        deps,
+        PROJECTS_UPSERT_ID,
+        PROJECTS_UPSERT_DESC,
+        |d, r| async move { projects::upsert(&d, r).await },
+    );
+    register_internal(
+        iii,
+        deps,
+        PROJECTS_DELETE_ID,
+        PROJECTS_DELETE_DESC,
+        |d, r| async move { projects::delete(&d, r).await },
     );
 
     // Internal cron target — registered, but kept off the public catalog.

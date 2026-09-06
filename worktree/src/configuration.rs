@@ -192,7 +192,8 @@ pub fn register_config_trigger(
             "Internal: hot-reload the worktree worker from the authoritative \
              configuration when it changes — swaps the per-call snapshot and \
              re-binds the prune cron on a schedule change.",
-        ),
+        )
+        .metadata(json!({ "internal": true })),
     );
 
     iii.register_trigger(RegisterTriggerInput::new(

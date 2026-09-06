@@ -131,6 +131,7 @@ export function Select<T extends string>({
 }: SelectProps<T>) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
+  const [panelBoundary, setPanelBoundary] = useState<Element | null>(null)
   const embeddedPageRef = useRef<HTMLDivElement>(null)
   const pageId = useId()
   const pageTitleId = `${pageId}-title`
@@ -170,6 +171,7 @@ export function Select<T extends string>({
 
   function handleOpenChange(nextOpen: boolean) {
     setOpen(nextOpen)
+    if (nextOpen) setPanelBoundary(triggerRef.current?.closest('[data-workspace-panel]') ?? null)
     if (!embeddedInSheet || !pageNavigation) return
     if (nextOpen) {
       pageNavigation.openPage(
@@ -392,6 +394,7 @@ export function Select<T extends string>({
               position="popper"
               sideOffset={4}
               collisionPadding={8}
+              collisionBoundary={panelBoundary ?? undefined}
               className={cn(
                 'iii-ui-motion-dropdown z-50 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-md bg-panel-raised font-sans text-base text-ink shadow-floating sm:text-[13px]',
               )}
@@ -399,7 +402,7 @@ export function Select<T extends string>({
               <SelectPrimitive.ScrollUpButton className="flex items-center justify-center h-5 text-ink-faint cursor-default">
                 <ChevronUp size={16} strokeWidth={1} aria-hidden="true" />
               </SelectPrimitive.ScrollUpButton>
-              <SelectPrimitive.Viewport className="p-1 max-h-[60vh]">
+              <SelectPrimitive.Viewport className="p-1 max-h-[min(60vh,var(--radix-select-content-available-height))]">
                 {allowEmpty ? (
                   <SelectItem
                     value={EMPTY_VALUE}

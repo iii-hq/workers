@@ -141,7 +141,6 @@ function conv(id: string): Conversation {
     id,
     title: 'Root session',
     model: 'openai::gpt-5',
-    mode: 'agent',
     messages: [{ id: 'u1', role: 'user', content: 'root msg', createdAt: 1 }],
     createdAt: Date.UTC(2025, 0, 1),
     updatedAt: Date.UTC(2025, 0, 1),

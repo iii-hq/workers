@@ -1,5 +1,5 @@
-import { Bot, Check, X } from 'lucide-react'
-import { useEffect, useId, useState } from 'react'
+import { Bot, Check, Plus } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import { CopyCommandButton } from '@/components/chat/sandbox/terminal/CopyCommandButton'
 import { Terminal } from '@/components/chat/sandbox/terminal/Terminal'
 import { Button } from '@/components/ui/Button'
@@ -17,15 +17,10 @@ import type {
 } from '@/types/chat'
 import { SUBAGENT_ICON_COMPONENTS } from './ActiveSubagentChips'
 import { DirectoryPicker, type WorktreePickerOptions } from './DirectoryPicker'
-import { SessionAddonsPicker } from './SessionAddonsPicker'
-import { SystemPromptPicker } from './SystemPromptPicker'
 import {
   agentIdFromSystemPrompt,
-  type SkillSelection,
   type SystemPromptState,
-  toggleSkillSelection,
   withAgentChoice,
-  withoutAgentChoice,
 } from './system-prompt-selection'
 import './EmptyState.css'
 
@@ -73,9 +68,6 @@ export interface EmptyStateProps {
   /** Session instructions selected before the first message. */
   systemPrompt?: SystemPromptState
   onSystemPromptChange?: (next: SystemPromptState) => void
-  /** Exact model-invocable skill IDs curated for this session. */
-  skills?: SkillSelection
-  onSkillsChange?: (next: SkillSelection) => void
   /** Optional deterministic catalog for stories/tests; omitted loads Directory. */
   agentEntries?: AgentEntry[] | null
   /** Frozen identity/configuration for the selected Directory agent. */
@@ -104,8 +96,6 @@ export function EmptyState({
   worktreePicker,
   systemPrompt,
   onSystemPromptChange,
-  skills,
-  onSkillsChange,
   agentEntries,
   agentProfile,
   onAgentProfileChange,
@@ -137,8 +127,6 @@ export function EmptyState({
             worktreePicker={worktreePicker}
             systemPrompt={systemPrompt}
             onSystemPromptChange={onSystemPromptChange}
-            skills={skills}
-            onSkillsChange={onSkillsChange}
             agentEntries={agentEntries}
             agentProfile={agentProfile}
             onAgentProfileChange={onAgentProfileChange}
@@ -177,8 +165,6 @@ function ReadyBody({
   worktreePicker,
   systemPrompt,
   onSystemPromptChange,
-  skills,
-  onSkillsChange,
   agentEntries,
   agentProfile,
   onAgentProfileChange,
@@ -190,8 +176,6 @@ function ReadyBody({
   worktreePicker?: WorktreePickerOptions
   systemPrompt?: SystemPromptState
   onSystemPromptChange?: (next: SystemPromptState) => void
-  skills?: SkillSelection
-  onSkillsChange?: (next: SkillSelection) => void
   agentEntries?: AgentEntry[] | null
   agentProfile?: AgentProfileSnapshot
   onAgentProfileChange?: (next: AgentProfileSnapshot | undefined) => void
@@ -226,8 +210,6 @@ function ReadyBody({
           <SessionSetupControls
             systemPrompt={systemPrompt}
             onSystemPromptChange={onSystemPromptChange}
-            skills={skills}
-            onSkillsChange={onSkillsChange}
             agentEntries={agentEntries}
             agentProfile={agentProfile}
             onAgentProfileChange={onAgentProfileChange}
@@ -241,118 +223,43 @@ function ReadyBody({
 function SessionSetupControls({
   systemPrompt,
   onSystemPromptChange,
-  skills,
-  onSkillsChange,
   agentEntries,
   agentProfile,
   onAgentProfileChange,
 }: {
   systemPrompt: SystemPromptState
   onSystemPromptChange: (next: SystemPromptState) => void
-  skills?: SkillSelection
-  onSkillsChange?: (next: SkillSelection) => void
   agentEntries?: AgentEntry[] | null
   agentProfile?: AgentProfileSnapshot
   onAgentProfileChange?: (next: AgentProfileSnapshot | undefined) => void
 }) {
   const selectedAgentId =
     agentProfile?.id ?? agentIdFromSystemPrompt(systemPrompt)
-  const [manualOpen, setManualOpen] = useState(
-    () =>
-      selectedAgentId === null &&
-      (systemPrompt.choice !== 'default' || Boolean(skills?.length)),
-  )
-  const panelId = useId()
   const catalog = useAgentCatalog(agentEntries)
   const agents = catalog.entries ?? []
 
-  const toggleManual = () => {
-    const next = !manualOpen
-    setManualOpen(next)
-    if (next && selectedAgentId !== null) {
-      if (agentIdFromSystemPrompt(systemPrompt) !== null) {
-        onSystemPromptChange(withoutAgentChoice(systemPrompt))
-      }
-      onAgentProfileChange?.(undefined)
-    }
-  }
-
   return (
-    <section
-      aria-label="session setup"
-      className="t-acc w-full max-w-[40rem]"
-      data-open={manualOpen}
-    >
-      <div className="empty-state-agent-panel">
-        <div
-          className="empty-state-agent-panel-inner"
-          aria-hidden={manualOpen}
-          inert={manualOpen}
-        >
-          <AgentGallery
-            entries={agents}
-            loading={catalog.entries === null}
-            error={catalog.error}
-            selectedId={selectedAgentId}
-            onSelect={(entry) => {
-              const profile: AgentProfileSnapshot = {
-                id: entry.id,
-                name: entry.name.trim() || entry.id,
-                ...(entry.model ? { model: entry.model } : {}),
-                ...(entry.reasoning_effort
-                  ? { reasoningEffort: entry.reasoning_effort }
-                  : {}),
-                ...(entry.icon ? { icon: entry.icon as SubagentIcon } : {}),
-                ...(entry.color ? { color: entry.color as SubagentColor } : {}),
-              }
-              if (onAgentProfileChange) onAgentProfileChange(profile)
-              else {
-                onSystemPromptChange(withAgentChoice(systemPrompt, entry.id))
-              }
-            }}
-          />
-        </div>
-      </div>
-
-      <button
-        type="button"
-        className="t-acc-head empty-state-manual-trigger"
-        aria-expanded={manualOpen}
-        aria-controls={panelId}
-        onClick={toggleManual}
-      >
-        <span>Configure manually</span>
-        <span className="t-acc-chevron" aria-hidden>
-          <svg
-            className="size-4 fill-none stroke-current"
-            viewBox="0 0 16 16"
-            aria-hidden
-          >
-            <title>Toggle manual configuration</title>
-            <path
-              d="M4 6.5L8 10.5L12 6.5"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </span>
-      </button>
-
-      <div id={panelId} className="t-acc-panel">
-        <div
-          className="t-acc-panel-inner"
-          aria-hidden={!manualOpen}
-          inert={!manualOpen}
-        >
-          <ManualSessionSetupControls
-            systemPrompt={systemPrompt}
-            onSystemPromptChange={onSystemPromptChange}
-            skills={skills}
-            onSkillsChange={onSkillsChange}
-          />
-        </div>
-      </div>
+    <section aria-label="session setup" className="w-full max-w-[40rem]">
+      <AgentGallery
+        entries={agents}
+        loading={catalog.entries === null}
+        error={catalog.error}
+        selectedId={selectedAgentId}
+        onSelect={(entry) => {
+          const profile: AgentProfileSnapshot = {
+            id: entry.id,
+            name: entry.name.trim() || entry.id,
+            ...(entry.model ? { model: entry.model } : {}),
+            ...(entry.reasoning_effort
+              ? { reasoningEffort: entry.reasoning_effort }
+              : {}),
+            ...(entry.icon ? { icon: entry.icon as SubagentIcon } : {}),
+            ...(entry.color ? { color: entry.color as SubagentColor } : {}),
+          }
+          if (onAgentProfileChange) onAgentProfileChange(profile)
+          else onSystemPromptChange(withAgentChoice(systemPrompt, entry.id))
+        }}
+      />
     </section>
   )
 }
@@ -406,7 +313,7 @@ function AgentGallery({
     <div className="pb-3 text-left">
       {loading ? (
         <div
-          className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 p-1"
+          className="grid grid-cols-1 gap-3 p-1 @lg:grid-cols-2 @3xl:grid-cols-3"
           aria-hidden
         >
           <div className="h-40 rounded-lg bg-panel-raised shadow-raised" />
@@ -415,43 +322,15 @@ function AgentGallery({
         </div>
       ) : error ? (
         <p className="rounded-md bg-panel-raised px-3 py-4 font-sans text-base text-ink-faint shadow-raised sm:text-sm">
-          Agent profiles are unavailable. Configure the session manually
-          instead.
+          Agent profiles are unavailable right now. Try again in a moment.
         </p>
-      ) : entries.length === 0 ? (
-        <div className="rounded-md bg-panel-raised p-4 shadow-raised">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex min-w-0 flex-col gap-1">
-              <p className="text-pretty font-sans text-base font-medium text-ink sm:text-sm">
-                Create your first agent profile
-              </p>
-              <p className="text-pretty font-sans text-base/7 text-ink-faint sm:text-sm/6">
-                Save instructions, a model, and skills once, then reuse them in
-                any session.
-              </p>
-            </div>
-            <Button
-              type="button"
-              size="sm"
-              className="w-full shrink-0 sm:w-auto"
-              onClick={() =>
-                requestPanelOpen({
-                  pageId: 'directory',
-                  context: { collection: 'agents', action: 'create' },
-                })
-              }
-            >
-              Create agent profile
-            </Button>
-          </div>
-        </div>
       ) : (
         <ul
           // biome-ignore lint/a11y/noRedundantRoles: keep list semantics when CSS resets remove markers.
           role="list"
           className={cn(
-            'grid grid-cols-1 gap-3 sm:grid-cols-2 p-1',
-            entries.length >= 3 && 'md:grid-cols-3',
+            'grid grid-cols-1 gap-3 p-1 @lg:grid-cols-2',
+            entries.length >= 2 && '@3xl:grid-cols-3',
           )}
         >
           {entries.map((entry) => (
@@ -463,9 +342,41 @@ function AgentGallery({
               />
             </li>
           ))}
+          <li className="min-w-0">
+            <CreateAgentCard />
+          </li>
         </ul>
       )}
     </div>
+  )
+}
+
+function CreateAgentCard() {
+  return (
+    <button
+      type="button"
+      aria-label="Create a new agent profile"
+      onClick={() =>
+        requestPanelOpen({
+          pageId: 'directory',
+          context: { collection: 'agents', action: 'create' },
+        })
+      }
+      className="group/create flex h-full w-full cursor-pointer flex-col items-start justify-between gap-6 rounded-lg bg-surface/30 p-4 text-left hover:bg-surface-hover/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent @lg:min-h-40"
+    >
+      <div className="flex min-w-0 flex-col gap-1">
+        <div className="font-sans text-base font-medium text-ink-faint sm:text-sm">
+          Create a new agent
+        </div>
+        <p className="text-pretty font-sans text-base/6 text-ink-ghost sm:text-sm/5">
+          Save a reusable set of instructions, a model, and skills.
+        </p>
+      </div>
+      <div className="flex items-center gap-1.5 font-sans text-base font-medium text-ink-faint group-hover/create:text-ink sm:text-sm">
+        <Plus aria-hidden className="size-4 h-lh shrink-0" />
+        <span>Create agent profile</span>
+      </div>
+    </button>
   )
 }
 
@@ -490,7 +401,7 @@ function AgentChoiceCard({
       aria-pressed={selected}
       onClick={onSelect}
       className={cn(
-        'group/agent relative h-full min-h-40 w-full cursor-pointer rounded-lg bg-panel-raised p-4 text-left shadow-raised ring-1 ring-rule-2 transition-[transform,box-shadow] duration-150 hover:-translate-y-px hover:shadow-floating focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+        'group/agent relative flex h-full w-full cursor-pointer flex-col rounded-lg bg-panel-raised p-4 text-left shadow-raised ring-1 ring-rule-2 transition-[transform,box-shadow] duration-150 hover:-translate-y-px hover:shadow-floating focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent @lg:min-h-40',
         selected && 'ring-2 ring-accent',
       )}
     >
@@ -499,15 +410,20 @@ function AgentChoiceCard({
           <Check aria-hidden className="size-4" strokeWidth={3} />
         </span>
       ) : null}
-      <div className="flex min-w-0 flex-col gap-3">
-        <div
-          className="agent-choice-avatar active-subagent-chip flex size-12 shrink-0 items-center justify-center rounded-lg sm:size-11"
-          data-color={color}
-        >
-          <Icon aria-hidden className="size-5" strokeWidth={2.25} />
+      <div className="flex min-w-0 flex-1 flex-col gap-2 @lg:gap-3">
+        <div className="flex min-w-0 items-center gap-3 @lg:block">
+          <div
+            className="agent-choice-avatar active-subagent-chip flex size-12 shrink-0 items-center justify-center rounded-lg @lg:size-11"
+            data-color={color}
+          >
+            <Icon aria-hidden className="size-5" strokeWidth={2.25} />
+          </div>
+          <div className="min-w-0 font-sans text-base font-semibold text-ink @lg:hidden">
+            {title}
+          </div>
         </div>
         <div className="flex min-w-0 flex-1 flex-col gap-1">
-          <div className="font-sans text-base font-semibold text-ink sm:text-sm">
+          <div className="hidden font-sans text-sm font-semibold text-ink @lg:block">
             {title}
           </div>
           <p className="line-clamp-3 text-pretty font-sans text-base leading-6 text-ink-faint sm:text-sm sm:leading-5">
@@ -516,73 +432,6 @@ function AgentChoiceCard({
         </div>
       </div>
     </button>
-  )
-}
-
-function ManualSessionSetupControls({
-  systemPrompt,
-  onSystemPromptChange,
-  skills,
-  onSkillsChange,
-}: {
-  systemPrompt: SystemPromptState
-  onSystemPromptChange: (next: SystemPromptState) => void
-  skills?: SkillSelection
-  onSkillsChange?: (next: SkillSelection) => void
-}) {
-  return (
-    <div className="flex max-w-full flex-col items-center gap-2 pt-3">
-      <div className="flex max-w-full min-w-0 items-baseline justify-center gap-1.5 font-sans text-base text-ink-faint sm:text-sm">
-        <span>System prompt</span>
-        <SystemPromptPicker
-          value={systemPrompt}
-          onChange={onSystemPromptChange}
-          allowCustom={false}
-          appearance="inline"
-          className="max-w-48"
-        />
-      </div>
-
-      {onSkillsChange ? (
-        <div className="flex justify-center font-sans text-base text-ink-faint sm:text-sm">
-          <SessionAddonsPicker
-            value={skills}
-            onChange={onSkillsChange}
-            appearance="inline"
-          />
-        </div>
-      ) : null}
-
-      {skills?.length && onSkillsChange ? (
-        <ul
-          // biome-ignore lint/a11y/noRedundantRoles: keep list semantics when CSS resets remove markers.
-          role="list"
-          aria-label="skills selected for this session"
-          className="flex max-w-full flex-wrap justify-center gap-1.5"
-        >
-          {skills.map((skill) => (
-            <li key={skill} className="min-w-0 max-w-full">
-              <button
-                type="button"
-                aria-label={`remove ${skill} from this session`}
-                title={`Remove ${skill}`}
-                onClick={() =>
-                  onSkillsChange(toggleSkillSelection(skills, skill))
-                }
-                className="relative inline-flex h-9 max-w-full items-center gap-1 rounded-full bg-surface py-1 pr-2 pl-3 font-sans text-base font-medium text-ink-faint hover:bg-surface-hover hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rule-focus sm:h-7 sm:text-[0.8125rem]"
-              >
-                <span className="truncate">{skill}</span>
-                <X className="size-4 shrink-0 text-ink-faint/80" aria-hidden />
-                <span
-                  className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
-                  aria-hidden="true"
-                />
-              </button>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-    </div>
   )
 }
 

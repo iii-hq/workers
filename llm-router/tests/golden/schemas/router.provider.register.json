@@ -209,6 +209,13 @@
           "null"
         ]
       },
+      "icon_svg": {
+        "description": "The provider's mark: one self-contained `<svg>` document, monochrome, drawn with a square `viewBox` and no fixed size. Consoles paint it as a `currentColor` mask next to the provider's models, so colour and scripts are ignored. Keep it under [`PROVIDER_ICON_SVG_MAX_BYTES`]; the router drops anything larger or not starting with `<svg`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "id": {
         "type": "string"
       },

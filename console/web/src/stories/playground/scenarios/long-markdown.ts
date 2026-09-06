@@ -97,7 +97,7 @@ domain errors carry a stable \`kind\` so callers can branch on the contract:
 
 export const longMarkdown = makeBackend(
   'long-markdown',
-  async function* (_prompt, _mode, _model, opts) {
+  async function* (_prompt, _model, opts) {
     yield* streamAssistant(BODY, { signal: opts?.signal, meanDelayMs: 6 })
   },
 )

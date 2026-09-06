@@ -1,0 +1,673 @@
+name: Build
+run-name: Build · ${{ inputs.worker }} · ${{ inputs.source_sha }} · ${{ inputs.correlation_id }}
+
+# Builds one worker from one exact source SHA and uploads only immutable,
+# content-addressed bytes: release assets under `build-<source_sha>`, an OCI
+# index tagged `build-<source_sha>`, and an attested `build-manifest` artifact.
+# Versions, channels, versioned releases and image version tags are published
+# by Release Control from that manifest; nothing here talks to Release Control.
+
+on:
+  workflow_dispatch:
+    inputs:
+      worker:
+        description: Worker to build (descriptor index key)
+        required: true
+        type: string
+      source_sha:
+        description: Exact 40-hex commit to build
+        required: true
+        type: string
+      descriptor_run_id:
+        description: Run id of the Deployment Descriptor Index checkpoint for source_sha
+        required: true
+        type: string
+      correlation_id:
+        description: Opaque caller identifier echoed into the manifest and run title
+        required: false
+        default: ''
+        type: string
+  workflow_call:
+    inputs:
+      worker: {required: true, type: string}
+      source_sha: {required: true, type: string}
+      descriptor_run_id: {required: true, type: string}
+      correlation_id: {required: false, default: '', type: string}
+
+env:
+  WORKER: ${{ inputs.worker }}
+  SOURCE_SHA: ${{ inputs.source_sha }}
+  DESCRIPTOR_RUN_ID: ${{ inputs.descriptor_run_id }}
+  CORRELATION_ID: ${{ inputs.correlation_id }}
+  BUILD_TAG: build-${{ inputs.source_sha }}
+
+permissions: {}
+
+concurrency:
+  group: build-${{ inputs.worker }}-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: workers-release-linux-8core
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      matrix: ${{ steps.descriptor.outputs.matrix }}
+      descriptor_sha256: ${{ steps.descriptor.outputs.descriptor_sha256 }}
+      descriptor_artifact: ${{ steps.descriptor.outputs.artifact }}
+      frontend_artifact: ${{ steps.descriptor.outputs.frontend_artifact }}
+      artifact_kind: ${{ steps.descriptor.outputs.artifact_kind }}
+      package_manifest_version: ${{ steps.descriptor.outputs.package_manifest_version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.source_sha }}
+
+      - name: Download descriptor index checkpoint
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: deployment-descriptor-index-${{ inputs.source_sha }}
+          path: deployment-descriptor-index
+          run-id: ${{ inputs.descriptor_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Select byte-exact descriptor from immutable index
+        run: |
+          set -euo pipefail
+          [[ "$WORKER" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$DESCRIPTOR_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          index=deployment-descriptor-index/deployment-descriptor-index.json
+          compiler_digest=$(jq -er .compiler.digest "$index")
+          # The index is the only authority for the descriptor digest: it is
+          # re-verified against the descriptor's own sealed hash below.
+          descriptor_sha256=$(jq -er --arg worker "$WORKER" '.workers[$worker].digest' "$index")
+          [[ "$descriptor_sha256" =~ ^[0-9a-f]{64}$ ]]
+          python3 .github/scripts/deployment_train.py select-descriptor \
+            --index-dir deployment-descriptor-index \
+            --worker "$WORKER" \
+            --source-sha "$SOURCE_SHA" \
+            --compiler-digest "$compiler_digest" \
+            --descriptor-sha256 "$descriptor_sha256" \
+            --out deployment-input/deployment-descriptor.json
+
+      - name: Resolve descriptor-owned frontend metadata
+        id: frontend
+        run: >-
+          python3 .github/scripts/deployment_train.py frontend-metadata
+          --descriptor deployment-input/deployment-descriptor.json
+          --github-output "$GITHUB_OUTPUT"
+
+      - name: Install descriptor-pinned pnpm
+        if: steps.frontend.outputs.count != '0'
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+        with:
+          version: ${{ steps.frontend.outputs.package_manager_version }}
+
+      - name: Install descriptor-pinned Node.js
+        if: steps.frontend.outputs.count != '0'
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: ${{ steps.frontend.outputs.runtime_version }}
+
+      - name: Resolve frontend pnpm store
+        if: steps.frontend.outputs.count != '0'
+        id: frontend-pnpm
+        run: echo "store_path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache descriptor-pinned frontend dependencies
+        if: steps.frontend.outputs.count != '0'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ steps.frontend-pnpm.outputs.store_path }}
+          key: deployment-frontend-${{ steps.frontend.outputs.package_manager_version }}-node${{ steps.frontend.outputs.runtime_version }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.frontend.outputs.lock_sha256 }}
+
+      - name: Build embedded frontends once
+        run: >-
+          python3 .github/scripts/deployment_train.py build-frontends
+          --descriptor deployment-input/deployment-descriptor.json
+          --out .release-frontend
+
+      - name: Export descriptor
+        id: descriptor
+        run: |
+          set -euo pipefail
+          {
+            echo "matrix=$(python3 .github/scripts/deployment_train.py matrix --descriptor deployment-input/deployment-descriptor.json)"
+            echo "descriptor_sha256=$(jq -r .descriptor_sha256 deployment-input/deployment-descriptor.json)"
+            echo "artifact_kind=$(jq -r .artifact.kind deployment-input/deployment-descriptor.json)"
+            echo "package_manifest_version=$(jq -r .package_manifest_version deployment-input/deployment-descriptor.json)"
+            echo "artifact=build-descriptor-$WORKER"
+            echo "frontend_artifact=build-frontend-$WORKER"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: build-descriptor-${{ inputs.worker }}
+          path: deployment-input/deployment-descriptor.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: build-frontend-${{ inputs.worker }}
+          path: .release-frontend/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 7
+
+  build:
+    needs: resolve
+    permissions:
+      actions: read
+      contents: read
+      # _deploy-build.yml assumes the sccache OIDC role; without id-token the
+      # remote compile cache silently degrades to cold builds.
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+    uses: ./.github/workflows/_deploy-build.yml
+    with:
+      worker: ${{ inputs.worker }}
+      prepared_sha: ${{ inputs.source_sha }}
+      descriptor_artifact: ${{ needs.resolve.outputs.descriptor_artifact }}
+      frontend_artifact: ${{ needs.resolve.outputs.frontend_artifact }}
+      target: ${{ matrix.target }}
+      unit: ${{ matrix.unit }}
+      kind: ${{ matrix.kind }}
+      runner: ${{ matrix.runner }}
+
+  assemble:
+    needs: [resolve, build]
+    runs-on: workers-release-linux-8core
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      # Worker bytes, their assembly contract and the capture-only configuration
+      # all come from the exact source SHA.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.source_sha }}
+
+      # Interface capture tooling follows the workflow implementation selected
+      # by this run, as the former interface job did.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          path: run-tooling
+          sparse-checkout: .github/scripts
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: ${{ needs.resolve.outputs.descriptor_artifact }}
+          path: deployment-input
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: release-build-${{ inputs.worker }}-*
+          path: release-builds
+
+      - name: Assemble immutable release
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          python3 .github/scripts/deployment_train.py assemble \
+            --descriptor deployment-input/deployment-descriptor.json \
+            --artifacts-dir release-builds \
+            --out deploy-prepared
+
+      - name: Stage immutable bytes for interface capture
+        id: interface
+        run: >-
+          python3 run-tooling/.github/scripts/deployment_interface.py stage
+          --descriptor deploy-prepared/deployment-descriptor.json
+          --prepared deploy-prepared/prepared-artifacts.json
+          --source-root .
+          --out interface-work/stage.json
+          --github-output "$GITHUB_OUTPUT"
+
+      - name: Install current iii runtime
+        if: steps.interface.outputs.interface_capture == 'required'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 --retry-all-errors --retry-delay 5 \
+            https://install.iii.dev/iii/main/install.sh -o /tmp/install-iii.sh
+          sh /tmp/install-iii.sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.iii/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$HOME/.iii/bin:$PATH"
+          iii --version
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        if: steps.interface.outputs.kind == 'javascript-bundle' && steps.interface.outputs.interface_capture == 'required'
+        with:
+          node-version: ${{ steps.interface.outputs.runtime_version }}
+          # No pnpm is installed here; avoid setup-node's package-manager
+          # cache lookup before the runtime is available.
+          package-manager-cache: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        if: steps.interface.outputs.kind == 'python-bundle' && steps.interface.outputs.interface_capture == 'required'
+        with:
+          python-version: ${{ steps.interface.outputs.runtime_version }}
+
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        if: steps.interface.outputs.kind == 'python-bundle' && steps.interface.outputs.interface_capture == 'required'
+        with:
+          version: ${{ steps.interface.outputs.package_manager_version }}
+          enable-cache: false
+
+      - name: Install OCI capture tooling
+        if: steps.interface.outputs.kind == 'oci-image' && steps.interface.outputs.interface_capture == 'required'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y skopeo
+
+      - name: Collect interface registration from immutable artifact
+        env:
+          INTERFACE_CAPTURE: ${{ steps.interface.outputs.interface_capture }}
+          KIND: ${{ steps.interface.outputs.kind }}
+        run: |
+          set -euo pipefail
+          tooling=run-tooling/.github/scripts
+          if [[ "$INTERFACE_CAPTURE" == skipped ]]; then
+            python3 "$tooling/deployment_interface.py" snapshot \
+              --descriptor deploy-prepared/deployment-descriptor.json \
+              --prepared deploy-prepared/prepared-artifacts.json \
+              --out deploy-prepared/deployment-interface.json
+            python3 "$tooling/deployment_interface.py" build-evidence \
+              --descriptor deploy-prepared/deployment-descriptor.json \
+              --prepared deploy-prepared/prepared-artifacts.json \
+              --interface deploy-prepared/deployment-interface.json \
+              --out deploy-prepared/deployment-evidence.json
+            exit 0
+          fi
+
+          engine_pid=''
+          worker_pid=''
+          container_name=''
+          image_name=''
+          cleanup() {
+            if [[ -n "$container_name" ]]; then docker rm -f "$container_name" >/dev/null 2>&1 || true; fi
+            if [[ -n "$image_name" ]]; then docker image rm "$image_name" >/dev/null 2>&1 || true; fi
+            if [[ -n "$worker_pid" ]]; then kill -- "-$worker_pid" >/dev/null 2>&1 || true; fi
+            if [[ -n "$engine_pid" ]]; then kill -- "-$engine_pid" >/dev/null 2>&1 || true; fi
+          }
+          trap cleanup EXIT
+          engine_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
+          engine_url="ws://127.0.0.1:$engine_port"
+          printf 'workers:\n  - name: iii-worker-manager\n    config:\n      host: 127.0.0.1\n      port: %s\n' "$engine_port" >interface-work/engine.yaml
+          setsid iii --config interface-work/engine.yaml --no-update-check >interface-work/engine.log 2>&1 &
+          engine_pid=$!
+          for _ in $(seq 1 60); do
+            kill -0 "$engine_pid" 2>/dev/null || { cat interface-work/engine.log; exit 1; }
+            iii trigger --port "$engine_port" 'engine::workers::list' --json '{}' >/dev/null 2>&1 && break
+            sleep 1
+          done
+          iii trigger --port "$engine_port" 'engine::workers::list' --json '{}' >interface-work/workers-baseline.json
+          iii trigger --port "$engine_port" 'engine::triggers::list' --json '{"include_internal":false}' >interface-work/triggers-baseline.json
+
+          if [[ "$KIND" == oci-image ]]; then
+            container_name="deployment-interface-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            image_name="$container_name:prepared"
+            oci_archive=$(jq -er .oci_archive interface-work/stage.json)
+            sudo skopeo copy "oci-archive:$oci_archive" "docker-daemon:$image_name"
+            docker_env=(--env "III_URL=$engine_url")
+            while IFS= read -r encoded; do
+              docker_env+=(--env "$(printf '%s' "$encoded" | base64 --decode)")
+            done < <(jq -r '.environment | to_entries[] | (.key + "=" + .value) | @base64' interface-work/stage.json)
+            docker run --rm --network host --name "$container_name" "${docker_env[@]}" "$image_name" \
+              >interface-work/worker.log 2>&1 &
+            worker_pid=$!
+          else
+            setsid python3 "$tooling/deployment_interface.py" run-worker \
+              --metadata interface-work/stage.json --engine-url "$engine_url" \
+              --log interface-work/worker.log &
+            worker_pid=$!
+          fi
+
+          export III_TRIGGER_PORT="$engine_port"
+          python3 "$tooling/collect_worker_interface.py" \
+            --worker "$WORKER" --out interface-work/worker-interface.json \
+            --wait-seconds 600 \
+            --trigger-types-baseline interface-work/triggers-baseline.json \
+            --workers-baseline interface-work/workers-baseline.json
+          python3 "$tooling/collect_worker_interface.py" \
+            --assert-typed-schemas \
+            --assert-file interface-work/worker-interface.json
+          python3 "$tooling/deployment_interface.py" snapshot \
+            --descriptor deploy-prepared/deployment-descriptor.json \
+            --prepared deploy-prepared/prepared-artifacts.json \
+            --interface interface-work/worker-interface.json \
+            --out deploy-prepared/deployment-interface.json
+          python3 "$tooling/deployment_interface.py" build-evidence \
+            --descriptor deploy-prepared/deployment-descriptor.json \
+            --prepared deploy-prepared/prepared-artifacts.json \
+            --interface deploy-prepared/deployment-interface.json \
+            --out deploy-prepared/deployment-evidence.json
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: build-prepared-${{ inputs.worker }}
+          path: deploy-prepared/
+          if-no-files-found: error
+          retention-days: 30
+
+  upload:
+    needs: [resolve, assemble]
+    runs-on: workers-release-linux-8core
+    permissions:
+      actions: read
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          sparse-checkout: .github/scripts
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: build-prepared-${{ inputs.worker }}
+          path: deploy-prepared
+
+      - name: Verify prepared bytes against their inventory
+        run: |
+          set -euo pipefail
+          test "$(jq -r .worker deploy-prepared/deployment-descriptor.json)" = "$WORKER"
+          test "$(jq -r .source_sha deploy-prepared/deployment-descriptor.json)" = "$SOURCE_SHA"
+          python3 .github/scripts/deployment_train.py verify-prepared \
+            --descriptor deploy-prepared/deployment-descriptor.json \
+            --prepared deploy-prepared/prepared-artifacts.json
+          python3 .github/scripts/deployment_interface.py verify-evidence \
+            --descriptor deploy-prepared/deployment-descriptor.json \
+            --evidence deploy-prepared/deployment-evidence.json
+
+      - name: Ensure the content-addressed release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$BUILD_TAG" --json id >/dev/null 2>&1; then
+            # Another worker built from the same source may create it first:
+            # a failed create followed by a successful view is the same outcome.
+            gh release create "$BUILD_TAG" --target "$SOURCE_SHA" --prerelease \
+              --title "build $SOURCE_SHA" \
+              --notes "Immutable build outputs for $SOURCE_SHA. Versions are published by Release Control." \
+              || gh release view "$BUILD_TAG" --json id >/dev/null
+          fi
+          gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/$BUILD_TAG" > release.json
+          test "$(jq -r .draft release.json)" = false
+          gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/$BUILD_TAG" > tag-ref.json
+          tag_sha=$(jq -er .object.sha tag-ref.json)
+          if [[ "$(jq -er .object.type tag-ref.json)" == tag ]]; then
+            tag_sha=$(gh api "/repos/${GITHUB_REPOSITORY}/git/tags/$tag_sha" --jq .object.sha)
+          fi
+          test "$tag_sha" = "$SOURCE_SHA"
+
+      - name: Upload immutable release assets once
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/build_manifest.py plan \
+            --worker "$WORKER" --prepared deploy-prepared/prepared-artifacts.json > asset-plan.tsv
+          test -s asset-plan.tsv
+          mkdir -p upload-stage remote-assets
+          gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/$BUILD_TAG" > release.json
+          declare -A state=()
+          to_upload=()
+          while IFS=$'\t' read -r name asset sha256 size; do
+            test "$(sha256sum "deploy-prepared/$name" | cut -d' ' -f1)" = "$sha256"
+            count=$(jq --arg name "$asset" '[.assets[] | select(.name == $name)] | length' release.json)
+            if [[ "$count" == 0 ]]; then
+              cp "deploy-prepared/$name" "upload-stage/$asset"
+              to_upload+=("upload-stage/$asset")
+              state[$name]=uploaded
+              continue
+            fi
+            test "$count" = 1
+            id=$(jq -er --arg name "$asset" '.assets[] | select(.name == $name) | .id' release.json)
+            gh api -H 'Accept: application/octet-stream' \
+              "/repos/${GITHUB_REPOSITORY}/releases/assets/$id" > "remote-assets/$asset"
+            remote_sha=$(sha256sum "remote-assets/$asset" | cut -d' ' -f1)
+            if [[ "$remote_sha" != "$sha256" ]]; then
+              echo "::error::release $BUILD_TAG already carries $asset with sha256 $remote_sha but this build produced $sha256; immutable assets are never overwritten"
+              exit 1
+            fi
+            echo "$asset already present with identical bytes; skipping upload"
+            state[$name]=existing
+          done < asset-plan.tsv
+          if ((${#to_upload[@]} > 0)); then
+            gh release upload "$BUILD_TAG" "${to_upload[@]}"
+          fi
+
+          # Readback: every planned asset must now exist once with the exact bytes.
+          gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/$BUILD_TAG" > release-final.json
+          : > assets.jsonl
+          while IFS=$'\t' read -r name asset sha256 size; do
+            test "$(jq --arg name "$asset" '[.assets[] | select(.name == $name)] | length' release-final.json)" = 1
+            test "$(jq -er --arg name "$asset" '.assets[] | select(.name == $name) | .size' release-final.json)" = "$size"
+            id=$(jq -er --arg name "$asset" '.assets[] | select(.name == $name) | .id' release-final.json)
+            gh api -H 'Accept: application/octet-stream' \
+              "/repos/${GITHUB_REPOSITORY}/releases/assets/$id" > "remote-assets/$asset"
+            test "$(sha256sum "remote-assets/$asset" | cut -d' ' -f1)" = "$sha256"
+            jq -nc --arg name "$name" --arg asset "$asset" --arg sha256 "$sha256" \
+              --argjson size "$size" --arg state "${state[$name]}" \
+              '{name:$name, asset:$asset, sha256:$sha256, size:$size, state:$state}' >> assets.jsonl
+          done < asset-plan.tsv
+          jq -s . assets.jsonl > assets.json
+
+      - name: Classify prepared artifact
+        id: artifact
+        run: |
+          if [[ "$(jq -r .artifact.kind deploy-prepared/deployment-descriptor.json)" == oci-image ]]; then
+            echo 'is_oci=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'is_oci=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up deterministic OCI index tooling
+        if: steps.artifact.outputs.is_oci == 'true'
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        with:
+          version: v0.36.1
+
+      - name: Authenticate OCI publication
+        if: steps.artifact.outputs.is_oci == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Publish immutable OCI index when declared
+        id: image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ "$(jq -r .artifact.kind deploy-prepared/deployment-descriptor.json)" != oci-image ]]; then
+            { echo 'image_repository='; echo 'image_tag='; echo 'image_digest='; echo 'image_state='; } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          sudo apt-get update
+          sudo apt-get install -y skopeo
+          base="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/$WORKER"
+          authfile="$RUNNER_TEMP/skopeo-auth.json"
+          # OCI archives contain root-owned entries, so hardened runners must
+          # extract them through the same privileged path used during capture.
+          printf '%s' "$GH_TOKEN" | sudo skopeo login --authfile "$authfile" \
+            ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          index_state=pushed
+          if docker buildx imagetools inspect "$base:$BUILD_TAG" --raw >published-index.json 2>/dev/null; then
+            index_state=existing
+            echo "OCI index $base:$BUILD_TAG already exists; verifying it instead of pushing"
+          fi
+          : >expected-image-digests.txt
+          refs=()
+          while IFS=$'\t' read -r unit archive; do
+            platform=$(jq -er --arg unit "$unit" '.build_units[] | select(.id == $unit) | .platform' \
+              deploy-prepared/deployment-descriptor.json)
+            platform_slug=${platform//\//-}
+            test -f "deploy-prepared/$archive"
+            gzip -dc "deploy-prepared/$archive" >"image-$platform_slug.oci.tar"
+            source_digest=$(sudo skopeo inspect --authfile "$authfile" --format '{{.Digest}}' \
+              "oci-archive:image-$platform_slug.oci.tar")
+            [[ "$source_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            # Per-platform manifests are addressed by the same build tag; they
+            # are the inputs of the index, never version or channel tags.
+            staging_tag="$BUILD_TAG-$platform_slug"
+            if remote_digest=$(sudo skopeo inspect --authfile "$authfile" --format '{{.Digest}}' \
+              "docker://$base:$staging_tag" 2>/dev/null); then
+              test "$remote_digest" = "$source_digest"
+            elif [[ "$index_state" == existing ]]; then
+              echo "::error::OCI index $base:$BUILD_TAG exists but its platform manifest $staging_tag is missing"
+              exit 1
+            else
+              sudo skopeo copy --authfile "$authfile" \
+                "oci-archive:image-$platform_slug.oci.tar" "docker://$base:$staging_tag"
+            fi
+            docker buildx imagetools inspect "$base:$staging_tag" --raw >"staging-$platform_slug.json"
+            if jq -e '.manifests | type == "array"' "staging-$platform_slug.json" >/dev/null; then
+              jq -r '.manifests[].digest' "staging-$platform_slug.json" >>expected-image-digests.txt
+            else
+              printf 'sha256:%s\n' "$(sha256sum "staging-$platform_slug.json" | cut -d' ' -f1)" \
+                >>expected-image-digests.txt
+            fi
+            refs+=("$base:$staging_tag")
+          done < <(jq -r '.artifacts[] | select(.role == "oci-platform") | [.unit,.name] | @tsv' \
+            deploy-prepared/prepared-artifacts.json)
+          test "${#refs[@]}" = "$(jq '.build_units | length' deploy-prepared/deployment-descriptor.json)"
+          if [[ "$index_state" == pushed ]]; then
+            docker buildx imagetools create --tag "$base:$BUILD_TAG" "${refs[@]}"
+            docker buildx imagetools inspect "$base:$BUILD_TAG" --raw >published-index.json
+          fi
+          sort -u expected-image-digests.txt -o expected-image-digests.txt
+          jq -r '.manifests[].digest' published-index.json | sort -u >published-image-digests.txt
+          if ! cmp expected-image-digests.txt published-image-digests.txt; then
+            echo "::error::OCI index $base:$BUILD_TAG does not reference the platform manifests built from $SOURCE_SHA; immutable images are never overwritten"
+            exit 1
+          fi
+          digest="sha256:$(sha256sum published-index.json | cut -d' ' -f1)"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          {
+            echo "image_repository=$base"
+            echo "image_tag=$BUILD_TAG"
+            echo "image_digest=$digest"
+            echo "image_state=$index_state"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Write upload receipt
+        env:
+          IMAGE_REPOSITORY: ${{ steps.image.outputs.image_repository }}
+          IMAGE_TAG: ${{ steps.image.outputs.image_tag }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.image_digest }}
+          IMAGE_STATE: ${{ steps.image.outputs.image_state }}
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg worker "$WORKER" --arg source_sha "$SOURCE_SHA" --arg tag "$BUILD_TAG" \
+            --slurpfile release release-final.json --slurpfile assets assets.json \
+            --arg repository "$IMAGE_REPOSITORY" --arg image_tag "$IMAGE_TAG" \
+            --arg digest "$IMAGE_DIGEST" --arg image_state "$IMAGE_STATE" \
+            '{
+              contract: "build-upload-receipt",
+              worker: $worker,
+              source_sha: $source_sha,
+              release: {tag: $tag, id: $release[0].id, url: $release[0].html_url},
+              assets: $assets[0],
+              image: (if $digest == "" then null
+                      else {repository: $repository, tag: $image_tag, digest: $digest, state: $image_state} end)
+            }' > upload-receipt.json
+          jq . upload-receipt.json
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: build-upload-receipt-${{ inputs.worker }}
+          path: upload-receipt.json
+          if-no-files-found: error
+          retention-days: 30
+
+  manifest:
+    needs: [resolve, assemble, upload]
+    runs-on: workers-release-linux-8core
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          sparse-checkout: .github/scripts
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: build-prepared-${{ inputs.worker }}
+          path: deploy-prepared
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: build-upload-receipt-${{ inputs.worker }}
+          path: upload-receipt
+
+      - name: Write the build manifest
+        env:
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/deployment_train.py verify-prepared \
+            --descriptor deploy-prepared/deployment-descriptor.json \
+            --prepared deploy-prepared/prepared-artifacts.json
+          python3 .github/scripts/deployment_interface.py verify-evidence \
+            --descriptor deploy-prepared/deployment-descriptor.json \
+            --evidence deploy-prepared/deployment-evidence.json
+          python3 .github/scripts/build_manifest.py write \
+            --worker "$WORKER" \
+            --source-sha "$SOURCE_SHA" \
+            --descriptor-run-id "$DESCRIPTOR_RUN_ID" \
+            --correlation-id "$CORRELATION_ID" \
+            --repository "$GITHUB_REPOSITORY" \
+            --run-id "$RUN_ID" \
+            --run-attempt "$RUN_ATTEMPT" \
+            --prepared-dir deploy-prepared \
+            --receipt upload-receipt/upload-receipt.json \
+            --out manifest.json
+          {
+            echo "### Build manifest"
+            echo
+            echo "- worker: \`$WORKER\`"
+            echo "- release: \`$BUILD_TAG\`"
+            echo "- assets: $(jq '.artifacts | length' manifest.json)"
+            echo "- image: \`$(jq -r '.image.digest // "none"' manifest.json)\`"
+            echo "- correlation: \`${CORRELATION_ID:-none}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Attest the build manifest
+        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+        with:
+          subject-path: manifest.json
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: build-manifest
+          path: manifest.json
+          if-no-files-found: error
+          # Release Control publishes from this manifest well after the run;
+          # it must outlive the candidate soak window.
+          retention-days: 90

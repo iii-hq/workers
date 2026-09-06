@@ -29,6 +29,7 @@ pub mod ids;
 pub mod locks;
 pub mod manifest;
 pub mod policy;
+pub mod projects;
 pub mod prompt;
 pub mod queue;
 pub mod skills;

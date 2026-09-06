@@ -12,10 +12,10 @@
 # editing `./data/configuration/iii-directory.yaml` directly.
 #
 # Tunable fields hot-reload on change (registry_url, download_timeout_ms,
-# registry_cache_ttl_ms, filter_unregistered). Topology fields require a
+# registry_cache_ttl_ms, filter_unregistered, function_search_mode). Topology fields require a
 # worker restart (skills_folder, local_skills_folder, agents_folder,
 # global_agents_folder, agents_skills_folder, global_agents_skills_folder,
-# auto_download).
+# auto_download, function_search_model_path, function_search_model_download).
 #
 # When omitted entirely, the worker seeds the built-in defaults
 # (skills_folder: skills, agents_folder: agents,
@@ -60,6 +60,20 @@ registry_url: https://api.workers.iii.dev
 download_timeout_ms: 60000
 
 # --- Function search (tunable, hot-reload) ---
+
+# Search lane: hybrid (BM25 fused with the local MiniLM model) is the default.
+# Lexical is BM25 only. Hybrid serves BM25 until the model bundle below is ready.
+function_search_mode: hybrid
+
+# Local semantic model directory: the pinned MiniLM bundle. Changing it
+# requires restart; `null` disables the semantic lane.
+# function_search_model_path: ~/.cache/iii/all-MiniLM-L6-v2-c9745ed1d9f207416be6d2e6f8de32d1f16199bf
+
+# With a semantic mode and a missing/incomplete bundle at boot, download the
+# pinned files from Hugging Face once (each verified by length and SHA-256).
+# Set false for air-gapped stacks; the worker then stays BM25-only until the
+# bundle is provisioned by hand.
+function_search_model_download: true
 
 # Bind the directory::pre-generate hook so the conditional search hint can
 # be injected into agent generations. Off unbinds the hook entirely.

@@ -607,11 +607,12 @@ assert_secret_safe_artifacts() {
 }
 
 # Declares one worker (and everything the registry resolves for it) in the
-# compose file, then lets the daemon restart the project. The call is
-# synchronous: it returns after installs finish and every container reports
-# ready, so it carries the old `worker add` timeout.
+# compose file, then waits for the daemon to finish reconciling the project.
+# Older Compose releases answer synchronously with status "ok". Newer releases
+# admit the mutation with status "accepted" and expose its terminal snapshot
+# through compose::operation.
 run_compose_add() {
-  local spec=$1 payload response
+  local spec=$1 payload response status operation_id terminal_snapshot
   payload=$(jq -cn --arg file "$compose_file" --arg worker "$spec" \
     '{file: $file, worker: $worker}')
   # `iii trigger` waits only 30s for the invocation result by default, far
@@ -628,10 +629,33 @@ run_compose_add() {
       --timeout-ms "$((add_timeout_seconds * 1000))" --json "$payload")
   fi
   printf '%s\n' "$response"
-  # A container that failed to start comes back as JSON with status "failed",
-  # not as a non-zero exit; the exit code alone proves nothing.
-  jq -e '.status == "ok"' <<<"$response" >/dev/null 2>&1 \
-    || die "compose::add $spec did not report ok"
+  status=$(jq -r '.status // empty' <<<"$response" 2>/dev/null || true)
+  case "$status" in
+    ok)
+      # Legacy synchronous response: every declared worker is already ready.
+      return 0
+      ;;
+    accepted)
+      operation_id=$(jq -r '.operation_id // empty' <<<"$response" 2>/dev/null || true)
+      [[ -n "$operation_id" ]] \
+        || die "compose::add $spec was accepted without an operation_id"
+      log_command "iii trigger compose::operation --port $engine_port --json '{\"operation_id\":\"$operation_id\"}' (until terminal)"
+      if ! terminal_snapshot=$(python3 "$script_dir/wait_for_compose_operation.py" \
+        --iii-bin "$iii_bin" \
+        --engine-port "$engine_port" \
+        --operation-id "$operation_id" \
+        --timeout-seconds "$add_timeout_seconds"); then
+        [[ -z "$terminal_snapshot" ]] || printf '%s\n' "$terminal_snapshot"
+        die "compose::add $spec operation did not succeed"
+      fi
+      printf '%s\n' "$terminal_snapshot"
+      ;;
+    *)
+      # A synchronous lifecycle failure is JSON with status "failed", not a
+      # non-zero CLI exit. Unexpected or missing statuses are equally unsafe.
+      die "compose::add $spec returned status ${status:-missing}"
+      ;;
+  esac
 }
 
 run_compose_restart() {
@@ -666,8 +690,14 @@ start_engine() {
 # below reach it the same way every other function is reached. It runs in the
 # foreground by design; the script owns backgrounding it, like the engine.
 start_compose() {
-  local command=("$iii_bin" compose --engine "ws://127.0.0.1:$engine_port" --namespace default)
-  log_command "iii compose --engine ws://127.0.0.1:$engine_port --namespace default"
+  local command=(
+    "$iii_bin" compose
+    --engine "ws://127.0.0.1:$engine_port"
+    --namespace default
+    --file "$compose_file"
+    --up
+  )
+  log_command "iii compose --engine ws://127.0.0.1:$engine_port --namespace default --file worker-compose.yaml --up"
   if command -v setsid >/dev/null 2>&1; then
     ANTHROPIC_API_KEY="$anthropic_api_key" OPENAI_API_KEY="$openai_api_key" \
       setsid "${command[@]}" >"$log_dir/compose.log" 2>&1 &
@@ -718,26 +748,21 @@ cli_version=$("$iii_bin" --version 2>&1)
 printf '%s\n' "$cli_version" >"$artifact_dir/cli-version.txt"
 ok "installed $cli_version"
 
-log "Step 2/9: Start an empty engine and the compose daemon"
+log "Step 2/9: Initialize the project, start an empty engine and the compose daemon"
+log_command "iii project init --directory $project_dir --template quickstart --skip-iii"
+"$iii_bin" project init \
+  --directory "$project_dir" \
+  --template quickstart \
+  --skip-iii \
+  2>&1 | tee "$log_dir/project-init.log"
 printf 'workers: []\n' >config.yaml
 start_engine
 wait_for_engine
 start_compose
 wait_for_compose
-# The seed only names the project: `compose::add` writes every container.
-# `namespace: default` is required — harness and Console must register beside
-# the engine builtins, exactly like the flow this validates. Written only
-# AFTER the daemon is up: since 0.23.0-rc.8 the daemon validates the compose
-# file at startup and exits on empty containers (EMPTY_CONTAINERS), while
-# `compose::add` requires the file to exist — so the seed lands between the
-# daemon boot and the first add.
-cat >"$compose_file" <<'COMPOSE'
-namespace: default
-startup_timeout: 5m
-stop_timeout: 10s
-
-containers:
-COMPOSE
+# `project init --template quickstart` supplies the empty project declaration
+# with an engine URL, so Compose can load it before the first worker is added.
+[[ -s "$compose_file" ]] || die "project init did not create worker-compose.yaml"
 
 log "Step 3/9: Add harness and Console from worker tag $worker_tag via compose"
 run_compose_add "harness@$worker_tag" 2>&1 | tee "$log_dir/compose-add-harness.log"

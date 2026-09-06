@@ -1,0 +1,198 @@
+/* Reasoning effort as a pill slider: a tall rounded track with one dot per
+   level and a small rounded thumb that rides inside it. The fill behind the
+   thumb and the value label pick up more of the accent the further right the
+   level sits — `--effort-ratio` (0..1) drives one `--effort-color` mixed
+   between the quiet ghost ink and the accent. One row on desktop (label,
+   track, value); the value drops under the label on narrow sheets. */
+.reasoning-effort {
+  --effort-thumb-w: 14px;
+  --effort-thumb-h: 20px;
+  --effort-track-h: 24px;
+  --effort-thumb-bg: var(--color-panel-raised);
+  --effort-color: color-mix(
+    in oklab,
+    var(--color-accent) calc(var(--effort-ratio, 0) * 100%),
+    var(--color-ink-ghost)
+  );
+  /* Thumb centre along the track: dots and the fill share this geometry. */
+  --effort-pct: calc(
+    var(--effort-thumb-w) /
+    2 +
+    var(--effort-ratio, 0) *
+    (100% - var(--effort-thumb-w))
+  );
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "label value"
+    "track track";
+  align-items: center;
+  column-gap: 12px;
+  row-gap: 8px;
+}
+
+/* The thumb reads as the light object on the dark track, like a switch knob. */
+[data-theme="dark"] .reasoning-effort {
+  --effort-thumb-bg: var(--color-ink);
+}
+
+@media (min-width: 640px) {
+  .reasoning-effort {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas: "label track value";
+    column-gap: 14px;
+    row-gap: 0;
+  }
+}
+
+.reasoning-effort__label {
+  grid-area: label;
+}
+
+.reasoning-effort__value {
+  grid-area: value;
+  color: var(--effort-color);
+  transition: color var(--motion-duration-control) ease;
+}
+
+.reasoning-effort__track {
+  position: relative;
+  grid-area: track;
+  height: var(--effort-track-h);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface-selected);
+}
+
+.reasoning-effort__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--effort-pct);
+  border-radius: var(--radius-xl);
+  background: color-mix(in oklab, var(--effort-color) 38%, transparent);
+  pointer-events: none;
+  transition: background-color var(--motion-duration-control) ease;
+}
+
+.reasoning-effort__dot {
+  position: absolute;
+  top: 50%;
+  left: calc(
+    var(--effort-thumb-w) /
+    2 +
+    var(--effort-stop, 0) *
+    (100% - var(--effort-thumb-w))
+  );
+  width: 3px;
+  height: 3px;
+  border-radius: var(--radius-full);
+  background: color-mix(in oklab, var(--color-ink) 32%, transparent);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+/* The native range sits over the track: its own track is transparent, so
+   only the thumb paints — clicks and drags still snap to the levels. */
+.reasoning-effort__range {
+  -webkit-appearance: none;
+  appearance: none;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  cursor: grab;
+  touch-action: pan-y;
+}
+
+.reasoning-effort__range:focus-visible {
+  outline: none;
+}
+
+.reasoning-effort__range::-webkit-slider-runnable-track {
+  height: var(--effort-track-h);
+  background: transparent;
+}
+
+.reasoning-effort__range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: var(--effort-thumb-w);
+  height: var(--effort-thumb-h);
+  margin-top: calc((var(--effort-track-h) - var(--effort-thumb-h)) / 2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--effort-thumb-bg);
+  box-shadow: var(--shadow-raised);
+  transition: box-shadow var(--motion-duration-control) ease;
+}
+
+.reasoning-effort__range:focus-visible::-webkit-slider-thumb {
+  box-shadow:
+    var(--shadow-raised),
+    0 0 0 2px var(--color-rule-focus);
+}
+
+.reasoning-effort__range::-moz-range-track {
+  height: var(--effort-track-h);
+  border: 0;
+  background: transparent;
+}
+
+.reasoning-effort__range::-moz-range-progress {
+  background: transparent;
+}
+
+.reasoning-effort__range::-moz-range-thumb {
+  width: var(--effort-thumb-w);
+  height: var(--effort-thumb-h);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--effort-thumb-bg);
+  box-shadow: var(--shadow-raised);
+}
+
+.reasoning-effort__range:focus-visible::-moz-range-thumb {
+  box-shadow:
+    var(--shadow-raised),
+    0 0 0 2px var(--color-rule-focus);
+}
+
+/* transitions.dev #04 — text states swap. The level name exits up through a
+   blur and the next one enters from below; `useTextSwap` drives the classes.
+   Tokens (`--text-swap-*`) live with the motion scale in index.css. */
+.t-text-swap {
+  display: inline-block;
+  transform: translateY(0);
+  filter: blur(0);
+  opacity: 1;
+  transition:
+    transform var(--text-swap-dur) var(--text-swap-ease),
+    filter var(--text-swap-dur) var(--text-swap-ease),
+    opacity var(--text-swap-dur) var(--text-swap-ease);
+  will-change: transform, filter, opacity;
+}
+.t-text-swap.is-exit {
+  transform: translateY(calc(var(--text-swap-translate-y) * -1));
+  filter: blur(var(--text-swap-blur));
+  opacity: 0;
+}
+.t-text-swap.is-enter-start {
+  transform: translateY(var(--text-swap-translate-y));
+  filter: blur(var(--text-swap-blur));
+  opacity: 0;
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-text-swap {
+    transition: none !important;
+  }
+
+  .reasoning-effort__value,
+  .reasoning-effort__fill,
+  .reasoning-effort__range::-webkit-slider-thumb {
+    transition: none;
+  }
+}

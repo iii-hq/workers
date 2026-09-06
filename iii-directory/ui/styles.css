@@ -1267,6 +1267,17 @@
 [data-iii-ui="iii-directory"] .dir-ui-config-number {
   max-width: 180px;
 }
+[data-iii-ui="iii-directory"] .dir-ui-config-select {
+  max-width: 240px;
+}
+[data-iii-ui="iii-directory"] .dir-ui-config-notice {
+  display: flex;
+  max-width: 60ch;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  overflow-wrap: anywhere;
+}
 /* This utility is also used by the agent-profile editor. */
 [data-iii-ui="iii-directory"] .dir-ui-checkrow {
   display: flex;

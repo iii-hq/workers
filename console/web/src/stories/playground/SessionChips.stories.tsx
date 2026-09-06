@@ -63,11 +63,7 @@ export const InjectedContextChip: Story = {
     if (!scenario) throw new Error('missing playground scenario')
     return (
       <WithDemoChip>
-        <PlaygroundHarness
-          backend={scenario.backend}
-          label={scenario.label}
-          preferredMode={scenario.preferredMode}
-        />
+        <PlaygroundHarness backend={scenario.backend} label={scenario.label} />
       </WithDemoChip>
     )
   },

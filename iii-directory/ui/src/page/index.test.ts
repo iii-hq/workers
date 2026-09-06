@@ -1,5 +1,6 @@
 import type { Host } from '@iii-dev/console-ui'
 import { expect, it, vi } from 'vitest'
+import { resolveBrowserPaneVisibility } from './browser'
 import { agentsAdapter, COLLECTIONS } from './index'
 
 vi.mock('@iii-dev/console-ui', () => ({
@@ -58,4 +59,38 @@ it('lists the bundled base agent as an editable copy-on-write row', async () => 
    quietly come back. */
 it('browses skills and agent profiles only', () => {
   expect(COLLECTIONS.map((c) => c.value)).toEqual(['skills', 'agents'])
+})
+
+it('shows only the creation form when a narrow browser starts a new entry', () => {
+  expect(
+    resolveBrowserPaneVisibility({
+      narrow: true,
+      selected: null,
+      creating: true,
+    }),
+  ).toEqual({ showSide: false, showDoc: true })
+
+  expect(
+    resolveBrowserPaneVisibility({
+      narrow: true,
+      selected: 'existing-agent',
+      creating: false,
+    }),
+  ).toEqual({ showSide: false, showDoc: true })
+
+  expect(
+    resolveBrowserPaneVisibility({
+      narrow: true,
+      selected: null,
+      creating: false,
+    }),
+  ).toEqual({ showSide: true, showDoc: false })
+
+  expect(
+    resolveBrowserPaneVisibility({
+      narrow: false,
+      selected: null,
+      creating: true,
+    }),
+  ).toEqual({ showSide: true, showDoc: true })
 })

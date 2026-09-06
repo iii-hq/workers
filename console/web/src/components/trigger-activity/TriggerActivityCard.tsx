@@ -36,6 +36,7 @@ import {
   useTriggerActivityRenderers,
 } from './renderer-registry'
 import {
+  TriggerGlyph,
   TriggerJsonPane,
   TriggerStats,
   TriggerTrace,
@@ -348,6 +349,7 @@ function TriggerActivityTerminal({
             icon={<RadioTower aria-hidden />}
             label="When"
             title={activity.triggerType}
+            mono
           >
             <TriggerSource activity={activity} presentation="compact" />
           </TriggerTraceNode>
@@ -372,18 +374,13 @@ function TriggerActivityTerminal({
       ) : null}
 
       <div className="flex min-w-0 flex-col gap-3 border-t border-edge pt-4 @md:flex-row @md:items-start">
-        <div
-          className={cn(
-            'flex size-9 shrink-0 items-center justify-center rounded-full',
-            showDeliveryBadge ? 'bg-warn-muted' : 'bg-accent-muted',
-          )}
-        >
+        <TriggerGlyph tone={showDeliveryBadge ? 'warn' : 'neutral'}>
           {showDeliveryBadge ? (
-            <CircleAlert aria-hidden className="size-5 shrink-0 stroke-warn" />
+            <CircleAlert aria-hidden />
           ) : (
-            <Info aria-hidden className="size-5 shrink-0 stroke-accent" />
+            <Info aria-hidden />
           )}
-        </div>
+        </TriggerGlyph>
         <div className="min-w-0 flex-1 font-sans">
           <div className="text-base font-medium text-ink sm:text-sm">
             {lifecycle.title}
@@ -477,8 +474,10 @@ function TriggerTarget({
       <div className="flex min-w-0 flex-col gap-2">
         <div
           className={cn(
-            'min-w-0 font-sans text-base break-all sm:text-sm',
-            call ? 'text-ink' : 'text-ink-faint italic',
+            'min-w-0',
+            call
+              ? 'font-mono text-[13px] break-all text-ink'
+              : 'font-sans text-base text-ink-faint sm:text-sm',
           )}
         >
           {target}

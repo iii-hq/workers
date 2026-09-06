@@ -20,22 +20,32 @@ const cases = [
 ] as const
 
 const failureSummary = 'The provider rejected this request.'
-const nextAction =
-  'Review the selected model and provider settings, then try again.'
+// Every fixture reason names a billing wall, so the console classifies the
+// failure as the user's provider account (not iii) and swaps the harness's
+// generic "review the provider settings" advice for account-specific steps.
+const failureTitle = 'Provider credit or quota exhausted'
+const ownerLabel = 'Needs your attention'
 const recoveryMessage =
   'Confirm the chat can continue after the provider issue is corrected.'
 
 async function expectFailureNotice(page: Page) {
   const notice = page
-    .locator('[data-message-role="system-notice"][data-message-tone="error"]')
+    .locator('[data-message-role="turn-failure"]')
     .filter({ hasText: failureSummary })
   await expect(notice).toHaveCount(1)
+  await expect(notice).toHaveAttribute('data-failure-category', 'billing')
+  await expect(notice).toHaveAttribute('data-failure-owner', 'user')
+  await expect(notice.getByRole('heading')).toHaveText(failureTitle)
+  await expect(notice.getByText(ownerLabel)).toBeVisible()
   await expect(notice.locator('[data-message-summary]')).toHaveText(
     failureSummary,
   )
-  await expect(notice.locator('[data-message-next-actions] li')).toHaveText(
-    nextAction,
+  await expect(notice.locator('[data-failure-ownership]')).toContainText(
+    'not an iii or console failure',
   )
+  const actions = notice.locator('[data-message-next-actions] li')
+  await expect(actions).toHaveCount(2)
+  await expect(actions.first()).toContainText('Add credit')
   const details = notice.locator('[data-message-technical-details]')
   await expect(details).not.toHaveAttribute('open', '')
   return details

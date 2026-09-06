@@ -12,7 +12,7 @@ import {
 
 export const scraplingScrape = makeBackend(
   'scrapling-scrape',
-  async function* (_prompt, _mode, _model, opts) {
+  async function* (_prompt, _model, opts) {
     const signal = opts?.signal
     yield* streamThought(
       'fetching the catalog with scrapling, then extracting the fields…',

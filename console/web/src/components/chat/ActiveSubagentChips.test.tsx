@@ -11,7 +11,6 @@ function conversation(
     id,
     title: id,
     model: null,
-    mode: 'agent',
     messages: [],
     createdAt: 1,
     updatedAt: 1,

@@ -49,7 +49,7 @@ never appear in `index` and `update`/`delete` refuse them.
 - You need to find a skill across the repo with filters — `directory::skills::list`.
 - You need the system prompts the chat picker offers as an identity override — `directory::system-prompts::list` / `get`.
 - You need a reusable agent profile (display name, emoji logo, skill selection, and its system prompt) — `directory::agents::list` / `get`.
-- You are about to build against a worker you have **not** installed — `directory::registry::workers::info` returns the same schema shape you would get after install.
+- You are deciding whether to install a worker — `directory::registry::workers::info` is the pre-install card: public function/trigger names with descriptions, config, dependencies, skill paths (no schemas; `readme: true` adds the README). Contracts come from `engine::functions::info` after install.
 - You need to install a published worker's skills — `directory::skills::download_from_registry`.
 - You can only reach the `directory::` namespace but need one engine function's exact schema — `directory::engine::functions::info`.
 
@@ -88,7 +88,7 @@ never appear in `index` and `update`/`delete` refuse them.
 - `directory::agents::update` — overwrite one EXISTING agent profile (same scanner rules; the id stays the file stem, frontmatter `name` is display-only). Updating the bundled `iii` creates the local file that shadows it.
 - `directory::agents::delete` — permanently remove one EXISTING agent profile by id; running sessions are unaffected, profiles extending it stop resolving until fixed. Deleting a local `iii` falls back to the bundled copy.
 - `directory::registry::workers::list` — page through published workers in the public registry (`pagination.next_cursor` feeds the next page's `cursor`).
-- `directory::registry::workers::info` — full registry detail for one worker, including ones not installed: `api_reference` (functions + triggers with schemas) and `skills_tree`.
+- `directory::registry::workers::info` — pre-install card for one worker, including ones not installed: envelope, `api_reference` (public functions + triggers, names and descriptions only) and `skills_tree`; `readme: true` adds the README.
 - `directory::engine::functions::info` — thin proxy to the engine's `engine::functions::info`; returns request/response schema, metadata, and registered triggers for one function id.
 
 A failed call returns one plain sentence carrying a `Did you mean:` suggestion and a `Next:` function to call (codes `D110`/`D112`/`D210`/`D310`/`D311`, `D410` for a missing agent profile, `D320` when the registry is unreachable, and on the write paths `D213` for content the next scan would skip, `D214`/`D114`/`D414` for a create whose name/id or target path is already taken, `D115` for a skill id the visibility filter or an agents namespace reserves, and `D116` for a write to a read-only system-installed skill) — follow it instead of retrying the same input. Downloads overwrite file-by-file, so hand-edited extra files survive a re-pull.

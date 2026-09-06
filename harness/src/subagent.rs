@@ -16,7 +16,6 @@ use crate::functions::spawn::{SpawnRequest, SubagentDisplay};
 use crate::ids;
 use crate::policy;
 use crate::prompt;
-use crate::prompt::{Mode, SystemPromptOpts};
 use crate::trigger::ResultData;
 use crate::types::content::ContentBlock;
 use crate::types::turn::{fs_scope_metadata, FunctionPolicy, ParentLink, TurnOptions, TurnRecord};
@@ -188,14 +187,11 @@ pub async fn spawn_child(
 /// so a leaf's own children stay leaves. Any real whitelist then keeps the
 /// contract-discovery pair ([`policy::CHILD_DISCOVERY_ALLOW`]): the sub-agent
 /// contract makes a `functions::info` round mandatory, so an allow-list of
-/// just the work functions quietly starves an obedient child. Finally an
-/// ask-mode child is clamped to the configured default policy (`*` as
-/// shipped) — the operator ceiling stays authoritative over the union.
+/// just the work functions quietly starves an obedient child.
 fn child_functions(
     cfg: &WorkerConfig,
     parent_record: Option<&TurnRecord>,
     requested: Option<&FunctionPolicy>,
-    mode: Option<Mode>,
     orchestrator: bool,
 ) -> Option<FunctionPolicy> {
     let mut functions = match parent_record {
@@ -221,7 +217,7 @@ fn child_functions(
             }
         }
     }
-    crate::functions::send::clamp_for_mode(cfg, mode, functions)
+    functions
 }
 
 /// Seed a child session + turn and enqueue its first step. When
@@ -305,7 +301,6 @@ async fn seed_child(
         cfg,
         parent_record,
         req.options.as_ref().and_then(|o| o.functions.as_ref()),
-        req.options.as_ref().and_then(|o| o.mode),
         orchestrator,
     );
 
@@ -341,23 +336,18 @@ async fn seed_child(
         model,
         provider,
         system_prompt: match agent.as_ref() {
-            Some(a) => Some(prompt::build_system_prompt(SystemPromptOpts {
-                mode: req.options.as_ref().and_then(|o| o.mode),
-                identity: &a.prompt,
-            })),
+            Some(a) => Some(a.prompt.clone()),
             None => prompt::resolve_system_prompt(
                 req.options.as_ref().and_then(|o| o.system_prompt.clone()),
                 req.options
                     .as_ref()
                     .map(|o| o.system_prompt_strategy)
                     .unwrap_or_default(),
-                req.options.as_ref().and_then(|o| o.mode),
                 identity,
             ),
         },
         skills_prompt: None,
         skill_context: None,
-        mode: req.options.as_ref().and_then(|o| o.mode),
         max_turns,
         max_output_tokens: req
             .options
@@ -749,7 +739,6 @@ mod tests {
                 system_prompt: None,
                 skills_prompt: None,
                 skill_context: None,
-                mode: None,
                 max_turns: 16,
                 max_output_tokens: None,
                 max_total_tokens: None,
@@ -1010,78 +999,21 @@ mod tests {
     }
 
     #[test]
-    fn ask_mode_child_is_clamped_to_the_configured_default() {
-        // The shipped default is `*`, so ask no longer strips the data plane…
+    fn parentless_child_defaults() {
+        // The parentless arms child_functions owns: an explicit request
+        // applies as-is, and no request falls back to the configured default
+        // (`*` as shipped).
         let cfg = WorkerConfig::default();
-        let mut parent = parent_record(None);
-        parent.options.functions = Some(broad_policy());
-        let asked = child_functions(&cfg, Some(&parent), None, Some(Mode::Ask), false);
-        assert!(policy::CompiledPolicy::from(asked.as_ref()).allows("state::set"));
-
-        // …but the chokepoint still bites when the operator narrows the default.
-        let asked = child_functions(&narrowed_cfg(), Some(&parent), None, Some(Mode::Ask), false);
-        let compiled = policy::CompiledPolicy::from(asked.as_ref());
-        assert!(compiled.allows("state::get"));
-        assert!(!compiled.allows("state::set"));
-    }
-
-    #[test]
-    fn ask_mode_keeps_the_narrower_of_parent_and_baseline() {
-        let cfg = WorkerConfig::default();
-        let mut parent = parent_record(None);
-        parent.options.functions = Some(FunctionPolicy {
-            allow: vec!["state::get".into()],
-            deny: vec![],
-            expose: Default::default(),
-        });
-        let asked = child_functions(&cfg, Some(&parent), None, Some(Mode::Ask), false);
-        let compiled = policy::CompiledPolicy::from(asked.as_ref());
-        assert!(compiled.allows("state::get"));
-        // In the baseline but outside the inherited policy — still denied.
-        assert!(!compiled.allows("state::list"));
-    }
-
-    #[test]
-    fn parentless_ask_child_takes_the_configured_default() {
-        let f = child_functions(&narrowed_cfg(), None, None, Some(Mode::Ask), false);
-        let compiled = policy::CompiledPolicy::from(f.as_ref());
-        assert!(compiled.allows("state::get"));
-        assert!(!compiled.allows("state::set"));
-    }
-
-    #[test]
-    fn ask_mode_child_clamps_an_explicit_broad_request() {
-        // The direct escalation vector: a spawn that explicitly asks for `*`
-        // under a narrowed operator default. Parented or not, the ask child
-        // stays capped.
-        let cfg = narrowed_cfg();
-        let mut parent = parent_record(None);
-        parent.options.functions = Some(broad_policy());
-        for parent_rec in [Some(&parent), None] {
-            let f = child_functions(
-                &cfg,
-                parent_rec,
-                Some(&broad_policy()),
-                Some(Mode::Ask),
-                false,
-            );
-            let compiled = policy::CompiledPolicy::from(f.as_ref());
-            assert!(compiled.allows("state::get"));
-            assert!(!compiled.allows("state::set"));
-            assert!(!compiled.allows("harness::spawn"));
-        }
-    }
-
-    #[test]
-    fn parentless_child_defaults_are_unclamped_outside_ask() {
-        // The pre-existing parentless arms child_functions now owns: an explicit
-        // request applies as-is, and no request falls back to the configured
-        // default (`*` as shipped).
-        let cfg = WorkerConfig::default();
-        let explicit = child_functions(&cfg, None, Some(&broad_policy()), Some(Mode::Agent), false);
+        let explicit = child_functions(&cfg, None, Some(&broad_policy()), false);
         assert!(policy::CompiledPolicy::from(explicit.as_ref()).allows("state::set"));
-        let defaulted = child_functions(&cfg, None, None, None, false);
+        let defaulted = child_functions(&cfg, None, None, false);
         assert!(policy::CompiledPolicy::from(defaulted.as_ref()).allows("state::set"));
+
+        // A narrowed operator default is what a parentless child falls back to.
+        let narrowed = child_functions(&narrowed_cfg(), None, None, false);
+        let compiled = policy::CompiledPolicy::from(narrowed.as_ref());
+        assert!(compiled.allows("state::get"));
+        assert!(!compiled.allows("state::set"));
     }
 
     #[test]
@@ -1091,7 +1023,7 @@ mod tests {
         let cfg = WorkerConfig::default();
         let mut parent = parent_record(None);
         parent.options.functions = Some(broad_policy());
-        let leaf = child_functions(&cfg, Some(&parent), None, Some(Mode::Agent), false);
+        let leaf = child_functions(&cfg, Some(&parent), None, false);
         let compiled = policy::CompiledPolicy::from(leaf.as_ref());
         assert!(compiled.allows("state::set"), "data-plane must survive");
         for id in [
@@ -1110,7 +1042,7 @@ mod tests {
         let cfg = WorkerConfig::default();
         let mut parent = parent_record(None);
         parent.options.functions = Some(broad_policy());
-        let orch = child_functions(&cfg, Some(&parent), None, Some(Mode::Agent), true);
+        let orch = child_functions(&cfg, Some(&parent), None, true);
         let compiled = policy::CompiledPolicy::from(orch.as_ref());
         assert!(compiled.allows("harness::spawn"));
         assert!(compiled.allows("engine::register_trigger"));
@@ -1121,7 +1053,7 @@ mod tests {
             deny: vec![],
             expose: Default::default(),
         });
-        let capped = child_functions(&cfg, Some(&parent), None, Some(Mode::Agent), true);
+        let capped = child_functions(&cfg, Some(&parent), None, true);
         assert!(!policy::CompiledPolicy::from(capped.as_ref()).allows("harness::spawn"));
     }
 
@@ -1136,7 +1068,7 @@ mod tests {
             .deny
             .extend(policy::CONTROL_PLANE_DENY.iter().map(|s| s.to_string()));
         leaf_parent.options.functions = Some(leaf_policy);
-        let child = child_functions(&cfg, Some(&leaf_parent), None, Some(Mode::Agent), true);
+        let child = child_functions(&cfg, Some(&leaf_parent), None, true);
         assert!(!policy::CompiledPolicy::from(child.as_ref()).allows("harness::spawn"));
     }
 
@@ -1150,7 +1082,7 @@ mod tests {
             deny: vec![],
             expose: Default::default(),
         };
-        let child = child_functions(&cfg, Some(&parent), Some(&narrow), Some(Mode::Agent), false);
+        let child = child_functions(&cfg, Some(&parent), Some(&narrow), false);
         let compiled = policy::CompiledPolicy::from(child.as_ref());
         assert!(compiled.allows("state::set"));
         assert!(!compiled.allows("state::get"));
@@ -1171,7 +1103,7 @@ mod tests {
             deny: vec![],
             expose: Default::default(),
         };
-        let child = child_functions(&cfg, Some(&parent), Some(&narrow), Some(Mode::Agent), false);
+        let child = child_functions(&cfg, Some(&parent), Some(&narrow), false);
         let compiled = policy::CompiledPolicy::from(child.as_ref());
         assert!(compiled.allows("database::executeBatch"));
         assert!(compiled.allows("engine::functions::list"));
@@ -1194,14 +1126,7 @@ mod tests {
             deny: vec![],
             expose: Default::default(),
         };
-        let child = child_functions(
-            &cfg,
-            Some(&parent),
-            Some(&covered),
-            Some(Mode::Agent),
-            false,
-        )
-        .unwrap();
+        let child = child_functions(&cfg, Some(&parent), Some(&covered), false).unwrap();
         assert_eq!(child.allow, vec!["engine::*", "state::set"]);
 
         // Explicitly denied: deny wins, and no dead allow entry is written.
@@ -1210,8 +1135,7 @@ mod tests {
             deny: vec!["engine::functions::*".into()],
             expose: Default::default(),
         };
-        let child =
-            child_functions(&cfg, Some(&parent), Some(&denied), Some(Mode::Agent), false).unwrap();
+        let child = child_functions(&cfg, Some(&parent), Some(&denied), false).unwrap();
         assert_eq!(child.allow, vec!["database::executeBatch"]);
         assert!(!policy::CompiledPolicy::from(Some(&child)).allows("engine::functions::info"));
 
@@ -1222,7 +1146,7 @@ mod tests {
             deny: vec![],
             expose: Default::default(),
         };
-        let child = child_functions(&cfg, None, Some(&disabled), Some(Mode::Agent), false).unwrap();
+        let child = child_functions(&cfg, None, Some(&disabled), false).unwrap();
         assert!(child.allow.is_empty());
         assert!(!policy::CompiledPolicy::from(Some(&child)).allows("engine::functions::list"));
     }

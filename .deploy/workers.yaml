@@ -10,14 +10,12 @@ workers:
         version: 1.97.1
       binary: a2ui
       targets: &id001
-      - x86_64-apple-darwin
       - aarch64-apple-darwin
       - x86_64-unknown-linux-gnu
       - x86_64-unknown-linux-musl
       - aarch64-unknown-linux-gnu
       - armv7-unknown-linux-gnueabihf
       - x86_64-pc-windows-msvc
-      - i686-pc-windows-msvc
       - aarch64-pc-windows-msvc
       frontends:
       - workspace_root: .
@@ -51,7 +49,6 @@ workers:
         version: 1.97.1
       binary: iii-acp
       targets:
-      - x86_64-apple-darwin
       - aarch64-apple-darwin
       - x86_64-unknown-linux-gnu
       - x86_64-unknown-linux-musl
@@ -204,7 +201,6 @@ workers:
         version: 1.97.1
       binary: code-runner
       targets:
-      - x86_64-apple-darwin
       - aarch64-apple-darwin
       - x86_64-unknown-linux-gnu
       - x86_64-unknown-linux-musl
@@ -290,7 +286,6 @@ workers:
         version: 1.97.1
       binary: compose-ui
       targets:
-      - x86_64-apple-darwin
       - aarch64-apple-darwin
       - x86_64-unknown-linux-gnu
       - x86_64-unknown-linux-musl
@@ -412,7 +407,6 @@ workers:
         version: 1.97.1
       binary: context-manager
       targets:
-      - x86_64-apple-darwin
       - aarch64-apple-darwin
       - x86_64-unknown-linux-gnu
       - x86_64-unknown-linux-musl
@@ -612,7 +606,6 @@ workers:
         version: 1.97.1
       binary: editor
       targets:
-      - x86_64-apple-darwin
       - aarch64-apple-darwin
       - x86_64-unknown-linux-gnu
       - x86_64-unknown-linux-musl
@@ -959,7 +952,6 @@ workers:
         version: 1.97.1
       binary: lsp
       targets:
-      - x86_64-apple-darwin
       - aarch64-apple-darwin
       - x86_64-unknown-linux-gnu
       - x86_64-unknown-linux-musl
@@ -1678,7 +1670,6 @@ workers:
         version: 1.97.1
       binary: sandbox-code-runner
       targets:
-      - x86_64-apple-darwin
       - aarch64-apple-darwin
       - x86_64-unknown-linux-gnu
       - x86_64-unknown-linux-musl
@@ -1711,40 +1702,12 @@ workers:
       path: scrapling
       package_manifest: pyproject.toml
     artifact:
-      kind: python-bundle
-      workspace_root: scrapling
-      runtime:
-        name: python
-        version: 3.12.3
-      package_manager:
-        name: uv
-        version: 0.12.5
-      lockfile: uv.lock
-      install_command:
-      - uv
-      - sync
-      - --frozen
-      - --no-dev
-      - --no-install-project
-      build_command:
-      - python
-      - scripts/build_release_runtime.py
-      include:
-      - dist/site-packages.tar.gz
-      - pyproject.toml
-      - scripts/build_release_runtime.py
-      - src/__init__.py
-      - src/configuration.py
-      - src/core.py
-      - src/crawl.py
-      - src/guidance.py
-      - src/handlers.py
-      - src/main.py
-      - src/schemas.py
-      - src/sessions.py
-      - src/storage.py
-      - uv.lock
-      - iii.worker.yaml
+      kind: oci-image
+      context: .
+      dockerfile: Dockerfile
+      platforms:
+      - linux/amd64
+      - linux/arm64
     publish: true
   security-scan:
     source:
@@ -1801,7 +1764,6 @@ workers:
         version: 1.97.1
       binary: shell
       targets:
-      - x86_64-apple-darwin
       - aarch64-apple-darwin
       - x86_64-unknown-linux-gnu
       - x86_64-unknown-linux-musl
@@ -2142,7 +2104,6 @@ workers:
         version: 1.97.1
       binary: workflow
       targets:
-      - x86_64-apple-darwin
       - aarch64-apple-darwin
       - x86_64-unknown-linux-gnu
       - x86_64-unknown-linux-musl

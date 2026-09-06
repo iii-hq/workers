@@ -5,7 +5,6 @@ import { fn } from 'storybook/test'
 import { STATIC_FUNCTIONS } from '@/lib/functions'
 import type {
   Attachment,
-  Mode,
   ModelId,
   ModelOption,
   ThinkingLevel,
@@ -87,11 +86,10 @@ function seedWithText() {
 }
 
 /**
- * Stateful wrapper so the in-composer mode + model pickers actually move,
- * matching how the composer behaves inside the live chat surface.
+ * Stateful wrapper so the in-composer model + directory pickers actually
+ * move, matching how the composer behaves inside the live chat surface.
  */
 function ComposerHarness({
-  initialMode = 'agent',
   initialModel = STORY_MODEL_OPTIONS[0].id,
   initialThinkingLevel = 'default',
   initialWorkingDir,
@@ -99,7 +97,6 @@ function ComposerHarness({
   initialAttachments,
   isStreaming,
 }: {
-  initialMode?: Mode
   initialModel?: ModelId
   initialThinkingLevel?: ThinkingLevel
   initialWorkingDir?: string
@@ -107,14 +104,12 @@ function ComposerHarness({
   initialAttachments?: Attachment[]
   isStreaming?: boolean
 }) {
-  const [mode, setMode] = useState<Mode>(initialMode)
   const [model, setModel] = useState<ModelId>(initialModel)
   const [thinkingLevel, setThinkingLevel] =
     useState<ThinkingLevel>(initialThinkingLevel)
   const [workingDir, setWorkingDir] = useState(initialWorkingDir)
   return (
     <Composer
-      mode={mode}
       model={model}
       modelOptions={STORY_MODEL_OPTIONS}
       functionEntries={STATIC_FUNCTIONS}
@@ -123,7 +118,6 @@ function ComposerHarness({
       showWorkingDir={initialWorkingDir !== undefined}
       workingDir={workingDir}
       onThinkingLevelChange={setThinkingLevel}
-      onModeChange={setMode}
       onModelChange={setModel}
       onWorkingDirChange={setWorkingDir}
       onPermissionModeChange={fn()}
@@ -156,7 +150,6 @@ export const PreSeededText: Story = {
   name: 'pre-seeded with plain text',
   render: () => (
     <ComposerHarness
-      initialMode="ask"
       initialModel="anthropic::claude-opus-4-7"
       initialContent={seedWithText}
     />
@@ -167,7 +160,6 @@ export const FunctionMention: Story = {
   name: 'pre-seeded with a function mention',
   render: () => (
     <ComposerHarness
-      initialMode="agent"
       initialModel="openai::gpt-5"
       initialContent={seedWithMention}
     />
@@ -178,7 +170,6 @@ export const WithAttachments: Story = {
   name: 'with attachments',
   render: () => (
     <ComposerHarness
-      initialMode="agent"
       initialModel="openai::gpt-5"
       initialAttachments={sampleAttachments}
     />
@@ -198,13 +189,22 @@ export const WithReasoningEffort: Story = {
   ),
 }
 
+export const MobileProjectStrip: Story = {
+  name: 'mobile, with project strip',
+  render: () => (
+    <div className="max-w-[390px]">
+      <ComposerHarness
+        initialModel="codex::gpt-5.6-terra"
+        initialThinkingLevel="medium"
+        initialWorkingDir="/workspace/workers"
+      />
+    </div>
+  ),
+}
+
 export const Streaming: Story = {
   name: 'disabled (streaming)',
   render: () => (
-    <ComposerHarness
-      initialMode="ask"
-      initialModel="openai::gpt-5-mini"
-      isStreaming
-    />
+    <ComposerHarness initialModel="openai::gpt-5-mini" isStreaming />
   ),
 }

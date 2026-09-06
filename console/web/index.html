@@ -2,9 +2,12 @@
 <html lang="en" class="antialiased">
   <head>
     <meta charset="UTF-8" />
+    <!-- resizes-content: Android shrinks the layout viewport for the
+         on-screen keyboard, so the 100dvh shell re-flows above it. iOS
+         ignores the hint; the Sheet tracks visualViewport for it. -->
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1, viewport-fit=cover"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
     />
 
     <title>iii console</title>

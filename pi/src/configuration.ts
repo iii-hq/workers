@@ -76,6 +76,7 @@ export async function bindConfigTrigger(
     },
     {
       description: 'Internal: reload pi configuration when it changes.',
+      metadata: { internal: true },
       request_format: { type: 'object', properties: {} },
       response_format: { type: 'null' },
     },

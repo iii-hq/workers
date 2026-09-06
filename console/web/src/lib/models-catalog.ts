@@ -216,6 +216,12 @@ export interface ProviderListEntry {
    * as "not loaded" and disables its models.
    */
   available: boolean
+  /**
+   * Inline SVG mark the provider worker declared (`icon_svg`); the picker's
+   * provider rail paints it as a `currentColor` mask. Absent on providers
+   * that ship no mark and on older routers — the rail shows an initial then.
+   */
+  icon_svg?: string
 }
 
 /**
@@ -249,6 +255,10 @@ export async function fetchProviderList(): Promise<ProviderListEntry[]> {
       configured: typeof o.configured === 'boolean' ? o.configured : undefined,
       // Absent on older routers — treat as available (previous behavior).
       available: o.available !== false,
+      icon_svg:
+        typeof o.icon_svg === 'string' && o.icon_svg.trim()
+          ? o.icon_svg
+          : undefined,
     })
   }
   return out

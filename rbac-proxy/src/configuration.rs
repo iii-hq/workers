@@ -184,7 +184,8 @@ pub fn register_config_trigger(
         .description(
             "Internal: hot-reload rbac-proxy from the authoritative configuration — rebinds the public \
              listener on a host/port change (last-good on failure), else swaps the per-connection snapshot.",
-        ),
+        )
+        .metadata(json!({ "internal": true })),
     );
 
     iii.register_trigger(RegisterTriggerInput::new(

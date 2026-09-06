@@ -7,6 +7,7 @@
  */
 
 import { getIiiClient } from '@/lib/iii-client'
+import type { WorkingDirScope } from '@/types/chat'
 
 export const WORKSPACE_ROOTS_FUNCTION_ID = 'shell::workspace::roots'
 export const WORKSPACE_LIST_FUNCTION_ID = 'shell::workspace::list'
@@ -71,6 +72,27 @@ export function workingDirRecoveryNotice(
   return nextDir === null
     ? `working directory ${savedDir} is no longer available; this session is now unscoped — applies to the messages that follow`
     : `working directory changed to ${nextDir} because ${savedDir} is no longer available — applies to the messages that follow`
+}
+
+/**
+ * The transcript marker for a scope change: the plain sentence (exports,
+ * announcements, plain-text fallbacks) plus the structured scope the
+ * working-dir row renders from. One builder for every cause so the picker,
+ * the recovery path and the "vanished with no fallback" path all drop the
+ * same shape into the conversation.
+ */
+export function workingDirScopeNotice(scope: WorkingDirScope): {
+  content: string
+  scope: WorkingDirScope
+} {
+  const previous = scope.previousPath ?? null
+  const content =
+    scope.cause === 'selected'
+      ? scope.path === null
+        ? 'working directory cleared; this session is now unscoped — applies to the messages that follow'
+        : `working directory changed to ${scope.path} — applies to the messages that follow`
+      : workingDirRecoveryNotice(previous ?? '(unknown)', scope.path)
+  return { content, scope }
 }
 
 /**

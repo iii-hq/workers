@@ -33,7 +33,7 @@ interface SystemPromptPickerProps {
   className?: string
 }
 
-/** One row of the select — ModePicker's item chrome, verbatim. */
+/** One row of the select — the shared picker item chrome, verbatim. */
 function PromptItem({
   value,
   label,
