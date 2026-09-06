@@ -28,6 +28,30 @@ const userWithAttachments: UserMessage = {
   createdAt: Date.now(),
 }
 
+/* The skill body rides as a block; the chip it collapses to is fused into
+   the prose as the command pill, so nothing repeats below the bubble. */
+const userWithSkill: UserMessage = {
+  id: 'u3',
+  role: 'user',
+  content:
+    '/skill:coder/index tighten the retry loop in the dispatcher, then run /skill:review-pr on it.',
+  attachments: [
+    {
+      id: 'slash-/skill:coder/index',
+      name: '/skill:coder/index',
+      size: 4_812,
+      type: 'text/x-skill',
+    },
+    {
+      id: 'slash-/skill:review-pr',
+      name: '/skill:review-pr',
+      size: 2_106,
+      type: 'text/x-skill',
+    },
+  ],
+  createdAt: Date.now(),
+}
+
 const spawnTask: UserMessage = {
   id: 'spawn-1',
   role: 'user',
@@ -352,6 +376,11 @@ export const UserPlain: Story = {
 export const UserWithAttachments: Story = {
   name: 'user, with attachments',
   args: { message: userWithAttachments },
+}
+
+export const UserWithSkills: Story = {
+  name: 'user, skill invocations as command pills',
+  args: { message: userWithSkill },
 }
 
 export const SpawnTask: Story = {

@@ -102,7 +102,7 @@ A purpose-built agentic chat UI on top of [Lexical](https://lexical.dev). Lives 
 
 - **Two modes** — `ask` and `agent` toggle right in the composer
 - **Live model picker** — provider-grouped from `router::models::list`; static fallback (OpenAI, Anthropic, Google) when the catalog is unreachable
-- **`@`-mentions** — fuzzy-search every function registered against the engine
+- **`@`-mentions** — one paged menu over every function registered against the engine _and_ the files under the session's working directory (the shell worker's `.gitignore`-aware quick-open search); a file pill carries an optional line window (`#file(src/a.ts:12-40)`), opens the shell explorer on those lines when clicked, and is what the shell's "Reference in chat" selection action inserts
 - **`/compact` slash command** — summarises conversation history via the `context-manager` worker's `context::compact`, then persists a `compaction` custom session entry; the durable transcript is untouched — the marker renders from that entry and the summary anchors future turns
 - **Attachments** — multi-file picker with text/image previews
 - **Function calls** — running / pending / error cards; consecutive calls collapse to the latest and expand as one tight stack, while rich code/screenshot displays, approvals, and live calls stay visible; intermediate agent prose summarizes the completed batch; pending approvals use **approve/deny** gating (`approval::resolve`)
@@ -149,6 +149,7 @@ The human window into the [`memory`](https://github.com/iii-hq/workers/tree/main
 
 The composer's `@`-mentions and the model picker pull from the engine in real time.
 
+- `coder::search` (shell worker, path-only, fuzzy, `respect_gitignore`, no dot-entries) — the files half of the `@` menu, one call per settled keystroke → [`web/src/lib/file-search.ts`](web/src/lib/file-search.ts)
 - `engine::functions::list` — TTL-cached function list (`VITE_FUNCTIONS_LIST_CACHE_MS`, default 10s) → [`web/src/lib/functions-catalog.ts`](web/src/lib/functions-catalog.ts)
 - `router::models::list` — provider-grouped model catalog, refreshed live off the `router::models::changed` trigger type → [`web/src/lib/models-catalog.ts`](web/src/lib/models-catalog.ts)
 

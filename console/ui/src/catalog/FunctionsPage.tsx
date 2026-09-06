@@ -207,7 +207,6 @@ export function FunctionsPage({
           title: 'Search functions',
           detail: 'Focus the function search field',
           keywords: ['find', 'filter'],
-          shortcut: '/',
           run: () => searchInputRef.current?.focus(),
         },
         {
@@ -215,7 +214,6 @@ export function FunctionsPage({
           title: 'Toggle internal functions',
           detail: 'Show or hide console and worker plumbing functions',
           keywords: ['internal', 'plumbing', 'hidden'],
-          shortcut: 'I',
           run: () => setShowInternal((v) => !v),
         },
         {
@@ -223,7 +221,6 @@ export function FunctionsPage({
           title: 'Refresh functions',
           detail: 'Reload the function catalog',
           keywords: ['reload'],
-          shortcut: 'R',
           run: () => catalog.reload(),
         },
         {

@@ -21,10 +21,12 @@ schema and `configuration::set` to publish values; consumers call
 `configuration::get` / `configuration::list` to read, and bind a
 `configuration` trigger to react to changes without polling.
 
-The default `fs` adapter persists one YAML file per id under
-`./data/configuration` and watches the directory, so manual edits surface as
-`configuration:updated` events the same way SDK calls do. The worker is enabled
-by default in the engine.
+The default `fs` adapter persists one YAML file per id under `./config`
+(older engines: `./data/configuration`, migrated on boot) and watches the
+directory, so manual edits surface as `configuration:updated` events the same
+way SDK calls do. The worker is enabled by default in the engine. `./config`
+is the Compose project's committable configuration: anything stored here is
+meant to travel with the project.
 
 ### When to use
 
@@ -42,6 +44,12 @@ by default in the engine.
   value client-side and ship it in one call.
 - Schemas are not version-checked across re-registrations — re-registering with
   an incompatible schema replaces it. Coordinate migrations out-of-band.
+- Not for developer-local or per-browser state (what a console pane has open,
+  a UI's layout, recent files). The store lands in the project's committable
+  `./config`, and every write rewrites a file that is meant to be committed.
+  Keep such state under the worker's `./data/<worker>/` tree (gitignored),
+  resolved with `iii_worker_paths` — the shell explorer's `shell::ui-state::*`
+  functions are the precedent.
 
 ## 2. Source of truth
 
@@ -50,7 +58,7 @@ runtime config. Nothing in the worker repo is loaded by default at runtime.
 
 | What | Role |
 |------|------|
-| `./data/configuration/<id>.yaml` | Persisted value (configuration worker fs adapter) |
+| `./config/<id>.yaml` | Persisted value (configuration worker fs adapter; committable) |
 | `WorkerConfig::default()` | Built-in defaults; registered as `initial_value` only when no stored value exists yet |
 | `--config <path>` (CLI) | **Optional one-time seed** for `initial_value` on first registration; never overwrites an existing stored value |
 | Console Configuration tab | Same store via `configuration::set` |
@@ -218,7 +226,7 @@ Seeding options (pick one):
 
 1. Built-in default on first `configuration::register` (when nothing stored).
 2. Optional `--config <path>` one-time seed at first boot.
-3. Operator `configuration::set` or edit of `./data/configuration/<id>.yaml`
+3. Operator `configuration::set` or edit of `./config/<id>.yaml`
    before the worker starts.
 
 A local seed file for development may exist but should stay **uncommitted** or

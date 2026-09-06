@@ -30,35 +30,29 @@ test('the keyboard reaches the chat, the panes and every page command through ‚å
   await openSession(page, stack)
   await expect(page.locator('[data-message-row]').first()).toBeVisible()
 
-  // The chat's keys are pane-scoped: they fire while focus is inside the pane.
+  // The chat has no bare keys ‚Äî a letter is a letter everywhere ‚Äî so its
+  // commands reach the keyboard through the palette, which lists them under
+  // the chat's name with the named keys they still own.
   await settle(page)
-  await pane(page, 0).focus()
-  await page.keyboard.press('i')
+  await page.keyboard.press('ControlOrMeta+k')
+  const palette = page.getByRole('dialog')
+  await palette.getByRole('textbox').fill('>latest')
+  await expect(
+    palette
+      .getByRole('button', { name: /Chat: Jump to the latest message/ })
+      .locator('kbd'),
+  ).toHaveText('End')
+  await palette.getByRole('textbox').fill('>focus the composer')
+  const row = palette.getByRole('button', { name: /Chat: Focus the composer/ })
+  await expect(row).toBeVisible()
+  await expect(row.locator('kbd')).toHaveCount(0)
+  await row.click()
   await expect(composer(page)).toBeFocused()
 
   // Typing never fires a page key; a letter in the composer is a letter.
   await page.keyboard.press('j')
   await expect(composer(page)).toHaveText('j')
   await page.keyboard.press('Backspace')
-
-  // J and K walk the transcript; End jumps to the tail.
-  await pane(page, 0).focus()
-  await page.keyboard.press('j')
-  await expect(page.locator('[data-message-row]').first()).toBeFocused()
-  await page.keyboard.press('j')
-  await expect(page.locator('[data-message-row]').nth(1)).toBeFocused()
-  await page.keyboard.press('k')
-  await expect(page.locator('[data-message-row]').first()).toBeFocused()
-
-  // The palette lists the chat's commands under its name, with their keys.
-  await page.keyboard.press('ControlOrMeta+k')
-  const palette = page.getByRole('dialog')
-  await palette.getByRole('textbox').fill('>focus the composer')
-  const row = palette.getByRole('button', { name: /Chat: Focus the composer/ })
-  await expect(row).toBeVisible()
-  await expect(row.locator('kbd')).toHaveText('I')
-  await row.click()
-  await expect(composer(page)).toBeFocused()
 
   // A prefix narrows the palette to a mode, and the last choice leads the
   // next empty query.
@@ -84,7 +78,7 @@ test('the keyboard reaches the chat, the panes and every page command through ‚å
   // palette's "open" lands the keyboard in the page it opened.
   await settle(page)
   await expect(page.locator('[data-workspace-pane-id]')).toHaveCount(2)
-  await page.keyboard.press('Alt+\\')
+  await page.keyboard.press('Alt+]')
   await expect(page.locator('[data-workspace-pane-id]')).toHaveCount(3)
   // The new pane opens with its search focused, where `}` is a character.
   await pane(page, 0).focus()

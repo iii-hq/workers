@@ -1,7 +1,7 @@
 //! `browser` binary entry: connect, register configuration + fetch the
 //! authoritative value, register the `browser::*` trigger types and functions
-//! plus the native `browser::*` parse surface, start the idle
-//! sweep, then sleep until Ctrl+C.
+//! plus the native `browser::*` parse surface, restore the saved tabs, start
+//! the sleep/expiry sweep, then sleep until Ctrl+C.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,7 +19,7 @@ use browser::{configuration, functions, manifest, scrapling};
 #[derive(Parser, Debug)]
 #[command(
     name = "browser",
-    about = "Interactive Chromium sessions on the iii bus (browser::*)."
+    about = "A browser on the iii bus (browser::*): tabs agents and people share."
 )]
 struct Cli {
     /// Optional YAML seed used to populate `initial_value` on first registration.
@@ -77,7 +77,8 @@ async fn main() -> Result<()> {
                 name: "browser".to_string(),
                 os: std::env::consts::OS.to_string(),
                 description: Some(
-                    "Interactive Chromium sessions on the iii bus (browser::*).".to_string(),
+                    "A browser on the iii bus (browser::*): tabs agents and people share."
+                        .to_string(),
                 ),
                 pid: Some(std::process::id()),
                 telemetry: None,
@@ -164,7 +165,8 @@ async fn main() -> Result<()> {
     // can attribute the assets.
     browser::ui::register(&iii);
 
-    // Idle sweep closes metadata and backends together in both registries.
+    // The sweep puts unused tabs to sleep, closes expired ones, and reaps
+    // idle scrapling sessions.
     let sweep_sessions = sessions.clone();
     let sweep_ctx = scrapling_ctx.clone();
     let sweep = tokio::spawn(async move {

@@ -82,37 +82,10 @@ export interface GitComparisonEntry extends GitResolvedComparisonEntry {
   y: string
 }
 
-/** A commit or branch comparison has no meaningful porcelain X/Y columns. */
-export type GitRevisionComparisonEntry = GitResolvedComparisonEntry
-
 export type GitComparisonState =
   | { kind: 'not-a-repo' }
   | { kind: 'error'; message: string }
   | { kind: 'ready'; scope: GitComparisonScope; changes: GitComparisonEntry[] }
-
-export type GitCommitComparisonState =
-  | { kind: 'not-a-repo' }
-  | { kind: 'error'; message: string }
-  | {
-      kind: 'ready'
-      scope: 'commit'
-      sha: string
-      parentSha: string | null
-      changes: GitRevisionComparisonEntry[]
-    }
-
-export type GitBranchComparisonState =
-  | { kind: 'not-a-repo' }
-  | { kind: 'error'; message: string }
-  | {
-      kind: 'ready'
-      scope: 'branch'
-      baseRef: string
-      baseSha: string
-      headSha: string
-      mergeBase: string
-      changes: GitRevisionComparisonEntry[]
-    }
 
 export interface GitCommitSummary {
   sha: string
@@ -212,71 +185,9 @@ async function checkedGit(
   return out
 }
 
-function parseObjectId(stdout: string, operation: string): string {
-  const value = stdout.replace(/\r?\n$/, '')
-  if (!/^[0-9a-f]{40,64}$/i.test(value)) {
-    throw new Error(`${operation} returned an invalid object id`)
-  }
-  return value
-}
-
-function parseParents(stdout: string, selected: string): string[] {
-  const value = stdout.replace(/\r?\n$/, '')
-  const ids = value.split(' ')
-  if (
-    ids.length === 0 ||
-    ids[0].toLowerCase() !== selected.toLowerCase() ||
-    ids.some((id) => !/^[0-9a-f]{40,64}$/i.test(id))
-  ) {
-    throw new Error('git rev-list returned malformed parent metadata')
-  }
-  return ids.slice(1)
-}
-
-function parseCommitObjectParents(stdout: string): string[] {
-  const headerEnd = stdout.indexOf('\n\n')
-  if (headerEnd < 0) throw new Error('git cat-file returned malformed commit data')
-
-  const headers = stdout.slice(0, headerEnd).split('\n')
-  if (!/^tree [0-9a-f]{40,64}$/i.test(headers[0] ?? '')) {
-    throw new Error('git cat-file returned malformed commit data')
-  }
-
-  const parents: string[] = []
-  for (const header of headers.slice(1)) {
-    if (!header.startsWith('parent ')) continue
-    const parent = header.slice('parent '.length)
-    if (!/^[0-9a-f]{40,64}$/i.test(parent)) {
-      throw new Error('git cat-file returned malformed parent metadata')
-    }
-    parents.push(parent)
-  }
-  return parents
-}
-
 function caughtGitMessage(error: unknown): string {
   const message = errorMessage(error)
   return message.startsWith('git ') ? message : `git execution failed: ${message}`
-}
-
-async function resolveCommit(host: Host, root: string, revision: string): Promise<string> {
-  const out = await checkedGit(
-    host,
-    root,
-    ['rev-parse', '--verify', '--end-of-options', `${revision}^{commit}`],
-    'git rev-parse revision',
-  )
-  return parseObjectId(out.stdout, 'git rev-parse revision')
-}
-
-async function rootPrefix(host: Host, root: string): Promise<string> {
-  const out = await checkedGit(
-    host,
-    root,
-    ['rev-parse', '--show-prefix'],
-    'git rev-parse --show-prefix',
-  )
-  return out.stdout.replace(/\r?\n$/, '')
 }
 
 function rootRelative(prefix: string, path: string): string {
@@ -341,44 +252,6 @@ function parseNameStatus(stdout: string, prefix: string): NameStatusEntry[] | st
     entries.push({ path: rootRelative(prefix, path), status })
   }
   return entries
-}
-
-function parseUntracked(stdout: string, prefix: string): string[] | string {
-  if (stdout === '') return []
-  if (!stdout.endsWith('\0')) return 'git ls-files returned an incomplete path record'
-  const paths = stdout.slice(0, -1).split('\0')
-  if (paths.some((path) => path === '')) return 'git ls-files returned an empty path'
-  return paths.map((path) => rootRelative(prefix, path))
-}
-
-function revisionEntry(
-  entry: NameStatusEntry,
-  beforeRevision: string | null,
-  after: { kind: 'revision'; revision: string } | { kind: 'worktree' },
-): GitRevisionComparisonEntry {
-  const beforePath = entry.from ?? entry.path
-  const before: GitContentSource =
-    entry.status === 'added' || beforeRevision === null
-      ? { kind: 'empty' }
-      : { kind: 'revision', revision: beforeRevision, path: beforePath }
-  const afterSource: GitContentSource =
-    entry.status === 'deleted'
-      ? { kind: 'empty' }
-      : after.kind === 'worktree'
-        ? { kind: 'worktree', path: entry.path }
-        : { kind: 'revision', revision: after.revision, path: entry.path }
-  const change: GitRevisionComparisonEntry = {
-    path: entry.path,
-    status: entry.status,
-    staged: false,
-    before,
-    after: afterSource,
-  }
-  if (entry.from !== undefined) {
-    change.from = entry.from
-    change.renameFrom = entry.from
-  }
-  return change
 }
 
 function parsePorcelain(stdout: string, prefix: string): PorcelainEntry[] | string {
@@ -794,166 +667,6 @@ export async function gitComparison(
   return { kind: 'ready', scope, changes }
 }
 
-/** Compare a selected commit with its first parent. Root commits compare
-    against an empty tree, represented by empty per-file sources. */
-export async function gitCommitComparison(
-  host: Host,
-  root: string,
-  revision: string,
-): Promise<GitCommitComparisonState> {
-  const repository = await probeRepository(host, root)
-  if (repository.kind !== 'ready') return repository
-
-  try {
-    const prefix = await rootPrefix(host, root)
-    const sha = await resolveCommit(host, root, revision)
-    const parentsOut = await checkedGit(
-      host,
-      root,
-      ['rev-list', '--parents', '--max-count=1', sha],
-      'git rev-list parents',
-    )
-    const parentSha = parseParents(parentsOut.stdout, sha)[0] ?? null
-    if (parentSha === null) {
-      const objectOut = await checkedGit(
-        host,
-        root,
-        ['cat-file', '-p', sha],
-        'git cat-file commit',
-      )
-      if (parseCommitObjectParents(objectOut.stdout).length > 0) {
-        throw new Error('git selected commit parent is unavailable; fetch more history')
-      }
-    }
-    const diffOut =
-      parentSha === null
-        ? await checkedGit(
-            host,
-            root,
-            [
-              'diff-tree',
-              '--root',
-              '--no-commit-id',
-              '--name-status',
-              '-z',
-              '-r',
-              '--find-renames',
-              sha,
-              '--',
-              '.',
-            ],
-            'git diff-tree commit',
-          )
-        : await checkedGit(
-            host,
-            root,
-            [
-              'diff',
-              '--no-ext-diff',
-              '--name-status',
-              '-z',
-              '--find-renames',
-              parentSha,
-              sha,
-              '--',
-              '.',
-            ],
-            'git diff commit',
-          )
-    const entries = parseNameStatus(diffOut.stdout, prefix)
-    if (typeof entries === 'string') return { kind: 'error', message: entries }
-    return {
-      kind: 'ready',
-      scope: 'commit',
-      sha,
-      parentSha,
-      changes: entries.map((entry) =>
-        revisionEntry(entry, parentSha, { kind: 'revision', revision: sha }),
-      ),
-    }
-  } catch (error) {
-    return { kind: 'error', message: caughtGitMessage(error) }
-  }
-}
-
-/** Compare the merge base of `baseRef` and HEAD with the complete working
-    tree. `git diff <merge-base>` covers committed, staged, and unstaged
-    tracked changes; a separate `ls-files` pass adds untracked files. */
-export async function gitBranchComparison(
-  host: Host,
-  root: string,
-  baseRef: string,
-): Promise<GitBranchComparisonState> {
-  const repository = await probeRepository(host, root)
-  if (repository.kind !== 'ready') return repository
-
-  try {
-    const prefix = await rootPrefix(host, root)
-    const baseSha = await resolveCommit(host, root, baseRef)
-    const headSha = await resolveCommit(host, root, 'HEAD')
-    const mergeBaseOut = await checkedGit(
-      host,
-      root,
-      ['merge-base', baseSha, headSha],
-      'git merge-base',
-    )
-    const mergeBase = parseObjectId(mergeBaseOut.stdout, 'git merge-base')
-    const diffOut = await checkedGit(
-      host,
-      root,
-      [
-        'diff',
-        '--no-ext-diff',
-        '--name-status',
-        '-z',
-        '--find-renames',
-        mergeBase,
-        '--',
-        '.',
-      ],
-      'git diff branch',
-    )
-    const entries = parseNameStatus(diffOut.stdout, prefix)
-    if (typeof entries === 'string') return { kind: 'error', message: entries }
-
-    const untrackedOut = await checkedGit(
-      host,
-      root,
-      ['ls-files', '--others', '--exclude-standard', '-z', '--', '.'],
-      'git ls-files untracked',
-    )
-    const untracked = parseUntracked(untrackedOut.stdout, prefix)
-    if (typeof untracked === 'string') return { kind: 'error', message: untracked }
-
-    const changes = entries.map((entry) =>
-      revisionEntry(entry, mergeBase, { kind: 'worktree' }),
-    )
-    const trackedPaths = new Set(changes.map((change) => change.path))
-    for (const path of untracked) {
-      if (trackedPaths.has(path)) continue
-      changes.push({
-        path,
-        status: 'untracked',
-        staged: false,
-        before: { kind: 'empty' },
-        after: { kind: 'worktree', path },
-      })
-    }
-
-    return {
-      kind: 'ready',
-      scope: 'branch',
-      baseRef,
-      baseSha,
-      headSha,
-      mergeBase,
-      changes,
-    }
-  } catch (error) {
-    return { kind: 'error', message: caughtGitMessage(error) }
-  }
-}
-
 /** Resolve one side of a comparison to text. Empty sources avoid I/O;
     Git-backed sources fail rather than returning partial command output;
     worktree sources reject binary and partial `coder::read-file` responses. */
@@ -1079,63 +792,6 @@ function parseRefs(stdout: string): GitRefSummary[] | string {
 
 /** Local and remote-tracking branch refs. Symbolic aliases such as
     `refs/remotes/origin/HEAD` are omitted so menu entries are unique. */
-export type GitPatchScope =
-  | { kind: 'uncommitted' }
-  | { kind: 'unstaged' }
-  | { kind: 'staged' }
-  | { kind: 'commit'; sha: string }
-  | { kind: 'branch'; ref: string }
-
-/** The same bases the comparisons use: a commit against its first parent
-    (`diff-tree --root` for a root commit), a branch's merge base against the
-    working tree. */
-async function patchArgs(host: Host, root: string, scope: GitPatchScope): Promise<string[]> {
-  switch (scope.kind) {
-    case 'uncommitted':
-      return ['diff', 'HEAD']
-    case 'unstaged':
-      return ['diff']
-    case 'staged':
-      return ['diff', '--cached']
-    case 'commit': {
-      const sha = await resolveCommit(host, root, scope.sha)
-      const parentsOut = await checkedGit(
-        host,
-        root,
-        ['rev-list', '--parents', '--max-count=1', sha],
-        'git rev-list parents',
-      )
-      const parentSha = parseParents(parentsOut.stdout, sha)[0] ?? null
-      return parentSha === null
-        ? ['diff-tree', '--root', '--no-commit-id', '-p', sha]
-        : ['diff', parentSha, sha]
-    }
-    case 'branch': {
-      const baseSha = await resolveCommit(host, root, scope.ref)
-      const headSha = await resolveCommit(host, root, 'HEAD')
-      const mergeBaseOut = await checkedGit(
-        host,
-        root,
-        ['merge-base', baseSha, headSha],
-        'git merge-base',
-      )
-      return ['diff', parseObjectId(mergeBaseOut.stdout, 'git merge-base')]
-    }
-  }
-}
-
-/** Unified patch for a git-backed scope, ready for `git apply` at the
-    repository root. Untracked files are outside every `git diff`. */
-export async function gitPatch(host: Host, root: string, scope: GitPatchScope): Promise<string> {
-  const args = await patchArgs(host, root, scope)
-  const out = await git(host, root, [...args, '--no-color', '--no-ext-diff', '--no-textconv'])
-  if (out.exit_code !== 0) {
-    throw new Error(out.stderr.trim() || `git exited with ${out.exit_code}`)
-  }
-  if (out.stdout_truncated) throw new Error('patch is larger than the shell output cap')
-  return out.stdout
-}
-
 export async function gitRefs(host: Host, root: string): Promise<GitRefsState> {
   const repository = await probeRepository(host, root)
   if (repository.kind !== 'ready') return repository
@@ -1157,31 +813,6 @@ export async function gitRefs(host: Host, root: string): Promise<GitRefsState> {
   }
 }
 
-/** The file's content at HEAD, or '' when it didn't exist there
-    (added/untracked). Paths are toplevel-relative on the git side —
-    `:./<path>` anchors the pathspec to `cwd` instead. */
-/** Probe ONE file's git standing from its own directory — `git -C`
-    auto-discovers the repo upward, so this works when the browsed root
-    sits ABOVE a repo (a worktree under the home directory). Returns the
-    file's status, `'clean'` for a tracked-and-unchanged file, or `null`
-    when no repo contains it. Renames report as `modified` — the probe
-    has no rename source to offer. */
-export async function nestedGitStatus(
-  host: Host,
-  dir: string,
-  name: string,
-): Promise<GitFileStatus | 'clean' | null> {
-  const probe = await git(host, dir, ['rev-parse', '--is-inside-work-tree'])
-  if (probe.exit_code !== 0 || !probe.stdout.startsWith('true')) return null
-  const out = await git(host, dir, ['status', '--porcelain', '-z', '--', `:(literal)${name}`])
-  if (out.exit_code !== 0) return null
-  const rec = out.stdout.split('\0')[0] ?? ''
-  if (rec.length < 3) return 'clean'
-  const status = statusFromCode(rec[0], rec[1])
-  if (status === null) return 'clean'
-  return status === 'renamed' ? 'modified' : status
-}
-
 /** The committed body of one path, resolved from the directory it lives in so
     a repository nested under a non-repository root still answers. Null means
     there is no usable committed body — no repository, path untracked, binary,
@@ -1200,14 +831,4 @@ export async function gitHeadBaseline(
   } catch {
     return null
   }
-}
-
-/** Committed body or empty, for the callers that already treat a missing
-    HEAD side as an addition. */
-export async function gitShowHead(
-  host: Host,
-  root: string,
-  path: string,
-): Promise<string> {
-  return (await gitHeadBaseline(host, root, path)) ?? ''
 }

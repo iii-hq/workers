@@ -282,7 +282,9 @@ function makeHost(
       },
       compose(draft) {
         if (draft.files && draft.files.length > 0) attachToComposer(draft.files)
-        if (draft.text) insertIntoComposer(draft.text)
+        if (draft.text) {
+          insertIntoComposer(draft.text, { inline: draft.inline === true })
+        }
         requestComposerFocus()
       },
       selectConversation(sessionId) {

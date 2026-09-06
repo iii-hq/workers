@@ -1,10 +1,16 @@
-//! Session lifecycle: one Chromium process + one page per session, with the
-//! CDP event pumps that keep the console/network ring buffers live and fire
-//! the `browser::*` custom triggers. The ring buffers are the durable record
-//! (`browser::console::read` / `browser::network::read`); the triggers are
-//! the live feed the console UI subscribes to.
+//! The browser model: one shared Chromium process (the browser) with one
+//! page per tab, the way a real browser works. A `Tab` is the durable
+//! record — url, title, history, back/forward stack — that survives the page
+//! being closed and, for regular tabs, the worker restarting (`tabs.json`
+//! under `data_dir`). A `Session` is a tab with its page open: the CDP event
+//! pumps that keep the console/network ring buffers live and fire the
+//! `browser::*` custom triggers hang off it. Selecting or calling into a
+//! sleeping tab wakes it: the page is opened again at the remembered url.
+//! Incognito tabs live in their own throwaway browser context and never
+//! touch `data_dir`.
 
 use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -17,6 +23,8 @@ use chromiumoxide::cdp::browser_protocol::dom;
 use chromiumoxide::cdp::browser_protocol::fetch as cdp_fetch;
 use chromiumoxide::cdp::browser_protocol::log as cdp_log;
 use chromiumoxide::cdp::browser_protocol::network as cdp_network;
+use chromiumoxide::cdp::browser_protocol::page as cdp_page;
+use chromiumoxide::cdp::browser_protocol::target as cdp_target;
 use chromiumoxide::cdp::js_protocol::runtime;
 use chromiumoxide::Page;
 use futures::StreamExt;
@@ -27,8 +35,8 @@ use crate::config::{
     origin_label, origin_policy_config_key_for, origin_policy_for, SharedConfig, WorkerConfig,
 };
 use crate::events::{
-    Bounds, ConsoleEventPayload, DownloadChangedEvent, Emitter, EventKind, NavigatedEvent,
-    PickedElement, PickedEvent, SessionStoppedEvent,
+    Bounds, ConsoleEventPayload, DownloadChangedEvent, Emitter, EventKind, FrameEventPayload,
+    NavigatedEvent, PickedElement, PickedEvent, SessionStoppedEvent, SessionUpdatedEvent,
 };
 
 /// Truncation caps for values that end up in ring buffers and event
@@ -38,8 +46,14 @@ const MAX_ARG_LEN: usize = 300;
 const MAX_OUTER_HTML_LEN: usize = 2_000;
 const MAX_PICK_TEXT_LEN: usize = 400;
 const RECENT_ERRORS_IN_PICK: usize = 3;
-/// Minimum wall-clock gap between pushed screencast frames (~15fps ceiling).
-const FRAME_MIN_INTERVAL_MS: i64 = 66;
+/// Minimum wall-clock gap between pushed screencast frames (~30fps ceiling).
+/// Chromium emits up to 60; the console cannot show more than this, and each
+/// frame crosses the bus as base64 JSON.
+const FRAME_MIN_INTERVAL_MS: i64 = 33;
+/// Chromium's error text for a committed HTTP error status (a 4xx/5xx with
+/// an empty body). The tab shows the response like any browser does, so it is
+/// reported rather than treated as a failed navigation.
+pub const HTTP_ERROR_STATUS: &str = "net::ERR_HTTP_RESPONSE_CODE_FAILURE";
 
 pub fn now_ms() -> i64 {
     SystemTime::now()
@@ -55,11 +69,7 @@ fn temp_nonce() -> u128 {
         .unwrap_or(0)
 }
 
-fn create_private_temp_dir(
-    prefix: &str,
-    owner: &str,
-    nonce: u128,
-) -> std::io::Result<std::path::PathBuf> {
+fn create_private_temp_dir(prefix: &str, owner: &str, nonce: u128) -> std::io::Result<PathBuf> {
     let path = std::env::temp_dir().join(format!(
         "{prefix}-{}-{owner}-{nonce:032x}",
         std::process::id()
@@ -146,18 +156,20 @@ pub struct NetworkEntry {
     pub error: Option<String>,
 }
 
-/// One entry in a session's navigation history.
-#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+/// One entry in a tab's navigation history.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct HistoryVisit {
     pub url: String,
     pub title: String,
     pub timestamp: i64,
 }
 
-/// How many navigations a session keeps for the history panel.
+/// How many navigations a tab keeps for the history panel.
 const HISTORY_CAP: usize = 200;
+/// How many entries the back/forward stack keeps.
+const NAV_CAP: usize = 100;
 
-/// How many downloads a session keeps; the oldest record and its file are
+/// How many downloads a tab keeps; the oldest record and its file are
 /// dropped past this, like the other per-session buffers.
 const DOWNLOADS_CAP: usize = 100;
 
@@ -165,7 +177,7 @@ const DOWNLOADS_CAP: usize = 100;
 /// still read their files.
 const UPLOAD_DIRS_CAP: usize = 16;
 
-fn remove_oldest_upload_dir(upload_dirs: &mut Vec<std::path::PathBuf>) -> Result<(), String> {
+fn remove_oldest_upload_dir(upload_dirs: &mut Vec<PathBuf>) -> Result<(), String> {
     let Some(oldest) = upload_dirs.first() else {
         return Ok(());
     };
@@ -179,7 +191,7 @@ fn remove_oldest_upload_dir(upload_dirs: &mut Vec<std::path::PathBuf>) -> Result
 }
 
 /// A download Chromium started, tracked by its CDP guid.
-#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct DownloadRecord {
     pub guid: String,
     pub file_name: String,
@@ -261,13 +273,14 @@ pub fn read_ring<T: Clone>(
 /// owned copy of the base64 payload happens in the `browser::frame` handler,
 /// which runs at poll rate. `seq` is the change cursor `browser::frame`
 /// compares against `since_frame`.
+#[derive(Clone)]
 pub struct LatestFrame {
     pub frame: Arc<ScreencastFrameEvent>,
     pub seq: u64,
     pub timestamp: i64,
 }
 
-type ScreencastFrameEvent = chromiumoxide::cdp::browser_protocol::page::EventScreencastFrame;
+type ScreencastFrameEvent = cdp_page::EventScreencastFrame;
 
 impl LatestFrame {
     pub fn width(&self) -> u32 {
@@ -285,12 +298,13 @@ impl LatestFrame {
 /// the fail-closed unknown-ref error, never to a wrong element.
 const MAX_REFS: usize = 20_000;
 
-/// How a session came to hold its browser, which decides what shutdown may
-/// destroy. A launched session owns its Chromium process outright. An
-/// attached session holds a CDP connection into the user's own running
-/// browser: shutdown closes at most the one tab the session created
-/// (`owns_page`), and an adopted user tab is always released untouched. The
-/// browser process itself is never closed or killed in attached mode.
+/// How a session came to hold its page, which decides what shutdown may
+/// destroy. A launched session is a tab in the worker's own shared Chromium:
+/// shutdown closes that one target (and its incognito context). An attached
+/// session holds a CDP connection into the user's own running browser:
+/// shutdown closes at most the one tab the session created (`owns_page`),
+/// and an adopted user tab is always released untouched. The user's browser
+/// process is never closed or killed in attached mode.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SessionKind {
     Launched,
@@ -338,128 +352,170 @@ async fn recording_writer(
     let _ = stdin.shutdown().await;
 }
 
-pub struct Session {
-    pub id: String,
-    pub headless: bool,
-    /// Ownership model deciding what shutdown may destroy; see `SessionKind`.
-    pub kind: SessionKind,
-    /// Inspection-only session: interaction functions are rejected while
-    /// navigation and reads stay available. Immutable for the session's
-    /// lifetime.
-    pub read_only: bool,
-    /// Viewport captured at launch. Config viewport is a session-start
-    /// setting (a running session keeps the browser it launched with), so
-    /// per-call consumers read these fields, not the live config.
-    /// The live viewport the session renders at. Set at launch, then tracked
-    /// to the console pane's size by browser::resize (or overridden by the
-    /// device toolbar), so the streamed frame fills the pane with no
-    /// letterboxing and click coordinates map 1:1.
-    pub viewport_width: AtomicU32,
-    pub viewport_height: AtomicU32,
-    pub created_ms: i64,
-    /// Temp profile dir removed on shutdown. None in persistent
-    /// `user_data_dir` mode.
-    ephemeral_profile: Option<std::path::PathBuf>,
-    pub latest_frame: Mutex<Option<LatestFrame>>,
-    /// Number of live consumers of the Chromium screencast: each console
-    /// viewer and each recording counts as one. The CDP screencast runs
-    /// while this is > 0; it starts on the 0->1 transition and stops on
-    /// 1->0, so stopping a recording never cuts off a UI viewer (and vice
-    /// versa).
-    pub screencast_consumers: std::sync::atomic::AtomicUsize,
-    /// Set while a `browser::recording` is capturing; the screencast pump
-    /// writes decoded frames into it.
-    pub recording: tokio::sync::Mutex<Option<Recording>>,
-    frame_seq: AtomicU64,
-    browser: tokio::sync::Mutex<Browser>,
-    pub page: Page,
-    pub console: Mutex<RingBuffer<ConsoleEntry>>,
-    pub network: Mutex<RingBuffer<NetworkEntry>>,
-    seq: AtomicU64,
-    last_used_ms: AtomicU64,
-    /// Snapshot/pick refs (`e1`, `p3`, …) → CDP backend node ids. Cleared on
-    /// navigation — backend ids do not survive a document swap. Snapshot
-    /// refs accumulate (names are session-monotonic), so a ref from an
-    /// earlier snapshot of the same document still resolves to the node it
-    /// named instead of colliding with a newer snapshot's numbering.
-    pub refs: Mutex<HashMap<String, i64>>,
-    /// Session-monotonic counter behind snapshot ref names; never reset
-    /// within a session so ref names are unique across snapshots.
-    pub ref_counter: AtomicU64,
-    /// Bumped on every top-document navigation. Snapshots report it so a
-    /// caller can tell which document epoch its refs belong to.
-    generation: AtomicU64,
-    /// Ref-stripped outline lines of the latest snapshot, the baseline for
-    /// `browser::snapshot` diff mode. None before the first snapshot and
-    /// after a navigation.
-    pub snapshot_keys: Mutex<Option<Vec<String>>>,
-    /// Cross-call state for `browser::execute`; lives until the session
-    /// stops.
-    pub exec_state: Mutex<serde_json::Value>,
-    /// Serializes explicit navigation, execute, and file-input attachment.
-    pub navigation_lock: tokio::sync::Mutex<()>,
-    /// Loud policy denial captured by the session navigation gate for the
-    /// explicit navigation or execute call currently holding the lock.
-    navigation_error: Mutex<Option<String>>,
-    /// Committed top-document navigations, newest last, for the history
-    /// panel and address-bar suggestions. Capped like the other buffers.
-    pub history: Mutex<Vec<HistoryVisit>>,
-    /// Downloads Chromium started in this session, by CDP guid. None for
-    /// attached sessions, where the worker does not own the download policy.
-    pub downloads: Mutex<Vec<DownloadRecord>>,
-    /// Where `allowAndName` writes files (named by guid); removed on stop.
-    pub downloads_dir: Option<std::path::PathBuf>,
-    /// File-input staging directories retained while Chromium may still read
-    /// their paths, then removed on stop.
-    upload_dirs: Mutex<Vec<std::path::PathBuf>>,
-    upload_counter: AtomicU64,
-    pick_counter: AtomicU64,
-    tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+/// The back/forward stack a tab keeps for itself. Chromium's own navigation
+/// history dies with the page, so a tab that slept (or the worker restarted)
+/// would otherwise lose back/forward; `browser::history` falls back to this
+/// when Chromium has no entry to move to. Kept in lockstep with committed
+/// navigations: a back/forward move is announced with `set_pending` so its
+/// commit moves the index instead of pushing.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct NavStack {
+    pub urls: Vec<String>,
+    pub index: usize,
+    #[serde(skip)]
+    pending: Option<usize>,
 }
 
-impl Session {
+impl NavStack {
+    /// A top-document navigation committed to `url`.
+    pub fn commit(&mut self, url: &str) {
+        if url.is_empty() || url == "about:blank" {
+            self.pending = None;
+            return;
+        }
+        if let Some(target) = self.pending.take() {
+            if self.urls.get(target).is_some_and(|u| u == url) {
+                self.index = target;
+                return;
+            }
+        }
+        // A reload, or the page coming back after sleep: same entry.
+        if self.urls.get(self.index).is_some_and(|u| u == url) {
+            return;
+        }
+        self.urls.truncate(self.index + 1);
+        self.urls.push(url.to_string());
+        if self.urls.len() > NAV_CAP {
+            self.urls.remove(0);
+        }
+        self.index = self.urls.len() - 1;
+    }
+
+    /// The entry one step back (or forward) from the current one.
+    pub fn neighbour(&self, back: bool) -> Option<(usize, String)> {
+        let target = if back {
+            self.index.checked_sub(1)?
+        } else {
+            self.index + 1
+        };
+        self.urls.get(target).map(|u| (target, u.clone()))
+    }
+
+    /// Announce a back/forward move to `target`; the matching commit lands
+    /// there instead of pushing a new entry.
+    pub fn set_pending(&mut self, target: usize) {
+        self.pending = Some(target);
+    }
+}
+
+/// The durable tab: what the tab strip shows and what a page is reopened
+/// from. Regular tabs are persisted to `tabs.json`; incognito and attached
+/// tabs live only in memory.
+pub struct Tab {
+    pub id: String,
+    /// Private tab: its page runs in a throwaway browser context, nothing
+    /// is written under `data_dir`, and inactivity closes it for good.
+    pub incognito: bool,
+    pub read_only: bool,
+    /// Bound into an external browser (`sessions::attach`); never persisted
+    /// and never put to sleep — inactivity closes it.
+    pub attached: bool,
+    pub created_ms: i64,
+    /// Optional lifetime; the tab closes once this much time passed since
+    /// `created_ms`. None = lives until closed.
+    pub ttl_ms: Option<u64>,
+    last_used_ms: AtomicU64,
+    /// Screencast frame cursor. On the tab, not the page, so a viewer that
+    /// ignores frames older than the last one it saw keeps working after
+    /// the tab slept and woke into a fresh page.
+    frame_seq: AtomicU64,
+    url: Mutex<String>,
+    title: Mutex<String>,
+    /// Visited pages, newest last, for the history panel. Capped.
+    pub history: Mutex<Vec<HistoryVisit>>,
+    /// Back/forward stack that outlives the page; see `NavStack`.
+    pub nav: Mutex<NavStack>,
+    /// Downloads Chromium started in this tab, by CDP guid. Empty for
+    /// attached tabs, where the worker does not own the download policy.
+    pub downloads: Mutex<Vec<DownloadRecord>>,
+    /// Where `allowAndName` writes this tab's files (named by guid): the
+    /// shared `data_dir/downloads` for regular tabs, a private temp dir for
+    /// incognito ones, None for attached tabs.
+    pub downloads_dir: Option<PathBuf>,
+}
+
+/// What `tabs.json` holds per regular tab.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TabRecord {
+    id: String,
+    url: String,
+    title: String,
+    #[serde(default)]
+    read_only: bool,
+    created_ms: i64,
+    #[serde(default)]
+    ttl_ms: Option<u64>,
+    #[serde(default)]
+    history: Vec<HistoryVisit>,
+    #[serde(default)]
+    nav: NavStack,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct TabStore {
+    next_slot: u64,
+    tabs: Vec<TabRecord>,
+}
+
+impl Tab {
     pub fn touch(&self) {
         self.last_used_ms.store(now_ms() as u64, Ordering::Relaxed);
     }
 
-    pub fn clear_navigation_error(&self) {
-        *self
-            .navigation_error
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    pub fn last_used_ms(&self) -> i64 {
+        self.last_used_ms.load(Ordering::Relaxed) as i64
     }
 
-    pub fn record_navigation_error(&self, error: String) {
-        let mut slot = self
-            .navigation_error
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if slot.is_none() {
-            *slot = Some(error);
+    pub fn url(&self) -> String {
+        self.url.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    pub fn title(&self) -> String {
+        self.title.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    pub fn set_location(&self, url: &str, title: Option<&str>) {
+        if !url.is_empty() {
+            *self.url.lock().unwrap_or_else(|p| p.into_inner()) = url.to_string();
+        }
+        if let Some(title) = title {
+            *self.title.lock().unwrap_or_else(|p| p.into_inner()) = title.to_string();
         }
     }
 
-    pub fn take_navigation_error(&self) -> Option<String> {
-        self.navigation_error
+    /// A top-document navigation committed to `url`: the tab remembers
+    /// where it is, the history panel and the back/forward stack learn about
+    /// it. Idempotent, so the navigation pump and the handler that started
+    /// the navigation can both report it — whichever runs first wins, and a
+    /// pump that dies before it gets there (the tab put to sleep right after)
+    /// loses nothing.
+    pub fn commit_location(&self, url: &str, title: Option<&str>) {
+        self.set_location(url, title);
+        self.record_visit(url, title.unwrap_or_default());
+        self.nav
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take()
+            .unwrap_or_else(|p| p.into_inner())
+            .commit(url);
     }
 
-    pub fn viewport(&self) -> (u32, u32) {
-        (
-            self.viewport_width.load(Ordering::Relaxed),
-            self.viewport_height.load(Ordering::Relaxed),
-        )
+    /// Whether this tab is written to `tabs.json`.
+    pub fn persists(&self) -> bool {
+        !self.incognito && !self.attached
     }
 
-    pub fn set_viewport(&self, width: u32, height: u32) {
-        self.viewport_width.store(width, Ordering::Relaxed);
-        self.viewport_height.store(height, Ordering::Relaxed);
-    }
-
-    pub fn last_used_ms(&self) -> i64 {
-        self.last_used_ms.load(Ordering::Relaxed) as i64
+    pub fn expired(&self, now: i64) -> bool {
+        self.ttl_ms
+            .is_some_and(|ttl| now.saturating_sub(self.created_ms) >= ttl as i64)
     }
 
     /// Record a committed navigation. Consecutive visits to the same URL
@@ -515,7 +571,8 @@ impl Session {
         }
     }
 
-    /// Update a download's progress and state by guid.
+    /// Update a download's progress and state by guid. False when the guid
+    /// is not this tab's (another tab in the same browser context).
     pub fn download_progress(&self, guid: &str, received: u64, total: u64, state: &str) -> bool {
         let mut downloads = self.downloads.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(record) = downloads.iter_mut().find(|d| d.guid == guid) {
@@ -537,7 +594,241 @@ impl Session {
         }
     }
 
-    pub fn create_upload_dir(&self) -> Result<std::path::PathBuf, String> {
+    /// Drop every file this tab downloaded (the dir itself is shared by the
+    /// regular tabs and stays; an incognito tab's private dir goes with it).
+    fn remove_download_files(&self) {
+        let guids: Vec<String> = self
+            .downloads
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .map(|d| d.guid.clone())
+            .collect();
+        for guid in guids {
+            self.remove_download_file(&guid);
+        }
+        if self.incognito {
+            if let Some(dir) = &self.downloads_dir {
+                let _ = std::fs::remove_dir_all(dir);
+            }
+        }
+    }
+
+    fn record(&self) -> TabRecord {
+        TabRecord {
+            id: self.id.clone(),
+            url: self.url(),
+            title: self.title(),
+            read_only: self.read_only,
+            created_ms: self.created_ms,
+            ttl_ms: self.ttl_ms,
+            history: self
+                .history
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone(),
+            nav: self.nav.lock().unwrap_or_else(|p| p.into_inner()).clone(),
+        }
+    }
+}
+
+/// The worker's own Chromium process, shared by every launched tab. Launched
+/// lazily by the first tab that needs a page and closed again when the last
+/// live tab sleeps, which also flushes the profile to disk.
+pub struct SharedBrowser {
+    browser: tokio::sync::Mutex<Browser>,
+    pub headless: bool,
+    /// The browser's user agent with the `Headless` marker dropped, applied
+    /// to every page: sites that refuse "HeadlessChrome" (x.com answers 400)
+    /// then serve the page they serve any Chrome.
+    user_agent: Mutex<String>,
+    handler: Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+impl SharedBrowser {
+    fn user_agent(&self) -> String {
+        self.user_agent
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    async fn close(&self) {
+        let mut browser = self.browser.lock().await;
+        if browser.close().await.is_err() {
+            if let Some(Err(e)) = browser.kill().await {
+                tracing::warn!(error = %e, "browser kill failed");
+            }
+        }
+        let _ = browser.wait().await;
+        if let Some(handler) = self
+            .handler
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
+            handler.abort();
+        }
+    }
+}
+
+/// Which CDP connection a live session speaks over. An attached session's
+/// own connection is held here for its lifetime: dropping it would close
+/// the connection under the page.
+enum Backing {
+    Shared(Arc<SharedBrowser>),
+    Own(Box<tokio::sync::Mutex<Browser>>),
+}
+
+/// A tab with its page open. Everything here is bound to the page and dies
+/// with it (a sleeping tab keeps only its `Tab`).
+pub struct Session {
+    pub id: String,
+    pub tab: Arc<Tab>,
+    pub headless: bool,
+    /// Ownership model deciding what shutdown may destroy; see `SessionKind`.
+    pub kind: SessionKind,
+    /// Inspection-only session: interaction functions are rejected while
+    /// navigation and reads stay available. Immutable for the tab's lifetime.
+    pub read_only: bool,
+    pub incognito: bool,
+    /// The throwaway browser context an incognito page runs in.
+    context_id: Option<cdp_browser::BrowserContextId>,
+    backing: Backing,
+    /// The live viewport the page renders at. Set at launch, then tracked to
+    /// the console pane's size by browser::resize (or overridden by the
+    /// device toolbar), so the streamed frame fills the pane with no
+    /// letterboxing and click coordinates map 1:1.
+    pub viewport_width: AtomicU32,
+    pub viewport_height: AtomicU32,
+    pub latest_frame: Mutex<Option<LatestFrame>>,
+    /// Number of live consumers of the Chromium screencast: each console
+    /// viewer and each recording counts as one. The CDP screencast runs
+    /// while this is > 0; it starts on the 0->1 transition and stops on
+    /// 1->0, so stopping a recording never cuts off a UI viewer (and vice
+    /// versa). A watched tab is never put to sleep.
+    pub screencast_consumers: std::sync::atomic::AtomicUsize,
+    /// Set while a `browser::recording` is capturing; the screencast pump
+    /// writes decoded frames into it.
+    pub recording: tokio::sync::Mutex<Option<Recording>>,
+    pub page: Page,
+    pub console: Mutex<RingBuffer<ConsoleEntry>>,
+    pub network: Mutex<RingBuffer<NetworkEntry>>,
+    seq: AtomicU64,
+    /// Snapshot/pick refs (`e1`, `p3`, …) → CDP backend node ids. Cleared on
+    /// navigation — backend ids do not survive a document swap. Snapshot
+    /// refs accumulate (names are session-monotonic), so a ref from an
+    /// earlier snapshot of the same document still resolves to the node it
+    /// named instead of colliding with a newer snapshot's numbering.
+    pub refs: Mutex<HashMap<String, i64>>,
+    /// Session-monotonic counter behind snapshot ref names; never reset
+    /// within a session so ref names are unique across snapshots.
+    pub ref_counter: AtomicU64,
+    /// Bumped on every top-document navigation. Snapshots report it so a
+    /// caller can tell which document epoch its refs belong to.
+    generation: AtomicU64,
+    /// Ref-stripped outline lines of the latest snapshot, the baseline for
+    /// `browser::snapshot` diff mode. None before the first snapshot and
+    /// after a navigation.
+    pub snapshot_keys: Mutex<Option<Vec<String>>>,
+    /// Cross-call state for `browser::execute`; lives until the page closes.
+    pub exec_state: Mutex<serde_json::Value>,
+    /// Serializes explicit navigation, execute, and file-input attachment.
+    pub navigation_lock: tokio::sync::Mutex<()>,
+    /// Loud policy denial captured by the session navigation gate for the
+    /// explicit navigation or execute call currently holding the lock.
+    navigation_error: Mutex<Option<String>>,
+    /// File-input staging directories retained while Chromium may still read
+    /// their paths, then removed on stop.
+    upload_dirs: Mutex<Vec<PathBuf>>,
+    upload_counter: AtomicU64,
+    pick_counter: AtomicU64,
+    tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+}
+
+impl Session {
+    pub fn touch(&self) {
+        self.tab.touch();
+    }
+
+    pub fn last_used_ms(&self) -> i64 {
+        self.tab.last_used_ms()
+    }
+
+    pub fn created_ms(&self) -> i64 {
+        self.tab.created_ms
+    }
+
+    pub fn clear_navigation_error(&self) {
+        *self
+            .navigation_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+
+    pub fn record_navigation_error(&self, error: String) {
+        let mut slot = self
+            .navigation_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if slot.is_none() {
+            *slot = Some(error);
+        }
+    }
+
+    pub fn take_navigation_error(&self) -> Option<String> {
+        self.navigation_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+    }
+
+    pub fn viewport(&self) -> (u32, u32) {
+        (
+            self.viewport_width.load(Ordering::Relaxed),
+            self.viewport_height.load(Ordering::Relaxed),
+        )
+    }
+
+    pub fn set_viewport(&self, width: u32, height: u32) {
+        self.viewport_width.store(width, Ordering::Relaxed);
+        self.viewport_height.store(height, Ordering::Relaxed);
+    }
+
+    /// `Page.navigate` the way a browser does it: Chromium commits its own
+    /// error page for a network failure or an empty HTTP error response, and
+    /// the tab shows that page. The error text is returned for the caller to
+    /// report; only a broken CDP connection is an `Err`.
+    pub async fn navigate(&self, url: &str) -> Result<Option<String>, String> {
+        let result = self
+            .page
+            .execute(cdp_page::NavigateParams::new(url))
+            .await
+            .map_err(|e| format!("navigation failed: {e}"))?;
+        Ok(result.result.error_text.clone())
+    }
+
+    /// `navigate`, plus the fallback a browser's address bar gives a local
+    /// dev server: an `https://` url on a loopback or private host that fails
+    /// the TLS handshake (the server speaks plain HTTP) is retried over
+    /// `http://` when that scheme is allowed. Returns the url that ended up
+    /// loading and Chromium's error text, if any.
+    pub async fn navigate_like_a_browser(
+        &self,
+        url: &str,
+        allow_http: bool,
+    ) -> Result<(String, Option<String>), String> {
+        let error = self.navigate(url).await?;
+        if let (true, Some(err)) = (allow_http, error.as_deref()) {
+            if let Some(plain) = http_fallback_url(url, err) {
+                let error = self.navigate(&plain).await?;
+                return Ok((plain, error));
+            }
+        }
+        Ok((url.to_string(), error))
+    }
+
+    pub fn create_upload_dir(&self) -> Result<PathBuf, String> {
         let mut upload_dirs = self
             .upload_dirs
             .lock()
@@ -640,14 +931,10 @@ impl Session {
         errors
     }
 
-    /// Tear down what this session owns and abort the event pumps.
-    /// Launched: close (or kill) the whole Chromium process and remove the
-    /// ephemeral profile. Attached: close only a tab the session itself
-    /// created; an adopted user tab is released untouched, and the user's
-    /// browser process is never closed. Idempotent at the caller level:
-    /// `Sessions::stop` removes the session from the map first, so a second
-    /// stop never reaches here.
-    pub async fn shutdown(&self) {
+    /// Release what the worker holds for this page without talking to
+    /// Chromium: finalize a recording, stop the event pumps, drop upload
+    /// staging. Enough on its own when the browser is already gone.
+    async fn detach(&self) {
         // Finalize any recording first: closing the sender ends the writer,
         // which shuts ffmpeg's stdin so it flushes the file; then reap the
         // child so it is not orphaned. Bound the wait so an ffmpeg that
@@ -673,30 +960,6 @@ impl Session {
         {
             task.abort();
         }
-        match self.kind {
-            SessionKind::Launched => {
-                let mut browser = self.browser.lock().await;
-                if browser.close().await.is_err() {
-                    if let Some(Err(e)) = browser.kill().await {
-                        tracing::warn!(session_id = %self.id, error = %e, "browser kill failed");
-                    }
-                }
-                let _ = browser.wait().await;
-                if let Some(dir) = &self.ephemeral_profile {
-                    let _ = std::fs::remove_dir_all(dir);
-                }
-                if let Some(dir) = &self.downloads_dir {
-                    let _ = std::fs::remove_dir_all(dir);
-                }
-            }
-            SessionKind::Attached { owns_page } => {
-                if owns_page {
-                    if let Err(e) = self.page.clone().close().await {
-                        tracing::debug!(session_id = %self.id, error = %e, "tab close failed");
-                    }
-                }
-            }
-        }
         for dir in self
             .upload_dirs
             .lock()
@@ -704,6 +967,43 @@ impl Session {
             .drain(..)
         {
             let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    /// Close the page. Launched: close the tab's target (and its incognito
+    /// context) in the shared browser, which stays up for the other tabs.
+    /// Attached: close only a tab the session itself created; an adopted
+    /// user tab is released untouched, and the user's browser process is
+    /// never closed. Idempotent at the caller level: `Sessions` removes the
+    /// session from the live map first, so a second stop never reaches here.
+    pub async fn shutdown(&self) {
+        self.detach().await;
+        match (&self.backing, self.kind) {
+            (Backing::Shared(shared), SessionKind::Launched) => {
+                let browser = shared.browser.lock().await;
+                let target = self.page.target_id().clone();
+                if let Err(e) = browser
+                    .execute(cdp_target::CloseTargetParams::new(target))
+                    .await
+                {
+                    tracing::debug!(session_id = %self.id, error = %e, "tab close failed");
+                }
+                if let Some(context) = &self.context_id {
+                    let _ = browser.dispose_browser_context(context.clone()).await;
+                }
+            }
+            (Backing::Own(browser), SessionKind::Attached { owns_page: true }) => {
+                let target = self.page.target_id().clone();
+                if let Err(e) = browser
+                    .lock()
+                    .await
+                    .execute(cdp_target::CloseTargetParams::new(target))
+                    .await
+                {
+                    tracing::debug!(session_id = %self.id, error = %e, "tab close failed");
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -716,10 +1016,29 @@ pub struct PendingHandoff {
     pub confirm: tokio::sync::oneshot::Sender<()>,
 }
 
-/// The live session table plus everything a pump task needs.
+/// What `Sessions::open` takes to make a tab.
+#[derive(Debug, Default, Clone)]
+pub struct OpenRequest {
+    pub url: Option<String>,
+    /// Applies when this open launches the browser process; a running
+    /// browser keeps its mode.
+    pub headful: Option<bool>,
+    pub read_only: bool,
+    pub incognito: bool,
+    pub ttl_ms: Option<u64>,
+}
+
+/// The browser: the tab list, the live pages, the shared Chromium process,
+/// and everything a pump task needs.
 pub struct Sessions {
-    map: Mutex<HashMap<String, Arc<Session>>>,
+    /// Every tab in strip order, live or asleep.
+    tabs: Mutex<Vec<Arc<Tab>>>,
+    /// Tabs with a page open, by id.
+    live: Mutex<HashMap<String, Arc<Session>>>,
     counter: AtomicU64,
+    browser: tokio::sync::Mutex<Option<Arc<SharedBrowser>>>,
+    /// Serializes wake-ups so two calls on one sleeping tab open one page.
+    activate_lock: tokio::sync::Mutex<()>,
     /// Target ids of user tabs currently adopted by a session. Adoption is
     /// exclusive: a tab in this set cannot be adopted again until its
     /// session stops.
@@ -728,10 +1047,11 @@ pub struct Sessions {
     /// fires the sender; the parked `browser::handoff` handler then returns.
     pending_handoffs: Mutex<HashMap<String, PendingHandoff>>,
     handoff_counter: AtomicU64,
+    /// Resolved `config.data_dir`, fixed at startup: the profile, the
+    /// downloads, and `tabs.json` live under it.
+    pub data_dir: PathBuf,
     pub config: SharedConfig,
     pub emitter: Arc<Emitter>,
-    /// For pushing screencast frames onto the `browser:frames` stream, which
-    /// the console subscribes to instead of polling.
     pub iii: Arc<iii_sdk::IIIClient>,
 }
 
@@ -741,130 +1061,359 @@ impl Sessions {
         emitter: Arc<Emitter>,
         iii: Arc<iii_sdk::IIIClient>,
     ) -> Arc<Self> {
-        Arc::new(Self {
-            map: Mutex::new(HashMap::new()),
+        let data_dir = iii_worker_paths::resolve_path(&config.load().data_dir);
+        let sessions = Arc::new(Self {
+            tabs: Mutex::new(Vec::new()),
+            live: Mutex::new(HashMap::new()),
             counter: AtomicU64::new(0),
+            browser: tokio::sync::Mutex::new(None),
+            activate_lock: tokio::sync::Mutex::new(()),
             adopted_targets: Mutex::new(std::collections::HashSet::new()),
             pending_handoffs: Mutex::new(HashMap::new()),
             handoff_counter: AtomicU64::new(0),
+            data_dir,
             config,
             emitter,
             iii,
-        })
+        });
+        sessions.restore();
+        sessions
     }
 
+    pub fn profile_dir(&self) -> PathBuf {
+        self.data_dir.join("profile")
+    }
+
+    fn downloads_dir(&self) -> PathBuf {
+        self.data_dir.join("downloads")
+    }
+
+    fn store_path(&self) -> PathBuf {
+        self.data_dir.join("tabs.json")
+    }
+
+    /// Load the regular tabs saved by the previous run, asleep; the first
+    /// call on one opens its page again.
+    fn restore(&self) {
+        let path = self.store_path();
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        let store: TabStore = match serde_json::from_str(&raw) {
+            Ok(store) => store,
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "tabs.json unreadable; starting empty");
+                return;
+            }
+        };
+        let downloads_dir = self.downloads_dir();
+        let mut max_slot = store.next_slot;
+        let mut tabs = self.tabs.lock().unwrap_or_else(|p| p.into_inner());
+        for record in store.tabs {
+            if let Some(slot) = record
+                .id
+                .strip_prefix('b')
+                .and_then(|n| n.parse::<u64>().ok())
+            {
+                max_slot = max_slot.max(slot);
+            }
+            tabs.push(Arc::new(Tab {
+                id: record.id,
+                incognito: false,
+                read_only: record.read_only,
+                attached: false,
+                created_ms: record.created_ms,
+                ttl_ms: record.ttl_ms,
+                last_used_ms: AtomicU64::new(now_ms() as u64),
+                frame_seq: AtomicU64::new(0),
+                url: Mutex::new(record.url),
+                title: Mutex::new(record.title),
+                history: Mutex::new(record.history),
+                nav: Mutex::new(record.nav),
+                downloads: Mutex::new(Vec::new()),
+                downloads_dir: Some(downloads_dir.clone()),
+            }));
+        }
+        self.counter.store(max_slot, Ordering::Relaxed);
+        tracing::info!(tabs = tabs.len(), "restored tabs");
+    }
+
+    /// Write the regular tabs to `tabs.json` (atomically: temp file + rename).
+    pub fn persist(&self) {
+        let store = TabStore {
+            next_slot: self.counter.load(Ordering::Relaxed),
+            tabs: self
+                .list_tabs()
+                .iter()
+                .filter(|tab| tab.persists())
+                .map(|tab| tab.record())
+                .collect(),
+        };
+        let path = self.store_path();
+        let tmp = path.with_extension("json.tmp");
+        let result = std::fs::create_dir_all(&self.data_dir)
+            .and_then(|_| {
+                std::fs::write(&tmp, serde_json::to_vec_pretty(&store).unwrap_or_default())
+            })
+            .and_then(|_| std::fs::rename(&tmp, &path));
+        if let Err(e) = result {
+            tracing::warn!(path = %path.display(), error = %e, "saving tabs failed");
+        }
+    }
+
+    pub fn tab(&self, id: &str) -> Option<Arc<Tab>> {
+        self.tabs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .find(|t| t.id == id)
+            .cloned()
+    }
+
+    /// Every tab in strip order.
+    pub fn list_tabs(&self) -> Vec<Arc<Tab>> {
+        self.tabs.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    /// The live session for a tab, None while it sleeps or is unknown.
     pub fn get(&self, id: &str) -> Option<Arc<Session>> {
-        self.lock().get(id).cloned()
+        self.live
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(id)
+            .cloned()
     }
 
-    pub fn list(&self) -> Vec<Arc<Session>> {
-        let mut sessions: Vec<_> = self.lock().values().cloned().collect();
+    /// Live sessions, sorted by id.
+    pub fn live_sessions(&self) -> Vec<Arc<Session>> {
+        let mut sessions: Vec<_> = self
+            .live
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .cloned()
+            .collect();
         sessions.sort_by(|a, b| a.id.cmp(&b.id));
         sessions
     }
 
-    pub fn count(&self) -> usize {
-        self.lock().len()
+    pub fn live_count(&self) -> usize {
+        self.live.lock().unwrap_or_else(|p| p.into_inner()).len()
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Arc<Session>>> {
-        self.map.lock().unwrap_or_else(|p| p.into_inner())
+    pub fn tab_count(&self) -> usize {
+        self.tabs.lock().unwrap_or_else(|p| p.into_inner()).len()
     }
 
-    /// Launch Chromium, open the page, arm the event pumps, insert into the
-    /// table. `url` is already scheme-checked by the caller.
-    pub async fn start(
+    pub async fn browser_running(&self) -> bool {
+        self.browser.lock().await.is_some()
+    }
+
+    fn next_id(&self) -> String {
+        format!("b{}", self.counter.fetch_add(1, Ordering::Relaxed) + 1)
+    }
+
+    /// Open a new tab: create its record, open its page, and (when asked)
+    /// navigate it. An origin-policy denial closes the tab again and fails
+    /// the open; a network-level failure leaves Chromium's error page in the
+    /// tab and is reported through `open_error`.
+    pub async fn open(
         self: &Arc<Self>,
-        url: Option<String>,
-        headful_override: Option<bool>,
-        read_only: bool,
-    ) -> Result<Arc<Session>, String> {
-        let cfg = self.config.load_full();
-        if self.count() as u64 >= cfg.max_sessions {
-            return Err(format!(
-                "session limit reached ({}); stop one with browser::sessions::stop",
-                cfg.max_sessions
-            ));
-        }
-
-        let headless = match headful_override {
-            Some(headful) => !headful,
-            None => cfg.headless,
+        request: OpenRequest,
+    ) -> Result<(Arc<Session>, Option<String>), String> {
+        let downloads_dir = if request.incognito {
+            None
+        } else {
+            let dir = self.downloads_dir();
+            let _ = std::fs::create_dir_all(&dir);
+            Some(dir)
         };
-        let slot = self.counter.fetch_add(1, Ordering::Relaxed) + 1;
-        let (browser_config, ephemeral_profile) = build_browser_config(&cfg, headless, slot)?;
-        let origin_gate_enabled = origin_gate_configured(&cfg);
+        let id = self.next_id();
+        let downloads_dir = match downloads_dir {
+            Some(dir) => Some(dir),
+            None => create_private_temp_dir("iii-browser-dl", &id, temp_nonce()).ok(),
+        };
+        let tab = Arc::new(Tab {
+            id: id.clone(),
+            incognito: request.incognito,
+            read_only: request.read_only,
+            attached: false,
+            created_ms: now_ms(),
+            ttl_ms: request.ttl_ms,
+            last_used_ms: AtomicU64::new(now_ms() as u64),
+            frame_seq: AtomicU64::new(0),
+            url: Mutex::new("about:blank".to_string()),
+            title: Mutex::new(String::new()),
+            history: Mutex::new(Vec::new()),
+            nav: Mutex::new(NavStack::default()),
+            downloads: Mutex::new(Vec::new()),
+            downloads_dir,
+        });
+        self.tabs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(tab.clone());
+        self.persist();
 
-        let (browser, mut handler) = Browser::launch(browser_config)
-            .await
-            .map_err(|e| format!("failed to launch Chromium: {e}"))?;
-
-        let handler_task = tokio::spawn(async move {
-            while let Some(event) = handler.next().await {
-                if let Err(e) = event {
-                    tracing::debug!(error = %e, "cdp handler event error");
+        let session = match self.wake(&tab, request.headful).await {
+            Ok(session) => session,
+            Err(error) => {
+                self.stop(&id, "stopped").await;
+                return Err(error);
+            }
+        };
+        let mut open_error = None;
+        if let Some(url) = request.url.as_deref() {
+            session.clear_navigation_error();
+            let allow_http = self
+                .config
+                .load()
+                .allowed_schemes
+                .iter()
+                .any(|s| s == "http");
+            let navigation = session.navigate_like_a_browser(url, allow_http).await;
+            if let Some(policy_error) = session.take_navigation_error() {
+                self.stop(&id, "stopped").await;
+                return Err(policy_error);
+            }
+            match navigation {
+                Ok((loaded, error)) => {
+                    open_error = error;
+                    tab.set_location(&loaded, None);
+                }
+                Err(error) => {
+                    self.stop(&id, "stopped").await;
+                    return Err(error);
                 }
             }
-        });
+        }
+        Ok((session, open_error))
+    }
 
-        let initial_url = if origin_gate_enabled {
-            "about:blank"
+    /// The live session for a tab, opening its page again if it sleeps.
+    /// Any function call on a tab counts as selecting it.
+    pub async fn activate(self: &Arc<Self>, id: &str) -> Result<Arc<Session>, String> {
+        if let Some(session) = self.get(id) {
+            session.touch();
+            return Ok(session);
+        }
+        let tab = self.tab(id).ok_or_else(|| {
+            format!("unknown session '{id}'; list tabs with browser::sessions::list")
+        })?;
+        if tab.attached {
+            return Err(format!(
+                "session '{id}' was attached to an external browser and has closed"
+            ));
+        }
+        let session = self.wake(&tab, None).await?;
+        let url = tab.url();
+        if url != "about:blank" && !url.is_empty() {
+            session.clear_navigation_error();
+            let navigation = session.navigate(&url).await;
+            let _ = session.take_navigation_error();
+            // The caller is about to act on the page: give the load the
+            // default navigation budget before handing the tab over.
+            if matches!(navigation, Ok(None)) {
+                let wait = std::time::Duration::from_millis(self.config.load().default_timeout_ms);
+                let _ = tokio::time::timeout(wait, session.page.wait_for_navigation()).await;
+            }
+        }
+        Ok(session)
+    }
+
+    /// Open the page for `tab` in the shared browser (launching it if needed)
+    /// and register the session as live. Serialized so a burst of calls on
+    /// one sleeping tab opens one page.
+    async fn wake(
+        self: &Arc<Self>,
+        tab: &Arc<Tab>,
+        headful: Option<bool>,
+    ) -> Result<Arc<Session>, String> {
+        let _guard = self.activate_lock.lock().await;
+        if let Some(session) = self.get(&tab.id) {
+            return Ok(session);
+        }
+        self.make_room(&tab.id).await?;
+        let shared = self.ensure_browser(headful).await?;
+        let cfg = self.config.load_full();
+        let origin_gate_enabled = origin_gate_configured(&cfg);
+
+        let context_id = if tab.incognito {
+            let params = cdp_target::CreateBrowserContextParams::builder()
+                .dispose_on_detach(true)
+                .build();
+            Some(
+                shared
+                    .browser
+                    .lock()
+                    .await
+                    .create_browser_context(params)
+                    .await
+                    .map_err(|e| format!("failed to open an incognito context: {e}"))?,
+            )
         } else {
-            url.as_deref().unwrap_or("about:blank")
+            None
         };
-        let page = match browser.new_page(initial_url).await {
-            Ok(p) => p,
+        // Every tab gets its own headless window: a window shows only its
+        // active tab, so a second tab in the same window would hide the
+        // first — no repaints, no screencast frames, a frozen picture.
+        let mut params = cdp_target::CreateTargetParams::new("about:blank");
+        params.browser_context_id = context_id.clone();
+        params.new_window = Some(true);
+        let page = match shared.browser.lock().await.new_page(params).await {
+            Ok(page) => page,
             Err(e) => {
-                handler_task.abort();
-                let mut browser = browser;
-                let _ = browser.kill().await;
+                if let Some(context) = &context_id {
+                    let _ = shared
+                        .browser
+                        .lock()
+                        .await
+                        .dispose_browser_context(context.clone())
+                        .await;
+                }
                 return Err(format!("failed to open page: {e}"));
             }
         };
 
+        let _ = page.set_user_agent(shared.user_agent()).await;
         // Log + Network are not enabled by default; console API events are.
         let _ = page.execute(cdp_log::EnableParams::default()).await;
         let _ = page.execute(cdp_network::EnableParams::default()).await;
-
-        // Let the session download files, named by guid into a per-session
-        // dir the worker owns, with progress events. Best-effort: a browser
-        // that refuses leaves downloads disabled, not the session broken.
-        // The dir name carries a nonce so it cannot be squatted in advance,
-        // and it is created fresh, owner-only, refusing a pre-existing path.
-        let downloads_dir =
-            create_private_temp_dir("iii-browser-dl", &slot.to_string(), temp_nonce()).ok();
-        if let Some(downloads_dir) = &downloads_dir {
-            if let Ok(params) = cdp_browser::SetDownloadBehaviorParams::builder()
+        // Downloads land in the tab's download dir, named by guid, with
+        // progress events. Best-effort: a browser that refuses leaves
+        // downloads disabled, not the tab broken. The behavior is per
+        // browser context, so an incognito tab names its own.
+        if let Some(downloads_dir) = &tab.downloads_dir {
+            let mut behavior = cdp_browser::SetDownloadBehaviorParams::builder()
                 .behavior(cdp_browser::SetDownloadBehaviorBehavior::AllowAndName)
                 .download_path(downloads_dir.to_string_lossy().to_string())
-                .events_enabled(true)
-                .build()
-            {
+                .events_enabled(true);
+            if let Some(context) = &context_id {
+                behavior = behavior.browser_context_id(context.clone());
+            }
+            if let Ok(params) = behavior.build() {
                 let _ = page.execute(params).await;
             }
         }
 
-        let id = format!("b{slot}");
-        let now = now_ms();
         let session = Arc::new(Session {
-            id: id.clone(),
-            headless,
+            id: tab.id.clone(),
+            tab: tab.clone(),
+            headless: shared.headless,
             kind: SessionKind::Launched,
-            read_only,
+            read_only: tab.read_only,
+            incognito: tab.incognito,
+            context_id,
+            backing: Backing::Shared(shared.clone()),
             viewport_width: AtomicU32::new(cfg.viewport_width),
             viewport_height: AtomicU32::new(cfg.viewport_height),
-            created_ms: now,
-            ephemeral_profile,
             latest_frame: Mutex::new(None),
             screencast_consumers: std::sync::atomic::AtomicUsize::new(0),
             recording: tokio::sync::Mutex::new(None),
-            frame_seq: AtomicU64::new(0),
-            browser: tokio::sync::Mutex::new(browser),
             page: page.clone(),
             console: Mutex::new(RingBuffer::new(cfg.console_buffer as usize)),
             network: Mutex::new(RingBuffer::new(cfg.network_buffer as usize)),
             seq: AtomicU64::new(1),
-            last_used_ms: AtomicU64::new(now as u64),
             refs: Mutex::new(HashMap::new()),
             ref_counter: AtomicU64::new(0),
             generation: AtomicU64::new(1),
@@ -872,13 +1421,10 @@ impl Sessions {
             exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),
             navigation_lock: tokio::sync::Mutex::new(()),
             navigation_error: Mutex::new(None),
-            history: Mutex::new(Vec::new()),
-            downloads: Mutex::new(Vec::new()),
-            downloads_dir,
             upload_dirs: Mutex::new(Vec::new()),
             upload_counter: AtomicU64::new(0),
             pick_counter: AtomicU64::new(0),
-            tasks: Mutex::new(vec![handler_task]),
+            tasks: Mutex::new(Vec::new()),
         });
 
         let pumps =
@@ -894,25 +1440,219 @@ impl Sessions {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .extend(pumps);
+        tab.touch();
+        self.live
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(tab.id.clone(), session.clone());
+        self.emit_updated(tab, true).await;
+        Ok(session)
+    }
 
-        if origin_gate_enabled {
-            if let Some(url) = url.as_deref() {
-                session.clear_navigation_error();
-                let navigation = session.page.goto(url).await;
-                let policy_error = session.take_navigation_error();
-                if let Some(error) = policy_error {
-                    session.shutdown().await;
-                    return Err(error);
-                }
-                if let Err(error) = navigation {
-                    session.shutdown().await;
-                    return Err(format!("failed to open page: {error}"));
+    /// Put unwatched tabs to sleep, least recently used first, until a page
+    /// for `for_id` fits under `max_sessions`. Fails only when every live
+    /// tab is being watched or recorded.
+    async fn make_room(self: &Arc<Self>, for_id: &str) -> Result<(), String> {
+        let cap = self.config.load().max_sessions as usize;
+        loop {
+            if self.live_count() < cap {
+                return Ok(());
+            }
+            let mut candidates: Vec<Arc<Session>> = Vec::new();
+            for session in self.live_sessions() {
+                if session.id != for_id
+                    && !session.screencast_on()
+                    && session.recording.lock().await.is_none()
+                {
+                    candidates.push(session);
                 }
             }
+            candidates.sort_by_key(|s| s.last_used_ms());
+            let Some(victim) = candidates.first() else {
+                return Err(format!(
+                    "tab limit reached ({cap}) and every live tab is being watched; close one \
+                     with browser::sessions::stop or raise max_sessions"
+                ));
+            };
+            tracing::info!(session_id = %victim.id, "sleeping tab to make room");
+            self.sleep_inner(&victim.id.clone(), "idle", false).await;
         }
+    }
 
-        self.lock().insert(id, session.clone());
-        Ok(session)
+    /// The shared Chromium, launched on first use. `headful` overrides the
+    /// configured mode for a launch; a running browser keeps its mode.
+    async fn ensure_browser(
+        self: &Arc<Self>,
+        headful: Option<bool>,
+    ) -> Result<Arc<SharedBrowser>, String> {
+        let mut slot = self.browser.lock().await;
+        if let Some(shared) = slot.as_ref() {
+            return Ok(shared.clone());
+        }
+        let cfg = self.config.load_full();
+        let headless = match headful {
+            Some(headful) => !headful,
+            None => cfg.headless,
+        };
+        let profile = self.profile_dir();
+        std::fs::create_dir_all(&profile)
+            .map_err(|e| format!("cannot create profile dir {}: {e}", profile.display()))?;
+        let browser_config = build_browser_config(&cfg, headless, &profile)?;
+        let (browser, mut handler) = match Browser::launch(browser_config).await {
+            Ok(launched) => launched,
+            Err(first) if reap_orphan_chromium(&profile) => {
+                tracing::warn!(error = %first, "launch failed against an orphaned Chromium; reaped it, retrying");
+                Browser::launch(build_browser_config(&cfg, headless, &profile)?)
+                    .await
+                    .map_err(|e| format!("failed to launch Chromium: {e}"))?
+            }
+            Err(e) => return Err(format!("failed to launch Chromium: {e}")),
+        };
+        let shared = Arc::new(SharedBrowser {
+            browser: tokio::sync::Mutex::new(browser),
+            headless,
+            user_agent: Mutex::new(String::new()),
+            handler: Mutex::new(None),
+        });
+        // The handler pump ends when the CDP connection drops: a clean
+        // close (the slot was already emptied) or Chromium dying underneath
+        // us, in which case every live tab goes to sleep so the next call
+        // relaunches instead of talking to a corpse.
+        let sessions = Arc::downgrade(self);
+        let mine = Arc::downgrade(&shared);
+        let handler_task = tokio::spawn(async move {
+            while let Some(event) = handler.next().await {
+                if let Err(e) = event {
+                    tracing::debug!(error = %e, "cdp handler event error");
+                }
+            }
+            if let (Some(sessions), Some(mine)) = (sessions.upgrade(), mine.upgrade()) {
+                sessions.on_browser_lost(&mine).await;
+            }
+        });
+        *shared.handler.lock().unwrap_or_else(|p| p.into_inner()) = Some(handler_task);
+        // Only now that the handler pump runs can the browser answer.
+        let user_agent = shared
+            .browser
+            .lock()
+            .await
+            .user_agent()
+            .await
+            .map(|ua| ua.replace("HeadlessChrome", "Chrome"))
+            .unwrap_or_default();
+        *shared.user_agent.lock().unwrap_or_else(|p| p.into_inner()) = user_agent;
+        *slot = Some(shared.clone());
+        tracing::info!(headless, profile = %profile.display(), "browser launched");
+        Ok(shared)
+    }
+
+    /// Chromium went away without us closing it: forget every launched
+    /// session (their pages are gone) and the browser, keeping the tabs.
+    async fn on_browser_lost(self: &Arc<Self>, lost: &Arc<SharedBrowser>) {
+        {
+            let mut slot = self.browser.lock().await;
+            match slot.as_ref() {
+                Some(current) if Arc::ptr_eq(current, lost) => {
+                    *slot = None;
+                }
+                _ => return,
+            }
+        }
+        tracing::warn!("browser process exited; live tabs are asleep until used again");
+        for session in self.live_sessions() {
+            if session.kind != SessionKind::Launched {
+                continue;
+            }
+            self.live
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&session.id);
+            session.detach().await;
+            if session.tab.persists() {
+                self.emit_updated(&session.tab, false).await;
+            } else {
+                self.remove_tab(&session.id);
+                self.emit_stopped(&session.id, "crashed").await;
+            }
+        }
+    }
+
+    /// Close the shared browser once no launched tab has a page open, which
+    /// also flushes the profile (cookies, storage) to disk.
+    async fn shutdown_browser_if_idle(&self) {
+        let still_live = self
+            .live_sessions()
+            .iter()
+            .any(|s| s.kind == SessionKind::Launched);
+        if still_live {
+            return;
+        }
+        let taken = self.browser.lock().await.take();
+        if let Some(shared) = taken {
+            shared.close().await;
+            tracing::info!("browser closed (no live tabs)");
+        }
+    }
+
+    async fn emit_updated(&self, tab: &Tab, active: bool) {
+        self.emitter
+            .emit(
+                EventKind::SessionUpdated,
+                &tab.id,
+                &SessionUpdatedEvent {
+                    session_id: tab.id.clone(),
+                    active,
+                    url: tab.url(),
+                    title: tab.title(),
+                    timestamp: now_ms(),
+                },
+            )
+            .await;
+    }
+
+    async fn emit_stopped(&self, id: &str, reason: &str) {
+        self.emitter
+            .emit(
+                EventKind::SessionStopped,
+                id,
+                &SessionStoppedEvent {
+                    session_id: id.to_string(),
+                    reason: reason.to_string(),
+                    timestamp: now_ms(),
+                },
+            )
+            .await;
+    }
+
+    fn remove_tab(&self, id: &str) -> Option<Arc<Tab>> {
+        let mut tabs = self.tabs.lock().unwrap_or_else(|p| p.into_inner());
+        let index = tabs.iter().position(|t| t.id == id)?;
+        Some(tabs.remove(index))
+    }
+
+    /// Put a tab to sleep: close its page, keep the tab. Incognito and
+    /// attached tabs cannot sleep — they close (`stop`) instead.
+    pub async fn sleep(self: &Arc<Self>, id: &str, reason: &str) {
+        self.sleep_inner(id, reason, true).await;
+    }
+
+    async fn sleep_inner(self: &Arc<Self>, id: &str, reason: &str, close_browser: bool) {
+        let Some(session) = self.get(id) else {
+            return;
+        };
+        if !session.tab.persists() {
+            self.stop_inner(id, reason, close_browser).await;
+            return;
+        }
+        self.live
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(id);
+        session.shutdown().await;
+        self.emit_updated(&session.tab, false).await;
+        if close_browser {
+            self.shutdown_browser_if_idle().await;
+        }
     }
 
     /// Attach to an already-running browser over CDP and bind a session to
@@ -928,9 +1668,9 @@ impl Sessions {
         read_only: bool,
     ) -> Result<Arc<Session>, String> {
         let cfg = self.config.load_full();
-        if self.count() as u64 >= cfg.max_sessions {
+        if self.live_count() as u64 >= cfg.max_sessions {
             return Err(format!(
-                "session limit reached ({}); stop one with browser::sessions::stop",
+                "tab limit reached ({}); stop one with browser::sessions::stop",
                 cfg.max_sessions
             ));
         }
@@ -973,28 +1713,42 @@ impl Sessions {
         let _ = page.execute(cdp_log::EnableParams::default()).await;
         let _ = page.execute(cdp_network::EnableParams::default()).await;
 
-        let slot = self.counter.fetch_add(1, Ordering::Relaxed) + 1;
-        let id = format!("b{slot}");
+        let id = self.next_id();
         let now = now_ms();
+        let tab = Arc::new(Tab {
+            id: id.clone(),
+            incognito: false,
+            read_only,
+            attached: true,
+            created_ms: now,
+            ttl_ms: None,
+            last_used_ms: AtomicU64::new(now as u64),
+            frame_seq: AtomicU64::new(0),
+            url: Mutex::new(url.clone().unwrap_or_else(|| "about:blank".to_string())),
+            title: Mutex::new(String::new()),
+            history: Mutex::new(Vec::new()),
+            nav: Mutex::new(NavStack::default()),
+            downloads: Mutex::new(Vec::new()),
+            downloads_dir: None,
+        });
         let session = Arc::new(Session {
             id: id.clone(),
+            tab: tab.clone(),
             headless: false,
             kind: SessionKind::Attached { owns_page },
             read_only,
+            incognito: false,
+            context_id: None,
+            backing: Backing::Own(Box::new(tokio::sync::Mutex::new(browser))),
             viewport_width: AtomicU32::new(cfg.viewport_width),
             viewport_height: AtomicU32::new(cfg.viewport_height),
-            created_ms: now,
-            ephemeral_profile: None,
             latest_frame: Mutex::new(None),
             screencast_consumers: std::sync::atomic::AtomicUsize::new(0),
             recording: tokio::sync::Mutex::new(None),
-            frame_seq: AtomicU64::new(0),
-            browser: tokio::sync::Mutex::new(browser),
             page: page.clone(),
             console: Mutex::new(RingBuffer::new(cfg.console_buffer as usize)),
             network: Mutex::new(RingBuffer::new(cfg.network_buffer as usize)),
             seq: AtomicU64::new(1),
-            last_used_ms: AtomicU64::new(now as u64),
             refs: Mutex::new(HashMap::new()),
             ref_counter: AtomicU64::new(0),
             generation: AtomicU64::new(1),
@@ -1002,9 +1756,6 @@ impl Sessions {
             exec_state: Mutex::new(serde_json::Value::Object(serde_json::Map::new())),
             navigation_lock: tokio::sync::Mutex::new(()),
             navigation_error: Mutex::new(None),
-            history: Mutex::new(Vec::new()),
-            downloads: Mutex::new(Vec::new()),
-            downloads_dir: None,
             upload_dirs: Mutex::new(Vec::new()),
             upload_counter: AtomicU64::new(0),
             pick_counter: AtomicU64::new(0),
@@ -1029,7 +1780,7 @@ impl Sessions {
         if origin_gate_enabled && owns_page {
             if let Some(url) = url.as_deref() {
                 session.clear_navigation_error();
-                let navigation = session.page.goto(url).await;
+                let navigation = session.navigate(url).await;
                 let policy_error = session.take_navigation_error();
                 if let Some(error) = policy_error {
                     session.shutdown().await;
@@ -1042,7 +1793,14 @@ impl Sessions {
             }
         }
 
-        self.lock().insert(id, session.clone());
+        self.tabs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(tab);
+        self.live
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id, session.clone());
         Ok(session)
     }
 
@@ -1050,7 +1808,7 @@ impl Sessions {
     /// and whether a session already adopted each). Read-only: opens a
     /// throwaway CDP connection, lists, and drops it without touching any
     /// tab. Used by `browser::tabs::list`.
-    pub async fn list_tabs(&self, cdp_url: &str) -> Result<Vec<TabInfo>, String> {
+    pub async fn remote_tabs(&self, cdp_url: &str) -> Result<Vec<TabInfo>, String> {
         let (browser, mut handler) = Browser::connect(cdp_url.to_string())
             .await
             .map_err(|e| format!("failed to connect to '{cdp_url}': {e}"))?;
@@ -1138,40 +1896,43 @@ impl Sessions {
         }
     }
 
-    /// Remove + shut down. Returns whether the session was running —
-    /// stopping an unknown id succeeds (delete semantics: the caller wants
-    /// it gone, and it is).
-    pub async fn stop(&self, id: &str, reason: &str) -> bool {
-        let session = self.lock().remove(id);
-        match session {
-            Some(session) => {
-                self.release_adopted_page(&session);
-                // Drop any handoff parked on this session so its call
-                // unblocks (its receiver errors) instead of waiting for the
-                // full timeout against a dead page.
-                {
-                    let mut pending = self
-                        .pending_handoffs
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner());
-                    pending.retain(|_, h| h.session_id != id);
-                }
-                session.shutdown().await;
-                self.emitter
-                    .emit(
-                        EventKind::SessionStopped,
-                        id,
-                        &SessionStoppedEvent {
-                            session_id: id.to_string(),
-                            reason: reason.to_string(),
-                            timestamp: now_ms(),
-                        },
-                    )
-                    .await;
-                true
-            }
-            None => false,
+    /// Close a tab for good: its page (if open), its record, its downloads.
+    /// Returns whether the tab existed — closing an unknown id succeeds
+    /// (delete semantics: the caller wants it gone, and it is).
+    pub async fn stop(self: &Arc<Self>, id: &str, reason: &str) -> bool {
+        self.stop_inner(id, reason, true).await
+    }
+
+    async fn stop_inner(self: &Arc<Self>, id: &str, reason: &str, close_browser: bool) -> bool {
+        let session = self
+            .live
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(id);
+        let tab = self.remove_tab(id);
+        if let Some(session) = &session {
+            self.release_adopted_page(session);
+            // Drop any handoff parked on this session so its call unblocks
+            // (its receiver errors) instead of waiting for the full timeout
+            // against a dead page.
+            self.pending_handoffs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .retain(|_, h| h.session_id != id);
+            session.shutdown().await;
         }
+        let Some(tab) = tab else {
+            return false;
+        };
+        tab.remove_download_files();
+        if tab.persists() {
+            self.persist();
+        }
+        self.emit_stopped(id, reason).await;
+        if close_browser {
+            self.shutdown_browser_if_idle().await;
+        }
+        true
     }
 
     /// Register a paused handoff and return its id plus the receiver the
@@ -1240,27 +2001,24 @@ impl Sessions {
     /// `recording::start` works without a separate screencast call.
     pub async fn start_recording(
         &self,
-        session_id: &str,
+        session: &Arc<Session>,
         path: &str,
         codec: &str,
     ) -> Result<(), String> {
-        let session = self
-            .get(session_id)
-            .ok_or_else(|| format!("unknown session '{session_id}'"))?;
-
         // Hold the recording lock across the whole check-and-set so two
         // concurrent starts cannot both spawn ffmpeg and overwrite each
         // other's Recording (leaking a process).
         let mut guard = session.recording.lock().await;
         if guard.is_some() {
             return Err(format!(
-                "session '{session_id}' is already recording; stop it first"
+                "session '{}' is already recording; stop it first",
+                session.id
             ));
         }
 
         // Acquire a screencast consumer (starts CDP screencast if we are the
         // first). Released again on any failure below.
-        self.acquire_screencast(&session).await?;
+        self.acquire_screencast(session).await?;
 
         let args = crate::functions::recording::ffmpeg_args(codec, path);
         let spawn = tokio::process::Command::new("ffmpeg")
@@ -1272,7 +2030,7 @@ impl Sessions {
         let mut child = match spawn {
             Ok(c) => c,
             Err(e) => {
-                self.release_screencast(&session).await;
+                self.release_screencast(session).await;
                 return Err(format!(
                     "failed to launch ffmpeg ({e}); install ffmpeg and put it on PATH"
                 ));
@@ -1283,7 +2041,7 @@ impl Sessions {
             None => {
                 let _ = child.kill().await;
                 let _ = child.wait().await;
-                self.release_screencast(&session).await;
+                self.release_screencast(session).await;
                 return Err("ffmpeg stdin unavailable".to_string());
             }
         };
@@ -1341,7 +2099,6 @@ impl Sessions {
     /// acquisitions just bump the count. On a CDP start failure the count is
     /// rolled back so it stays honest.
     pub async fn acquire_screencast(&self, session: &Arc<Session>) -> Result<(), String> {
-        use chromiumoxide::cdp::browser_protocol::page as cdp_page;
         let prev = session
             .screencast_consumers
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1363,9 +2120,6 @@ impl Sessions {
         Ok(())
     }
 
-    /// Release a screencast consumer. Stops the Chromium screencast on the
-    /// 1->0 transition, leaving it running while any other consumer remains
-    /// (so stopping a recording never cuts off a UI viewer). Never underflows.
     /// Force a fresh screencast frame (e.g. after a viewport resize) without
     /// racing the acquire/release counter: hold a consumer slot of our own
     /// while re-issuing StartScreencast, so a real viewer's release cannot
@@ -1381,7 +2135,6 @@ impl Sessions {
             .load(std::sync::atomic::Ordering::Relaxed)
             > 1
         {
-            use chromiumoxide::cdp::browser_protocol::page as cdp_page;
             let quality = self.config.load().screenshot_quality as i64;
             let restart = cdp_page::StartScreencastParams::builder()
                 .format(cdp_page::StartScreencastFormat::Jpeg)
@@ -1393,8 +2146,13 @@ impl Sessions {
         self.release_screencast(session).await;
     }
 
+    /// Release a screencast consumer. Stops the Chromium screencast on the
+    /// 1->0 transition, leaving it running while any other consumer remains
+    /// (so stopping a recording never cuts off a UI viewer). Never
+    /// underflows. Watching counts as using the tab, so the release also
+    /// touches it — the inactivity clock starts when the viewer leaves.
     pub async fn release_screencast(&self, session: &Arc<Session>) {
-        use chromiumoxide::cdp::browser_protocol::page as cdp_page;
+        session.touch();
         let prev = session
             .screencast_consumers
             .fetch_update(
@@ -1411,30 +2169,73 @@ impl Sessions {
         }
     }
 
-    /// Stop sessions idle beyond the configured threshold. Called from the
-    /// sweep task in `main`.
-    pub async fn sweep_idle(&self) {
-        let idle_stop_ms = self.config.load().idle_stop_ms;
-        if idle_stop_ms == 0 {
+    /// Close expired tabs and put unused, unwatched tabs to sleep (incognito
+    /// and attached ones close). Called from the sweep task in `main`.
+    pub async fn sweep_idle(self: &Arc<Self>) {
+        let now = now_ms();
+        for tab in self.list_tabs() {
+            if tab.expired(now) {
+                tracing::info!(session_id = %tab.id, "closing expired tab");
+                self.stop(&tab.id, "expired").await;
+            }
+        }
+        let inactive_after_ms = self.config.load().inactive_after_ms;
+        if inactive_after_ms == 0 {
             return;
         }
-        let cutoff = now_ms() - idle_stop_ms as i64;
-        let idle: Vec<String> = self
-            .list()
-            .into_iter()
-            .filter(|s| s.last_used_ms() < cutoff)
-            .map(|s| s.id.clone())
-            .collect();
-        for id in idle {
-            tracing::info!(session_id = %id, "stopping idle session");
-            self.stop(&id, "idle").await;
+        let cutoff = now - inactive_after_ms as i64;
+        for session in self.live_sessions() {
+            if session.screencast_on()
+                || session.recording.lock().await.is_some()
+                || session.last_used_ms() >= cutoff
+            {
+                continue;
+            }
+            tracing::info!(session_id = %session.id, "sleeping idle tab");
+            self.sleep(&session.id, "idle").await;
         }
     }
 
-    pub async fn stop_all(&self) {
-        let ids: Vec<String> = self.lock().keys().cloned().collect();
-        for id in ids {
-            self.stop(&id, "stopped").await;
+    /// The browser's "Clear browsing data" for everything: close every live
+    /// page, quit Chromium, and delete the profile and downloads on disk.
+    /// Tabs stay (asleep) and reopen into a clean profile. Returns how many
+    /// tabs were live.
+    pub async fn clear_browser_data(self: &Arc<Self>) -> Result<usize, String> {
+        let _guard = self.activate_lock.lock().await;
+        let live = self.live_sessions();
+        let count = live.len();
+        for session in live {
+            self.sleep_inner(&session.id, "stopped", false).await;
+        }
+        let taken = self.browser.lock().await.take();
+        if let Some(shared) = taken {
+            shared.close().await;
+        }
+        for dir in [self.profile_dir(), self.downloads_dir()] {
+            match std::fs::remove_dir_all(&dir) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(format!("removing {} failed: {e}", dir.display())),
+            }
+        }
+        for tab in self.list_tabs() {
+            tab.downloads
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clear();
+        }
+        Ok(count)
+    }
+
+    /// Worker shutdown: close every page and the browser. Regular tabs stay
+    /// in `tabs.json` and come back asleep on the next boot.
+    pub async fn stop_all(self: &Arc<Self>) {
+        for session in self.live_sessions() {
+            self.sleep_inner(&session.id, "stopped", false).await;
+        }
+        let taken = self.browser.lock().await.take();
+        if let Some(shared) = taken {
+            shared.close().await;
         }
     }
 }
@@ -1459,27 +2260,14 @@ async fn discovered_pages(browser: &Browser) -> Result<Vec<Page>, String> {
     Ok(Vec::new())
 }
 
-/// Every session gets its own profile dir: Chromium holds a process
-/// singleton per profile, so two sessions sharing one dir cannot coexist
-/// (and a killed session's stale SingletonLock would block the next
-/// launch). Ephemeral mode mints a temp dir removed on shutdown;
-/// persistent mode maps session slot N to `<user_data_dir>/session-N`, so
-/// the first session after every worker boot reuses the same cookies.
+/// One profile for the whole browser, like a browser: Chromium holds a
+/// process singleton per profile, which is exactly why every tab shares one
+/// process instead of getting its own.
 fn build_browser_config(
     cfg: &WorkerConfig,
     headless: bool,
-    slot: u64,
-) -> Result<(BrowserConfig, Option<std::path::PathBuf>), String> {
-    let (profile_dir, ephemeral) = if cfg.user_data_dir.is_empty() {
-        let dir = std::env::temp_dir().join(format!("iii-browser-{}-{slot}", std::process::id()));
-        (dir.clone(), Some(dir))
-    } else {
-        (
-            iii_worker_paths::resolve_path(&cfg.user_data_dir).join(format!("session-{slot}")),
-            None,
-        )
-    };
-
+    profile_dir: &std::path::Path,
+) -> Result<BrowserConfig, String> {
     let mut builder = BrowserConfig::builder()
         .window_size(cfg.viewport_width, cfg.viewport_height)
         .viewport(chromiumoxide::handler::viewport::Viewport {
@@ -1487,7 +2275,7 @@ fn build_browser_config(
             height: cfg.viewport_height,
             ..Default::default()
         })
-        .user_data_dir(&profile_dir);
+        .user_data_dir(profile_dir);
     builder = if headless {
         builder.new_headless_mode()
     } else {
@@ -1496,7 +2284,82 @@ fn build_browser_config(
     if !cfg.executable.is_empty() {
         builder = builder.chrome_executable(&cfg.executable);
     }
-    Ok((builder.build()?, ephemeral))
+    builder.build()
+}
+
+/// A worker killed without cleanup leaves its Chromium alive holding the
+/// profile's singleton lock; the next launch hands off to that orphan and
+/// times out. When the lock names a process that is running on THIS profile,
+/// kill it so the caller can launch again. Nothing else is ever touched.
+#[cfg(not(unix))]
+fn reap_orphan_chromium(_profile: &std::path::Path) -> bool {
+    false
+}
+
+#[cfg(unix)]
+fn reap_orphan_chromium(profile: &std::path::Path) -> bool {
+    let Ok(lock) = std::fs::read_link(profile.join("SingletonLock")) else {
+        return false;
+    };
+    // The link target is `<hostname>-<pid>`.
+    let Some(pid) = lock
+        .to_string_lossy()
+        .rsplit('-')
+        .next()
+        .and_then(|p| p.parse::<i32>().ok())
+    else {
+        return false;
+    };
+    let Ok(ps) = std::process::Command::new("ps")
+        .args(["-o", "command=", "-p", &pid.to_string()])
+        .output()
+    else {
+        return false;
+    };
+    let command = String::from_utf8_lossy(&ps.stdout);
+    if !command.contains(&*profile.to_string_lossy()) {
+        return false;
+    }
+    // SAFETY: plain libc call on a pid we just verified runs Chromium on our
+    // own profile directory.
+    let killed = unsafe { libc::kill(pid, libc::SIGKILL) } == 0;
+    if killed {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let _ = std::fs::remove_file(profile.join("SingletonLock"));
+    }
+    killed
+}
+
+/// The `http://` twin of an `https://` url on a local host whose TLS
+/// handshake failed — `https://localhost:3000` against a plain dev server
+/// answers `net::ERR_SSL_PROTOCOL_ERROR`. Public hosts never downgrade.
+fn http_fallback_url(url: &str, error: &str) -> Option<String> {
+    let tls_failure = error.starts_with("net::ERR_SSL_")
+        || error.starts_with("net::ERR_CERT_")
+        || matches!(
+            error,
+            "net::ERR_CONNECTION_CLOSED" | "net::ERR_CONNECTION_RESET" | "net::ERR_EMPTY_RESPONSE"
+        );
+    if !tls_failure {
+        return None;
+    }
+    let mut parsed = url::Url::parse(url).ok()?;
+    if parsed.scheme() != "https" {
+        return None;
+    }
+    let local = match parsed.host()? {
+        url::Host::Domain(host) => host == "localhost" || host.ends_with(".localhost"),
+        url::Host::Ipv4(ip) => ip.is_loopback() || ip.is_private() || ip.is_link_local(),
+        url::Host::Ipv6(ip) => ip.is_loopback(),
+    };
+    if !local {
+        return None;
+    }
+    let port = parsed.port();
+    parsed.set_scheme("http").ok()?;
+    // `set_scheme` keeps an explicit port; a bare https url moves to 80.
+    parsed.set_port(port).ok()?;
+    Some(parsed.to_string())
 }
 
 fn origin_gate_configured(config: &WorkerConfig) -> bool {
@@ -1514,6 +2377,36 @@ fn origin_access_denial(config: &WorkerConfig, url: &str) -> Option<String> {
     ))
 }
 
+/// A top-document navigation committed: the tab remembers where it is, the
+/// history panel and the back/forward stack learn about it, subscribers
+/// hear `browser::navigated`, and regular tabs are saved.
+async fn note_navigation(sessions: &Arc<Sessions>, session: &Arc<Session>, url: &str) {
+    // A wedged renderer must not stall the navigation pump on a title read;
+    // after a short wait the visit records untitled.
+    let title = tokio::time::timeout(std::time::Duration::from_secs(2), session.page.get_title())
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .flatten()
+        .unwrap_or_default();
+    session.tab.commit_location(url, Some(&title));
+    if session.tab.persists() {
+        sessions.persist();
+    }
+    sessions
+        .emitter
+        .emit(
+            EventKind::Navigated,
+            &session.id,
+            &NavigatedEvent {
+                session_id: session.id.clone(),
+                url: url.to_string(),
+                timestamp: now_ms(),
+            },
+        )
+        .await;
+}
+
 /// Arm the per-session CDP event listeners. Each pump owns one event stream,
 /// pushes into the ring buffer, and (console + pick) forwards to trigger
 /// subscribers.
@@ -1524,12 +2417,14 @@ async fn spawn_event_pumps(
 ) -> Result<Vec<tokio::task::JoinHandle<()>>, String> {
     let mut tasks = Vec::new();
     let page = &session.page;
+    let main_frame = page
+        .mainframe()
+        .await
+        .map_err(|error| format!("failed to read the main frame: {error}"))?;
 
     if origin_gate_enabled {
-        let main_frame = page
-            .mainframe()
-            .await
-            .map_err(|error| format!("origin policy gate failed to read main frame: {error}"))?
+        let main_frame = main_frame
+            .clone()
             .ok_or_else(|| "origin policy gate found no main frame".to_string())?;
         let mut events = page
             .event_listener::<cdp_fetch::EventRequestPaused>()
@@ -1764,10 +2659,7 @@ async fn spawn_event_pumps(
     }
 
     // committed navigations: emit + drop stale element refs
-    if let Ok(mut events) = page
-        .event_listener::<chromiumoxide::cdp::browser_protocol::page::EventFrameNavigated>()
-        .await
-    {
+    if let Ok(mut events) = page.event_listener::<cdp_page::EventFrameNavigated>().await {
         let s = session.clone();
         let sx = sessions.clone();
         tasks.push(tokio::spawn(async move {
@@ -1779,27 +2671,7 @@ async fn spawn_event_pumps(
                 // A cross-process navigation kills a running screencast with
                 // the old renderer; restart it so the stream never blanks.
                 sx.nudge_screencast(&s).await;
-                // A wedged renderer must not stall the navigation pump on a
-                // title read; after a short wait the visit records untitled.
-                let title =
-                    tokio::time::timeout(std::time::Duration::from_secs(2), s.page.get_title())
-                        .await
-                        .ok()
-                        .and_then(|r| r.ok())
-                        .flatten()
-                        .unwrap_or_default();
-                s.record_visit(&event.frame.url, &title);
-                sx.emitter
-                    .emit(
-                        EventKind::Navigated,
-                        &s.id,
-                        &NavigatedEvent {
-                            session_id: s.id.clone(),
-                            url: event.frame.url.clone(),
-                            timestamp: now_ms(),
-                        },
-                    )
-                    .await;
+                note_navigation(&sx, &s, &event.frame.url).await;
             }
         }));
     }
@@ -1807,8 +2679,7 @@ async fn spawn_event_pumps(
     // same-document navigations (hash routes, pushState): single-page apps
     // move this way, so they count as visits and emit the same event
     if let Ok(mut events) = page
-        .event_listener::<chromiumoxide::cdp::browser_protocol::page::EventNavigatedWithinDocument>(
-        )
+        .event_listener::<cdp_page::EventNavigatedWithinDocument>()
         .await
     {
         let s = session.clone();
@@ -1819,89 +2690,128 @@ async fn spawn_event_pumps(
                 if main_frame.is_some_and(|id| id != event.frame_id) {
                     continue;
                 }
-                let title =
-                    tokio::time::timeout(std::time::Duration::from_secs(2), s.page.get_title())
-                        .await
-                        .ok()
-                        .and_then(|r| r.ok())
-                        .flatten()
-                        .unwrap_or_default();
-                s.record_visit(&event.url, &title);
-                sx.emitter
-                    .emit(
-                        EventKind::Navigated,
-                        &s.id,
-                        &NavigatedEvent {
-                            session_id: s.id.clone(),
-                            url: event.url.clone(),
-                            timestamp: now_ms(),
-                        },
-                    )
-                    .await;
+                note_navigation(&sx, &s, &event.url).await;
             }
         }));
     }
 
     // screencast frames: keep only the newest, ack every frame so Chromium
-    // keeps pushing
+    // keeps pushing. Delivery to the console (`browser::frame-event`, one
+    // awaited trigger per viewer) runs on its own task fed by a watch
+    // channel — latest frame wins — so a slow bus never stalls the pump or
+    // builds a backlog of stale pictures; the viewer always gets the newest
+    // frame the engine can take.
     if let Ok(mut events) = page
-        .event_listener::<chromiumoxide::cdp::browser_protocol::page::EventScreencastFrame>()
+        .event_listener::<cdp_page::EventScreencastFrame>()
         .await
     {
+        let (frame_tx, mut frame_rx) = tokio::sync::watch::channel::<Option<LatestFrame>>(None);
+        {
+            let s = session.clone();
+            let sx = sessions.clone();
+            tasks.push(tokio::spawn(async move {
+                while frame_rx.changed().await.is_ok() {
+                    let next = frame_rx.borrow_and_update().clone();
+                    if let Some(frame) = next {
+                        let data: &str = frame.frame.data.as_ref();
+                        sx.emitter
+                            .emit_awaited(
+                                EventKind::FrameEvent,
+                                &s.id,
+                                &FrameEventPayload {
+                                    session_id: s.id.clone(),
+                                    frame: data.to_string(),
+                                    width: frame.width(),
+                                    height: frame.height(),
+                                    frame_seq: frame.seq,
+                                    timestamp: frame.timestamp,
+                                },
+                            )
+                            .await;
+                    }
+                }
+            }));
+        }
         let s = session.clone();
-        let sx = sessions.clone();
         tasks.push(tokio::spawn(async move {
             let mut last_push_ms = 0i64;
-            while let Some(event) = events.next().await {
-                let ack_id = event.session_id;
-                let now = now_ms();
-                // Wall-clock rate cap: an animated page can produce ~60
-                // compositor frames a second, but the console only needs a
-                // smooth ~15fps. Drop frames that arrive inside the interval
-                // (still ack them so Chromium keeps sending); a static page
-                // that produces one frame is never starved.
-                if now - last_push_ms >= FRAME_MIN_INTERVAL_MS {
-                    last_push_ms = now;
-                    let seq = s.frame_seq.fetch_add(1, Ordering::Relaxed) + 1;
-                    let stream_frame = LatestFrame {
-                        frame: event,
-                        seq,
-                        timestamp: now,
-                    };
-                    // Push onto the stream (the console subscribes to it); the
-                    // in-memory slot stays as the seed for a fresh subscriber.
-                    push_frame_stream(&sx.iii, &s.id, &stream_frame).await;
-                    // Feed the recorder the same capped frame flow. Decode to
-                    // JPEG bytes and hand them to the writer task via a bounded
-                    // queue with try_send: the pump never awaits ffmpeg I/O
-                    // (nor holds a lock across it), and frames are dropped
-                    // rather than backing up if the encoder falls behind.
-                    {
-                        let rec = s.recording.lock().await;
-                        if let Some(recording) = rec.as_ref() {
-                            let data: &str = stream_frame.frame.data.as_ref();
-                            if let Ok(bytes) = STANDARD.decode(data) {
-                                let _ = recording.tx.try_send(bytes);
-                            }
-                        }
-                    }
-                    let mut slot = s.latest_frame.lock().unwrap_or_else(|p| p.into_inner());
-                    *slot = Some(stream_frame);
-                }
-                let ack = chromiumoxide::cdp::browser_protocol::page::ScreencastFrameAckParams::new(
-                    ack_id,
+            // Trailing-edge throttle: a frame that arrives inside the
+            // interval waits here and goes out when the interval elapses
+            // unless a newer one replaced it, so the final frame of a burst
+            // (the settled page after a resize or a navigation) is always
+            // delivered. Dropping it instead left a stale picture on a
+            // static page.
+            let mut held: Option<(Arc<ScreencastFrameEvent>, Vec<u8>)> = None;
+            loop {
+                let wait = std::time::Duration::from_millis(
+                    (FRAME_MIN_INTERVAL_MS - (now_ms() - last_push_ms))
+                        .clamp(0, FRAME_MIN_INTERVAL_MS) as u64,
                 );
-                if let Err(e) = s.page.execute(ack).await {
-                    tracing::debug!(session_id = %s.id, error = %e, "screencast ack failed");
+                let next = tokio::select! {
+                    event = events.next() => match event {
+                        Some(event) => Some(event),
+                        None => break,
+                    },
+                    _ = tokio::time::sleep(wait), if held.is_some() => None,
+                };
+                if let Some(event) = next {
+                    let ack = cdp_page::ScreencastFrameAckParams::new(event.session_id);
+                    if let Err(e) = s.page.execute(ack).await {
+                        tracing::debug!(session_id = %s.id, error = %e, "screencast ack failed");
+                    }
+                    let data: &str = event.data.as_ref();
+                    let Ok(bytes) = STANDARD.decode(data) else {
+                        continue;
+                    };
+                    // Right after a (re)start Chromium can emit one frame
+                    // rendered at the previous surface size while its
+                    // metadata already reports the new viewport. Pushed, it
+                    // would show letterboxed and map clicks off by the
+                    // difference; the corrected frame follows at once.
+                    if !frame_matches_metadata(&event, &bytes) {
+                        continue;
+                    }
+                    held = Some((event, bytes));
+                    if now_ms() - last_push_ms < FRAME_MIN_INTERVAL_MS {
+                        continue;
+                    }
                 }
+                let Some((event, bytes)) = held.take() else {
+                    continue;
+                };
+                last_push_ms = now_ms();
+                let seq = s.tab.frame_seq.fetch_add(1, Ordering::Relaxed) + 1;
+                let stream_frame = LatestFrame {
+                    frame: event,
+                    seq,
+                    timestamp: last_push_ms,
+                };
+                // Offer it to the pusher (the console is bound to the frame
+                // trigger); the in-memory slot stays as the seed for a fresh
+                // viewer's first paint.
+                let _ = frame_tx.send(Some(stream_frame.clone()));
+                // Feed the recorder the same capped frame flow through a
+                // bounded queue with try_send: the pump never awaits ffmpeg
+                // I/O, and frames are dropped rather than backing up if the
+                // encoder falls behind.
+                {
+                    let rec = s.recording.lock().await;
+                    if let Some(recording) = rec.as_ref() {
+                        let _ = recording.tx.try_send(bytes);
+                    }
+                }
+                let mut slot = s.latest_frame.lock().unwrap_or_else(|p| p.into_inner());
+                *slot = Some(stream_frame);
             }
         }));
     }
 
-    // downloads: guid-named files land in the session's download dir; the
+    // downloads: guid-named files land in the tab's download dir; the
     // begin/progress events feed the downloads panel. Only armed when the
-    // worker owns the download policy.
-    if session.downloads_dir.is_some() {
+    // worker owns the download policy. The behavior is per browser context,
+    // so every regular tab hears every regular tab's downloads: the begin
+    // event's frame id keeps each tab to its own.
+    if session.tab.downloads_dir.is_some() {
         if let Ok(mut events) = page
             .event_listener::<cdp_browser::EventDownloadWillBegin>()
             .await
@@ -1910,15 +2820,19 @@ async fn spawn_event_pumps(
             let sx = sessions.clone();
             tasks.push(tokio::spawn(async move {
                 while let Some(event) = events.next().await {
+                    if main_frame.as_ref().is_some_and(|id| *id != event.frame_id) {
+                        continue;
+                    }
                     if !origin_policy_for(&sx.config.load(), &event.url).downloads {
                         let _ = s
                             .page
                             .execute(cdp_browser::CancelDownloadParams::new(event.guid.clone()))
                             .await;
-                        s.remove_download_file(&event.guid);
+                        s.tab.remove_download_file(&event.guid);
                         continue;
                     }
-                    s.download_begin(&event.guid, &event.suggested_filename, &event.url);
+                    s.tab
+                        .download_begin(&event.guid, &event.suggested_filename, &event.url);
                     emit_download_changed(&sx, &s).await;
                 }
             }));
@@ -1940,14 +2854,15 @@ async fn spawn_event_pumps(
                         cdp_browser::DownloadProgressState::Completed => "completed",
                         cdp_browser::DownloadProgressState::Canceled => "canceled",
                     };
-                    let recorded = s.download_progress(
+                    // Progress events carry no frame; a guid this tab never
+                    // recorded belongs to another tab (or was refused).
+                    let recorded = s.tab.download_progress(
                         &event.guid,
                         event.received_bytes as u64,
                         event.total_bytes as u64,
                         state,
                     );
                     if !recorded {
-                        s.remove_download_file(&event.guid);
                         continue;
                     }
                     if state != "in_progress" || last_emit.elapsed().as_millis() >= 250 {
@@ -1960,6 +2875,24 @@ async fn spawn_event_pumps(
     }
 
     Ok(tasks)
+}
+
+/// Whether the JPEG's pixel aspect matches the viewport its metadata claims
+/// (the frame is always CSS-pixel sized, whatever the device scale factor).
+fn frame_matches_metadata(event: &ScreencastFrameEvent, jpeg: &[u8]) -> bool {
+    let Ok(Ok((width, height))) = image::ImageReader::new(std::io::Cursor::new(jpeg))
+        .with_guessed_format()
+        .map(|reader| reader.into_dimensions())
+    else {
+        return true;
+    };
+    let (meta_w, meta_h) = (event.metadata.device_width, event.metadata.device_height);
+    if meta_w <= 0.0 || meta_h <= 0.0 || width == 0 || height == 0 {
+        return true;
+    }
+    let jpeg_aspect = width as f64 / height as f64;
+    let meta_aspect = meta_w / meta_h;
+    (jpeg_aspect - meta_aspect).abs() / meta_aspect < 0.02
 }
 
 async fn emit_download_changed(sessions: &Arc<Sessions>, session: &Arc<Session>) {
@@ -2012,38 +2945,6 @@ async fn push_network_and_emit(
             },
         )
         .await;
-}
-
-/// The stream the console subscribes to for live viewport frames. Each frame
-/// overwrites one item per session (constant item_id, group = session id), so
-/// the stream is last-value: subscribers get every new frame pushed, and the
-/// stream never retains more than one item per session.
-pub const FRAMES_STREAM: &str = "browser:frames";
-
-async fn push_frame_stream(iii: &iii_sdk::IIIClient, session_id: &str, frame: &LatestFrame) {
-    let data: &str = frame.frame.data.as_ref();
-    let res = iii
-        .trigger(iii_sdk::protocol::TriggerRequest {
-            function_id: "stream::set".to_string(),
-            payload: serde_json::json!({
-                "stream_name": FRAMES_STREAM,
-                "group_id": session_id,
-                "item_id": "frame",
-                "data": {
-                    "frame": data,
-                    "width": frame.width(),
-                    "height": frame.height(),
-                    "frame_seq": frame.seq,
-                    "timestamp": frame.timestamp,
-                },
-            }),
-            action: None,
-            timeout_ms: Some(5_000),
-        })
-        .await;
-    if let Err(e) = res {
-        tracing::debug!(session_id, error = %e, "frame stream push failed");
-    }
 }
 
 /// Resolve a pick from viewport coordinates: hit-test the exact point with
@@ -2316,5 +3217,99 @@ mod tests {
         assert!(!oldest.exists());
         assert_eq!(upload_dirs[0], root.join("1"));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The stack that survives sleep: pushes forward, collapses reloads,
+    /// truncates the forward branch on a fresh navigation, and follows an
+    /// announced back/forward move instead of pushing.
+    #[test]
+    fn nav_stack_tracks_back_and_forward_across_commits() {
+        let mut nav = NavStack::default();
+        nav.commit("about:blank");
+        assert!(nav.urls.is_empty());
+        nav.commit("https://a.test/");
+        nav.commit("https://b.test/");
+        nav.commit("https://b.test/"); // reload
+        nav.commit("https://c.test/");
+        assert_eq!(nav.urls.len(), 3);
+        assert_eq!(nav.index, 2);
+
+        let (target, url) = nav.neighbour(true).unwrap();
+        assert_eq!(url, "https://b.test/");
+        nav.set_pending(target);
+        nav.commit("https://b.test/");
+        assert_eq!(nav.index, 1);
+        assert_eq!(nav.neighbour(false).unwrap().1, "https://c.test/");
+
+        // A pending move that lands elsewhere (redirect) is a new entry and
+        // drops the forward branch.
+        nav.set_pending(0);
+        nav.commit("https://d.test/");
+        assert_eq!(
+            nav.urls,
+            ["https://a.test/", "https://b.test/", "https://d.test/"]
+        );
+        assert_eq!(nav.index, 2);
+        assert!(nav.neighbour(false).is_none());
+    }
+
+    #[test]
+    fn tab_store_round_trips_regular_tabs() {
+        let record = TabRecord {
+            id: "b7".to_string(),
+            url: "https://a.test/".to_string(),
+            title: "A".to_string(),
+            read_only: false,
+            created_ms: 1,
+            ttl_ms: Some(5_000),
+            history: vec![HistoryVisit {
+                url: "https://a.test/".to_string(),
+                title: "A".to_string(),
+                timestamp: 1,
+            }],
+            nav: NavStack {
+                urls: vec!["https://a.test/".to_string()],
+                index: 0,
+                pending: None,
+            },
+        };
+        let json = serde_json::to_string(&TabStore {
+            next_slot: 7,
+            tabs: vec![record],
+        })
+        .unwrap();
+        let back: TabStore = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.next_slot, 7);
+        assert_eq!(back.tabs[0].id, "b7");
+        assert_eq!(back.tabs[0].ttl_ms, Some(5_000));
+        assert_eq!(back.tabs[0].nav.urls, ["https://a.test/"]);
+    }
+}
+
+#[cfg(test)]
+mod fallback_tests {
+    use super::http_fallback_url;
+
+    #[test]
+    fn https_on_a_local_host_falls_back_to_http_only_for_tls_failures() {
+        assert_eq!(
+            http_fallback_url("https://localhost:3000/app", "net::ERR_SSL_PROTOCOL_ERROR"),
+            Some("http://localhost:3000/app".to_string())
+        );
+        assert_eq!(
+            http_fallback_url("https://127.0.0.1/", "net::ERR_CERT_AUTHORITY_INVALID"),
+            Some("http://127.0.0.1/".to_string())
+        );
+        assert_eq!(
+            http_fallback_url("https://app.localhost:8443/", "net::ERR_SSL_PROTOCOL_ERROR"),
+            Some("http://app.localhost:8443/".to_string())
+        );
+        assert!(http_fallback_url("https://example.com/", "net::ERR_SSL_PROTOCOL_ERROR").is_none());
+        assert!(
+            http_fallback_url("https://localhost:3000/", "net::ERR_NAME_NOT_RESOLVED").is_none()
+        );
+        assert!(
+            http_fallback_url("http://localhost:3000/", "net::ERR_SSL_PROTOCOL_ERROR").is_none()
+        );
     }
 }

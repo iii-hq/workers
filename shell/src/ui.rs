@@ -16,7 +16,10 @@
 //! Message-path trigger per asset, `III_SHELL_UI_WATCH` hot-reload
 //! watcher) lives in the shared `iii-console-ui` crate (path-linked from
 //! `workers/crates/console-ui`); this module only names the assets and
-//! embeds their bytes.
+//! embeds their bytes. The page's per-pane state (browsed folder, open
+//! tabs, terminal layout) is served by `ui_state.rs` from the worker's
+//! data directory — it used to live in a `shell-ui` configuration entry,
+//! which the worker no longer registers.
 //!
 //! The assets are compiled from `ui/` by esbuild (react +
 //! @iii-dev/console-ui external — they resolve through the console's
@@ -51,41 +54,6 @@ fn console_ui() -> ConsoleUi {
 /// so the Arc is built here rather than rippling through main.
 pub fn register(iii: &IIIClient) {
     console_ui().register(&std::sync::Arc::new(iii.clone()));
-    register_ui_state_entry(iii.clone());
-}
-
-/// The `shell-ui` configuration entry backs the explorer page's per-
-/// console-tab UI state (browsed root, open editor tabs, expanded
-/// folders): `{ tabs: { [workspaceTabId]: {...} } }`, read-modify-written
-/// by the page over `configuration::get`/`set`. Registered so the entry
-/// exists before the first `set` and survives engine restarts;
-/// `configuration::register` preserves any stored value. Fire-and-forget:
-/// a missing configuration worker degrades the page to non-persistent,
-/// never blocks the worker.
-fn register_ui_state_entry(iii: IIIClient) {
-    tokio::spawn(async move {
-        let payload = serde_json::json!({
-            "id": "shell-ui",
-            "name": "Shell UI",
-            "description": "Per-console-tab state for the shell explorer page \
-                            (open files, expanded folders). Managed by the page; \
-                            not intended for hand-editing.",
-            "schema": { "type": "object", "additionalProperties": true },
-            "initial_value": {},
-        });
-        if let Err(e) = crate::configuration::trigger_configuration_with_retry(
-            &iii,
-            "configuration::register",
-            payload,
-        )
-        .await
-        {
-            tracing::warn!(
-                error = %e,
-                "shell-ui configuration entry not registered (explorer UI state won't persist)"
-            );
-        }
-    });
 }
 
 #[cfg(test)]

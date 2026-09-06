@@ -1,6 +1,6 @@
 {
   "function_id": "browser::screencast::start",
-  "description": "Internal: start pushing live viewport frames for browser::frame. Console-UI plumbing; agents use browser::screenshot. Not an agent function.",
+  "description": "Internal: start the live viewport feed — frames arrive on the browser::frame-event trigger and browser::frame reads the newest. Console-UI plumbing; agents use browser::screenshot. Not an agent function.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "ScreencastStartInput",

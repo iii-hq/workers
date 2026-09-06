@@ -594,15 +594,14 @@ export function ComposePage({ host, onRequestClose, panelSide, commands, panelCo
   useEffect(
     () =>
       commands?.register([
-        { id: 'refresh', title: 'Refresh status', shortcut: 'R', run: () => void refresh() },
-        { id: 'filter', title: 'Filter containers', shortcut: '/', run: focusFilter },
-        { id: 'add', title: 'Add worker…', shortcut: 'N', run: focusWorker },
-        { id: 'validate', title: 'Validate compose file', shortcut: 'V', enabled: () => !busy, run: validate },
+        { id: 'refresh', title: 'Refresh status', run: () => void refresh() },
+        { id: 'filter', title: 'Filter containers', run: focusFilter },
+        { id: 'add', title: 'Add worker…', run: focusWorker },
+        { id: 'validate', title: 'Validate compose file', enabled: () => !busy, run: validate },
         ...sections.map((s, index) => ({
           id: `section-${s.id}`,
           title: s.label,
           detail: s.description,
-          shortcut: String(index + 1),
           run: () => setSection(s.id),
         })),
       ]),

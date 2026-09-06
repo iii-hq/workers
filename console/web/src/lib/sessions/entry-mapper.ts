@@ -24,7 +24,7 @@
  * read-backs as the source of truth.
  */
 
-import { parseAttachedFileHeader } from '@/lib/file-mentions'
+import { attachedFileLabel, parseAttachedFileHeader } from '@/lib/file-mentions'
 import { parseSlashBlockHeader, slashChip } from '@/lib/slash-commands'
 import type {
   Attachment,
@@ -454,9 +454,10 @@ function splitUserContent(blocks: ContentBlock[]): {
     if (block.type !== 'text') continue
     const header = parseAttachedFileHeader(block.text)
     if (header) {
+      const label = attachedFileLabel(header)
       attachments.push({
-        id: `mention-${header.path}`,
-        name: header.error ? `${header.path} (${header.error})` : header.path,
+        id: `mention-${label}`,
+        name: header.error ? `${label} (${header.error})` : label,
         size: header.size ?? 0,
         type: 'text/x-file-mention',
       })

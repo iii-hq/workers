@@ -1,13 +1,21 @@
 {
   "function_id": "browser::sessions::start",
-  "description": "Start an interactive Chromium session and return its session_id. Sessions keep console and network history; stop them with browser::sessions::stop when done.",
+  "description": "Open a browser tab (a session) and return its session_id. Tabs share one browser profile (cookies, logins) and stay open until stopped or until an optional ttl_ms; an unused tab sleeps and wakes on the next call. incognito=true opens a PRIVATE tab: nothing it does is saved, and inactivity closes it for good.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "StartInput",
     "type": "object",
     "properties": {
       "headful": {
-        "description": "Force a visible window for this session, overriding the configured `headless` default.",
+        "description": "Force a visible window, overriding the configured `headless` default. Applies when this call launches the browser process; a browser that is already running keeps its mode.",
+        "default": null,
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "incognito": {
+        "description": "INCOGNITO TAB. Opens the tab in a private browser context: it shares no cookies, logins, or storage with the regular tabs, nothing it does is saved to disk (no cookies, no history, no tab record), it does not come back after a restart, and inactivity closes it for good instead of putting it to sleep. Everything lives in memory for as long as the tab does. Use it for logins you do not want kept, or to see a site signed out.",
         "default": null,
         "type": [
           "boolean",
@@ -21,6 +29,16 @@
           "boolean",
           "null"
         ]
+      },
+      "ttl_ms": {
+        "description": "Optional lifetime in milliseconds: the tab closes on its own this long after it opened, even while in use. Omit for a tab that stays until stopped (what the console does).",
+        "default": null,
+        "type": [
+          "integer",
+          "null"
+        ],
+        "format": "uint64",
+        "minimum": 0.0
       },
       "url": {
         "description": "URL to open immediately. Omit to start on about:blank.",
@@ -38,12 +56,24 @@
     "type": "object",
     "required": [
       "headless",
+      "incognito",
       "read_only",
       "session_id",
       "url"
     ],
     "properties": {
+      "error": {
+        "description": "Chromium's error text when the requested url did not load and the tab shows the browser's error page instead (a network failure, or an empty HTTP error response such as a 400). Absent when the page came up. The tab is open either way.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "headless": {
+        "type": "boolean"
+      },
+      "incognito": {
+        "description": "True for a private tab; see `incognito` on the request.",
         "type": "boolean"
       },
       "read_only": {

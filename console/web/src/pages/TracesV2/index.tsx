@@ -764,7 +764,6 @@ export function TracesV2({
           title: 'Search traces',
           detail: 'Put the caret in the trace search',
           keywords: ['filter', 'find'],
-          shortcut: '/',
           run: () =>
             rootRef.current
               ?.querySelector<HTMLElement>('[placeholder="search traces..."]')
@@ -775,7 +774,6 @@ export function TracesV2({
           title: followTurns ? 'Stop following turns' : 'Follow turns',
           detail: 'Jump to each new turn as it arrives',
           keywords: ['live', 'tail', 'auto'],
-          shortcut: 'F',
           run: toggleFollowTurns,
         },
         {

@@ -56,19 +56,21 @@ use tokio::time::timeout;
 
 use crate::config::{origin_label, origin_policy_config_key_for, origin_policy_for, WorkerConfig};
 use crate::events::{EventKind, HandoffRequestedEvent, HandoffResolvedEvent, SessionStartedEvent};
-use crate::session::{now_ms, Session, Sessions};
+use crate::session::{now_ms, OpenRequest, Session, Sessions, Tab};
 
 pub const SESSIONS_START_ID: &str = "browser::sessions::start";
 pub const SESSIONS_START_DESC: &str =
-    "Start an interactive Chromium session and return its session_id. Sessions keep console \
-     and network history; stop them with browser::sessions::stop when done.";
+    "Open a browser tab (a session) and return its session_id. Tabs share one browser \
+     profile (cookies, logins) and stay open until stopped or until an optional ttl_ms; an \
+     unused tab sleeps and wakes on the next call. incognito=true opens a PRIVATE tab: nothing \
+     it does is saved, and inactivity closes it for good.";
 pub const SESSIONS_LIST_ID: &str = "browser::sessions::list";
 pub const SESSIONS_LIST_DESC: &str =
-    "List live browser sessions with their current URL and activity.";
+    "List every browser tab, live or asleep, with its current URL, title, and activity.";
 pub const SESSIONS_STOP_ID: &str = "browser::sessions::stop";
 pub const SESSIONS_STOP_DESC: &str =
-    "Stop a browser session and its Chromium process. Idempotent: stopping an unknown or \
-     already-stopped session succeeds with was_running=false.";
+    "Close a browser tab for good. Idempotent: closing an unknown or already-closed tab \
+     succeeds with was_running=false.";
 pub const SESSIONS_ATTACH_ID: &str = "browser::sessions::attach";
 pub const SESSIONS_ATTACH_DESC: &str =
     "Attach a session to an already-running browser over CDP (Chrome started with \
@@ -82,8 +84,10 @@ pub const TABS_LIST_DESC: &str =
      browser::sessions::attach.";
 pub const NAVIGATE_ID: &str = "browser::navigate";
 pub const NAVIGATE_DESC: &str =
-    "Navigate a session to a URL and wait for the page to load. Element refs from earlier \
-     snapshots are invalidated by navigation.";
+    "Navigate a tab to a URL and wait for the page to load. Like a browser, a network failure \
+     or an empty HTTP error response leaves Chromium's error page in the tab and is reported \
+     in `error` rather than failing the call. Element refs from earlier snapshots are \
+     invalidated by navigation.";
 pub const SNAPSHOT_ID: &str = "browser::snapshot";
 pub const SNAPSHOT_DESC: &str =
     "Read the page as an accessibility-tree outline. Lines carry [ref=eN] handles that \
@@ -134,8 +138,8 @@ pub const NETWORK_READ_DESC: &str =
      failed_only=true is the fast path for 'what broke'.";
 pub const HISTORY_ID: &str = "browser::history";
 pub const HISTORY_DESC: &str =
-    "Go back, go forward, or reload the session's page. Back/forward at the history edge is a \
-     no-op with moved=false.";
+    "Go back, go forward, or reload the tab's page. History survives the tab sleeping and the \
+     worker restarting. Back/forward at the history edge is a no-op with moved=false.";
 pub const DOM_READ_ID: &str = "browser::dom::read";
 pub const DOM_READ_DESC: &str =
     "Read the DOM as a tree of tags with id/class and refs. Structure-oriented complement to \
@@ -150,8 +154,9 @@ pub const STYLES_WRITE_DESC: &str =
      page's source files are untouched, and the edit dies with the next navigation.";
 pub const SCREENCAST_START_ID: &str = "browser::screencast::start";
 pub const SCREENCAST_START_DESC: &str =
-    "Internal: start pushing live viewport frames for browser::frame. Console-UI plumbing; \
-     agents use browser::screenshot. Not an agent function.";
+    "Internal: start the live viewport feed — frames arrive on the browser::frame-event \
+     trigger and browser::frame reads the newest. Console-UI plumbing; agents use \
+     browser::screenshot. Not an agent function.";
 pub const SCREENCAST_STOP_ID: &str = "browser::screencast::stop";
 pub const SCREENCAST_STOP_DESC: &str =
     "Internal: stop the live frame push. Idempotent. Not an agent function.";
@@ -205,8 +210,14 @@ pub const HISTORY_LIST_DESC: &str =
      forward / reloads.";
 pub const CLEAR_DATA_ID: &str = "browser::clear-data";
 pub const CLEAR_DATA_DESC: &str =
-    "Clear the session's browsing data (cookies, cache, storage), like the browser's Clear \
-     browsing data. Scoped to this session's browser context.";
+    "Clear the browsing data of the site the tab is on: its cookies, its storage, and the \
+     shared cache — like a browser's per-site 'Clear cookies and site data'. Other sites keep \
+     their logins; browser::clear-browser-data wipes everything.";
+pub const CLEAR_BROWSER_DATA_ID: &str = "browser::clear-browser-data";
+pub const CLEAR_BROWSER_DATA_DESC: &str =
+    "Clear ALL browser data: closes every tab's page, quits Chromium, and deletes the profile \
+     (every site's cookies, logins, storage, cache) and the downloads on disk. Tabs stay and \
+     reopen signed out. Incognito tabs are closed.";
 pub const DOWNLOADS_LIST_ID: &str = "browser::downloads::list";
 pub const DOWNLOADS_LIST_DESC: &str =
     "The files this session downloaded (name, url, size, state), newest first. Downloads are \
@@ -235,7 +246,9 @@ pub const COOKIES_SET_DESC: &str =
     "Set cookies on the session, like importing a cookie file. A cookie without a domain is \
      scoped to the current page's URL. same_site is Strict, Lax, or None.";
 pub const COOKIES_CLEAR_ID: &str = "browser::cookies::clear";
-pub const COOKIES_CLEAR_DESC: &str = "Clear all of the session's cookies.";
+pub const COOKIES_CLEAR_DESC: &str =
+    "Delete the cookies the tab's current page can see (its site's cookies). Other sites keep \
+     theirs; browser::clear-browser-data removes everything.";
 
 /// One wire-surface entry: everything the golden schema test pins.
 pub struct FunctionSpec {
@@ -335,6 +348,10 @@ pub fn catalog() -> Vec<FunctionSpec> {
             CLEAR_DATA_ID,
             CLEAR_DATA_DESC,
         ),
+        spec::<clear_data::ClearBrowserDataInput, clear_data::ClearBrowserDataOutput>(
+            CLEAR_BROWSER_DATA_ID,
+            CLEAR_BROWSER_DATA_DESC,
+        ),
         spec::<downloads::DownloadsListInput, downloads::DownloadsListOutput>(
             DOWNLOADS_LIST_ID,
             DOWNLOADS_LIST_DESC,
@@ -396,6 +413,7 @@ pub fn register_all(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     register_pdf(iii, sessions);
     register_history_list(iii, sessions);
     register_clear_data(iii, sessions);
+    register_clear_browser_data(iii, sessions);
     register_downloads_list(iii, sessions);
     register_download(iii, sessions);
     register_download_remove(iii, sessions);
@@ -435,12 +453,25 @@ fn origin_of(url: &str) -> Option<String> {
     }
 }
 
-fn get_session(sessions: &Sessions, id: &str) -> Result<Arc<Session>, Error> {
-    sessions.get(id).ok_or_else(|| {
+/// The tab's live session, waking it if it sleeps: any call is a selection.
+async fn get_session(sessions: &Arc<Sessions>, id: &str) -> Result<Arc<Session>, Error> {
+    sessions.activate(id).await.map_err(handler_err)
+}
+
+/// The tab record, live or asleep.
+fn get_tab(sessions: &Sessions, id: &str) -> Result<Arc<Tab>, Error> {
+    sessions.tab(id).ok_or_else(|| {
         handler_err(format!(
-            "unknown session '{id}'; list live sessions with browser::sessions::list"
+            "unknown session '{id}'; list tabs with browser::sessions::list"
         ))
     })
+}
+
+/// The live session for a read that must not wake a sleeping tab: `None`
+/// while the tab sleeps, an error for an unknown id.
+fn live_session(sessions: &Sessions, id: &str) -> Result<Option<Arc<Session>>, Error> {
+    get_tab(sessions, id)?;
+    Ok(sessions.get(id))
 }
 
 /// Read-only guard shared by every interaction function. Inspection and
@@ -523,8 +554,14 @@ fn register_sessions_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     sessions::check_scheme(&config, url).map_err(handler_err)?;
                     ensure_origin_permission(&config, url, OriginPermission::Access)?;
                 }
-                let session = sx
-                    .start(req.url, req.headful, req.read_only.unwrap_or(false))
+                let (session, error) = sx
+                    .open(OpenRequest {
+                        url: req.url,
+                        headful: req.headful,
+                        read_only: req.read_only.unwrap_or(false),
+                        incognito: req.incognito.unwrap_or(false),
+                        ttl_ms: req.ttl_ms,
+                    })
                     .await
                     .map_err(handler_err)?;
                 let url = session
@@ -534,16 +571,6 @@ fn register_sessions_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     .ok()
                     .flatten()
                     .unwrap_or_else(|| "about:blank".to_string());
-                let title = tokio::time::timeout(
-                    std::time::Duration::from_secs(2),
-                    session.page.get_title(),
-                )
-                .await
-                .ok()
-                .and_then(|r| r.ok())
-                .flatten()
-                .unwrap_or_default();
-                session.record_visit(&url, &title);
                 sx.emitter
                     .emit(
                         EventKind::SessionStarted,
@@ -561,6 +588,8 @@ fn register_sessions_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     url,
                     headless: session.headless,
                     read_only: session.read_only,
+                    incognito: session.incognito,
+                    error,
                 })
             }
         })
@@ -575,31 +604,51 @@ fn register_sessions_list(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |_req: sessions::ListInput| {
             let sx = sx.clone();
             async move {
-                // Each session's url + title are two independent CDP
-                // round-trips, and sessions are independent of each other:
-                // join both axes so the whole list costs one round-trip time
-                // instead of 2N. This is re-read on every lifecycle trigger
-                // plus a poll fallback.
-                let out =
-                    futures::future::join_all(sx.list().into_iter().map(|session| async move {
-                        let (url, title) =
-                            futures::join!(session.page.url(), session.page.get_title());
-                        let console_entries = {
-                            let buf = session.console.lock().unwrap_or_else(|p| p.into_inner());
-                            buf.len() as u64
+                // A live tab's url + title are two independent CDP
+                // round-trips, and tabs are independent of each other: join
+                // both axes so the whole list costs one round-trip time
+                // instead of 2N. A sleeping tab answers from its record. The
+                // fresh title is written back so the record (and the tab
+                // strip after the tab sleeps) keeps what the page last said.
+                let headless_default = sx.config.load().headless;
+                let out = futures::future::join_all(sx.list_tabs().into_iter().map(|tab| {
+                    let live = sx.get(&tab.id);
+                    async move {
+                        let (headless, console_entries) = match &live {
+                            Some(session) => {
+                                let (url, title) =
+                                    futures::join!(session.page.url(), session.page.get_title());
+                                let url = url.ok().flatten().unwrap_or_default();
+                                let title = title.ok().flatten();
+                                if !tab.attached || !url.is_empty() {
+                                    tab.set_location(&url, title.as_deref());
+                                }
+                                let entries = session
+                                    .console
+                                    .lock()
+                                    .unwrap_or_else(|p| p.into_inner())
+                                    .len() as u64;
+                                (session.headless, entries)
+                            }
+                            None => (headless_default, 0),
                         };
+                        let title = tab.title();
                         sessions::SessionInfo {
-                            session_id: session.id.clone(),
-                            url: url.ok().flatten().unwrap_or_default(),
-                            title: title.ok().flatten(),
-                            headless: session.headless,
-                            read_only: session.read_only,
-                            created_ms: session.created_ms,
-                            last_used_ms: session.last_used_ms(),
+                            session_id: tab.id.clone(),
+                            url: tab.url(),
+                            title: (!title.is_empty()).then_some(title),
+                            headless,
+                            read_only: tab.read_only,
+                            incognito: tab.incognito,
+                            active: live.is_some(),
+                            ttl_ms: tab.ttl_ms,
+                            created_ms: tab.created_ms,
+                            last_used_ms: tab.last_used_ms(),
                             console_entries,
                         }
-                    }))
-                    .await;
+                    }
+                }))
+                .await;
                 Ok::<_, Error>(sessions::ListOutput { sessions: out })
             }
         })
@@ -700,7 +749,7 @@ fn register_tabs_list(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                          config to inspect a running browser's tabs.",
                     ));
                 }
-                let tabs = sx.list_tabs(&req.cdp_url).await.map_err(handler_err)?;
+                let tabs = sx.remote_tabs(&req.cdp_url).await.map_err(handler_err)?;
                 Ok::<_, Error>(attach::TabsListOutput { tabs })
             }
         })
@@ -718,33 +767,40 @@ fn register_navigate(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                 let cfg = sx.config.load_full();
                 sessions::check_scheme(&cfg, &req.url).map_err(handler_err)?;
                 ensure_origin_permission(&cfg, &req.url, OriginPermission::Access)?;
-                let session = get_session(&sx, &req.session_id)?;
+                let session = get_session(&sx, &req.session_id).await?;
                 session.touch();
                 let wait = Duration::from_millis(cfg.clamp_timeout(req.timeout_ms));
                 let _navigation = session.navigation_lock.lock().await;
                 session.clear_navigation_error();
 
-                if let Err(error) = session.page.goto(req.url.as_str()).await {
-                    if let Some(policy_error) = session.take_navigation_error() {
-                        return Err(handler_err(policy_error));
-                    }
-                    return Err(handler_err(format!("navigation failed: {error}")));
+                let allow_http = cfg.allowed_schemes.iter().any(|s| s == "http");
+                let navigation = session.navigate_like_a_browser(&req.url, allow_http).await;
+                if let Some(policy_error) = session.take_navigation_error() {
+                    return Err(handler_err(policy_error));
                 }
-                let timed_out = timeout(wait, session.page.wait_for_navigation())
-                    .await
-                    .is_err();
+                let (_, error) = navigation.map_err(handler_err)?;
+                // An error page is committed already; only a real load waits.
+                let timed_out = error.is_none()
+                    && timeout(wait, session.page.wait_for_navigation())
+                        .await
+                        .is_err();
                 if let Some(policy_error) = session.take_navigation_error() {
                     return Err(handler_err(policy_error));
                 }
 
                 let url = session.page.url().await.ok().flatten().unwrap_or(req.url);
                 let title = session.page.get_title().await.ok().flatten();
+                session.tab.commit_location(&url, title.as_deref());
+                if session.tab.persists() {
+                    sx.persist();
+                }
                 session.touch();
                 Ok::<_, Error>(navigate::NavigateOutput {
-                    ok: true,
+                    ok: error.is_none(),
                     url,
                     title,
                     timed_out,
+                    error,
                 })
             }
         })
@@ -759,7 +815,7 @@ fn register_snapshot(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: snapshot::SnapshotInput| {
             let sx = sx.clone();
             async move {
-                let session = get_session(&sx, &req.session_id)?;
+                let session = get_session(&sx, &req.session_id).await?;
                 session.touch();
                 let cfg = sx.config.load_full();
 
@@ -830,7 +886,7 @@ fn register_screenshot(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: screenshot::ScreenshotInput| {
             let sx = sx.clone();
             async move {
-                let session = get_session(&sx, &req.session_id)?;
+                let session = get_session(&sx, &req.session_id).await?;
                 session.touch();
                 let cfg = sx.config.load_full();
 
@@ -1048,7 +1104,7 @@ fn register_act(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: act::ActInput| {
             let sx = sx.clone();
             async move {
-                let session = get_session(&sx, &req.session_id)?;
+                let session = get_session(&sx, &req.session_id).await?;
                 ensure_writable(&session, "browser::act")?;
                 session.touch();
 
@@ -1190,7 +1246,7 @@ fn register_evaluate(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: evaluate::EvaluateInput| {
             let sx = sx.clone();
             async move {
-                let session = get_session(&sx, &req.session_id)?;
+                let session = get_session(&sx, &req.session_id).await?;
                 ensure_writable(&session, "browser::evaluate")?;
                 session.touch();
                 let cfg = sx.config.load();
@@ -1228,7 +1284,7 @@ fn register_execute(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: execute::ExecuteInput| {
             let sx = sx.clone();
             async move {
-                let session = get_session(&sx, &req.session_id)?;
+                let session = get_session(&sx, &req.session_id).await?;
                 ensure_writable(&session, "browser::execute")?;
                 session.touch();
                 let cfg = sx.config.load_full();
@@ -1352,7 +1408,7 @@ fn register_handoff(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: handoff::HandoffInput| {
             let sx = sx.clone();
             async move {
-                let session = get_session(&sx, &req.session_id)?;
+                let session = get_session(&sx, &req.session_id).await?;
                 session.touch();
                 let cfg = sx.config.load_full();
                 let wait = Duration::from_millis(cfg.clamp_timeout(req.timeout_ms));
@@ -1487,7 +1543,7 @@ fn register_doctor(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     });
                 }
 
-                let active_sessions = sx.count() as u64;
+                let active_sessions = sx.live_count() as u64;
                 if active_sessions >= cfg.max_sessions {
                     issues.push(doctor::DoctorIssue {
                         what: format!(
@@ -1517,6 +1573,9 @@ fn register_doctor(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     headless_default: cfg.headless,
                     max_sessions: cfg.max_sessions,
                     active_sessions,
+                    open_tabs: sx.tab_count() as u64,
+                    browser_running: sx.browser_running().await,
+                    data_dir: sx.data_dir.display().to_string(),
                     allowed_schemes: cfg.allowed_schemes.clone(),
                     configured_origin_policies: cfg
                         .origin_policies
@@ -1543,7 +1602,15 @@ fn register_console_read(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: console::ConsoleReadInput| {
             let sx = sx.clone();
             async move {
-                let session = get_session(&sx, &req.session_id)?;
+                // Reading logs never wakes a sleeping tab: its buffers went
+                // with the page, so the answer is simply empty.
+                let Some(session) = live_session(&sx, &req.session_id)? else {
+                    return Ok::<_, Error>(console::ConsoleReadOutput {
+                        entries: Vec::new(),
+                        last_seq: req.since_seq.unwrap_or(0),
+                        dropped: 0,
+                    });
+                };
                 session.touch();
                 let matcher = req
                     .pattern
@@ -1589,7 +1656,13 @@ fn register_network_read(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: network::NetworkReadInput| {
             let sx = sx.clone();
             async move {
-                let session = get_session(&sx, &req.session_id)?;
+                let Some(session) = live_session(&sx, &req.session_id)? else {
+                    return Ok::<_, Error>(network::NetworkReadOutput {
+                        entries: Vec::new(),
+                        last_seq: req.since_seq.unwrap_or(0),
+                        dropped: 0,
+                    });
+                };
                 session.touch();
                 let matcher = req
                     .pattern
@@ -1629,7 +1702,7 @@ fn register_pick_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: pick::PickStartInput| {
             let sx = sx.clone();
             async move {
-                let session = get_session(&sx, &req.session_id)?;
+                let session = get_session(&sx, &req.session_id).await?;
                 session.touch();
                 // Enable the DOM domain so getNodeForLocation can hit-test.
                 // The pick itself is resolved by browser::pick::resolve from
@@ -1653,7 +1726,7 @@ fn register_pick_resolve(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: pick::PickResolveInput| {
             let sx = sx.clone();
             async move {
-                let session = get_session(&sx, &req.session_id)?;
+                let session = get_session(&sx, &req.session_id).await?;
                 session.touch();
                 crate::session::resolve_pick_at(&sx, &session, req.x, req.y)
                     .await
@@ -1718,7 +1791,7 @@ fn register_find_in_page(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: find_in_page::FindInput| {
             let sx = sx.clone();
             async move {
-                let session = get_session(&sx, &req.session_id)?;
+                let session = get_session(&sx, &req.session_id).await?;
                 ensure_writable(&session, "browser::find-in-page")?;
                 session.touch();
                 let action = req.action.as_deref().unwrap_or("search");
@@ -1763,7 +1836,7 @@ fn register_zoom(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: zoom::ZoomInput| {
             let sx = sx.clone();
             async move {
-                let session = get_session(&sx, &req.session_id)?;
+                let session = get_session(&sx, &req.session_id).await?;
                 let action = req.action.as_deref().unwrap_or(if req.level.is_some() {
                     "set"
                 } else {
@@ -1813,7 +1886,7 @@ fn register_pdf(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: pdf::PdfInput| {
             let sx = sx.clone();
             async move {
-                let session = get_session(&sx, &req.session_id)?;
+                let session = get_session(&sx, &req.session_id).await?;
                 session.touch();
                 let mut params = cdp_page::PrintToPdfParams::builder()
                     .landscape(req.landscape.unwrap_or(false))
@@ -1879,7 +1952,7 @@ fn register_cookies_list(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: cookies::CookiesListInput| {
             let sx = sx.clone();
             async move {
-                let session = get_session(&sx, &req.session_id)?;
+                let session = get_session(&sx, &req.session_id).await?;
                 let result = session
                     .page
                     .execute(cdp_network::GetCookiesParams::default())
@@ -1918,7 +1991,7 @@ fn register_cookies_set(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: cookies::CookiesSetInput| {
             let sx = sx.clone();
             async move {
-                let session = get_session(&sx, &req.session_id)?;
+                let session = get_session(&sx, &req.session_id).await?;
                 ensure_writable(&session, "browser::cookies::set")?;
                 if !sx.config.load().allow_cookie_import {
                     return Err(handler_err(
@@ -1958,6 +2031,29 @@ fn register_cookies_set(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     );
 }
 
+/// Delete the cookies the tab's current page can see, one by one: the
+/// profile is shared by every regular tab, so the browser-wide
+/// `Network.clearBrowserCookies` would sign every other site out too.
+async fn delete_site_cookies(session: &Session) -> Result<usize, Error> {
+    let result = session
+        .page
+        .execute(cdp_network::GetCookiesParams::default())
+        .await
+        .map_err(|e| handler_err(format!("get cookies failed: {e}")))?;
+    let cookies = &result.result.cookies;
+    for cookie in cookies {
+        let mut params = cdp_network::DeleteCookiesParams::new(cookie.name.clone());
+        params.domain = Some(cookie.domain.clone());
+        params.path = Some(cookie.path.clone());
+        session
+            .page
+            .execute(params)
+            .await
+            .map_err(|e| handler_err(format!("delete cookie failed: {e}")))?;
+    }
+    Ok(cookies.len())
+}
+
 fn register_cookies_clear(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     let sx = sessions.clone();
     iii.register_function(
@@ -1965,14 +2061,10 @@ fn register_cookies_clear(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: cookies::CookiesClearInput| {
             let sx = sx.clone();
             async move {
-                let session = get_session(&sx, &req.session_id)?;
+                let session = get_session(&sx, &req.session_id).await?;
                 ensure_writable(&session, "browser::cookies::clear")?;
                 session.touch();
-                session
-                    .page
-                    .execute(cdp_network::ClearBrowserCookiesParams::default())
-                    .await
-                    .map_err(|e| handler_err(format!("clear cookies failed: {e}")))?;
+                delete_site_cookies(&session).await?;
                 Ok::<_, Error>(cookies::CookiesClearOutput { ok: true })
             }
         })
@@ -1987,7 +2079,7 @@ fn register_resize(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: resize::ResizeInput| {
             let sx = sx.clone();
             async move {
-                let session = get_session(&sx, &req.session_id)?;
+                let session = get_session(&sx, &req.session_id).await?;
                 ensure_writable(&session, "browser::resize")?;
                 session.touch();
                 let mut width = resize::clamp(req.width);
@@ -2055,8 +2147,8 @@ fn register_history_list(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                         "browser::history::list is denied by allow_history_access=false",
                     ));
                 }
-                let session = get_session(&sx, &req.session_id)?;
-                let visits = session.history.lock().unwrap_or_else(|p| p.into_inner());
+                let tab = get_tab(&sx, &req.session_id)?;
+                let visits = tab.history.lock().unwrap_or_else(|p| p.into_inner());
                 let out =
                     history_list::select(&visits, req.query.as_deref(), req.limit.unwrap_or(100));
                 Ok::<_, Error>(history_list::HistoryListOutput { visits: out })
@@ -2073,16 +2165,12 @@ fn register_clear_data(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: clear_data::ClearDataInput| {
             let sx = sx.clone();
             async move {
-                let session = get_session(&sx, &req.session_id)?;
+                let session = get_session(&sx, &req.session_id).await?;
                 ensure_writable(&session, "browser::clear-data")?;
                 session.touch();
                 let mut cleared = Vec::new();
                 if req.cookies.unwrap_or(true) {
-                    session
-                        .page
-                        .execute(cdp_network::ClearBrowserCookiesParams::default())
-                        .await
-                        .map_err(|e| handler_err(format!("clear cookies failed: {e}")))?;
+                    delete_site_cookies(&session).await?;
                     cleared.push("cookies".to_string());
                 }
                 if req.cache.unwrap_or(true) {
@@ -2114,6 +2202,25 @@ fn register_clear_data(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     );
 }
 
+fn register_clear_browser_data(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
+    let sx = sessions.clone();
+    iii.register_function(
+        CLEAR_BROWSER_DATA_ID,
+        RegisterFunction::new_async(move |_req: clear_data::ClearBrowserDataInput| {
+            let sx = sx.clone();
+            async move {
+                let closed_pages = sx.clear_browser_data().await.map_err(handler_err)?;
+                Ok::<_, Error>(clear_data::ClearBrowserDataOutput {
+                    ok: true,
+                    closed_pages: closed_pages as u64,
+                    profile_dir: sx.profile_dir().display().to_string(),
+                })
+            }
+        })
+        .description(CLEAR_BROWSER_DATA_DESC),
+    );
+}
+
 fn register_downloads_list(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
     let sx = sessions.clone();
     iii.register_function(
@@ -2121,8 +2228,8 @@ fn register_downloads_list(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: downloads::DownloadsListInput| {
             let sx = sx.clone();
             async move {
-                let session = get_session(&sx, &req.session_id)?;
-                let mut list = session
+                let tab = get_tab(&sx, &req.session_id)?;
+                let mut list = tab
                     .downloads
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
@@ -2142,9 +2249,9 @@ fn register_download(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: downloads::DownloadInput| {
             let sx = sx.clone();
             async move {
-                let session = get_session(&sx, &req.session_id)?;
+                let tab = get_tab(&sx, &req.session_id)?;
                 let (file_name, url, dir) = {
-                    let downloads = session.downloads.lock().unwrap_or_else(|p| p.into_inner());
+                    let downloads = tab.downloads.lock().unwrap_or_else(|p| p.into_inner());
                     let record = downloads
                         .iter()
                         .find(|d| d.guid == req.guid)
@@ -2152,7 +2259,7 @@ fn register_download(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     (
                         record.file_name.clone(),
                         record.url.clone(),
-                        session.downloads_dir.clone(),
+                        tab.downloads_dir.clone(),
                     )
                 };
                 ensure_origin_permission(&sx.config.load(), &url, OriginPermission::Downloads)?;
@@ -2194,22 +2301,21 @@ fn register_download_remove(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: downloads::DownloadRemoveInput| {
             let sx = sx.clone();
             async move {
-                let session = get_session(&sx, &req.session_id)?;
-                // Only a guid the session actually recorded names a file the
+                let tab = get_tab(&sx, &req.session_id)?;
+                // Only a guid the tab actually recorded names a file the
                 // worker wrote; anything else must not reach the filesystem.
                 let known = {
-                    let downloads = session.downloads.lock().unwrap_or_else(|p| p.into_inner());
+                    let downloads = tab.downloads.lock().unwrap_or_else(|p| p.into_inner());
                     downloads.iter().any(|d| d.guid == req.guid)
                 };
                 if !known {
                     return Err(handler_err(format!("no download '{}'", req.guid)));
                 }
                 ensure_safe_guid(&req.guid)?;
-                if let Some(dir) = &session.downloads_dir {
+                if let Some(dir) = &tab.downloads_dir {
                     let _ = std::fs::remove_file(dir.join(&req.guid));
                 }
-                session
-                    .downloads
+                tab.downloads
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .retain(|d| d.guid != req.guid);
@@ -2227,7 +2333,7 @@ fn register_upload(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: upload::UploadInput| {
             let sx = sx.clone();
             async move {
-                let session = get_session(&sx, &req.session_id)?;
+                let session = get_session(&sx, &req.session_id).await?;
                 ensure_writable(&session, "browser::upload")?;
                 upload::validate_files(&req.files).map_err(handler_err)?;
                 session.touch();
@@ -2341,7 +2447,7 @@ fn register_history(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: history::HistoryInput| {
             let sx = sx.clone();
             async move {
-                let session = get_session(&sx, &req.session_id)?;
+                let session = get_session(&sx, &req.session_id).await?;
                 session.touch();
 
                 let moved = match req.action.as_str() {
@@ -2354,21 +2460,39 @@ fn register_history(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                         true
                     }
                     dir @ ("back" | "forward") => {
+                        let back = dir == "back";
                         let history = session
                             .page
                             .execute(cdp_page::GetNavigationHistoryParams::default())
                             .await
                             .map_err(|e| handler_err(format!("history read failed: {e}")))?;
-                        let target = if dir == "back" {
+                        let target = if back {
                             history.current_index - 1
                         } else {
                             history.current_index + 1
                         };
+                        // The tab's own stack moves with Chromium's so the
+                        // two stay aligned; it is also what remains after the
+                        // page slept or the worker restarted.
+                        let remembered = session
+                            .tab
+                            .nav
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .neighbour(back);
                         match usize::try_from(target)
                             .ok()
                             .and_then(|i| history.entries.get(i))
                         {
                             Some(entry) => {
+                                if let Some((index, _)) = remembered {
+                                    session
+                                        .tab
+                                        .nav
+                                        .lock()
+                                        .unwrap_or_else(|p| p.into_inner())
+                                        .set_pending(index);
+                                }
                                 session
                                     .page
                                     .execute(cdp_page::NavigateToHistoryEntryParams::new(entry.id))
@@ -2378,7 +2502,19 @@ fn register_history(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                                     })?;
                                 true
                             }
-                            None => false,
+                            None => match remembered {
+                                Some((index, url)) => {
+                                    session
+                                        .tab
+                                        .nav
+                                        .lock()
+                                        .unwrap_or_else(|p| p.into_inner())
+                                        .set_pending(index);
+                                    session.navigate(&url).await.map_err(handler_err)?;
+                                    true
+                                }
+                                None => false,
+                            },
                         }
                     }
                     other => {
@@ -2393,6 +2529,13 @@ fn register_history(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                     let _ = timeout(wait, session.page.wait_for_navigation()).await;
                 }
                 let url = session.page.url().await.ok().flatten().unwrap_or_default();
+                if moved {
+                    let title = session.page.get_title().await.ok().flatten();
+                    session.tab.commit_location(&url, title.as_deref());
+                    if session.tab.persists() {
+                        sx.persist();
+                    }
+                }
                 session.touch();
                 Ok::<_, Error>(history::HistoryOutput {
                     ok: true,
@@ -2460,7 +2603,7 @@ fn register_dom_read(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: dom::DomReadInput| {
             let sx = sx.clone();
             async move {
-                let session = get_session(&sx, &req.session_id)?;
+                let session = get_session(&sx, &req.session_id).await?;
                 session.touch();
                 let depth = i64::from(req.depth.unwrap_or(dom::DEFAULT_DEPTH).clamp(1, 20));
 
@@ -2534,7 +2677,7 @@ fn register_styles_read(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: styles::StylesReadInput| {
             let sx = sx.clone();
             async move {
-                let session = get_session(&sx, &req.session_id)?;
+                let session = get_session(&sx, &req.session_id).await?;
                 session.touch();
                 let backend_id = session.resolve_ref_or_err(&req.r#ref)?;
                 let node_id = frontend_node_id(&session, backend_id).await?;
@@ -2592,7 +2735,7 @@ fn register_styles_write(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: styles::StylesWriteInput| {
             let sx = sx.clone();
             async move {
-                let session = get_session(&sx, &req.session_id)?;
+                let session = get_session(&sx, &req.session_id).await?;
                 ensure_writable(&session, "browser::styles::write")?;
                 session.touch();
                 let backend_id = session.resolve_ref_or_err(&req.r#ref)?;
@@ -2676,14 +2819,16 @@ fn register_pick_hint(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: hint::PickHintInput| {
             let sx = sx.clone();
             async move {
-                let session = get_session(&sx, &req.session_id)?;
-
                 let miss = hint::PickHintOutput {
                     hit: false,
                     tag: None,
                     id: None,
                     classes: None,
                     bounds: None,
+                };
+                // Hover sampling runs at cursor cadence; it never wakes a tab.
+                let Some(session) = live_session(&sx, &req.session_id)? else {
+                    return Ok::<_, Error>(miss);
                 };
                 let located = match session
                     .page
@@ -2743,7 +2888,7 @@ fn register_screencast_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: frame::ScreencastStartInput| {
             let sx = sx.clone();
             async move {
-                let session = get_session(&sx, &req.session_id)?;
+                let session = get_session(&sx, &req.session_id).await?;
                 session.touch();
                 // Register a console viewer as a screencast consumer; the CDP
                 // screencast starts on the first consumer (see
@@ -2786,20 +2931,6 @@ fn register_screencast_stop(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
                         .page
                         .evaluate(overlays::remove_ghost_cursor_script())
                         .await;
-                    // Drop the last frame from the stream so a later
-                    // subscriber does not see a stale image.
-                    let _ = sx
-                        .iii
-                        .trigger(iii_sdk::protocol::TriggerRequest {
-                            function_id: "stream::delete".to_string(),
-                            payload: json!({
-                                "stream_name": crate::session::FRAMES_STREAM,
-                                "group_id": req.session_id,
-                            }),
-                            action: None,
-                            timeout_ms: Some(5_000),
-                        })
-                        .await;
                 }
                 Ok::<_, Error>(pick::AckOutput { ok: true })
             }
@@ -2816,10 +2947,10 @@ fn register_recording_start(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: recording::RecordingStartInput| {
             let sx = sx.clone();
             async move {
-                get_session(&sx, &req.session_id)?;
+                let session = get_session(&sx, &req.session_id).await?;
                 let (format, codec) =
                     recording::resolve_format(req.format.as_deref()).map_err(handler_err)?;
-                sx.start_recording(&req.session_id, &req.path, codec)
+                sx.start_recording(&session, &req.path, codec)
                     .await
                     .map_err(handler_err)?;
                 Ok::<_, Error>(recording::RecordingStartOutput {
@@ -2868,7 +2999,16 @@ fn register_frame(iii: &Arc<IIIClient>, sessions: &Arc<Sessions>) {
         RegisterFunction::new_async(move |req: frame::FrameInput| {
             let sx = sx.clone();
             async move {
-                let session = get_session(&sx, &req.session_id)?;
+                let Some(session) = live_session(&sx, &req.session_id)? else {
+                    return Ok::<_, Error>(frame::FrameOutput {
+                        frame: None,
+                        width: 0,
+                        height: 0,
+                        frame_seq: 0,
+                        timestamp: 0,
+                        active: false,
+                    });
+                };
                 let active = session.screencast_on();
                 // Clone the Arc under the lock and release it before copying
                 // the base64 payload, so the push-rate pump never waits

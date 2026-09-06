@@ -128,7 +128,7 @@ async fn run(deps: &Deps, payload: TurnStepPayload) -> Result<TurnStepResult, Ha
             }
             Err(e) => {
                 tracing::error!(session_id = %session_id, turn_id = %turn_id, error = %e, "turn step failed; finalising turn as failed");
-                break turn_loop::fail_turn(deps, &session_id, &turn_id, &e.to_string()).await;
+                break turn_loop::fail_turn(deps, &session_id, &turn_id, &e.to_string()).await?;
             }
         }
     };

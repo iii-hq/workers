@@ -726,7 +726,6 @@ export function CronSchedulesPage({
           title: 'New schedule',
           detail: 'Open the manual schedule form',
           keywords: ['create', 'cron', 'add'],
-          shortcut: 'N',
           run: () => {
             setView('tasks')
             setReplacementTask(null)
@@ -738,7 +737,6 @@ export function CronSchedulesPage({
           title: 'Search schedules',
           detail: 'Filter schedules and system bindings by name',
           keywords: ['filter', 'find'],
-          shortcut: '/',
           run: () => searchRef.current?.focus(),
         },
         {
@@ -746,7 +744,6 @@ export function CronSchedulesPage({
           title: 'Refresh',
           detail: 'Reload schedules and system bindings',
           keywords: ['reload'],
-          shortcut: 'R',
           run: () => void refreshAll(),
         },
       ]),

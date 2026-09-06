@@ -1,174 +1,77 @@
 import type { SessionTurnSummaryProps } from '@iii-dev/console-ui'
 import { ChevronDown, Files } from 'lucide-react'
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react'
-import {
-  emitShellReviewFileSelection,
-  useShellReviewSummary,
-} from './review-summary-store'
+import { useId, useRef } from 'react'
+import { emitShellReviewFileSelection, useShellReviewSummary } from './review-summary-store'
 
+const POPOVER_GAP_PX = 6
+
+/* The chat footer's "N files changed" pill. Its file list is a native
+   popover: the top layer escapes the footer's overflow clip, and the browser
+   owns the open state, light dismiss, Escape and focus return. */
 export function ShellTurnSummary({ sessionId }: SessionTurnSummaryProps) {
   const summary = useShellReviewSummary(sessionId)
-  const summaryIdentity =
-    summary && summary.files.length > 0
-      ? `${sessionId}\u0000${summary.sourceId}\u0000${summary.turnId}`
-      : null
-  const [openIdentity, setOpenIdentity] = useState<string | null>(null)
-  const open = summaryIdentity !== null && openIdentity === summaryIdentity
-  const rootRef = useRef<HTMLDivElement>(null)
-  const triggerRef = useRef<HTMLButtonElement>(null)
-  const focusWithinRef = useRef(false)
-
-  const totals = useMemo(
-    () =>
-      summary?.files.reduce(
-        (total, file) => ({
-          add: total.add + (file.add ?? 0),
-          del: total.del + (file.del ?? 0),
-          ready: total.ready + (file.state === 'ready' ? 1 : 0),
-          pending: total.pending + (file.state === 'pending' ? 1 : 0),
-          unavailable:
-            total.unavailable + (file.state === 'unavailable' ? 1 : 0),
-        }),
-        { add: 0, del: 0, ready: 0, pending: 0, unavailable: 0 },
-      ) ?? { add: 0, del: 0, ready: 0, pending: 0, unavailable: 0 },
-    [summary],
-  )
-
-  const closeAndRestoreFocus = useCallback(() => {
-    setOpenIdentity(null)
-    triggerRef.current?.focus()
-  }, [])
-
-  // The open state belongs to one concrete summary. Clear the old identity
-  // before paint so switching away and later returning cannot reopen it.
-  useLayoutEffect(() => {
-    if (openIdentity !== null && openIdentity !== summaryIdentity) {
-      setOpenIdentity(null)
-    }
-  }, [openIdentity, summaryIdentity])
-
-  // A source/turn replacement closes before paint. If focus belonged to the
-  // outgoing popover, return it to the persistent trigger before that subtree
-  // becomes inert (or the summary unmounts altogether).
-  useLayoutEffect(() => {
-    const root = rootRef.current
-    const trigger = triggerRef.current
-    const slot = root?.closest<HTMLElement>('[data-chat-turn-summary-slot]')
-    const composer = slot?.nextElementSibling
-    const focusableSelector =
-      'textarea:not([disabled]), input:not([disabled]), [contenteditable="true"], button:not([disabled]), [tabindex]:not([tabindex="-1"])'
-    const fallback = composer?.matches(focusableSelector)
-      ? (composer as HTMLElement)
-      : composer?.querySelector<HTMLElement>(focusableSelector)
-
-    return () => {
-      const hadFocus =
-        focusWithinRef.current ||
-        Boolean(root?.contains(document.activeElement))
-      if (!hadFocus) return
-      focusWithinRef.current = false
-
-      trigger?.focus()
-      focusWithinRef.current = Boolean(
-        trigger?.isConnected && root?.contains(document.activeElement),
-      )
-      // When an empty summary removes its trigger too, hand focus to the
-      // adjacent composer after React has finished the commit.
-      queueMicrotask(() => {
-        if (
-          !trigger?.isConnected &&
-          fallback?.isConnected &&
-          document.activeElement === document.body
-        ) {
-          fallback.focus()
-        }
-      })
-    }
-  }, [summaryIdentity])
-
-  useEffect(() => {
-    if (!open) return
-    const onPointerDown = (event: PointerEvent) => {
-      if (rootRef.current?.contains(event.target as Node)) return
-      if (rootRef.current?.contains(document.activeElement)) {
-        triggerRef.current?.focus()
-      }
-      setOpenIdentity(null)
-    }
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
-      closeAndRestoreFocus()
-    }
-    document.addEventListener('pointerdown', onPointerDown, true)
-    document.addEventListener('keydown', onKeyDown)
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown, true)
-      document.removeEventListener('keydown', onKeyDown)
-    }
-  }, [closeAndRestoreFocus, open])
+  const popoverId = useId()
+  const popoverRef = useRef<HTMLDivElement>(null)
 
   if (!summary || summary.files.length === 0) return null
 
+  let add = 0
+  let del = 0
+  let ready = 0
+  for (const file of summary.files) {
+    if (file.state !== 'ready') continue
+    ready += 1
+    add += file.add ?? 0
+    del += file.del ?? 0
+  }
+  const withoutTotals = summary.files.length - ready
   const fileLabel = summary.files.length === 1 ? 'file' : 'files'
 
   return (
-    <div
-      ref={rootRef}
-      className="shui-chat-summary"
-      onFocusCapture={() => {
-        focusWithinRef.current = true
-      }}
-      onBlurCapture={(event) => {
-        if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
-          return
-        }
-        focusWithinRef.current = false
-      }}
-    >
+    <div className="shui-chat-summary">
       <button
-        ref={triggerRef}
         type="button"
         className="shui-chat-summary-pill"
-        aria-expanded={open}
-        aria-haspopup="dialog"
-        onClick={() => setOpenIdentity(open ? null : summaryIdentity)}
+        popoverTarget={popoverId}
+        onClick={(event) => {
+          // A top-layer popover is viewport-positioned; pin it above the
+          // pill before the click's default action shows it.
+          const rect = event.currentTarget.getBoundingClientRect()
+          const style = popoverRef.current?.style
+          if (!style) return
+          style.right = `${window.innerWidth - rect.right}px`
+          style.bottom = `${window.innerHeight - rect.top + POPOVER_GAP_PX}px`
+        }}
       >
         <Files aria-hidden className="files-icon" />
         <span>
           {summary.files.length} {fileLabel} changed
         </span>
-        {totals.ready > 0 ? (
+        {ready > 0 ? (
           <>
-            <span className="add">+{totals.add}</span>
-            <span className="del">−{totals.del}</span>
+            <span className="add">+{add}</span>
+            <span className="del">−{del}</span>
           </>
         ) : null}
-        {totals.pending > 0 || totals.unavailable > 0 ? (
+        {withoutTotals > 0 ? (
           <span
             role="status"
-            title={`${totals.pending} pending, ${totals.unavailable} unavailable`}
-            aria-label={`${totals.pending} change totals pending, ${totals.unavailable} unavailable`}
+            title={`${withoutTotals} without totals yet`}
+            aria-label={`${withoutTotals} without totals yet`}
           >
             …
           </span>
         ) : null}
-        <ChevronDown aria-hidden className={`chevron${open ? ' open' : ''}`} />
+        <ChevronDown aria-hidden className="chevron" />
       </button>
 
       <div
+        id={popoverId}
+        ref={popoverRef}
+        popover="auto"
         className="shui-chat-summary-popover"
         role="dialog"
         aria-label="Last Turn changed files"
-        aria-hidden={!open}
-        data-open={open}
-        inert={open ? undefined : true}
       >
         <div className="shui-chat-summary-head">
           <span>Last Turn</span>
@@ -193,20 +96,22 @@ export function ShellTurnSummary({ sessionId }: SessionTurnSummaryProps) {
                   sourceId: summary.sourceId,
                   path: file.path,
                 })
-                closeAndRestoreFocus()
+                popoverRef.current?.hidePopover()
               }}
             >
               <span className="path">{file.path}</span>
-              {file.state === 'ready' ? (
-                <span className="stats">
-                  <span className="add">+{file.add}</span>
-                  <span className="del">−{file.del}</span>
-                </span>
-              ) : (
-                <span className="stats" title={`change totals ${file.state}`}>
-                  {file.state === 'pending' ? '…' : '—'}
-                </span>
-              )}
+              <span className="stats" title={file.state === 'ready' ? undefined : `change totals ${file.state}`}>
+                {file.state === 'ready' ? (
+                  <>
+                    <span className="add">+{file.add}</span>
+                    <span className="del">−{file.del}</span>
+                  </>
+                ) : file.state === 'pending' ? (
+                  '…'
+                ) : (
+                  '—'
+                )}
+              </span>
             </button>
           ))}
         </div>

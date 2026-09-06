@@ -189,7 +189,7 @@ describe('injectable page configuration metadata', () => {
     const RegisteredPage = page.render
     const markup = renderToStaticMarkup(
       <TooltipProvider>
-        <RegisteredPage panelSide="left" tabId="tab-1" />
+        <RegisteredPage panelSide="left" tabId="tab-1" paneId="tab-1:pane:0" />
       </TooltipProvider>,
     )
     expect(markup).toContain('aria-label="Configure worker"')

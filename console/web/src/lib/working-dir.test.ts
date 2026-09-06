@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { HARNESS_PROJECTS_LIST_FUNCTION_ID } from '@/lib/backend/projects'
 import {
   activateWorkingDir,
   errMsg,
   fetchDefaultWorkingDir,
+  fetchNewChatWorkingDir,
   HARNESS_FILESYSTEM_INFO_FUNCTION_ID,
   resetDefaultWorkingDirForTests,
   validateWorkspaceDir,
@@ -99,6 +101,68 @@ describe('fetchDefaultWorkingDir', () => {
   it('is null when the harness function is missing (older harness)', async () => {
     triggerMock.mockRejectedValueOnce({ message: 'function not found' })
     await expect(fetchDefaultWorkingDir()).resolves.toBeNull()
+  })
+})
+
+describe('fetchNewChatWorkingDir', () => {
+  it('prefers the most recently used harness project, shell-canonical', async () => {
+    triggerMock
+      .mockResolvedValueOnce({
+        projects: [
+          { path: '/work/latest', name: 'latest', last_used_at: 20 },
+          { path: '/work/older', name: 'older', last_used_at: 10 },
+        ],
+      })
+      .mockResolvedValueOnce({ path: '/work/latest-canonical' })
+    await expect(fetchNewChatWorkingDir()).resolves.toBe(
+      '/work/latest-canonical',
+    )
+    expect(triggerMock).toHaveBeenNthCalledWith(
+      1,
+      HARNESS_PROJECTS_LIST_FUNCTION_ID,
+      {},
+    )
+    expect(triggerMock).toHaveBeenNthCalledWith(
+      2,
+      WORKSPACE_VALIDATE_FUNCTION_ID,
+      { path: '/work/latest' },
+    )
+    expect(triggerMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('falls back to the stack default when the catalog is empty', async () => {
+    triggerMock
+      .mockResolvedValueOnce({ projects: [] })
+      .mockResolvedValueOnce({ default_root: '/work/stack' })
+      .mockResolvedValueOnce({ path: '/work/stack' })
+    await expect(fetchNewChatWorkingDir()).resolves.toBe('/work/stack')
+    expect(triggerMock).toHaveBeenNthCalledWith(
+      2,
+      HARNESS_FILESYSTEM_INFO_FUNCTION_ID,
+      {},
+    )
+  })
+
+  it('falls back to the stack default when the last-used project is gone', async () => {
+    triggerMock
+      .mockResolvedValueOnce({
+        projects: [{ path: '/work/gone', name: 'gone', last_used_at: 1 }],
+      })
+      .mockRejectedValueOnce({
+        message:
+          'handler error: {"code":"S211","message":"not found or not accessible"}',
+      })
+      .mockResolvedValueOnce({ default_root: '/work/stack' })
+      .mockResolvedValueOnce({ path: '/work/stack' })
+    await expect(fetchNewChatWorkingDir()).resolves.toBe('/work/stack')
+  })
+
+  it('falls back to the stack default when the catalog function is missing', async () => {
+    triggerMock
+      .mockRejectedValueOnce({ message: 'function not found' })
+      .mockResolvedValueOnce({ default_root: '/work/stack' })
+      .mockResolvedValueOnce({ path: '/work/stack' })
+    await expect(fetchNewChatWorkingDir()).resolves.toBe('/work/stack')
   })
 })
 

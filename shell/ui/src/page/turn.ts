@@ -1,10 +1,9 @@
 import type { Host } from '@iii-dev/console-ui'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { activeTurnFromStatus, canActivateHarnessTurn } from './turn-status'
 
 const TURN_STARTED_FN = 'iii::shell-ui::turn-started'
 const TURN_COMPLETED_FN = 'iii::shell-ui::turn-completed'
-const PREPARE_TURN_FN = 'iii::shell-ui::prepare-turn'
 
 interface TurnStartedEvent {
   session_id: string
@@ -21,68 +20,20 @@ interface HarnessStatus {
   status?: string
 }
 
-export interface HarnessPreTurnEvent {
-  point: 'pre_turn'
-  session_id: string
-  turn_id: string
-  step: number
-  metadata?: Record<string, unknown>
-}
-
 export interface HarnessTurnState {
   turnId: string | null
   active: boolean
   completedAtMs: number | null
 }
 
-/**
- * Run an async browser-local preparation inside Harness's awaited pre-turn
- * chain. Unlike the fire-and-forget turn-started event, this is a real barrier:
- * the model cannot write files until every matching preparation has returned.
- *
- * The binding is global because Harness hook trigger types are global. The
- * browser handler scopes itself to the active session and fails open so a
- * disconnected review pane can never prevent a turn from running.
- */
-export function useHarnessPreTurn(
-  host: Host,
-  conversationId: string | null | undefined,
-  instanceId: string,
-  onPrepare: (event: HarnessPreTurnEvent) => void | Promise<void>,
-) {
-  const prepareRef = useRef(onPrepare)
-  prepareRef.current = onPrepare
-
-  useEffect(() => {
-    if (!conversationId) return
-    const suffix = instanceId.replace(/[^a-zA-Z0-9_-]/g, '_') || 'page'
-    const functionId = `${PREPARE_TURN_FN}:${suffix}`
-    const offHandler = host.iii.on<HarnessPreTurnEvent>(functionId, async (event) => {
-      if (event?.session_id !== conversationId || typeof event.turn_id !== 'string') return
-      await prepareRef.current(event)
-    })
-    const offTrigger = host.iii.registerTrigger({
-      type: 'harness::hook::pre-turn',
-      function_id: `${functionId}::${host.iii.browserId}`,
-      config: {
-        sessions: [conversationId],
-        priority: -100,
-        timeout_ms: 30_000,
-        on_error: 'fail_open',
-      },
-    })
-    return () => {
-      offTrigger()
-      offHandler()
-    }
-  }, [host, conversationId, instanceId])
-}
-
 /** Exact Harness turn identity for the active chat. The status read closes
-    the small bind race and restores an already-running turn after mount. */
+    the small bind race and restores an already-running turn after mount.
+    `scope` (the pane's function-id segment) keeps two panes beside the
+    same chat on separate functions, so neither hears the other's binding. */
 export function useHarnessTurn(
   host: Host,
   conversationId: string | null | undefined,
+  scope: string,
 ): HarnessTurnState {
   const [state, setState] = useState<HarnessTurnState>({
     turnId: null,
@@ -100,7 +51,9 @@ export function useHarnessTurn(
     const completedTurnIds = new Set<string>()
     setState({ turnId: null, active: false, completedAtMs: null })
 
-    const offHandler = host.iii.on<TurnStartedEvent>(TURN_STARTED_FN, (event) => {
+    const startedFn = `${TURN_STARTED_FN}::${scope}`
+    const completedFn = `${TURN_COMPLETED_FN}::${scope}`
+    const offHandler = host.iii.on<TurnStartedEvent>(startedFn, (event) => {
       if (event?.session_id !== conversationId || typeof event.turn_id !== 'string') return
       if (!canActivateHarnessTurn(event.turn_id, completedTurnIds)) return
       lifecycleGeneration += 1
@@ -108,10 +61,10 @@ export function useHarnessTurn(
     })
     const offTrigger = host.iii.registerTrigger({
       type: 'harness::turn-started',
-      function_id: `${TURN_STARTED_FN}::${host.iii.browserId}`,
+      function_id: `${startedFn}::${host.iii.browserId}`,
       config: { session_id: conversationId },
     })
-    const offCompletedHandler = host.iii.on<TurnCompletedEvent>(TURN_COMPLETED_FN, (event) => {
+    const offCompletedHandler = host.iii.on<TurnCompletedEvent>(completedFn, (event) => {
       if (
         event?.session_id !== conversationId ||
         typeof event.turn_id !== 'string' ||
@@ -130,7 +83,7 @@ export function useHarnessTurn(
     })
     const offCompletedTrigger = host.iii.registerTrigger({
       type: 'harness::turn-completed',
-      function_id: `${TURN_COMPLETED_FN}::${host.iii.browserId}`,
+      function_id: `${completedFn}::${host.iii.browserId}`,
       config: { session_id: conversationId },
     })
 
@@ -165,7 +118,7 @@ export function useHarnessTurn(
         offCompletedHandler()
       }
     }
-  }, [host, conversationId])
+  }, [host, conversationId, scope])
 
   return state
 }

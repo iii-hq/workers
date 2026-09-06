@@ -22,8 +22,8 @@ describe('page commands', () => {
         source: 'page',
         paneId: 'pane-1',
         commands: [
-          { id: 'open', title: 'Open file', shortcut: 'P', run: noop },
-          { id: 'find', title: 'Search', shortcut: 'F', run: noop },
+          { id: 'open', title: 'Open file', shortcut: 'Ctrl+P', run: noop },
+          { id: 'find', title: 'Search', shortcut: 'Ctrl+F', run: noop },
         ],
       },
       'mac',
@@ -54,7 +54,7 @@ describe('page commands', () => {
         pageId: 'shell',
         source: 'worker',
         commands: [
-          { id: 'open', title: 'Open file', shortcut: 'P', run: noop },
+          { id: 'open', title: 'Open file', shortcut: 'Ctrl+P', run: noop },
         ],
       },
       'mac',
@@ -65,21 +65,21 @@ describe('page commands', () => {
         source: 'page',
         paneId: 'pane-1',
         commands: [
-          { id: 'open', title: 'Open file', shortcut: 'P', run: noop },
+          { id: 'open', title: 'Open file', shortcut: 'Ctrl+P', run: noop },
         ],
       },
       'mac',
     )
     const [worker, page] = getPageCommands()
     expect(worker.bindings).toEqual([])
-    expect(page.bindings).toEqual(['P'])
+    expect(page.bindings).toEqual(['Ctrl+P'])
     expect(paneCommands('pane-1').map((entry) => entry.key)).toEqual([
       'shell.open',
     ])
     expect(paneCommands('pane-2')).toEqual([])
   })
 
-  it('refuses the palette chord and browser keys, keeps the freed keys', () => {
+  it('refuses bare keys, the palette chord and browser keys, keeps the rest', () => {
     registerPageCommands(
       {
         pageId: 'shell',
@@ -91,10 +91,12 @@ describe('page commands', () => {
           { id: 'c', title: 'c', shortcut: 'G L', run: noop },
           { id: 'd', title: 'd', shortcut: 'Mod+K', run: noop },
           { id: 'e', title: 'e', shortcut: 'Mod+W', run: noop },
+          { id: 'f', title: 'f', shortcut: 'Ctrl+Q L', run: noop },
+          { id: 'g', title: 'g', shortcut: 'Escape', run: noop },
           {
-            id: 'f',
-            title: 'f',
-            shortcut: { mac: ['P'], other: ['Q'] },
+            id: 'h',
+            title: 'h',
+            shortcut: { mac: ['Ctrl+P'], other: ['Alt+P'] },
             run: noop,
           },
         ],
@@ -104,14 +106,19 @@ describe('page commands', () => {
     expect(
       getPageCommands().map((entry) => [entry.command.id, entry.bindings]),
     ).toEqual([
-      ['a', ['t']],
-      ['b', ['5']],
-      ['c', ['G L']],
+      ['a', []],
+      ['b', []],
+      ['c', []],
       ['d', []],
       ['e', []],
-      ['f', ['P']],
+      ['f', ['Ctrl+Q L']],
+      ['g', ['Escape']],
+      ['h', ['Ctrl+P']],
     ])
-    expect(console.warn).toHaveBeenCalledTimes(2)
+    expect(console.warn).toHaveBeenCalledTimes(5)
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining("cannot bind 't': it has no modifier"),
+    )
   })
 
   it('lets a re-registration from the same pane replace the older one', () => {

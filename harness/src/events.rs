@@ -358,19 +358,29 @@ impl TurnEvents {
         .await;
     }
 
+    /// `message_preview` is the first characters of the user message that
+    /// started the turn (a sub-agent's task text for a child), so a consumer
+    /// can name the turn without reading the transcript; `depth` is 0 for a
+    /// top-level turn.
     pub async fn emit_started(
         &self,
         session_id: &str,
         turn_id: &str,
         parent: Option<&ParentLink>,
         display_parent: Option<&str>,
+        message_preview: Option<&str>,
+        depth: u32,
     ) {
         tracing::info!(session_id, turn_id, "turn started");
         let mut payload = serde_json::json!({
             "session_id": session_id,
             "turn_id": turn_id,
             "timestamp": now_ms(),
+            "depth": depth,
         });
+        if let Some(preview) = message_preview.filter(|p| !p.trim().is_empty()) {
+            payload["message_preview"] = Value::String(preview.to_string());
+        }
         if let Some(p) = parent {
             payload["parent"] = serde_json::to_value(p).unwrap_or(Value::Null);
         }

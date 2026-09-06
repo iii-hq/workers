@@ -133,7 +133,9 @@ filtered, and fan-out is fire-and-forget. Read content on demand via
 The shell worker also serves the `coder::*` code-file surface (formerly a
 standalone worker) over the **same jail** (`fs.host_roots`): `coder::info`
 (discover roots/caps first), `coder::read-file` (windowed + batch reads),
-`coder::search`, `coder::list-folder`, `coder::tree`, and the batched
+`coder::search` (add `respect_gitignore: true` to skip ignored files,
+`fuzzy_paths: true` to rank path matches like an editor's quick open),
+`coder::list-folder`, `coder::tree`, and the batched
 `coder::create-file` / `coder::update-file` / `coder::delete-file` /
 `coder::move`. Prefer these structured ops over editing files through
 `shell::exec`. They return `C2xx` error codes (distinct from `shell::*`'s

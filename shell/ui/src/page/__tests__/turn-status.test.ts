@@ -1,11 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import {
-  activeTurnFromStatus,
-  canCaptureHarnessWorkspaceChange,
-  canActivateHarnessTurn,
-  HARNESS_CHANGE_DRAIN_MS,
-  isActiveHarnessStatus,
-} from '../turn-status'
+import { activeTurnFromStatus, canActivateHarnessTurn, isActiveHarnessStatus } from '../turn-status'
 
 describe('isActiveHarnessStatus', () => {
   it('recognizes only in-flight Harness states', () => {
@@ -81,52 +75,5 @@ describe('canActivateHarnessTurn', () => {
 
     expect(canActivateHarnessTurn('turn-1', completed)).toBe(false)
     expect(canActivateHarnessTurn('turn-2', completed)).toBe(true)
-  })
-})
-
-describe('canCaptureHarnessWorkspaceChange', () => {
-  const completed = {
-    turnId: 'turn-1',
-    epoch: 3,
-    active: false,
-    completedAtMs: 1_000,
-  }
-
-  it('accepts the final buffered batch during the bounded completion drain', () => {
-    expect(
-      canCaptureHarnessWorkspaceChange(
-        completed,
-        'turn-1',
-        3,
-        1_000 + HARNESS_CHANGE_DRAIN_MS,
-      ),
-    ).toBe(true)
-  })
-
-  it('rejects later writes after the completion drain closes', () => {
-    expect(
-      canCaptureHarnessWorkspaceChange(
-        completed,
-        'turn-1',
-        3,
-        1_001 + HARNESS_CHANGE_DRAIN_MS,
-      ),
-    ).toBe(false)
-  })
-
-  it('invalidates the drain immediately for a different turn or epoch', () => {
-    expect(canCaptureHarnessWorkspaceChange(completed, 'turn-2', 3, 1_001)).toBe(false)
-    expect(canCaptureHarnessWorkspaceChange(completed, 'turn-1', 4, 1_001)).toBe(false)
-  })
-
-  it('accepts an active pre-turn window without a completion deadline', () => {
-    expect(
-      canCaptureHarnessWorkspaceChange(
-        { ...completed, active: true, completedAtMs: null },
-        'turn-1',
-        3,
-        99_000,
-      ),
-    ).toBe(true)
   })
 })

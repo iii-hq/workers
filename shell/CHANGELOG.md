@@ -1,5 +1,158 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **The explorer is shaped like VS Code.** An activity bar on the sidebar's
+  outer edge switches between Explorer, Search, Source control and Timeline;
+  one tab strip holds files and diffs alike (a diff tab names what it
+  compares: Staged, Changes, a turn, a revision), and what a click opens is
+  decided by the view it comes from — Explorer opens the file, Source
+  control opens its staged or unstaged diff (both can be open at once),
+  Timeline opens the diff of one turn; editor tabs carry file-type icons,
+  Git colours, the preview italics and a dirty dot in place of the close
+  button; breadcrumbs sit above the editor and the diff;
+  files, folders, the empty space and the tabs have right-click menus (new
+  file/folder, rename with F2, delete with confirmation, duplicate, copy
+  path, open in terminal, find in folder, compare, discard changes, close
+  others/right/saved/all). Back and forward across opened files
+  (`Shift+Alt+←/→`), go to line (`L`), reveal the active file (`R`).
+- **Source control view** — Staged changes and Changes with the letter
+  VS Code shows per status, stage / unstage / discard per file or per
+  section (discard asks first), and a commit box. Rows open the file's diff
+  for their side of the index.
+- **Timeline view** — every Harness turn of the chat, newest first, as a
+  folder-like group named after the message that started it (the harness
+  `turn-started` event now carries `message_preview` and `depth`), holding
+  the files the turn changed. Work done by sub-agents the turn spawned is
+  recorded under that turn by the worker (from the parent link the harness
+  stamps into the child's hooks and events) and tagged with the agent's
+  name. Opening a file shows that turn's exact patch: its pre-image against
+  the body it left behind (`shell::turns::get` now returns `after`, the
+  next turn's pre-image of the same path, and `agent`). A turn or a single
+  file rolls back through the new `shell::turns::revert`, which restores the
+  pre-image bodies the change history kept (created files are removed, moved
+  files go back, bodies that were never stored are reported, not guessed).
+- **Compare with…** — the working copy of a file against any branch, tag,
+  recent commit or typed revision, from the editor header, the tabs or the
+  explorer menu.
+- **A diff tab says why it shows nothing.** No line changes, only
+  whitespace changed (with a button that shows it), an image, a binary, a
+  turn that never touched the file or whose record is gone: each takes the
+  same notice shape as a file that could not be opened — icon, title, path,
+  one line and the way out (open the file, try again) — instead of a bare
+  line of text. A caveat above a diff that still renders (compared against
+  the last commit, showing the working copy, absent at the revision) is the
+  console's status row, warn-tinted when the diff shows more than the
+  source promises.
+- **The chat composer's folder picker, in the header and the empty pane.**
+  The console now shares `DirectoryPicker` (remembered projects first, a
+  level-by-level browse to add one, every pick validated by this worker),
+  so the explorer's root picker is the same control the chat uses instead of
+  a native select over the base paths.
+- **Tabs per folder, and a folder that sticks.** Switching the pane to
+  another folder keeps what was open in the one being left and brings back
+  what was open in the one being entered (up to sixteen folders, persisted).
+  A folder picked in the pane is restored on reload even beside a chat on
+  another folder; the chat's next folder change still re-roots the pane.
+- **One folder for the pane and its chat, both ways.** The pane already
+  followed the chat's folder; now a folder picked in the pane (header or
+  empty pane) is handed to the chat beside it too, which records the change
+  in the conversation as it does for its own picker. The "Browsing X. Chat
+  still works in Y" banner and its "use for chat" button are gone with the
+  state they described.
+- **Tabs that outlive their files.** A file deleted or moved outside the
+  editor — while the console was away, or live — no longer surfaces as a
+  wire error in the editor: the tab is struck through in the strip, the
+  editor shows a "no longer here" state with the path and a way out (try
+  again, show the folder, close the tab), a buffer that was already loaded
+  stays editable with a "gone from disk — save to put it back" note, and a
+  file that comes back (created, or an atomic replace) reloads on its own.
+  The tabs restored with a folder are probed once, so a file gone since the
+  last visit reads as gone before it is opened; a persisted folder that no
+  longer exists is reported in a notice once the pane has settled on
+  another. A diff that cannot load gets the same shape of state.
+- **Several Shell panes in one workspace tab.** The console passes a
+  `paneId` to every page; the explorer keys its persisted state, its
+  terminal leases and the engine functions its live triggers call on it, so
+  two panes can browse two folders with separate terminal sessions and
+  neither hears the other's file changes.
+- **A new empty pane.** The wordmark, the folder sentence with the picker,
+  one card per surface (open a file, search, browse, source control,
+  timeline, terminal) with its key and what is behind it right now (how
+  many changes and how many are staged, how many turns and the last one's
+  name), and the files opened last.
+- **`shell::workspace::read-bytes`** — one bounded byte range of a file per
+  call, so the explorer streams a large image into a Blob chunk by chunk
+  instead of asking for a single base64 frame the size of the picture.
+- **`coder::search`** takes `respect_gitignore` (walk with `.gitignore`
+  rules) and `fuzzy_paths` (quick-open ranking of path matches, best
+  first); the command palette's `#` file search uses both.
+
+### Changed
+
+- **The explorer's per-pane state moved out of the `configuration` store
+  and into the worker's data directory.** What a developer has open in a
+  console pane (browsed folder, open tabs, expanded folders, view, diff
+  options, terminal layout) used to be one `shell-ui` configuration entry,
+  which the engine persists into the project's `config/` folder — the one
+  meant to be committed. It is developer-local runtime state, so it now
+  lives as one JSON file per pane under `data/shell/ui-state/panes/`
+  (gitignored, next to the `turns` store), served by two console-only
+  functions, `shell::ui-state::get` and `shell::ui-state::set`. On its
+  first boot the worker imports whatever the old entry still holds (a pane
+  that already has a file keeps it) and blanks the entry; the worker no
+  longer registers it, and `config/shell-ui.yaml` can be deleted.
+
+- **The review scope picker is gone.** Uncommitted / unstaged / staged /
+  commit / branch / turn / session scopes, the review toolbar, the inline
+  diff editing with its save barrier and the browser-side pre-turn snapshot
+  all went with it; the views above cover the same ground with one model,
+  and a turn's patch now comes from the worker's change history instead of
+  a snapshot the page took at turn start.
+- **Large workspaces and large files stay fast.** The explorer lists the
+  root three levels deep and fetches a folder when it is expanded; watcher
+  bursts patch the tree in place instead of re-listing it. The editor asks
+  for up to 8 MiB per file (the worker's 128 KiB agent budget was cutting
+  ordinary source files short) and, through the console `CodeEditor`'s new
+  `fill` mode, owns its viewport so only visible lines render; files past
+  the budget open as a read-only window of their first 5,000 lines.
+- **Search results read like an editor's.** Matches group by file with the
+  hit highlighted inside a short window of its line, the list is
+  virtualized and keyboard-walkable, the query runs as you type, and the
+  `Aa` / whole-word / regex toggles live inside the box; include/exclude
+  globs and a "skip files ignored by Git" switch sit behind the disclosure.
+- **`coder::search` content scanning** runs one compiled regex over each
+  file's bytes and fans files out across a small thread pool while results
+  are consumed in walk order — the same input truncates at the same place
+  every time — and the walk is name-sorted.
+
+### Fixed
+
+- **Two panes saving at once could lose each other's state.** Every pane
+  used to read the whole `shell-ui` map, put its own slice in and write
+  the whole map back, so two saves in flight at the same time (a split
+  view, two browsers) ended with whichever landed last, missing the
+  other's tabs. A save now writes only that pane's file, atomically
+  (temp + rename) and serialized in the worker, so panes cannot clobber
+  each other and a reader never sees a half-written document. The read
+  that seeds a pane now retries on any failure — the worker still coming
+  up (`function_not_found`) included — and a failed save is retried on the
+  next change instead of switching persistence off for the page.
+- **The explorer forgot everything on a worker restart.** The worker
+  registered its `shell-ui` configuration entry with an `initial_value` of
+  `{}` on every boot, and `configuration::register` replaces the stored
+  value whenever a seed is present — so each restart of the worker (or of
+  the engine, which restarts the worker) erased every pane's browsed folder,
+  open tabs and expanded folders. The seed is now installed only when
+  nothing is stored, the way the `shell` entry's own seed already was. On
+  the page side, the read that seeds a pane is retried a few times when it
+  fails for a reason other than "nothing there", so an engine still coming
+  up cannot make the pane boot fresh and then save its defaults over the
+  stored state; and a save that finds the entry not registered yet is
+  retried on the next change instead of disabling persistence for the page.
+
 ## 0.12.0
 
 ### Added

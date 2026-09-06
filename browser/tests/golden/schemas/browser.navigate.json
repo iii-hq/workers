@@ -1,6 +1,6 @@
 {
   "function_id": "browser::navigate",
-  "description": "Navigate a session to a URL and wait for the page to load. Element refs from earlier snapshots are invalidated by navigation.",
+  "description": "Navigate a tab to a URL and wait for the page to load. Like a browser, a network failure or an empty HTTP error response leaves Chromium's error page in the tab and is reported in `error` rather than failing the call. Element refs from earlier snapshots are invalidated by navigation.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "NavigateInput",
@@ -39,7 +39,15 @@
       "url"
     ],
     "properties": {
+      "error": {
+        "description": "Chromium's error text when the navigation ended on the browser's own error page: a network failure (`net::ERR_NAME_NOT_RESOLVED`), or an empty HTTP error response (`net::ERR_HTTP_RESPONSE_CODE_FAILURE`, a 4xx/5xx with no body). Like a browser, the tab still shows that page and stays usable.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "ok": {
+        "description": "False when the tab shows Chromium's error page instead of the site; see `error`.",
         "type": "boolean"
       },
       "timed_out": {

@@ -98,6 +98,18 @@
      fill, a border, or body text. */
   --color-workdir: #0ea5e9;
   --color-workdir-muted: rgba(14, 165, 233, 0.12);
+  /* ── Glyph tones ──────────────────────────────────────────────────────
+     Identity tints for a 16px glyph beside a label — the agent-profile
+     color in the conversation tree, a folder or scope mark in a worker's
+     navigation tree. Deliberately vivid, and each one holds at least 3:1
+     against the sidebar in its theme so the glyph stays legible. A tone
+     is never a fill, a border, a selection state, or text. */
+  --color-glyph-blue: #2563eb;
+  --color-glyph-purple: #7c3aed;
+  --color-glyph-teal: #0d9488;
+  --color-glyph-green: #15803d;
+  --color-glyph-amber: #b7791f;
+  --color-glyph-rose: #e11d48;
 
   --color-ring: color-mix(in oklab, var(--foreground) 5%, transparent);
 
@@ -138,6 +150,16 @@
     0 0 0 1px var(--iii-ui-lift-edge),
     0 1px 1px -0.5px var(--iii-ui-lift-drop),
     0 3px 3px -1.5px var(--iii-ui-lift-drop);
+  /* `keycap` is the lift turned upside down — the lit edge along the bottom,
+     the drops cast upward — so a key cap reads as a key set into the surface
+     rather than a card floating on it. Same ingredients, so the dark block
+     re-tints it with `lift`. The shared `Kbd` component is its one consumer. */
+  --shadow-keycap:
+    inset 0 -1px 0 0 var(--iii-ui-lift-highlight),
+    inset 0 0 0 1px var(--iii-ui-lift-ring),
+    0 0 0 1px var(--iii-ui-lift-edge),
+    0 -1px 1px -0.5px var(--iii-ui-lift-drop),
+    0 -3px 3px -1.5px var(--iii-ui-lift-drop);
 
   /* ── Motion ─────────────────────────────────────────────────────────── */
   --motion-duration-instant: 0ms;
@@ -235,6 +257,14 @@
   --color-ok-muted: rgba(54, 201, 143, 0.12);
   --color-workdir: #0ea5e9;
   --color-workdir-muted: rgba(14, 165, 233, 0.14);
+  /* Glyph tones brighten on near-black so the tint reads as strongly as
+     it does on cream. */
+  --color-glyph-blue: #3b82f6;
+  --color-glyph-purple: #8b5cf6;
+  --color-glyph-teal: #14b8a6;
+  --color-glyph-green: #22c55e;
+  --color-glyph-amber: #eab308;
+  --color-glyph-rose: #f43f5e;
 }
 
 @layer base {
@@ -605,7 +635,8 @@
 
 /* Discoverability nudge on the workspace edge add-panel zones: the `+`
    panel sliver shakes for ~0.8s once every 10s until the user adds a panel
-   through a zone for the first time; the resting `+` remains afterwards. */
+   through a zone for the first time; afterwards the sliver is gone and the
+   edge stays bare until a dwell reveals the split preview (below). */
 @keyframes edge-nudge {
   0%,
   8%,
@@ -630,6 +661,83 @@
   .edge-nudge {
     animation: none;
   }
+}
+
+/* The split preview a workspace edge reveals: a pane-shaped card sliding in
+   from that edge (and back out on dismissal) with the panel motion tokens,
+   like the real pane it stands for. Its solid new-column rectangle arrives a
+   beat after the card. Reduced motion is handled by the global rule above:
+   durations and delays collapse, so each keyframe lands on its final frame. */
+@keyframes split-preview-enter-left {
+  from {
+    opacity: 0;
+    transform: translateX(-0.75rem);
+  }
+}
+
+@keyframes split-preview-enter-right {
+  from {
+    opacity: 0;
+    transform: translateX(0.75rem);
+  }
+}
+
+@keyframes split-preview-exit-left {
+  to {
+    opacity: 0;
+    transform: translateX(-0.5rem);
+  }
+}
+
+@keyframes split-preview-exit-right {
+  to {
+    opacity: 0;
+    transform: translateX(0.5rem);
+  }
+}
+
+@keyframes split-preview-column-left {
+  from {
+    opacity: 0;
+    transform: translateX(-0.375rem);
+  }
+}
+
+@keyframes split-preview-column-right {
+  from {
+    opacity: 0;
+    transform: translateX(0.375rem);
+  }
+}
+
+@utility split-preview-enter-left {
+  animation: split-preview-enter-left var(--motion-duration-panel)
+    var(--motion-ease-enter) both;
+}
+
+@utility split-preview-enter-right {
+  animation: split-preview-enter-right var(--motion-duration-panel)
+    var(--motion-ease-enter) both;
+}
+
+@utility split-preview-exit-left {
+  animation: split-preview-exit-left var(--motion-duration-fast)
+    var(--motion-ease-exit) both;
+}
+
+@utility split-preview-exit-right {
+  animation: split-preview-exit-right var(--motion-duration-fast)
+    var(--motion-ease-exit) both;
+}
+
+@utility split-preview-column-left {
+  animation: split-preview-column-left var(--motion-duration-panel)
+    var(--motion-ease-enter) 80ms both;
+}
+
+@utility split-preview-column-right {
+  animation: split-preview-column-right var(--motion-duration-panel)
+    var(--motion-ease-enter) 80ms both;
 }
 
 /* sanctioned exception to the no-gradients rule: a soft sweep across the */

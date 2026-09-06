@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { $createParagraphNode, $createTextNode, $getRoot } from 'lexical'
 import { useState } from 'react'
 import { fn } from 'storybook/test'
+import type { FileHit } from '@/lib/file-search'
 import { STATIC_FUNCTIONS } from '@/lib/functions'
 import type {
   Attachment,
@@ -58,7 +59,49 @@ const STORY_MODEL_OPTIONS: ModelOption[] = [
 ]
 
 import { Composer } from './Composer'
+import { $createFileMentionNode } from './lexical/FileMentionNode'
 import { $createFunctionMentionNode } from './lexical/FunctionMentionNode'
+import { $createSlashCommandNode } from './lexical/SlashCommandNode'
+
+/** Stand-in for the shell worker's quick-open search: a fixed tree,
+    subsequence-filtered, so the `@` and `#` menus have files to show. */
+const STORY_FILES: FileHit[] = [
+  { path: 'README.md', kind: 'file' },
+  { path: 'package.json', kind: 'file' },
+  { path: 'src/', kind: 'dir' },
+  { path: 'src/App.tsx', kind: 'file' },
+  { path: 'src/main.tsx', kind: 'file' },
+  { path: 'src/components/', kind: 'dir' },
+  { path: 'src/components/chat/Composer.tsx', kind: 'file' },
+  { path: 'src/components/chat/LexicalShell.tsx', kind: 'file' },
+  { path: 'src/components/chat/lexical/MentionsPlugin.tsx', kind: 'file' },
+  { path: 'src/components/chat/lexical/FileMentionNode.tsx', kind: 'file' },
+  { path: 'src/lib/file-search.ts', kind: 'file' },
+  { path: 'src/lib/mention-search.ts', kind: 'file' },
+  { path: 'src/lib/functions.ts', kind: 'file' },
+  { path: 'harness/src/turn_loop.rs', kind: 'file' },
+  { path: 'harness/src/functions/turn.rs', kind: 'file' },
+  { path: 'shell/src/code/functions/search.rs', kind: 'file' },
+  { path: 'shell/ui/src/page/EditorPane.tsx', kind: 'file' },
+  {
+    path: 'docs/a very long file name that keeps going and going to test the ellipsis.md',
+    kind: 'file',
+  },
+]
+
+function isSubsequence(needle: string, haystack: string): boolean {
+  let i = 0
+  for (const ch of haystack) {
+    if (ch === needle[i]) i++
+    if (i === needle.length) return true
+  }
+  return needle.length === 0
+}
+
+async function storySearchFiles(query: string): Promise<FileHit[]> {
+  const q = query.trim().toLowerCase()
+  return STORY_FILES.filter((hit) => isSubsequence(q, hit.path.toLowerCase()))
+}
 
 const sampleAttachments: Attachment[] = [
   { id: 'spec', name: 'spec.md', size: 4_312, type: 'text/markdown' },
@@ -73,6 +116,37 @@ function seedWithMention() {
   para.append($createTextNode('ping '))
   para.append($createFunctionMentionNode('engine::echo'))
   para.append($createTextNode(' with my prompt'))
+  root.append(para)
+}
+
+/** Seed the editor with a file mention that carries a line window. */
+function seedWithFileMention() {
+  const root = $getRoot()
+  root.clear()
+  const para = $createParagraphNode()
+  para.append($createTextNode('explain '))
+  para.append(
+    $createFileMentionNode('src/components/chat/Composer.tsx', {
+      from: 12,
+      to: 40,
+    }),
+  )
+  para.append($createTextNode(' and '))
+  para.append($createFileMentionNode('src/lib/functions.ts'))
+  root.append(para)
+}
+
+/** Seed the editor with a skill invocation leading the sentence and a file mention in it. */
+function seedWithSlashCommand() {
+  const root = $getRoot()
+  root.clear()
+  const para = $createParagraphNode()
+  para.append($createSlashCommandNode('/skill:coder/index'))
+  para.append($createTextNode(' tighten the retry loop in '))
+  para.append($createFileMentionNode('src/lib/dispatcher.ts'))
+  para.append($createTextNode(', then run '))
+  para.append($createSlashCommandNode('/skill:review-pr'))
+  para.append($createTextNode(' on it'))
   root.append(para)
 }
 
@@ -96,6 +170,7 @@ function ComposerHarness({
   initialContent,
   initialAttachments,
   isStreaming,
+  openFileMention,
 }: {
   initialModel?: ModelId
   initialThinkingLevel?: ThinkingLevel
@@ -103,6 +178,8 @@ function ComposerHarness({
   initialContent?: () => void
   initialAttachments?: Attachment[]
   isStreaming?: boolean
+  /** Make file pills clickable (logged to the Actions panel). */
+  openFileMention?: boolean
 }) {
   const [model, setModel] = useState<ModelId>(initialModel)
   const [thinkingLevel, setThinkingLevel] =
@@ -113,6 +190,8 @@ function ComposerHarness({
       model={model}
       modelOptions={STORY_MODEL_OPTIONS}
       functionEntries={STATIC_FUNCTIONS}
+      searchFiles={storySearchFiles}
+      onOpenFileMention={openFileMention ? fn() : undefined}
       permissionMode="manual"
       thinkingLevel={thinkingLevel}
       showWorkingDir={initialWorkingDir !== undefined}
@@ -162,6 +241,28 @@ export const FunctionMention: Story = {
     <ComposerHarness
       initialModel="openai::gpt-5"
       initialContent={seedWithMention}
+    />
+  ),
+}
+
+export const FileMention: Story = {
+  name: 'pre-seeded with file mentions (one with lines)',
+  render: () => (
+    <ComposerHarness
+      initialModel="openai::gpt-5"
+      initialContent={seedWithFileMention}
+      openFileMention
+    />
+  ),
+}
+
+export const SlashCommands: Story = {
+  name: 'pre-seeded with skill invocations (command pills)',
+  render: () => (
+    <ComposerHarness
+      initialModel="openai::gpt-5"
+      initialContent={seedWithSlashCommand}
+      openFileMention
     />
   ),
 }

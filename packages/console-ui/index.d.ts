@@ -76,6 +76,14 @@ export interface PageRenderProps {
    */
   tabId: string
   /**
+   * Stable id of the pane (column) hosting this render inside that tab —
+   * two panes of the same page in one tab get different ids, so state a
+   * page keeps per instance (its own folder, its own terminals) keys on
+   * this. Persists with the workspace. Empty string outside a workspace
+   * tab; absent on consoles older than this declaration.
+   */
+  paneId?: string
+  /**
    * Close the pane hosting this page (a split drops the column; a
    * single-column tab detaches back to the attach affordance). Pass it to
    * `PageHeader`'s `onClose` — every page header carries the standard ✕.
@@ -494,7 +502,7 @@ export interface Host {
      * drop or a paste would, and put the caret there. Files become
      * attachments. Absent on older consoles; feature-detect.
      */
-    compose?(draft: { text?: string; files?: File[] }): void
+    compose?(draft: { text?: string; files?: File[]; inline?: boolean }): void
     registerSessionChip(chip: SessionChipRegistration): () => void
     /** Optional on consoles that predate the footer turn-summary slot. */
     registerTurnSummary?(summary: SessionTurnSummaryRegistration): () => void
@@ -505,7 +513,8 @@ export interface Host {
     selectConversation?(sessionId: string): void
     /**
      * Ask the mounted conversation to adopt a validated working directory.
-     * Call this only from an explicit user action such as "Use for chat".
+     * Call this only from an explicit user action, such as the user picking
+     * a folder in a page that sits beside the chat.
      */
     requestWorkingDirectoryChange?(request: { sessionId: string; path: string }): boolean
     /** Live composer model for a conversation, including unsaved drafts. */
@@ -536,6 +545,14 @@ export interface UiClasses {
   readonly listItemTitle: 'iii-ui-list-item__title'
   readonly listItemDescription: 'iii-ui-list-item__description'
   readonly listItemMeta: 'iii-ui-list-item__meta'
+  readonly tree: 'iii-ui-tree'
+  readonly treeItem: 'iii-ui-tree-item'
+  readonly treeItemIcon: 'iii-ui-tree-item__icon'
+  readonly treeItemLabel: 'iii-ui-tree-item__label'
+  readonly treeItemCaret: 'iii-ui-tree-item__caret'
+  readonly treeItemTrailing: 'iii-ui-tree-item__trailing'
+  readonly treeItemMeta: 'iii-ui-tree-item__meta'
+  readonly treeItemAction: 'iii-ui-tree-item__action'
   readonly card: 'iii-ui-card'
   readonly cardHeader: 'iii-ui-card__header'
   readonly cardBody: 'iii-ui-card__body'
@@ -1363,6 +1380,25 @@ export interface CodeEditorHandle {
       the editor so the line sits centered, and focus. Before the editor
       mounts the request is kept and replayed once it does. */
   revealLine(line: number, column?: number): void
+  /** Select whole lines `from`..`to` (1-based, inclusive, clamped), scroll
+      them into view and focus — how a `#file(path:from-to)` reference opens.
+      Absent at runtime on older consoles; guard the call. */
+  revealLines(from: number, to: number): void
+}
+/** A non-empty selection in the editor, 1-based like the gutter. */
+export interface CodeEditorSelection {
+  startLine: number
+  startColumn: number
+  endLine: number
+  endColumn: number
+  text: string
+}
+/** An action offered on a selection, in a small floating bar by its end. */
+export interface CodeEditorSelectionAction {
+  id: string
+  label: string
+  icon?: React.ReactNode
+  run(selection: CodeEditorSelection): void
 }
 export interface CodeEditorProps {
   value: string
@@ -1386,6 +1422,20 @@ export interface CodeEditorProps {
       keywords). Non-empty turns on the as-you-type suggest popup and
       registers a completion provider for the current `language`. */
   completions?: readonly string[]
+  /** Fill the container and own vertical scrolling instead of growing with
+      content: only the visible lines render, so files of thousands of
+      lines stay fast. Decided at mount. The default grows with content. */
+  fill?: boolean
+  /** Line-number gutter, folding and current-line highlight (code files).
+      Off by default (prose fields). */
+  lineNumbers?: boolean
+  /** Soft-wrap long lines. Default true. */
+  wordWrap?: boolean
+  /** Render the minimap; only meaningful together with `fill`. */
+  minimap?: boolean
+  /** Actions shown in a discreet floating bar whenever text is selected
+      ("Reference in chat", …). Empty or absent: no bar. */
+  selectionActions?: readonly CodeEditorSelectionAction[]
 }
 /** The console's Monaco-backed code editor — the one editor for every code
     or long-text editing surface, themed by the console's design tokens in
@@ -1468,3 +1518,44 @@ export interface WorkerConfigurationDialogProps {
  * `configurationId` in `host.pages.register` instead.
  */
 export declare const WorkerConfigurationDialog: React.ComponentType<WorkerConfigurationDialogProps>
+
+export interface DirectoryPickerProps {
+  /** The chosen directory (absolute, as the shell worker echoed it). */
+  value: string | null
+  /** A validated pick — the worker-echoed canonical path. */
+  onChange: (dir: string) => void
+  locked?: boolean
+  disabled?: boolean
+  /**
+   * An externally-detected problem with the current value (e.g. it no
+   * longer validates against the live shell); shown when the picker opens.
+   */
+  externalError?: string | null
+  /** The stack's launch folder, pinned at the top of the projects list. */
+  defaultDir?: string | null
+  className?: string
+  /** `inline`: a text-only trigger for use inside a sentence. */
+  triggerAppearance?: 'default' | 'inline'
+  /** Trigger copy while no directory has been resolved yet. */
+  emptyLabel?: string
+  /** `embedded`: only the picker content, inside an existing sheet page. */
+  presentation?: 'trigger' | 'embedded'
+  /** Called after an embedded picker accepts a directory. */
+  onSelect?: () => void
+}
+/**
+ * The chat composer's working-directory picker: the remembered harness
+ * projects first, a level-by-level browse over `shell::workspace::*` to
+ * add one, live validation of every pick against the shell worker.
+ */
+export declare const DirectoryPicker: React.ComponentType<DirectoryPickerProps>
+
+export interface WordmarkProps {
+  className?: string
+  /** `inset`: the large recessed, low-contrast treatment for empty states. */
+  appearance?: 'default' | 'inset' | 'loading'
+  /** `auto` follows the theme; `ink` and `inverse` pin a variant. */
+  tone?: 'auto' | 'ink' | 'inverse'
+}
+/** The "iii" wordmark. */
+export declare const Wordmark: React.ComponentType<WordmarkProps>

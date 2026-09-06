@@ -1,5 +1,6 @@
 import type * as monacoNs from 'monaco-editor'
 import * as React from 'react'
+import { createPortal } from 'react-dom'
 import { centeredScrollTop, clampLine, scrollParentOf } from '@/lib/reveal-line'
 import { cn } from '@/lib/utils'
 
@@ -9,6 +10,27 @@ export interface CodeEditorHandle {
       holds the editor so the line sits centered, and focus. Before Monaco
       mounts the request is kept and replayed once it does. */
   revealLine(line: number, column?: number): void
+  /** Select whole lines `from`..`to` (1-based, inclusive, clamped), scroll
+      them into view and focus — how a `#file(path:from-to)` reference
+      opens. Kept and replayed like `revealLine` before Monaco mounts. */
+  revealLines(from: number, to: number): void
+}
+
+/** A non-empty selection in the editor, 1-based like the gutter. */
+export interface CodeEditorSelection {
+  startLine: number
+  startColumn: number
+  endLine: number
+  endColumn: number
+  text: string
+}
+
+/** An action offered on a selection, in a small floating bar by its end. */
+export interface CodeEditorSelectionAction {
+  id: string
+  label: string
+  icon?: React.ReactNode
+  run(selection: CodeEditorSelection): void
 }
 
 export interface CodeEditorProps {
@@ -35,6 +57,22 @@ export interface CodeEditorProps {
       the editor stays prose-quiet) and registers a completion provider for
       the current `language` offering these words. Disposed on unmount. */
   completions?: readonly string[]
+  /** Fill the container and own vertical scrolling instead of growing with
+      content. The default grows so a short field reads like a textarea; a
+      file of thousands of lines needs the editor to virtualize its own
+      viewport — with `fill` only visible lines are rendered. Decided at
+      mount. */
+  fill?: boolean
+  /** Show the line-number gutter, folding and current-line highlight — the
+      code-file presentation. Off by default (prose fields). */
+  lineNumbers?: boolean
+  /** Soft-wrap long lines. Default true. */
+  wordWrap?: boolean
+  /** Render the minimap; only meaningful together with `fill`. */
+  minimap?: boolean
+  /** Actions shown in a discreet floating bar whenever text is selected
+      ("Reference in chat", …). Empty or absent: no bar. */
+  selectionActions?: readonly CodeEditorSelectionAction[]
 }
 
 /* The pre-Monaco fallback (and permanent degraded mode if the editor chunk
@@ -42,6 +80,43 @@ export interface CodeEditorProps {
    with, so the swap-in doesn't reflow the text. */
 const EDITOR_TYPOGRAPHY =
   'm-0 whitespace-pre-wrap break-words px-3 py-2 text-left font-code text-[12.5px] leading-[19px]'
+
+/** Presentation knobs that map straight onto Monaco options. Applied at
+    mount and again whenever the props change. */
+function presentationOptions({
+  fill,
+  lineNumbers,
+  wordWrap,
+  minimap,
+}: {
+  fill: boolean
+  lineNumbers: boolean
+  wordWrap: boolean
+  minimap: boolean
+}): monacoNs.editor.IEditorOptions {
+  return {
+    wordWrap: wordWrap ? 'on' : 'off',
+    lineNumbers: lineNumbers ? 'on' : 'off',
+    folding: lineNumbers,
+    lineDecorationsWidth: lineNumbers ? 10 : 12,
+    lineNumbersMinChars: lineNumbers ? 3 : 0,
+    renderLineHighlight: lineNumbers ? 'line' : 'none',
+    minimap: { enabled: fill && minimap },
+    scrollbar: fill
+      ? {
+          vertical: 'auto',
+          horizontal: 'auto',
+          alwaysConsumeMouseWheel: true,
+          useShadows: false,
+        }
+      : {
+          vertical: 'hidden',
+          horizontal: 'hidden',
+          alwaysConsumeMouseWheel: false,
+          useShadows: false,
+        },
+  }
+}
 
 const MONACO_OPTIONS: monacoNs.editor.IStandaloneEditorConstructionOptions = {
   automaticLayout: true,
@@ -79,6 +154,15 @@ const MONACO_OPTIONS: monacoNs.editor.IStandaloneEditorConstructionOptions = {
   contextmenu: false,
 }
 
+/** Keyboard selections settle for this long before the bar shows. */
+const SELECTION_BAR_DELAY_MS = 160
+
+let selectionWidgetSeq = 0
+
+type PendingReveal =
+  | { kind: 'line'; line: number; column: number }
+  | { kind: 'lines'; from: number; to: number }
+
 /**
  * The console's code editor — Monaco, themed by the design tokens (the
  * `iii-console` theme in `lib/monaco.ts` follows `html[data-theme]`), shared
@@ -106,6 +190,11 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
       'aria-label': ariaLabel,
       onKeyDown,
       completions,
+      fill = false,
+      lineNumbers = false,
+      wordWrap = true,
+      minimap = false,
+      selectionActions,
     },
     ref,
   ) => {
@@ -113,24 +202,16 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
     const fallbackRef = React.useRef<HTMLTextAreaElement>(null)
     const editorRef = React.useRef<monacoNs.editor.IStandaloneCodeEditor>(null)
     const applyingRef = React.useRef(false)
-    const pendingRevealRef = React.useRef<{
-      line: number
-      column: number
-    } | null>(null)
+    const pendingRevealRef = React.useRef<PendingReveal | null>(null)
     const [ready, setReady] = React.useState(false)
 
-    const revealLine = React.useCallback((line: number, column = 1) => {
-      const editor = editorRef.current
-      if (!editor) {
-        pendingRevealRef.current = { line, column }
-        return
-      }
-      const lineNumber = clampLine(line, editor.getModel()?.getLineCount() ?? 1)
-      editor.setPosition({ lineNumber, column: Math.max(1, column) })
-      editor.revealLineInCenter(lineNumber)
-      const host = hostRef.current
-      const scroller = scrollParentOf(host)
-      if (host && scroller) {
+    /** Scroll the OUTER pane so `lineNumber` sits centered (growing mode). */
+    const scrollOuterTo = React.useCallback(
+      (editor: monacoNs.editor.IStandaloneCodeEditor, lineNumber: number) => {
+        const host = hostRef.current
+        // A filled editor scrolls itself; the outer pane has nothing to move.
+        const scroller = latest.current.fill ? null : scrollParentOf(host)
+        if (!host || !scroller) return
         const hostTop =
           host.getBoundingClientRect().top -
           scroller.getBoundingClientRect().top +
@@ -152,15 +233,156 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
             ? 'auto'
             : 'smooth',
         })
-      }
-      editor.focus()
-    }, [])
+      },
+      [],
+    )
+
+    const revealLine = React.useCallback(
+      (line: number, column = 1) => {
+        const editor = editorRef.current
+        if (!editor) {
+          pendingRevealRef.current = { kind: 'line', line, column }
+          return
+        }
+        const lineNumber = clampLine(
+          line,
+          editor.getModel()?.getLineCount() ?? 1,
+        )
+        editor.setPosition({ lineNumber, column: Math.max(1, column) })
+        editor.revealLineInCenter(lineNumber)
+        scrollOuterTo(editor, lineNumber)
+        editor.focus()
+      },
+      [scrollOuterTo],
+    )
+
+    const revealLines = React.useCallback(
+      (from: number, to: number) => {
+        const editor = editorRef.current
+        if (!editor) {
+          pendingRevealRef.current = { kind: 'lines', from, to }
+          return
+        }
+        const model = editor.getModel()
+        const lineCount = model?.getLineCount() ?? 1
+        const first = clampLine(Math.min(from, to), lineCount)
+        const last = clampLine(Math.max(from, to), lineCount)
+        // A selection the caller made is not one the person made: no bar.
+        programmaticSelectionRef.current = true
+        editor.setSelection({
+          startLineNumber: first,
+          startColumn: 1,
+          endLineNumber: last,
+          endColumn: model?.getLineMaxColumn(last) ?? 1,
+        })
+        editor.revealLinesInCenter(first, last)
+        scrollOuterTo(editor, first)
+        editor.focus()
+      },
+      [scrollOuterTo],
+    )
 
     // The mount effect runs once; it reads mount-time props through here.
-    const latest = React.useRef({ value, language, autoFocus })
-    latest.current = { value, language, autoFocus }
+    const latest = React.useRef({
+      value,
+      language,
+      autoFocus,
+      fill,
+      lineNumbers,
+      wordWrap,
+      minimap,
+    })
+    latest.current = {
+      value,
+      language,
+      autoFocus,
+      fill,
+      lineNumbers,
+      wordWrap,
+      minimap,
+    }
     const onChangeRef = React.useRef(onChange)
     onChangeRef.current = onChange
+
+    // ── selection actions ──
+    // A floating bar by the end of a non-empty selection, offering the
+    // caller's actions. Monaco positions it as a content widget (so it
+    // follows scrolling and escapes the wrapper's clipping); React renders
+    // into the widget's node through a portal.
+    const actionsRef = React.useRef(selectionActions)
+    actionsRef.current = selectionActions
+    const hasActions = Boolean(selectionActions && selectionActions.length > 0)
+    const [selection, setSelection] =
+      React.useState<CodeEditorSelection | null>(null)
+    const selectionNodeRef = React.useRef<HTMLDivElement | null>(null)
+    const selectionWidgetRef =
+      React.useRef<monacoNs.editor.IContentWidget | null>(null)
+    const selectionShownRef = React.useRef(false)
+    const mouseDownRef = React.useRef(false)
+    const programmaticSelectionRef = React.useRef(false)
+    const selectionTimerRef = React.useRef<number | null>(null)
+
+    const hideSelectionBar = React.useCallback(() => {
+      if (selectionTimerRef.current !== null) {
+        window.clearTimeout(selectionTimerRef.current)
+        selectionTimerRef.current = null
+      }
+      const editor = editorRef.current
+      const widget = selectionWidgetRef.current
+      if (editor && widget && selectionShownRef.current) {
+        editor.removeContentWidget(widget)
+      }
+      selectionShownRef.current = false
+      setSelection(null)
+    }, [])
+
+    const showSelectionBar = React.useCallback(
+      (editor: monacoNs.editor.IStandaloneCodeEditor) => {
+        const model = editor.getModel()
+        const sel = editor.getSelection()
+        if (!model || !sel || sel.isEmpty()) {
+          hideSelectionBar()
+          return
+        }
+        const end = sel.getEndPosition()
+        if (!selectionNodeRef.current) {
+          const node = document.createElement('div')
+          node.className = 'z-10'
+          selectionNodeRef.current = node
+        }
+        const node = selectionNodeRef.current
+        if (!selectionWidgetRef.current) {
+          const widgetId = `iii-selection-actions-${++selectionWidgetSeq}`
+          selectionWidgetRef.current = {
+            getId: () => widgetId,
+            getDomNode: () => node,
+            getPosition: () => ({
+              position: { lineNumber: end.lineNumber, column: end.column },
+              // monaco ContentWidgetPositionPreference: 2 = BELOW, 1 = ABOVE
+              preference: [2, 1],
+            }),
+            allowEditorOverflow: true,
+          }
+        }
+        const widget = selectionWidgetRef.current
+        // Re-anchor at the new end of the selection.
+        widget.getPosition = () => ({
+          position: { lineNumber: end.lineNumber, column: end.column },
+          preference: [2, 1],
+        })
+        if (selectionShownRef.current) editor.layoutContentWidget(widget)
+        else editor.addContentWidget(widget)
+        selectionShownRef.current = true
+        setSelection({
+          startLine: sel.startLineNumber,
+          startColumn: sel.startColumn,
+          endLine: sel.endLineNumber,
+          endColumn: sel.endColumn,
+          text: model.getValueInRange(sel),
+        })
+      },
+      [hideSelectionBar],
+    )
 
     React.useImperativeHandle(ref, () => ({
       focus: () => {
@@ -168,6 +390,7 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
         else fallbackRef.current?.focus()
       },
       revealLine,
+      revealLines,
     }))
 
     React.useEffect(() => {
@@ -175,8 +398,10 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
       void import('@/lib/monaco')
         .then(({ monaco, CONSOLE_THEME, codeFontFamily }) => {
           if (disposed || !hostRef.current) return
+          const filled = latest.current.fill
           const editor = monaco.editor.create(hostRef.current, {
             ...MONACO_OPTIONS,
+            ...presentationOptions(latest.current),
             value: latest.current.value,
             language: latest.current.language,
             theme: CONSOLE_THEME,
@@ -185,24 +410,74 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
           editorRef.current = editor
           editor.getModel()?.updateOptions({ tabSize: 2, insertSpaces: true })
 
+          // Growing mode sizes the host to the content so the OUTER pane
+          // scrolls; filled mode leaves the host at the container's height
+          // and lets Monaco virtualize the viewport.
           const fitHeight = () => {
-            if (hostRef.current)
+            if (hostRef.current && !filled)
               hostRef.current.style.height = `${editor.getContentHeight()}px`
           }
           editor.onDidChangeModelContent(() => {
+            // Editing moves the text under the bar; it comes back on the
+            // next selection.
+            hideSelectionBar()
             if (applyingRef.current) return
             // Read through the ref-captured editor: the latest onChange is
             // re-bound below on every render via this stable dispatcher.
             onChangeRef.current(editor.getValue())
           })
-          editor.onDidContentSizeChange(fitHeight)
+          if (!filled) editor.onDidContentSizeChange(fitHeight)
           fitHeight()
+
+          // The bar waits for the mouse button to come up (a drag would
+          // otherwise chase the pointer) and for keyboard selections to
+          // settle; a selection made by code (`revealLines`) shows none.
+          // A press on the bar itself is not a press in the text: hiding
+          // it there would unmount the button before its click fires.
+          // (9 = monaco MouseTargetType.CONTENT_WIDGET.)
+          const onWidget = (target: { type: number } | null) =>
+            target?.type === 9
+          editor.onMouseDown((event) => {
+            if (onWidget(event.target)) return
+            mouseDownRef.current = true
+            hideSelectionBar()
+          })
+          editor.onMouseUp((event) => {
+            if (onWidget(event.target)) return
+            mouseDownRef.current = false
+            if (actionsRef.current?.length) showSelectionBar(editor)
+          })
+          editor.onDidChangeCursorSelection((event) => {
+            if (!actionsRef.current?.length) return
+            if (programmaticSelectionRef.current) {
+              programmaticSelectionRef.current = false
+              hideSelectionBar()
+              return
+            }
+            if (event.selection.isEmpty()) {
+              hideSelectionBar()
+              return
+            }
+            if (mouseDownRef.current) return
+            if (selectionTimerRef.current !== null) {
+              window.clearTimeout(selectionTimerRef.current)
+            }
+            selectionTimerRef.current = window.setTimeout(() => {
+              selectionTimerRef.current = null
+              if (editorRef.current === editor) showSelectionBar(editor)
+            }, SELECTION_BAR_DELAY_MS)
+          })
+
           if (latest.current.autoFocus) editor.focus()
           setReady(true)
           const pending = pendingRevealRef.current
           if (pending) {
             pendingRevealRef.current = null
-            revealLine(pending.line, pending.column)
+            if (pending.kind === 'line') {
+              revealLine(pending.line, pending.column)
+            } else {
+              revealLines(pending.from, pending.to)
+            }
           }
         })
         .catch((err) => {
@@ -213,10 +488,21 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
         })
       return () => {
         disposed = true
+        if (selectionTimerRef.current !== null) {
+          window.clearTimeout(selectionTimerRef.current)
+          selectionTimerRef.current = null
+        }
+        selectionShownRef.current = false
+        selectionWidgetRef.current = null
         editorRef.current?.dispose()
         editorRef.current = null
       }
-    }, [revealLine])
+    }, [revealLine, revealLines, hideSelectionBar, showSelectionBar])
+
+    // Actions withdrawn while the bar is up: take it down.
+    React.useEffect(() => {
+      if (!hasActions) hideSelectionBar()
+    }, [hasActions, hideSelectionBar])
 
     // Prop → editor sync (external value swaps, language, options).
     React.useEffect(() => {
@@ -238,6 +524,15 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
           monaco.editor.setModelLanguage(model, language)
       })
     }, [ready, language])
+
+    React.useEffect(() => {
+      if (!ready) return
+      const editor = editorRef.current
+      if (!editor) return
+      editor.updateOptions(
+        presentationOptions({ fill, lineNumbers, wordWrap, minimap }),
+      )
+    }, [ready, fill, lineNumbers, wordWrap, minimap])
 
     React.useEffect(() => {
       if (!ready) return
@@ -318,6 +613,18 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
       }
     }, [ready, completionsKey, language])
 
+    const selectionBar =
+      selection && selectionNodeRef.current && selectionActions?.length
+        ? createPortal(
+            <SelectionActionBar
+              actions={selectionActions}
+              selection={selection}
+              onRun={hideSelectionBar}
+            />,
+            selectionNodeRef.current,
+          )
+        : null
+
     return (
       // biome-ignore lint/a11y/noStaticElementInteractions: shortcut relay + gap-click focus around a real editor
       <div
@@ -329,6 +636,7 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
         inert={disabled || undefined}
         className={cn(
           'relative bg-bg',
+          fill && 'h-full min-h-0 overflow-hidden',
           disabled && 'pointer-events-none opacity-40',
           className,
         )}
@@ -355,12 +663,13 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
       >
         <div
           ref={hostRef}
-          className={
+          className={cn(
             // Until the swap, the host hides under the in-flow fallback
             // textarea (which is what sizes the wrapper) — `invisible`
             // keeps its box measurable for Monaco's initial layout.
-            ready ? undefined : 'invisible absolute inset-0 overflow-hidden'
-          }
+            ready ? undefined : 'invisible absolute inset-0 overflow-hidden',
+            ready && fill && 'h-full',
+          )}
         />
         {!ready ? (
           <textarea
@@ -380,14 +689,55 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(
             rows={Math.max(1, value.split('\n').length)}
             className={cn(
               EDITOR_TYPOGRAPHY,
-              'relative block w-full resize-none overflow-hidden',
+              'relative block w-full resize-none',
+              fill ? 'h-full overflow-auto' : 'overflow-hidden',
               'bg-transparent text-ink caret-ink',
               'placeholder:text-ink-ghost focus:outline-none',
             )}
           />
         ) : null}
+        {selectionBar}
       </div>
     )
   },
 )
 CodeEditor.displayName = 'CodeEditor'
+
+/**
+ * The bar itself: a raised chip with one quiet button per action, tucked
+ * just under the selection's end. Mouse-down is swallowed so pressing a
+ * button never collapses the selection it acts on.
+ */
+function SelectionActionBar({
+  actions,
+  selection,
+  onRun,
+}: {
+  actions: readonly CodeEditorSelectionAction[]
+  selection: CodeEditorSelection
+  onRun: () => void
+}) {
+  return (
+    <div
+      role="toolbar"
+      aria-label="selection actions"
+      className="mt-1.5 flex items-center gap-0.5 rounded-md bg-panel-raised p-0.5 shadow-floating"
+      onMouseDown={(event) => event.preventDefault()}
+    >
+      {actions.map((action) => (
+        <button
+          key={action.id}
+          type="button"
+          onClick={() => {
+            action.run(selection)
+            onRun()
+          }}
+          className="inline-flex h-6 items-center gap-1.5 rounded-sm px-2 font-sans text-[11px] font-semibold text-ink hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rule-focus [&>svg]:size-4 [&>svg]:shrink-0 [&>svg]:text-ink-faint"
+        >
+          {action.icon}
+          {action.label}
+        </button>
+      ))}
+    </div>
+  )
+}

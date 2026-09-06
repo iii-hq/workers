@@ -1,21 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { FunctionTriggerCard } from '@/components/function-trigger/FunctionTriggerCard'
-import type { FunctionTriggerMessage } from '@/types/chat'
+import { spawnDepthError } from '@/stories/fixtures/harness-fixtures'
 import { SandboxErrorView } from './ErrorView'
-
-const genericFunctionError: FunctionTriggerMessage = {
-  id: 'error-view-story-generic',
-  role: 'function-trigger',
-  functionId: 'sandbox::exec',
-  input: { command: 'run the audit' },
-  output: {
-    error: {
-      kind: 'function_error',
-      message: 'sandbox/depth_exceeded: nesting depth 3 exceeds max_depth 2',
-    },
-  },
-  createdAt: Date.now(),
-}
 
 const meta = {
   title: 'Chat/Sandbox/ErrorView',
@@ -85,7 +71,5 @@ export const DispatchPolicy: Story = {
 
 export const InFunctionCard: Story = {
   name: 'inside function card',
-  render: () => (
-    <FunctionTriggerCard message={genericFunctionError} defaultOpen />
-  ),
+  render: () => <FunctionTriggerCard message={spawnDepthError} defaultOpen />,
 }

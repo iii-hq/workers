@@ -1,6 +1,6 @@
 {
   "function_id": "browser::clear-data",
-  "description": "Clear the session's browsing data (cookies, cache, storage), like the browser's Clear browsing data. Scoped to this session's browser context.",
+  "description": "Clear the browsing data of the site the tab is on: its cookies, its storage, and the shared cache — like a browser's per-site 'Clear cookies and site data'. Other sites keep their logins; browser::clear-browser-data wipes everything.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "ClearDataInput",
@@ -10,7 +10,7 @@
     ],
     "properties": {
       "cache": {
-        "description": "Clear the HTTP cache. Default true.",
+        "description": "Clear the HTTP cache (shared by every tab). Default true.",
         "default": null,
         "type": [
           "boolean",
@@ -18,7 +18,7 @@
         ]
       },
       "cookies": {
-        "description": "Clear cookies. Default true.",
+        "description": "Delete the cookies the current page can see (its site's cookies). Default true.",
         "default": null,
         "type": [
           "boolean",

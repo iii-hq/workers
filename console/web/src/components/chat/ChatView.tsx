@@ -47,11 +47,14 @@ import type {
 import { requestComposerFocus } from '@/lib/composer-insert'
 import { useConversationsCtxOptional } from '@/lib/conversations-context'
 import { syncEditorWorkspace } from '@/lib/editor-sync'
+import type { FileMentionRef } from '@/lib/file-mention-token'
 import { expandFileMentions, parseFileMentions } from '@/lib/file-mentions'
+import { createWorkspaceFileSearch } from '@/lib/file-search'
 import { formatStopReason } from '@/lib/format-stop-reason'
+import { requestPanelOpen } from '@/lib/panel-context'
 import { newMessageId } from '@/lib/session-id'
 import {
-  expandSlashInvocation,
+  expandSlashInvocations,
   loadedSkillIds,
   slashChip,
 } from '@/lib/slash-commands'
@@ -71,6 +74,7 @@ import {
 import {
   activateWorkingDir,
   fetchDefaultWorkingDir,
+  fetchNewChatWorkingDir,
   workingDirScopeNotice,
 } from '@/lib/working-dir'
 import { onWorkingDirectoryChangeRequest } from '@/lib/working-directory-request'
@@ -255,6 +259,42 @@ export function ChatView({
     (conversationsCtx ? conversationsCtx.shellAvailable : false)
   const workingDirRef = useRef(conversation.workingDir ?? null)
   workingDirRef.current = conversation.workingDir ?? null
+  // Files in the composer's `@` / `#` menus come from the shell worker's
+  // quick-open search under the session's folder; without shell there is
+  // no folder and no search.
+  const conversationWorkingDir = conversation.workingDir ?? null
+  const searchFiles = useMemo(
+    () =>
+      workingDirEnabled && conversationWorkingDir
+        ? createWorkspaceFileSearch(conversationWorkingDir)
+        : undefined,
+    [workingDirEnabled, conversationWorkingDir],
+  )
+  // A clicked file pill opens the shell explorer on that file — on the
+  // referenced lines when the mention carries a window. Relative mentions
+  // resolve against the session's folder; absolute ones (a file referenced
+  // from a shell rooted elsewhere) go as they are.
+  const handleOpenFileMention = useCallback(
+    (ref: FileMentionRef) => {
+      if (!workingDirEnabled || ref.path.endsWith('/')) return
+      const dir = workingDirRef.current
+      const path = ref.path.startsWith('/')
+        ? ref.path
+        : dir
+          ? `${dir.replace(/\/+$/, '')}/${ref.path}`
+          : null
+      if (!path) return
+      requestPanelOpen({
+        pageId: 'shell',
+        context: {
+          type: 'file',
+          path,
+          ...(ref.range ? { line: ref.range.from, endLine: ref.range.to } : {}),
+        },
+      })
+    },
+    [workingDirEnabled],
+  )
   const workingDirActivationRef = useRef<{
     path: string
     token: symbol
@@ -661,26 +701,28 @@ export function ChatView({
           }
         }
         // Same expansion as the live send path: an edited queued message
-        // keeps its `/skill:<id>` block instead of silently
-        // dropping it. Staying silent on a failed re-resolution would strip
+        // keeps its `/skill:<id>` blocks instead of silently
+        // dropping them. Staying silent on a failed re-resolution would strip
         // the body the queued message already carried with no explanation.
-        const slashExpansion =
+        const slashExpansions =
           backend.id === 'real'
-            ? await expandSlashInvocation(
+            ? await expandSlashInvocations(
                 payload.text.trim(),
                 loadedSkillIds(messagesRef.current),
               )
-            : null
-        if (slashExpansion?.status === 'attached') {
-          attachedBlocks = [...(attachedBlocks ?? []), slashExpansion.block]
-        } else if (slashExpansion) {
-          onAppendMessage(
-            conversationId,
-            makeSystemNotice(
-              `could not attach ${slashExpansion.command} — the edited message will be sent as typed`,
-              'warn',
-            ),
-          )
+            : []
+        for (const expansion of slashExpansions) {
+          if (expansion.status === 'attached') {
+            attachedBlocks = [...(attachedBlocks ?? []), expansion.block]
+          } else {
+            onAppendMessage(
+              conversationId,
+              makeSystemNotice(
+                `could not attach ${expansion.command} — the edited message will be sent as typed`,
+                'warn',
+              ),
+            )
+          }
         }
         // Same expansion as the live send path: a queued message's documents
         // and pictures have to reach the agent too, or editing a queued
@@ -972,17 +1014,18 @@ export function ChatView({
     }
   }, [workingDirEnabled])
 
-  // Default a fresh draft to the stack's current folder (MOT-3897): the
-  // harness-reported launch dir, shell-validated, set only while the chat is
-  // still an untouched draft (prefillWorkingDir re-checks under the patch so
-  // an explicit pick or the first send racing this fetch wins). Visible
-  // immediately in the picker chip — a default, not a silent inheritance.
+  // Default a fresh draft to the last-used harness project (the catalog in
+  // data/harness-projects.json), falling back to the stack's launch dir
+  // (MOT-3897) when nothing was ever picked. Shell-validated, set only while
+  // the chat is still an untouched draft (prefillWorkingDir re-checks under
+  // the patch so an explicit pick or the first send racing this fetch wins).
+  // Visible immediately in the picker chip — a default, not a silent one.
   const prefillWorkingDir = conversationsCtx?.prefillWorkingDir
   useEffect(() => {
     if (!workingDirEnabled || !prefillWorkingDir) return
     if (!conversation.draft || conversation.workingDir != null) return
     let cancelled = false
-    void fetchDefaultWorkingDir().then((dir) => {
+    void fetchNewChatWorkingDir().then((dir) => {
       if (!cancelled && dir) prefillWorkingDir(conversation.id, dir)
     })
     return () => {
@@ -1391,37 +1434,39 @@ export function ChatView({
         }
       }
 
-      // A leading `/skill:<id>` the palette offered expands here: the resolved body rides as another attachment
-      // block while the typed text (command + args) stays the user message.
-      // Prose that merely starts with a slash never resolves (the expander
-      // is gated on the palette's fetched entries).
-      const slashExpansion =
+      // Every `/skill:<id>` the palette offered expands here, wherever it
+      // sits in the text: each resolved body rides as another attachment
+      // block while the typed text (commands + prose) stays the user
+      // message. Slash-prefixed prose never resolves (the expander is gated
+      // on the palette's fetched entries).
+      const slashExpansions =
         backend.id === 'real'
-          ? await expandSlashInvocation(
+          ? await expandSlashInvocations(
               trimmed,
               loadedSkillIds(messagesRef.current),
             )
-          : null
-      if (slashExpansion?.status === 'attached') {
-        attachedBlocks = [...(attachedBlocks ?? []), slashExpansion.block]
-        // The body travels as a block, never as visible text — show the same
-        // chip the hydrated transcript will collapse the block into.
-        if (!willQueue) {
-          onPatchMessage(conversationId, userMsg.id, {
-            attachments: [
-              ...(userMsg.attachments ?? []),
-              slashChip(slashExpansion.inv, slashExpansion.block.length),
-            ],
-          })
+          : []
+      const slashChips: Attachment[] = []
+      for (const expansion of slashExpansions) {
+        if (expansion.status === 'attached') {
+          attachedBlocks = [...(attachedBlocks ?? []), expansion.block]
+          slashChips.push(slashChip(expansion.inv, expansion.block.length))
+        } else {
+          onAppendMessage(
+            conversationId,
+            makeSystemNotice(
+              `could not attach ${expansion.command} — sending the message as typed`,
+              'warn',
+            ),
+          )
         }
-      } else if (slashExpansion) {
-        onAppendMessage(
-          conversationId,
-          makeSystemNotice(
-            `could not attach ${slashExpansion.command} — sending the message as typed`,
-            'warn',
-          ),
-        )
+      }
+      // The bodies travel as blocks, never as visible text — show the same
+      // chips the hydrated transcript will collapse the blocks into.
+      if (slashChips.length > 0 && !willQueue) {
+        onPatchMessage(conversationId, userMsg.id, {
+          attachments: [...(userMsg.attachments ?? []), ...slashChips],
+        })
       }
 
       // Mid-stream send (MOT-3837): a turn is already streaming, so the
@@ -2122,7 +2167,6 @@ export function ChatView({
         title: 'Focus the composer',
         detail: 'Put the caret in the message box',
         keywords: ['type', 'write', 'input', 'message'],
-        shortcut: 'I',
         run: () => requestComposerFocus(),
       },
       {
@@ -2130,7 +2174,6 @@ export function ChatView({
         title: 'Next message',
         detail: 'Move the focus down the conversation',
         keywords: ['down', 'read', 'inspect'],
-        shortcut: 'J',
         run: () => focusMessage(1),
       },
       {
@@ -2138,7 +2181,6 @@ export function ChatView({
         title: 'Previous message',
         detail: 'Move the focus up the conversation',
         keywords: ['up', 'read', 'inspect'],
-        shortcut: 'K',
         run: () => focusMessage(-1),
       },
       {
@@ -2159,7 +2201,6 @@ export function ChatView({
         title: 'Approve the pending call',
         detail: 'Let the focused (or the only waiting) function call run',
         keywords: ['allow', 'yes', 'permission'],
-        shortcut: 'A',
         enabled: pendingApproval,
         run: () => answerApproval('approve'),
       },
@@ -2168,7 +2209,6 @@ export function ChatView({
         title: 'Deny the pending call',
         detail: 'Refuse the focused (or the only waiting) function call',
         keywords: ['reject', 'no', 'permission'],
-        shortcut: 'D',
         enabled: pendingApproval,
         run: () => answerApproval('deny'),
       },
@@ -2177,7 +2217,6 @@ export function ChatView({
         title: 'Always allow the pending call',
         detail: 'Approve it and stop asking for this function',
         keywords: ['allow', 'permission', 'session', 'trust'],
-        shortcut: 'S',
         enabled: pendingApproval,
         run: () => answerApproval('always-allow'),
       },
@@ -2186,7 +2225,6 @@ export function ChatView({
         title: 'Expand or collapse the focused message',
         detail: 'Open a function call card, or fold it',
         keywords: ['open', 'fold', 'details'],
-        shortcut: 'O',
         run: () => actOnFocused('toggle'),
       },
       {
@@ -2194,7 +2232,6 @@ export function ChatView({
         title: 'Copy the focused message',
         detail: 'Copy its text to the clipboard',
         keywords: ['clipboard'],
-        shortcut: 'Y',
         run: () => actOnFocused('copy'),
       },
       {
@@ -2202,7 +2239,6 @@ export function ChatView({
         title: 'Switch model',
         detail: 'Open the model picker',
         keywords: ['provider', 'picker', 'llm'],
-        shortcut: 'M',
         run: handleOpenModelPicker,
       },
       {
@@ -2426,6 +2462,10 @@ export function ChatView({
             modelPickerOpenRequest={modelPickerOpenRequest}
             modelLocked={Boolean(conversation.agentProfile?.model)}
             functionEntries={functionEntries}
+            searchFiles={searchFiles}
+            onOpenFileMention={
+              workingDirEnabled ? handleOpenFileMention : undefined
+            }
             permissionMode={approvalSettings.settings.mode}
             permissionModeLoading={!approvalSettings.loaded}
             showPermissionMode={approvalEnabled}

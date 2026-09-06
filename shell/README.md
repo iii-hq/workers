@@ -173,7 +173,7 @@ fully unjailed, regardless of `fs.allow_unjailed`.
 |---|---|
 | `coder::info` | Discover the jail: roots, caps, response budgets, exclude/non-accessible globs. Call first. |
 | `coder::read-file` | Windowed reads (`line_from`/`line_to`), `stat` probe, byte-budgeted full reads, and multi-file batch reads. |
-| `coder::search` | Literal/regex content + path search with context lines, bounded by match/byte budgets. |
+| `coder::search` | Literal/regex content + path search with context lines, bounded by match/byte budgets. `respect_gitignore: true` skips what `.gitignore` hides; `fuzzy_paths: true` ranks path matches quick-open style, best first. |
 | `coder::list-folder` | Paginated single-folder listing. |
 | `coder::tree` | Recursive depth- and per-folder-bounded directory snapshot. |
 | `coder::create-file` / `coder::update-file` / `coder::delete-file` / `coder::move` | Batched create, line/regex edits, delete, and atomic rename/move. |
@@ -302,9 +302,10 @@ Conventions (hold these when adding functions to either surface):
   mean the same failure class (see [Errors](#errors)). Redaction: never let
   a denied path read differently from a missing one.
 - **Discovery**: `coder::info` is the agent-facing contract report.
-  `shell::config-status` (reload health) and `shell::workspace::*` (console
-  working-directory picker) are operator/console control plane, not agent
-  tools.
+  `shell::config-status` (reload health), `shell::workspace::*` (console
+  working-directory picker and the explorer's chunked byte reads) and
+  `shell::turns::*` (per-session change history and its `revert`) are
+  operator/console control plane, not agent tools.
 - **Sandbox**: `shell::fs::*`/`shell::exec` accept `target: sandbox`;
   `coder::*` is host-only.
 

@@ -45,6 +45,11 @@
         },
         "type": "array"
       },
+      "fuzzy_paths": {
+        "default": false,
+        "description": "Rank path matches by fuzzy subsequence score (quick-open style) instead of substring/regex matching; `path_matches` then comes back best first. Content matching is unaffected.",
+        "type": "boolean"
+      },
       "ignore_case": {
         "default": false,
         "type": "boolean"
@@ -56,6 +61,11 @@
           "type": "string"
         },
         "type": "array"
+      },
+      "include_hidden": {
+        "default": true,
+        "description": "Walk dot-files and dot-folders (`.github`, `.env`, …); default true. `false` leaves them out, the way an editor's quick open does.",
+        "type": "boolean"
       },
       "max_line_bytes": {
         "default": null,
@@ -83,11 +93,16 @@
         "type": "string"
       },
       "query": {
-        "description": "Pattern to search for. Treated as a regex when `regex: true`, otherwise as a literal substring.",
+        "description": "Pattern to search for. Treated as a regex when `regex: true`, otherwise as a literal substring. May be empty only when `search_content` is false: a path-only search with no query lists every path (with `fuzzy_paths`, shallow and short paths first).",
         "type": "string"
       },
       "regex": {
         "default": false,
+        "type": "boolean"
+      },
+      "respect_gitignore": {
+        "default": false,
+        "description": "Honour `.gitignore`/`.ignore` rules (inside a Git repository) while walking, the way an editor's search does; default false keeps every non-excluded file searchable.",
         "type": "boolean"
       },
       "search_content": {

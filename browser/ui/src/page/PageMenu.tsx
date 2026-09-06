@@ -1,7 +1,9 @@
 /**
  * The ⋮ menu beside the address bar: what a browser keeps behind its own
- * menu, scoped to this session. Every row is also a page command, so ⌘K
- * lists the same verbs with their keys; the menu is the mouse path.
+ * menu, scoped to this tab. The developer tools (console, network,
+ * downloads, history) live here too — hidden until asked for, like a
+ * browser's. Every row is also a page command, so ⌘K lists the same verbs
+ * with their keys; the menu is the mouse path.
  */
 
 import {
@@ -15,6 +17,8 @@ import { cn } from '../lib/cn'
 import { Minus, MoreVertical, Plus, RefreshCw } from '../lib/icons'
 
 export interface PageMenuActions {
+  newTab: () => void
+  newIncognitoTab: () => void
   findInPage: () => void
   takeScreenshot: () => void
   screenshotToChat: () => void
@@ -22,7 +26,8 @@ export interface PageMenuActions {
   zoomIn: () => void
   zoomOut: () => void
   zoomReset: () => void
-  clearData: () => void
+  toggleDevtools: () => void
+  clearSiteData: () => void
   toggleDeviceToolbar: () => void
   importCookies: () => void
   copyCookies: () => void
@@ -33,10 +38,16 @@ export interface PageMenuActions {
 interface PageMenuProps {
   actions: PageMenuActions
   zoom: number
+  devtoolsOpen: boolean
   canSendToChat: boolean
 }
 
-export function PageMenu({ actions, zoom, canSendToChat }: PageMenuProps) {
+export function PageMenu({
+  actions,
+  zoom,
+  devtoolsOpen,
+  canSendToChat,
+}: PageMenuProps) {
   const row = (
     label: string,
     action: keyof PageMenuActions,
@@ -56,13 +67,16 @@ export function PageMenu({ actions, zoom, canSendToChat }: PageMenuProps) {
         <button
           type="button"
           className="br-ui-chrome-btn"
-          title="page menu"
-          aria-label="page menu"
+          title="browser menu"
+          aria-label="browser menu"
         >
           <MoreVertical size={17} aria-hidden />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" sideOffset={6} className="br-ui-menu">
+        {row('New tab', 'newTab')}
+        {row('New incognito tab', 'newIncognitoTab')}
+        <DropdownMenuSeparator />
         {row('Find in page', 'findInPage')}
         {row('Print to PDF', 'printToPdf')}
         <DropdownMenuSeparator />
@@ -108,6 +122,10 @@ export function PageMenu({ actions, zoom, canSendToChat }: PageMenuProps) {
           </span>
         </fieldset>
         <DropdownMenuSeparator />
+        {row(
+          devtoolsOpen ? 'Hide developer tools' : 'Developer tools',
+          'toggleDevtools',
+        )}
         {row('Show device toolbar', 'toggleDeviceToolbar')}
         {row('Take a screenshot', 'takeScreenshot')}
         {row('Screenshot to chat', 'screenshotToChat', {
@@ -116,7 +134,7 @@ export function PageMenu({ actions, zoom, canSendToChat }: PageMenuProps) {
         <DropdownMenuSeparator />
         {row('Import cookies…', 'importCookies')}
         {row('Copy cookies', 'copyCookies')}
-        {row('Clear browsing data', 'clearData')}
+        {row('Clear cookies and site data…', 'clearSiteData')}
         <DropdownMenuSeparator />
         {row('Saved annotations', 'openSavedSets')}
         {row('Browser diagnostics', 'showDiagnostics')}

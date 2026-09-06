@@ -79,6 +79,9 @@ rules:
   - shell::pty::sessions
   # Interactive PTY lifecycle is driven only by the console UI.
   - '!shell::pty::*'
+  # The explorer page's per-pane state (open tabs, folder, terminal layout):
+  # developer-local files the console reads and writes on the person's behalf.
+  - '!shell::ui-state::*'
   - '!oauth::anthropic::login'
   - '!oauth::openai-codex::login'
   - '!run::start'

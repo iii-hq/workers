@@ -121,9 +121,11 @@ const EDGE_ADD_DISCOVERED_KEY = 'iii-edge-add-discovered'
 
 /**
  * Whether the user has ever added a panel through an edge add zone (either
- * side) — gates the discoverability motion and hover hint. The edge `+`
- * remains visible after discovery; only its periodic shake stops. Existing
- * splits don't count: the default workspace ships with a 2-column tab.
+ * side) — gates the first-run affordance: the framed `+` sliver on each
+ * edge, its periodic shake and the preview's hint. After discovery the
+ * edges are bare and only the split preview answers a dwell or a tap.
+ * Existing splits don't count: the default workspace ships with a
+ * 2-column tab.
  */
 export function loadEdgeAddDiscovered(): boolean {
   try {

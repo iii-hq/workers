@@ -50,7 +50,7 @@ import {
   type View,
 } from '@/hooks/use-hash-route'
 import { useKeybindings } from '@/hooks/use-keybindings'
-import { useMediaQuery } from '@/hooks/use-media-query'
+import { REDUCED_MOTION_QUERY, useMediaQuery } from '@/hooks/use-media-query'
 import { useTheme } from '@/hooks/use-theme'
 import {
   type UseWorkspaceTabsReturn,
@@ -490,6 +490,7 @@ export function App({
     'workspace.previous': () => workspaceRef.current.activateAdjacent(-1),
     'workspace.close': () => requestCloseTab(workspaceRef.current.activeTabId),
     'panel.split': () => splitWorkspacePanel('right'),
+    'panel.splitLeft': () => splitWorkspacePanel('left'),
     'panel.next': () => stepPaneFocus(1),
     'panel.previous': () => stepPaneFocus(-1),
     // Out of range is a no-op rather than a wrap: pressing 7 with four
@@ -601,7 +602,6 @@ interface PanelDragState {
 }
 
 const DESKTOP_PANEL_MOTION_QUERY = '(min-width: 640px)'
-const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)'
 /** Conservative safety net if CSS animation events are interrupted. */
 const PANEL_MOTION_FALLBACK_MS = 400
 
@@ -1575,12 +1575,14 @@ function WorkspacePanes({
         <>
           <EdgeAddZone
             side="left"
+            columns={columns}
             disabled={panelInteractionDisabled || panelDrag !== null}
             nudge={edgeNudge}
             onAdd={() => addEdgeColumn('left')}
           />
           <EdgeAddZone
             side="right"
+            columns={columns}
             disabled={panelInteractionDisabled || panelDrag !== null}
             nudge={edgeNudge}
             onAdd={() => addEdgeColumn('right')}
@@ -1650,6 +1652,7 @@ function ScreenBody({
         pageId={extId}
         panelSide={panelSide}
         tabId={tabId}
+        paneId={paneId}
         onRequestClose={onClose}
         setDirty={setDirty}
         commands={commands}

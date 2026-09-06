@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { isBrowserReserved, type Platform, parseSequence } from './bindings'
+import {
+  isBareKey,
+  isBrowserReserved,
+  type Platform,
+  parseSequence,
+} from './bindings'
 import {
   bindingsFor,
   hoverTitle,
@@ -20,6 +25,20 @@ describe('the registry itself', () => {
   it('has no two shortcuts fighting over a chord, on either platform', () => {
     for (const platform of PLATFORMS) {
       expect(keybindingConflicts(platform)).toEqual([])
+    }
+  })
+
+  it('binds nothing to a bare character key, on either platform', () => {
+    for (const platform of PLATFORMS) {
+      for (const definition of KEYBINDINGS) {
+        for (const binding of resolveBindings(definition.bindings, platform)) {
+          expect({
+            id: definition.id,
+            binding,
+            bare: isBareKey(binding),
+          }).toEqual({ id: definition.id, binding, bare: false })
+        }
+      }
     }
   })
 
@@ -97,23 +116,78 @@ describe('lookup', () => {
   })
 
   it('says why a page may not take a key, or lets it', () => {
-    expect(shortcutClaimReason('t', 'mac')).toBeNull()
-    expect(shortcutClaimReason('7', 'mac')).toBeNull()
-    expect(shortcutClaimReason('G', 'mac')).toBeNull()
-    expect(shortcutClaimReason('G X', 'mac')).toBeNull()
     expect(shortcutClaimReason('Mod+K', 'other')).toMatch(
       /command palette|Search|palette/i,
     )
     expect(shortcutClaimReason('Mod+W', 'mac')).toBe('the browser owns it')
     expect(shortcutClaimReason('Hyper+Q', 'mac')).toBe('it does not parse')
-    expect(shortcutClaimReason('P', 'mac')).toBeNull()
+    expect(shortcutClaimReason('Ctrl+T', 'mac')).toMatch(/New workspace/)
+    expect(shortcutClaimReason('Ctrl+G L', 'mac')).toMatch(/starts like/)
+    expect(shortcutClaimReason('Ctrl+J', 'mac')).toBeNull()
+    expect(shortcutClaimReason('Mod+Shift+P', 'mac')).toBeNull()
+    expect(shortcutClaimReason('Ctrl+Q L', 'mac')).toBeNull()
     expect(shortcutClaimReason('Escape', 'mac')).toBeNull()
-    expect(shortcutClaimReason('Q L', 'mac')).toBeNull()
+    expect(shortcutClaimReason('F2', 'other')).toBeNull()
+  })
+
+  it('refuses a key that types a character, on either platform', () => {
+    for (const platform of PLATFORMS) {
+      for (const binding of [
+        't',
+        '7',
+        'P',
+        '/',
+        '`',
+        'Shift+W',
+        'G X',
+        'Q L',
+      ]) {
+        expect([binding, shortcutClaimReason(binding, platform)]).toEqual([
+          binding,
+          'it has no modifier',
+        ])
+      }
+    }
   })
 
   it('steps panel focus with the modifier braces', () => {
     expect(bindingsFor('panel.next', 'mac')).toEqual(['Ctrl+}'])
     expect(bindingsFor('panel.previous', 'other')).toEqual(['Alt+{'])
+  })
+
+  it('splits with the brackets, unshifted, and steps workspaces with the arrows', () => {
+    expect(bindingsFor('panel.split', 'mac')).toEqual(['Ctrl+]'])
+    expect(bindingsFor('panel.splitLeft', 'mac')).toEqual(['Ctrl+['])
+    expect(bindingsFor('panel.splitLeft', 'other')).toEqual(['Alt+['])
+    expect(hoverTitle('Split left', 'panel.splitLeft', 'mac')).toBe(
+      'Split left (⌃ [)',
+    )
+    expect(bindingsFor('workspace.next', 'mac')).toEqual([
+      'Ctrl+Shift+ArrowRight',
+    ])
+    expect(bindingsFor('workspace.previous', 'other')).toEqual([
+      'Alt+Shift+ArrowLeft',
+    ])
+    expect(hoverTitle('Next', 'workspace.next', 'mac')).toBe('Next (⌃ ⇧ →)')
+    // The bracket splits; its shifted twin, the brace, moves focus instead.
+    const bracket = {
+      key: ']',
+      metaKey: false,
+      ctrlKey: true,
+      altKey: false,
+      shiftKey: false,
+    }
+    expect(matchesKeybinding('panel.split', bracket, 'mac')).toBe(true)
+    expect(matchesKeybinding('panel.next', bracket, 'mac')).toBe(false)
+    const brace = { ...bracket, key: '}', shiftKey: true }
+    expect(matchesKeybinding('panel.next', brace, 'mac')).toBe(true)
+    expect(matchesKeybinding('panel.split', brace, 'mac')).toBe(false)
+    // An arrow keeps its name under Shift; without Shift it is not a chord.
+    const arrow = { ...bracket, key: 'ArrowRight', shiftKey: true }
+    expect(matchesKeybinding('workspace.next', arrow, 'mac')).toBe(true)
+    expect(
+      matchesKeybinding('workspace.next', { ...arrow, shiftKey: false }, 'mac'),
+    ).toBe(false)
   })
 
   it('lists the chords of a go-to sequence, and none for a plain chord', () => {

@@ -1,0 +1,34 @@
+{
+  "function_id": "browser::clear-browser-data",
+  "description": "Clear ALL browser data: closes every tab's page, quits Chromium, and deletes the profile (every site's cookies, logins, storage, cache) and the downloads on disk. Tabs stay and reopen signed out. Incognito tabs are closed.",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ClearBrowserDataInput",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ClearBrowserDataOutput",
+    "type": "object",
+    "required": [
+      "closed_pages",
+      "ok",
+      "profile_dir"
+    ],
+    "properties": {
+      "closed_pages": {
+        "description": "Tabs whose page was closed to release the profile; they reopen on the next call, signed out.",
+        "type": "integer",
+        "format": "uint64",
+        "minimum": 0.0
+      },
+      "ok": {
+        "type": "boolean"
+      },
+      "profile_dir": {
+        "description": "The profile directory that was deleted.",
+        "type": "string"
+      }
+    }
+  }
+}

@@ -115,7 +115,6 @@ export function ChatPanel({
         title: 'New chat',
         detail: 'Start a conversation',
         keywords: ['conversation', 'session', 'create'],
-        shortcut: 'N',
         run: () => {
           createNew()
           setNarrowView('chat')
@@ -126,7 +125,6 @@ export function ChatPanel({
         title: 'Search conversations',
         detail: 'Put the caret in the sidebar search',
         keywords: ['find', 'sessions', 'filter'],
-        shortcut: '/',
         run: () => {
           setNarrowView('list')
           window.requestAnimationFrame(() => {

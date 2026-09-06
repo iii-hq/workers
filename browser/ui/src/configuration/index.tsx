@@ -6,6 +6,8 @@
 
 import {
   type ConfigFormProps,
+  ConfirmDialog,
+  type ExtensionIii,
   Input,
   type JsonValue,
   SettingsList,
@@ -15,6 +17,7 @@ import {
   Switch,
 } from '@iii-dev/console-ui'
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
+import { clearAllBrowserData, errorMessage } from '../lib/browser'
 import { ChevronLeftIcon, GlobeIcon, useContainerNarrow } from '../lib/widgets'
 import {
   booleanLiteralForRawValue,
@@ -34,7 +37,7 @@ const CONFIG_NARROW_BELOW = 660
 const LEGACY_WRAPPER = 'browser'
 const BROWSER_OWNED_TOP_LEVEL_FIELDS = [
   'executable',
-  'user_data_dir',
+  'data_dir',
   'headless',
   'max_sessions',
   'console_buffer',
@@ -43,7 +46,7 @@ const BROWSER_OWNED_TOP_LEVEL_FIELDS = [
   'viewport_height',
   'default_timeout_ms',
   'max_timeout_ms',
-  'idle_stop_ms',
+  'inactive_after_ms',
   'screenshot_quality',
   'allowed_schemes',
   'max_snapshot_nodes',
@@ -59,7 +62,7 @@ const BROWSER_OWNED_TOP_LEVEL_FIELDS = [
 ] as const
 const DEFAULTS = {
   executable: '',
-  user_data_dir: '',
+  data_dir: './data/browser',
   headless: true,
   max_sessions: 4,
   console_buffer: 500,
@@ -68,7 +71,7 @@ const DEFAULTS = {
   viewport_height: 800,
   default_timeout_ms: 30_000,
   max_timeout_ms: 120_000,
-  idle_stop_ms: 300_000,
+  inactive_after_ms: 1_800_000,
   screenshot_quality: 60,
   allowed_schemes: ['http', 'https', 'file'],
   max_snapshot_nodes: 2_000,
@@ -97,7 +100,7 @@ const DEFAULTS = {
 
 const FIELD_SECTION: Record<string, SectionId> = {
   executable: 'launch',
-  user_data_dir: 'launch',
+  data_dir: 'launch',
   headless: 'launch',
   max_sessions: 'launch',
   allow_attach: 'launch',
@@ -109,7 +112,7 @@ const FIELD_SECTION: Record<string, SectionId> = {
   max_snapshot_nodes: 'limits',
   default_timeout_ms: 'behavior',
   max_timeout_ms: 'behavior',
-  idle_stop_ms: 'behavior',
+  inactive_after_ms: 'behavior',
   allowed_schemes: 'behavior',
   default_origin_policy: 'access',
   origin_policies: 'access',
@@ -818,7 +821,7 @@ function ConfigNav({
   const consoleBuffer = numberValue(value.console_buffer, DEFAULTS.console_buffer)
   const networkBuffer = numberValue(value.network_buffer, DEFAULTS.network_buffer)
   const timeout = numberValue(value.default_timeout_ms, DEFAULTS.default_timeout_ms)
-  const idle = numberValue(value.idle_stop_ms, DEFAULTS.idle_stop_ms)
+  const sleepAfter = numberValue(value.inactive_after_ms, DEFAULTS.inactive_after_ms)
   const originCount = Object.keys(asObject(value.origin_policies)).length
   const history = booleanValue(value.allow_history_access, DEFAULTS.allow_history_access)
   const cookies = booleanValue(value.allow_cookie_import, DEFAULTS.allow_cookie_import)
@@ -833,8 +836,8 @@ function ConfigNav({
     {
       id: 'launch',
       label: 'Launch',
-      description: 'Process and sessions',
-      summary: `${headless ? 'headless' : 'headful'} · ${maxSessions} max`,
+      description: 'Process, data, and tabs',
+      summary: `${headless ? 'headless' : 'headful'} · ${maxSessions} live tabs`,
     },
     {
       id: 'viewport',
@@ -852,7 +855,7 @@ function ConfigNav({
       id: 'behavior',
       label: 'Behavior',
       description: 'Timeouts and navigation',
-      summary: `${formatDuration(timeout)} · idle ${formatDuration(idle)}`,
+      summary: `${formatDuration(timeout)} · sleep ${formatDuration(sleepAfter)}`,
     },
     {
       id: 'access',
@@ -934,11 +937,61 @@ function EditorHeader({
   )
 }
 
+/** The browser's "Clear browsing data" for everything, from Settings: wipes
+ * the profile (every site's cookies, logins, storage, cache) and downloads.
+ * Tabs stay and reopen signed out. Rendered only with a bus client. */
+function ClearBrowserData({ iii }: { iii: ExtensionIii }) {
+  const [confirming, setConfirming] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [status, setStatus] = useState<string | null>(null)
+  const clear = () => {
+    setBusy(true)
+    setStatus(null)
+    void clearAllBrowserData(iii)
+      .then((result) => setStatus(`Cleared. ${result.profileDir} was deleted; tabs reopen signed out.`))
+      .catch((error: unknown) => setStatus(`Clearing failed: ${errorMessage(error)}`))
+      .finally(() => setBusy(false))
+  }
+  return (
+    <ConfigSection
+      title="Browser data"
+      description="Every regular tab shares one profile: cookies, logins, local storage, cache, and downloads."
+    >
+      <div className="br-cfg-danger">
+        <div>
+          <p className="br-cfg-danger-title">Clear browser data</p>
+          <p className="br-cfg-hint">
+            Signs every site out in every tab and deletes the downloads. Open tabs stay and reload into a clean
+            profile. Incognito tabs are closed. This cannot be undone.
+          </p>
+        </div>
+        <button type="button" className="br-cfg-policy-remove" disabled={busy} onClick={() => setConfirming(true)}>
+          {busy ? 'Clearing…' : 'Clear browser data…'}
+        </button>
+      </div>
+      {status ? (
+        <p className="br-cfg-hint" role="status">
+          {status}
+        </p>
+      ) : null}
+      <ConfirmDialog
+        open={confirming}
+        onOpenChange={setConfirming}
+        title="Clear all browser data?"
+        description="Every site is signed out in every tab, and the profile and downloads on disk are deleted. Tabs stay and reopen into a clean profile."
+        confirmLabel="Clear everything"
+        onConfirm={clear}
+      />
+    </ConfigSection>
+  )
+}
+
 export function BrowserConfigEditor({
   selection,
   value,
   errors,
   narrow,
+  iii,
   onBack,
   onChange,
 }: {
@@ -946,6 +999,8 @@ export function BrowserConfigEditor({
   value: JsonObject
   errors: ConfigFormProps['errors']
   narrow: boolean
+  /** Bus client for actions (Clear browser data); absent in isolated renders. */
+  iii?: ExtensionIii
   onBack: () => void
   onChange: (value: JsonObject) => void
 }) {
@@ -1011,8 +1066,8 @@ export function BrowserConfigEditor({
 
   const titles: Record<SectionId, { title: string; description: string }> = {
     launch: {
-      title: 'Launch and sessions',
-      description: 'Choose how Chromium starts and how many sessions can run.',
+      title: 'Browser and tabs',
+      description: 'Choose how Chromium starts, where its data lives, and how many tabs stay live.',
     },
     viewport: {
       title: 'Viewport and screenshots',
@@ -1024,7 +1079,7 @@ export function BrowserConfigEditor({
     },
     behavior: {
       title: 'Runtime behavior',
-      description: 'Control timeouts, idle cleanup, and allowed destinations.',
+      description: 'Control timeouts, tab sleep, and allowed destinations.',
     },
     access: {
       title: 'Access policy',
@@ -1045,7 +1100,7 @@ export function BrowserConfigEditor({
           <>
             <ConfigSection
               title="Chromium process"
-              description="Leave paths empty to use an auto-detected browser and an ephemeral profile."
+              description="Leave the executable empty to use an auto-detected browser. Both are startup settings."
             >
               <SettingsList className="br-cfg-section-list">
                 <TextField
@@ -1058,34 +1113,35 @@ export function BrowserConfigEditor({
                   onChange={(next) => setString('executable', next)}
                 />
                 <TextField
-                  field="user_data_dir"
-                  label="Profile directory"
-                  value={stringValue(value.user_data_dir)}
-                  placeholder="Ephemeral profile per session"
-                  hint="A persistent directory keeps cookies and logins. All sessions share the same profile."
-                  error={fieldError(errors, 'user_data_dir')}
-                  onChange={(next) => setString('user_data_dir', next)}
+                  field="data_dir"
+                  label="Browser data directory"
+                  value={stringValue(value.data_dir)}
+                  placeholder={DEFAULTS.data_dir}
+                  hint="Holds the profile (cookies, logins, storage), downloads, and the open-tab list that comes back after a restart. Relative paths resolve from the project root. Incognito tabs never write here."
+                  error={fieldError(errors, 'data_dir')}
+                  onChange={(next) => setString('data_dir', next)}
                 />
               </SettingsList>
             </ConfigSection>
             <ConfigSection
-              title="Session policy"
-              description="Launch settings apply to sessions started after the configuration is saved."
+              title="Tab policy"
+              description="Launch settings apply the next time the browser process starts."
             >
               <SettingsList className="br-cfg-section-list">
                 <NumberField
                   field="max_sessions"
-                  label="Maximum concurrent sessions"
+                  label="Maximum live tabs"
                   value={value.max_sessions}
                   placeholder={DEFAULTS.max_sessions}
                   min={1}
+                  hint="Tabs with a page open at once. Opening one more puts the least recently used unwatched tab to sleep."
                   error={fieldError(errors, 'max_sessions')}
                   onChange={(next) => setNumber('max_sessions', next)}
                 />
                 <CheckField
                   field="headless"
-                  label="Launch sessions headless"
-                  hint="Turn this off to open visible browser windows on the worker host."
+                  label="Launch the browser headless"
+                  hint="Turn this off to open a visible browser window on the worker host."
                   value={value.headless}
                   fallback={DEFAULTS.headless}
                   error={fieldError(errors, 'headless')}
@@ -1107,6 +1163,7 @@ export function BrowserConfigEditor({
                 </div>
               ) : null}
             </ConfigSection>
+            {iii ? <ClearBrowserData iii={iii} /> : null}
           </>
         ) : null}
 
@@ -1244,13 +1301,13 @@ export function BrowserConfigEditor({
                   onChange={(next) => setNumber('max_timeout_ms', next)}
                 />
                 <NumberField
-                  field="idle_stop_ms"
-                  label="Idle session cleanup (milliseconds)"
-                  value={value.idle_stop_ms}
-                  placeholder={DEFAULTS.idle_stop_ms}
-                  hint={`Currently ${formatDuration(numberValue(value.idle_stop_ms, DEFAULTS.idle_stop_ms))}. Set 0 to disable automatic cleanup.`}
-                  error={fieldError(errors, 'idle_stop_ms')}
-                  onChange={(next) => setNumber('idle_stop_ms', next)}
+                  field="inactive_after_ms"
+                  label="Sleep idle tabs after (milliseconds)"
+                  value={value.inactive_after_ms}
+                  placeholder={DEFAULTS.inactive_after_ms}
+                  hint={`Currently ${formatDuration(numberValue(value.inactive_after_ms, DEFAULTS.inactive_after_ms))}. A tab nobody watches or calls for this long closes its page and keeps its place; selecting it loads the page again. Incognito tabs close instead. Set 0 to keep every page open.`}
+                  error={fieldError(errors, 'inactive_after_ms')}
+                  onChange={(next) => setNumber('inactive_after_ms', next)}
                 />
               </SettingsList>
             </ConfigSection>
@@ -1496,7 +1553,7 @@ export function BrowserConfigEditor({
   )
 }
 
-export function BrowserConfigForm(props: ConfigFormProps) {
+export function BrowserConfigForm(props: ConfigFormProps & { iii?: ExtensionIii }) {
   const value = browserConfigurationValue(props.value)
   const [rootRef, narrow] = useContainerNarrow(CONFIG_NARROW_BELOW)
   const [selection, setSelection] = useState<SectionId>('launch')
@@ -1564,6 +1621,7 @@ export function BrowserConfigForm(props: ConfigFormProps) {
             value={value}
             errors={props.errors}
             narrow={narrow}
+            iii={props.iii}
             onBack={showNavigation}
             onChange={(nextValue) => props.onChange(migrateBrowserConfiguration(props.value, nextValue))}
           />

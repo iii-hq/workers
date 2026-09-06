@@ -1,14 +1,17 @@
 # browser
 
-Interactive Chromium sessions on the [iii engine](https://github.com/iii-hq/iii)
-bus. Agents start a session, read the page as an accessibility-tree outline,
-click and type against element refs, and read the page's own console and
-network history back as data. The single most important thing it gives you:
-"why is my dev server page blank?" becomes answerable, because the page's
-console errors are one `browser::console::read` away. The [console](https://github.com/iii-hq/workers/tree/main/console)
-worker adds the human window: a live Browser page with a streaming viewport
-(Chromium-pushed screencast frames), the console feed, and click-to-pick
-elements into chat.
+A browser on the [iii engine](https://github.com/iii-hq/iii) bus: one shared
+Chromium with tabs, a persistent profile (cookies, logins, storage) under
+`data/browser`, tabs that survive restarts, and incognito tabs that save
+nothing. Agents open a tab (a *session*), read the page as an
+accessibility-tree outline, click and type against element refs, and read the
+page's own console and network history back as data. The single most
+important thing it gives you: "why is my dev server page blank?" becomes
+answerable, because the page's console errors are one
+`browser::console::read` away. The [console](https://github.com/iii-hq/workers/tree/main/console)
+worker adds the human window: a Chrome-style tab strip over a streaming
+viewport (Chromium-pushed screencast frames), an address bar, developer tools
+behind the menu, and click-to-pick elements into chat.
 
 It also carries a native Rust scraping surface, `browser::*`: HTTP
 and browser fetching, screenshots, persistent sessions and BFS crawling, plus
@@ -37,6 +40,46 @@ composer as an actionable ref:
 <a href="https://raw.githubusercontent.com/iii-hq/workers/main/browser/assets/pick.png">
   <img src="https://raw.githubusercontent.com/iii-hq/workers/main/browser/assets/pick.png" alt="pick mode highlighting an element and inserting it into the chat composer" width="100%" />
 </a>
+
+## Tabs, sleep, and incognito
+
+A session is a tab in the worker's browser. Tabs share one Chromium process
+and one profile, so a login in one tab is a login in all of them, exactly as
+in a browser. Regular tabs are saved to `<data_dir>/tabs.json` (url, title,
+visited pages, back/forward stack) and come back after a worker restart.
+
+- **Lifetime.** A tab stays open until `browser::sessions::stop`, or until
+  the optional `ttl_ms` it was opened with elapses. The console opens tabs
+  with no lifetime.
+- **Sleep.** A tab nobody watches (no console viewer, no recording) or calls
+  for `inactive_after_ms` (30 minutes by default) goes to sleep: its page is
+  closed, the tab is kept and still listed (`active: false`). Any call on it,
+  or selecting it in the console, opens the page again at the url it
+  remembered; back/forward keep working from the tab's own stack. When the
+  last live tab sleeps, Chromium quits and its profile is flushed to disk;
+  the next tab launches it again. `max_sessions` caps *live* tabs: opening
+  one more puts the least recently used unwatched tab to sleep first.
+- **Incognito.** `browser::sessions::start` with `incognito: true` opens a
+  PRIVATE tab in its own throwaway browser context: no shared cookies or
+  logins, nothing written under `data_dir`, no history kept, not restored
+  after a restart, and inactivity closes it for good instead of putting it
+  to sleep. The console shows it in Chrome's dark private-window palette.
+- **Clearing data.** `browser::clear-data` clears the *site* a tab is on
+  (its cookies, its storage, the shared cache) — the ⋮ menu's "Clear cookies
+  and site data". `browser::clear-browser-data` (Settings → Clear browser
+  data) closes every page, quits Chromium, and deletes the whole profile and
+  downloads; tabs stay and reopen signed out.
+- **Loading like a browser.** A page that fails to load (a network error, an
+  empty HTTP error response such as x.com's 400 to unknown clients) leaves
+  Chromium's error page in the tab and is *reported* in `navigate`'s
+  `ok`/`error`, not thrown. An `https://` url on localhost, `*.localhost`, or
+  a loopback/private address whose TLS handshake fails (a plain dev server)
+  is retried over `http://`, like an address bar does; public hosts never
+  downgrade. Pages see a plain Chrome user agent, never `HeadlessChrome`.
+- **Live view.** Every tab renders in its own headless window (a window
+  shows only its active tab, so tabs sharing one would freeze), and the
+  console gets frames at up to 30 fps, latest frame first, whatever the bus
+  latency.
 
 ## Install
 
@@ -102,18 +145,20 @@ async fn main() -> anyhow::Result<()> {
 The rest of the surface: `browser::act` (click/hover/type/press/scroll by
 ref or coordinates, left/right/middle and double-click), `browser::evaluate`
 (JS expression), `browser::screenshot` (viewable JPEG), `browser::history`
-(back/forward/reload), `browser::history::list` (visited pages for a history
-panel), `browser::find-in-page` (find bar: highlight matches, step
-next/previous), `browser::zoom` (page zoom 50-200 %), `browser::pdf` (print
-the page to a PDF), `browser::downloads::list` / `browser::download` /
-`browser::download::remove` (files the session downloaded), `browser::clear-data`
-(cookies, cache, storage), `browser::resize` (live viewport size / device
-presets), `browser::cookies::list` / `set` / `clear` (import a cookie file),
-`browser::network::read` (requests + failures),
-`browser::dom::read` (DOM tree with refs), `browser::styles::read` /
-`browser::styles::write` (computed styles + live inline edits, the design
-panel backing), and `browser::sessions::list` / `browser::sessions::stop`.
-Function ids and schemas live in the code and `iii worker info browser`.
+(back/forward/reload, surviving sleep and restarts), `browser::history::list`
+(visited pages for a history panel), `browser::find-in-page` (find bar:
+highlight matches, step next/previous), `browser::zoom` (page zoom
+50-200 %), `browser::pdf` (print the page to a PDF), `browser::downloads::list`
+/ `browser::download` / `browser::download::remove` (files the tab
+downloaded), `browser::clear-data` (this site's cookies, storage, and the
+cache), `browser::clear-browser-data` (the whole profile), `browser::resize`
+(live viewport size / device presets), `browser::cookies::list` / `set` /
+`clear` (import a cookie file; clear is per site), `browser::network::read`
+(requests + failures), `browser::dom::read` (DOM tree with refs),
+`browser::styles::read` / `browser::styles::write` (computed styles + live
+inline edits, the design panel backing), and `browser::sessions::list` /
+`browser::sessions::stop`. Function ids and schemas live in the code and
+`iii worker info browser`.
 
 File transfer functions:
 
@@ -333,25 +378,27 @@ means "Rust still agrees with Python":
 
 ## Configuration
 
-Stored in the `configuration` worker under the `browser` key. Existing
-interactive-browser settings retain their current behavior. Scrapling settings
-live in an isolated nested block: bulk/default policy can be read per call,
-while the session cap, idle timeout, and adaptive database path are snapshotted
-at worker startup. Restart after changing a startup-snapshotted value.
+Stored in the `configuration` worker under the `browser` key. `data_dir` is
+read at startup; `executable`, `headless`, and the viewport apply the next
+time the Chromium process launches (the first live tab after boot, or after
+every tab went to sleep). Scrapling settings live in an isolated nested
+block: bulk/default policy can be read per call, while the session cap, idle
+timeout, and adaptive database path are snapshotted at worker startup.
+Restart after changing a startup-snapshotted value.
 
 ```yaml
 browser:
   executable: ''            # empty = auto-detect Chrome/Chromium/Edge
-  user_data_dir: ''         # set a path to persist cookies/logins across sessions
+  data_dir: ./data/browser  # profile/ (cookies, logins), downloads/, tabs.json; startup setting
   headless: true            # false shows a real window locally
-  max_sessions: 4           # concurrent Chromium processes
+  max_sessions: 4           # tabs with a page open at once; the LRU unwatched tab sleeps past it
   console_buffer: 500       # per-session console ring buffer (entries)
   network_buffer: 500       # per-session network ring buffer (entries)
   viewport_width: 1280
   viewport_height: 800
   default_timeout_ms: 30000 # navigation/act/evaluate default
   max_timeout_ms: 120000    # ceiling; caller timeout_ms clamped DOWN to this
-  idle_stop_ms: 300000      # stop sessions idle this long; 0 disables
+  inactive_after_ms: 1800000 # unused, unwatched tabs sleep after this (incognito closes); 0 disables
   screenshot_quality: 60    # JPEG quality 1-100
   allowed_schemes: [http, https, file]  # `file` lets a local document be rendered; see below
   max_snapshot_nodes: 2000  # a11y outline size cap
@@ -422,12 +469,14 @@ bindings accept an optional `{ "session_id": "..." }` filter.
 
 | Trigger type | Fires when | Payload to subscribers |
 |---|---|---|
-| `browser::session-started` | A session is up and ready | `{ session_id, url, headless, timestamp }` |
-| `browser::session-stopped` | A session ended | `{ session_id, reason: "stopped" \| "idle" \| "crashed", timestamp }` |
+| `browser::session-started` | A tab opened and is ready | `{ session_id, url, headless, timestamp }` |
+| `browser::session-stopped` | A tab closed for good | `{ session_id, reason: "stopped" \| "idle" \| "expired" \| "crashed", timestamp }` |
+| `browser::session-updated` | A tab woke (`active: true`) or went to sleep (`active: false`) | `{ session_id, active, url, title, timestamp }` |
 | `browser::navigated` | The page committed a navigation | `{ session_id, url, timestamp }` |
 | `browser::console-event` | A console/log/exception entry was captured | `{ session_id, entry }` |
 | `browser::picked` | The human picked an element in inspect mode | `{ session_id, element, timestamp }` |
 | `browser::handoff-requested` | A session paused for a human step (CAPTCHA, 2FA, payment) | `{ session_id, handoff_id, instructions, timestamp }` |
+| `browser::frame-event` | Internal: a live screencast frame of a watched tab (console viewport plumbing) | `{ session_id, frame, width, height, frame_seq, timestamp }` |
 
 `browser::console-event` is high-volume; bind it with a `session_id` filter
 and treat `browser::console::read` as the durable record. `browser::picked`

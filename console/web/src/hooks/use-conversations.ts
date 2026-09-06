@@ -112,11 +112,11 @@ function emptyConversation(
     title: 'new chat',
     model: defaultModel,
     thinkingLevel: defaultThinkingLevel,
-    // Drafts start with no working dir; ChatView pre-fills the stack's
-    // default folder (harness::filesystem::info, validated against the live
-    // shell) once known — always visible in the picker chip. What stays
-    // forbidden is silently inheriting the LAST-USED dir: that is what once
-    // made a chat operate in the wrong directory without the user choosing it.
+    // Drafts start with no working dir; ChatView pre-fills the last-used
+    // harness project (data/harness-projects.json), or the stack's default
+    // folder (harness::filesystem::info) when none was ever picked — both
+    // validated against the live shell and always visible in the picker chip,
+    // so the folder a chat operates in is never hidden from the user.
     workingDir: null,
     messages: [],
     started: false,

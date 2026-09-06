@@ -409,7 +409,6 @@ function StorageExplorer({
           title: 'Upload a file',
           detail: 'Choose a file to upload into the current folder',
           keywords: ['file', 'add'],
-          shortcut: 'U',
           enabled: () => bucketName !== null && transfer === null,
           run: () => fileInputRef.current?.click(),
         },
@@ -418,7 +417,6 @@ function StorageExplorer({
           title: 'Refresh',
           detail: 'Reload buckets and the current folder',
           keywords: ['reload'],
-          shortcut: 'R',
           run: () => {
             loadBuckets()
             if (bucketName) loadListing()

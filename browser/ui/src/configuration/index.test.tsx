@@ -47,12 +47,13 @@ vi.mock('@iii-dev/console-ui', () => ({
     </div>
   ),
   StatusPanel: () => null,
+  ConfirmDialog: () => null,
   Switch: (props: ComponentProps<'input'>) => <input {...props} type="checkbox" />,
 }))
 
 const value = {
   executable: '/opt/chrome',
-  user_data_dir: '/tmp/profile',
+  data_dir: './data/browser',
   headless: true,
   max_sessions: 4,
   console_buffer: 500,
@@ -61,7 +62,7 @@ const value = {
   viewport_height: 800,
   default_timeout_ms: 30_000,
   max_timeout_ms: 120_000,
-  idle_stop_ms: 300_000,
+  inactive_after_ms: 1_800_000,
   screenshot_quality: 60,
   allowed_schemes: ['http', 'https', 'file'],
   max_snapshot_nodes: 2_000,
@@ -123,7 +124,7 @@ describe('BrowserConfigEditor schema parity', () => {
 
     for (const field of [
       'executable',
-      'user_data_dir',
+      'data_dir',
       'headless',
       'max_sessions',
       'console_buffer',
@@ -132,7 +133,7 @@ describe('BrowserConfigEditor schema parity', () => {
       'viewport_height',
       'default_timeout_ms',
       'max_timeout_ms',
-      'idle_stop_ms',
+      'inactive_after_ms',
       'screenshot_quality',
       'allowed_schemes',
       'max_snapshot_nodes',

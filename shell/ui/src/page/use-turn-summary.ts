@@ -1,0 +1,101 @@
+/* The chat footer's "N files changed +x -y" pill for the newest turn.
+   Totals come from the same loader the diff tabs use, computed for a
+   bounded number of files so a turn of hundreds of writes does not stall
+   the page; the rest of the rows stay "pending" and the pill says so. */
+
+import type { Host } from '@iii-dev/console-ui'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { diffLines, diffTotals } from './diff'
+import { loadTurnDiff } from './diff-load'
+import type { ShellReviewFileSummary } from './review-summary-store'
+import { relativeToRoot, type SessionTurn, type SessionTurnSummary } from './turns'
+
+const SUMMARY_MAX_FILES = 40
+const SUMMARY_CONCURRENCY = 3
+
+export function useTurnSummary(
+  host: Host,
+  root: string | null,
+  turn: SessionTurnSummary | null,
+  turns: { get(turnId: string): Promise<SessionTurn | null>; forget(turnId: string): void },
+  /** Bumps when the disk changed; totals of the newest turn follow. */
+  refreshEpoch: number,
+): readonly ShellReviewFileSummary[] {
+  const [rows, setRows] = useState<readonly ShellReviewFileSummary[]>([])
+  const seqRef = useRef(0)
+  const shownTurnRef = useRef<string | null>(null)
+  const turnId = turn?.turn_id ?? null
+  const fileKey = useMemo(
+    () => (turn ? turn.files.map((file) => `${file.path}\u0000${file.kind}`).join('\n') : ''),
+    [turn],
+  )
+
+  // A running turn keeps gaining files; the record cached before they
+  // existed would report them as untouched.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the file list is the trigger
+  useEffect(() => {
+    if (turnId !== null) turns.forget(turnId)
+  }, [turnId, fileKey, turns])
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: fileKey and refreshEpoch are the recompute triggers
+  useEffect(() => {
+    const seq = ++seqRef.current
+    if (!turn || root === null || turnId === null) {
+      shownTurnRef.current = null
+      setRows([])
+      return
+    }
+    const inside = turn.files
+      .map((file) => ({ file, rel: relativeToRoot(file.path, root) }))
+      .filter((entry): entry is { file: (typeof turn.files)[number]; rel: string } => entry.rel !== null)
+    const initial: ShellReviewFileSummary[] = inside.map(({ rel }) => ({
+      path: rel,
+      state: 'pending',
+      add: null,
+      del: null,
+    }))
+    // Totals already on screen stay put while they recompute, so a disk
+    // burst does not flip every row through "…"; another turn starts over.
+    const sameTurn = shownTurnRef.current === turnId
+    shownTurnRef.current = turnId
+    setRows((previous) => {
+      if (!sameTurn) return initial
+      const known = new Map(previous.map((row) => [row.path, row]))
+      return initial.map((row) => known.get(row.path) ?? row)
+    })
+    if (inside.length === 0) return
+    let cancelled = false
+    void turns.get(turnId).then(async (record) => {
+      if (cancelled || seqRef.current !== seq || record === null) return
+      const results = new Map<string, ShellReviewFileSummary>()
+      const queue = inside.slice(0, SUMMARY_MAX_FILES)
+      let cursor = 0
+      const worker = async () => {
+        while (cursor < queue.length && !cancelled) {
+          const { rel } = queue[cursor++]
+          try {
+            const contents = await loadTurnDiff(host, root, rel, record)
+            if (contents.binary || contents.noBaseline) {
+              results.set(rel, { path: rel, state: 'unavailable', add: null, del: null })
+            } else {
+              const totals = diffTotals(diffLines(contents.oldContents, contents.newContents))
+              results.set(rel, { path: rel, state: 'ready', add: totals.add, del: totals.del })
+            }
+          } catch {
+            results.set(rel, { path: rel, state: 'unavailable', add: null, del: null })
+          }
+          if (!cancelled && seqRef.current === seq) {
+            setRows((previous) => previous.map((row) => results.get(row.path) ?? row))
+          }
+        }
+      }
+      // ponytail: every file recomputes on each disk burst; feed the watcher's changed set here if long turns feel slow
+      await Promise.all(Array.from({ length: Math.min(SUMMARY_CONCURRENCY, queue.length) }, worker))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [host, root, turnId, fileKey, refreshEpoch, turns])
+
+  return rows
+}

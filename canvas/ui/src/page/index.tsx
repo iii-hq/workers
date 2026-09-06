@@ -357,7 +357,6 @@ export function CanvasPage({
           id: 'new-canvas',
           title: 'New canvas',
           detail: 'Create a canvas from the starter flowchart',
-          shortcut: 'N',
           enabled: () => !creating,
           run: create,
         },
@@ -375,7 +374,6 @@ export function CanvasPage({
         {
           id: 'delete-canvas',
           title: 'Delete canvas',
-          shortcut: 'X',
           enabled: () => selectedId !== null,
           run: () => {
             const rec = canvases.find((c) => c.id === selectedId)

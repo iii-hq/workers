@@ -12,7 +12,7 @@ iii trigger compose::add worker=tailscale
 
 ## Quickstart
 
-Open **Tailscale** from the Console navigation or press `⌘K` and run `Open Tailscale`. The page shows the connection, the devices on your tailnet, network diagnostics, preferences, Taildrop, and publishing; page commands: `R` refresh, `N` create a link, `C` copy it, `O` open it, `X` stop the route.
+Open **Tailscale** from the Console navigation or press `⌘K` and run `Open Tailscale`. The page shows the connection, the devices on your tailnet, network diagnostics, preferences, Taildrop, and publishing; its `⌘K` rows refresh, create a link, copy it, open it, and stop the route.
 
 From a function call, ask the node what it sees:
 

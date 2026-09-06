@@ -137,7 +137,7 @@ default_pending_timeout_ms: 1800000  # legacy parked-call (hold / pre-deploy chi
 max_depth: 3                     # sub-agent depth budget
 max_children: 8                  # sub-agent spawns-per-turn budget
 max_transient_resumes: 1         # recovery generations after a partial stream failure
-projects_file_path: ./data/harness-projects.json  # durable operator project catalog
+projects_file_path: ~/.iii/data/harness/projects.json  # durable operator project catalog (default: data/harness-projects.json under III_COMPOSE_DIR / cwd)
 sweep_expression: "0 * * * * *"  # cron for the pending-call expiry sweep
 ```
 
@@ -276,7 +276,7 @@ plug into in-path. Bind with the standard two-step pattern.
 
 | Trigger type | Kind | Fires / runs |
 |---|---|---|
-| `harness::turn-started` | async event | A turn began executing (first loop step). Worker-bindable via direct engine registration only — the agent path (`engine::register_trigger`) refuses harness-internal types in every shape. |
+| `harness::turn-started` | async event | A turn began executing (first loop step). Payload: `session_id`, `turn_id`, `timestamp`, `depth` (0 = top level), `message_preview` (first characters of the message that started the turn, when there is one), and `parent` / `parent_session_id` for sub-agents. Worker-bindable via direct engine registration only — the agent path (`engine::register_trigger`) refuses harness-internal types in every shape. |
 | `harness::turn-completed` | async event | A turn reached a terminal status (`completed` / `cancelled` / `failed`), carrying the result and `terminal: bool` — `false` while the session still owns an armed wake (a one-shot notify), meaning a later turn carries the run's real outcome; consumers finalize a logical exchange only on `terminal: true`. Worker-bindable only, same as above. |
 | `harness::hook::pre-turn` | sync hook | First step of a turn, before any model spend. May veto. |
 | `harness::hook::pre-generate` | sync hook | After context assembly, before generation. May extend the system prompt, append messages, or veto. A static-only hook may publish its exact contribution as trigger metadata `inject_prompt`; the harness appends it directly and skips the compatibility handler. |

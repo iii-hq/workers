@@ -236,7 +236,6 @@ export function ComputerPage({
           title: 'Start session',
           detail: 'Start a desktop with the current start form settings',
           keywords: ['new', 'desktop'],
-          shortcut: 'N',
           enabled: () => !starting,
           run: () => startFormRef.current?.submit(),
         },
@@ -245,7 +244,6 @@ export function ComputerPage({
           title: 'Stop session',
           detail: 'Stop the selected desktop session',
           keywords: ['close', 'end'],
-          shortcut: 'X',
           enabled: () => selected !== null && busyId === null,
           run: () => {
             if (selected && busyId === null)

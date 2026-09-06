@@ -22,6 +22,7 @@ import componentNames from '@iii-dev/console-ui/component-names'
 import tokenNames from '@iii-dev/console-ui/token-names'
 import uiClasses, { uiClassNames } from '@iii-dev/console-ui/ui-classes'
 import { describe, expect, it } from 'vitest'
+import { DirectoryPicker } from '@/components/chat/DirectoryPicker'
 import { ModelPicker } from '@/components/chat/ModelPicker'
 import { AnnotationLayer, AnnotationList } from '@/components/ui/Annotations'
 import { AnsiText } from '@/components/ui/AnsiText'
@@ -110,6 +111,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/Tooltip'
+import { Wordmark } from '@/components/ui/Wordmark'
 import { components } from '@/lib/console-api'
 import { Markdown } from '@/lib/markdown'
 import { CodeHighlight, JsonHighlight } from '@/lib/syntax'
@@ -205,6 +207,8 @@ const conformance: {
   TooltipContent: typeof ConsoleUi.TooltipContent
   TooltipTrigger: typeof ConsoleUi.TooltipTrigger
   WorkerConfigurationDialog: typeof ConsoleUi.WorkerConfigurationDialog
+  DirectoryPicker: typeof ConsoleUi.DirectoryPicker
+  Wordmark: typeof ConsoleUi.Wordmark
 } = {
   AnnotationLayer,
   AnnotationList,
@@ -290,6 +294,8 @@ const conformance: {
   TooltipContent,
   TooltipTrigger,
   WorkerConfigurationDialog,
+  DirectoryPicker,
+  Wordmark,
 }
 
 const workerBadgeProps: ConsoleUi.BadgeProps = { variant: 'ok' }
@@ -354,6 +360,33 @@ describe('@iii-dev/console-ui surface', () => {
     expect(themeCss).toContain('--color-card-highlight: #0d0d0e63;')
     expect(recipe).toContain('border: 0;')
     expect(recipe).toContain('background: var(--color-card-highlight);')
+  })
+
+  it('publishes the navigation tree recipe with glyph tones in both themes', () => {
+    const themeCss = readFileSync(
+      new URL('../index.css', import.meta.url),
+      'utf8',
+    )
+    const recipesCss = readFileSync(
+      new URL('../styles/ui-recipes.css', import.meta.url),
+      'utf8',
+    )
+    for (const tone of ['blue', 'purple', 'teal', 'green', 'amber', 'rose']) {
+      expect(
+        themeCss.match(new RegExp(`--color-glyph-${tone}:`, 'g')),
+        tone,
+      ).toHaveLength(2)
+      expect(recipesCss).toContain(
+        `.iii-ui-tree-item__icon[data-color="${tone}"]`,
+      )
+    }
+    const row = recipesCss.match(/\.iii-ui-tree-item\s*\{([^}]*)\}/)?.[1]
+    expect(row).toContain('var(--iii-ui-tree-depth, 0)')
+    expect(row).toContain('font-size: 0.8125rem;')
+    expect(row).toContain('font-weight: 500;')
+    expect(recipesCss).toContain(
+      '.iii-ui-tree-item__caret[aria-expanded="true"] > svg',
+    )
   })
 
   it('publishes the lift elevation as one composed token tinted per theme', () => {

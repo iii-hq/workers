@@ -1,8 +1,9 @@
 /**
  * The composer's `/` command registry. Built-ins live in `SLASH_COMMANDS`;
  * the palette (`SlashCommandsPlugin`) merges in skills from iii-directory as
- * `/skill:<id>`. Both send paths in `ChatView` expand a leading invocation
- * into an attachment block via `expandSlashInvocation`.
+ * `/skill:<id>`. Both send paths in `ChatView` expand every palette-known
+ * invocation in the text into an attachment block via
+ * `expandSlashInvocations`.
  */
 
 import { getSkill, skillBodyWithBaseDir } from '@/lib/backend/directory-prompts'
@@ -44,13 +45,45 @@ export function mergeSlashEntries(dynamic: SlashCommand[]): SlashCommand[] {
 
 export type SlashInvocation = { kind: 'skill'; id: string }
 
-const SKILL_INVOCATION = /^\/skill:([\w./-]+)(?:\s|$)/
+export const SKILL_PREFIX = '/skill:'
 
-/** A leading `/skill:<id>`, or null (ordinary text and built-ins). */
-export function parseSlashInvocation(text: string): SlashInvocation | null {
-  const skill = text.match(SKILL_INVOCATION)
-  if (skill) return { kind: 'skill', id: skill[1] }
-  return null
+/* A skill id is word segments joined by `.` or `/`, so it never ends in a
+   separator: a sentence's trailing period stays outside the token. */
+export const SKILL_ID_SOURCE = String.raw`[\w-]+(?:[./][\w-]+)*`
+
+/* One `/skill:<id>` token wherever it sits after a start-of-text, whitespace
+   or `(` — never inside a word or a path ("either/skill:x"). One capture
+   group: the id. Compose it into other patterns; call `skillTokenRe()` to
+   scan a string. */
+export const SKILL_TOKEN_SOURCE = String.raw`(?<=^|[\s(])\/skill:(${SKILL_ID_SOURCE})`
+
+export function skillTokenRe(): RegExp {
+  return new RegExp(SKILL_TOKEN_SOURCE, 'g')
+}
+
+/** Every distinct `/skill:<id>` in the text, in order of first appearance. */
+export function parseSlashInvocations(text: string): SlashInvocation[] {
+  const seen = new Set<string>()
+  const out: SlashInvocation[] = []
+  for (const m of text.matchAll(skillTokenRe())) {
+    const id = m[1]
+    if (seen.has(id)) continue
+    seen.add(id)
+    out.push({ kind: 'skill', id })
+  }
+  return out
+}
+
+/**
+ * What a `/` entry shows beside its glyph: the slug without the leading `/`
+ * and without the `skill:` namespace — `/skill:coder/index` reads
+ * `coder/index`, the way `@fn(engine::echo)` reads `engine::echo`.
+ */
+export function slashCommandLabel(command: string): string {
+  if (command.startsWith(SKILL_PREFIX)) {
+    return command.slice(SKILL_PREFIX.length)
+  }
+  return command.startsWith('/') ? command.slice(1) : command
 }
 
 /** Wrap a resolved body as the attachment block riding with the send. */
@@ -62,7 +95,7 @@ export function slashAttachmentBlock(
 }
 
 export function invocationCommand(inv: SlashInvocation): string {
-  return `/skill:${inv.id}`
+  return `${SKILL_PREFIX}${inv.id}`
 }
 
 /**
@@ -124,31 +157,41 @@ export function loadedSkillIds(
       continue
     }
     for (const a of m.attachments ?? []) {
-      if (a.type === 'text/x-skill' && a.name.startsWith('/skill:'))
-        ids.add(a.name.slice('/skill:'.length))
+      if (a.type === 'text/x-skill' && a.name.startsWith(SKILL_PREFIX))
+        ids.add(a.name.slice(SKILL_PREFIX.length))
     }
   }
   return ids
 }
 
 /**
- * Shared submit-time expansion for the fresh-send and queued-edit paths: a
- * leading palette-known `/skill:<id>` resolves its body into an
- * attachment block; `failed` means the caller should warn and send the text
- * as typed; null means the text is not an invocation (or not palette-known).
+ * Shared submit-time expansion for the fresh-send and queued-edit paths:
+ * every palette-known `/skill:<id>` in the text — leading or mid-sentence,
+ * each id once — resolves its body into an attachment block; `failed` means
+ * the caller should warn and send the text as typed. Tokens the palette
+ * never offered are left alone, as is text without any.
  *
  * A skill in `loaded` (see `loadedSkillIds`) expands to a short pointer
  * instead of refetching the body — the full block is already in context, so
  * a repeat invocation shouldn't cost another copy of it.
  */
-export async function expandSlashInvocation(
+export async function expandSlashInvocations(
   text: string,
   loaded?: ReadonlySet<string>,
-): Promise<SlashExpansion | null> {
-  const inv = parseSlashInvocation(text)
-  if (!inv) return null
+): Promise<SlashExpansion[]> {
+  const offered = dynamicSlashEntries
+  if (!offered) return []
+  const invocations = parseSlashInvocations(text).filter((inv) =>
+    offered.some((e) => e.command === invocationCommand(inv)),
+  )
+  return Promise.all(invocations.map((inv) => expandOne(inv, loaded)))
+}
+
+async function expandOne(
+  inv: SlashInvocation,
+  loaded?: ReadonlySet<string>,
+): Promise<SlashExpansion> {
   const command = invocationCommand(inv)
-  if (!dynamicSlashEntries?.some((e) => e.command === command)) return null
   if (inv.kind === 'skill' && loaded?.has(inv.id)) {
     return {
       status: 'attached',

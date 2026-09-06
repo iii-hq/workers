@@ -243,7 +243,6 @@ export function A2uiPage({
           title: 'New from template',
           detail: 'Create a surface from the first saved template',
           keywords: ['create', 'template'],
-          shortcut: 'N',
           enabled: () => templates.length > 0,
           run: () => {
             const template = templates[0]
@@ -258,7 +257,6 @@ export function A2uiPage({
           id: 'undo',
           title: 'Undo latest change',
           detail: 'Restore the previous saved revision',
-          shortcut: 'Z',
           enabled: () => selected !== null && selected.history.length > 0,
           run: () => {
             if (selected)
@@ -271,7 +269,6 @@ export function A2uiPage({
           id: 'pin',
           title: 'Pin/unpin interface',
           detail: 'Keep this surface at the top of the library',
-          shortcut: 'P',
           enabled: () => selected !== null,
           run: () => {
             if (selected)
@@ -285,7 +282,6 @@ export function A2uiPage({
           id: 'export-react',
           title: 'Write React app to workspace',
           detail: 'Create a complete editable React app as workspace files',
-          shortcut: 'E',
           enabled: () => selected !== null && !!workingDir,
           run: () => void writeReactApp(),
         },

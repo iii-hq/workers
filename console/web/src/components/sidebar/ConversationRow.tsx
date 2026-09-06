@@ -1,21 +1,19 @@
-import { Bot, ChevronDown, ChevronRight, Trash2 } from 'lucide-react'
+import uiClasses from '@iii-dev/console-ui/ui-classes'
+import { Bot, ChevronRight, MessageSquare, X } from 'lucide-react'
+import type { CSSProperties } from 'react'
 import { useEffect, useRef, useState } from 'react'
 import { SUBAGENT_ICON_COMPONENTS } from '@/components/chat/ActiveSubagentChips'
-import '@/components/chat/ActiveSubagentChips.css'
 import { StatusDot } from '@/components/ui/StatusDot'
 import { TriggerIcon } from '@/components/ui/TriggerIcon'
-import { cn } from '@/lib/utils'
-import type { Conversation } from '@/types/chat'
+import type { Conversation, SubagentColor } from '@/types/chat'
 
 interface ConversationRowProps {
   conversation: Conversation
   active: boolean
-  /** Larger row actions when the sidebar is the whole narrow page. */
-  narrow?: boolean
   onSelect: () => void
   onRename: (title: string) => void
   onRemove: () => void
-  /** Tree nesting level; 0 = root. Controls left indent. */
+  /** Tree nesting level; 0 = root. Drives the shared tree indent. */
   depth?: number
   /** True when this row has nested sub-agent rows (renders a toggle caret). */
   hasChildren?: boolean
@@ -25,9 +23,6 @@ interface ConversationRowProps {
   onToggleTree?: () => void
 }
 
-/** px of indent per tree level. */
-const INDENT_STEP = 12
-
 function formatRelative(ts: number): string {
   const delta = Date.now() - ts
   if (delta < 60_000) return 'now'
@@ -36,10 +31,47 @@ function formatRelative(ts: number): string {
   return `${Math.floor(delta / 86_400_000)}d`
 }
 
+interface RowGlyph {
+  Icon: typeof Bot
+  /** Glyph tone; `neutral`/absent keeps the ghost ink. */
+  color?: SubagentColor
+  /** Native tooltip naming the session's origin or profile. */
+  title?: string
+}
+
+/**
+ * Which mark opens the row. A selected agent profile owns the glyph at
+ * every depth; a spawned child shows its origin (trigger bolt or the
+ * spawning agent's appearance); a plain chat keeps a quiet message mark so
+ * every label starts on the same column.
+ */
+function resolveGlyph(conversation: Conversation, depth: number): RowGlyph {
+  const profile = conversation.agentProfile
+  if (profile) {
+    return {
+      Icon: (profile.icon && SUBAGENT_ICON_COMPONENTS[profile.icon]) || Bot,
+      color: profile.color,
+      title: profile.name,
+    }
+  }
+  if (depth > 0 && conversation.spawnedBy === 'trigger') {
+    return { Icon: TriggerIcon, title: 'spawned by a trigger' }
+  }
+  if (depth > 0 && conversation.spawnedBy === 'agent') {
+    const appearance = conversation.subagentAppearance
+    return {
+      Icon:
+        (appearance?.icon && SUBAGENT_ICON_COMPONENTS[appearance.icon]) || Bot,
+      color: appearance?.color,
+      title: appearance?.name ?? 'spawned by an agent',
+    }
+  }
+  return { Icon: MessageSquare }
+}
+
 export function ConversationRow({
   conversation,
   active,
-  narrow = false,
   onSelect,
   onRename,
   onRemove,
@@ -69,23 +101,17 @@ export function ConversationRow({
     if (next && next !== conversation.title) onRename(next)
   }
 
-  /* Only flat lists (every row depth 0, childless) render with no caret slot,
-     so the common case looks exactly as before. Any tree row reserves the
-     caret column so titles line up across siblings with and without carets. */
-  const inTree = hasChildren || depth > 0
+  const glyph = resolveGlyph(conversation, depth)
 
   return (
-    // biome-ignore lint/a11y/useSemanticElements: row hosts a nested delete <button>; using a real <button> here would nest interactive elements.
+    // biome-ignore lint/a11y/useSemanticElements: row hosts nested caret/delete <button>s; using a real <button> here would nest interactive elements.
     <div
       role="button"
       tabIndex={editing ? -1 : 0}
       aria-current={active ? 'page' : undefined}
       aria-label={`open ${conversation.title}`}
-      className={cn(
-        'group relative flex cursor-pointer items-center gap-2 rounded-sm pr-1 pl-2',
-        narrow ? 'min-h-12 py-1.5' : 'py-1',
-        active ? 'bg-surface-selected' : 'hover:bg-surface-hover',
-      )}
+      className={uiClasses.treeItem}
+      style={{ '--iii-ui-tree-depth': depth } as CSSProperties}
       onClick={() => !editing && onSelect()}
       onDoubleClick={() => setEditing(true)}
       onKeyDown={(e) => {
@@ -99,153 +125,74 @@ export function ConversationRow({
         }
       }}
     >
-      {depth > 0 ? (
-        <span
-          aria-hidden
-          className="shrink-0"
-          style={{ width: depth * INDENT_STEP }}
-        />
-      ) : null}
-      {inTree ? (
-        hasChildren ? (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation()
-              onToggleTree?.()
-            }}
-            aria-label={
-              treeCollapsed ? 'expand sub-agents' : 'collapse sub-agents'
-            }
-            aria-expanded={!treeCollapsed}
-            className={cn(
-              'relative flex shrink-0 items-center justify-center text-ink-faint hover:text-ink',
-              narrow ? 'size-10' : 'size-4',
-            )}
-          >
-            <span
-              className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
-              aria-hidden="true"
-            />
-            {treeCollapsed ? (
-              <ChevronRight className="size-4 shrink-0" aria-hidden />
-            ) : (
-              <ChevronDown className="size-4 shrink-0" aria-hidden />
-            )}
-          </button>
-        ) : (
-          <span
-            aria-hidden
-            className={cn('shrink-0', narrow ? 'size-10' : 'size-4')}
-          />
-        )
-      ) : null}
-      {/* A selected agent profile owns the session glyph at every depth.
-          Sessions without one retain the child-origin presentation. */}
-      {conversation.agentProfile || (depth > 0 && conversation.spawnedBy) ? (
-        <span
-          className="subagent-tree-icon flex items-center shrink-0 text-ink-ghost"
-          data-color={
-            conversation.agentProfile?.color ??
-            (conversation.spawnedBy === 'agent'
-              ? conversation.subagentAppearance?.color
-              : undefined)
-          }
-          title={
-            conversation.agentProfile?.name ??
-            (conversation.spawnedBy === 'trigger'
-              ? 'spawned by a trigger'
-              : (conversation.subagentAppearance?.name ??
-                'spawned by an agent'))
-          }
-        >
-          {!conversation.agentProfile &&
-          conversation.spawnedBy === 'trigger' ? (
-            <TriggerIcon
-              aria-label="spawned by a trigger"
-              className="size-4 shrink-0 fill-ink-ghost"
-            />
-          ) : (
-            (() => {
-              const icon =
-                conversation.agentProfile?.icon ??
-                conversation.subagentAppearance?.icon
-              const Icon = (icon && SUBAGENT_ICON_COMPONENTS[icon]) || Bot
-              return (
-                <Icon
-                  aria-label={
-                    conversation.agentProfile?.name ??
-                    conversation.subagentAppearance?.name ??
-                    'spawned by an agent'
-                  }
-                  className="size-4 shrink-0"
-                />
-              )
-            })()
-          )}
-        </span>
-      ) : null}
-      <div className="flex-1 min-w-0">
-        {editing ? (
-          <input
-            name="conversation-title"
-            aria-label="conversation title"
-            ref={inputRef}
-            value={draft}
-            onChange={(e) => setDraft(e.currentTarget.value)}
-            onBlur={commit}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') commit()
-              else if (e.key === 'Escape') {
-                setEditing(false)
-                setDraft(conversation.title)
-              }
-            }}
-            className="w-full rounded-xs bg-surface px-1 py-1 font-sans text-base text-ink outline-none sm:text-[13px]"
-          />
-        ) : (
-          <div
-            className={cn(
-              'truncate font-sans text-base sm:text-[13px]',
-              active ? 'text-ink' : 'text-ink-faint',
-            )}
-          >
-            {conversation.title}
-          </div>
-        )}
-      </div>
-      {conversation.status === 'working' ? (
-        <StatusDot tone="accent" pulse title="working" className="shrink-0" />
-      ) : conversation.status === 'error' ? (
-        <StatusDot
-          tone="alert"
-          title={conversation.statusReason ?? 'error'}
-          className="shrink-0"
-        />
-      ) : null}
-      <span className="shrink-0 font-sans text-sm text-ink-ghost tabular-nums sm:text-[11px]">
-        {formatRelative(conversation.updatedAt)}
-      </span>
-      <button
-        type="button"
-        onClick={(e) => {
-          e.stopPropagation()
-          onRemove()
-        }}
-        aria-label={`delete ${conversation.title}`}
-        className={cn(
-          'relative flex shrink-0 items-center justify-center text-ink-faint hover:text-alert focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
-          narrow
-            ? 'size-10 opacity-100'
-            : 'size-7 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100',
-        )}
+      <span
+        className={uiClasses.treeItemIcon}
+        data-color={glyph.color}
+        title={glyph.title}
       >
-        <span
-          className="pointer-events-none absolute top-1/2 left-1/2 size-[max(100%,3rem)] -translate-1/2 pointer-fine:hidden"
-          aria-hidden="true"
+        <glyph.Icon aria-hidden />
+      </span>
+      {editing ? (
+        <input
+          name="conversation-title"
+          aria-label="conversation title"
+          ref={inputRef}
+          value={draft}
+          onChange={(e) => setDraft(e.currentTarget.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commit()
+            else if (e.key === 'Escape') {
+              setEditing(false)
+              setDraft(conversation.title)
+            }
+          }}
+          className="min-w-0 flex-1 rounded-xs bg-surface px-1 py-0.5 font-sans text-base font-medium text-ink outline-none sm:text-[13px]"
         />
-        <Trash2 className="size-4 shrink-0" aria-hidden />
-      </button>
+      ) : (
+        <span className={uiClasses.treeItemLabel}>{conversation.title}</span>
+      )}
+      {hasChildren ? (
+        <button
+          type="button"
+          className={uiClasses.treeItemCaret}
+          aria-expanded={!treeCollapsed}
+          aria-label={
+            treeCollapsed ? 'expand sub-agents' : 'collapse sub-agents'
+          }
+          onClick={(e) => {
+            e.stopPropagation()
+            onToggleTree?.()
+          }}
+        >
+          <ChevronRight aria-hidden />
+        </button>
+      ) : null}
+      <span className={uiClasses.treeItemTrailing}>
+        {conversation.status === 'working' ? (
+          <StatusDot tone="accent" pulse title="working" />
+        ) : conversation.status === 'error' ? (
+          <StatusDot
+            tone="alert"
+            title={conversation.statusReason ?? 'error'}
+          />
+        ) : null}
+        <span className={uiClasses.treeItemMeta}>
+          {formatRelative(conversation.updatedAt)}
+        </span>
+        <button
+          type="button"
+          className={uiClasses.treeItemAction}
+          data-tone="alert"
+          aria-label={`delete ${conversation.title}`}
+          onClick={(e) => {
+            e.stopPropagation()
+            onRemove()
+          }}
+        >
+          <X aria-hidden />
+        </button>
+      </span>
     </div>
   )
 }

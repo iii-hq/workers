@@ -116,6 +116,25 @@ pub struct FileRecord {
     /// Revision after the last write, when the file could be read back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after_revision: Option<String>,
+    /// The sub-agent session that made the change, when it was not the
+    /// turn's own session. Children's changes are recorded under the turn
+    /// of the top-level agent that spawned them, so one turn reads as one
+    /// unit of work whoever did the typing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentRef>,
+    /// The body after this turn's last write, when a later turn kept it as
+    /// its own pre-image. Never stored; filled in by `shell::turns::get`.
+    /// Absent means the working copy is the body after this turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<PreImage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct AgentRef {
+    pub session_id: String,
+    /// The `subagent_display` name the harness stamped, when it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -124,6 +143,10 @@ pub struct TurnRecord {
     pub started_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<u64>,
+    /// The first characters of the message that started the turn, from
+    /// the harness `turn-started` event; what a timeline calls the turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     #[serde(default)]
     pub files: Vec<FileRecord>,
 }
@@ -179,6 +202,20 @@ impl Default for HookOutput {
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct TurnEvent {
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub turn_id: Option<String>,
+    /// First characters of the message that started the turn.
+    #[serde(default)]
+    pub message_preview: Option<String>,
+    /// The spawning turn, for a sub-agent session.
+    #[serde(default)]
+    pub parent: Option<ParentRef>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+pub struct ParentRef {
     #[serde(default)]
     pub session_id: Option<String>,
     #[serde(default)]
@@ -515,6 +552,9 @@ pub fn record_file(turn: &mut TurnRecord, change: FileRecord) {
         if change.from.is_some() {
             existing.from = change.from;
         }
+        if existing.agent.is_none() {
+            existing.agent = change.agent;
+        }
         return;
     }
     if turn.files.len() >= MAX_FILES_PER_TURN {
@@ -527,7 +567,14 @@ pub fn record_file(turn: &mut TurnRecord, change: FileRecord) {
 /// write there is no pre-image and no function id; when the path is already
 /// recorded from a hook, only the freshness and kind move — the hook's
 /// cause, pre-image and after-revision are the better record.
-pub fn record_observed(turn: &mut TurnRecord, path: String, root: &str, kind: &str, at: u64) {
+pub fn record_observed(
+    turn: &mut TurnRecord,
+    path: String,
+    root: &str,
+    kind: &str,
+    at: u64,
+    agent: Option<AgentRef>,
+) {
     if let Some(existing) = turn.files.iter_mut().find(|f| f.path == path) {
         existing.last_seen = at;
         existing.kind = match (existing.kind.as_str(), kind) {
@@ -551,6 +598,8 @@ pub fn record_observed(turn: &mut TurnRecord, path: String, root: &str, kind: &s
         from: None,
         before: None,
         after_revision: None,
+        agent,
+        after: None,
     });
 }
 
@@ -570,6 +619,7 @@ fn turn_mut<'a>(record: &'a mut SessionRecord, turn_id: &str, at: u64) -> &'a mu
         turn_id: turn_id.to_string(),
         started_at: at,
         ended_at: None,
+        title: None,
         files: Vec::new(),
     });
     record.turns.last_mut().expect("just pushed")
@@ -735,6 +785,34 @@ pub struct TurnLog {
     store: TurnStore,
     pending: Mutex<HashMap<PendingKey, ReadImage>>,
     locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// Sub-agent session → the (session, turn) that spawned it, learned
+    /// from `turn-started` events and hook metadata. Every change a child
+    /// makes is recorded under its top-level ancestor's turn.
+    parents: std::sync::Mutex<HashMap<String, (String, String)>>,
+}
+
+/// Where a child's changes belong: the top-level session and turn above it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RootTurn {
+    pub session_id: String,
+    pub turn_id: String,
+}
+
+/// The harness stamps these into a child session's turn metadata, which
+/// the hook envelope carries as `metadata`.
+pub fn parent_of(metadata: Option<&Value>) -> Option<(String, String)> {
+    let metadata = metadata?;
+    let session = metadata.get("parent_session_id")?.as_str()?;
+    let turn = metadata.get("parent_turn_id")?.as_str()?;
+    Some((session.to_string(), turn.to_string()))
+}
+
+pub fn agent_name(metadata: Option<&Value>) -> Option<String> {
+    metadata?
+        .get("subagent_display")?
+        .get("name")?
+        .as_str()
+        .map(str::to_string)
 }
 
 impl TurnLog {
@@ -743,7 +821,90 @@ impl TurnLog {
             store,
             pending: Mutex::new(HashMap::new()),
             locks: Mutex::new(HashMap::new()),
+            parents: std::sync::Mutex::new(HashMap::new()),
         }
+    }
+
+    fn parents(&self) -> std::sync::MutexGuard<'_, HashMap<String, (String, String)>> {
+        self.parents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Remember who spawned a session. A parent link never changes once
+    /// known; a stray later event cannot re-home a child.
+    pub fn link_parent(&self, child_session: &str, parent_session: &str, parent_turn: &str) {
+        if child_session == parent_session {
+            return;
+        }
+        self.parents()
+            .entry(child_session.to_string())
+            .or_insert_with(|| (parent_session.to_string(), parent_turn.to_string()));
+    }
+
+    /// Follow parent links up to the top-level session. A session with no
+    /// link is its own root; a cycle or an over-deep chain stops where it is.
+    pub fn resolve_root(&self, session_id: &str, turn_id: &str) -> RootTurn {
+        let parents = self.parents();
+        let mut session = session_id.to_string();
+        let mut turn = turn_id.to_string();
+        for _ in 0..16 {
+            match parents.get(&session) {
+                Some((parent_session, parent_turn)) if parent_session != &session => {
+                    session = parent_session.clone();
+                    turn = parent_turn.clone();
+                }
+                _ => break,
+            }
+        }
+        RootTurn {
+            session_id: session,
+            turn_id: turn,
+        }
+    }
+
+    pub fn is_child(&self, session_id: &str) -> bool {
+        self.parents().contains_key(session_id)
+    }
+
+    /// A `turn-started` event: a top-level turn opens its record and takes
+    /// its title; a child turn only records its parent link — its work is
+    /// recorded under the parent.
+    pub async fn on_turn_opened(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        title: Option<&str>,
+        parent: Option<(&str, &str)>,
+    ) -> Result<(), Error> {
+        if let Some((parent_session, parent_turn)) = parent {
+            self.link_parent(session_id, parent_session, parent_turn);
+            return Ok(());
+        }
+        if self.is_child(session_id) {
+            return Ok(());
+        }
+        let at = now_ms();
+        let title = title
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string);
+        self.update(session_id, |record| {
+            let turn = turn_mut(record, turn_id, at);
+            if turn.title.is_none() {
+                turn.title = title;
+            }
+        })
+        .await
+    }
+
+    /// A `turn-completed` event for a child closes nothing: the parent's own
+    /// completion closes the turn the child's work was recorded under.
+    pub async fn on_turn_closed(&self, session_id: &str, turn_id: &str) -> Result<(), Error> {
+        if self.is_child(session_id) {
+            return Ok(());
+        }
+        self.on_turn_completed(session_id, turn_id).await
     }
 
     async fn session_lock(&self, session_id: &str) -> Arc<Mutex<()>> {
@@ -760,31 +921,52 @@ impl TurnLog {
 
     /// A turn with its pre-image bodies read back from the blob store, within
     /// the response budget.
-    pub async fn inflate(&self, mut turn: TurnRecord) -> TurnRecord {
+    /// Fill a turn's pre-image bodies from the blob store, and each file's
+    /// `after` body from the first later turn that kept the same path as its
+    /// own pre-image — the exact state the file was left in by this turn.
+    pub async fn inflate(&self, record: &SessionRecord, mut turn: TurnRecord) -> TurnRecord {
         let mut budget = MAX_RESPONSE_BODY_BYTES;
+        let later: Vec<&TurnRecord> = record
+            .turns
+            .iter()
+            .skip_while(|candidate| candidate.turn_id != turn.turn_id)
+            .skip(1)
+            .collect();
         for file in &mut turn.files {
-            let Some(before) = &mut file.before else {
-                continue;
-            };
-            if !before.stored {
-                continue;
+            if file.after.is_none() {
+                file.after = later
+                    .iter()
+                    .find_map(|candidate| candidate.files.iter().find(|f| f.path == file.path))
+                    .and_then(|next| next.before.clone());
             }
-            let Some(revision) = before.revision.as_deref() else {
-                continue;
-            };
-            match self.store.get_blob(revision).await {
-                Some(bytes) if bytes.len() <= budget => match String::from_utf8(bytes) {
-                    Ok(text) => {
-                        budget -= text.len();
-                        before.content = Some(text);
-                    }
-                    Err(_) => before.binary = true,
-                },
-                Some(_) => before.truncated = true,
-                None => before.stored = false,
+            if let Some(before) = &mut file.before {
+                self.inflate_image(before, &mut budget).await;
+            }
+            if let Some(after) = &mut file.after {
+                self.inflate_image(after, &mut budget).await;
             }
         }
         turn
+    }
+
+    async fn inflate_image(&self, image: &mut PreImage, budget: &mut usize) {
+        if !image.stored || image.content.is_some() {
+            return;
+        }
+        let Some(revision) = image.revision.as_deref() else {
+            return;
+        };
+        match self.store.get_blob(revision).await {
+            Some(bytes) if bytes.len() <= *budget => match String::from_utf8(bytes) {
+                Ok(text) => {
+                    *budget -= text.len();
+                    image.content = Some(text);
+                }
+                Err(_) => image.binary = true,
+            },
+            Some(_) => image.truncated = true,
+            None => image.stored = false,
+        }
     }
 
     async fn update<F>(&self, session_id: &str, apply: F) -> Result<(), Error>
@@ -799,6 +981,8 @@ impl TurnLog {
         self.store.store(&record).await
     }
 
+    /// Open a top-level turn without a title (tests and older callers).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub async fn on_turn_started(&self, session_id: &str, turn_id: &str) -> Result<(), Error> {
         let at = now_ms();
         self.update(session_id, |record| {
@@ -816,11 +1000,16 @@ impl TurnLog {
         changes: Vec<(String, &'static str)>,
     ) {
         let at = now_ms();
+        let target = self.resolve_root(session_id, turn_id);
+        let agent = (target.session_id != session_id).then(|| AgentRef {
+            session_id: session_id.to_string(),
+            name: None,
+        });
         let result = self
-            .update(session_id, |record| {
-                let turn = turn_mut(record, turn_id, at);
+            .update(&target.session_id, |record| {
+                let turn = turn_mut(record, &target.turn_id, at);
                 for (path, kind) in changes {
-                    record_observed(turn, path, root, kind, at);
+                    record_observed(turn, path, root, kind, at, agent.clone());
                 }
             })
             .await;
@@ -886,6 +1075,8 @@ impl TurnLog {
                             binary: false,
                         }),
                         after_revision: Some(after_revision),
+                        agent: None,
+                        after: None,
                     },
                 );
             }
@@ -905,14 +1096,18 @@ impl TurnLog {
             return;
         }
         let root = session_root(input.metadata.as_ref());
+        if let Some((parent_session, parent_turn)) = parent_of(input.metadata.as_ref()) {
+            self.link_parent(&session_id, &parent_session, &parent_turn);
+        }
+        let target = self.resolve_root(&session_id, &turn_id);
         let mut pending = self.pending.lock().await;
         for touch in touches {
             let path = absolute_path(&touch.path, root.as_deref());
             let read = read_pre_image(&path).await;
             pending.insert(
                 PendingKey {
-                    session_id: session_id.clone(),
-                    turn_id: turn_id.clone(),
+                    session_id: target.session_id.clone(),
+                    turn_id: target.turn_id.clone(),
                     path,
                 },
                 read,
@@ -932,13 +1127,21 @@ impl TurnLog {
         }
         let failed = input.result.as_ref().is_some_and(|r| r.is_error);
         let root = session_root(input.metadata.as_ref());
+        if let Some((parent_session, parent_turn)) = parent_of(input.metadata.as_ref()) {
+            self.link_parent(&session_id, &parent_session, &parent_turn);
+        }
+        let target = self.resolve_root(&session_id, &turn_id);
+        let agent = (target.session_id != session_id).then(|| AgentRef {
+            session_id: session_id.clone(),
+            name: agent_name(input.metadata.as_ref()),
+        });
         let at = now_ms();
         let mut changes: Vec<FileRecord> = Vec::new();
         for touch in touches {
             let path = absolute_path(&touch.path, root.as_deref());
             let key = PendingKey {
-                session_id: session_id.clone(),
-                turn_id: turn_id.clone(),
+                session_id: target.session_id.clone(),
+                turn_id: target.turn_id.clone(),
                 path: path.clone(),
             };
             let pending = self.pending.lock().await.remove(&key);
@@ -973,14 +1176,16 @@ impl TurnLog {
                 from: touch.from.map(|from| absolute_path(&from, root.as_deref())),
                 before,
                 after_revision,
+                agent: agent.clone(),
+                after: None,
             });
         }
         if changes.is_empty() {
             return;
         }
         if let Err(e) = self
-            .update(&session_id, |record| {
-                let turn = turn_mut(record, &turn_id, at);
+            .update(&target.session_id, |record| {
+                let turn = turn_mut(record, &target.turn_id, at);
                 for change in changes {
                     record_file(turn, change);
                 }
@@ -1003,6 +1208,9 @@ pub struct TurnSummary {
     pub started_at: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<u64>,
+    /// First characters of the message that started the turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     pub file_count: usize,
     /// Paths with their change kind, without bodies.
     pub files: Vec<FileHead>,
@@ -1014,6 +1222,10 @@ pub struct FileHead {
     pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub root: Option<String>,
+    /// The sub-agent that made the change, when it was not the turn's own
+    /// session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentRef>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -1050,7 +1262,11 @@ pub struct AdoptRootOutput {
     pub recorded: usize,
 }
 
-pub fn register(iii: &IIIClient, config: &TurnsConfig) -> Arc<TurnLog> {
+pub fn register(
+    iii: &IIIClient,
+    config: &TurnsConfig,
+    resolver: crate::code::state::ResolverCell,
+) -> Arc<TurnLog> {
     let data_dir = config.resolved_data_dir();
     let log = Arc::new(TurnLog::new(TurnStore::new(
         data_dir.clone(),
@@ -1146,7 +1362,19 @@ pub fn register(iii: &IIIClient, config: &TurnsConfig) -> Arc<TurnLog> {
                 let log = log.clone();
                 async move {
                     if let (Some(session_id), Some(turn_id)) = (event.session_id, event.turn_id) {
-                        if let Err(e) = log.on_turn_started(&session_id, &turn_id).await {
+                        let parent = event
+                            .parent
+                            .as_ref()
+                            .and_then(|p| Some((p.session_id.as_deref()?, p.turn_id.as_deref()?)));
+                        if let Err(e) = log
+                            .on_turn_opened(
+                                &session_id,
+                                &turn_id,
+                                event.message_preview.as_deref(),
+                                parent,
+                            )
+                            .await
+                        {
                             tracing::warn!(error = %e, "turn log: turn start not recorded");
                         }
                     }
@@ -1167,7 +1395,7 @@ pub fn register(iii: &IIIClient, config: &TurnsConfig) -> Arc<TurnLog> {
                 let observers = observers.clone();
                 async move {
                     if let (Some(session_id), Some(turn_id)) = (event.session_id, event.turn_id) {
-                        if let Err(e) = log.on_turn_completed(&session_id, &turn_id).await {
+                        if let Err(e) = log.on_turn_closed(&session_id, &turn_id).await {
                             tracing::warn!(error = %e, "turn log: turn end not recorded");
                         }
                         observers.complete(&session_id, &turn_id);
@@ -1208,6 +1436,7 @@ pub fn register(iii: &IIIClient, config: &TurnsConfig) -> Arc<TurnLog> {
                             turn_id: turn.turn_id.clone(),
                             started_at: turn.started_at,
                             ended_at: turn.ended_at,
+                            title: turn.title.clone(),
                             file_count: turn.files.len(),
                             files: turn
                                 .files
@@ -1216,6 +1445,7 @@ pub fn register(iii: &IIIClient, config: &TurnsConfig) -> Arc<TurnLog> {
                                     path: f.path.clone(),
                                     kind: f.kind.clone(),
                                     root: f.root.clone(),
+                                    agent: f.agent.clone(),
                                 })
                                 .collect(),
                         })
@@ -1241,12 +1471,13 @@ pub fn register(iii: &IIIClient, config: &TurnsConfig) -> Arc<TurnLog> {
                 let log = log.clone();
                 async move {
                     let record = log.load(&input.session_id).await?;
-                    let turn = match input.turn_id {
-                        Some(turn_id) => record.turns.into_iter().find(|t| t.turn_id == turn_id),
-                        None => record.turns.into_iter().last(),
-                    };
+                    let turn = match &input.turn_id {
+                        Some(turn_id) => record.turns.iter().find(|t| &t.turn_id == turn_id),
+                        None => record.turns.last(),
+                    }
+                    .cloned();
                     let turn = match turn {
-                        Some(turn) => Some(log.inflate(turn).await),
+                        Some(turn) => Some(log.inflate(&record, turn).await),
                         None => None,
                     };
                     Ok::<GetOutput, Error>(GetOutput {
@@ -1257,14 +1488,267 @@ pub fn register(iii: &IIIClient, config: &TurnsConfig) -> Arc<TurnLog> {
             })
             .description(
                 "One turn of a session's change history: every file it changed, the change \
-                 kind, the function that made it, and the file's pre-image (revision and body \
-                 up to 64 KiB each, 1 MiB per response) so a diff can be shown later. Omit \
-                 turn_id for the newest turn.",
+                 kind, the function that made it, the sub-agent that did it when one did, \
+                 the file's pre-image (revision and body up to 64 KiB each, 1 MiB per \
+                 response) and, when a later turn kept it, the body the turn left behind \
+                 (`after`), so the exact patch of that turn can be shown later. Omit turn_id \
+                 for the newest turn.",
             ),
         );
     }
-    tracing::info!("registered shell::turns::list, shell::turns::get, shell::turns::adopt-root and the turn-history hooks");
+    {
+        let log = log.clone();
+        let resolver = resolver.clone();
+        iii.register_function(
+            "shell::turns::revert",
+            RegisterFunction::new_async(move |input: RevertInput| {
+                let log = log.clone();
+                let resolver = resolver.clone();
+                async move {
+                    let resolver = resolver.read().await.clone();
+                    let allow = |path: &str| {
+                        resolver
+                            .deny_only(path)
+                            .map(|_| ())
+                            .map_err(crate::code::error::err_to_string)
+                    };
+                    log.revert(
+                        &input.session_id,
+                        &input.turn_id,
+                        input.paths.as_deref(),
+                        &allow,
+                    )
+                    .await
+                }
+            })
+            .description(
+                "Undo the file changes one turn made, from the pre-images kept in the change \
+                 history: created files are removed, modified and deleted files get their \
+                 earlier body back, moved files return to their original path. Pass `paths` to \
+                 revert a subset. Per-file results say what happened; bodies that were never \
+                 stored are reported, not guessed.",
+            ),
+        );
+    }
+    tracing::info!("registered shell::turns::list, shell::turns::get, shell::turns::revert, shell::turns::adopt-root and the turn-history hooks");
     log
+}
+
+// ── shell::turns::revert ──────────────────────────────────────────────
+//
+// Roll a turn back file by file from the pre-images the hooks kept. A
+// created file is removed, a modified or deleted one gets its stored
+// body back, a moved one goes back where it came from. Files whose body
+// was never stored (over the cap, binary, unreadable at the time) are
+// reported, never guessed at; the caller decides what to do with them.
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RevertInput {
+    pub session_id: String,
+    pub turn_id: String,
+    /// Restrict the revert to these absolute paths; omit for every file
+    /// the turn changed.
+    #[serde(default)]
+    pub paths: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize, JsonSchema, PartialEq, Eq)]
+pub struct RevertFileResult {
+    pub path: String,
+    /// The recorded change kind that was undone.
+    pub kind: String,
+    /// `restored` (body written back), `removed`, `moved-back`, or
+    /// `skipped` (nothing to undo, e.g. a delete of a file that never
+    /// existed).
+    pub action: String,
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct RevertOutput {
+    pub session_id: String,
+    pub turn_id: String,
+    pub results: Vec<RevertFileResult>,
+    /// Files whose revert succeeded (skips included).
+    pub reverted: usize,
+    /// Files whose revert failed; their `error` says why.
+    pub failed: usize,
+}
+
+/// How a recorded change is undone, decided from the record alone so the
+/// plan is testable without touching a filesystem.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RevertStep {
+    /// Delete the path (a file the turn created).
+    Remove,
+    /// Write the stored body under `revision` back to the path.
+    Restore { revision: String },
+    /// Rename the path back to `from`, then restore an overwritten body
+    /// at the path when one was stored.
+    MoveBack {
+        from: String,
+        overwritten: Option<String>,
+    },
+    /// Nothing to do: the turn deleted a path that did not exist.
+    Skip,
+    /// Cannot be undone: the pre-image body is not in the store.
+    Unavailable(&'static str),
+}
+
+pub fn revert_step(file: &FileRecord) -> RevertStep {
+    let stored_revision = file
+        .before
+        .as_ref()
+        .filter(|before| before.stored)
+        .and_then(|before| before.revision.clone());
+    let missing_before = file.before.as_ref().is_some_and(|before| before.missing);
+    if let Some(from) = &file.from {
+        return RevertStep::MoveBack {
+            from: from.clone(),
+            overwritten: stored_revision,
+        };
+    }
+    match file.kind.as_str() {
+        "created" => RevertStep::Remove,
+        "deleted" if missing_before => RevertStep::Skip,
+        _ => match stored_revision {
+            Some(revision) => RevertStep::Restore { revision },
+            None if file.before.is_none() => RevertStep::Unavailable(
+                "no pre-image was recorded for this change (observed through the watcher)",
+            ),
+            None => RevertStep::Unavailable(
+                "the pre-image body is not in the store (too large, binary, or pruned)",
+            ),
+        },
+    }
+}
+
+impl TurnLog {
+    /// Undo the recorded changes of one turn. `allow` is the deny gate
+    /// every touched path must pass (operator denylist, non-accessible
+    /// globs); the paths themselves come from this worker's own records.
+    pub async fn revert(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        only: Option<&[String]>,
+        allow: &(dyn Fn(&str) -> Result<(), String> + Sync),
+    ) -> Result<RevertOutput, Error> {
+        let record = self.load(session_id).await?;
+        let turn = record
+            .turns
+            .into_iter()
+            .find(|turn| turn.turn_id == turn_id)
+            .ok_or_else(|| Error::Handler("turn is not present in session history".into()))?;
+        let wanted: Option<std::collections::HashSet<&str>> =
+            only.map(|paths| paths.iter().map(String::as_str).collect());
+        // Later changes are undone first so a file moved and then edited
+        // in the same turn lands back in its original place with its
+        // original body.
+        let mut files = turn.files;
+        files.sort_by_key(|file| std::cmp::Reverse(file.last_seen));
+        let mut results = Vec::new();
+        for file in files {
+            if wanted
+                .as_ref()
+                .is_some_and(|set| !set.contains(file.path.as_str()))
+            {
+                continue;
+            }
+            let step = revert_step(&file);
+            let outcome = self.apply_revert(&file, &step, allow).await;
+            let action = match &step {
+                RevertStep::Remove => "removed",
+                RevertStep::Restore { .. } => "restored",
+                RevertStep::MoveBack { .. } => "moved-back",
+                RevertStep::Skip => "skipped",
+                RevertStep::Unavailable(_) => "unavailable",
+            };
+            results.push(RevertFileResult {
+                path: file.path,
+                kind: file.kind,
+                action: action.to_string(),
+                success: outcome.is_ok(),
+                error: outcome.err(),
+            });
+        }
+        let reverted = results.iter().filter(|r| r.success).count();
+        let failed = results.len() - reverted;
+        Ok(RevertOutput {
+            session_id: session_id.to_string(),
+            turn_id: turn_id.to_string(),
+            results,
+            reverted,
+            failed,
+        })
+    }
+
+    async fn apply_revert(
+        &self,
+        file: &FileRecord,
+        step: &RevertStep,
+        allow: &(dyn Fn(&str) -> Result<(), String> + Sync),
+    ) -> Result<(), String> {
+        allow(&file.path)?;
+        match step {
+            RevertStep::Skip => Ok(()),
+            RevertStep::Unavailable(reason) => Err((*reason).to_string()),
+            RevertStep::Remove => match tokio::fs::metadata(&file.path).await {
+                Ok(md) if md.is_dir() => tokio::fs::remove_dir(&file.path)
+                    .await
+                    .map_err(|e| format!("remove directory failed: {e}")),
+                Ok(_) => tokio::fs::remove_file(&file.path)
+                    .await
+                    .map_err(|e| format!("remove failed: {e}")),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(format!("stat failed: {e}")),
+            },
+            RevertStep::Restore { revision } => self.write_blob(&file.path, revision).await,
+            RevertStep::MoveBack { from, overwritten } => {
+                allow(from)?;
+                if tokio::fs::metadata(from).await.is_ok() {
+                    return Err(format!("cannot move back: {from} exists"));
+                }
+                if tokio::fs::metadata(&file.path).await.is_err() {
+                    return Err("cannot move back: the moved file is gone".into());
+                }
+                if let Some(parent) = Path::new(from).parent() {
+                    tokio::fs::create_dir_all(parent)
+                        .await
+                        .map_err(|e| format!("create parent failed: {e}"))?;
+                }
+                tokio::fs::rename(&file.path, from)
+                    .await
+                    .map_err(|e| format!("move back failed: {e}"))?;
+                match overwritten {
+                    Some(revision) => self.write_blob(&file.path, revision).await,
+                    None => Ok(()),
+                }
+            }
+        }
+    }
+
+    async fn write_blob(&self, path: &str, revision: &str) -> Result<(), String> {
+        let Some(body) = self.store.get_blob(revision).await else {
+            return Err("the pre-image body is no longer in the store".into());
+        };
+        if let Some(parent) = Path::new(path).parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("create parent failed: {e}"))?;
+        }
+        let tmp = format!("{path}.iii-revert.tmp");
+        tokio::fs::write(&tmp, &body)
+            .await
+            .map_err(|e| format!("write failed: {e}"))?;
+        if let Err(e) = tokio::fs::rename(&tmp, path).await {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return Err(format!("replace failed: {e}"));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1298,6 +1782,7 @@ mod tests {
             turn_id: "t1".into(),
             started_at: 1,
             ended_at: None,
+            title: None,
             files: vec![FileRecord {
                 path: "/w/a.txt".into(),
                 root: Some("/w".into()),
@@ -1315,9 +1800,11 @@ mod tests {
                     stored: true,
                 }),
                 after_revision: Some("sha256:bb".into()),
+                agent: None,
+                after: None,
             }],
         };
-        record_observed(&mut turn, "/w/a.txt".into(), "/w", "modified", 9);
+        record_observed(&mut turn, "/w/a.txt".into(), "/w", "modified", 9, None);
         let file = &turn.files[0];
         assert_eq!(file.cause, "coder::create-file");
         assert_eq!(file.kind, "created");
@@ -1332,10 +1819,11 @@ mod tests {
             turn_id: "t1".into(),
             started_at: 1,
             ended_at: None,
+            title: None,
             files: Vec::new(),
         };
-        record_observed(&mut turn, "/w/gen.txt".into(), "/w", "created", 5);
-        record_observed(&mut turn, "/w/gen.txt".into(), "/w", "deleted", 8);
+        record_observed(&mut turn, "/w/gen.txt".into(), "/w", "created", 5, None);
+        record_observed(&mut turn, "/w/gen.txt".into(), "/w", "deleted", 8, None);
         let file = &turn.files[0];
         assert_eq!(file.cause, "observed");
         assert_eq!(file.kind, "deleted");
@@ -1424,6 +1912,7 @@ mod tests {
             turn_id: "t".into(),
             started_at: 1,
             ended_at: None,
+            title: None,
             files: Vec::new(),
         };
         let before = PreImage {
@@ -1444,6 +1933,8 @@ mod tests {
             from: None,
             before,
             after_revision: Some(format!("sha256:{at}")),
+            agent: None,
+            after: None,
         };
         record_file(&mut turn, change("created", None, 1));
         record_file(&mut turn, change("modified", Some(before.clone()), 2));
@@ -1465,6 +1956,7 @@ mod tests {
                 turn_id: format!("t{i}"),
                 started_at: i as u64,
                 ended_at: None,
+                title: None,
                 files: Vec::new(),
             });
         }
@@ -1524,7 +2016,7 @@ mod tests {
             Some(content_revision(b"after\n").as_str())
         );
 
-        let inflated = log.inflate(stored.clone()).await;
+        let inflated = log.inflate(&record, stored.clone()).await;
         assert_eq!(
             inflated.files[0]
                 .before
@@ -1635,5 +2127,399 @@ mod tests {
             .iter()
             .all(|file| file.cause == "console::working-directory::propose"));
         assert!(!files.iter().any(|file| file.path.contains("node_modules")));
+    }
+
+    fn record(
+        path: &str,
+        kind: &str,
+        before: Option<PreImage>,
+        from: Option<&str>,
+        at: u64,
+    ) -> FileRecord {
+        FileRecord {
+            path: path.into(),
+            root: None,
+            kind: kind.into(),
+            cause: "coder::update-file".into(),
+            first_seen: at,
+            last_seen: at,
+            from: from.map(String::from),
+            before,
+            after_revision: None,
+            agent: None,
+            after: None,
+        }
+    }
+
+    fn stored(revision: &str) -> PreImage {
+        PreImage {
+            revision: Some(revision.into()),
+            content: None,
+            truncated: false,
+            stored: true,
+            missing: false,
+            binary: false,
+        }
+    }
+
+    #[test]
+    fn revert_step_is_decided_from_the_record_alone() {
+        let missing = PreImage {
+            revision: None,
+            content: None,
+            truncated: false,
+            stored: false,
+            missing: true,
+            binary: false,
+        };
+        assert_eq!(
+            revert_step(&record(
+                "/w/new.txt",
+                "created",
+                Some(missing.clone()),
+                None,
+                1
+            )),
+            RevertStep::Remove
+        );
+        assert_eq!(
+            revert_step(&record(
+                "/w/gone.txt",
+                "deleted",
+                Some(missing.clone()),
+                None,
+                1
+            )),
+            RevertStep::Skip
+        );
+        assert_eq!(
+            revert_step(&record(
+                "/w/a.txt",
+                "modified",
+                Some(stored("sha256:aa")),
+                None,
+                1
+            )),
+            RevertStep::Restore {
+                revision: "sha256:aa".into()
+            }
+        );
+        assert_eq!(
+            revert_step(&record("/w/b.txt", "modified", None, None, 1)),
+            RevertStep::Unavailable(
+                "no pre-image was recorded for this change (observed through the watcher)"
+            )
+        );
+        let unstored = PreImage {
+            stored: false,
+            ..stored("sha256:bb")
+        };
+        assert!(matches!(
+            revert_step(&record("/w/c.txt", "deleted", Some(unstored), None, 1)),
+            RevertStep::Unavailable(_)
+        ));
+        assert_eq!(
+            revert_step(&record(
+                "/w/e.txt",
+                "moved",
+                Some(missing),
+                Some("/w/d.txt"),
+                1
+            )),
+            RevertStep::MoveBack {
+                from: "/w/d.txt".into(),
+                overwritten: None
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn revert_restores_removes_and_moves_back_from_the_blob_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        let log = log_in(dir.path());
+        let p = |name: &str| ws.join(name).display().to_string();
+
+        let old_a = b"old a".to_vec();
+        let old_c = b"old c".to_vec();
+        let ra = content_revision(&old_a);
+        let rc = content_revision(&old_c);
+        assert!(log.store.put_blob(&ra, &old_a).await);
+        assert!(log.store.put_blob(&rc, &old_c).await);
+
+        std::fs::write(ws.join("a.txt"), "new a").unwrap();
+        std::fs::write(ws.join("b.txt"), "created").unwrap();
+        std::fs::write(ws.join("e.txt"), "moved body").unwrap();
+        std::fs::write(ws.join("keep.txt"), "untouched").unwrap();
+
+        let missing = PreImage {
+            revision: None,
+            content: None,
+            truncated: false,
+            stored: false,
+            missing: true,
+            binary: false,
+        };
+        log.store
+            .store(&SessionRecord {
+                session_id: "s".into(),
+                turns: vec![TurnRecord {
+                    turn_id: "t1".into(),
+                    started_at: 1,
+                    ended_at: Some(9),
+                    title: None,
+                    files: vec![
+                        record(&p("a.txt"), "modified", Some(stored(&ra)), None, 2),
+                        record(&p("b.txt"), "created", Some(missing.clone()), None, 3),
+                        record(&p("c.txt"), "deleted", Some(stored(&rc)), None, 4),
+                        record(
+                            &p("e.txt"),
+                            "moved",
+                            Some(missing.clone()),
+                            Some(&p("d.txt")),
+                            5,
+                        ),
+                        record(&p("keep.txt"), "modified", None, None, 6),
+                    ],
+                }],
+            })
+            .await
+            .unwrap();
+
+        let allow = |_: &str| Ok(());
+        let out = log.revert("s", "t1", None, &allow).await.unwrap();
+        assert_eq!(out.results.len(), 5);
+        assert_eq!(out.reverted, 4);
+        assert_eq!(out.failed, 1);
+        assert_eq!(std::fs::read_to_string(ws.join("a.txt")).unwrap(), "old a");
+        assert!(!ws.join("b.txt").exists());
+        assert_eq!(std::fs::read_to_string(ws.join("c.txt")).unwrap(), "old c");
+        assert!(!ws.join("e.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(ws.join("d.txt")).unwrap(),
+            "moved body"
+        );
+        assert_eq!(
+            std::fs::read_to_string(ws.join("keep.txt")).unwrap(),
+            "untouched"
+        );
+        let failed = out.results.iter().find(|r| !r.success).unwrap();
+        assert!(failed.path.ends_with("keep.txt"));
+        assert_eq!(failed.action, "unavailable");
+
+        // A subset revert touches only the named paths; a denied path fails
+        // without touching disk.
+        std::fs::write(ws.join("a.txt"), "new again").unwrap();
+        let deny = |path: &str| {
+            if path.ends_with("a.txt") {
+                Err("denied".to_string())
+            } else {
+                Ok(())
+            }
+        };
+        let out = log
+            .revert("s", "t1", Some(&[p("a.txt")]), &deny)
+            .await
+            .unwrap();
+        assert_eq!(out.results.len(), 1);
+        assert_eq!(out.failed, 1);
+        assert_eq!(
+            std::fs::read_to_string(ws.join("a.txt")).unwrap(),
+            "new again"
+        );
+        let out = log
+            .revert("s", "t1", Some(&[p("a.txt")]), &allow)
+            .await
+            .unwrap();
+        assert_eq!(out.reverted, 1);
+        assert_eq!(std::fs::read_to_string(ws.join("a.txt")).unwrap(), "old a");
+    }
+
+    #[tokio::test]
+    async fn revert_of_an_unknown_turn_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = log_in(dir.path());
+        let allow = |_: &str| Ok(());
+        assert!(log.revert("s", "nope", None, &allow).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn child_agents_record_under_the_parent_turn_with_attribution() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("work");
+        std::fs::create_dir_all(&root).unwrap();
+        let root_s = root.to_string_lossy().into_owned();
+        let log = log_in(dir.path());
+        log.on_turn_opened("parent", "pt1", Some("  Build the login page  "), None)
+            .await
+            .unwrap();
+        // The child's turn-started carries its parent link.
+        log.on_turn_opened(
+            "child",
+            "ct1",
+            Some("write the form"),
+            Some(("parent", "pt1")),
+        )
+        .await
+        .unwrap();
+        let file = root.join("form.tsx");
+        let mut input = hook(
+            "child",
+            "ct1",
+            call(
+                "coder::create-file",
+                json!({ "files": [{ "path": "form.tsx" }] }),
+            ),
+            &root_s,
+            false,
+        );
+        input.metadata = Some(json!({
+            "fs_scope": { "root": root_s },
+            "parent_session_id": "parent",
+            "parent_turn_id": "pt1",
+            "subagent_display": { "name": "Form writer" }
+        }));
+        log.on_pre_trigger(HookInput {
+            result: None,
+            ..hook_clone(&input)
+        })
+        .await;
+        std::fs::write(&file, "<form/>\n").unwrap();
+        log.on_post_trigger(input).await;
+
+        let parent = log.load("parent").await.unwrap();
+        assert_eq!(parent.turns.len(), 1);
+        let turn = &parent.turns[0];
+        assert_eq!(turn.title.as_deref(), Some("Build the login page"));
+        assert_eq!(turn.files.len(), 1);
+        let agent = turn.files[0].agent.as_ref().expect("child attribution");
+        assert_eq!(agent.session_id, "child");
+        assert_eq!(agent.name.as_deref(), Some("Form writer"));
+        assert!(
+            log.load("child").await.unwrap().turns.is_empty(),
+            "children keep no record of their own"
+        );
+
+        // Closing the child closes nothing; closing the parent does.
+        log.on_turn_closed("child", "ct1").await.unwrap();
+        assert!(log.load("parent").await.unwrap().turns[0]
+            .ended_at
+            .is_none());
+        log.on_turn_closed("parent", "pt1").await.unwrap();
+        assert!(log.load("parent").await.unwrap().turns[0]
+            .ended_at
+            .is_some());
+    }
+
+    #[test]
+    fn nested_children_resolve_to_the_top_level_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = log_in(dir.path());
+        log.link_parent("c1", "root", "rt");
+        log.link_parent("c2", "c1", "c1t");
+        assert_eq!(
+            log.resolve_root("c2", "c2t"),
+            RootTurn {
+                session_id: "root".into(),
+                turn_id: "rt".into()
+            }
+        );
+        assert_eq!(
+            log.resolve_root("root", "rt"),
+            RootTurn {
+                session_id: "root".into(),
+                turn_id: "rt".into()
+            }
+        );
+        // A later, different link never re-homes a known child.
+        log.link_parent("c1", "other", "ot");
+        assert_eq!(log.resolve_root("c1", "x").session_id, "root");
+        assert!(log.is_child("c2"));
+        assert!(!log.is_child("root"));
+    }
+
+    #[tokio::test]
+    async fn observed_changes_of_a_child_land_in_the_parent_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = log_in(dir.path());
+        log.on_turn_opened("parent", "pt", Some("do it"), None)
+            .await
+            .unwrap();
+        log.link_parent("child", "parent", "pt");
+        log.fold_observed("child", "ct", "/w", vec![("/w/gen.txt".into(), "created")])
+            .await;
+        let parent = log.load("parent").await.unwrap();
+        let file = &parent.turns[0].files[0];
+        assert_eq!(file.path, "/w/gen.txt");
+        assert_eq!(
+            file.agent.as_ref().map(|a| a.session_id.as_str()),
+            Some("child")
+        );
+        assert!(log.load("child").await.unwrap().turns.is_empty());
+    }
+
+    #[tokio::test]
+    async fn inflate_fills_after_from_the_next_turn_that_kept_the_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = log_in(dir.path());
+        let v1 = b"v1\n".to_vec();
+        let v2 = b"v2\n".to_vec();
+        let r1 = content_revision(&v1);
+        let r2 = content_revision(&v2);
+        assert!(log.store.put_blob(&r1, &v1).await);
+        assert!(log.store.put_blob(&r2, &v2).await);
+        let stored = |revision: &str| PreImage {
+            revision: Some(revision.into()),
+            content: None,
+            truncated: false,
+            stored: true,
+            missing: false,
+            binary: false,
+        };
+        let record = SessionRecord {
+            session_id: "s".into(),
+            turns: vec![
+                TurnRecord {
+                    turn_id: "t1".into(),
+                    started_at: 1,
+                    ended_at: Some(2),
+                    title: Some("first".into()),
+                    files: vec![record("/w/a.txt", "modified", Some(stored(&r1)), None, 1)],
+                },
+                TurnRecord {
+                    turn_id: "t2".into(),
+                    started_at: 3,
+                    ended_at: Some(4),
+                    title: None,
+                    files: vec![record("/w/a.txt", "modified", Some(stored(&r2)), None, 3)],
+                },
+            ],
+        };
+        let first = log.inflate(&record, record.turns[0].clone()).await;
+        let file = &first.files[0];
+        assert_eq!(
+            file.before.as_ref().unwrap().content.as_deref(),
+            Some("v1\n")
+        );
+        assert_eq!(
+            file.after.as_ref().unwrap().content.as_deref(),
+            Some("v2\n")
+        );
+        let second = log.inflate(&record, record.turns[1].clone()).await;
+        assert!(
+            second.files[0].after.is_none(),
+            "the newest turn's after is the working copy"
+        );
+    }
+
+    fn hook_clone(input: &HookInput) -> HookInput {
+        HookInput {
+            metadata: input.metadata.clone(),
+            call: input.call.clone(),
+            session_id: input.session_id.clone(),
+            turn_id: input.turn_id.clone(),
+            result: None,
+        }
     }
 }

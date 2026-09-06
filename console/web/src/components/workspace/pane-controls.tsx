@@ -5,25 +5,34 @@
  * The edge zones live in the panes container's responsive horizontal gutter
  * (12px on narrow screens, 16px from `sm` up), so they never sit over pane
  * content or its scrollbars. Resting a mouse there for a beat — or tapping
- * it on touch — reveals the add-column affordance; clicking that adds an
- * empty pane on that side.
+ * it on touch — reveals a preview of the pane a click would add on that
+ * side; until the first split the edge also keeps a framed `+` sliver.
  */
 
 import { GripHorizontal, Plus } from 'lucide-react'
 import {
   type DragEvent,
+  type FocusEvent,
   type KeyboardEvent,
+  type MutableRefObject,
+  type RefObject,
   useEffect,
   useRef,
   useState,
 } from 'react'
-import { hoverTitle } from '@/lib/keybindings/registry'
+import { KeyCombo } from '@/components/ui/KeyCombo'
+import { REDUCED_MOTION_QUERY, useMediaQuery } from '@/hooks/use-media-query'
+import { bindingsFor, hoverTitle } from '@/lib/keybindings/registry'
 import { cn } from '@/lib/utils'
 
-/** Mouse dwell on an edge before the add-column affordance reveals. */
+/** Mouse dwell on an edge before the split preview reveals. */
 const EDGE_REVEAL_MS = 200
-/** Revealed affordance auto-hides after the pointer leaves it. */
+/** Revealed preview auto-hides after the pointer leaves it. */
 const EDGE_HIDE_MS = 150
+/** The preview's exit motion — the `fast` duration token. */
+const EDGE_EXIT_MS = 120
+/** Existing columns the split schematic draws; more would not fit the card. */
+const SCHEMATIC_MAX = 3
 /** Keyboard resize step, as a fraction of the container width. */
 const KEY_STEP = 0.02
 
@@ -224,162 +233,314 @@ export function ResizeHandle({
   )
 }
 
+type PreviewPhase = 'idle' | 'open' | 'closing'
+
+function clearTimer(ref: MutableRefObject<number | null>) {
+  if (ref.current != null) window.clearTimeout(ref.current)
+  ref.current = null
+}
+
+interface SplitPreviewProps {
+  side: 'left' | 'right'
+  /** Columns the tab has now — the schematic draws them beside the new one. */
+  columns: number
+  /** First-run hint: the other edge works too. */
+  nudge?: boolean
+  disabled?: boolean
+  /** Presence: mounting slides in from the edge; `closing` fades out before
+      the zone unmounts the card. */
+  closing?: boolean
+  buttonRef?: RefObject<HTMLButtonElement | null>
+  onAdd: () => void
+  onKeyDown?: (event: KeyboardEvent<HTMLButtonElement>) => void
+  onBlur?: (event: FocusEvent<HTMLButtonElement>) => void
+}
+
+/**
+ * The card a workspace edge reveals: a floating, pane-shaped surface that
+ * previews the split — a schematic of the columns the tab will have, with
+ * the new one drawn in ink on the side it will appear — under the action's
+ * name and its key. It is the desktop counterpart of the phone's "swipe to
+ * split" screen: same `bg-surface` tile, same words.
+ */
+export function SplitPreview({
+  side,
+  columns,
+  nudge = false,
+  disabled = false,
+  closing = false,
+  buttonRef,
+  onAdd,
+  onKeyDown,
+  onBlur,
+}: SplitPreviewProps) {
+  const splitLabel = `Split ${side}`
+  const action = side === 'left' ? 'panel.splitLeft' : 'panel.split'
+  const binding = bindingsFor(action)[0]
+  const existing = Math.min(Math.max(Math.trunc(columns), 1), SCHEMATIC_MAX)
+  const newColumn = side === 'left' ? 0 : existing
+  return (
+    <button
+      ref={buttonRef}
+      type="button"
+      disabled={disabled}
+      aria-label={splitLabel}
+      title={hoverTitle(splitLabel, action)}
+      onClick={onAdd}
+      onKeyDown={onKeyDown}
+      onBlur={onBlur}
+      className={cn(
+        'group/preview absolute top-0 bottom-1.5 flex w-[7.25rem] flex-col items-center justify-center gap-2.5 px-3 text-center',
+        // Overlay grammar: one surface step up and the floating shadow — no
+        // frame. It sits over the neighbouring pane, not beside it.
+        'rounded-sm bg-panel-raised font-sans shadow-floating select-none',
+        'focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent',
+        side === 'left' ? 'left-1.5' : 'right-1.5',
+        closing
+          ? side === 'left'
+            ? 'split-preview-exit-left'
+            : 'split-preview-exit-right'
+          : side === 'left'
+            ? 'split-preview-enter-left'
+            : 'split-preview-enter-right',
+      )}
+    >
+      {/* The schematic: today's columns in alpha ink, the new one solid —
+          it arrives a beat after the card, the way the real pane will. */}
+      <span
+        aria-hidden
+        className={cn(
+          'iii-ui-motion-control flex h-9 items-center gap-[3px] rounded-sm bg-surface px-2.5 transition-colors',
+          'group-hover/preview:bg-surface-hover group-active/preview:bg-surface-active',
+        )}
+      >
+        {Array.from({ length: existing + 1 }, (_, index) => (
+          <span
+            // biome-ignore lint/suspicious/noArrayIndexKey: position is the identity
+            key={index}
+            className={cn(
+              'h-5 w-3 shrink-0',
+              index === newColumn
+                ? cn(
+                    'bg-ink',
+                    side === 'left'
+                      ? 'split-preview-column-left'
+                      : 'split-preview-column-right',
+                  )
+                : 'bg-ink/20',
+            )}
+          />
+        ))}
+      </span>
+      <span className="text-[12.5px] leading-tight font-semibold text-ink">
+        {splitLabel}
+      </span>
+      {binding ? <KeyCombo binding={binding} /> : null}
+      {nudge ? (
+        <span className="text-[11px] leading-snug text-ink-faint">
+          The {side === 'left' ? 'right' : 'left'} edge works too.
+        </span>
+      ) : null}
+    </button>
+  )
+}
+
 interface EdgeAddZoneProps {
   side: 'left' | 'right'
   onAdd: () => void
-  /** Keep the indicator visible but suspend interaction during panel motion. */
+  /** Columns the tab has now — the split preview draws them beside the new
+      one. */
+  columns?: number
+  /** Suspend interaction (and dismiss an open preview) during panel motion. */
   disabled?: boolean
-  /** First-run discoverability: animate the persistent edge `+` and show
-      the hover hint until the user grows a split once (either side). */
+  /** First-run discoverability: until the user grows a split once (either
+      side) the edge keeps a framed `+` sliver that shakes now and then, and
+      the preview mentions the other edge. Afterwards the edge is bare — the
+      preview alone answers a dwell, a tap or a keyboard activation. */
   nudge?: boolean
 }
 
 /**
  * The far-left / far-right sliver of the workspace. A mouse resting on it
- * reveals a GHOST PANEL — a dashed, translucent preview of the pane that
- * would appear there (a click/tap reveals immediately; touch has no hover
- * to dwell on); clicking the ghost makes it real.
+ * reveals the SPLIT PREVIEW — a floating, pane-shaped card sliding in from
+ * the edge (a tap or a keyboard activation reveals immediately; touch has
+ * no hover to dwell on); activating the preview makes the pane real.
  * Render while the tab is under the workspace's defensive safety ceiling.
  */
 export function EdgeAddZone({
   side,
   onAdd,
+  columns = 1,
   disabled = false,
   nudge = false,
 }: EdgeAddZoneProps) {
   const splitLabel = `Split ${side}`
-  const [revealed, setRevealed] = useState(false)
+  const [phase, setPhase] = useState<PreviewPhase>('idle')
+  const reducedMotion = useMediaQuery(REDUCED_MOTION_QUERY)
   const dwellRef = useRef<number | null>(null)
   const hideRef = useRef<number | null>(null)
+  const exitRef = useRef<number | null>(null)
+  const previewRef = useRef<HTMLButtonElement>(null)
+  const targetRef = useRef<HTMLButtonElement>(null)
+  // Where focus lands once the next phase renders: the preview after a
+  // keyboard activation (a dwell or a click never moves focus away from the
+  // page), the bare target after Escape.
+  const focusRef = useRef<'preview' | 'target' | null>(null)
+  const revealed = phase !== 'idle'
 
-  const clearTimers = () => {
-    if (dwellRef.current != null) window.clearTimeout(dwellRef.current)
-    if (hideRef.current != null) window.clearTimeout(hideRef.current)
-    dwellRef.current = null
-    hideRef.current = null
-  }
   useEffect(
     () => () => {
-      if (dwellRef.current != null) window.clearTimeout(dwellRef.current)
-      if (hideRef.current != null) window.clearTimeout(hideRef.current)
+      clearTimer(dwellRef)
+      clearTimer(hideRef)
+      clearTimer(exitRef)
     },
     [],
   )
   useEffect(() => {
     if (!disabled) return
-    if (dwellRef.current != null) window.clearTimeout(dwellRef.current)
-    if (hideRef.current != null) window.clearTimeout(hideRef.current)
-    dwellRef.current = null
-    hideRef.current = null
-    setRevealed(false)
+    clearTimer(dwellRef)
+    clearTimer(hideRef)
+    clearTimer(exitRef)
+    focusRef.current = null
+    setPhase('idle')
   }, [disabled])
+  useEffect(() => {
+    const wanted = focusRef.current
+    if (wanted === 'preview' && phase === 'open') {
+      focusRef.current = null
+      previewRef.current?.focus()
+    } else if (wanted === 'target' && phase === 'idle') {
+      focusRef.current = null
+      targetRef.current?.focus()
+    }
+  }, [phase])
+
+  const clearTimers = () => {
+    clearTimer(dwellRef)
+    clearTimer(hideRef)
+    clearTimer(exitRef)
+  }
+  const reveal = (focusPreview: boolean) => {
+    clearTimers()
+    focusRef.current = focusPreview ? 'preview' : null
+    setPhase('open')
+  }
+  const hide = (focusTarget = false) => {
+    clearTimers()
+    focusRef.current = focusTarget ? 'target' : null
+    if (reducedMotion) {
+      setPhase('idle')
+      return
+    }
+    setPhase((current) => (current === 'idle' ? current : 'closing'))
+    exitRef.current = window.setTimeout(() => {
+      exitRef.current = null
+      setPhase('idle')
+    }, EDGE_EXIT_MS)
+  }
 
   return (
     <div
       className={cn(
-        'absolute inset-y-0 z-20 hidden pb-1.5 transition-[width] sm:flex',
-        '[transition-duration:var(--motion-duration-control)] [transition-timing-function:var(--motion-ease-standard)]',
+        'absolute inset-y-0 z-20 hidden pb-1.5 sm:flex',
         disabled && 'pointer-events-none',
         side === 'left' ? 'left-0' : 'right-0',
         revealed ? 'w-32' : 'w-3 sm:w-4',
       )}
       onPointerEnter={(e) => {
         if (disabled) return
-        if (hideRef.current != null) {
-          window.clearTimeout(hideRef.current)
-          hideRef.current = null
+        clearTimer(hideRef)
+        if (phase === 'closing') {
+          reveal(false)
+          return
         }
         if (revealed || dwellRef.current != null) return
         if (e.pointerType === 'mouse') {
           dwellRef.current = window.setTimeout(() => {
             dwellRef.current = null
-            setRevealed(true)
+            reveal(false)
           }, EDGE_REVEAL_MS)
         }
       }}
       onPointerLeave={() => {
         if (disabled) return
-        if (dwellRef.current != null) {
-          window.clearTimeout(dwellRef.current)
-          dwellRef.current = null
-        }
-        if (revealed) {
-          hideRef.current = window.setTimeout(() => {
-            hideRef.current = null
-            setRevealed(false)
-          }, EDGE_HIDE_MS)
-        }
+        clearTimer(dwellRef)
+        if (phase !== 'open') return
+        // A preview the keyboard opened stays until Escape or blur; a pointer
+        // merely passing through must not take it away.
+        if (document.activeElement === previewRef.current) return
+        hideRef.current = window.setTimeout(() => {
+          hideRef.current = null
+          hide()
+        }, EDGE_HIDE_MS)
       }}
     >
       {revealed ? (
-        // The ghost panel: same shape as a real pane (rounded, bordered,
-        // bottom-aligned with the row), but dashed and translucent — a
-        // preview of the pane the click will create.
-        <button
-          type="button"
+        <SplitPreview
+          side={side}
+          columns={columns}
+          nudge={nudge}
           disabled={disabled}
-          aria-label={splitLabel}
-          title={
-            side === 'right'
-              ? hoverTitle(splitLabel, 'panel.split')
-              : splitLabel
-          }
-          onClick={() => {
+          closing={phase === 'closing'}
+          buttonRef={previewRef}
+          onAdd={() => {
             clearTimers()
-            setRevealed(false)
+            focusRef.current = null
+            setPhase('idle')
             onAdd()
           }}
-          className={cn(
-            'flex h-full w-full flex-col items-center justify-center gap-2 rounded-sm',
-            'border border-dashed border-ink-ghost bg-panel/60 backdrop-blur-[2px]',
-            'font-mono text-[11px] text-ink-faint',
-            'mx-1.5 hover:border-accent hover:text-ink transition-colors',
-          )}
-        >
-          <Plus className="size-4" />
-          {splitLabel}
-          {nudge ? (
-            <span className="px-3 text-center text-[10px] leading-relaxed text-ink-ghost">
-              hover either screen edge — left or right — to split
-            </span>
-          ) : null}
-        </button>
+          onKeyDown={(event) => {
+            if (event.key !== 'Escape') return
+            event.preventDefault()
+            event.stopPropagation()
+            hide(true)
+          }}
+          onBlur={() => hide()}
+        />
       ) : (
         <>
           <button
+            ref={targetRef}
             type="button"
             disabled={disabled}
             aria-label={`show ${splitLabel} control`}
-            onClick={() => {
-              // Touch (and impatient mice): first tap reveals, second adds.
-              clearTimers()
-              setRevealed(true)
-            }}
-            className="peer h-full w-full cursor-default bg-transparent focus-visible:outline-none"
-          />
-          {/* A persistent sliver of the would-be panel. Before discovery it
-              shakes periodically; afterwards only the animation stops. */}
-          <span
-            aria-hidden
+            // Touch (and impatient mice): first tap reveals, second adds. A
+            // keyboard activation (detail 0) also hands the preview focus.
+            onClick={(event) => reveal(event.detail === 0)}
             className={cn(
-              'pointer-events-none absolute inset-y-0 flex pb-1.5 text-ink-faint',
-              'peer-focus-visible:-outline-offset-2 peer-focus-visible:text-accent peer-focus-visible:outline-2 peer-focus-visible:outline-accent',
-              side === 'left' ? 'left-0' : 'right-0',
+              'peer h-full w-full cursor-default bg-transparent',
+              // Before discovery the sliver below carries the focus
+              // treatment; a bare edge draws its own.
+              nudge
+                ? 'focus-visible:outline-none'
+                : 'focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent',
             )}
-          >
+          />
+          {nudge ? (
+            // A persistent sliver of the would-be panel, shaking now and then
+            // until the first split; afterwards the edge is bare.
             <span
+              aria-hidden
               className={cn(
-                // rounded-[3px]: the system's one-radius 6px reads pill-like
-                // on a 16px sliver — deliberately tighter here.
-                'flex w-3 items-center justify-center rounded-[3px] sm:w-4',
-                'border border-edge bg-panel/85 backdrop-blur-[2px]',
-                nudge && 'edge-nudge',
-                nudge && side === 'right' && '[animation-delay:-5s]',
+                'pointer-events-none absolute inset-y-0 flex pb-1.5 text-ink-faint',
+                'peer-focus-visible:-outline-offset-2 peer-focus-visible:text-accent peer-focus-visible:outline-2 peer-focus-visible:outline-accent',
+                side === 'left' ? 'left-0' : 'right-0',
               )}
             >
-              <Plus className="size-4 shrink-0" />
+              <span
+                className={cn(
+                  // rounded-[3px]: the system's one-radius 6px reads pill-like
+                  // on a 16px sliver — deliberately tighter here.
+                  'flex w-3 items-center justify-center rounded-[3px] sm:w-4',
+                  'border border-edge bg-panel/85 backdrop-blur-[2px]',
+                  'edge-nudge',
+                  side === 'right' && '[animation-delay:-5s]',
+                )}
+              >
+                <Plus className="size-4 shrink-0" />
+              </span>
             </span>
-          </span>
+          ) : null}
         </>
       )}
     </div>

@@ -49,7 +49,6 @@ export function Workers({ onRequestClose, commands }: WorkersProps) {
           title: 'Refresh workers',
           detail: 'Read the fleet again',
           keywords: ['reload', 'fleet'],
-          shortcut: 'R',
           run: () => void refetch(),
         },
         {
@@ -57,7 +56,6 @@ export function Workers({ onRequestClose, commands }: WorkersProps) {
           title: 'Search workers',
           detail: 'Put the caret in the filter',
           keywords: ['filter', 'find'],
-          shortcut: '/',
           run: () =>
             rootRef.current
               ?.querySelector<HTMLElement>('[aria-label="search workers"]')
@@ -68,7 +66,6 @@ export function Workers({ onRequestClose, commands }: WorkersProps) {
           title: 'Open Compose',
           detail: 'Containers, lifecycle, worker packages, and logs',
           keywords: ['compose', 'containers', 'daemon', 'logs'],
-          shortcut: 'C',
           enabled: () => composePage,
           run: () => requestPanelOpen({ pageId: COMPOSE_PAGE_ID, context: {} }),
         },

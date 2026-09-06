@@ -86,11 +86,17 @@ export function SessionStartView({ output }: { output: unknown }) {
       <MetaRow>
         <StatusPill label="session started" variant="accent" />
         <Chip>{res.session_id}</Chip>
+        {res.incognito ? <Chip className="br-ui-chip-warn">incognito</Chip> : null}
         <Chip>{res.headless ? 'headless' : 'headful'}</Chip>
       </MetaRow>
       <ActionLine symbol="→" tone="ink">
         <span className="br-ui-break">{res.url}</span>
       </ActionLine>
+      {res.error ? (
+        <ActionLine symbol="!" tone="warn">
+          <span className="br-ui-break">page failed to load: {res.error}</span>
+        </ActionLine>
+      ) : null}
     </div>
   )
 }
@@ -115,12 +121,12 @@ export function SessionListView({ output }: { output: unknown }) {
     <div>
       <MetaRow>
         <StatusPill
-          label={`${res.sessions.length} sessions`}
+          label={`${res.sessions.length} ${res.sessions.length === 1 ? 'tab' : 'tabs'}`}
           variant={res.sessions.length > 0 ? 'accent' : 'default'}
         />
       </MetaRow>
       {res.sessions.length === 0 ? (
-        <div className="br-ui-empty-line">· no live sessions</div>
+        <div className="br-ui-empty-line">· no tabs</div>
       ) : (
         <table className="br-ui-vtable">
           <tbody>
@@ -131,7 +137,8 @@ export function SessionListView({ output }: { output: unknown }) {
                 </td>
                 <td className="br-ui-td br-ui-break">{s.url}</td>
                 <td className="br-ui-td br-ui-td-dim br-ui-nowrap">
-                  {s.headless ? 'headless' : 'headful'}
+                  {s.incognito ? 'incognito · ' : ''}
+                  {s.active === false ? 'asleep' : s.headless ? 'headless' : 'headful'}
                 </td>
                 <td className="br-ui-td br-ui-td-dim br-ui-num br-ui-right br-ui-nowrap">
                   {s.console_entries} logs

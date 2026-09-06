@@ -87,13 +87,6 @@ export function diffPanelRequest(row: FileChangeRow): PanelOpenRequest {
   }
 }
 
-export function filePanelRequest(row: FileChangeRow): PanelOpenRequest {
-  return {
-    pageId: 'shell',
-    context: { type: 'file', path: row.absolutePath ?? row.path },
-  }
-}
-
 function countLines(content: string): number {
   if (content.length === 0) return 0
   const lines = content.split('\n')

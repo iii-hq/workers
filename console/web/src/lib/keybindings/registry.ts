@@ -17,6 +17,7 @@ import {
   conflictIdentity,
   digitFromEvent,
   formatBinding,
+  isBareKey,
   isBrowserReserved,
   isSequence,
   type KeyEventLike,
@@ -43,6 +44,7 @@ export type KeybindingActionId =
   | 'workspace.previous'
   | 'workspace.close'
   | 'panel.split'
+  | 'panel.splitLeft'
   | 'panel.next'
   | 'panel.previous'
   | 'palette.next'
@@ -124,12 +126,19 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     bindings: { mac: ['Ctrl+T'], other: ['Alt+T'] },
     keywords: ['tab', 'new', 'create'],
   },
+  // Workspaces step with the arrows, the way the browser's own tab strip
+  // does (⌘⌥←/→ in Chrome and Firefox). Shift is not decoration: ⌃← is
+  // "move a Space" on a Mac and Alt+← is Back everywhere else, and a named
+  // key keeps its value under any modifier on any layout.
   {
     id: 'workspace.next',
     title: 'Next workspace',
     group: 'Workspace',
     scope: 'global',
-    bindings: { mac: ['Ctrl+]'], other: ['Alt+]'] },
+    bindings: {
+      mac: ['Ctrl+Shift+ArrowRight'],
+      other: ['Alt+Shift+ArrowRight'],
+    },
     keywords: ['tab', 'switch', 'cycle'],
   },
   {
@@ -137,7 +146,10 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     title: 'Previous workspace',
     group: 'Workspace',
     scope: 'global',
-    bindings: { mac: ['Ctrl+['], other: ['Alt+['] },
+    bindings: {
+      mac: ['Ctrl+Shift+ArrowLeft'],
+      other: ['Alt+Shift+ArrowLeft'],
+    },
     keywords: ['tab', 'switch', 'cycle'],
   },
   {
@@ -148,13 +160,26 @@ export const KEYBINDINGS: readonly KeybindingDefinition[] = [
     bindings: { mac: ['Ctrl+W'], other: ['Alt+W'] },
     keywords: ['tab', 'close', 'remove'],
   },
+  // Split is the bracket pair: `[` adds a panel on the left, `]` on the
+  // right, unshifted on both platforms so neither reads as the other's
+  // variant and the key value is the same on every layout. The braces, the
+  // same keys with Shift, are the panel tier's other pair: focus moves
+  // between panels the way the brackets create them.
   {
     id: 'panel.split',
     title: 'Split right',
     group: 'Workspace',
     scope: 'global',
-    bindings: { mac: ['Ctrl+\\'], other: ['Alt+\\'] },
+    bindings: { mac: ['Ctrl+]'], other: ['Alt+]'] },
     keywords: ['panel', 'pane', 'column', 'split', 'right'],
+  },
+  {
+    id: 'panel.splitLeft',
+    title: 'Split left',
+    group: 'Workspace',
+    scope: 'global',
+    bindings: { mac: ['Ctrl+['], other: ['Alt+['] },
+    keywords: ['panel', 'pane', 'column', 'split', 'left'],
   },
   // Go-to chords: a prefix key, then a letter for the place. The prefix never
   // does anything on its own, so the letters stay free for single-key actions
@@ -286,15 +311,17 @@ export function hoverTitle(
 }
 
 /**
- * Why a page may not take `binding` for itself, or null when it may: the
- * console's global keys, every digit, a sequence prefix and the chords the
- * browser owns stay the console's. Pages bind what is left.
+ * Why a page may not take `binding` for itself, or null when it may: a key
+ * that types a character (no modifier, or Shift alone), the console's global
+ * keys, every digit, a sequence prefix and the chords the browser owns are
+ * all refused. Pages bind what is left: a modifier chord, or a named key.
  */
 export function shortcutClaimReason(
   binding: string,
   platform: Platform = shortcutPlatform(),
 ): string | null {
   if (!parseSequence(binding)) return 'it does not parse'
+  if (isBareKey(binding)) return 'it has no modifier'
   if (isBrowserReserved(binding, platform)) return 'the browser owns it'
   const identity = conflictIdentity(binding, platform)
   const head = conflictIdentity(splitSequence(binding)[0] ?? binding, platform)

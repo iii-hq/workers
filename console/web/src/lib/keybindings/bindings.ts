@@ -84,6 +84,23 @@ export function splitSequence(binding: string): string[] {
   return binding.split(' ').filter((chord) => chord !== '')
 }
 
+/**
+ * A chord that would type a character: a letter, digit or punctuation key
+ * with no modifier, or with Shift alone (`Shift+W` still types a W). Such a
+ * key fires under people's hands from any surface whose focus target is not
+ * literally a field, and it collides with whatever a page's own widgets do
+ * with the same letter, so nothing may bind one. A named key (`Escape`,
+ * `Enter`, `F2`) is not a character and may stay bare. For a sequence the
+ * first chord decides: `Ctrl+G C` is armed by a modifier, `Q L` is not.
+ */
+export function isBareKey(binding: string): boolean {
+  const first = splitSequence(binding)[0]
+  const parsed = first === undefined ? null : parseBinding(first)
+  if (!parsed) return false
+  const modified = parsed.mod || parsed.meta || parsed.ctrl || parsed.alt
+  return !modified && parsed.key.length === 1
+}
+
 /** Every chord of a binding parsed, single chords included; null if any fails. */
 export function parseSequence(binding: string): ParsedBinding[] | null {
   const chords = splitSequence(binding).map(parseBinding)

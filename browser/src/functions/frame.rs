@@ -1,10 +1,11 @@
 //! `browser::screencast::start` / `stop` / `browser::frame` — the live-view
 //! pipeline behind the console viewport. Chromium pushes encoded frames
-//! continuously (`Page.startScreencast`); the worker keeps only the newest
-//! in memory; `browser::frame` hands it out without any capture round-trip,
-//! so the UI can poll fast and stay smooth. All three are internal
-//! console-UI plumbing, not agent surface — agents read pages with
-//! `browser::snapshot` and `browser::screenshot`.
+//! continuously (`Page.startScreencast`); the worker fans each one out on the
+//! `browser::frame-event` trigger (bind with a `session_id` filter) and keeps
+//! the newest in memory, which `browser::frame` hands out for a viewer's
+//! first paint. All three are internal console-UI plumbing, not agent
+//! surface — agents read pages with `browser::snapshot` and
+//! `browser::screenshot`.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

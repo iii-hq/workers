@@ -1,32 +1,57 @@
-/* Per-console-tab persistence for the explorer's UI state (browsed root,
-   open editor tabs, expanded folders), stored in the engine's
-   `configuration` worker under the worker-registered `shell-ui` entry
-   (src/ui.rs registers it with `initial_value: {}`).
+/* Per-pane persistence for the explorer's UI state (browsed root, open
+   editor tabs, expanded folders, view, options, terminal layout), stored
+   by the worker under its data directory (`data/shell/ui-state/panes/
+   <pane key>.json`, `src/ui_state.rs`) through two console-only
+   functions: `shell::ui-state::get { key, legacy_key }` → `{ state }` and
+   `shell::ui-state::set { key, state }`.
 
-   The entry's value is one JSON object shared by every browser:
-   `{ tabs: { [workspaceTabId]: TabUiState } }`. `configuration::set`
-   replaces the WHOLE value, so writes are read-modify-write and
-   debounced; concurrent tabs are last-write-wins (the console's own
-   config transport accepts the same trade-off). A missing configuration
-   worker degrades to non-persistent silently. */
+   The key is the console's pane id (`pane-scope.ts`); saves made before
+   panes had ids sit under the workspace tab id, which the worker reads
+   as a fallback (`legacy_key`). One file per pane means a save touches
+   only this pane's state: panes never clobber each other, and the worker
+   serializes writers of one pane (its later state wins). Nothing here is
+   read-modify-write any more — the state used to be one `shell-ui`
+   configuration entry holding every pane, which two panes saving at once
+   could lose each other's slice of, and which the engine persisted into
+   the project's committable `config/` folder.
+
+   The read that seeds a pane matters more than any write: a pane that
+   boots believing nothing was stored replaces the stored state with its
+   defaults on its first save. So a load that fails for any reason — the
+   engine still coming up after a restart, the worker not yet registered
+   (`function_not_found`), a transport error — is retried a few times
+   before the pane gives up and boots fresh. Only a clean "nothing stored"
+   answer is final. */
 
 import type { Host } from '@iii-dev/console-ui'
-import type { OpenTab } from './tabs'
+import type { DiffOptions } from './DiffTab'
+import { parseRootMemory, type RootUiState, serializeRootMemory } from './root-memory'
 import {
   createTerminalWorkspace,
   normalizeTerminalWorkspace,
   type TerminalWorkspaceState,
 } from './terminal-layout'
 
-export const UI_STATE_CONFIG_ID = 'shell-ui'
+export const UI_STATE_GET_FN = 'shell::ui-state::get'
+export const UI_STATE_SET_FN = 'shell::ui-state::set'
 
 export type TerminalDock = 'bottom' | 'right' | 'editor'
 
 export interface TabUiState {
   root?: string
-  open: OpenTab[]
+  /** True when the user picked `root` here: it then outranks the chat's
+      folder on reload (the chat's next move still re-roots the pane). */
+  rootPinned?: boolean
+  /** What was open in other folders this pane browsed (`root-memory.ts`). */
+  roots?: Record<string, RootUiState>
+  /** Open tabs in their persisted form (`persistedTabs`); restored through
+      `restoreTabs`, which also reads the older `{ path, pinned }` rows. */
+  open: unknown[]
   active: string | null
   expanded: string[]
+  /** The active sidebar view; absent in legacy saves = explorer. */
+  sideView?: string
+  diffOptions?: Partial<DiffOptions>
   /** Files-tab dot-entries toggle; absent in legacy saves = hidden. */
   showHidden?: boolean
   /** Sidebar width in px from the drag handle; absent = default. */
@@ -41,43 +66,72 @@ export interface TabUiState {
   terminalWorkspace?: TerminalWorkspaceState
 }
 
-function isUnavailable(err: unknown): boolean {
-  const message = err instanceof Error ? err.message : String(err)
-  return /function[_ ]not[_ ]found|not[_ ]found/i.test(message)
+/** The stored object for the pane (or its legacy key), null when the
+    worker has nothing for either. Any failure throws so the caller can
+    tell "nothing there" from "could not ask". */
+async function fetchStoredState(
+  host: Host,
+  key: string,
+  legacyKey?: string,
+): Promise<Record<string, unknown> | null> {
+  const resp = await host.iii.trigger<{ state?: unknown }>(UI_STATE_GET_FN, {
+    key,
+    legacy_key: legacyKey && legacyKey !== '' ? legacyKey : undefined,
+  })
+  const state = resp?.state
+  return state && typeof state === 'object' && !Array.isArray(state)
+    ? (state as Record<string, unknown>)
+    : null
 }
 
-async function fetchWholeValue(
+/** Delays between load attempts: about four seconds in all, invisible
+    behind the page's own "connecting" state. */
+export const LOAD_RETRY_DELAYS_MS: readonly number[] = [300, 1000, 3000]
+
+const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms))
+
+/** `fetchStoredState` with retries on failure; null once the retries are
+    spent (the pane then boots fresh, the best it can do). */
+async function fetchStoredStateWithRetry(
   host: Host,
+  key: string,
+  legacyKey: string | undefined,
+  delays: readonly number[],
+  wait: (ms: number) => Promise<void>,
 ): Promise<Record<string, unknown> | null> {
-  try {
-    const resp = await host.iii.trigger<{ value?: unknown }>(
-      'configuration::get',
-      { id: UI_STATE_CONFIG_ID },
-    )
-    const value = resp?.value
-    return value && typeof value === 'object' && !Array.isArray(value)
-      ? (value as Record<string, unknown>)
-      : {}
-  } catch (err) {
-    if (isUnavailable(err)) return null
-    throw err instanceof Error ? err : new Error(String(err))
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await fetchStoredState(host, key, legacyKey)
+    } catch (err) {
+      const delay = delays[attempt]
+      if (delay === undefined) {
+        console.warn('[shell-ui] could not load the pane state; starting fresh', err)
+        return null
+      }
+      await wait(delay)
+    }
   }
 }
 
-/** The persisted state for one workspace tab; null = none stored (or the
-    configuration worker is unavailable — callers can't tell, and don't
-    need to). */
+/** The persisted state for one pane; null = none stored (or the worker
+    could not be reached — callers can't tell, and don't need to).
+    `legacyKey` is the workspace tab id: saves made before state was keyed
+    by pane are read from there. */
 export async function loadTabUiState(
   host: Host,
-  tabId: string,
+  key: string,
+  legacyKey?: string,
+  retry: { delays?: readonly number[]; wait?: (ms: number) => Promise<void> } = {},
 ): Promise<TabUiState | null> {
-  if (tabId === '') return null
-  const whole = await fetchWholeValue(host).catch(() => null)
-  const tabs = whole?.tabs
-  if (!tabs || typeof tabs !== 'object' || Array.isArray(tabs)) return null
-  const entry = (tabs as Record<string, unknown>)[tabId]
-  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null
-  const raw = entry as Record<string, unknown>
+  if (key === '') return null
+  const raw = await fetchStoredStateWithRetry(
+    host,
+    key,
+    legacyKey,
+    retry.delays ?? LOAD_RETRY_DELAYS_MS,
+    retry.wait ?? sleep,
+  )
+  if (raw === null) return null
   const root = typeof raw.root === 'string' ? raw.root : undefined
   const terminalOpen =
     raw.terminalOpen === true || raw.workspaceMode === 'terminal'
@@ -94,11 +148,18 @@ export async function loadTabUiState(
   }
   return {
     root,
-    open: Array.isArray(raw.open) ? (raw.open as OpenTab[]) : [],
+    rootPinned: raw.rootPinned === true ? true : undefined,
+    roots: raw.roots === undefined ? undefined : serializeRootMemory(parseRootMemory(raw.roots)),
+    open: Array.isArray(raw.open) ? raw.open : [],
     active: typeof raw.active === 'string' ? raw.active : null,
     expanded: Array.isArray(raw.expanded)
       ? raw.expanded.filter((p): p is string => typeof p === 'string')
       : [],
+    sideView: typeof raw.sideView === 'string' ? raw.sideView : undefined,
+    diffOptions:
+      raw.diffOptions && typeof raw.diffOptions === 'object' && !Array.isArray(raw.diffOptions)
+        ? (raw.diffOptions as Partial<DiffOptions>)
+        : undefined,
     showHidden:
       typeof raw.showHidden === 'boolean' ? raw.showHidden : undefined,
     sideWidth: typeof raw.sideWidth === 'number' ? raw.sideWidth : undefined,
@@ -126,9 +187,10 @@ export async function loadTabUiState(
   }
 }
 
-/* One debounced writer per (page-instance, tabId): the trailing state
-   wins, writes are chained so a slow set can't interleave with the next
-   read-modify-write. */
+/* One debounced writer per (page-instance, pane key): the trailing state
+   wins, and writes are chained so a slow set can't overtake the next one
+   and land an older state last. A failed write is not final: the worker
+   may be restarting, and the next state change tries again. */
 const DEBOUNCE_MS = 600
 
 export interface TabUiStateSaver {
@@ -139,44 +201,29 @@ export interface TabUiStateSaver {
 
 export function createTabUiStateSaver(
   host: Host,
-  tabId: string,
+  key: string,
 ): TabUiStateSaver {
   let timer: number | null = null
   let pending: TabUiState | null = null
   let chain: Promise<void> = Promise.resolve()
-  let unavailable = false
 
   const flush = () => {
     timer = null
     const state = pending
     pending = null
-    if (!state || unavailable) return
+    if (!state) return
     chain = chain.then(async () => {
       try {
-        const whole = (await fetchWholeValue(host)) ?? {}
-        const tabs =
-          whole.tabs &&
-          typeof whole.tabs === 'object' &&
-          !Array.isArray(whole.tabs)
-            ? (whole.tabs as Record<string, unknown>)
-            : {}
-        await host.iii.trigger('configuration::set', {
-          id: UI_STATE_CONFIG_ID,
-          value: { ...whole, tabs: { ...tabs, [tabId]: state } },
-        })
+        await host.iii.trigger(UI_STATE_SET_FN, { key, state })
       } catch (err) {
-        if (isUnavailable(err)) {
-          unavailable = true
-          return
-        }
-        console.warn('[shell-ui] failed to persist tab state', err)
+        console.warn('[shell-ui] failed to persist pane state', err)
       }
     })
   }
 
   return {
     save(state) {
-      if (tabId === '' || unavailable) return
+      if (key === '') return
       pending = state
       if (timer != null) window.clearTimeout(timer)
       timer = window.setTimeout(flush, DEBOUNCE_MS)

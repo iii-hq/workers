@@ -1,42 +1,73 @@
 import { describe, expect, it } from 'vitest'
 import {
-  expandSlashInvocation,
+  expandSlashInvocations,
   fuzzyFilterSlash,
   loadedSkillIds,
   mergeSlashEntries,
   parseSlashBlockHeader,
-  parseSlashInvocation,
+  parseSlashInvocations,
   SLASH_COMMANDS,
   setDynamicSlashEntries,
   slashAttachmentBlock,
   slashChip,
+  slashCommandLabel,
 } from './slash-commands'
 
-describe('parseSlashInvocation', () => {
+describe('parseSlashInvocations', () => {
   it('leaves a leading /name as ordinary text', () => {
-    expect(parseSlashInvocation('/review-pr the auth changes')).toBeNull()
-    expect(parseSlashInvocation('/review-pr')).toBeNull()
+    expect(parseSlashInvocations('/review-pr the auth changes')).toEqual([])
+    expect(parseSlashInvocations('/review-pr')).toEqual([])
   })
 
   it('parses /skill:<id> including slashes in the id', () => {
-    expect(parseSlashInvocation('/skill:coder/index do the thing')).toEqual({
-      kind: 'skill',
-      id: 'coder/index',
-    })
+    expect(parseSlashInvocations('/skill:coder/index do the thing')).toEqual([
+      { kind: 'skill', id: 'coder/index' },
+    ])
+  })
+
+  it('finds an invocation anywhere after whitespace or a paren', () => {
+    expect(parseSlashInvocations('please run /skill:review-pr on it')).toEqual([
+      { kind: 'skill', id: 'review-pr' },
+    ])
+    expect(parseSlashInvocations('(/skill:a)')).toEqual([
+      { kind: 'skill', id: 'a' },
+    ])
+  })
+
+  it('lists each id once, in order of first appearance', () => {
+    expect(
+      parseSlashInvocations('/skill:b then /skill:a then /skill:b again'),
+    ).toEqual([
+      { kind: 'skill', id: 'b' },
+      { kind: 'skill', id: 'a' },
+    ])
+  })
+
+  it('keeps a trailing period out of the id', () => {
+    expect(parseSlashInvocations('use /skill:coder/index.')).toEqual([
+      { kind: 'skill', id: 'coder/index' },
+    ])
+    expect(parseSlashInvocations('use /skill:v1.2/x, ok')).toEqual([
+      { kind: 'skill', id: 'v1.2/x' },
+    ])
   })
 
   it('built-ins are not invocations', () => {
-    expect(parseSlashInvocation('/compact')).toBeNull()
-    expect(parseSlashInvocation('/compact now')).toBeNull()
+    expect(parseSlashInvocations('/compact')).toEqual([])
+    expect(parseSlashInvocations('/compact now')).toEqual([])
   })
 
-  it('a leading absolute path is not an invocation', () => {
-    expect(parseSlashInvocation('/home/x/y is broken')).toBeNull()
+  it('an absolute path or a slash inside a word is not an invocation', () => {
+    expect(parseSlashInvocations('/home/x/y is broken')).toEqual([])
+    expect(parseSlashInvocations('either/skill:or')).toEqual([])
+    expect(parseSlashInvocations('either/or')).toEqual([])
   })
+})
 
-  it('plain text is not an invocation', () => {
-    expect(parseSlashInvocation('hello /review-pr')).toBeNull()
-    expect(parseSlashInvocation('either/or')).toBeNull()
+describe('slashCommandLabel', () => {
+  it('drops the slash and the skill namespace', () => {
+    expect(slashCommandLabel('/skill:coder/index')).toBe('coder/index')
+    expect(slashCommandLabel('/compact')).toBe('compact')
   })
 })
 
@@ -95,22 +126,22 @@ describe('slashChip', () => {
   })
 })
 
-describe('expandSlashInvocation gate', () => {
+describe('expandSlashInvocations gate', () => {
   /* Only the palette-known gate is unit-testable (it returns before any
      client is touched); the resolution path needs a live bus. */
   it('never expands before the palette has fetched entries', async () => {
     setDynamicSlashEntries(null)
-    expect(await expandSlashInvocation('/review-pr x')).toBeNull()
+    expect(await expandSlashInvocations('/skill:review-pr x')).toEqual([])
   })
 
   it('never expands slugs the palette did not offer', async () => {
     setDynamicSlashEntries([
       { command: '/skill:review-pr', description: 'review a pr' },
     ])
-    expect(await expandSlashInvocation('/review-pr x')).toBeNull()
-    expect(await expandSlashInvocation('/etc is full')).toBeNull()
-    expect(await expandSlashInvocation('/compact now')).toBeNull()
-    expect(await expandSlashInvocation('/skill:coder/index go')).toBeNull()
+    expect(await expandSlashInvocations('/review-pr x')).toEqual([])
+    expect(await expandSlashInvocations('/etc is full')).toEqual([])
+    expect(await expandSlashInvocations('/compact now')).toEqual([])
+    expect(await expandSlashInvocations('/skill:coder/index go')).toEqual([])
     setDynamicSlashEntries(null)
   })
 
@@ -119,7 +150,7 @@ describe('expandSlashInvocation gate', () => {
     setDynamicSlashEntries([
       { command: '/skill:coder/index', description: 'coder' },
     ])
-    const result = await expandSlashInvocation(
+    const [result] = await expandSlashInvocations(
       '/skill:coder/index go',
       new Set(['coder/index']),
     )
@@ -132,6 +163,22 @@ describe('expandSlashInvocation gate', () => {
       kind: 'skill',
       id: 'coder/index',
     })
+    setDynamicSlashEntries(null)
+  })
+
+  it('expands every offered invocation in the text, mid-sentence too', async () => {
+    setDynamicSlashEntries([
+      { command: '/skill:coder/index', description: 'coder' },
+      { command: '/skill:review-pr', description: 'review' },
+    ])
+    const results = await expandSlashInvocations(
+      'fix it with /skill:coder/index then /skill:review-pr and /skill:unknown',
+      new Set(['coder/index', 'review-pr']),
+    )
+    expect(results.map((r) => r.status === 'attached' && r.inv.id)).toEqual([
+      'coder/index',
+      'review-pr',
+    ])
     setDynamicSlashEntries(null)
   })
 })
@@ -177,5 +224,8 @@ describe('fuzzyFilterSlash', () => {
     expect(
       fuzzyFilterSlash('skill:cod', entries).map((c) => c.command),
     ).toEqual(['/skill:coder/index'])
+    expect(fuzzyFilterSlash('cod', entries).map((c) => c.command)).toEqual([
+      '/skill:coder/index',
+    ])
   })
 })

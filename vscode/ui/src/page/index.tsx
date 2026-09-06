@@ -147,21 +147,18 @@ export function VscodePage({ host, onRequestClose, workingDir, panelContext, com
         {
           id: 'reload',
           title: 'Reload workbench',
-          shortcut: 'R',
           enabled: () => running,
           run: startCurrent,
         },
         {
           id: 'open-external',
           title: 'Open in a browser tab',
-          shortcut: 'O',
           enabled: () => running,
           run: openExternal,
         },
         {
           id: 'stop',
           title: 'Stop VS Code Server',
-          shortcut: 'X',
           enabled: () => running,
           run: () => void stop(),
         },

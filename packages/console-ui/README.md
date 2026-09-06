@@ -111,9 +111,18 @@ Renderers can also open their worker's registered page with contextual JSON:
 ```tsx
 host.panels?.open({
   pageId: 'shell',
-  context: { type: 'file', path: '/repo/src/app.ts' },
+  context: { type: 'file', path: '/repo/src/app.ts', line: 12, endLine: 40 },
 })
 ```
+
+(The shell's `file` context takes an optional `line`/`endLine` window; the
+page opens the file and selects those lines.) The reverse direction goes
+through `host.chat?.compose({ text, inline: true })`: an inline compose
+appends to the end of the draft's last line instead of starting a paragraph,
+which is how the shell's "Reference in chat" selection action hands a
+`#file(path:from-to)` token to the composer. `CodeEditor` offers that bar
+through its `selectionActions` prop and lands on a referenced window through
+`revealLines(from, to)` on its handle.
 
 The host reuses an existing page or places it beside chat, and delivers a
 `panelContext` event to the page's `PageRenderProps`. Use the event `id` to

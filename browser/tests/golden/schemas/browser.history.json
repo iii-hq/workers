@@ -1,6 +1,6 @@
 {
   "function_id": "browser::history",
-  "description": "Go back, go forward, or reload the session's page. Back/forward at the history edge is a no-op with moved=false.",
+  "description": "Go back, go forward, or reload the tab's page. History survives the tab sleeping and the worker restarting. Back/forward at the history edge is a no-op with moved=false.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "HistoryInput",

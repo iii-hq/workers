@@ -19,6 +19,7 @@ import {
 import { FpFunctionIdLabel, FpToolView } from '@/components/chat/fp'
 import {
   HarnessFunctionIdLabel,
+  HarnessSpawnToolView,
   HarnessToolView,
 } from '@/components/chat/harness'
 import { RouterFunctionIdLabel, RouterToolView } from '@/components/chat/router'
@@ -114,6 +115,20 @@ export const FIRST_PARTY_RENDERERS: readonly FunctionTriggerRenderer[] = [
     tryRenderRunning: RouterToolView.tryRenderRunning,
     tryRenderPreview: RouterToolView.tryRenderPreview,
     FunctionIdLabel: RouterFunctionIdLabel,
+  },
+  // `harness::spawn` is the one first-party call with a prominent display:
+  // the child it created is a live thing the reader will want to open, so
+  // the card stays visible while a phase group collapses (see
+  // collapsedTimelineActivities). Registered ahead of the harness family so
+  // only spawn gets the treatment.
+  {
+    id: 'first-party/harness-spawn',
+    isMatch: HarnessSpawnToolView.isHarnessSpawnFunction,
+    tryRender: HarnessSpawnToolView.tryRender,
+    tryRenderRunning: HarnessSpawnToolView.tryRenderRunning,
+    tryRenderDisplay: HarnessSpawnToolView.tryRenderDisplay,
+    FunctionIdLabel: HarnessFunctionIdLabel,
+    metadata: { display: true },
   },
   {
     id: 'first-party/harness',

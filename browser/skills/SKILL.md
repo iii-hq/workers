@@ -72,13 +72,19 @@ on navigation; re-snapshot before acting after any page change.
 
 ## Functions
 
-- `browser::sessions::start` — launch a Chromium session; returns the
-  session_id every other function needs. `read_only: true` starts an
-  inspection-only session.
-- `browser::sessions::list` — live sessions with their current URL.
-- `browser::sessions::stop` — stop a session; idempotent. A launched session
-  closes its browser; an attached session closes only a tab it opened and
-  releases an adopted user tab untouched.
+- `browser::sessions::start` — open a browser tab; returns the session_id
+  every other function needs. Tabs share one browser profile (cookies,
+  logins) and stay open until stopped: an unused tab sleeps after a while
+  and wakes on the next call, so keep using the same session_id instead of
+  opening new ones. `read_only: true` opens an inspection-only tab. `ttl_ms`
+  gives the tab a lifetime. `incognito: true` opens a PRIVATE tab: its own
+  browser context, no shared logins, nothing saved to disk, no history, and
+  inactivity closes it for good — use it when a login must not be kept.
+- `browser::sessions::list` — every tab, live or asleep (`active`), with its
+  current URL and whether it is incognito.
+- `browser::sessions::stop` — close a tab for good; idempotent. An attached
+  session closes only a tab it opened and releases an adopted user tab
+  untouched.
 - `browser::sessions::attach` — bind a session to an already-running browser
   over CDP (start Chrome with `--remote-debugging-port`): open a fresh tab
   the session owns, or adopt an existing logged-in tab by URL substring.
@@ -91,7 +97,10 @@ on navigation; re-snapshot before acting after any page change.
 - `browser::recording::start` / `browser::recording::stop` — capture a
   session's live viewport to a webm or mp4 file via ffmpeg; stop returns the
   path, duration, and frame count. Requires ffmpeg on PATH.
-- `browser::navigate` — go to a URL and wait for the load.
+- `browser::navigate` — go to a URL and wait for the load. Like a browser, a
+  network failure or an empty HTTP error response leaves Chromium's error
+  page in the tab: the call returns `ok: false` with `error` set instead of
+  failing, and the tab stays usable.
 - `browser::snapshot` — the page as an accessibility outline with `[ref=eN]`
   handles; the default way to read a page. `diff: true` returns only what
   changed since the previous snapshot.
@@ -115,7 +124,11 @@ on navigation; re-snapshot before acting after any page change.
   pattern/level and page with since_seq.
 - `browser::network::read` — captured requests; failed_only=true is the fast
   path for what broke.
-- `browser::history` — back, forward, or reload.
+- `browser::history` — back, forward, or reload; the tab's history survives
+  it sleeping and the worker restarting.
+- `browser::clear-data` — clear the cookies, storage and cache of the site the
+  tab is on; other sites stay signed in. `browser::clear-browser-data` wipes
+  the whole profile (every tab signed out).
 - `browser::dom::read` — DOM tag outline with refs, for structure the
   accessibility tree hides.
 - `browser::styles::read` / `browser::styles::write` — computed styles and

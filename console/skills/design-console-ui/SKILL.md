@@ -179,7 +179,9 @@ available width changes.
   `Chip`, `IconButton`, semantic `Table` parts, line `Tabs`, and
   `SegmentedControl` primitives before adding local structure. Use stable
   `uiClasses` recipes when a worker needs semantic markup without another
-  React wrapper.
+  React wrapper; a compact sidebar hierarchy is the `uiClasses.tree*` recipe
+  (28 px rows, glyph tinted by `data-color`, caret after the label,
+  hover-revealed X to remove).
 - Build simple tables as `TableViewport` → `TableFrame` → `Table`, with the
   shared semantic sections, rows, headings, and cells. Use natural-case sans
   headers, horizontal dividers, comfortable page density or compact chat
@@ -318,7 +320,8 @@ older Console versions.
   `PageShell` and `PageHeader`; wire `onRequestClose`; use `PageBody`,
   `PageSidebar`, and `PageMain` when their structure fits.
 - Page render props: use `panelSide` only to place wide navigation on the
-  outside edge; key per-tab state by `tabId`; react to live `workingDir`; use
+  outside edge; key per-pane state by `paneId` (`tabId` on older consoles,
+  and the same page may be open twice in one tab); react to live `workingDir`; use
   `conversationId` for exact session subscriptions; treat `panelContext` as
   ephemeral JSON navigation context.
 - `host.panels?.open`: place or reuse a registered contextual page beside

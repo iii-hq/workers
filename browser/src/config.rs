@@ -1,9 +1,9 @@
 //! Config for the browser worker. Numeric caps are HARD ceilings — a caller
 //! may ask for less per call, never more. Buffer sizes, timeouts, and the
 //! scheme allowlist are read per call, so they hot-reload. `executable`,
-//! `headless`, and the viewport are read at session start, so a change
-//! applies to sessions started after it — running sessions keep the browser
-//! they were launched with.
+//! `headless`, and the viewport are read when the shared Chromium process
+//! launches (the first live tab after boot or after every tab went to
+//! sleep); `data_dir` is a startup setting.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -222,14 +222,17 @@ pub struct WorkerConfig {
     /// Absolute path to a Chromium/Chrome executable. Empty string
     /// auto-detects a system install (Chrome, Chromium, Edge).
     pub executable: String,
-    /// Chromium profile directory. Empty string is ephemeral (fresh profile
-    /// per session); set a path to persist cookies, localStorage, and logins
-    /// across sessions. All sessions share the one profile.
-    pub user_data_dir: String,
+    /// Where the browser keeps its state, like a browser's profile folder:
+    /// `profile/` (cookies, localStorage, logins — shared by every regular
+    /// tab), `downloads/`, and `tabs.json` (open tabs and their history, so
+    /// they come back after a restart). Incognito tabs never write here.
+    /// Relative to the compose project; read at startup.
+    pub data_dir: String,
     /// Launch sessions headless. Set false to watch a real window locally.
     pub headless: bool,
-    /// Maximum concurrently running sessions; `sessions::start` beyond this
-    /// fails until one stops.
+    /// Maximum tabs kept live (with a page open) at once. Opening or waking
+    /// a tab past this puts the least recently used unwatched tab to sleep;
+    /// it fails only when every live tab is being watched.
     pub max_sessions: u64,
     /// Per-session console ring-buffer capacity (entries).
     pub console_buffer: u64,
@@ -245,8 +248,10 @@ pub struct WorkerConfig {
     /// Hard ceiling on per-call timeout; caller `timeout_ms` is clamped DOWN
     /// to this.
     pub max_timeout_ms: u64,
-    /// Stop sessions idle longer than this (ms). 0 disables the sweep.
-    pub idle_stop_ms: u64,
+    /// Put a tab to sleep (close its page, keep the tab) after it has gone
+    /// unused and unwatched this long (ms); selecting it loads the page
+    /// again. Incognito and attached tabs close instead. 0 disables.
+    pub inactive_after_ms: u64,
     /// JPEG quality for `browser::screenshot` (1-100).
     pub screenshot_quality: u64,
     /// URL schemes `browser::navigate` accepts.
@@ -294,7 +299,7 @@ impl Default for WorkerConfig {
     fn default() -> Self {
         Self {
             executable: String::new(),
-            user_data_dir: String::new(),
+            data_dir: "./data/browser".to_string(),
             headless: true,
             max_sessions: 4,
             console_buffer: 500,
@@ -303,7 +308,7 @@ impl Default for WorkerConfig {
             viewport_height: 800,
             default_timeout_ms: 30_000,
             max_timeout_ms: 120_000,
-            idle_stop_ms: 300_000,
+            inactive_after_ms: 1_800_000,
             screenshot_quality: 60,
             allowed_schemes: vec!["http".to_string(), "https".to_string(), "file".to_string()],
             max_snapshot_nodes: 2_000,
@@ -382,7 +387,7 @@ mod tests {
     fn defaults_match_spec() {
         let c = WorkerConfig::default();
         assert_eq!(c.executable, "");
-        assert_eq!(c.user_data_dir, "");
+        assert_eq!(c.data_dir, "./data/browser");
         assert!(c.headless);
         assert_eq!(c.max_sessions, 4);
         assert_eq!(c.console_buffer, 500);
@@ -391,7 +396,7 @@ mod tests {
         assert_eq!(c.viewport_height, 800);
         assert_eq!(c.default_timeout_ms, 30_000);
         assert_eq!(c.max_timeout_ms, 120_000);
-        assert_eq!(c.idle_stop_ms, 300_000);
+        assert_eq!(c.inactive_after_ms, 1_800_000);
         assert_eq!(c.screenshot_quality, 60);
         assert_eq!(c.allowed_schemes, vec!["http", "https", "file"]);
         assert_eq!(c.max_snapshot_nodes, 2_000);

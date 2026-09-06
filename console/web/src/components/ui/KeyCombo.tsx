@@ -13,6 +13,7 @@ import {
   THEN,
 } from '@/lib/keybindings/bindings'
 import { cn } from '@/lib/utils'
+import { Kbd } from './Kbd'
 
 interface KeyComboProps {
   binding: string
@@ -52,14 +53,7 @@ export function KeyCombo({
         ) : (
           // biome-ignore lint/suspicious/noArrayIndexKey: a chord can repeat a cap and position is the identity
           <Fragment key={`${cap}-${index}`}>
-            <kbd
-              className={cn(
-                'inline-flex min-w-5 items-center justify-center rounded border border-edge px-1 py-px font-mono text-[0.65rem] text-ink-ghost',
-                capClassName,
-              )}
-            >
-              {cap}
-            </kbd>
+            <Kbd className={capClassName}>{cap}</Kbd>
             {!mac && index < caps.length - 1 && caps[index + 1] !== THEN ? (
               <span aria-hidden className="text-[0.65rem] text-ink-ghost">
                 +

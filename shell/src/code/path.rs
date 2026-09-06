@@ -536,6 +536,20 @@ impl PathResolver {
         }
     }
 
+    /// Deny-only gate for a host path the worker itself recorded (the turn
+    /// history's absolute paths): the operator denylist and the
+    /// non-accessible globs apply, containment does not — the path was
+    /// already written through a jailed call, and a session scope that
+    /// admitted it then is not available here. Returns the canonical form.
+    pub fn deny_only(&self, path: &str) -> Result<PathBuf, CoderError> {
+        let canon = self.canonicalize_wire(path, Path::new(path))?;
+        self.deny_check(path, &canon)?;
+        if self.is_non_accessible(&canon) {
+            return Err(CoderError::not_found_or_denied(path));
+        }
+        Ok(canon)
+    }
+
     pub fn require_writable_scope(
         &self,
         scope: Option<&crate::fs::FsScope>,

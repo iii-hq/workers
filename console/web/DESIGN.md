@@ -873,9 +873,12 @@ separator. No divider, no outer outline.
 
 ### Shadows
 
-Two sanctioned elevation shadows live in the theme: `shadow-raised` (raised
-cards — composer, trace detail) and `shadow-floating` (popovers, dialogs,
-dropdowns, tooltips). `.deal-shadow` remains a transient animation cue on
+Four sanctioned elevation shadows live in the theme: `shadow-raised` (raised
+cards — trace detail), `shadow-floating` (popovers, dialogs, dropdowns,
+tooltips), `shadow-lift` (a crisp-edged instrument surface — the chat
+composer) and `shadow-keycap` (a key cap: the lift turned upside down, so the
+key reads as set into the surface; the shared `Kbd` renders it). Each is a
+complete, theme-aware value used alone. `.deal-shadow` remains a transient animation cue on
 the language-card stack. No heavy glows — the only glow is the live
 `pulse-dot`.
 
@@ -1007,30 +1010,38 @@ Workspace tabs behave like this everywhere:
 - **Overflow** scrolls the strip. Fades mark the hidden side, the active tab
   is kept in view, and an "All workspaces" menu lists every tab with its
   digit. The `+` and the menu stay visible outside the scrolled region.
-- **Keyboard:** `1`–`9` select by position, `[` / `]` step, `t` creates,
-  `Shift+W` closes, `\` splits, `G then C` / `W` / `T` go to chat, workers or
-  traces (a sequence binding is chords separated by a space in the registry;
-  the prefix arms a 1.5 s pending state and never acts alone, so a new place
-  costs one more letter rather than one more reserved key). Key caps print
-  uppercase. Inside the strip, arrow keys, Home and End
+- **Keyboard:** every console key is a modifier chord on the free tier,
+  Ctrl on a Mac and Alt elsewhere (`⌃` below; bare keys kept firing under
+  people's hands from any surface whose focus target was not a field):
+  `⌃1`–`⌃9` select by position, `⌃⇧←` / `⌃⇧→` step, `⌃T` creates, `⌃W`
+  closes, `⌃[` / `⌃]` split left / right (`⌃{` / `⌃}`, the same keys with
+  Shift, move the keyboard between panes), `⌃G then C` / `W` / `T` go to
+  chat, workers or traces (a sequence binding is chords separated by a space
+  in the registry; the prefix arms a 1.5 s pending state and never acts
+  alone, so a new place costs one more letter rather than one more reserved
+  key). Key caps print uppercase. Inside the strip, arrow keys, Home and End
   move between tabs and Delete closes the focused one. Nothing fires while
   the caret is in a field (`useKeybindings`). There is no key to memorise
   first: every action and every open workspace is a row in `⌘K`, each
   showing its key, and hovering a control spells the same key
   (`hoverTitle`), so the keys are learned in passing. The full list is a
-  `⌘K` row, not a key of its own. `{` / `}` move the keyboard between
-  panes, and opening a page from `⌘K`, a chord or `panels.open` lands focus
-  inside it (`lib/pane-focus.ts`).
+  `⌘K` row, not a key of its own. Opening a page from `⌘K`, a chord or
+  `panels.open` lands focus inside it (`lib/pane-focus.ts`).
 - **Page commands:** a page contributes rows to `⌘K` and keys to its own
   pane through `PageRenderProps.commands` (render time, pane-scoped keys)
   or `host.commands` (setup time, rows only). They live in
   `lib/page-commands.ts` and die with the worker, so a worker that is not
   attached has no rows and no keys. The dispatcher runs the console's keys
   first, then the focused pane's; a page can never shadow a console chord
-  (`shortcutClaimReason`). Chat is the first consumer: `I` composer, `J`/`K`
-  walk the transcript, `A`/`D` approve or deny the pending call, `O` expand
-  and `Y` copy the focused message, `End` latest, `M` model, `Escape` stop,
-  `N` new chat, `/` search conversations.
+  (`shortcutClaimReason`), and no page may bind a key that types a
+  character: a bare letter, digit or punctuation key, with or without
+  Shift, is refused at registration (`isBareKey`) because it fired under
+  people's hands from any surface whose focus target is not a field and
+  collided with what the page's own widgets do with the same letter. A
+  page key is a modifier chord or a named key (`Escape`, `End`); everything
+  else is a `⌘K` row without a key. Chat is the first consumer: `End`
+  latest, `Escape` stop; the composer, transcript walking, approve or deny,
+  expand, copy, model and new chat are rows.
 - **Palette sources, prefixes, recents:** a worker registers a live source
   (`host.palette.registerSource`, `lib/palette/providers.ts`): rows
   computed per query, asked debounced with an abort signal, shown under the
@@ -2073,8 +2084,9 @@ export function PageHeader({
   explicit alpha-ink fills (`bg-ink/15`, `bg-ink/8`).
 - Don't deviate from the **single 6px radius** — no in-between values, and
   `rounded-full` only on genuinely circular elements.
-- Don't add **drop shadows** outside the two theme tokens (`shadow-raised`
-  in-flow, `shadow-floating` for overlays) and the transient `.deal-shadow`.
+- Don't add **drop shadows** outside the theme tokens (`shadow-raised`
+  in-flow, `shadow-floating` for overlays, `shadow-lift` for instrument
+  surfaces, `shadow-keycap` for key caps) and the transient `.deal-shadow`.
   No heavy glows — `pulse-dot` is the only glow.
 - Don't use the accent for **body text, large fills, or decorative
   blocks.** It loses meaning the moment it stops being rare.

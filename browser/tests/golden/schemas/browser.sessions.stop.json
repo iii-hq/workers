@@ -1,6 +1,6 @@
 {
   "function_id": "browser::sessions::stop",
-  "description": "Stop a browser session and its Chromium process. Idempotent: stopping an unknown or already-stopped session succeeds with was_running=false.",
+  "description": "Close a browser tab for good. Idempotent: closing an unknown or already-closed tab succeeds with was_running=false.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "StopInput",
@@ -10,7 +10,7 @@
     ],
     "properties": {
       "session_id": {
-        "description": "Session to stop. Stopping an unknown or already-stopped id succeeds.",
+        "description": "Tab to close. Closing an unknown or already-closed id succeeds.",
         "type": "string"
       }
     }

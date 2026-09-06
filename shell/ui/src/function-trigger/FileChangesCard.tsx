@@ -1,4 +1,4 @@
-import { ChevronDown, Eye, Files } from 'lucide-react'
+import { ChevronDown, Files } from 'lucide-react'
 import { useId, useState } from 'react'
 import type { FileChangeRow, FileChangesSummary } from './file-changes'
 
@@ -46,15 +46,7 @@ function AnimatedMetric({
   )
 }
 
-function FileChangeItem({
-  row,
-  onOpenDiff,
-  onOpenFile,
-}: {
-  row: FileChangeRow
-  onOpenDiff?: (row: FileChangeRow) => void
-  onOpenFile?: (row: FileChangeRow) => void
-}) {
+function FileChangeItem({ row, onOpenDiff }: { row: FileChangeRow; onOpenDiff?: (row: FileChangeRow) => void }) {
   return (
     <li className="shui-file-change-row">
       {onOpenDiff && row.changeId ? (
@@ -69,25 +61,11 @@ function FileChangeItem({
       ) : (
         <span className="shui-file-change-path">{row.path}</span>
       )}
-      <div className="shui-file-change-actions">
-        <div className="shui-file-change-stats">
-          {row.additions != null ? <span className="is-added">+{row.additions}</span> : null}
-          {row.deletions != null ? <span className="is-deleted">−{row.deletions}</span> : null}
-          {row.additions == null && row.deletions == null ? (
-            <span className={`is-${row.status}`}>{row.status}</span>
-          ) : null}
-        </div>
-        {onOpenFile && row.absolutePath && (row.status === 'created' || row.status === 'updated') ? (
-          <button
-            type="button"
-            className="shui-file-change-view"
-            onClick={() => onOpenFile(row)}
-            aria-label={`View ${row.path} in shell`}
-            title={`View ${row.path} in shell`}
-          >
-            <Eye aria-hidden />
-            <span>View file</span>
-          </button>
+      <div className="shui-file-change-stats">
+        {row.additions != null ? <span className="is-added">+{row.additions}</span> : null}
+        {row.deletions != null ? <span className="is-deleted">−{row.deletions}</span> : null}
+        {row.additions == null && row.deletions == null ? (
+          <span className={`is-${row.status}`}>{row.status}</span>
         ) : null}
       </div>
     </li>
@@ -97,11 +75,9 @@ function FileChangeItem({
 function FileChangeList({
   rows,
   onOpenDiff,
-  onOpenFile,
 }: {
   rows: readonly FileChangeRow[]
   onOpenDiff?: (row: FileChangeRow) => void
-  onOpenFile?: (row: FileChangeRow) => void
 }) {
   const pathOccurrences = new Map<string, number>()
   return (
@@ -112,9 +88,7 @@ function FileChangeList({
         // out of the key preserves each row across running -> settled.
         const occurrence = pathOccurrences.get(row.path) ?? 0
         pathOccurrences.set(row.path, occurrence + 1)
-        return (
-          <FileChangeItem key={`${row.path}:${occurrence}`} row={row} onOpenDiff={onOpenDiff} onOpenFile={onOpenFile} />
-        )
+        return <FileChangeItem key={`${row.path}:${occurrence}`} row={row} onOpenDiff={onOpenDiff} />
       })}
     </ul>
   )
@@ -124,12 +98,10 @@ export function FileChangesCard({
   summary,
   running,
   onOpenDiff,
-  onOpenFile,
 }: {
   summary: FileChangesSummary
   running: boolean
   onOpenDiff?: (row: FileChangeRow) => void
-  onOpenFile?: (row: FileChangeRow) => void
 }) {
   const [expanded, setExpanded] = useState(false)
   const overflowId = useId()
@@ -177,13 +149,13 @@ export function FileChangesCard({
         </div>
       </header>
 
-      <FileChangeList rows={primaryRows} onOpenDiff={onOpenDiff} onOpenFile={onOpenFile} />
+      <FileChangeList rows={primaryRows} onOpenDiff={onOpenDiff} />
 
       {overflowRows.length > 0 ? (
         <>
           <div id={overflowId} className="shui-file-changes-overflow" data-open={expanded} aria-hidden={!expanded}>
             <div className="shui-file-changes-overflow-inner" inert={expanded ? undefined : true}>
-              <FileChangeList rows={overflowRows} onOpenDiff={onOpenDiff} onOpenFile={onOpenFile} />
+              <FileChangeList rows={overflowRows} onOpenDiff={onOpenDiff} />
             </div>
           </div>
           <button

@@ -1,4 +1,4 @@
-import { Blocks, Bot, Sparkles } from 'lucide-react'
+import { Bot, Sparkles } from 'lucide-react'
 import { useEffect, useRef } from 'react'
 import { FunctionTriggerCard } from '@/components/function-trigger/FunctionTriggerCard'
 import type { FilesystemAccessAction } from '@/components/permissions/FilesystemAccessPrompt'
@@ -9,18 +9,17 @@ import { Chip } from '@/components/ui/Chip'
 import { Prompt } from '@/components/ui/Prompt'
 import { Card, CardBody, CardHeader } from '@/components/ui/Surface'
 import { Markdown } from '@/lib/markdown'
+import { invocationCommand, parseSlashInvocations } from '@/lib/slash-commands'
 import { JsonHighlight } from '@/lib/syntax'
-import { cn } from '@/lib/utils'
 import type {
   AssistantMessage as AssistantMessageType,
-  Attachment,
   Message as MessageType,
   SubagentAppearance,
   SystemMessage as SystemMessageType,
   UserMessage as UserMessageType,
 } from '@/types/chat'
 import { SUBAGENT_ICON_COMPONENTS } from './ActiveSubagentChips'
-import { AttachmentChip, formatSize } from './AttachmentChip'
+import { AttachmentChip } from './AttachmentChip'
 import { CopyMessageButton } from './CopyMessageButton'
 import { MemoryChip } from './MemoryChip'
 import { SystemNotice } from './SystemNotice'
@@ -358,46 +357,19 @@ function SpawnTaskMessage({
   )
 }
 
-/**
- * The `/command` token inside the user bubble: the typed command fused with
- * its expansion metadata (body size), so the slash chip never repeats the
- * same name one row below the bubble. Same anatomy as FunctionMentionPill —
- * accent glyph, ink text, one alpha-surface step above the bubble.
- */
-function SlashCommandToken({ chip }: { chip: Attachment }) {
-  return (
-    <span
-      className="inline-flex items-center gap-1.5 px-1.5 h-[22px] rounded-xs bg-surface font-mono text-[13px] text-ink select-none"
-      title={`skill body attached · ${formatSize(chip.size)}`}
-    >
-      <Blocks size={16} aria-hidden className="text-accent shrink-0" />
-      <span className="leading-none truncate">{chip.name}</span>
-      <span className="leading-none text-[11px] text-ink-ghost tabular-nums shrink-0">
-        {formatSize(chip.size)}
-      </span>
-    </span>
-  )
-}
-
 function UserMessage({ message }: { message: UserMessageType }) {
   const attachments = message.attachments ?? []
-  /* A slash expansion's chip duplicates the command that already leads the
-     typed text — fuse it into the bubble as one token instead of orphaning
-     it in the strip below. A chip that doesn't match the leading token
-     (shouldn't happen) keeps the strip as a fallback. */
-  const slashChip = attachments.find(
-    (a) =>
-      a.type === 'text/x-skill' &&
-      message.content.startsWith(a.name) &&
-      (message.content.length === a.name.length ||
-        message.content.charAt(a.name.length) === ' '),
+  /* A skill invocation already renders as a command pill inside the prose
+     (the markdown turns `/skill:<id>` into one wherever it sits), so its
+     expansion chip would only repeat the same name one row below the
+     bubble. A chip whose command is not in the text (shouldn't happen)
+     keeps the strip as a fallback. */
+  const inline = new Set(
+    parseSlashInvocations(message.content).map(invocationCommand),
   )
-  const chips = slashChip
-    ? attachments.filter((a) => a.id !== slashChip.id)
-    : attachments
-  const args = slashChip
-    ? message.content.slice(slashChip.name.length).trim()
-    : ''
+  const chips = attachments.filter(
+    (a) => !(a.type === 'text/x-skill' && inline.has(a.name)),
+  )
   return (
     <article
       className="group flex flex-col items-end gap-2"
@@ -412,27 +384,10 @@ function UserMessage({ message }: { message: UserMessageType }) {
         ) : null}
         <span>You</span>
       </header>
-      <div
-        className={cn(
-          'max-w-[92%] rounded-sm bg-surface px-3.5 py-2.5 sm:max-w-[80%]',
-          'break-words',
-          slashChip && 'flex flex-col items-start gap-1.5',
-        )}
-      >
-        {slashChip ? (
-          <>
-            <SlashCommandToken chip={slashChip} />
-            {args ? (
-              <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
-                {args}
-              </Markdown>
-            ) : null}
-          </>
-        ) : (
-          <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
-            {message.content}
-          </Markdown>
-        )}
+      <div className="max-w-[92%] break-words rounded-sm bg-surface px-3.5 py-2.5 sm:max-w-[80%]">
+        <Markdown className="max-sm:[&_ol]:text-base max-sm:[&_p]:text-base max-sm:[&_ul]:text-base">
+          {message.content}
+        </Markdown>
       </div>
       {chips.length > 0 ? (
         <div className="flex max-w-[92%] flex-wrap justify-end gap-2 sm:max-w-[80%]">

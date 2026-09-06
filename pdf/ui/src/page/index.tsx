@@ -92,7 +92,6 @@ export function PdfPage({
           title: 'Choose a file',
           detail: 'Pick a PDF to classify and extract',
           keywords: ['open', 'upload', 'drop'],
-          shortcut: 'O',
           enabled: () => state.status !== 'reading',
           run: () => input.current?.click(),
         },

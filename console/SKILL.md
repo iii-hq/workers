@@ -114,13 +114,15 @@ generic dashboard with too many panels.
 - Build hierarchy with surfaces, not boxes: sidebar, panel, raised toolbar,
   hover/selected wash. Reserve 1 px edges for structural or tabular
   separation; avoid borders, shadows, or a card around every section.
-- Elevation is three shared tokens, never a hand-rolled stack:
+- Elevation is four shared tokens, never a hand-rolled stack:
   `--shadow-raised` for a card sitting on a panel, `--shadow-floating` for
-  menus, popovers, and sheets, and `--shadow-lift` for an instrument surface
+  menus, popovers, and sheets, `--shadow-lift` for an instrument surface
   that must read as lifted off the canvas with a crisp edge (the chat
-  composer). Each is a complete, theme-aware `box-shadow` value — write
-  `box-shadow: var(--shadow-lift)` and nothing else: no border, ring, or
-  extra drop beside it, and never a literal shadow color.
+  composer), and `--shadow-keycap` for a key cap (the lift turned upside
+  down, so the key reads as set into the surface). Each is a complete,
+  theme-aware `box-shadow` value — write `box-shadow: var(--shadow-lift)`
+  and nothing else: no border, ring, or extra drop beside it, and never a
+  literal shadow color.
 - Use a restrained scale: 4/6/8 px for internal gaps, 12/14/20/24 px for
   section spacing, and the system 6 px radius. Oversized padding makes these
   dense operator tools look like marketing pages.
@@ -138,6 +140,14 @@ generic dashboard with too many panels.
 - Make list rows full-width targets with one strong primary line and at most
   one or two quieter supporting lines. Indicate selection with a surface wash,
   stronger ink, and an optional 2 px neutral edge—never accent color alone.
+- Build a compact sidebar hierarchy (sessions and their sub-agents, folders,
+  scopes) on the `uiClasses.tree*` recipe rather than a private row: 28 px
+  rows in 13 px/500 sans, one 16 px glyph tinted through `data-color` with
+  the shared glyph tones, 14 px of indent per level set as
+  `--iii-ui-tree-depth` on the row, the disclosure caret right after the
+  label, quiet metadata and a hover-revealed X (Lucide `X`, never a trash
+  can) on the trailing edge. Set `data-narrow` on the tree when the pane is a
+  phone-sized drill-in so rows and controls grow to touch size.
 - Keep page actions in `PageHeader`; put resource actions in the identity
   masthead and work actions in the nearest toolbar. Show one clear primary
   action at the point of work; move rare actions into a menu.
@@ -233,7 +243,8 @@ status/empty/loading components; Markdown and JSON renderers; the terminal atoms
 `TerminalStream`, `TerminalCommandLine`); `CodeEditor`, `FileDiff`; and
 settings primitives (`SettingsSection`, `SettingsList`, `SettingsRow`,
 `SettingsField`, `RawValueInput`, `SettingsDeck`, `Switch`). It also exports the stable `uiClasses` recipes
-and canonical `tokens` inventory. Read `packages/console-ui/index.d.ts` for
+(list, navigation tree, card, panel, chip, table, tabs, field, settings and
+motion) and the canonical `tokens` inventory. Read `packages/console-ui/index.d.ts` for
 the authoritative names and props.
 
 Use `Selector` for searchable single-choice input, including grouped or
@@ -427,7 +438,8 @@ Apply these rules:
   the content region that needs it `overflow: auto`.
 - Use `panelSide` to mirror side navigation in a wide right-hand pane. Do not
   mirror reading order or a single-pane narrow flow.
-- Key persisted UI state with `tabId`; treat `localStorage` as best-effort.
+- Key persisted UI state with `paneId` (fall back to `tabId` on consoles
+  without it); treat `localStorage` as best-effort.
   Guard dirty drafts before navigation and ignore stale async responses after
   the selection changes.
 - Keep editors mounted when hiding a preview/editor mode if cursor and scroll
@@ -469,7 +481,9 @@ tokens. The main roles are:
 
 Use `--color-bg/sidebar/panel/panel-raised/surface*` for hierarchy,
 `--color-ink/ink-faint/ink-ghost` for text, `--color-alert/warn/ok` and their
-muted variants for status, `--color-edge/rule-focus` for structure,
+muted variants for status, `--color-glyph-*` for the tint of one 16 px
+identity glyph beside a label (never a fill, border, or text),
+`--color-edge/rule-focus` for structure,
 `--shadow-raised/floating/lift` for elevation, and
 `--font-sans`/`--font-mono`/`--font-code` by semantic role. Accent is not a
 selected-state token.
@@ -600,7 +614,11 @@ the nav. Its `render` receives:
 - `panelSide`: `'left' | 'right'` — which side of the workspace tab the
   pane occupies; use it only to keep wide side navigation on the outer edge;
 - `tabId`: the hosting workspace tab's stable id (tabs persist across
-  reloads); key per-tab UI state on it;
+  reloads);
+- `paneId`: the hosting pane's stable id inside that tab — the same page
+  can be open in two columns of one tab, so key persisted UI state and
+  per-instance resources (terminals, live triggers) on it; fall back to
+  `tabId` when absent (older consoles);
 - `onRequestClose`: close the pane hosting your page (a split drops the
   column; a single pane detaches); wire it to `PageHeader.onClose`;
 - `workingDir`: the active conversation's live working directory, or

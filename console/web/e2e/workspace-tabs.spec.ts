@@ -38,14 +38,14 @@ test('workspace tabs stay deterministic across keys, reloads, deep links and oth
   const thirdId = await activeTab(page).getAttribute('data-tab-id')
   expect(thirdId).not.toBe(homeId)
 
-  // Step with the alt-brackets, jump with alt-digits.
-  await page.keyboard.press('Alt+[')
+  // Step with alt-shift-arrows, jump with alt-digits.
+  await page.keyboard.press('Alt+Shift+ArrowLeft')
   await expect(activeTab(page)).not.toHaveAttribute(
     'data-tab-id',
     thirdId ?? '',
   )
   await settle(page)
-  await page.keyboard.press('Alt+]')
+  await page.keyboard.press('Alt+Shift+ArrowRight')
   await expect(activeTab(page)).toHaveAttribute('data-tab-id', thirdId ?? '')
   await settle(page)
   await page.keyboard.press('Alt+1')

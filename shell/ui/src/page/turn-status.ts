@@ -8,31 +8,6 @@ interface HarnessStatusSnapshot {
   status?: string
 }
 
-export const HARNESS_CHANGE_DRAIN_MS = 250
-
-export interface HarnessReviewWindow {
-  turnId: string | null
-  epoch: number
-  active: boolean
-  completedAtMs: number | null
-}
-
-/** Shell batches filesystem notifications for up to 200 ms. Keep the review
- * window open just long enough to receive that final batch, while requiring
- * the same turn and epoch so a new turn/root invalidates it immediately. */
-export function canCaptureHarnessWorkspaceChange(
-  window: HarnessReviewWindow,
-  currentTurnId: string | null,
-  currentEpoch: number,
-  nowMs: number,
-): boolean {
-  if (window.turnId === null || window.turnId !== currentTurnId || window.epoch !== currentEpoch) {
-    return false
-  }
-  if (window.active) return true
-  return window.completedAtMs !== null && nowMs <= window.completedAtMs + HARNESS_CHANGE_DRAIN_MS
-}
-
 export function canActivateHarnessTurn(
   turnId: string,
   completedTurnIds: ReadonlySet<string>,

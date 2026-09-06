@@ -544,30 +544,24 @@
   display: block;
   max-width: min(220px, 24vw);
 }
-[data-iii-ui="shell"] .shui-header-root-select {
-  display: block;
+/* The header's folder picker is the console's DirectoryPicker; its
+   trigger is sized for the chat composer, so it is trimmed to the header
+   row here. */
+[data-iii-ui="shell"] .shui-header-root {
+  display: inline-flex;
   max-width: 100%;
+  vertical-align: middle;
 }
-[data-iii-ui="shell"] .shui-header-root-select > button {
-  width: auto;
-  max-width: 100%;
+[data-iii-ui="shell"] .shui-header-root > button {
   height: 24px;
   min-height: 24px;
-  padding: 0 4px;
-  border: 0;
-  outline: 0;
+  padding: 0 6px;
+  border-radius: 6px;
+  font-size: 12px;
   color: var(--color-ink-ghost);
-  background: transparent;
-  font: inherit;
 }
-[data-iii-ui="shell"] .shui-header-root-select > button:hover {
+[data-iii-ui="shell"] .shui-header-root > button:hover {
   color: var(--color-ink);
-  background: var(--color-surface-hover);
-}
-[data-iii-ui="shell"] .shui-header-root-select > button:focus-visible {
-  color: var(--color-ink);
-  outline: 1px solid var(--color-rule-focus);
-  outline-offset: 1px;
 }
 
 [data-iii-ui="shell"] .shui-collapse-btn {
@@ -913,11 +907,15 @@
 }
 [data-iii-ui="shell"] .shui-main-empty {
   flex: 1;
+  min-height: 0;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 12.5px;
+  overflow-y: auto;
+  padding: clamp(20px, 7vh, 64px) 24px 28px;
+  font-family:
+    system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
 }
 [data-iii-ui="shell"] .shui-main-pane {
   flex: 1;
@@ -1744,48 +1742,6 @@
   justify-content: flex-end;
   gap: 4px;
 }
-[data-iii-ui="shell"] .shui-review-message:has(.shui-review-inline-action) {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px;
-  margin: 8px 10px 0;
-  padding: 10px 12px;
-  color: var(--color-ink-faint);
-  font-family: var(--font-sans);
-  border: 1px solid var(--color-edge);
-  border-radius: 6px;
-  background: var(--color-surface);
-}
-[data-iii-ui="shell"]
-  .shui-review-message:has(.shui-review-inline-action)
-  > span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-[data-iii-ui="shell"] .shui-review-inline-action {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 28px;
-  padding: 4px 9px;
-  color: var(--color-ink);
-  font: 500 12px / 16px var(--font-sans);
-  text-transform: capitalize;
-  white-space: nowrap;
-  border: 1px solid var(--color-edge);
-  border-radius: 5px;
-  background: var(--color-bg);
-  cursor: pointer;
-}
-[data-iii-ui="shell"] .shui-review-inline-action:hover {
-  background: var(--color-surface-hover);
-}
-[data-iii-ui="shell"] .shui-review-inline-action:focus-visible {
-  outline: 1px solid var(--color-rule-focus);
-  outline-offset: 1px;
-}
 [data-iii-ui="shell"] .shui-review-diff {
   display: block;
 }
@@ -1827,7 +1783,6 @@
    the composer's high-density control band; the elevated surface exists only
    while the file list is open. */
 [data-iii-ui="shell"] .shui-chat-summary {
-  position: relative;
   margin: 0 0 4px auto;
   font: 400 11px / 16px var(--font-mono, ui-monospace, monospace);
   color: var(--color-ink-faint);
@@ -1846,8 +1801,11 @@
   white-space: nowrap;
   cursor: pointer;
 }
-[data-iii-ui="shell"] .shui-chat-summary-pill:hover,
-[data-iii-ui="shell"] .shui-chat-summary-pill[aria-expanded="true"] {
+[data-iii-ui="shell"] .shui-chat-summary-pill:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-chat-summary-pill:has(+ :popover-open) {
   background: var(--color-surface-hover);
   color: var(--color-ink);
 }
@@ -1877,44 +1835,43 @@
   height: 16px;
   transition: transform var(--motion-duration-fast) var(--motion-ease-standard);
 }
-[data-iii-ui="shell"] .shui-chat-summary-pill .chevron.open {
+[data-iii-ui="shell"] .shui-chat-summary-pill:has(+ :popover-open) .chevron {
   transform: rotate(180deg);
 }
+/* A top-layer popover: the chat footer clips its overflow while summaries
+   animate in, so a menu positioned above the pill inside it never shows. */
 [data-iii-ui="shell"] .shui-chat-summary-popover {
-  position: absolute;
-  right: 0;
-  bottom: calc(100% + 6px);
-  z-index: 6;
+  position: fixed;
+  inset: auto;
   width: min(380px, calc(100vw - 32px));
+  margin: 0;
+  padding: 0;
   overflow: hidden;
   border: 1px solid var(--color-edge);
   border-radius: 10px;
   background: var(--color-panel-raised);
+  color: inherit;
   box-shadow: 0 12px 32px rgb(0 0 0 / 24%);
   opacity: 0;
-  pointer-events: none;
   transform: translateY(4px) scale(0.98);
   transform-origin: right bottom;
-  visibility: hidden;
   transition:
-    opacity var(--duration-quick, 150ms)
-    var(--motion-ease-standard, ease-in-out),
-    transform var(--duration-quick, 150ms)
-    var(--motion-ease-standard, ease-in-out),
-    visibility 0s linear var(--duration-quick, 150ms);
-  will-change: opacity, transform;
+    opacity var(--duration-quick, 150ms) var(--motion-ease-standard, ease-in-out),
+    transform var(--duration-quick, 150ms) var(--motion-ease-standard, ease-in-out),
+    display var(--duration-quick, 150ms) allow-discrete,
+    overlay var(--duration-quick, 150ms) allow-discrete;
 }
-[data-iii-ui="shell"] .shui-chat-summary-popover[data-open="true"] {
+[data-iii-ui="shell"] .shui-chat-summary-popover:popover-open {
   opacity: 1;
-  pointer-events: auto;
-  transform: translateY(0) scale(1);
-  visibility: visible;
-  transition:
-    opacity var(--motion-duration-panel, 220ms)
-    var(--motion-ease-enter, ease-out),
-    transform var(--motion-duration-panel, 220ms)
-    var(--motion-ease-enter, ease-out),
-    visibility 0s linear 0s;
+  transform: none;
+  transition-duration: var(--motion-duration-panel, 220ms);
+  transition-timing-function: var(--motion-ease-enter, ease-out);
+}
+@starting-style {
+  [data-iii-ui="shell"] .shui-chat-summary-popover:popover-open {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
 }
 [data-iii-ui="shell"] .shui-chat-summary-head {
   display: flex;
@@ -1971,6 +1928,15 @@
   [data-iii-ui="shell"] .shui-chat-summary-pill .chevron,
   [data-iii-ui="shell"] .shui-chat-summary-popover {
     transition: none;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-iii-ui="shell"] .shui-launcher-card {
+    transition: none;
+  }
+  [data-iii-ui="shell"] .shui-launcher-card:hover {
     transform: none;
   }
 }
@@ -2242,40 +2208,9 @@
   text-decoration: underline;
   text-underline-offset: 3px;
 }
-[data-iii-ui="shell"] button.shui-file-change-path:focus-visible,
-[data-iii-ui="shell"] .shui-file-change-view:focus-visible {
+[data-iii-ui="shell"] button.shui-file-change-path:focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: 2px;
-}
-[data-iii-ui="shell"] .shui-file-change-actions {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 10px;
-}
-[data-iii-ui="shell"] .shui-file-change-view {
-  display: inline-flex;
-  min-height: 28px;
-  align-items: center;
-  gap: 5px;
-  border: 1px solid var(--color-edge);
-  border-radius: var(--radius-sm, 6px);
-  background: transparent;
-  padding: 4px 8px 4px 6px;
-  color: var(--color-ink-faint);
-  cursor: pointer;
-  font: inherit;
-  font-size: 11px;
-  white-space: nowrap;
-}
-[data-iii-ui="shell"] .shui-file-change-view:hover {
-  background: var(--color-surface-hover);
-  color: var(--color-ink);
-}
-[data-iii-ui="shell"] .shui-file-change-view svg {
-  width: 16px;
-  height: 16px;
-  flex: 0 0 auto;
 }
 [data-iii-ui="shell"] .shui-file-changes .is-added {
   color: var(--color-ok);
@@ -2374,18 +2309,6 @@
   [data-iii-ui="shell"] .shui-file-change-row {
     align-items: flex-start;
     gap: 8px;
-  }
-  [data-iii-ui="shell"] .shui-file-change-actions {
-    gap: 6px;
-  }
-  [data-iii-ui="shell"] .shui-file-change-view {
-    min-width: 48px;
-    min-height: 48px;
-    justify-content: center;
-    padding: 0;
-  }
-  [data-iii-ui="shell"] .shui-file-change-view span {
-    display: none;
   }
 }
 [data-iii-ui="shell"] .shui-workspace-frame {
@@ -3014,35 +2937,206 @@
   flex: 1;
 }
 
+/* The empty pane: wordmark, the folder sentence, one card per surface,
+   the files opened last. Cards borrow the chat's welcome gallery (raised
+   panel, lift on hover); keys are shown as keycaps. */
 [data-iii-ui="shell"] .shui-launcher {
+  width: min(100%, 46rem);
+  margin: auto 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+}
+
+[data-iii-ui="shell"] .shui-launcher-mark {
+  width: 104px;
+  height: 104px;
+  margin-bottom: 4px;
+}
+
+[data-iii-ui="shell"] .shui-launcher-title {
+  margin: 0;
+  max-width: 100%;
+  text-align: center;
+  font-size: 20px;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui="shell"] .shui-launcher-picker {
+  max-width: min(18rem, 60vw);
+  vertical-align: baseline;
+}
+
+[data-iii-ui="shell"] .shui-launcher-path {
+  margin: -12px 0 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui="shell"] .shui-launcher-grid {
+  width: 100%;
   display: grid;
-  grid-template-columns: repeat(2, 8.5rem);
-  gap: 0.6rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
 }
 
 [data-iii-ui="shell"] .shui-launcher-card {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 0.5rem;
-  height: 6.5rem;
-  border: 1px solid var(--color-border);
-  border-radius: 10px;
-  background: var(--color-bg-subtle);
-  color: var(--color-ink-faint);
-  font-size: 0.82rem;
+  align-items: flex-start;
+  gap: 6px;
+  min-height: 104px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-rule-2);
+  border-radius: 6px;
+  background: var(--color-panel-raised);
+  box-shadow: var(--shadow-raised);
+  color: var(--color-ink);
+  font: inherit;
+  text-align: left;
   cursor: pointer;
+  transition:
+    transform 120ms ease,
+    box-shadow 120ms ease;
 }
 
 [data-iii-ui="shell"] .shui-launcher-card:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-floating);
+}
+
+[data-iii-ui="shell"] .shui-launcher-card:focus-visible {
+  outline: 2px solid var(--color-rule-focus);
+  outline-offset: 2px;
+}
+
+[data-iii-ui="shell"] .shui-launcher-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui="shell"] .shui-launcher-card:hover .shui-launcher-card-head {
   color: var(--color-ink);
-  border-color: var(--color-border-strong, var(--color-border));
 }
 
 [data-iii-ui="shell"] .shui-launcher-icon {
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
+}
+
+[data-iii-ui="shell"] .shui-launcher-key {
+  display: inline-flex;
+  align-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  justify-content: center;
+  border: 1px solid var(--color-edge);
+  border-radius: 4px;
+  background: var(--color-bg);
+  box-shadow: var(--shadow-keycap);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui="shell"] .shui-launcher-card-title {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+[data-iii-ui="shell"] .shui-launcher-card-detail {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui="shell"] .shui-launcher-recent {
+  width: 100%;
+}
+
+[data-iii-ui="shell"] .shui-launcher-recent-title {
+  margin: 0 0 4px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui="shell"] .shui-launcher-recent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+[data-iii-ui="shell"] .shui-launcher-recent-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+[data-iii-ui="shell"] .shui-launcher-recent-row:hover {
+  background: var(--color-surface-hover);
+}
+
+[data-iii-ui="shell"] .shui-launcher-recent-row:focus-visible {
+  outline: 1px solid var(--color-rule-focus);
+  outline-offset: -1px;
+}
+
+[data-iii-ui="shell"] .shui-launcher-recent-row .file-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+[data-iii-ui="shell"] .shui-launcher-recent-row .name {
+  flex-shrink: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+}
+
+[data-iii-ui="shell"] .shui-launcher-recent-row .dir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--color-ink-ghost);
+}
+
+[data-iii-ui="shell"] .shui-launcher-hint {
+  margin: 0;
+  text-align: center;
+  font-size: 11px;
+  line-height: 1.8;
+  color: var(--color-ink-ghost);
 }
 
 /* Workspace browser -------------------------------------------------------- */
@@ -3250,29 +3344,33 @@
     pointer-events: auto;
   }
 
+  [data-iii-ui="shell"] .shui-main-empty {
+    padding: 20px 16px 24px;
+  }
+
   [data-iii-ui="shell"] .shui-launcher {
+    gap: 16px;
+  }
+
+  [data-iii-ui="shell"] .shui-launcher-mark {
+    width: 72px;
+    height: 72px;
+  }
+
+  [data-iii-ui="shell"] .shui-launcher-title {
+    font-size: 17px;
+  }
+
+  [data-iii-ui="shell"] .shui-launcher-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    width: min(100%, 20rem);
+  }
+
+  [data-iii-ui="shell"] .shui-launcher-hint {
+    display: none;
   }
 
   [data-iii-ui="shell"] .shui-browser-list {
     grid-template-columns: 1fr;
-  }
-
-  [data-iii-ui="shell"] .shui-review-message:has(.shui-review-inline-action) {
-    grid-template-columns: minmax(0, 1fr);
-    align-items: start;
-  }
-
-  [data-iii-ui="shell"]
-    .shui-review-message:has(.shui-review-inline-action)
-    > span {
-    overflow-wrap: anywhere;
-    white-space: normal;
-  }
-
-  [data-iii-ui="shell"] .shui-review-inline-action {
-    justify-self: start;
   }
 }
 
@@ -3318,4 +3416,1387 @@
   margin-top: 4px;
   color: var(--color-warn);
   font-size: 11px;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   VS Code-shaped chrome: activity bar, view headers, explorer menus,
+   grouped search, source control, timeline, tabs with icons, breadcrumbs,
+   compare. Later rules deliberately override the earlier sidebar layout.
+   ══════════════════════════════════════════════════════════════════════ */
+
+/* ── status colours shared by tree letters, tab labels and SCM rows ── */
+[data-iii-ui="shell"] {
+  --shui-status-added: light-dark(#199f43, #40c977);
+  --shui-status-deleted: light-dark(#d52c36, #fa423e);
+  --shui-status-modified: light-dark(#c9700f, #ff8549);
+  --shui-status-renamed: light-dark(#b8930a, #ffd452);
+}
+
+/* ── sidebar: activity bar + view ──────────────────────────────────── */
+[data-iii-ui="shell"] .shui-side-body {
+  flex-direction: row;
+}
+[data-iii-ui="shell"] .shui-side-body.side-right {
+  flex-direction: row-reverse;
+}
+[data-iii-ui="shell"] .shui-side-view {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+[data-iii-ui="shell"] .shui-activity-bar {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  width: 40px;
+  padding: 6px 0;
+  background: var(--color-panel-raised);
+  border-right: 1px solid var(--color-edge);
+}
+[data-iii-ui="shell"] .shui-activity-bar.side-right {
+  border-right: 0;
+  border-left: 1px solid var(--color-edge);
+}
+[data-iii-ui="shell"] .shui-activity-item {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+  transition:
+    color var(--motion-duration-control) var(--motion-ease-standard),
+    background-color var(--motion-duration-control) var(--motion-ease-standard);
+}
+[data-iii-ui="shell"] .shui-activity-item:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-activity-item.active {
+  color: var(--color-ink);
+  background: var(--color-surface-selected);
+}
+[data-iii-ui="shell"] .shui-activity-bar.side-left .shui-activity-item.active::before,
+[data-iii-ui="shell"] .shui-activity-bar.side-right .shui-activity-item.active::after {
+  content: '';
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-activity-bar.side-left .shui-activity-item.active::before {
+  left: -3px;
+}
+[data-iii-ui="shell"] .shui-activity-bar.side-right .shui-activity-item.active::after {
+  right: -3px;
+}
+[data-iii-ui="shell"] .shui-activity-item:focus-visible {
+  outline: 1px solid var(--color-rule-focus);
+  outline-offset: -2px;
+}
+[data-iii-ui="shell"] .shui-activity-icon {
+  width: 18px;
+  height: 18px;
+}
+[data-iii-ui="shell"] .shui-activity-badge {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--color-accent);
+  color: var(--color-accent-fg);
+  font: 600 9.5px / 15px var(--font-mono, ui-monospace, monospace);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  pointer-events: none;
+}
+/* The collapsed rail shows the same bar without its own frame. */
+[data-iii-ui="shell"] .shui-sidebar [class*="collapsed"] .shui-activity-bar,
+[data-iii-ui="shell"] .shui-sidebar aside > div > .shui-activity-bar {
+  width: auto;
+  border: 0;
+  background: transparent;
+}
+
+/* ── view header + sections ────────────────────────────────────────── */
+[data-iii-ui="shell"] .shui-view-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 6px 0 12px;
+  font: 600 11.5px / 16px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  letter-spacing: 0.02em;
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-view-header .spacer {
+  flex: 1;
+}
+[data-iii-ui="shell"] .shui-view-title {
+  flex: none;
+}
+[data-iii-ui="shell"] .shui-view-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 400;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-view-root {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+}
+[data-iii-ui="shell"] .shui-view-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  flex: none;
+}
+[data-iii-ui="shell"] .shui-view-actions > button {
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  min-height: 22px;
+  padding: 0;
+  border-radius: 5px;
+}
+[data-iii-ui="shell"] .shui-view-actions > button svg {
+  width: 15px;
+  height: 15px;
+}
+[data-iii-ui="shell"] .shui-view-section {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+}
+[data-iii-ui="shell"] .shui-view-section-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 6px 0 4px;
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-view-section-head:hover {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-view-section-toggle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: 600 11.5px / 16px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  cursor: pointer;
+  text-align: left;
+}
+[data-iii-ui="shell"] .shui-view-section-toggle .chevron {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  position: relative;
+}
+[data-iii-ui="shell"] .shui-view-section-toggle .chevron::before {
+  content: '';
+  position: absolute;
+  top: 4px;
+  left: 6px;
+  width: 5px;
+  height: 5px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform var(--motion-duration-control) var(--motion-ease-standard);
+}
+[data-iii-ui="shell"] .shui-view-section-toggle .chevron.open::before {
+  transform: rotate(45deg);
+  top: 3px;
+}
+[data-iii-ui="shell"] .shui-view-section-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] .shui-view-section-count {
+  flex: none;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--color-surface-active);
+  color: var(--color-ink-faint);
+  font: 500 10.5px / 16px var(--font-mono, ui-monospace, monospace);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+[data-iii-ui="shell"] .shui-view-section-head .shui-view-actions {
+  visibility: hidden;
+}
+[data-iii-ui="shell"] .shui-view-section-head:hover .shui-view-actions,
+[data-iii-ui="shell"] .shui-view-section-head:focus-within .shui-view-actions {
+  visibility: visible;
+}
+[data-iii-ui="shell"] .shui-view-section-body {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── explorer: notes ───────────────────────────────────────────────── */
+[data-iii-ui="shell"] .shui-tree-filter-shell {
+  padding: 2px 8px 4px;
+}
+[data-iii-ui="shell"] .shui-tree-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 2px 8px 4px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--color-warn-muted);
+  color: var(--color-warn);
+  font: 400 12px / 16px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  word-break: break-word;
+}
+[data-iii-ui="shell"] .shui-tree-note > span {
+  flex: 1;
+  min-width: 0;
+}
+[data-iii-ui="shell"] .shui-tree-note-close {
+  flex: none;
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-tree-note-close svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* ── context menu ──────────────────────────────────────────────────── */
+[data-iii-ui="shell"] .shui-context-anchor {
+  position: fixed;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+[data-iii-ui="shell"] .shui-context-menu {
+  min-width: 220px;
+  max-width: 320px;
+}
+[data-iii-ui="shell"] .shui-context-item {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  padding: 0 8px;
+  font: 400 12.5px / 16px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+[data-iii-ui="shell"] .shui-context-item .menu-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-context-item .menu-icon svg {
+  width: 15px;
+  height: 15px;
+}
+[data-iii-ui="shell"] .shui-context-item .menu-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] .shui-context-item .menu-shortcut {
+  font: 400 10.5px / 14px var(--font-mono, ui-monospace, monospace);
+  color: var(--color-ink-ghost);
+  padding-left: 12px;
+}
+[data-iii-ui="shell"] .shui-context-item.danger {
+  color: var(--color-alert);
+}
+[data-iii-ui="shell"] .shui-context-item.danger .menu-icon {
+  color: inherit;
+}
+
+/* ── virtual list ──────────────────────────────────────────────────── */
+[data-iii-ui="shell"] .shui-vlist {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  outline: none;
+}
+[data-iii-ui="shell"] .shui-vlist:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--color-rule-focus);
+}
+[data-iii-ui="shell"] .shui-vlist-space {
+  position: relative;
+  width: 100%;
+}
+[data-iii-ui="shell"] .shui-vrow {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+}
+
+/* ── search view ───────────────────────────────────────────────────── */
+[data-iii-ui="shell"] .shui-search-form {
+  gap: 4px;
+  padding: 2px 10px 6px;
+  border-bottom: 0;
+}
+[data-iii-ui="shell"] .shui-search-box {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 28px;
+  border-radius: 6px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-edge);
+}
+[data-iii-ui="shell"] .shui-search-box:focus-within {
+  border-color: var(--color-rule-focus);
+}
+[data-iii-ui="shell"] .shui-search-box input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0 4px 0 8px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--color-ink);
+  font: 400 13px / 18px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+[data-iii-ui="shell"] .shui-search-box input::placeholder {
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="shell"] .shui-search-toggles {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  padding-right: 3px;
+}
+[data-iii-ui="shell"] .shui-search-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-search-toggle svg {
+  width: 15px;
+  height: 15px;
+}
+[data-iii-ui="shell"] .shui-search-toggle:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-search-toggle.active {
+  color: var(--color-ink);
+  background: var(--color-surface-selected);
+  border-color: var(--color-edge);
+}
+[data-iii-ui="shell"] .shui-search-details-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 20px;
+}
+[data-iii-ui="shell"] .shui-search-details-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-search-details-toggle:hover,
+[data-iii-ui="shell"] .shui-search-details-toggle.open {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-search-details-toggle svg {
+  width: 15px;
+  height: 15px;
+}
+[data-iii-ui="shell"] .shui-search-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 400 11.5px / 16px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-search-details {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 0 2px 24px;
+}
+[data-iii-ui="shell"] .shui-search-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font: 400 11px / 14px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-search-field input {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--color-edge);
+  border-radius: 5px;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font: 400 12px / 16px var(--font-mono, ui-monospace, monospace);
+  outline: 0;
+}
+[data-iii-ui="shell"] .shui-search-field input:focus {
+  border-color: var(--color-rule-focus);
+}
+[data-iii-ui="shell"] .shui-search-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: 400 11.5px / 16px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-search-truncated {
+  padding: 4px 12px;
+  font: 400 11.5px / 16px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: var(--color-warn);
+}
+[data-iii-ui="shell"] .shui-search-results {
+  padding-bottom: 0;
+  display: block;
+}
+[data-iii-ui="shell"] .shui-search-section {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+  padding: 0 12px;
+  font: 600 11px / 16px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-search-section .count {
+  font-weight: 500;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="shell"] .shui-search-file,
+[data-iii-ui="shell"] .shui-search-path,
+[data-iii-ui="shell"] .shui-search-match {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 100%;
+  padding: 0 8px 0 6px;
+  color: var(--color-ink);
+  cursor: pointer;
+  white-space: nowrap;
+  font: 400 12.5px / 16px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  user-select: none;
+}
+[data-iii-ui="shell"] .shui-search-file:hover,
+[data-iii-ui="shell"] .shui-search-path:hover,
+[data-iii-ui="shell"] .shui-search-match:hover {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-search-file.focused,
+[data-iii-ui="shell"] .shui-search-path.focused,
+[data-iii-ui="shell"] .shui-search-match.focused {
+  background: var(--color-surface-selected);
+}
+[data-iii-ui="shell"] .shui-search-file .chevron {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-search-file .file-icon,
+[data-iii-ui="shell"] .shui-search-path .file-icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+[data-iii-ui="shell"] .shui-search-path {
+  padding-left: 12px;
+}
+[data-iii-ui="shell"] .shui-search-path .file-icon.folder {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-search-file .name,
+[data-iii-ui="shell"] .shui-search-path .name {
+  flex: none;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-iii-ui="shell"] .shui-search-file .dir,
+[data-iii-ui="shell"] .shui-search-path .dir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--color-ink-ghost);
+  font-size: 11.5px;
+}
+[data-iii-ui="shell"] .shui-search-file .spacer {
+  flex: 1;
+}
+[data-iii-ui="shell"] .shui-search-file .count {
+  flex: none;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--color-surface-active);
+  color: var(--color-ink-faint);
+  font: 500 10.5px / 16px var(--font-mono, ui-monospace, monospace);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+[data-iii-ui="shell"] .shui-search-file .dismiss {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-search-file .dismiss svg {
+  width: 13px;
+  height: 13px;
+}
+[data-iii-ui="shell"] .shui-search-file:hover .dismiss,
+[data-iii-ui="shell"] .shui-search-file.focused .dismiss {
+  display: inline-flex;
+}
+[data-iii-ui="shell"] .shui-search-file:hover .count,
+[data-iii-ui="shell"] .shui-search-file.focused .count {
+  display: none;
+}
+[data-iii-ui="shell"] .shui-search-file .dismiss:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-active);
+}
+[data-iii-ui="shell"] .shui-search-match {
+  padding-left: 28px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+}
+[data-iii-ui="shell"] .shui-search-match .line {
+  flex: none;
+  min-width: 3ch;
+  text-align: right;
+  color: var(--color-ink-ghost);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+[data-iii-ui="shell"] .shui-search-match .text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-search-match .text .cut {
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="shell"] .shui-search-match .text mark.shui-hl {
+  color: var(--color-ink);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+/* ── source control view ───────────────────────────────────────────── */
+[data-iii-ui="shell"] .shui-scm {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+[data-iii-ui="shell"] .shui-scm-branch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font: 400 11px / 14px var(--font-mono, ui-monospace, monospace);
+}
+[data-iii-ui="shell"] .shui-scm-branch svg {
+  width: 13px;
+  height: 13px;
+}
+[data-iii-ui="shell"] .shui-scm-commit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 12px 8px;
+}
+[data-iii-ui="shell"] .shui-scm-message {
+  width: 100%;
+  min-height: 46px;
+  padding: 6px 8px;
+  border: 1px solid var(--color-edge);
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font: 400 12.5px / 17px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  resize: vertical;
+  outline: 0;
+  box-sizing: border-box;
+}
+[data-iii-ui="shell"] .shui-scm-message:focus {
+  border-color: var(--color-rule-focus);
+}
+[data-iii-ui="shell"] .shui-scm-message::placeholder {
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="shell"] .shui-scm-commit-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 26px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--color-accent);
+  color: var(--color-accent-fg);
+  font: 600 12px / 16px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-scm-commit-btn:hover {
+  background: var(--color-accent-hover);
+}
+[data-iii-ui="shell"] .shui-scm-commit-btn:disabled {
+  background: var(--color-surface-active);
+  color: var(--color-ink-ghost);
+  cursor: default;
+}
+[data-iii-ui="shell"] .shui-scm-commit-btn svg {
+  width: 15px;
+  height: 15px;
+}
+[data-iii-ui="shell"] .shui-scm-note {
+  padding: 4px 12px;
+  font: 400 11.5px / 16px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-scm-note.warn {
+  color: var(--color-warn);
+}
+[data-iii-ui="shell"] .shui-scm-sections {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+[data-iii-ui="shell"] .shui-scm-empty {
+  padding: 4px 12px 8px 26px;
+  font: 400 12px / 16px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="shell"] .shui-scm-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 18px;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 8px 0 0;
+}
+[data-iii-ui="shell"] .shui-scm-row:hover {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-scm-row.active {
+  background: var(--color-surface-selected);
+}
+[data-iii-ui="shell"] .shui-scm-row-main {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  height: 100%;
+  padding: 0 0 0 20px;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink);
+  font: 400 12.5px / 16px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] .shui-scm-row-main:disabled {
+  cursor: default;
+}
+[data-iii-ui="shell"] .shui-scm-row.outside .shui-scm-row-main {
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="shell"] .shui-scm-row-main .file-icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+[data-iii-ui="shell"] .shui-scm-row-main .name {
+  flex: none;
+  max-width: 65%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-iii-ui="shell"] .shui-scm-row-main .dir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--color-ink-ghost);
+  font-size: 11.5px;
+}
+[data-iii-ui="shell"] .shui-scm-row[data-status="deleted"] .shui-scm-row-main .name {
+  text-decoration: line-through;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-scm-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  visibility: hidden;
+}
+[data-iii-ui="shell"] .shui-scm-row:hover .shui-scm-row-actions,
+[data-iii-ui="shell"] .shui-scm-row:focus-within .shui-scm-row-actions {
+  visibility: visible;
+}
+[data-iii-ui="shell"] .shui-scm-row-actions > button {
+  width: 20px;
+  height: 20px;
+  min-width: 20px;
+  min-height: 20px;
+  padding: 0;
+  border-radius: 4px;
+}
+[data-iii-ui="shell"] .shui-scm-row-actions > button svg {
+  width: 14px;
+  height: 14px;
+}
+[data-iii-ui="shell"] .shui-scm-status {
+  text-align: center;
+  font: 600 11px / 16px var(--font-mono, ui-monospace, monospace);
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] [data-status="added"] .shui-scm-status,
+[data-iii-ui="shell"] [data-status="untracked"] .shui-scm-status {
+  color: var(--shui-status-added);
+}
+[data-iii-ui="shell"] [data-status="deleted"] .shui-scm-status {
+  color: var(--shui-status-deleted);
+}
+[data-iii-ui="shell"] [data-status="modified"] .shui-scm-status {
+  color: var(--shui-status-modified);
+}
+[data-iii-ui="shell"] [data-status="renamed"] .shui-scm-status {
+  color: var(--shui-status-renamed);
+}
+
+/* ── timeline view ─────────────────────────────────────────────────── */
+[data-iii-ui="shell"] .shui-timeline {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+[data-iii-ui="shell"] .shui-timeline-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+[data-iii-ui="shell"] .shui-timeline-session,
+[data-iii-ui="shell"] .shui-timeline-turn-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 100%;
+  padding: 0 6px;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink);
+  font: 400 12.5px / 16px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] .shui-timeline-session {
+  flex: none;
+  height: 28px;
+  margin: 0 6px 2px;
+  padding: 0 8px;
+  border-radius: 6px;
+}
+[data-iii-ui="shell"] .shui-timeline-session:hover,
+[data-iii-ui="shell"] .shui-timeline-turn-head:hover {
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-timeline-session.active,
+[data-iii-ui="shell"] .shui-timeline-turn.active > .shui-timeline-turn-head {
+  background: var(--color-surface-selected);
+}
+[data-iii-ui="shell"] .shui-timeline-session .icon,
+[data-iii-ui="shell"] .shui-timeline-turn-main .icon {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-timeline-session .label,
+[data-iii-ui="shell"] .shui-timeline-turn-main .label {
+  font-weight: 500;
+  flex: none;
+}
+[data-iii-ui="shell"] .shui-timeline-session .meta,
+[data-iii-ui="shell"] .shui-timeline-turn-main .meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--color-ink-ghost);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+[data-iii-ui="shell"] .shui-timeline-turn-main .pill {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--color-accent-muted);
+  color: var(--color-accent);
+  font: 600 10px / 15px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+[data-iii-ui="shell"] .shui-timeline-turn {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+}
+[data-iii-ui="shell"] .shui-timeline-turn-head {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  height: 26px;
+  padding: 0 6px 0 4px;
+}
+[data-iii-ui="shell"] .shui-timeline-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-ink-faint);
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-timeline-toggle svg {
+  width: 15px;
+  height: 15px;
+}
+[data-iii-ui="shell"] .shui-timeline-turn-head .shui-view-actions {
+  visibility: hidden;
+}
+[data-iii-ui="shell"] .shui-timeline-turn-head:hover .shui-view-actions,
+[data-iii-ui="shell"] .shui-timeline-turn-head:focus-within .shui-view-actions {
+  visibility: visible;
+}
+[data-iii-ui="shell"] .shui-timeline-files {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 2px;
+}
+[data-iii-ui="shell"] .shui-timeline-files .shui-scm-row-main {
+  padding-left: 30px;
+}
+
+/* ── editor tabs ───────────────────────────────────────────────────── */
+[data-iii-ui="shell"] .shui-editor-tabs {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  scrollbar-width: thin;
+}
+[data-iii-ui="shell"] .shui-etab {
+  height: 35px;
+  max-width: 220px;
+  position: relative;
+}
+[data-iii-ui="shell"] .shui-etab.active {
+  background: var(--color-panel);
+  box-shadow: inset 0 1px 0 var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-etab .open {
+  padding: 0 2px 0 10px;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 12.5px;
+  gap: 6px;
+}
+[data-iii-ui="shell"] .shui-etab .open .label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-iii-ui="shell"] .shui-etab-file-icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+[data-iii-ui="shell"] .shui-etab[data-status="modified"] .open .label {
+  color: var(--shui-status-modified);
+}
+[data-iii-ui="shell"] .shui-etab[data-status="added"] .open .label,
+[data-iii-ui="shell"] .shui-etab[data-status="untracked"] .open .label {
+  color: var(--shui-status-added);
+}
+[data-iii-ui="shell"] .shui-etab[data-status="deleted"] .open .label {
+  color: var(--shui-status-deleted);
+  text-decoration: line-through;
+}
+[data-iii-ui="shell"] .shui-etab[data-status="renamed"] .open .label {
+  color: var(--shui-status-renamed);
+}
+[data-iii-ui="shell"] .shui-etab .close {
+  width: 20px;
+  height: 20px;
+  margin: 0 5px 0 2px;
+  border-radius: 4px;
+  visibility: hidden;
+}
+[data-iii-ui="shell"] .shui-etab:hover .close,
+[data-iii-ui="shell"] .shui-etab.active .close,
+[data-iii-ui="shell"] .shui-etab.dirty .close,
+[data-iii-ui="shell"] .shui-etab .close:focus-visible {
+  visibility: visible;
+}
+[data-iii-ui="shell"] .shui-etab.dirty .close .shui-x-icon {
+  display: none;
+}
+[data-iii-ui="shell"] .shui-etab.dirty .close:hover .shui-x-icon {
+  display: block;
+}
+[data-iii-ui="shell"] .shui-etab.dirty .close:hover .shui-dirty {
+  display: none;
+}
+[data-iii-ui="shell"] .shui-etab.terminal .open {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+}
+
+/* ── editor head: breadcrumbs, go to line ──────────────────────────── */
+[data-iii-ui="shell"] .shui-editor-head {
+  padding: 0 8px 0 10px;
+  min-height: 30px;
+  gap: 6px;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+[data-iii-ui="shell"] .shui-breadcrumbs {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  font: 400 12px / 16px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+[data-iii-ui="shell"] .shui-breadcrumbs .crumb-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+[data-iii-ui="shell"] .shui-breadcrumbs .crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 200px;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-ink-faint);
+  font: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-breadcrumbs .crumb.root {
+  flex: none;
+}
+[data-iii-ui="shell"] .shui-breadcrumbs button.crumb:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-breadcrumbs .crumb.file {
+  color: var(--color-ink);
+  cursor: default;
+  flex: 1 0 auto;
+}
+[data-iii-ui="shell"] .shui-breadcrumbs .crumb-icon {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+[data-iii-ui="shell"] .shui-breadcrumbs .sep {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="shell"] .shui-goto {
+  display: inline-flex;
+  flex: none;
+}
+[data-iii-ui="shell"] .shui-goto input {
+  width: 9ch;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--color-rule-focus);
+  border-radius: 5px;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font: 400 12px / 16px var(--font-mono, ui-monospace, monospace);
+  outline: 0;
+}
+[data-iii-ui="shell"] .shui-goto-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+  height: 22px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-ink-ghost);
+  font: 400 11px / 16px var(--font-mono, ui-monospace, monospace);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+[data-iii-ui="shell"] .shui-goto-btn:hover {
+  color: var(--color-ink);
+  background: var(--color-surface-hover);
+}
+[data-iii-ui="shell"] .shui-goto-btn svg {
+  width: 12px;
+  height: 12px;
+}
+[data-iii-ui="shell"] .shui-editor-head > button[aria-label] {
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+  flex: none;
+}
+[data-iii-ui="shell"] .shui-editor-head > button[aria-label] svg {
+  width: 15px;
+  height: 15px;
+}
+/* The filled editor takes the whole body; Monaco scrolls itself. */
+[data-iii-ui="shell"] .shui-editor-body > .shui-editor {
+  height: 100%;
+}
+
+/* ── compare pane ──────────────────────────────────────────────────── */
+[data-iii-ui="shell"] .shui-compare-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 2px 8px 2px 12px;
+  border-bottom: 1px solid var(--color-edge);
+  background: var(--color-panel-raised);
+  font: 400 12.5px / 16px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-compare-bar .spacer {
+  flex: 1;
+}
+[data-iii-ui="shell"] .shui-compare-side {
+  flex: none;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 200px;
+}
+[data-iii-ui="shell"] .shui-compare-picker {
+  flex: 0 1 280px;
+  min-width: 140px;
+}
+[data-iii-ui="shell"] .shui-compare-body {
+  display: flex;
+  flex-direction: column;
+}
+[data-iii-ui="shell"] .shui-compare-body .shui-review-diff {
+  flex: 1;
+  min-height: 0;
+}
+
+/* ── narrow panels ─────────────────────────────────────────────────── */
+@container shui-page (max-width: 720px) {
+  [data-iii-ui="shell"] .shui-compare-picker {
+    flex-basis: 160px;
+  }
+  [data-iii-ui="shell"] .shui-breadcrumbs .crumb:not(.file):not(.root) {
+    display: none;
+  }
+  [data-iii-ui="shell"] .shui-breadcrumbs .crumb-group:not(:last-child) .sep {
+    display: none;
+  }
+}
+[data-iii-ui="shell"] .shui-side-tab:disabled {
+  color: var(--color-ink-ghost);
+  background: transparent;
+  cursor: default;
+}
+
+/* ── review rows: only diffs near the viewport are in the DOM ─────── */
+[data-iii-ui="shell"] .shui-review-file-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+[data-iii-ui="shell"] .shui-review-file-placeholder {
+  min-height: 24px;
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      color-mix(in srgb, var(--color-ink) 4%, transparent) 0 19px,
+      transparent 19px 38px
+    );
+  opacity: 0.6;
+}
+
+/* ── unified tabs: diff tabs, agent tags, timeline groups ──────────── */
+[data-iii-ui="shell"] .shui-etab-icon.diff {
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-etab-chip {
+  flex: none;
+  max-width: 120px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--color-surface-active);
+  color: var(--color-ink-faint);
+  font: 500 10px / 15px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] .shui-etab.active .shui-etab-chip {
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-diff-chip {
+  flex: none;
+  max-width: 220px;
+  padding: 1px 7px;
+  border-radius: 5px;
+  background: var(--color-surface-active);
+  color: var(--color-ink);
+  font: 500 11.5px / 16px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] .shui-diff-tab[data-source="staged"] .shui-diff-chip {
+  color: var(--shui-status-added);
+}
+[data-iii-ui="shell"] .shui-diff-tab[data-source="unstaged"] .shui-diff-chip {
+  color: var(--shui-status-modified);
+}
+[data-iii-ui="shell"] .shui-diff-body {
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+[data-iii-ui="shell"] .shui-diff-body .shui-review-diff {
+  flex: 1;
+  min-height: 0;
+}
+/* A caveat above a diff that still renders (compared against the last
+   commit, showing the working copy, absent at the revision): the console's
+   StatusPanel row, kept off the diff's edges. */
+[data-iii-ui="shell"] .shui-diff-note {
+  flex: none;
+  margin: 8px 10px 0;
+}
+[data-iii-ui="shell"] .shui-agent-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+  max-width: 140px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--color-accent-muted);
+  color: var(--color-accent);
+  font: 500 10px / 15px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-iii-ui="shell"] .shui-agent-tag svg {
+  width: 11px;
+  height: 11px;
+  flex: none;
+}
+[data-iii-ui="shell"] .shui-timeline-turn-head {
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding-left: 4px;
+}
+[data-iii-ui="shell"] .shui-timeline-turn-main .chevron {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-timeline-turn-main .label {
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+}
+[data-iii-ui="shell"] .shui-timeline-turn-main .meta {
+  flex: none;
+}
+[data-iii-ui="shell"] .shui-timeline-files .shui-scm-row-main {
+  padding-left: 26px;
+}
+[data-iii-ui="shell"] .shui-scm-row-actions .file-icon {
+  width: 14px;
+  height: 14px;
+}
+
+/* ── pane notices: the main pane when it cannot show content ── */
+[data-iii-ui="shell"] .shui-pane-notice {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  max-width: 460px;
+  margin: clamp(24px, 12vh, 96px) auto 0;
+  padding: 0 24px;
+  text-align: center;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-pane-notice-icon {
+  display: inline-flex;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 6px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-rule-2);
+  border-radius: 12px;
+  background: var(--color-panel-raised);
+  color: var(--color-ink-faint);
+}
+[data-iii-ui="shell"] .shui-pane-notice.warn .shui-pane-notice-icon {
+  color: var(--color-warn);
+}
+[data-iii-ui="shell"] .shui-pane-notice-icon > svg {
+  width: 20px;
+  height: 20px;
+}
+[data-iii-ui="shell"] .shui-pane-notice-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--color-ink);
+}
+[data-iii-ui="shell"] .shui-pane-notice-path {
+  margin: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  color: var(--color-ink-ghost);
+}
+[data-iii-ui="shell"] .shui-pane-notice-detail {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  text-wrap: balance;
+}
+[data-iii-ui="shell"] .shui-pane-notice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 12px;
+}
+[data-iii-ui="shell"] .shui-pane-notice-actions svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* A tab whose file is gone: struck through and dimmed, like Git's
+   deleted colour but without claiming Git knows. */
+[data-iii-ui="shell"] .shui-etab.missing .open .label {
+  color: var(--color-ink-ghost);
+  text-decoration: line-through;
+}
+[data-iii-ui="shell"] .shui-etab.missing .shui-etab-file-icon {
+  opacity: 0.55;
 }

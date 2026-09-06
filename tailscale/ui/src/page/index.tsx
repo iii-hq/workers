@@ -696,16 +696,15 @@ export function TailscalePage({ host, onRequestClose, panelSide, commands }: Pro
   useEffect(
     () =>
       commands?.register([
-        { id: 'refresh', title: 'Refresh status', shortcut: 'R', run: () => void refresh() },
-        { id: 'create', title: 'Create link', shortcut: 'N', enabled: () => canCreate, run: () => { setSection('share'); requestShare() } },
-        { id: 'copy', title: 'Copy link', shortcut: 'C', enabled: () => share !== null, run: () => void copyLink() },
-        { id: 'open', title: 'Open link in a browser tab', shortcut: 'O', enabled: () => share !== null, run: openLink },
-        { id: 'stop', title: 'Stop route', shortcut: 'X', enabled: () => routeLive && !busy, run: stopShare },
+        { id: 'refresh', title: 'Refresh status', run: () => void refresh() },
+        { id: 'create', title: 'Create link', enabled: () => canCreate, run: () => { setSection('share'); requestShare() } },
+        { id: 'copy', title: 'Copy link', enabled: () => share !== null, run: () => void copyLink() },
+        { id: 'open', title: 'Open link in a browser tab', enabled: () => share !== null, run: openLink },
+        { id: 'stop', title: 'Stop route', enabled: () => routeLive && !busy, run: stopShare },
         ...sections.map((s, index) => ({
           id: `section-${s.id}`,
           title: s.label,
           detail: s.description,
-          shortcut: String(index + 1),
           run: () => setSection(s.id),
         })),
       ]),
