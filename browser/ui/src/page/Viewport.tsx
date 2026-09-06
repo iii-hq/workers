@@ -42,7 +42,10 @@ export interface ViewportAnnotation {
  */
 
 const HINT_INTERVAL_MS = 120
-const SCROLL_FLUSH_MS = 150
+/** Wheel deltas accumulate this long before one scroll act goes out: short
+ * enough that a flick reads as continuous, long enough that a trackpad's
+ * burst of tiny deltas is one round trip, not fifty. */
+const SCROLL_FLUSH_MS = 40
 const DOUBLE_CLICK_WINDOW_MS = 220
 /** Keys forwarded as `browser::act {action:'press'}` (worker key_spec set). */
 const PRESS_KEYS: ReadonlySet<string> = new Set([
@@ -81,20 +84,22 @@ interface RenderedImageRect {
  * `object-fit: contain` paints the screenshot inside the image element's
  * content box and can leave horizontal or vertical letterboxing. DOM APIs
  * only expose the element box, so derive the centered painted rect from the
- * frame dimensions before translating pointer coordinates.
+ * picture the browser actually painted — its natural pixel size — before
+ * translating pointer coordinates. The frame's reported viewport size is
+ * the coordinate space the point is then scaled into; deriving the rect from
+ * that instead put clicks off whenever a frame's pixels did not match its
+ * metadata (the transitional frame after a resize).
  */
-function renderedImageRect(
-  img: HTMLImageElement,
-  frameWidth: number,
-  frameHeight: number,
-): RenderedImageRect | null {
-  if (frameWidth <= 0 || frameHeight <= 0) return null
+function renderedImageRect(img: HTMLImageElement): RenderedImageRect | null {
+  const naturalWidth = img.naturalWidth
+  const naturalHeight = img.naturalHeight
+  if (naturalWidth <= 0 || naturalHeight <= 0) return null
   const box = img.getBoundingClientRect()
   if (box.width <= 0 || box.height <= 0) return null
 
-  const scale = Math.min(box.width / frameWidth, box.height / frameHeight)
-  const width = frameWidth * scale
-  const height = frameHeight * scale
+  const scale = Math.min(box.width / naturalWidth, box.height / naturalHeight)
+  const width = naturalWidth * scale
+  const height = naturalHeight * scale
   return {
     left: box.left + (box.width - width) / 2,
     top: box.top + (box.height - height) / 2,
@@ -106,7 +111,8 @@ function renderedImageRect(
 interface ViewportProps {
   frame: LiveFrame | null
   loading: boolean
-  error: string | null
+  /** What the empty surface says while there is no frame. */
+  emptyLabel: string
   onClickAt: (x: number, y: number, options?: BrowserClickOptions) => void
   onScrollAt: (x: number, y: number, deltaY: number) => void
   onTextInput: (text: string) => void
@@ -123,7 +129,7 @@ interface ViewportProps {
 export function Viewport({
   frame,
   loading,
-  error,
+  emptyLabel,
   onClickAt,
   onScrollAt,
   onTextInput,
@@ -171,7 +177,7 @@ export function Viewport({
       if (!current || !img || current.width <= 0 || current.height <= 0) {
         return null
       }
-      const rect = renderedImageRect(img, current.width, current.height)
+      const rect = renderedImageRect(img)
       if (!rect) return null
       const relX = (clientX - rect.left) / rect.width
       const relY = (clientY - rect.top) / rect.height
@@ -342,7 +348,7 @@ export function Viewport({
             setHint(null)
             return
           }
-          const imgRect = renderedImageRect(img, current.width, current.height)
+          const imgRect = renderedImageRect(img)
           const surfaceRect = surface.getBoundingClientRect()
           if (!imgRect) {
             setHint(null)
@@ -434,13 +440,7 @@ export function Viewport({
           className="br-ui-vp-img"
         />
       ) : (
-        <p className="br-ui-vp-empty">
-          {error
-            ? `live view failed: ${error}`
-            : loading
-              ? 'waiting for the first frame...'
-              : 'no frame yet'}
-        </p>
+        <p className={cn('br-ui-vp-empty', loading && 'is-loading')}>{emptyLabel}</p>
       )}
       {hint ? (
         <div

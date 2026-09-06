@@ -8,14 +8,17 @@ import {
 import { useBrowserLifecycleEvents } from '../lib/events'
 
 /**
- * Live session feed for the browser page: `browser::sessions::list`, re-read
- * on session-started / session-stopped / navigated. While the event bindings
- * are unavailable (SDK hiccup, races around worker restart) a modest poll
- * keeps the rail honest, skipped entirely while the tab is hidden so a
- * backgrounded console never hammers the engine.
+ * Live tab feed for the browser page: `browser::sessions::list`, re-read on
+ * session-started / session-stopped / session-updated / navigated. A modest
+ * poll runs alongside — faster while the event bindings are unavailable (SDK
+ * hiccup, races around worker restart), slower otherwise — so a title a page
+ * sets after it loaded reaches the tab strip too. Skipped entirely while the
+ * document is hidden so a backgrounded console never hammers the engine.
  */
 
 export const BROWSER_SESSIONS_POLL_MS = 10_000
+/** Title catch-up cadence while the live bindings are up. */
+export const BROWSER_SESSIONS_TITLE_POLL_MS = 15_000
 
 export interface BrowserSessionsLive {
   sessions: BrowserSessionInfo[]
@@ -70,11 +73,14 @@ export function useBrowserSessionsLive(
   }, [host, enabled, token])
 
   useEffect(() => {
-    if (!enabled || bound) return
-    const id = window.setInterval(() => {
-      if (document.hidden) return
-      refresh()
-    }, BROWSER_SESSIONS_POLL_MS)
+    if (!enabled) return
+    const id = window.setInterval(
+      () => {
+        if (document.hidden) return
+        refresh()
+      },
+      bound ? BROWSER_SESSIONS_TITLE_POLL_MS : BROWSER_SESSIONS_POLL_MS,
+    )
     return () => window.clearInterval(id)
   }, [enabled, bound, refresh])
 

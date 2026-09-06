@@ -37,7 +37,7 @@ export function registerBrowserPalette(host: Host): void {
         .map((session) => ({
           id: session.session_id,
           title: session.title?.trim() || session.url,
-          detail: session.url,
+          detail: `${session.incognito ? 'incognito · ' : ''}${session.active === false ? 'asleep · ' : ''}${session.url}`,
           keywords: [session.session_id],
           run: () =>
             host.panels?.open({
@@ -78,9 +78,22 @@ export function registerBrowserPalette(host: Host): void {
     {
       id: 'open',
       title: 'Open the browser',
-      detail: 'Live Chromium sessions you can watch and drive',
-      keywords: ['chromium', 'sessions', 'screencast'],
+      detail: 'Tabs you can watch and drive, shared with agents',
+      keywords: ['chromium', 'sessions', 'tabs', 'screencast'],
       run: () => host.panels?.open({ pageId: 'browser', context: {} }),
+    },
+    {
+      id: 'new-tab',
+      title: 'New browser tab',
+      keywords: ['browser', 'tab', 'open'],
+      run: () => host.panels?.open({ pageId: 'browser', context: { type: 'new-tab' } }),
+    },
+    {
+      id: 'new-incognito-tab',
+      title: 'New incognito tab',
+      detail: 'A private tab: nothing saved, closes when idle',
+      keywords: ['browser', 'tab', 'private', 'incognito'],
+      run: () => host.panels?.open({ pageId: 'browser', context: { type: 'new-tab', incognito: true } }),
     },
   ])
 }

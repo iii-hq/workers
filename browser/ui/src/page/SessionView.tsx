@@ -1,21 +1,17 @@
 /**
- * Everything for one selected session — the workspace beside (or, when
- * narrow, instead of) the rail: a document header carrying the session's
- * identity plus the pick-to-clipboard and stop controls, the URL bar, the
- * screencast-fed viewport letterboxed in the workspace, the console /
- * network feeds, and a status bar with the input-forwarding hints.
+ * One tab's workspace, under the tab strip: the toolbar (back / forward /
+ * reload, the address bar, the annotate and menu buttons), the
+ * screencast-fed viewport filling the rest of the pane, and — only when
+ * asked for from the ⋮ menu — the developer tools docked below it
+ * (console | network | downloads | history).
  *
- * Wide: the viewport takes the workspace and the feeds dock under it behind
- * a console | network segmented control. Narrow: a viewport | console |
- * network segmented control shows one pane at a time, and the screencast
- * subscription only runs while the viewport segment is actually visible.
+ * Selecting a tab starts its screencast, which wakes a sleeping tab: the
+ * viewport shows "opening the page" until the first frame lands. The
+ * viewport tracks the pane's size through browser::resize so the frame
+ * fills it and clicks map 1:1; the device toolbar pins a size instead.
  *
- * Pick-to-chat became pick-to-clipboard: the injected UI has no composer
- * slot (host.composer is unimplemented), so a picked element's summary is
- * copied to the clipboard for the user to paste into chat.
- *
- * The page remounts this component per session (React key), so all state
- * here — url draft, pick mode, type buffer, pane choices — is session-local.
+ * The page remounts this component per tab (React key), so all state here —
+ * url draft, annotate mode, type buffer, devtools pane — is tab-local.
  */
 
 import {
@@ -60,22 +56,22 @@ import {
   screenshotFileName,
   scrollBrowserAt,
   setBrowserCookies,
-  stopBrowserSession,
   takeBrowserScreenshot,
   typeBrowserText,
   zoomBrowserPage,
 } from '../lib/browser'
+import { toUrl } from '../lib/address'
 import { cn } from '../lib/cn'
 import { useBrowserSessionEvent } from '../lib/events'
-import { formatMtime } from '../lib/format'
 import {
   ExternalLink,
   Globe,
+  Incognito,
   MessageSquarePlus,
   RefreshCw,
   X,
 } from '../lib/icons'
-import { BackButton, ChevronLeftIcon } from '../lib/widgets'
+import { ChevronLeftIcon } from '../lib/widgets'
 import {
   type Annotation,
   type AnnotationSet,
@@ -132,13 +128,11 @@ const NAVIGATED_FN = 'iii::browser-ui::navigated'
 const FIND_DEBOUNCE_MS = 150
 const TYPE_FLUSH_MS = 200
 
-type FeedPane = 'console' | 'network' | 'downloads' | 'history'
-type NarrowPane = 'viewport' | FeedPane
+type DevtoolsPane = 'console' | 'network' | 'downloads' | 'history'
 
 /** Verbs the page's commands reach through a ref, since they close over
- * this component's session-local state. */
+ * this component's tab-local state. */
 export interface SessionActions {
-  stop: () => void
   focusUrl: () => void
   toggleAnnotate: () => void
   annotating: () => boolean
@@ -151,7 +145,8 @@ export interface SessionActions {
   takeScreenshot: () => void
   screenshotToChat: () => void
   printToPdf: () => void
-  clearData: () => void
+  clearSiteData: () => void
+  toggleDevtools: () => void
   toggleDeviceToolbar: () => void
   importCookies: () => void
   copyCookies: () => void
@@ -160,21 +155,13 @@ export interface SessionActions {
   openSavedSets: () => void
 }
 
-const FEED_PANES: readonly FeedPane[] = [
+const DEVTOOLS_PANES: readonly DevtoolsPane[] = [
   'console',
   'network',
   'downloads',
   'history',
 ]
-const NARROW_PANES: readonly NarrowPane[] = [
-  'viewport',
-  'console',
-  'network',
-  'downloads',
-  'history',
-]
-const PANE_LABELS: Record<NarrowPane, string> = {
-  viewport: 'Viewport',
+const PANE_LABELS: Record<DevtoolsPane, string> = {
   console: 'Console',
   network: 'Network',
   downloads: 'Downloads',
@@ -197,92 +184,68 @@ function writeStored(key: string, value: string) {
   }
 }
 
-/** Same page-title derivation as the rail rows. */
-function hostOf(url: string): string {
-  try {
-    const parsed = new URL(url)
-    return parsed.host || url
-  } catch {
-    return url
-  }
-}
-
 interface SessionViewProps {
-  /** Opens the saved-sets dialog (page-level; works without a session). */
+  /** Opens the saved-sets dialog (page-level; works without a tab). */
   onOpenSavedSets?: (key?: string | null) => void
   host: Host
   session: BrowserSessionInfo
-  chromiumVersion: string | null
   enabled: boolean
-  narrow: boolean
   /** Stable workspace-tab id — namespaces persisted UI state. */
   tabId: string
-  /** Populated with this session's stop/inspect/focus-url verbs while
-   * mounted, so the page's commands can reach them. */
+  /** Populated with this tab's verbs while mounted, so the page's commands
+   * can reach them. */
   actionsRef?: RefObject<SessionActions | null>
-  onBack: () => void
   onSessionsRefresh: () => void
-  onStopped: () => void
+  onNewTab: (incognito: boolean) => void
 }
 
 export function SessionView({
   host,
   onOpenSavedSets,
   session,
-  chromiumVersion,
   enabled,
-  narrow,
   tabId,
   actionsRef,
-  onBack,
   onSessionsRefresh,
-  onStopped,
+  onNewTab,
 }: SessionViewProps) {
   const sessionId = session.session_id
+  const asleep = session.active === false
 
-  // Narrow-mode segment (viewport | console | network); session-local, so a
-  // drill-in always lands on the viewport.
-  const [narrowPane, setNarrowPane] = useState<NarrowPane>('viewport')
-  // Wide-mode feeds dock (console | network), persisted per workspace tab.
-  const dockStoreKey = `browser-ui:${tabId || 'page'}:dock`
-  const [dockPane, setDockPaneState] = useState<FeedPane>(() => {
-    const stored = readStored(dockStoreKey)
-    return stored === 'network' ||
-      stored === 'downloads' ||
-      stored === 'history'
-      ? (stored as FeedPane)
+  // Developer tools: hidden until asked for, then remembered per workspace
+  // tab (open or not, and which pane) so a reload lands where it was left.
+  const devtoolsStoreKey = `browser-ui:${tabId || 'page'}:devtools`
+  const devtoolsPaneStoreKey = `browser-ui:${tabId || 'page'}:dock`
+  const [devtoolsOpen, setDevtoolsOpenState] = useState(
+    () => readStored(devtoolsStoreKey) === 'true',
+  )
+  const [devtoolsPane, setDevtoolsPaneState] = useState<DevtoolsPane>(() => {
+    const stored = readStored(devtoolsPaneStoreKey)
+    return DEVTOOLS_PANES.includes(stored as DevtoolsPane)
+      ? (stored as DevtoolsPane)
       : 'console'
   })
-  const dockCollapsedStoreKey = `browser-ui:${tabId || 'page'}:dock-collapsed`
-  const [dockCollapsed, setDockCollapsedState] = useState(
-    () => readStored(dockCollapsedStoreKey) === 'true',
+  const setDevtoolsOpen = useCallback(
+    (open: boolean) => {
+      setDevtoolsOpenState(open)
+      writeStored(devtoolsStoreKey, String(open))
+    },
+    [devtoolsStoreKey],
   )
-  const setDockPane = (pane: FeedPane) => {
-    setDockPaneState(pane)
-    writeStored(dockStoreKey, pane)
-    if (dockCollapsed) {
-      setDockCollapsedState(false)
-      writeStored(dockCollapsedStoreKey, 'false')
-    }
-  }
-  const toggleDock = () => {
-    setDockCollapsedState((current) => {
-      const next = !current
-      writeStored(dockCollapsedStoreKey, String(next))
-      return next
-    })
+  const toggleDevtools = useCallback(
+    () => setDevtoolsOpen(!devtoolsOpen),
+    [devtoolsOpen, setDevtoolsOpen],
+  )
+  const setDevtoolsPane = (pane: DevtoolsPane) => {
+    setDevtoolsPaneState(pane)
+    writeStored(devtoolsPaneStoreKey, pane)
   }
 
-  // The screencast subscription is gated on the viewport actually being
-  // visible: wide mode always shows it, narrow only on its segment.
-  const viewportShown = !narrow || narrowPane === 'viewport'
   const [reseedToken, setReseedToken] = useState(0)
-  const live = useLiveFrames(
-    host,
-    sessionId,
-    enabled && viewportShown,
-    reseedToken,
-  )
+  // Bumped when the tab wakes under us, so the screencast is started again
+  // on the new page (see useLiveFrames).
+  const [wakeToken, setWakeToken] = useState(0)
+  const live = useLiveFrames(host, sessionId, enabled, reseedToken, wakeToken)
 
   const [actionError, setActionError] = useState<string | null>(null)
   const runAction = useCallback(async (action: () => Promise<void>) => {
@@ -294,38 +257,36 @@ export function SessionView({
     }
   }, [])
 
-  // URL bar: mirrors the session's committed url, but never clobbers
-  // in-progress typing (focus-aware sync).
-  const [urlDraft, setUrlDraft] = useState(session.url)
+  // URL bar: mirrors the tab's committed url, but never clobbers
+  // in-progress typing (focus-aware sync). about:blank reads as empty, the
+  // way a new tab's bar does.
+  const shownUrl = session.url === 'about:blank' ? '' : session.url
+  const [urlDraft, setUrlDraft] = useState(shownUrl)
   const urlFocusedRef = useRef(false)
-  const lastSessionUrlRef = useRef(session.url)
+  const lastSessionUrlRef = useRef(shownUrl)
   useEffect(() => {
-    if (lastSessionUrlRef.current === session.url) return
-    lastSessionUrlRef.current = session.url
-    if (!urlFocusedRef.current) setUrlDraft(session.url)
-  }, [session.url])
-  useEffect(() => {
-    setUrlDraft(session.url)
-    lastSessionUrlRef.current = session.url
-  }, [sessionId])
+    if (lastSessionUrlRef.current === shownUrl) return
+    lastSessionUrlRef.current = shownUrl
+    if (!urlFocusedRef.current) setUrlDraft(shownUrl)
+  }, [shownUrl])
 
   const submitUrl = useCallback(() => {
-    let url = urlDraft.trim()
+    const url = toUrl(urlDraft)
     if (!url) return
-    // Require a real scheme (`scheme://`) to skip the prefix; a bare
-    // `host:port` like localhost:3000 is not a scheme and must get https://.
-    if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url)) url = `https://${url}`
     void runAction(async () => {
-      await navigateBrowser(host.iii, sessionId, url)
+      const result = await navigateBrowser(host.iii, sessionId, url)
       onSessionsRefresh()
+      // Like a browser: the tab shows Chromium's error page; say why here.
+      if (result?.error) throw new Error(`page failed to load: ${result.error}`)
     })
+    urlInputRef.current?.blur()
   }, [host, urlDraft, sessionId, runAction, onSessionsRefresh])
 
   const handleHistory = useCallback(
     (action: 'back' | 'forward' | 'reload') => {
       void runAction(async () => {
         const result = await controlBrowserHistory(host.iii, sessionId, action)
-        if (result?.url) setUrlDraft(result.url)
+        if (result?.url && result.url !== 'about:blank') setUrlDraft(result.url)
         onSessionsRefresh()
       })
     },
@@ -333,15 +294,9 @@ export function SessionView({
   )
 
   const openCurrentPage = useCallback(() => {
-    let url = urlDraft.trim() || session.url
-    if (url && !/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url))
-      url = `https://${url}`
+    const url = toUrl(urlDraft) || shownUrl
     if (url) window.open(url, '_blank', 'noopener,noreferrer')
-  }, [session.url, urlDraft])
-
-  useEffect(() => {
-    setActionError(null)
-  }, [sessionId])
+  }, [shownUrl, urlDraft])
 
   // Annotate mode freezes the frame the pins sit on; the live view resumes
   // when the mode ends. The pins outlive the mode until sent or cleared.
@@ -355,21 +310,19 @@ export function SessionView({
   )
   const [sending, setSending] = useState(false)
   const unlabeledPinsRef = useRef<string[]>([])
-  useEffect(() => {
-    setAnnotating(false)
-    setFrozen(null)
-    setAnnotations([])
-    setSelectedAnnotation(null)
-    unlabeledPinsRef.current = []
-    setTool('pin')
-  }, [sessionId])
   const liveFrameRef = useRef(live.frame)
   liveFrameRef.current = live.frame
+  const annotatingRef = useRef(annotating)
+  annotatingRef.current = annotating
+  const annotationsRef = useRef(annotations)
+  annotationsRef.current = annotations
+  const frozenRef = useRef(frozen)
+  frozenRef.current = frozen
   const toggleAnnotate = useCallback(() => {
     setAnnotating((current) => {
       if (current) return false
       // Re-entering with unsent marks resumes them on their own frozen
-      // frame; only a fresh session starts from the live frame.
+      // frame; only a fresh set starts from the live frame.
       if (annotationsRef.current.length > 0 && frozenRef.current) return true
       const frame = liveFrameRef.current
       if (!frame) {
@@ -445,12 +398,9 @@ export function SessionView({
     if (!set || set.annotations.length === 0) return
     void runAction(async () => {
       const blob = await renderAnnotatedImage(set)
-      const url = URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-      link.download = annotationFileName(set, 'png')
-      link.click()
-      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+      downloadFile(
+        new File([blob], annotationFileName(set, 'png'), { type: 'image/png' }),
+      )
     })
   }, [annotationSet, runAction])
   const clearAnnotations = useCallback(() => {
@@ -563,10 +513,9 @@ export function SessionView({
 
   // A dropped pin asks the worker what sits under it (the page is still
   // live under the frozen frame); the answer labels the newest unlabeled
-  // pin so the note carries the element it points at.
-  // Picked events carry no correlation token, so pins waiting for their
-  // element label queue up first-in first-out; two quick drops each get
-  // their own answer instead of the second overwriting the first.
+  // pin so the note carries the element it points at. Picked events carry
+  // no correlation token, so pins waiting for their element label queue up
+  // first-in first-out; two quick drops each get their own answer.
   useBrowserSessionEvent({
     host,
     enabled: enabled && annotating,
@@ -634,9 +583,8 @@ export function SessionView({
     [host, takeTypeBuffer, sessionId, runAction],
   )
 
-  // Flush any buffered text before the session changes or the component
-  // unmounts, so keystrokes typed against one session are sent to that
-  // session rather than dropped (or leaking into the next one).
+  // Flush any buffered text before the component unmounts, so keystrokes
+  // typed against one tab are sent to that tab rather than dropped.
   useEffect(() => {
     return () => {
       flushTypeBuffer()
@@ -650,7 +598,9 @@ export function SessionView({
 
   // Match the Chromium viewport to the pane as it resizes, so the streamed
   // frame fills the surface with no letterboxing and clicks map 1:1. The
-  // observer fires often; debounce and skip sub-pixel-ish changes.
+  // observer fires often; debounce and skip sub-pixel-ish changes. The
+  // screencast is CSS-pixel sized whatever the device scale factor, so the
+  // pane fit asks for 1x and spares the page a 2x render it cannot show.
   const resizeTimerRef = useRef<number | undefined>(undefined)
   const lastSentSizeRef = useRef<{ w: number; h: number } | null>(null)
   const lastPaneSizeRef = useRef<{ w: number; h: number } | null>(null)
@@ -692,7 +642,7 @@ export function SessionView({
   const onSurfaceResize = useCallback(
     (width: number, height: number) => {
       lastPaneSizeRef.current = { w: width, h: height }
-      // A read-only session's viewport is not ours to change; the frame
+      // A read-only tab's viewport is not ours to change; the frame
       // letterbox-scales instead.
       if (session.read_only === true) return
       if (deviceRef.current) return
@@ -702,24 +652,24 @@ export function SessionView({
       window.clearTimeout(resizeTimerRef.current)
       resizeTimerRef.current = window.setTimeout(() => {
         lastSentSizeRef.current = { w: width, h: height }
-        applyViewport(
-          width,
-          height,
-          Math.min(window.devicePixelRatio || 1, 2),
-          undefined,
-          true,
-        )
+        applyViewport(width, height, 1, undefined, true)
       }, 180)
     },
-    [applyViewport],
+    [applyViewport, session.read_only],
   )
+  useEffect(() => () => window.clearTimeout(resizeTimerRef.current), [])
+  // A tab that just woke has a fresh page: start its screencast again and
+  // fit the config-sized viewport to the pane.
+  const wasAsleepRef = useRef(asleep)
   useEffect(() => {
-    lastSentSizeRef.current = null
-    setReseedToken(0)
-    setDevice(null)
-    setShowDevice(false)
-    return () => window.clearTimeout(resizeTimerRef.current)
-  }, [sessionId])
+    if (wasAsleepRef.current && !asleep) {
+      setWakeToken((t) => t + 1)
+      lastSentSizeRef.current = null
+      const pane = lastPaneSizeRef.current
+      if (pane && !deviceRef.current) onSurfaceResize(pane.w, pane.h)
+    }
+    wasAsleepRef.current = asleep
+  }, [asleep, onSurfaceResize])
   const applyDevice = useCallback(
     (preset: DevicePreset) => {
       setDevice({
@@ -778,7 +728,7 @@ export function SessionView({
     const pane = lastPaneSizeRef.current
     if (pane) {
       lastSentSizeRef.current = pane
-      applyViewport(pane.w, pane.h)
+      applyViewport(pane.w, pane.h, 1)
     }
   }, [applyViewport])
   const toggleDeviceToolbar = useCallback(() => {
@@ -883,20 +833,16 @@ export function SessionView({
     },
     [runFind],
   )
-  useEffect(() => {
-    setFind(null)
-    return () => window.clearTimeout(findTimerRef.current)
-  }, [sessionId])
+  useEffect(() => () => window.clearTimeout(findTimerRef.current), [])
 
   // Zoom belongs to the loaded document, so a navigation resets it in the
   // page; the level the user chose is re-applied when the next page commits.
+  // Read only once the page is up: asking a sleeping tab would wake it.
   const [zoom, setZoom] = useState(100)
   const zoomRef = useRef(zoom)
   zoomRef.current = zoom
-  // The document keeps its zoom across a pane remount; read it back so the
-  // menu shows the real level.
   useEffect(() => {
-    setZoom(100)
+    if (asleep) return
     let cancelled = false
     void zoomBrowserPage(host.iii, sessionId, 'read')
       .then((level) => {
@@ -906,7 +852,7 @@ export function SessionView({
     return () => {
       cancelled = true
     }
-  }, [host, sessionId])
+  }, [host, sessionId, asleep])
   const applyZoom = useCallback(
     (action: 'in' | 'out' | 'reset' | 'set', level?: number) => {
       void runAction(async () => {
@@ -971,7 +917,6 @@ export function SessionView({
   // resolve out-of-band (in-page click, another caller, timeout) — the
   // resolved event drops it from the queue so the banner never goes stale.
   const [handoffs, setHandoffs] = useState<BrowserHandoffEvent[]>([])
-  useEffect(() => setHandoffs([]), [sessionId])
   useBrowserSessionEvent({
     host,
     enabled,
@@ -1013,37 +958,27 @@ export function SessionView({
       () => {},
     )
   }, [host, sessionId, handoffs])
-  const clearData = useCallback(() => {
+  const clearSiteData = useCallback(() => {
     void runAction(async () => {
-      await clearBrowserData(host.iii, sessionId)
+      const cleared = await clearBrowserData(host.iii, sessionId)
+      setActionError(
+        cleared.length > 0
+          ? `cleared ${cleared.join(', ')} for this site`
+          : 'nothing to clear for this site',
+      )
+      handleHistory('reload')
     })
-  }, [host, sessionId, runAction])
-  const paneBody = (pane: FeedPane) =>
-    pane === 'console' ? (
-      <ConsolePanel host={host} sessionId={sessionId} enabled={enabled} />
-    ) : pane === 'network' ? (
-      <NetworkPanel host={host} sessionId={sessionId} enabled={enabled} />
-    ) : pane === 'downloads' ? (
-      <DownloadsPanel host={host} sessionId={sessionId} enabled={enabled} />
-    ) : (
-      <HistoryPanel host={host} sessionId={sessionId} enabled={enabled} />
-    )
-
-  const handleStop = useCallback(() => {
-    void runAction(async () => {
-      await stopBrowserSession(host.iii, sessionId)
-      onSessionsRefresh()
-      onStopped()
-    })
-  }, [host, sessionId, runAction, onSessionsRefresh, onStopped])
+  }, [host, sessionId, runAction, handleHistory])
 
   const urlInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     if (!actionsRef) return
     actionsRef.current = {
-      stop: handleStop,
-      focusUrl: () => urlInputRef.current?.focus(),
+      focusUrl: () => {
+        urlInputRef.current?.focus()
+        urlInputRef.current?.select()
+      },
       toggleAnnotate,
       annotating: () => annotatingRef.current,
       annotationCount: () => annotationsRef.current.length,
@@ -1055,7 +990,8 @@ export function SessionView({
       takeScreenshot,
       screenshotToChat,
       printToPdf,
-      clearData: () => setConfirmingClear(true),
+      clearSiteData: () => setConfirmingClear(true),
+      toggleDevtools,
       toggleDeviceToolbar,
       importCookies,
       copyCookies,
@@ -1068,7 +1004,6 @@ export function SessionView({
     }
   }, [
     actionsRef,
-    handleStop,
     toggleAnnotate,
     sendAnnotations,
     downloadAnnotations,
@@ -1078,336 +1013,266 @@ export function SessionView({
     takeScreenshot,
     screenshotToChat,
     printToPdf,
+    toggleDevtools,
     toggleDeviceToolbar,
     importCookies,
     copyCookies,
     saveSet,
     onOpenSavedSets,
   ])
-  const annotatingRef = useRef(annotating)
-  annotatingRef.current = annotating
-  const annotationsRef = useRef(annotations)
-  annotationsRef.current = annotations
-  const frozenRef = useRef(frozen)
-  frozenRef.current = frozen
 
-  const displayName =
-    session.title?.trim() || hostOf(session.url) || 'about:blank'
-  const feedPane: FeedPane =
-    narrow && narrowPane !== 'viewport' ? narrowPane : dockPane
-  const browserMajor = chromiumVersion?.match(/\d+/)?.[0]
-  const browserLabel = browserMajor ? `Chromium ${browserMajor}` : null
-  const readOnly = session.read_only === true
+  const paneBody = (pane: DevtoolsPane) =>
+    pane === 'console' ? (
+      <ConsolePanel host={host} sessionId={sessionId} enabled={enabled} />
+    ) : pane === 'network' ? (
+      <NetworkPanel host={host} sessionId={sessionId} enabled={enabled} />
+    ) : pane === 'downloads' ? (
+      <DownloadsPanel host={host} sessionId={sessionId} enabled={enabled} />
+    ) : (
+      <HistoryPanel host={host} sessionId={sessionId} enabled={enabled} />
+    )
+
+  const viewportLabel = live.error
+    ? `live view failed: ${live.error}`
+    : asleep
+      ? 'opening the page…'
+      : 'waiting for the first frame…'
+  const marks = annotations.length
 
   return (
     <section
-      className="br-ui-stage"
-      aria-label={`browser session ${sessionId}`}
+      className={cn(
+        'br-ui-stage',
+        session.incognito && 'is-incognito',
+        session.read_only && 'is-readonly',
+      )}
+      aria-label={`browser tab ${sessionId}`}
     >
-      <header className="br-ui-doc-head">
-        {narrow ? (
-          <BackButton onClick={onBack} label="back to session list" />
-        ) : null}
-        <div className="br-ui-doc-identity">
-          <div className="br-ui-doc-title-row">
-            <span
-              className="br-ui-doc-name"
-              title={`${sessionId} · ${session.url}`}
+      <div className="br-ui-browser-frame">
+        <form
+          className="br-ui-toolbar"
+          onSubmit={(event) => {
+            event.preventDefault()
+            submitUrl()
+          }}
+        >
+          <fieldset
+            className="br-ui-history-controls"
+            aria-label="browser history controls"
+          >
+            <button
+              type="button"
+              className="br-ui-chrome-btn"
+              onClick={() => handleHistory('back')}
+              title="back"
+              aria-label="back"
             >
-              <span className="txt">{displayName}</span>
-            </span>
-            <span className="br-ui-doc-badge">
-              {session.headless ? 'headless' : 'headful'}
-            </span>
-            {readOnly ? (
-              <span className="br-ui-doc-badge is-readonly">read-only</span>
-            ) : null}
-            {!narrow && browserLabel ? (
-              <span className="br-ui-doc-badge">{browserLabel}</span>
+              <ChevronLeftIcon className="br-ui-chrome-icon" />
+            </button>
+            <button
+              type="button"
+              className="br-ui-chrome-btn"
+              onClick={() => handleHistory('forward')}
+              title="forward"
+              aria-label="forward"
+            >
+              <ChevronLeftIcon className="br-ui-chrome-icon is-forward" />
+            </button>
+            <button
+              type="button"
+              className="br-ui-chrome-btn"
+              onClick={() => handleHistory('reload')}
+              title="reload"
+              aria-label="reload"
+            >
+              <RefreshCw size={16} aria-hidden />
+            </button>
+          </fieldset>
+          <div className="br-ui-address">
+            {session.incognito ? (
+              <Incognito size={16} aria-hidden className="br-ui-address-icon" />
+            ) : (
+              <Globe size={16} aria-hidden className="br-ui-address-icon" />
+            )}
+            <Input
+              ref={urlInputRef}
+              name="browser-url"
+              value={urlDraft}
+              onChange={setUrlDraft}
+              preserveCase
+              placeholder={
+                session.incognito
+                  ? 'Search or type a URL — incognito'
+                  : 'Search or type a URL'
+              }
+              aria-label="page url"
+              onFocus={(event) => {
+                urlFocusedRef.current = true
+                event.currentTarget.select()
+              }}
+              onBlur={() => {
+                urlFocusedRef.current = false
+                // Typing abandoned: fall back to where the tab really is.
+                setUrlDraft(shownUrl)
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  setUrlDraft(shownUrl)
+                  event.currentTarget.blur()
+                }
+              }}
+              className="br-ui-url-input"
+            />
+            {session.read_only ? (
+              <span className="br-ui-address-tag">read-only</span>
             ) : null}
           </div>
-          <span className="br-ui-doc-crumb">
-            <span className="br-ui-doc-url">{session.url}</span>
-            <span aria-hidden>·</span>
-            <span className="br-ui-doc-live">
-              <span className="br-ui-live-dot" aria-hidden />
-              live
+          {session.incognito ? (
+            <span className="br-ui-incognito-pill" title="Incognito tab: nothing is saved">
+              <Incognito size={14} aria-hidden />
+              Incognito
             </span>
-            {!narrow ? (
-              <>
-                <span aria-hidden>·</span>
-                <span>
-                  started {formatMtime(Math.floor(session.created_ms / 1000))}
-                </span>
-              </>
-            ) : null}
-          </span>
-        </div>
-        <div className="br-ui-doc-actions">
-          {annotations.length > 0 ? (
-            <>
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={sendAnnotations}
-                disabled={sending || typeof host.chat?.compose !== 'function'}
-                title="send the pins to the chat, one attachment each (⌘↵)"
-              >
-                {sending ? 'Sending…' : `Send ${annotations.length} to chat`}
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={saveSet}
-                disabled={saving}
-                title="save this set for later; anyone on this engine can reopen it"
-              >
-                {saving ? 'Saving…' : 'Save'}
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={downloadAnnotations}
-                title="save the frozen view with its pins as a PNG"
-              >
-                Download
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={clearAnnotations}
-                title="drop every pin"
-              >
-                Clear
-              </Button>
-            </>
           ) : null}
           <button
             type="button"
             onClick={toggleAnnotate}
             aria-pressed={annotating}
+            aria-label={annotating ? 'stop annotating' : 'annotate the view'}
             title={
               annotating
                 ? 'annotating: click an element to drop a pin on it, esc ends'
-                : 'freeze the view and pin elements with notes'
+                : 'annotate: freeze the view and pin elements with notes'
             }
-            className={cn('br-ui-pick-btn', annotating && 'is-on')}
+            className={cn(
+              'br-ui-chrome-btn',
+              annotating && 'is-on',
+              !annotating && marks > 0 && 'has-marks',
+            )}
           >
-            <MessageSquarePlus size={16} aria-hidden />
-            {annotating ? 'Annotating' : 'Annotate'}
+            <MessageSquarePlus size={17} aria-hidden />
+            {!annotating && marks > 0 ? (
+              <span className="br-ui-chrome-badge">{marks}</span>
+            ) : null}
           </button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="br-ui-stop-btn"
-            onClick={handleStop}
-          >
-            Stop session
-          </Button>
-        </div>
-      </header>
-
-      {actionError ? (
-        <div className="br-ui-banner alert" role="alert">
-          <span>{actionError}</span>
           <button
             type="button"
-            className="br-ui-linkish quiet"
-            onClick={() => setActionError(null)}
+            className="br-ui-chrome-btn"
+            onClick={openCurrentPage}
+            title="open page in your own browser"
+            aria-label="open page in your own browser"
           >
-            dismiss
+            <ExternalLink size={16} aria-hidden />
           </button>
-        </div>
-      ) : null}
-
-      {narrow ? (
-        <div className="br-ui-view-row">
-          <SegmentedControl<NarrowPane>
-            value={narrowPane}
-            onChange={setNarrowPane}
-            options={NARROW_PANES.map((pane) => ({
-              value: pane,
-              label: PANE_LABELS[pane],
-            }))}
-            className="br-ui-tabs"
-            aria-label="Session view"
+          <PageMenu
+            zoom={zoom}
+            devtoolsOpen={devtoolsOpen}
+            canSendToChat={typeof host.chat?.compose === 'function'}
+            actions={{
+              newTab: () => onNewTab(false),
+              newIncognitoTab: () => onNewTab(true),
+              findInPage: openFind,
+              takeScreenshot,
+              screenshotToChat,
+              printToPdf,
+              zoomIn: () => applyZoom('in'),
+              zoomOut: () => applyZoom('out'),
+              zoomReset: () => applyZoom('reset'),
+              toggleDevtools,
+              clearSiteData: () => setConfirmingClear(true),
+              toggleDeviceToolbar,
+              importCookies,
+              copyCookies,
+              showDiagnostics: () => setShowDoctor(true),
+              openSavedSets: () => onOpenSavedSets?.(),
+            }}
           />
-        </div>
-      ) : null}
+          <button type="submit" className="br-ui-address-submit" tabIndex={-1}>
+            navigate to address
+          </button>
+        </form>
 
-      {viewportShown ? (
-        <div className="br-ui-stage-body">
-          <div className="br-ui-browser-frame">
-            <form
-              className="br-ui-toolbar"
-              onSubmit={(event) => {
-                event.preventDefault()
-                submitUrl()
-              }}
+        {actionError ? (
+          <div className="br-ui-banner alert" role="alert">
+            <span>{actionError}</span>
+            <button
+              type="button"
+              className="br-ui-linkish quiet"
+              onClick={() => setActionError(null)}
             >
-              <fieldset
-                className="br-ui-history-controls"
-                aria-label="browser history controls"
-              >
-                <button
-                  type="button"
-                  className="br-ui-chrome-btn"
-                  onClick={() => handleHistory('back')}
-                  title="back"
-                  aria-label="back"
-                >
-                  <ChevronLeftIcon className="br-ui-chrome-icon" />
-                </button>
-                <button
-                  type="button"
-                  className="br-ui-chrome-btn"
-                  onClick={() => handleHistory('forward')}
-                  title="forward"
-                  aria-label="forward"
-                >
-                  <ChevronLeftIcon className="br-ui-chrome-icon is-forward" />
-                </button>
-                <button
-                  type="button"
-                  className="br-ui-chrome-btn"
-                  onClick={() => handleHistory('reload')}
-                  title="reload"
-                  aria-label="reload"
-                >
-                  <RefreshCw size={16} aria-hidden />
-                </button>
-              </fieldset>
-              <div className="br-ui-address">
-                <Globe size={16} aria-hidden className="br-ui-address-icon" />
-                <Input
-                  ref={urlInputRef}
-                  name="browser-url"
-                  value={urlDraft}
-                  onChange={setUrlDraft}
-                  preserveCase
-                  placeholder="https://localhost:3000"
-                  aria-label="page url"
-                  onFocus={() => {
-                    urlFocusedRef.current = true
-                  }}
-                  onBlur={() => {
-                    urlFocusedRef.current = false
-                  }}
-                  className="br-ui-url-input"
-                />
-              </div>
-              <button
-                type="button"
-                className="br-ui-chrome-btn"
-                onClick={openCurrentPage}
-                title="open page in a new tab"
-                aria-label="open page in a new tab"
-              >
-                <ExternalLink size={17} aria-hidden />
-              </button>
-              <PageMenu
-                zoom={zoom}
-                canSendToChat={typeof host.chat?.compose === 'function'}
-                actions={{
-                  findInPage: openFind,
-                  takeScreenshot,
-                  screenshotToChat,
-                  printToPdf,
-                  zoomIn: () => applyZoom('in'),
-                  zoomOut: () => applyZoom('out'),
-                  zoomReset: () => applyZoom('reset'),
-                  clearData: () => setConfirmingClear(true),
-                  toggleDeviceToolbar,
-                  importCookies,
-                  copyCookies,
-                  showDiagnostics: () => setShowDoctor(true),
-                  openSavedSets: () => onOpenSavedSets?.(),
-                }}
-              />
-              <button
-                type="submit"
-                className="br-ui-address-submit"
-                tabIndex={-1}
-              >
-                navigate to address
-              </button>
-            </form>
-            {find ? (
-              <FindBar
-                state={find}
-                onQuery={setFindQuery}
-                onNext={() => stepFind('next')}
-                onPrevious={() => stepFind('previous')}
-                onClose={closeFind}
-              />
-            ) : null}
-            <ConfirmDialog
-              open={confirmingClear}
-              onOpenChange={setConfirmingClear}
-              title="Clear browsing data?"
-              description="Cookies, cache and storage for this session are cleared. Other sessions are untouched."
-              confirmLabel="Clear"
-              onConfirm={clearData}
-            />
-            <DoctorDialog
-              host={host}
-              open={showDoctor}
-              onOpenChange={setShowDoctor}
-            />
-            {showDevice && device ? (
-              <DeviceToolbar
-                device={device}
-                onPreset={applyDevice}
-                onDimensions={setDeviceDimensions}
-                onRotate={rotateDevice}
-                onReset={resetDevice}
-              />
-            ) : showDevice ? (
-              <DeviceToolbar
-                device={{
-                  width: lastPaneSizeRef.current?.w ?? 0,
-                  height: lastPaneSizeRef.current?.h ?? 0,
-                  deviceScaleFactor: 1,
-                  mobile: false,
-                  presetId: null,
-                }}
-                onPreset={applyDevice}
-                onDimensions={setDeviceDimensions}
-                onRotate={rotateDevice}
-                onReset={resetDevice}
-              />
-            ) : null}
-            {handoff ? (
-              <div className="br-ui-handoff" role="alert">
-                <div className="br-ui-handoff-text">
-                  <span className="br-ui-handoff-title">Waiting for you</span>
-                  <span className="br-ui-handoff-instructions">
-                    {handoff.instructions}
-                    {handoffs.length > 1
-                      ? ` (${handoffs.length - 1} more waiting)`
-                      : ''}
-                  </span>
-                </div>
-                <Button variant="primary" size="sm" onClick={confirmHandoff}>
-                  I'm done
-                </Button>
-              </div>
-            ) : null}
-            <input
-              ref={cookieInputRef}
-              type="file"
-              accept=".json,.txt,application/json,text/plain"
-              className="br-ui-visually-hidden"
-              onChange={(event) => {
-                onCookieFile(event.target.files?.[0])
-                event.target.value = ''
-              }}
-            />
+              dismiss
+            </button>
+          </div>
+        ) : null}
+
+        {find ? (
+          <FindBar
+            state={find}
+            onQuery={setFindQuery}
+            onNext={() => stepFind('next')}
+            onPrevious={() => stepFind('previous')}
+            onClose={closeFind}
+          />
+        ) : null}
+        <ConfirmDialog
+          open={confirmingClear}
+          onOpenChange={setConfirmingClear}
+          title="Clear cookies and site data?"
+          description="Cookies and storage for the site this tab is on, plus the cache, are cleared and the page reloads. Other sites stay signed in. Settings has the button that clears everything."
+          confirmLabel="Clear"
+          onConfirm={clearSiteData}
+        />
+        <DoctorDialog
+          host={host}
+          open={showDoctor}
+          onOpenChange={setShowDoctor}
+        />
+        {showDevice ? (
+          <DeviceToolbar
+            device={
+              device ?? {
+                width: lastPaneSizeRef.current?.w ?? 0,
+                height: lastPaneSizeRef.current?.h ?? 0,
+                deviceScaleFactor: 1,
+                mobile: false,
+                presetId: null,
+              }
+            }
+            onPreset={applyDevice}
+            onDimensions={setDeviceDimensions}
+            onRotate={rotateDevice}
+            onReset={resetDevice}
+          />
+        ) : null}
+        {handoff ? (
+          <div className="br-ui-handoff" role="alert">
+            <div className="br-ui-handoff-text">
+              <span className="br-ui-handoff-title">Waiting for you</span>
+              <span className="br-ui-handoff-instructions">
+                {handoff.instructions}
+                {handoffs.length > 1
+                  ? ` (${handoffs.length - 1} more waiting)`
+                  : ''}
+              </span>
+            </div>
+            <Button variant="primary" size="sm" onClick={confirmHandoff}>
+              I'm done
+            </Button>
+          </div>
+        ) : null}
+        <input
+          ref={cookieInputRef}
+          type="file"
+          accept=".json,.txt,application/json,text/plain"
+          className="br-ui-visually-hidden"
+          onChange={(event) => {
+            onCookieFile(event.target.files?.[0])
+            event.target.value = ''
+          }}
+        />
+        {annotating || marks > 0 ? (
+          <fieldset className="br-ui-annot-tools" aria-label="annotation tools">
             {annotating ? (
-              <fieldset
-                className="br-ui-annot-tools"
-                aria-label="annotation tools"
-              >
+              <>
                 <SegmentedControl<AnnotationTool>
                   value={tool}
                   onChange={setTool}
@@ -1436,7 +1301,7 @@ export function SessionView({
                   className="br-ui-tabs"
                   aria-label="annotation tool"
                 />
-                <span className="br-ui-annot-hint">{TOOL_HINTS[tool]}</span>
+                <span className="br-ui-annot-hint">{TOOL_HINTS[tool]} Esc ends.</span>
                 <span className="br-ui-annot-swatches">
                   {SHAPE_COLORS.map((c) => (
                     <button
@@ -1468,104 +1333,109 @@ export function SessionView({
                   variant="ghost"
                   size="sm"
                   onClick={() => setAnnotations((list) => undoAnnotation(list))}
-                  disabled={annotations.length === 0}
+                  disabled={marks === 0}
                   title="undo the last mark"
                 >
                   Undo
                 </Button>
-              </fieldset>
+              </>
+            ) : (
+              <span className="br-ui-annot-hint">
+                {marks} {marks === 1 ? 'mark' : 'marks'} pinned on the frozen
+                view
+              </span>
+            )}
+            {marks > 0 ? (
+              <>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={sendAnnotations}
+                  disabled={sending || typeof host.chat?.compose !== 'function'}
+                  title="send the pins to the chat, one attachment each (⌘↵)"
+                >
+                  {sending ? 'Sending…' : `Send ${marks} to chat`}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={saveSet}
+                  disabled={saving}
+                  title="save this set for later; anyone on this engine can reopen it"
+                >
+                  {saving ? 'Saving…' : 'Save'}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={downloadAnnotations}
+                  title="save the frozen view with its pins as a PNG"
+                >
+                  Download
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={clearAnnotations}
+                  title="drop every mark"
+                >
+                  Clear
+                </Button>
+              </>
             ) : null}
-            <Viewport
-              frame={annotating && frozen ? frozen : live.frame}
-              loading={live.loading}
-              error={live.error}
-              annotation={viewportAnnotation}
-              onSurfaceResize={onSurfaceResize}
-              onClickAt={handleClickAt}
-              onScrollAt={handleScrollAt}
-              onTextInput={handleTextInput}
-              onPressKey={handlePressKey}
-              requestHint={requestHint}
-            />
-          </div>
-        </div>
-      ) : (
-        <div className="br-ui-pane-fill">{paneBody(feedPane)}</div>
-      )}
-
-      {!narrow ? (
-        <div className={`br-ui-dock${dockCollapsed ? ' collapsed' : ''}`}>
-          <div className="br-ui-dock-head">
-            <SegmentedControl<FeedPane>
-              value={dockPane}
-              onChange={setDockPane}
-              options={FEED_PANES.map((pane) => ({
-                value: pane,
-                label:
-                  pane === 'downloads' && downloadCount > 0
-                    ? `Downloads ${downloadCount}`
-                    : PANE_LABELS[pane],
-              }))}
-              className="br-ui-tabs"
-              aria-label="Session feeds"
-            />
-            <button
-              type="button"
-              className="br-ui-dock-toggle"
-              aria-expanded={!dockCollapsed}
-              aria-label={
-                dockCollapsed ? 'show developer tools' : 'hide developer tools'
-              }
-              title={
-                dockCollapsed ? 'show developer tools' : 'hide developer tools'
-              }
-              onClick={toggleDock}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={toggleAnnotate}
+              title={annotating ? 'back to the live view' : 'resume annotating'}
             >
-              {dockCollapsed ? (
-                <>
-                  <span>Show developer tools</span>
-                  <ChevronLeftIcon className="br-ui-dock-toggle-icon" />
-                </>
-              ) : (
-                <X size={16} aria-hidden />
-              )}
-            </button>
-          </div>
-          {!dockCollapsed ? (
-            <div className="br-ui-dock-body">{paneBody(dockPane)}</div>
-          ) : null}
-        </div>
-      ) : null}
-
-      <footer className="br-ui-statusbar">
-        {live.frame ? (
-          <span className="fact">
-            Viewport: {live.frame.width}×{live.frame.height}
-          </span>
-        ) : (
-          <span className="fact">Viewport: —</span>
-        )}
-        <span className="fact">
-          {session.headless ? 'Headless' : 'Headful'}
-        </span>
-        {browserLabel ? <span className="fact">{browserLabel}</span> : null}
-        <span className="fact live">
-          <span className="br-ui-live-dot" aria-hidden />
-          live
-        </span>
-        <span className="spacer" />
-        {viewportShown ? (
-          annotating ? (
-            <span className="fact hint">{TOOL_HINTS[tool]} Esc ends.</span>
-          ) : (
-            <>
-              <span className="fact hint">Click to focus</span>
-              <span className="fact hint">Scroll or type to interact</span>
-              <span className="fact hint">Shift+Esc to release</span>
-            </>
-          )
+              {annotating ? 'Done' : 'Resume'}
+            </Button>
+          </fieldset>
         ) : null}
-      </footer>
+        <Viewport
+          frame={annotating && frozen ? frozen : live.frame}
+          loading={live.loading}
+          emptyLabel={viewportLabel}
+          annotation={viewportAnnotation}
+          onSurfaceResize={onSurfaceResize}
+          onClickAt={handleClickAt}
+          onScrollAt={handleScrollAt}
+          onTextInput={handleTextInput}
+          onPressKey={handlePressKey}
+          requestHint={requestHint}
+        />
+
+        {devtoolsOpen ? (
+          <div className="br-ui-dock">
+            <div className="br-ui-dock-head">
+              <SegmentedControl<DevtoolsPane>
+                value={devtoolsPane}
+                onChange={setDevtoolsPane}
+                options={DEVTOOLS_PANES.map((pane) => ({
+                  value: pane,
+                  label:
+                    pane === 'downloads' && downloadCount > 0
+                      ? `Downloads ${downloadCount}`
+                      : PANE_LABELS[pane],
+                }))}
+                className="br-ui-tabs"
+                aria-label="Developer tools"
+              />
+              <button
+                type="button"
+                className="br-ui-dock-toggle"
+                aria-label="hide developer tools"
+                title="hide developer tools"
+                onClick={() => setDevtoolsOpen(false)}
+              >
+                <X size={16} aria-hidden />
+              </button>
+            </div>
+            <div className="br-ui-dock-body">{paneBody(devtoolsPane)}</div>
+          </div>
+        ) : null}
+      </div>
     </section>
   )
 }

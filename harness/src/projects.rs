@@ -160,7 +160,7 @@ fn storage_path(raw: &str) -> Result<PathBuf, HarnessError> {
             "projects_file_path must not be empty".to_string(),
         ));
     }
-    let path = PathBuf::from(trimmed);
+    let path = iii_worker_paths::resolve_path(trimmed);
     if path.file_name().is_none() {
         return Err(HarnessError::ProjectStore(format!(
             "projects_file_path must name a file: {}",
@@ -261,6 +261,19 @@ mod tests {
         assert_eq!(
             normalized_name("/work/harness", Some("  Harness core  "), None),
             "Harness core"
+        );
+    }
+
+    #[test]
+    fn storage_path_expands_home_and_keeps_absolute_paths() {
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(
+            storage_path("~/.iii/data/harness/projects.json").unwrap(),
+            PathBuf::from(home).join(".iii/data/harness/projects.json")
+        );
+        assert_eq!(
+            storage_path("/var/lib/iii/projects.json").unwrap(),
+            PathBuf::from("/var/lib/iii/projects.json")
         );
     }
 

@@ -1,154 +1,170 @@
 /**
- * The browser page (#/ext/browser): the standard page chrome (PageShell/
- * PageHeader/PageSidebar from @iii-dev/console-ui) over a session rail and the
- * selected session's workspace — a screencast-fed live viewport with the
- * console and network feeds — so a user can watch what an agent is doing in a
- * Chromium session, drive the page directly, and pick elements into the
- * clipboard.
+ * The browser page (#/ext/browser): a browser. Under the standard pane
+ * header sits a Chrome-style tab strip over the selected tab's workspace —
+ * address bar, a screencast-fed live viewport that fills the pane, and the
+ * developer tools (console, network, downloads, history) docked below only
+ * when asked for from the ⋮ menu. A user watches what an agent is doing in a
+ * tab, drives the page directly, and pins elements for the chat.
+ *
+ * Tabs are the worker's: `browser::sessions::list` is the strip, re-read on
+ * every lifecycle trigger (opened, closed, slept, woke, navigated). A tab
+ * the worker put to sleep is still listed; selecting it starts its
+ * screencast, which wakes it. The selected tab is page-local state kept per
+ * workspace tab, so a reload lands where it left off.
  *
  * The host only mounts this page while the browser worker is connected, so
  * there is no presence gate here (worker disconnect disposes the script and
- * drops the nav entry). Session selection is page-local state — the injected
- * page owns its own view, and the host owns the `#/ext/browser` route.
- *
- * Layout adapts to the width the page HAS (a ResizeObserver on its own body
- * row, not a viewport media query — the console can host it in panes of any
- * size). Wide: the rail (start control + session list) is a collapsible
- * navigation column beside the session workspace. Under NARROW_BELOW px it
- * becomes a drill-in flow: the session list fills the width, and opening a
- * session swaps it for the full-width workspace with a ← back button. The
- * screencast subscription only runs while the viewport is actually visible
- * (see SessionView), so a narrow pane parked on the list streams nothing.
+ * drops the nav entry).
  */
 
 import {
-  Button,
   type Host,
   PageHeader,
   type PageRenderProps,
   PageShell,
-  PageSidebar,
 } from '@iii-dev/console-ui'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   errorMessage,
-  readBrowserDoctor,
   startBrowserSession,
+  stopBrowserSession,
 } from '../lib/browser'
-import { Plus } from '../lib/icons'
-import {
-  GlobeIcon,
-  LivePill,
-  RefreshButton,
-  useContainerNarrow,
-} from '../lib/widgets'
+import { cn } from '../lib/cn'
+import { Globe, Incognito, Plus } from '../lib/icons'
+import { GlobeIcon, useContainerNarrow } from '../lib/widgets'
 import { SavedSetsDialog } from './SavedSetsDialog'
-import { SessionRail } from './SessionRail'
 import { type SessionActions, SessionView } from './SessionView'
+import { TabStrip } from './TabStrip'
 import { useBrowserSessionsLive } from './useBrowserSessionsLive'
 
-/** Container width (px) below which the page collapses to the drill-in
- * session-list ⇄ workspace flow. */
+/** Container width (px) below which controls grow to touch size. */
 const NARROW_BELOW = 720
+
+function readStored(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+function writeStored(key: string, value: string | null) {
+  try {
+    if (value === null) window.localStorage.removeItem(key)
+    else window.localStorage.setItem(key, value)
+  } catch {
+    /* private mode / quota — persistence is best-effort */
+  }
+}
 
 export function BrowserPage({
   host,
-  panelSide = 'left',
   tabId = '',
   onRequestClose,
   panelContext,
   commands,
 }: { host: Host } & Partial<PageRenderProps>) {
-  const { sessions, loading, error, live, refresh } = useBrowserSessionsLive(
-    host,
-    true,
-  )
-  const [chromiumVersion, setChromiumVersion] = useState<string | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    void readBrowserDoctor(host.iii)
-      .then((doctor) => {
-        if (!cancelled) setChromiumVersion(doctor?.chromium_version ?? null)
-      })
-      .catch(() => {
-        // Version is useful context, not a requirement for operating a session.
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [host])
-
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const {
+    sessions: tabs,
+    loading,
+    error,
+    refresh,
+  } = useBrowserSessionsLive(host, true)
   const [rootRef, narrow] = useContainerNarrow(NARROW_BELOW)
-  // Narrow-mode drill-in: true once a session was explicitly opened (row
-  // click or a start), false after ← back. Wide mode renders both panes
-  // regardless, so the flag is harmless there.
-  const [drilled, setDrilled] = useState(false)
 
-  // A session selected the moment it starts is not in the list yet; hold it
-  // until the refresh lands so the selection does not bounce to the first
-  // session and then away again.
+  // The selected tab survives a reload of the console.
+  const selectionKey = `browser-ui:${tabId || 'page'}:tab`
+  const [selectedId, setSelectedIdState] = useState<string | null>(() =>
+    readStored(selectionKey),
+  )
+  const setSelectedId = useCallback(
+    (next: string | null | ((current: string | null) => string | null)) => {
+      setSelectedIdState((current) => {
+        const value = typeof next === 'function' ? next(current) : next
+        writeStored(selectionKey, value)
+        return value
+      })
+    },
+    [selectionKey],
+  )
+
+  // A tab selected the moment it opens is not in the list yet; hold it until
+  // the refresh lands so the selection does not bounce to another tab and
+  // then back again.
   const pendingIdRef = useRef<string | null>(null)
 
-  // Auto-select the first session when nothing (or a stopped session) is
-  // selected, and clear a selection whose session is gone.
+  // Fall back to the first tab when nothing (or a closed tab) is selected.
   useEffect(() => {
     if (loading) return
     setSelectedId((current) => {
-      if (current && sessions.some((s) => s.session_id === current)) {
+      if (current && tabs.some((t) => t.session_id === current)) {
         pendingIdRef.current = null
         return current
       }
       if (current && current === pendingIdRef.current) return current
       pendingIdRef.current = null
-      return sessions[0]?.session_id ?? null
+      return tabs[0]?.session_id ?? null
     })
-  }, [loading, sessions])
+  }, [loading, tabs, setSelectedId])
 
   const selected = useMemo(
-    () => sessions.find((s) => s.session_id === selectedId) ?? null,
-    [sessions, selectedId],
+    () => tabs.find((t) => t.session_id === selectedId) ?? null,
+    [tabs, selectedId],
   )
-
-  // The drilled-into session can die underneath us (stopped from chat or
-  // another tab): drill back out to the list rather than silently showing
-  // whichever session the selection fell back to. A session still waiting
-  // to appear in the list (pendingIdRef) is not dead — keep the workspace.
-  useEffect(() => {
-    if (!drilled || selectedId === null) return
-    const alive = sessions.some((s) => s.session_id === selectedId)
-    if (!alive && pendingIdRef.current !== selectedId) setDrilled(false)
-  }, [sessions, drilled, selectedId])
 
   const [starting, setStarting] = useState(false)
   const [startError, setStartError] = useState<string | null>(null)
-  const handleNewSession = useCallback(async () => {
-    if (starting) return
-    setStarting(true)
-    try {
-      const started = await startBrowserSession(host.iii)
-      setStartError(null)
-      refresh()
-      if (started) {
-        pendingIdRef.current = started.session_id
-        setSelectedId(started.session_id)
-        setDrilled(true)
+  const startingRef = useRef(false)
+  const handleNewTab = useCallback(
+    async (incognito = false) => {
+      if (startingRef.current) return
+      startingRef.current = true
+      setStarting(true)
+      try {
+        const started = await startBrowserSession(host.iii, { incognito })
+        setStartError(null)
+        refresh()
+        if (started) {
+          pendingIdRef.current = started.session_id
+          setSelectedId(started.session_id)
+        }
+      } catch (err) {
+        setStartError(errorMessage(err))
+      } finally {
+        startingRef.current = false
+        setStarting(false)
       }
-    } catch (err) {
-      setStartError(errorMessage(err))
-    } finally {
-      setStarting(false)
-    }
-  }, [host, refresh, starting])
+    },
+    [host, refresh, setSelectedId],
+  )
 
-  const openSession = useCallback((sessionId: string) => {
-    setSelectedId(sessionId)
-    setDrilled(true)
-  }, [])
+  // A browser opens with a tab: the first visit to an empty strip makes one.
+  // Once only, so closing the last tab leaves the empty state, not a loop.
+  const autoOpenedRef = useRef(false)
+  useEffect(() => {
+    if (loading || error || tabs.length > 0 || autoOpenedRef.current) return
+    autoOpenedRef.current = true
+    void handleNewTab(false)
+  }, [loading, error, tabs.length, handleNewTab])
 
-  // Per-session verbs (stop / annotate / focus url) live inside SessionView;
-  // this ref lets page-level commands reach the mounted session's handlers
+  // Closing the selected tab lands on its right-hand neighbour, else the
+  // left one — the way every browser does it.
+  const closeTab = useCallback(
+    (sessionId: string) => {
+      const index = tabs.findIndex((t) => t.session_id === sessionId)
+      const neighbour = tabs[index + 1] ?? tabs[index - 1] ?? null
+      if (sessionId === selectedId) {
+        setSelectedId(neighbour?.session_id ?? null)
+      }
+      void stopBrowserSession(host.iii, sessionId)
+        .then(() => refresh())
+        .catch((err: unknown) => setStartError(errorMessage(err)))
+    },
+    [host, tabs, selectedId, refresh, setSelectedId],
+  )
+
+  // Per-tab verbs (annotate, find, zoom, devtools…) live inside SessionView;
+  // this ref lets page-level commands reach the mounted tab's handlers
   // without lifting their state up.
   const sessionActionsRef = useRef<SessionActions | null>(null)
   const [savedSets, setSavedSets] = useState<{
@@ -160,47 +176,63 @@ export function BrowserPage({
     [],
   )
 
-  // A palette "sessions" row (or any other host.panels.open caller) selects
-  // a session by id through the standard panelContext channel.
+  // A palette row (or any other host.panels.open caller) selects a tab, or
+  // asks for a new one, through the standard panelContext channel.
   const appliedContextRef = useRef(0)
   useEffect(() => {
     if (!panelContext || panelContext.id === appliedContextRef.current) return
     appliedContextRef.current = panelContext.id
-    const context = panelContext.context
-    const sessionId =
-      context && typeof context === 'object' && !Array.isArray(context)
-        ? (context as Record<string, unknown>).sessionId
-        : null
-    if (typeof sessionId === 'string' && sessionId) openSession(sessionId)
-    const type =
-      context && typeof context === 'object' && !Array.isArray(context)
-        ? (context as Record<string, unknown>).type
-        : null
-    const setKey =
-      context && typeof context === 'object' && !Array.isArray(context)
-        ? (context as Record<string, unknown>).key
-        : null
-    if (type === 'saved-set' && typeof setKey === 'string')
-      openSavedSets(setKey)
-  }, [panelContext, openSession, openSavedSets])
+    const context =
+      panelContext.context &&
+      typeof panelContext.context === 'object' &&
+      !Array.isArray(panelContext.context)
+        ? (panelContext.context as Record<string, unknown>)
+        : {}
+    if (typeof context.sessionId === 'string' && context.sessionId) {
+      setSelectedId(context.sessionId)
+    }
+    if (context.type === 'saved-set' && typeof context.key === 'string') {
+      openSavedSets(context.key)
+    }
+    if (context.type === 'new-tab') {
+      void handleNewTab(context.incognito === true)
+    }
+  }, [panelContext, openSavedSets, handleNewTab, setSelectedId])
 
   useEffect(
     () =>
       commands?.register([
         {
-          id: 'new-session',
-          title: 'New session',
-          detail: 'Start a browser session',
-          keywords: ['start', 'chromium'],
-          run: () => void handleNewSession(),
+          id: 'new-tab',
+          title: 'New tab',
+          keywords: ['open', 'start', 'session'],
+          run: () => void handleNewTab(false),
         },
         {
-          id: 'stop-session',
-          title: 'Stop session',
-          detail: 'Stop the selected browser session',
-          keywords: ['close', 'end'],
+          id: 'new-incognito-tab',
+          title: 'New incognito tab',
+          detail: 'A private tab: nothing saved, closes when idle',
+          keywords: ['private', 'incognito', 'session'],
+          run: () => void handleNewTab(true),
+        },
+        {
+          id: 'close-tab',
+          title: 'Close tab',
+          detail: 'Close the selected tab',
+          keywords: ['stop', 'end', 'session'],
+          enabled: () => selected !== null,
+          run: () => {
+            if (selectedId) closeTab(selectedId)
+          },
+        },
+        {
+          id: 'developer-tools',
+          title: 'Toggle developer tools',
+          detail: 'Console, network, downloads and history for this tab',
+          keywords: ['console', 'network', 'devtools', 'inspect', 'logs'],
+          shortcut: 'Mod+Shift+I',
           enabled: () => selected !== null && sessionActionsRef.current !== null,
-          run: () => sessionActionsRef.current?.stop(),
+          run: () => sessionActionsRef.current?.toggleDevtools(),
         },
         {
           id: 'annotate',
@@ -301,12 +333,12 @@ export function BrowserPage({
           run: () => sessionActionsRef.current?.printToPdf(),
         },
         {
-          id: 'clear-browsing-data',
-          title: 'Clear browsing data',
-          detail: 'Cookies, cache and storage for this session',
-          keywords: ['clear', 'cookies', 'cache', 'storage', 'reset'],
+          id: 'clear-site-data',
+          title: 'Clear cookies and site data',
+          detail: "This tab's site only; other sites stay signed in",
+          keywords: ['clear', 'cookies', 'cache', 'storage', 'reset', 'logout'],
           enabled: () => selected !== null && sessionActionsRef.current !== null,
-          run: () => sessionActionsRef.current?.clearData(),
+          run: () => sessionActionsRef.current?.clearSiteData(),
         },
         {
           id: 'device-toolbar',
@@ -319,7 +351,7 @@ export function BrowserPage({
         {
           id: 'import-cookies',
           title: 'Import cookies',
-          detail: 'Load a JSON or Netscape cookie file into the session',
+          detail: 'Load a JSON or Netscape cookie file into the browser',
           keywords: ['cookies', 'import', 'auth', 'session'],
           enabled: () => selected !== null && sessionActionsRef.current !== null,
           run: () => sessionActionsRef.current?.importCookies(),
@@ -327,7 +359,7 @@ export function BrowserPage({
         {
           id: 'copy-cookies',
           title: 'Copy cookies',
-          detail: 'Copy the session cookies as JSON',
+          detail: "Copy this site's cookies as JSON",
           keywords: ['cookies', 'export', 'copy'],
           enabled: () => selected !== null && sessionActionsRef.current !== null,
           run: () => sessionActionsRef.current?.copyCookies(),
@@ -346,7 +378,7 @@ export function BrowserPage({
         {
           id: 'saved-annotations',
           title: 'Saved annotations',
-          detail: 'Sets saved from any session; send or download them again',
+          detail: 'Sets saved from any tab; send or download them again',
           keywords: ['annotations', 'saved', 'sets', 'share'],
           run: () => openSavedSets(),
         },
@@ -369,165 +401,114 @@ export function BrowserPage({
         {
           id: 'focus-url',
           title: 'Focus the address bar',
-          detail: 'Type a url to navigate the selected session',
+          detail: 'Type a url to navigate the selected tab',
           keywords: ['address', 'navigate', 'url'],
+          shortcut: 'Mod+L',
           enabled: () => selected !== null && sessionActionsRef.current !== null,
           run: () => sessionActionsRef.current?.focusUrl(),
         },
       ]),
-    [commands, handleNewSession, selected, openSavedSets],
+    [commands, handleNewTab, closeTab, selected, selectedId, openSavedSets, host],
   )
 
-  // Narrow: one pane at a time — the rail or the opened session workspace.
-  const stageVisible = !narrow || (drilled && selected !== null)
-  const railVisible = !narrow || !stageVisible
+  const banner = error ?? startError
 
   return (
     <PageShell className="br-ui-shell">
       <PageHeader
         icon={<GlobeIcon />}
         title="Browser"
-        description="Live Chromium sessions you can watch and drive"
-        actions={
-          <div className="br-ui-header-actions">
-            <LivePill live={live} />
-          </div>
-        }
         onClose={onRequestClose}
       />
 
-      {error ? (
+      {banner ? (
         <div className="br-ui-banner alert" role="alert">
-          <span>
-            The session list could not be loaded.
-            <span className="detail">{error}</span>
-          </span>
-          <button type="button" className="br-ui-linkish" onClick={refresh}>
-            retry
-          </button>
+          <span>{banner}</span>
+          {error ? (
+            <button type="button" className="br-ui-linkish" onClick={refresh}>
+              retry
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="br-ui-linkish quiet"
+              onClick={() => setStartError(null)}
+            >
+              dismiss
+            </button>
+          )}
         </div>
       ) : null}
 
       <div
-        className={`br-ui-browser${narrow ? ' narrow' : ''}${panelSide === 'right' ? ' right' : ''}`}
+        className={cn(
+          'br-ui-browser',
+          narrow && 'narrow',
+          selected?.incognito && 'is-incognito',
+        )}
         ref={rootRef}
       >
-        {railVisible ? (
-          <PageSidebar
-            label="session list"
-            side={panelSide}
-            collapsible
-            storageKey="browser:sessions"
-            defaultWidth={300}
-            narrow={narrow}
-            className="br-ui-rail"
-            header={
-              <div className="br-ui-rail-intro">
-                <div className="br-ui-rail-intro-copy">
-                  <h2>Sessions</h2>
-                  <p>Active local and attached browsers.</p>
-                </div>
-                <Button
-                  variant="primary"
-                  size="sm"
-                  onClick={() => void handleNewSession()}
-                  disabled={starting}
-                  data-autofocus=""
-                >
-                  <Plus size={16} aria-hidden />
-                  {starting ? 'Starting...' : 'New session'}
-                </Button>
-              </div>
-            }
-            collapsedActions={
-              <>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => void handleNewSession()}
-                  disabled={starting}
-                  aria-label={
-                    starting
-                      ? 'starting browser session'
-                      : 'new browser session'
-                  }
-                  title={
-                    starting
-                      ? 'starting browser session'
-                      : 'new browser session'
-                  }
-                >
-                  <Plus size={16} aria-hidden />
-                </Button>
-                <RefreshButton
-                  onClick={refresh}
-                  label="refresh sessions"
-                  disabled={loading}
-                  spinning={loading}
-                />
-              </>
-            }
-          >
-            {startError ? <p className="br-ui-rail-err">{startError}</p> : null}
-            <header className="br-ui-col-head">
-              <span className="label">Active now</span>
-              <span className="spacer" />
-              {loading && sessions.length === 0 ? null : (
-                <span className="count">{sessions.length}</span>
-              )}
-              <RefreshButton
-                onClick={refresh}
-                label="refresh sessions"
-                disabled={loading}
-                spinning={loading}
-              />
-            </header>
-            <div className="br-ui-rail-scroll">
-              <SessionRail
-                sessions={sessions}
-                selectedId={selectedId}
-                loading={loading}
-                onSelect={openSession}
-              />
-            </div>
-          </PageSidebar>
-        ) : null}
+        <TabStrip
+          tabs={tabs}
+          selectedId={selectedId}
+          starting={starting}
+          onSelect={setSelectedId}
+          onClose={closeTab}
+          onNew={() => void handleNewTab(false)}
+        />
 
-        {stageVisible ? (
-          selected ? (
-            <SessionView
-              // Remount per session so drafts, pick mode, and type buffers
-              // never leak across sessions.
-              key={selected.session_id}
-              host={host}
-              onOpenSavedSets={openSavedSets}
-              session={selected}
-              chromiumVersion={chromiumVersion}
-              enabled
-              narrow={narrow}
-              tabId={tabId}
-              actionsRef={sessionActionsRef}
-              onBack={() => setDrilled(false)}
-              onSessionsRefresh={refresh}
-              onStopped={() => {
-                setSelectedId(null)
-                setDrilled(false)
-              }}
-            />
-          ) : (
-            <section className="br-ui-stage" aria-label="session workspace">
-              <div className="br-ui-hero">
-                <GlobeIcon className="br-ui-hero-icon" />
-                <h2 className="br-ui-hero-title">No browser sessions</h2>
-                <p className="br-ui-hero-body">
-                  Sessions started by agents appear here automatically. Start
-                  one from the session rail, or ask an agent to call{' '}
-                  <code>browser::sessions::start</code>.
-                </p>
-              </div>
-            </section>
-          )
-        ) : null}
+        {selected ? (
+          <SessionView
+            // Remount per tab so drafts, pick mode, and type buffers never
+            // leak across tabs.
+            key={selected.session_id}
+            host={host}
+            onOpenSavedSets={openSavedSets}
+            session={selected}
+            enabled
+            tabId={tabId}
+            actionsRef={sessionActionsRef}
+            onSessionsRefresh={refresh}
+            onNewTab={(incognito) => void handleNewTab(incognito)}
+          />
+        ) : (
+          <section className="br-ui-stage" aria-label="browser workspace">
+            <div className="br-ui-hero">
+              <Globe size={28} aria-hidden className="br-ui-hero-icon" />
+              <h2 className="br-ui-hero-title">
+                {loading ? 'Loading tabs…' : 'No open tabs'}
+              </h2>
+              {loading ? null : (
+                <>
+                  <p className="br-ui-hero-body">
+                    Tabs agents open appear here live. Open one yourself, or ask
+                    an agent to call <code>browser::sessions::start</code>.
+                  </p>
+                  <div className="br-ui-hero-actions">
+                    <button
+                      type="button"
+                      className="br-ui-hero-btn"
+                      onClick={() => void handleNewTab(false)}
+                      disabled={starting}
+                    >
+                      <Plus size={16} aria-hidden />
+                      {starting ? 'Opening…' : 'New tab'}
+                    </button>
+                    <button
+                      type="button"
+                      className="br-ui-hero-btn is-incognito"
+                      onClick={() => void handleNewTab(true)}
+                      disabled={starting}
+                    >
+                      <Incognito size={16} aria-hidden />
+                      New incognito tab
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </section>
+        )}
       </div>
       <SavedSetsDialog
         host={host}

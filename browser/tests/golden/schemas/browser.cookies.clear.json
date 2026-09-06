@@ -1,6 +1,6 @@
 {
   "function_id": "browser::cookies::clear",
-  "description": "Clear all of the session's cookies.",
+  "description": "Delete the cookies the tab's current page can see (its site's cookies). Other sites keep theirs; browser::clear-browser-data removes everything.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "CookiesClearInput",

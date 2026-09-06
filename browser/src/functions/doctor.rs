@@ -27,8 +27,16 @@ pub struct DoctorOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chromium_version: Option<String>,
     pub headless_default: bool,
+    /// Live-tab cap (`max_sessions`).
     pub max_sessions: u64,
+    /// Tabs with a page open right now.
     pub active_sessions: u64,
+    /// Every tab, live or asleep.
+    pub open_tabs: u64,
+    /// Whether the shared Chromium process is running.
+    pub browser_running: bool,
+    /// Where the profile, downloads and tab list live.
+    pub data_dir: String,
     pub allowed_schemes: Vec<String>,
     pub configured_origin_policies: u64,
     pub default_origin_policy_set: bool,

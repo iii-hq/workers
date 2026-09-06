@@ -32,19 +32,21 @@ export const BROWSER_FRAME_FUNCTION_ID = 'browser::frame'
 
 export const BROWSER_SESSION_STARTED_TRIGGER = 'browser::session-started'
 export const BROWSER_SESSION_STOPPED_TRIGGER = 'browser::session-stopped'
+export const BROWSER_SESSION_UPDATED_TRIGGER = 'browser::session-updated'
 export const BROWSER_NAVIGATED_TRIGGER = 'browser::navigated'
 export const BROWSER_CONSOLE_EVENT_TRIGGER = 'browser::console-event'
 export const BROWSER_NETWORK_EVENT_TRIGGER = 'browser::network-event'
 export const BROWSER_PICKED_TRIGGER = 'browser::picked'
+/** Live viewport frames of a watched tab (bind with a `session_id` filter);
+ * `browser::frame` seeds the first paint. */
+export const BROWSER_FRAME_EVENT_TRIGGER = 'browser::frame-event'
 
-/** Stream the worker pushes live viewport frames onto (group = session id).
- * The page subscribes with a `type:'stream'` trigger instead of polling. */
-export const BROWSER_FRAMES_STREAM = 'browser:frames'
-
-/** Session lifecycle trigger types the sessions rail re-reads on. */
+/** Tab lifecycle trigger types the tab strip re-reads on: opened, closed,
+ * slept/woke, navigated. */
 export const BROWSER_LIFECYCLE_TRIGGERS = [
   BROWSER_SESSION_STARTED_TRIGGER,
   BROWSER_SESSION_STOPPED_TRIGGER,
+  BROWSER_SESSION_UPDATED_TRIGGER,
   BROWSER_NAVIGATED_TRIGGER,
 ] as const
 
@@ -62,6 +64,11 @@ export const sessionInfoSchema = z.object({
   last_used_ms: z.number(),
   console_entries: z.number(),
   read_only: z.boolean().optional(),
+  /** Private tab: nothing saved, closes instead of sleeping. */
+  incognito: z.boolean().optional(),
+  /** False while the tab sleeps (page closed, tab kept); selecting it wakes it. */
+  active: z.boolean().optional(),
+  ttl_ms: z.number().optional(),
 })
 export type BrowserSessionInfo = z.infer<typeof sessionInfoSchema>
 
@@ -99,6 +106,9 @@ export const sessionStartSchema = z.object({
   session_id: z.string(),
   url: z.string(),
   headless: z.boolean(),
+  incognito: z.boolean().optional(),
+  /** Chromium's error text when the tab opened on its error page. */
+  error: z.string().optional(),
 })
 export type BrowserSessionStart = z.infer<typeof sessionStartSchema>
 
@@ -289,26 +299,18 @@ export function parseNetworkEvent(
   return parsed.success ? parsed.data : null
 }
 
-const streamFrameSchema = z.object({
+const frameEventSchema = z.object({
+  session_id: z.string(),
   frame: z.string(),
   width: z.number(),
   height: z.number(),
   frame_seq: z.number(),
   timestamp: z.number(),
 })
-export type BrowserStreamFrame = z.infer<typeof streamFrameSchema>
+export type BrowserFrameEvent = z.infer<typeof frameEventSchema>
 
-/** Pull the frame payload out of a raw `stream::set` frame. The Create/Update
- * shape nests the data at `event.data`; a flat `data` is the fallback. */
-export function extractStreamFrame(raw: unknown): BrowserStreamFrame | null {
-  if (!raw || typeof raw !== 'object') return null
-  const obj = raw as Record<string, unknown>
-  const outer =
-    obj.event && typeof obj.event === 'object'
-      ? (obj.event as Record<string, unknown>)
-      : obj
-  const data = 'data' in outer ? outer.data : obj.data
-  const parsed = streamFrameSchema.safeParse(data)
+export function parseFrameEvent(payload: unknown): BrowserFrameEvent | null {
+  const parsed = frameEventSchema.safeParse(payload)
   return parsed.success ? parsed.data : null
 }
 
@@ -452,12 +454,12 @@ export async function listBrowserSessions(
 
 export async function startBrowserSession(
   iii: ExtensionIii,
-  url?: string,
+  options: { url?: string; incognito?: boolean } = {},
 ): Promise<BrowserSessionStart | null> {
-  const res = await iii.trigger<unknown>(
-    BROWSER_SESSIONS_START_FUNCTION_ID,
-    url ? { url } : {},
-  )
+  const res = await iii.trigger<unknown>(BROWSER_SESSIONS_START_FUNCTION_ID, {
+    ...(options.url ? { url: options.url } : {}),
+    ...(options.incognito ? { incognito: true } : {}),
+  })
   const parsed = sessionStartSchema.safeParse(res)
   return parsed.success ? parsed.data : null
 }
@@ -471,15 +473,25 @@ export async function stopBrowserSession(
   })
 }
 
+const navigateSchema = z.object({
+  ok: z.boolean(),
+  url: z.string(),
+  error: z.string().optional(),
+})
+
+/** Navigate the tab. Resolves even when the site failed to load — like a
+ * browser, the tab then shows Chromium's error page and `error` says why. */
 export async function navigateBrowser(
   iii: ExtensionIii,
   sessionId: string,
   url: string,
-): Promise<void> {
-  await iii.trigger(BROWSER_NAVIGATE_FUNCTION_ID, {
+): Promise<{ url: string; error?: string } | null> {
+  const res = await iii.trigger<unknown>(BROWSER_NAVIGATE_FUNCTION_ID, {
     session_id: sessionId,
     url,
   })
+  const parsed = navigateSchema.safeParse(res)
+  return parsed.success ? parsed.data : null
 }
 
 export async function controlBrowserHistory(
@@ -825,6 +837,7 @@ export function screenshotFileName(url: string, at = new Date()): string {
 
 export const BROWSER_HISTORY_LIST_FUNCTION_ID = 'browser::history::list'
 export const BROWSER_CLEAR_DATA_FUNCTION_ID = 'browser::clear-data'
+export const BROWSER_CLEAR_BROWSER_DATA_FUNCTION_ID = 'browser::clear-browser-data'
 export const BROWSER_DOWNLOADS_LIST_FUNCTION_ID = 'browser::downloads::list'
 export const BROWSER_DOWNLOAD_FUNCTION_ID = 'browser::download'
 export const BROWSER_DOWNLOAD_REMOVE_FUNCTION_ID = 'browser::download::remove'
@@ -867,6 +880,23 @@ export async function clearBrowserData(
   return clearDataSchema.safeParse(res).success
     ? clearDataSchema.parse(res).cleared
     : []
+}
+
+const clearBrowserDataSchema = z.object({
+  ok: z.boolean(),
+  closed_pages: z.number(),
+  profile_dir: z.string(),
+})
+
+/** Wipe the whole profile: every site's cookies, logins, storage, cache and
+ * downloads. Tabs stay and reopen signed out. */
+export async function clearAllBrowserData(
+  iii: ExtensionIii,
+): Promise<{ closedPages: number; profileDir: string }> {
+  const res = await iii.trigger<unknown>(BROWSER_CLEAR_BROWSER_DATA_FUNCTION_ID, {})
+  const parsed = clearBrowserDataSchema.safeParse(res)
+  if (!parsed.success) throw new Error('clear browser data returned an unexpected shape')
+  return { closedPages: parsed.data.closed_pages, profileDir: parsed.data.profile_dir }
 }
 
 const downloadRecordSchema = z.object({

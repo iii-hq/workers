@@ -19,6 +19,7 @@ use serde_json::Value;
 
 pub const SESSION_STARTED: &str = "browser::session-started";
 pub const SESSION_STOPPED: &str = "browser::session-stopped";
+pub const SESSION_UPDATED: &str = "browser::session-updated";
 pub const NAVIGATED: &str = "browser::navigated";
 pub const CONSOLE_EVENT: &str = "browser::console-event";
 pub const NETWORK_EVENT: &str = "browser::network-event";
@@ -26,11 +27,13 @@ pub const PICKED: &str = "browser::picked";
 pub const HANDOFF_REQUESTED: &str = "browser::handoff-requested";
 pub const HANDOFF_RESOLVED: &str = "browser::handoff-resolved";
 pub const DOWNLOAD_CHANGED: &str = "browser::download-changed";
+pub const FRAME_EVENT: &str = "browser::frame-event";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EventKind {
     SessionStarted,
     SessionStopped,
+    SessionUpdated,
     Navigated,
     ConsoleEvent,
     NetworkEvent,
@@ -38,6 +41,7 @@ pub enum EventKind {
     HandoffRequested,
     HandoffResolved,
     DownloadChanged,
+    FrameEvent,
 }
 
 impl EventKind {
@@ -45,6 +49,7 @@ impl EventKind {
         match self {
             EventKind::SessionStarted => SESSION_STARTED,
             EventKind::SessionStopped => SESSION_STOPPED,
+            EventKind::SessionUpdated => SESSION_UPDATED,
             EventKind::Navigated => NAVIGATED,
             EventKind::ConsoleEvent => CONSOLE_EVENT,
             EventKind::NetworkEvent => NETWORK_EVENT,
@@ -52,13 +57,15 @@ impl EventKind {
             EventKind::HandoffRequested => HANDOFF_REQUESTED,
             EventKind::HandoffResolved => HANDOFF_RESOLVED,
             EventKind::DownloadChanged => DOWNLOAD_CHANGED,
+            EventKind::FrameEvent => FRAME_EVENT,
         }
     }
 
-    pub fn all() -> [EventKind; 9] {
+    pub fn all() -> [EventKind; 11] {
         [
             EventKind::SessionStarted,
             EventKind::SessionStopped,
+            EventKind::SessionUpdated,
             EventKind::Navigated,
             EventKind::ConsoleEvent,
             EventKind::NetworkEvent,
@@ -66,6 +73,7 @@ impl EventKind {
             EventKind::HandoffRequested,
             EventKind::HandoffResolved,
             EventKind::DownloadChanged,
+            EventKind::FrameEvent,
         ]
     }
 }
@@ -102,12 +110,24 @@ pub struct SessionStartedEvent {
     pub timestamp: i64,
 }
 
-/// `browser::session-stopped` — a session ended; see `reason`.
+/// `browser::session-stopped` — a tab closed for good; see `reason`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SessionStoppedEvent {
     pub session_id: String,
-    /// One of `stopped`, `idle`, `crashed`.
+    /// One of `stopped`, `idle`, `expired`, `crashed`.
     pub reason: String,
+    pub timestamp: i64,
+}
+
+/// `browser::session-updated` — a tab woke up (`active: true`, its page is
+/// open again) or went to sleep (`active: false`, page closed, tab kept).
+/// The tab strip re-reads `browser::sessions::list` on this.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SessionUpdatedEvent {
+    pub session_id: String,
+    pub active: bool,
+    pub url: String,
+    pub title: String,
     pub timestamp: i64,
 }
 
@@ -125,6 +145,25 @@ pub struct NavigatedEvent {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DownloadChangedEvent {
     pub session_id: String,
+    pub timestamp: i64,
+}
+
+/// `browser::frame-event` — one live screencast frame of a watched tab, the
+/// picture the console viewport paints. Internal console-UI plumbing and
+/// high-volume (up to 30 a second, base64 JPEG): bind with a `session_id`
+/// filter only while a viewer is on screen. `browser::frame` reads the newest
+/// frame once for the first paint.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct FrameEventPayload {
+    pub session_id: String,
+    /// Base64 JPEG.
+    pub frame: String,
+    /// Page-viewport size the frame maps to (input coordinate space).
+    pub width: u32,
+    pub height: u32,
+    /// Monotonic per-tab cursor; a viewer ignores frames older than the last
+    /// one it painted.
+    pub frame_seq: u64,
     pub timestamp: i64,
 }
 
@@ -322,14 +361,18 @@ impl TriggerHandler for BrowserTriggerHandler {
 /// `functions::register_all` so handlers can capture the subscriber sets.
 pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
     let sets = TriggerSets::new();
-    let descriptions: [(EventKind, &str); 9] = [
+    let descriptions: [(EventKind, &str); 11] = [
         (
             EventKind::SessionStarted,
-            "A Chromium session is up and ready.",
+            "A browser tab opened and is ready.",
         ),
         (
             EventKind::SessionStopped,
-            "A Chromium session ended (stopped, idle, or crashed).",
+            "A browser tab closed for good (stopped, idle, expired, or crashed).",
+        ),
+        (
+            EventKind::SessionUpdated,
+            "A browser tab woke up (page open again) or went to sleep (page closed, tab kept).",
         ),
         (
             EventKind::Navigated,
@@ -359,6 +402,10 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
             EventKind::DownloadChanged,
             "A download started, progressed, or finished in a session.",
         ),
+        (
+            EventKind::FrameEvent,
+            "Internal: a live screencast frame of a watched tab (console viewport plumbing, high volume).",
+        ),
     ];
     for (kind, description) in descriptions {
         let _ = iii.register_trigger_type(
@@ -387,7 +434,13 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
 /// bus; tests record.
 #[async_trait]
 pub trait EventDeliverer: Send + Sync {
+    /// Fire-and-forget delivery.
     async fn deliver(&self, trigger_type: &str, function_id: &str, payload: Value);
+    /// Delivery that returns once the bus accepted the event, for producers
+    /// that want back-pressure (the frame pump). Defaults to `deliver`.
+    async fn deliver_awaited(&self, trigger_type: &str, function_id: &str, payload: Value) {
+        self.deliver(trigger_type, function_id, payload).await;
+    }
 }
 
 /// Fire-and-forget bus delivery so the page-event pump that produced the
@@ -423,6 +476,21 @@ impl EventDeliverer for IiiDeliverer {
             }
         });
     }
+
+    async fn deliver_awaited(&self, trigger_type: &str, function_id: &str, payload: Value) {
+        let res = self
+            .iii
+            .trigger(TriggerRequest {
+                function_id: function_id.to_string(),
+                payload,
+                action: Some(TriggerAction::Void),
+                timeout_ms: Some(5_000),
+            })
+            .await;
+        if let Err(e) = res {
+            tracing::debug!(trigger_type, function_id, error = %e, "event delivery failed");
+        }
+    }
 }
 
 /// Evaluates each binding's session filter against each event and delivers
@@ -438,6 +506,32 @@ impl Emitter {
     }
 
     pub async fn emit<T: Serialize>(&self, kind: EventKind, session_id: &str, payload: &T) {
+        self.emit_inner(kind, session_id, payload, false).await;
+    }
+
+    /// `emit`, returning once every matching binding accepted the event, so
+    /// the caller is paced by the bus instead of flooding it.
+    pub async fn emit_awaited<T: Serialize>(&self, kind: EventKind, session_id: &str, payload: &T) {
+        self.emit_inner(kind, session_id, payload, true).await;
+    }
+
+    /// Whether anyone is bound to `kind` for this session — lets a producer
+    /// skip work (a JPEG decode, say) nobody would see.
+    pub fn has_subscribers(&self, kind: EventKind, session_id: &str) -> bool {
+        self.sets
+            .for_kind(kind)
+            .snapshot()
+            .iter()
+            .any(|b| binding_matches(&b.filter, session_id))
+    }
+
+    async fn emit_inner<T: Serialize>(
+        &self,
+        kind: EventKind,
+        session_id: &str,
+        payload: &T,
+        awaited: bool,
+    ) {
         let bindings = self.sets.for_kind(kind).snapshot();
         // Filter before serializing: on the high-volume console-event pump,
         // a session with no matching binding must not pay the payload
@@ -458,9 +552,15 @@ impl Emitter {
             }
         };
         for binding in matched {
-            self.deliverer
-                .deliver(kind.trigger_type(), &binding.function_id, payload.clone())
-                .await;
+            if awaited {
+                self.deliverer
+                    .deliver_awaited(kind.trigger_type(), &binding.function_id, payload.clone())
+                    .await;
+            } else {
+                self.deliverer
+                    .deliver(kind.trigger_type(), &binding.function_id, payload.clone())
+                    .await;
+            }
         }
     }
 }

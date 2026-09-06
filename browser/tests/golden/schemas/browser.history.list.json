@@ -49,7 +49,7 @@
     },
     "definitions": {
       "HistoryVisit": {
-        "description": "One entry in a session's navigation history.",
+        "description": "One entry in a tab's navigation history.",
         "type": "object",
         "required": [
           "timestamp",

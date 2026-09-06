@@ -1,6 +1,6 @@
 {
   "function_id": "browser::sessions::list",
-  "description": "List live browser sessions with their current URL and activity.",
+  "description": "List every browser tab, live or asleep, with its current URL, title, and activity.",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "ListInput",
@@ -25,16 +25,23 @@
       "SessionInfo": {
         "type": "object",
         "required": [
+          "active",
           "console_entries",
           "created_ms",
           "headless",
+          "incognito",
           "last_used_ms",
           "read_only",
           "session_id",
           "url"
         ],
         "properties": {
+          "active": {
+            "description": "True while the tab has its page open. A sleeping tab (false) is listed and usable; the next call on it reopens the page at `url`.",
+            "type": "boolean"
+          },
           "console_entries": {
+            "description": "Console entries captured since the page opened; 0 while asleep.",
             "type": "integer",
             "format": "uint64",
             "minimum": 0.0
@@ -44,6 +51,10 @@
             "format": "int64"
           },
           "headless": {
+            "type": "boolean"
+          },
+          "incognito": {
+            "description": "Private tab: nothing persisted, closes instead of sleeping.",
             "type": "boolean"
           },
           "last_used_ms": {
@@ -61,6 +72,15 @@
               "string",
               "null"
             ]
+          },
+          "ttl_ms": {
+            "description": "Lifetime the tab was opened with, when any.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint64",
+            "minimum": 0.0
           },
           "url": {
             "type": "string"

@@ -16,16 +16,20 @@
       "allow_history_access",
       "allowed_schemes",
       "attach_enabled",
+      "browser_running",
       "configured_origin_policies",
+      "data_dir",
       "default_origin_policy_set",
       "headless_default",
       "issues",
       "max_sessions",
       "ok",
+      "open_tabs",
       "recording_available"
     ],
     "properties": {
       "active_sessions": {
+        "description": "Tabs with a page open right now.",
         "type": "integer",
         "format": "uint64",
         "minimum": 0.0
@@ -46,6 +50,10 @@
         "description": "Whether attach mode is enabled (allow_attach).",
         "type": "boolean"
       },
+      "browser_running": {
+        "description": "Whether the shared Chromium process is running.",
+        "type": "boolean"
+      },
       "chromium_path": {
         "type": [
           "string",
@@ -63,6 +71,10 @@
         "format": "uint64",
         "minimum": 0.0
       },
+      "data_dir": {
+        "description": "Where the profile, downloads and tab list live.",
+        "type": "string"
+      },
       "default_origin_policy_set": {
         "type": "boolean"
       },
@@ -76,6 +88,7 @@
         }
       },
       "max_sessions": {
+        "description": "Live-tab cap (`max_sessions`).",
         "type": "integer",
         "format": "uint64",
         "minimum": 0.0
@@ -83,6 +96,12 @@
       "ok": {
         "description": "True when sessions can start right now.",
         "type": "boolean"
+      },
+      "open_tabs": {
+        "description": "Every tab, live or asleep.",
+        "type": "integer",
+        "format": "uint64",
+        "minimum": 0.0
       },
       "recording_available": {
         "description": "Whether ffmpeg is on PATH, which browser::recording requires.",

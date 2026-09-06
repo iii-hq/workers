@@ -630,6 +630,7 @@ dependencies = [
  "iii-console-ui",
  "iii-helpers 0.23.0",
  "iii-sdk 0.23.0",
+ "iii-worker-paths",
  "jsonschema",
  "opentelemetry_sdk",
  "schemars",
@@ -1066,6 +1067,10 @@ dependencies = [
  "tracing",
  "uuid",
 ]
+
+[[package]]
+name = "iii-worker-paths"
+version = "0.1.0"
 
 [[package]]
 name = "indexmap"

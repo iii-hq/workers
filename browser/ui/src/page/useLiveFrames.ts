@@ -1,25 +1,25 @@
 import type { Host } from '@iii-dev/console-ui'
 import { useEffect, useRef, useState } from 'react'
 import {
-  BROWSER_FRAMES_STREAM,
-  extractStreamFrame,
+  BROWSER_FRAME_EVENT_TRIGGER,
+  parseFrameEvent,
   readBrowserFrame,
   startBrowserScreencast,
   stopBrowserScreencast,
   takeBrowserScreenshot,
 } from '../lib/browser'
-import { useBrowserStream } from '../lib/events'
+import { useBrowserSessionEvent } from '../lib/events'
 
 /**
- * Live view for the selected session, fed by the worker's screencast stream:
- * `screencast::start` on mount, then the worker pushes each frame onto the
- * `browser:frames` stream (group = session id) and this hook appends the
- * pushed frames, the same engine-pushes / client-appends pattern the Traces
- * view uses. No polling. One `browser::frame` seed read paints the current
- * frame immediately (the stream only delivers frames produced after the
- * subscription); a `browser::screenshot` is the last-resort first paint if
- * the screencast surface is unavailable (older worker). `screencast::stop`
- * runs on unmount and session switch (idempotent).
+ * Live view for the selected tab, fed by the worker's screencast:
+ * `screencast::start` on mount, then every frame arrives on the
+ * `browser::frame-event` trigger (bound with this tab's `session_id`, the
+ * same path the console and network feeds use) and this hook paints it. No
+ * polling. One `browser::frame` seed read paints the current frame
+ * immediately (the trigger only delivers frames produced after the binding);
+ * a `browser::screenshot` is the last-resort first paint if the screencast
+ * surface is unavailable (older worker). `screencast::stop` runs on unmount
+ * and tab switch (idempotent).
  */
 
 export interface LiveFrame {
@@ -43,6 +43,10 @@ export function useLiveFrames(
   /** Bump to re-read the current frame once (e.g. after a resize), so the
    * new size paints even if the screencast stream is momentarily quiet. */
   reseedToken = 0,
+  /** Bump when the tab's page was reopened under this viewer (it slept and
+   * woke, the browser data was cleared): the new page has no screencast
+   * until we start one again. */
+  wakeToken = 0,
 ): LiveViewState {
   const [frame, setFrame] = useState<LiveFrame | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -58,7 +62,8 @@ export function useLiveFrames(
   }, [sessionId])
 
   // Start the screencast, seed the current frame, and clean up on unmount /
-  // session switch.
+  // session switch / wake.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: wakeToken re-runs the effect on purpose
   useEffect(() => {
     if (!enabled || !sessionId) return
     let cancelled = false
@@ -110,17 +115,17 @@ export function useLiveFrames(
         .then(() => stopBrowserScreencast(host.iii, sessionId))
         .catch(() => {})
     }
-  }, [host, enabled, sessionId])
+  }, [host, enabled, sessionId, wakeToken])
 
-  useBrowserStream({
+  useBrowserSessionEvent({
     host,
     enabled: enabled && !!sessionId,
-    streamName: BROWSER_FRAMES_STREAM,
-    groupId: sessionId,
+    triggerType: BROWSER_FRAME_EVENT_TRIGGER,
+    sessionId,
     fnId: 'iii::browser-ui::frames',
-    onFrame: (payload) => {
-      const f = extractStreamFrame(payload)
-      if (!f || f.frame_seq <= lastSeqRef.current) return
+    onEvent: (payload) => {
+      const f = parseFrameEvent(payload)
+      if (!f || f.session_id !== sessionId || f.frame_seq <= lastSeqRef.current) return
       lastSeqRef.current = f.frame_seq
       setFrame({
         dataUrl: `data:image/jpeg;base64,${f.frame}`,

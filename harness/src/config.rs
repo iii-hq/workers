@@ -100,9 +100,11 @@ pub struct WorkerConfig {
     #[serde(default)]
     pub default_filesystem_root: Option<String>,
 
-    /// JSON file used for the operator's durable project catalog. Relative
-    /// paths resolve from the harness process working directory. Changes take
-    /// effect on the next project operation without restarting the worker.
+    /// JSON file used for the operator's durable project catalog. Resolved
+    /// like every other worker path: absolute and `~/` paths are kept, relative
+    /// paths resolve under `III_COMPOSE_DIR` (or the process cwd outside
+    /// Compose). Changes take effect on the next project operation without
+    /// restarting the worker.
     #[serde(default = "default_projects_file_path")]
     pub projects_file_path: String,
 }
@@ -250,7 +252,7 @@ fn default_sweep_expression() -> String {
     "0 0 0 * * *".to_string()
 }
 fn default_projects_file_path() -> String {
-    "./data/harness-projects.json".to_string()
+    iii_worker_paths::default_path("data/harness-projects.json")
 }
 fn default_functions() -> Option<FunctionPolicy> {
     // Default policy for PARENTLESS spawns that carry no inherited policy
@@ -324,7 +326,7 @@ mod tests {
         assert_eq!(cfg.max_children, 8);
         assert_eq!(cfg.max_transient_resumes, 3);
         assert_eq!(cfg.sweep_expression, "0 0 0 * * *");
-        assert_eq!(cfg.projects_file_path, "./data/harness-projects.json");
+        assert_eq!(cfg.projects_file_path, "data/harness-projects.json");
     }
 
     #[test]
