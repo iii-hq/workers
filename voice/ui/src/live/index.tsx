@@ -16,12 +16,31 @@ export function createVoiceLiveSummary(_host: Host, controller: DictationControl
     const { state } = useDictation(controller)
     const listening = state.status === 'listening' || state.status === 'starting'
     if (!listening) return null
-    const tail = [...state.committed.slice(-2), state.partial].filter(Boolean).join(' ')
-    const shown = tail.length > PARTIAL_MAX_CHARS ? `…${tail.slice(-PARTIAL_MAX_CHARS)}` : tail
+    const settled = state.committed.slice(-2).join(' ')
+    const room = Math.max(0, PARTIAL_MAX_CHARS - state.partial.length)
+    const settledShown = settled.length > room ? `…${settled.slice(settled.length - room)}` : settled
+    const idle = state.status === 'starting' ? 'starting…' : 'listening'
     return (
       <output className="voice-live" aria-live="polite">
         <span className="voice-chip-dot" aria-hidden="true" />
-        <span className="voice-live-text">{shown || (state.status === 'starting' ? 'starting…' : 'listening')}</span>
+        <span className="voice-live-text">
+          {settledShown || state.partial ? (
+            <>
+              {settledShown}
+              {settledShown && state.partial ? ' ' : ''}
+              {state.partial ? (
+                <span
+                  className="voice-live-partial"
+                  title="Live words from the streaming model; the final text arrives when the sentence ends"
+                >
+                  {state.partial}
+                </span>
+              ) : null}
+            </>
+          ) : (
+            idle
+          )}
+        </span>
       </output>
     )
   }

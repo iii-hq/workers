@@ -6,7 +6,7 @@
  * through an `<audio>` element with a real `onended`. The `host` backend
  * returns as soon as playback STARTS (`played: true`, no audio) — "Stop" is
  * hidden by whichever comes first: an estimated duration (~150 wpm, capped
- * at 60s) or `voice::doctor` reporting `tts.playing === 0`, polled no
+ * the worker's `voice::speech-ended` trigger for host playback.
  * faster than every 2s. "Stop" calls `voice::speak::stop` with the
  * utterance's `speech_id`. Hidden while the turn is streaming; disabled
  * with a tooltip when the doctor reports the tts backend `off`.
@@ -17,11 +17,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { doctor, speak, speakStop } from '../lib/client'
 import { errorMessage, stripCodeFences } from '../lib/format'
 import { SpeakerIcon } from '../lib/icons'
+import { useSpeechEnded } from '../lib/playback'
 import type { SessionContentBlock, SessionMessageEntry, SessionMessagesResponse } from '../lib/types'
 
-const WORDS_PER_MINUTE = 150
-const MAX_ESTIMATE_SECS = 60
-const POLL_INTERVAL_MS = 2000
 const MAX_PAGES = 20
 
 function extractAssistantText(entry: SessionMessageEntry): string | null {
@@ -55,12 +53,6 @@ async function fetchLastAssistantText(host: Host, sessionId: string): Promise<st
   return lastText
 }
 
-function estimateSpeechSeconds(text: string): number {
-  const words = text.trim().split(/\s+/).filter(Boolean).length
-  if (words === 0) return 1
-  return Math.min(MAX_ESTIMATE_SECS, Math.max(1, (words / WORDS_PER_MINUTE) * 60))
-}
-
 type SpeakState =
   | { phase: 'idle' }
   | { phase: 'loading' }
@@ -72,8 +64,6 @@ export function createVoiceTurnSummary(host: Host): SessionTurnSummaryRegistrati
     const [ttsOff, setTtsOff] = useState(false)
     const [speakState, setSpeakState] = useState<SpeakState>({ phase: 'idle' })
     const audioRef = useRef<HTMLAudioElement | null>(null)
-    const estimateTimerRef = useRef<number | null>(null)
-    const pollTimerRef = useRef<number | null>(null)
     const [lastReply, setLastReply] = useState<string | null>(null)
     const hasReply = lastReply !== null
 
@@ -106,55 +96,39 @@ export function createVoiceTurnSummary(host: Host): SessionTurnSummaryRegistrati
       }
     }, [])
 
-    const clearWatch = useCallback(() => {
-      if (estimateTimerRef.current !== null) {
-        window.clearTimeout(estimateTimerRef.current)
-        estimateTimerRef.current = null
-      }
-      if (pollTimerRef.current !== null) {
-        window.clearInterval(pollTimerRef.current)
-        pollTimerRef.current = null
-      }
-    }, [])
+    useSpeechEnded(host, (event) => {
+      setSpeakState((current) =>
+        current.phase === 'speaking' && (!current.speechId || current.speechId === event.speech_id)
+          ? { phase: 'idle' }
+          : current,
+      )
+    })
 
-    const armHostPlaybackWatch = useCallback(
-      (estimateSecs: number) => {
-        clearWatch()
-        estimateTimerRef.current = window.setTimeout(() => {
-          clearWatch()
-          setSpeakState({ phase: 'idle' })
-        }, estimateSecs * 1000)
-        pollTimerRef.current = window.setInterval(() => {
-          doctor(host.iii)
-            .then((res) => {
-              if (res.tts.playing === 0) {
-                clearWatch()
-                setSpeakState({ phase: 'idle' })
-              }
-            })
-            .catch(() => {})
-        }, POLL_INTERVAL_MS)
-      },
-      [clearWatch],
-    )
+    const speakOpRef = useRef(0)
 
     useEffect(
       () => () => {
-        clearWatch()
+        speakOpRef.current += 1
         audioRef.current?.pause()
       },
-      [clearWatch],
+      [],
     )
 
     const onReadAloud = useCallback(async () => {
+      const op = ++speakOpRef.current
       setSpeakState({ phase: 'loading' })
       try {
         const text = lastReply ?? (await fetchLastAssistantText(host, sessionId))
+        if (op !== speakOpRef.current) return
         if (!text) {
           setSpeakState({ phase: 'idle' })
           return
         }
         const res = await speak(host.iii, { text })
+        if (op !== speakOpRef.current) {
+          if (res.speech_id) speakStop(host.iii, { speech_id: res.speech_id }).catch(() => {})
+          return
+        }
         if (res.audio_base64) {
           const mime = res.mime ?? 'audio/mpeg'
           const audio = new Audio(`data:${mime};base64,${res.audio_base64}`)
@@ -165,23 +139,22 @@ export function createVoiceTurnSummary(host: Host): SessionTurnSummaryRegistrati
           setSpeakState({ phase: 'speaking', speechId: res.speech_id })
         } else if (res.played) {
           setSpeakState({ phase: 'speaking', speechId: res.speech_id })
-          armHostPlaybackWatch(estimateSpeechSeconds(text))
         } else {
           setSpeakState({ phase: 'idle' })
         }
       } catch (err) {
-        setSpeakState({ phase: 'error', message: errorMessage(err) })
+        if (op === speakOpRef.current) setSpeakState({ phase: 'error', message: errorMessage(err) })
       }
-    }, [sessionId, lastReply, armHostPlaybackWatch])
+    }, [sessionId, lastReply])
 
     const onStop = useCallback(() => {
+      speakOpRef.current += 1
       audioRef.current?.pause()
       audioRef.current = null
-      clearWatch()
       const speechId = speakState.phase === 'speaking' ? speakState.speechId : undefined
       speakStop(host.iii, speechId ? { speech_id: speechId } : {}).catch(() => {})
       setSpeakState({ phase: 'idle' })
-    }, [clearWatch, speakState])
+    }, [speakState])
 
     if (isStreaming || !hasReply) return null
 

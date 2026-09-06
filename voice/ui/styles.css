@@ -426,6 +426,11 @@
   color: var(--color-ink);
 }
 
+[data-iii-ui='voice'] .voice-live-partial {
+  color: var(--color-ink-faint);
+  font-style: italic;
+}
+
 [data-iii-ui='voice'] .voice-chip-dot {
   width: 6px;
   height: 6px;

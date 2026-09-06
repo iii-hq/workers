@@ -6,6 +6,7 @@ pub mod events;
 pub mod functions;
 pub mod manifest;
 pub mod models;
+pub mod router;
 pub mod session;
 pub mod tts;
 pub mod ui;

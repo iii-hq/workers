@@ -22,6 +22,7 @@ pub const TRANSCRIPT: &str = "voice::transcript";
 pub const SESSION_STARTED: &str = "voice::session-started";
 pub const SESSION_STOPPED: &str = "voice::session-stopped";
 pub const MODEL_PROGRESS: &str = "voice::model-progress";
+pub const SPEECH_ENDED: &str = "voice::speech-ended";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EventKind {
@@ -29,6 +30,7 @@ pub enum EventKind {
     SessionStarted,
     SessionStopped,
     ModelProgress,
+    SpeechEnded,
 }
 
 impl EventKind {
@@ -38,32 +40,50 @@ impl EventKind {
             EventKind::SessionStarted => SESSION_STARTED,
             EventKind::SessionStopped => SESSION_STOPPED,
             EventKind::ModelProgress => MODEL_PROGRESS,
+            EventKind::SpeechEnded => SPEECH_ENDED,
         }
     }
 
-    pub fn all() -> [EventKind; 4] {
+    pub fn all() -> [EventKind; 5] {
         [
             EventKind::Transcript,
             EventKind::SessionStarted,
             EventKind::SessionStopped,
             EventKind::ModelProgress,
+            EventKind::SpeechEnded,
         ]
     }
 }
 
 /// Config accepted by every `voice::*` trigger binding. The only filter is an
-/// optional session-id equality match; unknown fields fail at registration so
-/// a misspelled filter key fails loudly instead of silently receiving nothing.
+/// optional id equality match: `session_id` for dictation events,
+/// `speech_id` for `voice::speech-ended`. Unknown fields fail at
+/// registration so a misspelled filter key fails loudly instead of silently
+/// receiving nothing.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BindingConfig {
     /// Only deliver events for this dictation session.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// Only deliver the end of this playback (`voice::speech-ended`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speech_id: Option<String>,
 }
 
-pub fn binding_matches(filter: &BindingConfig, session_id: Option<&str>) -> bool {
-    match (&filter.session_id, session_id) {
+/// `id` is the session id for dictation events and the speech id for
+/// `voice::speech-ended`; each kind consults its own filter field. A
+/// filter on the other kind's field can never match, so a binding that
+/// sets it receives nothing rather than everything.
+pub fn binding_matches(filter: &BindingConfig, kind: EventKind, id: Option<&str>) -> bool {
+    let (want, stray) = match kind {
+        EventKind::SpeechEnded => (&filter.speech_id, &filter.session_id),
+        _ => (&filter.session_id, &filter.speech_id),
+    };
+    if stray.is_some() {
+        return false;
+    }
+    match (want, id) {
         (Some(want), Some(have)) => want == have,
         (Some(_), None) => false,
         (None, _) => true,
@@ -113,6 +133,18 @@ pub struct SessionStartedEvent {
 pub struct SessionStoppedEvent {
     pub session_id: String,
     /// One of `stopped`, `discarded`, `idle`, `shutdown`.
+    pub reason: String,
+    pub timestamp_ms: i64,
+}
+
+/// `voice::speech-ended` — a host playback started by `voice::speak` is
+/// over. Fires for the `host` engine only: the other engines hand the audio
+/// to the caller, who plays it and knows when it ends.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SpeechEndedEvent {
+    pub speech_id: String,
+    /// `ended` (played to the end), `stopped` (voice::speak::stop), or
+    /// `failed` (the speech command exited with an error).
     pub reason: String,
     pub timestamp_ms: i64,
 }
@@ -189,7 +221,7 @@ impl SubscriberSet {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .values()
-            .filter(|b| binding_matches(&b.filter, session_id))
+            .filter(|b| binding_matches(&b.filter, self.kind, session_id))
             .cloned()
             .collect()
     }
@@ -247,7 +279,7 @@ impl TriggerHandler for VoiceTriggerHandler {
 /// `functions::register_all` so handlers can capture the subscriber sets.
 pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
     let sets = TriggerSets::new();
-    let descriptions: [(EventKind, &str); 4] = [
+    let descriptions: [(EventKind, &str); 5] = [
         (
             EventKind::Transcript,
             "A dictation session produced text: a partial replaces the in-progress text, a \
@@ -265,6 +297,11 @@ pub fn register_trigger_types(iii: &Arc<IIIClient>) -> TriggerSets {
             EventKind::ModelProgress,
             "Bytes received while a speech model downloads, one event per megabyte and a \
              final done event (with error when the download failed).",
+        ),
+        (
+            EventKind::SpeechEnded,
+            "A host read-aloud started by voice::speak finished: reason ended, stopped or \
+             failed. Filter with speech_id.",
         ),
     ];
     for (kind, description) in descriptions {
@@ -397,6 +434,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_filter_on_the_other_kind_never_matches() {
+        let dictation = BindingConfig {
+            session_id: Some("d_1".into()),
+            speech_id: None,
+        };
+        assert!(!binding_matches(
+            &dictation,
+            EventKind::SpeechEnded,
+            Some("s_1")
+        ));
+        assert!(binding_matches(
+            &dictation,
+            EventKind::Transcript,
+            Some("d_1")
+        ));
+        let speech = BindingConfig {
+            session_id: None,
+            speech_id: Some("s_1".into()),
+        };
+        assert!(!binding_matches(
+            &speech,
+            EventKind::Transcript,
+            Some("d_1")
+        ));
+        assert!(binding_matches(
+            &speech,
+            EventKind::SpeechEnded,
+            Some("s_1")
+        ));
+    }
+
+    #[test]
     fn a_misspelled_filter_key_is_rejected() {
         let set = SubscriberSet::new(EventKind::Transcript);
         let err = set
@@ -444,4 +513,19 @@ mod tests {
         assert_eq!(deliveries[0].1, "fn-y");
         assert_eq!(deliveries[0].0, SESSION_STOPPED);
     }
+}
+
+/// A deliverer that drops every event; for speakers built in tests.
+pub struct NoopDeliverer;
+
+#[async_trait]
+impl EventDeliverer for NoopDeliverer {
+    async fn deliver(&self, _trigger_type: &str, _function_id: &str, _payload: Value) {}
+}
+
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
