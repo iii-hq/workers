@@ -1,0 +1,623 @@
+/**
+ * Every rule is scoped under [data-iii-ui="voice"]. Injected CSS is
+ * unlayered, so an unscoped selector would silently beat the console's
+ * own fully-layered styles document-wide. Colors and motion come from the
+ * console's design tokens, so both themes and reduced motion work without
+ * a duplicate ruleset. Layout responds to the pane's own width through
+ * container queries, never the viewport.
+ */
+
+/* ── page chrome ─────────────────────────────────────────────────────── */
+
+[data-iii-ui='voice'] .voice-shell {
+  container-type: inline-size;
+  min-width: 0;
+  min-height: 0;
+}
+
+[data-iii-ui='voice'] .voice-side-list {
+  padding: 0.5rem;
+}
+
+[data-iii-ui='voice'] .voice-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  min-width: 0;
+  min-height: 0;
+  padding: 1rem;
+  overflow-y: auto;
+}
+
+[data-iii-ui='voice'] .voice-main > * {
+  flex: 0 0 auto;
+}
+
+[data-iii-ui='voice'] .voice-section {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  min-width: 0;
+  animation: voice-enter var(--motion-duration-control, 160ms) var(--motion-ease-enter, ease-out) both;
+}
+
+[data-iii-ui='voice'] .voice-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1rem;
+}
+
+[data-iii-ui='voice'] .voice-spin {
+  animation: voice-spin 0.9s linear infinite;
+}
+
+/* ── cards and facts ─────────────────────────────────────────────────── */
+
+[data-iii-ui='voice'] .voice-card {
+  min-width: 0;
+}
+
+[data-iii-ui='voice'] .voice-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-height: 2.25rem;
+}
+
+[data-iii-ui='voice'] .voice-card-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  font-family: var(--font-sans);
+  font-weight: 600;
+  color: var(--color-ink);
+}
+
+[data-iii-ui='voice'] .voice-card-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  flex-shrink: 0;
+}
+
+[data-iii-ui='voice'] .voice-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+[data-iii-ui='voice'] .voice-facts {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+}
+
+[data-iii-ui='voice'] .voice-fact {
+  display: grid;
+  grid-template-columns: 6.5rem minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: baseline;
+}
+
+[data-iii-ui='voice'] .voice-fact dt {
+  color: var(--color-ink-faint);
+  font-family: var(--font-sans);
+  font-size: 0.8125rem;
+}
+
+[data-iii-ui='voice'] .voice-fact dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--color-ink);
+  font-size: 0.8125rem;
+}
+
+[data-iii-ui='voice'] .voice-fact-line {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+[data-iii-ui='voice'] .voice-mono {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+}
+
+[data-iii-ui='voice'] .voice-wrap {
+  overflow-wrap: anywhere;
+}
+
+[data-iii-ui='voice'] .voice-strong {
+  color: var(--color-ink);
+  font-weight: 500;
+}
+
+[data-iii-ui='voice'] .voice-sub {
+  color: var(--color-ink-faint);
+  font-size: 0.75rem;
+}
+
+[data-iii-ui='voice'] .voice-note {
+  margin: 0;
+  color: var(--color-ink-faint);
+  font-family: var(--font-sans);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+[data-iii-ui='voice'] .voice-warn {
+  color: var(--color-warn);
+}
+
+[data-iii-ui='voice'] .voice-alert {
+  color: var(--color-alert);
+}
+
+[data-iii-ui='voice'] .voice-skeletons {
+  display: grid;
+  gap: 0.5rem;
+}
+
+[data-iii-ui='voice'] .voice-skeleton {
+  height: 1rem;
+  width: 70%;
+}
+
+[data-iii-ui='voice'] .voice-skeleton:nth-child(2n) {
+  width: 45%;
+}
+
+[data-iii-ui='voice'] .voice-skeleton:nth-child(3n) {
+  width: 85%;
+}
+
+[data-iii-ui='voice'] .voice-inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+[data-iii-ui='voice'] .voice-model-list {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+[data-iii-ui='voice'] .voice-model-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.625rem 0.5rem;
+  border-radius: 8px;
+  background: var(--color-panel);
+}
+
+[data-iii-ui='voice'] .voice-model-main {
+  display: grid;
+  gap: 0.125rem;
+  min-width: 0;
+}
+
+[data-iii-ui='voice'] .voice-model-main > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+[data-iii-ui='voice'] .voice-model-side {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+/* ── dictate ─────────────────────────────────────────────────────────── */
+
+[data-iii-ui='voice'] .voice-hero {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 1rem;
+  align-items: center;
+}
+
+[data-iii-ui='voice'] .voice-hero-btn {
+  min-height: 3rem;
+  padding-inline: 1.25rem;
+}
+
+[data-iii-ui='voice'] .voice-transcript {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0.75rem;
+  border-radius: 8px;
+  background: var(--color-panel);
+  color: var(--color-ink);
+  font-size: 0.9375rem;
+  line-height: 1.55;
+}
+
+[data-iii-ui='voice'] .voice-transcript-line,
+[data-iii-ui='voice'] .voice-transcript-partial {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+[data-iii-ui='voice'] .voice-transcript-partial {
+  color: var(--color-accent);
+}
+
+[data-iii-ui='voice'] .voice-transcript-text {
+  margin: 0;
+  color: var(--color-ink);
+  font-size: 0.9375rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ── transcribe ──────────────────────────────────────────────────────── */
+
+[data-iii-ui='voice'] .voice-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+[data-iii-ui='voice'] .voice-dropzone {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  min-height: 4.5rem;
+  padding: 0.875rem 1rem;
+  border: 1px dashed var(--color-edge);
+  border-radius: 8px;
+  background: var(--color-panel);
+  color: var(--color-ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--motion-duration-control, 160ms) var(--motion-ease-standard, ease),
+    background-color var(--motion-duration-control, 160ms) var(--motion-ease-standard, ease);
+}
+
+[data-iii-ui='voice'] .voice-dropzone:hover,
+[data-iii-ui='voice'] .voice-dropzone:focus-visible,
+[data-iii-ui='voice'] .voice-dropzone.dragging {
+  border-color: var(--color-accent);
+  background: var(--color-surface-hover);
+  outline: none;
+}
+
+[data-iii-ui='voice'] .voice-dropzone-icon {
+  flex-shrink: 0;
+  color: var(--color-ink-faint);
+}
+
+[data-iii-ui='voice'] .voice-dropzone-copy,
+[data-iii-ui='voice'] .voice-dropzone-file {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-width: 0;
+  font-size: 0.8125rem;
+}
+
+[data-iii-ui='voice'] .voice-dropzone-file {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+[data-iii-ui='voice'] .voice-dropzone-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui='voice'] .voice-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: end;
+}
+
+[data-iii-ui='voice'] .voice-field {
+  display: grid;
+  gap: 0.375rem;
+  min-width: 0;
+}
+
+[data-iii-ui='voice'] .voice-field-label {
+  color: var(--color-ink-faint);
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+}
+
+[data-iii-ui='voice'] .voice-field-actions {
+  display: flex;
+  align-items: center;
+}
+
+/* ── read aloud ──────────────────────────────────────────────────────── */
+
+[data-iii-ui='voice'] .voice-textarea {
+  width: 100%;
+  min-height: 5.5rem;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid var(--color-edge);
+  border-radius: 8px;
+  background: var(--color-panel);
+  color: var(--color-ink);
+  font: inherit;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+[data-iii-ui='voice'] .voice-textarea:focus-visible {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+/* ── chat header chip (src/chip): old consoles only ──────────────────── */
+
+[data-iii-ui='voice'] .voice-chip-root {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+[data-iii-ui='voice'] .voice-chip-btn.listening,
+[data-iii-ui='voice'] .voice-composer-btn.listening {
+  color: var(--color-accent);
+}
+
+[data-iii-ui='voice'] .voice-chip-copied,
+[data-iii-ui='voice'] .voice-chip-error {
+  padding: 0.125rem 0.5rem;
+  border-radius: 999px;
+  background: var(--color-surface-raised);
+  color: var(--color-ink-faint);
+  font-size: 0.75rem;
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-iii-ui='voice'] .voice-chip-error {
+  color: var(--color-alert);
+}
+
+/* ── live transcript row above the composer (src/live) ─────────────── */
+
+[data-iii-ui='voice'] .voice-live {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 0.25rem 0.75rem;
+  color: var(--color-ink-faint);
+  font-size: 0.8125rem;
+}
+
+[data-iii-ui='voice'] .voice-live-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-ink);
+}
+
+[data-iii-ui='voice'] .voice-chip-dot {
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--color-accent);
+  animation: voice-pulse 1.4s ease-in-out infinite;
+}
+
+/* ── turn summary row (src/turn-summary) ─────────────────────────────── */
+
+[data-iii-ui='voice'] .voice-turn-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.75rem;
+  color: var(--color-ink-faint);
+  font-size: 0.8125rem;
+}
+
+[data-iii-ui='voice'] .voice-turn-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  border: none;
+  background: none;
+  padding: 0.25rem 0.5rem;
+  border-radius: 6px;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+[data-iii-ui='voice'] .voice-turn-action:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
+}
+
+[data-iii-ui='voice'] .voice-turn-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+[data-iii-ui='voice'] .voice-turn-error {
+  color: var(--color-alert);
+}
+
+/* ── composer toolbar action (src/composer) ─────────────────────────── */
+
+[data-iii-ui='voice'] .voice-composer-action {
+  display: inline-flex;
+  align-items: center;
+}
+
+[data-iii-ui='voice'] .voice-composer-btn {
+  width: 2.25rem;
+  height: 2.25rem;
+}
+
+/* ── touch ───────────────────────────────────────────────────────────── */
+
+[data-iii-ui='voice'] .voice-chip-btn,
+[data-iii-ui='voice'] .voice-composer-btn {
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+@media (pointer: coarse) {
+  [data-iii-ui='voice'] .voice-chip-btn,
+  [data-iii-ui='voice'] .voice-composer-btn {
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+  }
+
+  [data-iii-ui='voice'] .voice-turn-action,
+  [data-iii-ui='voice'] .voice-dropzone {
+    min-height: 2.75rem;
+  }
+}
+
+/* ── narrow panes ────────────────────────────────────────────────────── */
+
+@container (max-width: 44rem) {
+  [data-iii-ui='voice'] .voice-card-header {
+    flex-wrap: wrap;
+  }
+
+  [data-iii-ui='voice'] .voice-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  [data-iii-ui='voice'] .voice-fact {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.125rem;
+  }
+
+  [data-iii-ui='voice'] .voice-hero {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  [data-iii-ui='voice'] .voice-hero-btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  [data-iii-ui='voice'] .voice-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  [data-iii-ui='voice'] .voice-field-actions > * {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
+@container (max-width: 30rem) {
+  [data-iii-ui='voice'] .voice-main {
+    padding: 0.75rem;
+  }
+}
+
+/* ── motion ──────────────────────────────────────────────────────────── */
+
+@keyframes voice-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes voice-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+@keyframes voice-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-iii-ui='voice'] .voice-chip-dot,
+  [data-iii-ui='voice'] .voice-spin {
+    animation: none;
+  }
+
+  [data-iii-ui='voice'] .voice-section {
+    animation-name: voice-fade;
+  }
+
+  [data-iii-ui='voice'] .voice-dropzone {
+    transition: none;
+  }
+}
+
+@keyframes voice-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+/* ── inline choices on the overview ──────────────────────────────────── */
+
+[data-iii-ui='voice'] .voice-choice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+[data-iii-ui='voice'] .voice-block {
+  display: block;
+  margin-top: 0.25rem;
+}
+
+[data-iii-ui='voice'] .voice-link {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+[data-iii-ui='voice'] .voice-link:hover {
+  color: var(--ui-fg, inherit);
+}
