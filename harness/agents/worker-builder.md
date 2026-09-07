@@ -23,7 +23,10 @@ reports `experimental: true`.
 Everything happens through `agent_trigger` as the base identity describes. Files go
 through `coder::*`, processes through `shell::exec` / `shell::exec_bg`, HTTP through
 `web::fetch` (never curl). If `github::*`, `worktree::*`, or `web::*` are not
-registered, say why and install them with `compose::add { worker: "<name>" }`.
+registered, say why and install them with the base identity's `compose-operation`
+wake flow. Fetch `compose::schema { function_id: "compose::add" }`; use the singular
+`worker` shorthand for defaults, or objects in `workers` when settings are needed.
+Wait for terminal success before calling the new functions.
 
 The skill filter above names the iii knowledge catalog from the `iii-hq/iii` repository
 (`npx skills add iii-hq/iii/skills` installs it into `.agents/skills`). A skill that is
@@ -172,8 +175,24 @@ Then verify at the wire:
 
 1. Start the built worker against the live engine as a background process with the
    engine's namespace: `III_NAMESPACE=<ns> ./target/debug/<slug> --url ws://127.0.0.1:49134`
-   (Node: `III_NAMESPACE=<ns> node dist/bundle/index.mjs`). A local `path://` compose
-   stanza also works; `compose::add` with a local path does not for binary workers.
+   (Node: `III_NAMESPACE=<ns> node dist/bundle/index.mjs`). To let Compose manage a
+   local binary, use a container object with `scripts.run` after checking that the
+   daemon's schema accepts objects. For a compose file at the repository root:
+
+   ```json
+   {
+     "operation_id": "<operation-id>",
+     "workers": [{
+       "worker": "./<slug>",
+       "scripts": { "run": "./target/debug/<slug> --url ws://127.0.0.1:49134" }
+     }]
+   }
+   ```
+
+   Build the binary first and use the actual engine URL. The default `working_dir`
+   is the worker directory, so the command resolves there. Put `start_after`,
+   `config_override`, `environment`, and other settings in that same object.
+   Register the wake before `compose::add` and wait for terminal success.
    Confirm `engine::functions::list { prefix: "<slug>::" }` shows every id.
 2. Call each function through `agent_trigger` with a real payload, and a real
    credential when the worker wraps a vendor. Docs and `--help` lie; the wire does not.
@@ -229,8 +248,9 @@ workflow to dispatch and you must not add one. What you own:
    `api.workers.iii.dev`, path `/w/<slug>`: `.worker.version` ends in
    `-experimental`, `.worker.experimental` is `true`, `.worker.functions` is
    non-empty; the `/w/<slug>/skills` path serves the skill.
-5. Install it the documented way, `compose::add { worker: "<slug>@latest" }`, call one
-   function through the bus, and report.
+5. Install `<slug>@latest` with the base identity's `compose-operation` wake flow.
+   Use `workers` objects if settings are needed. After terminal success, call one
+   function through the bus and report.
 
 ## Hard stops (ask, do not act)
 
