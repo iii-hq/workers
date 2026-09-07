@@ -1,8 +1,9 @@
 //! @pure steps asserting on the FsStore's on-disk JSONL files and
 //! simulating worker restarts (fresh store over the same directory).
 
-use cucumber::{then, when};
+use cucumber::{given, then, when};
 
+use session_manager::config::WorkerConfig;
 use session_manager::store::encode_session_id;
 
 use crate::common::world::SessionWorld;
@@ -61,4 +62,45 @@ async fn file_absent(world: &mut SessionWorld, session_id: String) {
 #[when("the worker restarts with the same data directory")]
 async fn reopen_store(world: &mut SessionWorld) {
     world.reopen_fs();
+}
+
+/// `<data_dir>/attachments/<encoded session id>/` — where the FsStore keeps
+/// a session's attachment blobs, mirrored here so the feature can assert
+/// the folder's lifecycle without reaching into the store's internals.
+fn attachments_dir(world: &SessionWorld, session_id: &str) -> std::path::PathBuf {
+    world
+        .fs_dir
+        .join("attachments")
+        .join(encode_session_id(session_id))
+}
+
+#[then(regex = r#"^an attachment folder exists for "([^"]+)"$"#)]
+async fn attachment_folder_exists(world: &mut SessionWorld, session_id: String) {
+    let session_id = world.substitute(&session_id);
+    let path = attachments_dir(world, &session_id);
+    assert!(
+        path.is_dir(),
+        "expected an attachment folder for `{session_id}` at {}",
+        path.display()
+    );
+}
+
+#[then(regex = r#"^no attachment folder exists for "([^"]+)"$"#)]
+async fn attachment_folder_absent(world: &mut SessionWorld, session_id: String) {
+    let session_id = world.substitute(&session_id);
+    let path = attachments_dir(world, &session_id);
+    assert!(
+        !path.exists(),
+        "expected no attachment folder for `{session_id}`, but {} exists",
+        path.display()
+    );
+}
+
+#[given(regex = r"^the worker's attachment limit is (\d+) bytes$")]
+async fn set_attachment_limit(world: &mut SessionWorld, max_attachment_bytes: u64) {
+    let cfg = WorkerConfig {
+        max_attachment_bytes,
+        ..WorkerConfig::default()
+    };
+    world.reopen_fs_with(cfg);
 }

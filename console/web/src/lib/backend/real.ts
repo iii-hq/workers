@@ -17,7 +17,6 @@ import { getIiiClient } from '@/lib/iii-client'
 import { newMessageId, newSessionId } from '@/lib/session-id'
 import { appendCustomEntry, fetchTranscript } from '@/lib/sessions/api'
 import { COMPACTION_CUSTOM_TYPE } from '@/lib/sessions/entry-mapper'
-import type { AgentMessage } from '@/lib/sessions/types'
 import type { ModelId } from '@/types/chat'
 import type { PendingApprovalRecord } from '@/types/iii-agent-event'
 import {
@@ -27,8 +26,10 @@ import {
   startApprovalEventsSubscription,
 } from './approval-events-live'
 import { loadApprovalGateDefaults } from './approval-gate-config'
+import { compactionWindow, latestCompactionAnchor } from './compaction-window'
 import {
   getTurnStatus,
+  type HarnessFileBlock,
   type HarnessFunctionPolicy,
   type HarnessImageBlock,
   type HarnessSendRequest,
@@ -143,21 +144,31 @@ export function buildTurnMetadata(
  * mention expansions appended. Shared by the send/queue path and the
  * edit-queued path so an edit rebuilds content exactly as the original did.
  */
-function buildMessageInput(
+export function buildMessageInput(
   prompt: string,
   attachedBlocks: string[],
   attachedImages: HarnessImageBlock[] = [],
+  attachedFiles: HarnessFileBlock[] = [],
 ) {
-  if (attachedBlocks.length === 0 && attachedImages.length === 0) return prompt
+  if (
+    attachedBlocks.length === 0 &&
+    attachedImages.length === 0 &&
+    attachedFiles.length === 0
+  ) {
+    return prompt
+  }
   return {
     role: 'user' as const,
     content: [
       // Images last: the text says what was asked, and a provider that trims
       // content to fit its own window should drop pixels before the question.
+      // File references sit between: they cost the model nothing (the harness
+      // strips them) and belong with the text that describes the same files.
       ...[prompt, ...attachedBlocks].map((text) => ({
         type: 'text' as const,
         text,
       })),
+      ...attachedFiles,
       ...attachedImages,
     ],
     timestamp: Date.now(),
@@ -197,6 +208,7 @@ async function buildSendRequest(
     prompt,
     opts?.attachedBlocks ?? [],
     opts?.attachedImages ?? [],
+    opts?.attachedFiles ?? [],
   )
 
   return {
@@ -494,7 +506,11 @@ async function realEditQueued(
   sessionId: string,
   entryId: string,
   prompt: string,
-  opts?: { attachedBlocks?: string[]; attachedImages?: HarnessImageBlock[] },
+  opts?: {
+    attachedBlocks?: string[]
+    attachedImages?: HarnessImageBlock[]
+    attachedFiles?: HarnessFileBlock[]
+  },
 ): Promise<void> {
   const client = await getIiiClient()
   await client.trigger('harness::edit_queued', {
@@ -504,6 +520,7 @@ async function realEditQueued(
       prompt,
       opts?.attachedBlocks ?? [],
       opts?.attachedImages ?? [],
+      opts?.attachedFiles ?? [],
     ),
   })
 }
@@ -634,11 +651,19 @@ type CompactResponse =
  * the transcript, summarise the head via `context::compact`, then persist a
  * `compaction` custom entry the same way the harness does so the marker renders
  * and future turns anchor on it. Refuses while a turn is live.
+ *
+ * A prior compaction anchors this one the way it anchors the harness's next
+ * turn (`compaction-window.ts`): its summary rides as `previous_summary` so the
+ * summariser UPDATES it in place, and only the window from its
+ * `tail_start_entry_id` onward is re-read — the convergence contract of
+ * context-manager `integration.md` §5. `instructions` (the text after
+ * `/compact`) is one-shot guidance for the summariser and is not persisted.
  */
 async function realCompactSession(
   sessionId: string,
   model: ModelId,
   contextWindow?: number,
+  instructions?: string,
 ): Promise<CompactResult> {
   const { provider, model: modelId } = resolveRunParams(model)
   const client = await getIiiClient()
@@ -647,12 +672,14 @@ async function realCompactSession(
     const status = await getTurnStatus(client, sessionId).catch(() => null)
     if (status && isTurnActive(status.status)) return { status: 'busy' }
 
-    const items = (await fetchTranscript(sessionId)).filter(
-      (item): item is typeof item & { message: AgentMessage } =>
-        item.message !== undefined,
-    )
-    if (items.length === 0) return { status: 'empty' }
-    const messages = items.map((item) => item.message)
+    // The window below goes straight back to a model, which cannot read an
+    // image block whose bytes were left out; ask for the full transcript.
+    const items = await fetchTranscript(sessionId, { includeImageData: true })
+    const anchor = latestCompactionAnchor(items)
+    const window = compactionWindow(items, anchor?.tailStartEntryId ?? null)
+    if (window.length === 0) return { status: 'empty' }
+    const messages = window.map((entry) => entry.message)
+    const guidance = instructions?.trim()
 
     const DEFAULT_MAX_OUTPUT = 4_096
     const modelInput: {
@@ -672,8 +699,12 @@ async function realCompactSession(
       {
         messages,
         model: modelInput,
-        // Serialise concurrent compactions of the same conversation.
-        options: { lease_key: sessionId },
+        options: {
+          // Serialise concurrent compactions of the same conversation.
+          lease_key: sessionId,
+          ...(anchor?.summary ? { previous_summary: anchor.summary } : {}),
+          ...(guidance ? { instructions: guidance } : {}),
+        },
       },
       // Compaction makes a summariser LLM call budgeted up to 320s
       // (context-manager `summarizer_timeout_ms`); the SDK's default 30s
@@ -683,10 +714,11 @@ async function realCompactSession(
     )
 
     if (resp?.status === 'ok') {
+      // `tail_start_index` indexes the `messages` we sent, i.e. the window.
       const tailStartEntryId =
         typeof resp.tail_start_index === 'number' &&
-        items[resp.tail_start_index]
-          ? items[resp.tail_start_index].entry_id
+        window[resp.tail_start_index]
+          ? window[resp.tail_start_index].entry_id
           : null
       // Persist the marker the same shape the harness writes, so it renders
       // (session::message-added → conversations layer) and the next turn's

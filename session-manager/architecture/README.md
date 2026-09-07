@@ -43,7 +43,7 @@ flowchart LR
     subs[trigger subscribers]
   end
   subgraph worker [session-manager]
-    fns["15 session::* functions"]
+    fns["19 session::* functions"]
     svc["SessionService (domain logic, per-session locks)"]
     emit["Emitter (6 trigger types, per-binding filters)"]
     storeTrait[SessionStore trait]
@@ -70,7 +70,8 @@ flowchart LR
 | **Active path** | Walk from the active leaf to the root, reversed (oldest first). What `session::messages` returns. |
 | **Revision** | Per-entry monotonic counter, starts at 0, +1 per content update. Consumers reconcile streamed snapshots last-write-wins by revision. |
 | **Branch** | Appending under a non-leaf parent (or after `session::set-active-leaf`) creates a sibling chain. Abandoned branches stay readable. |
-| **Fork** | Copy-on-fork: the root→entry path is copied into a *new session* with fresh entry ids. Fully independent afterwards. |
+| **Fork** | Copy-on-fork: the root→entry path is copied into a *new session* with fresh entry ids. Fully independent afterwards. Attachments the copied path references are copied too, under the same ids. |
+| **Attachment** | An uploaded file's original bytes plus `AttachmentMeta`, stored per session outside the transcript (`session::put-attachment`). A message points at it with a `type: "file"` content block; the bytes are never inline. An `image` block may also carry an `attachment_id` linking its inline copy to the stored original, which lets readers ask `session::messages` for `include_image_data: false` and fetch pictures lazily. The composer's unsent chips are parked on the draft (`draft_attachments`). Deleted with the session. |
 | **Main instance** | An fs-backend instance that owns durable storage and is the single event fan-out point in a bridge topology. |
 | **Bridged instance** | A bridge-adapter instance: runs all domain logic locally, stores through the main, publishes its events to the main, and receives every participant's events back through a relay. |
 | **Envelope** | `EventEnvelope { trigger_type, payload, session_metadata }` — the wire form events travel in between instances, carrying session metadata so tenancy filters work at every edge. |

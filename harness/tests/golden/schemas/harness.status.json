@@ -196,6 +196,13 @@
           },
           {
             "properties": {
+              "attachment_id": {
+                "description": "Optional link to the stored original of this inline image (`session::put-attachment`, resolvable with `session::get-attachment`). Lets readers ask `session::messages { include_image_data: false }` and fetch the bytes lazily instead of receiving them inline. Persisted verbatim on the transcript; model-bound consumers never see it (see [`ContentBlock::strip_files`]). Omitted on the wire when absent so legacy transcripts stay byte-identical.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "data": {
                 "type": "string"
               },
@@ -212,6 +219,39 @@
             "required": [
               "data",
               "mime",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Reference to an original upload in the session-manager attachment store (resolvable with `session::get-attachment`). A REFERENCE ONLY: the bytes are never inline. Persisted verbatim on user messages and stripped from every model-bound copy (see [`ContentBlock::strip_files`]).",
+            "properties": {
+              "attachment_id": {
+                "type": "string"
+              },
+              "mime": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "size": {
+                "format": "uint64",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "type": {
+                "enum": [
+                  "file"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "attachment_id",
+              "mime",
+              "name",
+              "size",
               "type"
             ],
             "type": "object"

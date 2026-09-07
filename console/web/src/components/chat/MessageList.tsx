@@ -116,6 +116,12 @@ interface MessageListProps {
   spawnContext?: SpawnTaskContext
   /** Session agent profile name shown on assistant message headers. */
   agentName?: string
+  /**
+   * The conversation's session id, handed to user-message chips so a stored
+   * attachment can be downloaded. Optional: showcase and fixture surfaces
+   * have no session store behind them.
+   */
+  sessionId?: string
   workingDir?: string | null
   onWorkingDirChange?: (next: string) => void
   workingDirError?: string | null
@@ -471,6 +477,7 @@ export function MessageList({
   onConfigureProvider,
   spawnContext,
   agentName,
+  sessionId,
   workingDir,
   onWorkingDirChange,
   workingDirError,
@@ -1037,6 +1044,7 @@ export function MessageList({
                   message={m}
                   spawnContext={spawnContext}
                   agentName={agentName}
+                  sessionId={sessionId}
                   copyText={copyText}
                   defaultOpenCalls={defaultOpenCalls}
                   onResolveApproval={onResolveApproval}

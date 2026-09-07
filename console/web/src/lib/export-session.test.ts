@@ -146,6 +146,31 @@ describe('conversationToMarkdown', () => {
     expect(out).not.toContain('data:image/png')
   })
 
+  /* A chip hydrated from a `file` block lists like any other: name, type and
+     size. The store id is a console-internal handle, not transcript content. */
+  it('lists a stored-file chip by metadata without its attachment id', () => {
+    const user: UserMessage = {
+      id: 'u2',
+      role: 'user',
+      content: 'read this',
+      createdAt: 1,
+      attachments: [
+        {
+          id: 'a_1',
+          name: 'report.pdf',
+          size: 12345,
+          type: 'application/pdf',
+          attachmentId: 'a_1',
+        },
+      ],
+    }
+    const out = conversationToMarkdown(baseConversation([user]))
+    expect(out).toContain(
+      '**Attachments:** `report.pdf` (application/pdf, 12.1 KB)',
+    )
+    expect(out).not.toContain('a_1')
+  })
+
   it('falls back to String(value) for non-serialisable tool input', () => {
     const circular: { self?: unknown } = {}
     circular.self = circular

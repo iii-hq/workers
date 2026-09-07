@@ -46,7 +46,12 @@ export interface Attachment {
   name: string
   size: number
   type: string
-  /** present only for previewable text/image attachments under ~1MB */
+  /**
+   * Present only for previewable text/image attachments under ~1MB. An image
+   * chip with an `attachmentId` but neither this nor `file` is one whose
+   * bytes stayed in the store: the transcript read left them out, and the
+   * chip fetches its thumbnail when it scrolls into view.
+   */
   dataUrl?: string
   /**
    * The picked file, for attachment kinds a worker reads at send time (PDFs go
@@ -55,6 +60,13 @@ export interface Attachment {
    * chip, not the bytes.
    */
   file?: File
+  /**
+   * The id session-manager keeps the original bytes under. Present once the
+   * send has stored the file, or when the chip was hydrated from a `file`
+   * content block; a chip that has one can hand the original back out, which
+   * `file` above never could after a reload.
+   */
+  attachmentId?: string
 }
 
 interface BaseMessage {
@@ -88,6 +100,12 @@ export interface UserMessage extends BaseMessage {
    * split off by the entry mapper: rendered as collapsible JSON, not prose.
    */
   reactionEvent?: { label: 'event' | 'inputs'; json: string }
+  /**
+   * A console slash command the client handled itself (`/compact`): shown as
+   * what the user typed, but no harness turn follows, so it must never mark
+   * the session working or seed its title.
+   */
+  command?: boolean
 }
 
 export interface AssistantMessage extends BaseMessage {
@@ -529,6 +547,13 @@ export interface Conversation {
    * Distinct from `draft` above, which marks a not-yet-created session.
    */
   draftText?: string
+  /**
+   * Composer chips restored from `SessionMeta.draft_attachments` (or the
+   * live list this tab recorded). Restored chips carry `attachmentId` but no
+   * `file`; ChatView hydrates the bytes in the background so a send can
+   * expand them like a fresh attach.
+   */
+  draftAttachments?: Attachment[]
   /** Transcript fetched from session-manager at least once. */
   hydrated?: boolean
   createdAt: number

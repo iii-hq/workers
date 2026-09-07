@@ -24,6 +24,51 @@
       }
     ],
     "definitions": {
+      "AttachmentMeta": {
+        "description": "Metadata of one stored attachment. The bytes live in the session's attachment store (`session::get-attachment`), never inline in the transcript: a message references them through a [`ContentBlock::File`] block carrying the same `attachment_id`.",
+        "properties": {
+          "attachment_id": {
+            "description": "Store-generated id (`a_<uuid>`), unique within the session.",
+            "type": "string"
+          },
+          "created_at": {
+            "description": "Milliseconds since epoch.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "mime": {
+            "description": "MIME type, as uploaded (`application/octet-stream` when unknown).",
+            "type": "string"
+          },
+          "name": {
+            "description": "Original filename, as uploaded.",
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "sha256": {
+            "description": "Lowercase hex SHA-256 of the bytes.",
+            "type": "string"
+          },
+          "size": {
+            "description": "Decoded byte length.",
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "attachment_id",
+          "created_at",
+          "mime",
+          "name",
+          "session_id",
+          "sha256",
+          "size"
+        ],
+        "type": "object"
+      },
       "SessionMeta": {
         "description": "A session's metadata record.",
         "properties": {
@@ -39,6 +84,16 @@
             "description": "Unsent composer input parked on the session (`session::set-draft`), so a client reload restores what the user was typing. Never set by `session::set-meta`; absent when nothing is parked.",
             "type": [
               "string",
+              "null"
+            ]
+          },
+          "draft_attachments": {
+            "description": "Attachments parked with the draft (`session::set-draft` `attachment_ids`), resolved to their stored metadata so a client can rebuild the composer's chips and fetch the bytes back. Absent when none are parked; never copied by `session::fork`.",
+            "items": {
+              "$ref": "#/definitions/AttachmentMeta"
+            },
+            "type": [
+              "array",
               "null"
             ]
           },

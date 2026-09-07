@@ -23,6 +23,8 @@ pub fn content_block_to_wire(b: &ContentBlock) -> Option<Value> {
             "type": "image",
             "source": { "type": "base64", "media_type": mime, "data": data }
         })),
+        // Attachment references are stripped by the harness; ignore stray references.
+        ContentBlock::File { .. } => None,
         ContentBlock::FunctionCall {
             id,
             function_id,

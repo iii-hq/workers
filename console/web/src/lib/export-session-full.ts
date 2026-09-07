@@ -148,8 +148,11 @@ export async function assembleFullExport(
   for (const sub of descendants) {
     let messages: Message[] | null = null
     try {
+      // An export is the one reader that must carry the pictures themselves:
+      // a markdown file cannot fetch a thumbnail later.
       const items = await fetchTranscript(sub.meta.session_id, {
         timeoutMs: TRANSCRIPT_TIMEOUT_MS,
+        includeImageData: true,
       })
       messages = transcriptToMessages(items, sub.meta.session_id)
     } catch {

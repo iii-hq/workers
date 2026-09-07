@@ -24,7 +24,7 @@
 //!   propagation plumbing (`EventEnvelope`, `RemotePublisher`,
 //!   `attach_bridge_relay`): the main instance is the single fan-out
 //!   point and every bridged instance re-emits its feed locally.
-//! - [`functions`] — the 14 `session::*` typed function handlers plus
+//! - [`functions`] — the 19 `session::*` typed function handlers plus
 //!   the internal `session::store::*` protocol.
 //! - [`runtime`] — the hot-swappable storage + event runtime built from
 //!   the `adapter` config, so an adapter change reloads live (no restart).

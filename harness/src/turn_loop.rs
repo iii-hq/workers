@@ -2645,7 +2645,11 @@ async fn assemble_context(
     }
 
     // Candidate window: message entries from tail_start onward (compaction
-    // entries themselves are never sent to the model).
+    // entries themselves are never sent to the model). `file` attachment
+    // references are stripped from this MODEL-BOUND copy here, at the head of
+    // the model-facing pipeline: neither `context::assemble` nor `router::chat`
+    // ever sees one (the console also sends the `<attached-file …>` text
+    // expansion, so the model loses nothing). The persisted entries keep them.
     let mut started = tail_start.is_none();
     let mut candidate: Vec<(String, AgentMessage)> = Vec::new();
     // Index (into `candidate`) of the first entry appended after the previous
@@ -2664,7 +2668,9 @@ async fn assemble_context(
                     if past_prev_watermark && first_new.is_none() {
                         first_new = Some(candidate.len());
                     }
-                    candidate.push((entry.entry_id.clone(), msg.clone()));
+                    let mut msg = msg.clone();
+                    msg.strip_file_blocks();
+                    candidate.push((entry.entry_id.clone(), msg));
                 }
             }
         }

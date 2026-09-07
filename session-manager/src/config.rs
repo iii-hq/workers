@@ -57,6 +57,11 @@ pub struct WorkerConfig {
     /// Hard cap applied to any requested `limit`.
     #[serde(default = "default_max_list_limit")]
     pub max_list_limit: usize,
+
+    /// Largest attachment `session::put-attachment` accepts, in decoded
+    /// bytes. Larger uploads are refused with `session/attachment_too_large`.
+    #[serde(default = "default_max_attachment_bytes")]
+    pub max_attachment_bytes: u64,
 }
 
 /// Storage adapter selection. Adjacently tagged (`name` + `config`) so the
@@ -210,6 +215,12 @@ fn default_max_list_limit() -> usize {
     500
 }
 
+/// 50 MiB: comfortably above the console's per-file document ceiling while
+/// still bounding what one `session::put-attachment` call can pin in memory.
+fn default_max_attachment_bytes() -> u64 {
+    50 * 1024 * 1024
+}
+
 /// Expand `${NAME}` occurrences against the process environment. Unknown
 /// variables expand to the empty string and emit a tracing warning. Only the
 /// `--config` seed path uses this — values from `configuration::get` are
@@ -251,6 +262,7 @@ impl Default for WorkerConfig {
             adapter: StorageAdapter::default(),
             default_list_limit: default_default_list_limit(),
             max_list_limit: default_max_list_limit(),
+            max_attachment_bytes: default_max_attachment_bytes(),
         }
     }
 }
@@ -264,6 +276,7 @@ mod tests {
         let cfg: WorkerConfig = serde_yaml::from_str("{}").unwrap();
         assert_eq!(cfg.default_list_limit, 50);
         assert_eq!(cfg.max_list_limit, 500);
+        assert_eq!(cfg.max_attachment_bytes, 50 * 1024 * 1024);
         let StorageAdapter::Fs(fs) = cfg.resolve_adapter() else {
             panic!("expected fs adapter");
         };
@@ -393,6 +406,7 @@ mod tests {
         let tuned = WorkerConfig {
             default_list_limit: boot.default_list_limit + 1,
             max_list_limit: boot.max_list_limit + 1,
+            max_attachment_bytes: boot.max_attachment_bytes + 1,
             ..boot.clone()
         };
         assert_eq!(tuned.boot_signature(), boot.boot_signature());

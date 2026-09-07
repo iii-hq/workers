@@ -1,0 +1,34 @@
+{
+  "function_id": "session::delete-attachment",
+  "request_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "attachment_id": {
+        "type": "string"
+      },
+      "session_id": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "attachment_id",
+      "session_id"
+    ],
+    "title": "DeleteAttachmentRequest",
+    "type": "object"
+  },
+  "response_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "deleted": {
+        "description": "`false` when the attachment was already absent (a silent no-op).",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "deleted"
+    ],
+    "title": "DeleteAttachmentResponse",
+    "type": "object"
+  }
+}

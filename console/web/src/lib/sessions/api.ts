@@ -5,6 +5,11 @@
  * active path.
  */
 
+import type {
+  AttachmentMeta,
+  GetAttachmentResponse,
+  PutAttachmentResponse,
+} from '@/lib/attachments/store'
 import { getIiiClient } from '@/lib/iii-client'
 import type { SessionMeta, SessionStatus, TranscriptItem } from './types'
 
@@ -60,19 +65,32 @@ export async function setSessionMeta(input: {
   return client.trigger('session::set-meta', input)
 }
 
+/** `session::set-draft`'s answer: what is parked after the write. */
+export interface SetDraftResponse {
+  draft: string | null
+  attachments: AttachmentMeta[]
+}
+
 /**
  * Park (or clear, with `null`/empty text) the session's unsent composer
  * input. Event-silent and `updated_at`-neutral server-side, so it is safe
  * at keystroke cadence; reads back as `SessionMeta.draft`.
+ *
+ * `attachmentIds` is the parked attachment list (`SessionMeta.draft_attachments`),
+ * in chip order. It is sent only when given: a text-only keystroke save
+ * leaves the server's list alone, `[]` clears it (the post-send clear), and
+ * an id the store does not know is refused with `session/invalid_request`.
  */
 export async function setSessionDraft(
   sessionId: string,
   draft: string | null,
-): Promise<void> {
+  attachmentIds?: string[],
+): Promise<SetDraftResponse> {
   const client = await getIiiClient()
-  await client.trigger('session::set-draft', {
+  return client.trigger<SetDraftResponse>('session::set-draft', {
     session_id: sessionId,
     ...(draft ? { draft } : {}),
+    ...(attachmentIds !== undefined ? { attachment_ids: attachmentIds } : {}),
   })
 }
 
@@ -117,12 +135,72 @@ export async function appendCustomEntry(input: {
 }
 
 /**
+ * Store an attachment's original bytes against a session. `data` is standard
+ * (padded) base64 of the raw file. The answer carries the `file` content
+ * block to put on the outgoing message, so a caller never assembles one by
+ * hand. Rejects with `session/not_found`, `session/attachment_too_large` or
+ * `session/invalid_request` ahead of the colon in the error message.
+ */
+export async function putAttachment(input: {
+  session_id: string
+  name: string
+  mime: string
+  data: string
+}): Promise<PutAttachmentResponse> {
+  const client = await getIiiClient()
+  return client.trigger('session::put-attachment', input)
+}
+
+/**
+ * Read a stored attachment back. `null` when the session or the attachment
+ * is unknown. `include_data: false` answers with the metadata alone, for a
+ * caller that only needs to know the bytes are still there.
+ */
+export async function getAttachment(input: {
+  session_id: string
+  attachment_id: string
+  include_data?: boolean
+}): Promise<GetAttachmentResponse | null> {
+  const client = await getIiiClient()
+  const resp = await client.trigger<GetAttachmentResponse | null>(
+    'session::get-attachment',
+    input,
+  )
+  return resp ?? null
+}
+
+/**
+ * Drop a stored attachment nothing sent references any more — a chip the
+ * user removed from the composer after it was parked with the draft. The
+ * store refuses (`session/attachment_in_use`) when a sent message still
+ * points at it, which a draft chip never does.
+ */
+export async function deleteAttachment(input: {
+  session_id: string
+  attachment_id: string
+}): Promise<{ deleted: boolean }> {
+  const client = await getIiiClient()
+  return client.trigger('session::delete-attachment', input)
+}
+
+/**
  * Full active path (oldest first), custom entries interleaved at their path
  * position, looping `cursor` until exhausted.
+ *
+ * Image bytes are left out unless `includeImageData` says otherwise. Every
+ * picture ever sent in a session rides inline on its user message, and
+ * opening a long conversation used to pull all of them at once, most for
+ * messages far above the fold. Blocks that name a stored original come back
+ * with `data: ""` and the chip fetches the picture when it scrolls into view;
+ * blocks without one (sent before the store existed) keep their bytes, since
+ * there is nowhere else to get them. A session-manager that predates the
+ * option ignores it and answers with everything, which renders as before.
+ * Readers that hand the transcript to a model or write it to disk need the
+ * bytes and ask for them.
  */
 export async function fetchTranscript(
   sessionId: string,
-  opts?: { timeoutMs?: number },
+  opts?: { timeoutMs?: number; includeImageData?: boolean },
 ): Promise<TranscriptItem[]> {
   const client = await getIiiClient()
   const items: TranscriptItem[] = []
@@ -137,6 +215,9 @@ export async function fetchTranscript(
         session_id: sessionId,
         limit: MESSAGES_PAGE_LIMIT,
         include_custom: true,
+        // Omitted, not `true`, when the bytes are wanted: that is the
+        // server's default, and the payload stays what older workers expect.
+        ...(opts?.includeImageData ? {} : { include_image_data: false }),
         ...(cursor ? { cursor } : {}),
       },
       opts?.timeoutMs ? { timeoutMs: opts.timeoutMs } : undefined,

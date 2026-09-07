@@ -1,5 +1,5 @@
 import type { ModelId } from '@/types/chat'
-import type { HarnessImageBlock } from './harness-send'
+import type { HarnessFileBlock, HarnessImageBlock } from './harness-send'
 import type { SessionTriggerInfo } from './triggers'
 
 /**
@@ -160,6 +160,14 @@ export interface ChatStreamOptions {
    * providers map onto their own image shapes. Mock backends ignore this.
    */
   attachedImages?: HarnessImageBlock[]
+  /**
+   * References to the attachments' original bytes, stored in session-manager
+   * before the send (`session::put-attachment`). They ride BETWEEN the text
+   * and the images and ADD to them: the harness strips `file` blocks before
+   * the model sees the message, so the expansions above are still what it
+   * reads. Mock backends ignore this.
+   */
+  attachedFiles?: HarnessFileBlock[]
   /** mean delay between assistant tokens, in ms */
   meanDelayMs?: number
   /**
@@ -319,6 +327,7 @@ export interface ChatBackend {
     opts?: {
       attachedBlocks?: string[]
       attachedImages?: HarnessImageBlock[]
+      attachedFiles?: HarnessFileBlock[]
     },
   ): Promise<void>
   /**
@@ -367,11 +376,14 @@ export interface ChatBackend {
   /**
    * Powers `/compact`. Compacts the session-manager transcript (the single
    * source of truth) directly. `contextWindow` skips the server's
-   * `models::get` lookup when known.
+   * `models::get` lookup when known. `instructions` is the free text typed
+   * after the command: one-shot guidance for the summariser on what to keep,
+   * drop, or emphasise — it steers this compaction only.
    */
   compactSession?(
     sessionId: string,
     model: ModelId,
     contextWindow?: number,
+    instructions?: string,
   ): Promise<CompactResult>
 }

@@ -14,12 +14,31 @@ export interface SlashCommand {
   description: string
 }
 
+export const COMPACT_COMMAND = '/compact'
+
 export const SLASH_COMMANDS: SlashCommand[] = [
   {
-    command: '/compact',
-    description: 'summarise this session and free up context',
+    command: COMPACT_COMMAND,
+    description:
+      'summarise this session and free up context — add text to say what to keep or drop',
   },
 ]
+
+/**
+ * Recognise a `/compact` send. Anything after the command is one-shot guidance
+ * for the summariser (what to keep, drop, or emphasise); the bare command
+ * compacts with the default prompt. `null` when the text is not a compact
+ * command — `/compaction`, or a `/compact` that does not lead the message, is
+ * prose.
+ */
+export function parseCompactCommand(
+  text: string,
+): { instructions?: string } | null {
+  const match = /^\/compact(?:\s([\s\S]*))?$/.exec(text.trim())
+  if (!match) return null
+  const instructions = match[1]?.trim()
+  return instructions ? { instructions } : {}
+}
 
 export function fuzzyFilterSlash(
   query: string,

@@ -225,6 +225,20 @@ change to the top-level ancestor's turn (`resolve_root`), and records
 the child as the file's `agent`. Child sessions keep no record of their
 own; a child's `turn-completed` closes nothing.
 
+**A shared workspace is recorded by the session at work.** The workspace
+watch (`turn_observe.rs`) records writes the hooks never see, and two
+chats in one folder each watch it — a watch cannot tell who wrote. So an
+observed write is the session's only when it can be: the pre/post hooks
+claim each path a `shell::fs::*` / `coder::*` call touches for the
+top-level session, for `CLAIM_TTL_MS` past the call, and `fold_observed`
+drops paths another session holds (that session's hook recorded them, with
+the pre-image); and every hooked call, `shell::exec` included, marks the
+top-level session as working until it returns plus `ACTIVITY_GRACE_MS`
+(`TurnLog::is_working`, reset when the turn completes), so where another
+top-level session's watch covers the same path, `TurnObservers::own_changes`
+keeps a write only for a session at work. A lone watch keeps everything it
+sees, as before; a parent and its sub-agents never contest each other.
+
 `coder::search` grew two flags the page relies on: `respect_gitignore`
 (walk with `.gitignore`/`.ignore` rules inside a repository) and
 `fuzzy_paths` (quick-open ranking of path matches, best first). Content

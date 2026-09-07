@@ -32,11 +32,21 @@ import {
   type SystemPromptAddon,
   type SystemPromptState,
 } from '@/components/chat/system-prompt-selection'
+import {
+  createDraftAttachmentStore,
+  type DraftAttachmentChange,
+  draftAttachmentIds,
+  draftAttachmentsFromMeta,
+  reconcileDraftAttachments,
+  releaseRemovedDraftAttachments,
+} from '@/lib/attachments/draft-attachments'
+import { uploadAttachments } from '@/lib/attachments/store'
 import { upsertHarnessProject } from '@/lib/backend/projects'
 import { requestComposerFocus } from '@/lib/composer-insert'
 import { getIiiClient, type IIIConnectionState } from '@/lib/iii-client'
 import { newSessionId } from '@/lib/session-id'
 import {
+  deleteAttachment,
   deleteSession,
   ensureSession as ensureSessionApi,
   fetchTranscript,
@@ -71,6 +81,7 @@ import {
 import { releaseConsoleClaimIfAny } from '@/lib/worktree-claims'
 import {
   type AgentProfileSnapshot,
+  type Attachment,
   type Conversation,
   type ConversationMetadataEdits,
   DEFAULT_THINKING_LEVEL,
@@ -95,6 +106,41 @@ function sessionIdsFromSignature(signature: string): string[] {
 /** Composer-draft save cadence (`session::set-draft` is event-silent, so the
  *  only costs are the RPC and one JSONL append per flush). */
 const DRAFT_SAVE_DEBOUNCE_MS = 500
+
+/** One queued `session::set-draft` write. `attachmentIds` is the parked list
+ *  when the chips changed; absent on a text-only save, which leaves the
+ *  server's list alone (see `setSessionDraft`). */
+export interface PendingDraft {
+  id: string
+  text: string
+  attachmentIds?: string[]
+}
+
+/** What the last successful save for a session carried; `attachmentIds` is
+ *  unknown until a save has sent the list once. */
+export interface SavedDraft {
+  text: string
+  attachmentIds?: string[]
+}
+
+/**
+ * A save can be skipped when the server already holds what it would write:
+ * the same text and — if the save carries a list — the same list. A first
+ * list (even an empty one, the post-send clear) always goes: the server side
+ * has never been told, so nothing local can vouch for it.
+ */
+export function draftSaveIsRedundant(
+  saved: SavedDraft | undefined,
+  pending: PendingDraft,
+): boolean {
+  if (!saved || saved.text !== pending.text) return false
+  if (pending.attachmentIds === undefined) return true
+  if (saved.attachmentIds === undefined) return false
+  return (
+    saved.attachmentIds.length === pending.attachmentIds.length &&
+    saved.attachmentIds.every((id, i) => id === pending.attachmentIds?.[i])
+  )
+}
 
 function deriveTitle(text: string): string {
   const clean = text.replace(/\s+/g, ' ').trim().toLowerCase()
@@ -134,7 +180,8 @@ export function isUntouchedDraft(conversation: Conversation): boolean {
   return (
     conversation.draft === true &&
     conversation.messages.length === 0 &&
-    (conversation.draftText ?? '') === ''
+    (conversation.draftText ?? '') === '' &&
+    (conversation.draftAttachments?.length ?? 0) === 0
   )
 }
 
@@ -613,6 +660,7 @@ function conversationFromMeta(
       typeof meta.draft === 'string' && meta.draft.length > 0
         ? meta.draft
         : undefined,
+    draftAttachments: draftAttachmentsFromMeta(meta),
     messages: [],
     status: meta.status,
     statusReason: meta.status_reason,
@@ -821,6 +869,12 @@ export function mergeConversationMeta(
     ...mapped,
     messages: existing.messages,
     hydrated: existing.hydrated,
+    // The server names the parked attachments again; keep the chip objects
+    // this tab already hydrated (bytes, thumbnail) for the same ids.
+    draftAttachments: reconcileDraftAttachments(
+      existing.draftAttachments,
+      mapped.draftAttachments,
+    ),
     serverMetaUpdatedAt: Math.max(
       existing.serverMetaUpdatedAt ?? -Infinity,
       meta.updated_at,
@@ -937,13 +991,18 @@ export function appendMessageToConversation(
     messages,
     updatedAt: now,
   }
-  if (message.role === 'user') {
+  // A typed send starts a harness turn, so mark the session working until
+  // `session::status-changed` reports back. A client-handled `command` row
+  // (`/compact`) starts no turn: flipping it here would leave the session
+  // working forever, since no status event will ever clear it.
+  const startsTurn = message.role === 'user' && !message.command
+  if (startsTurn) {
     next.status = 'working'
     next.statusReason = undefined
   }
   if (
     !c.titleManual &&
-    message.role === 'user' &&
+    startsTurn &&
     c.messages.every((m) => m.role !== 'user')
   ) {
     next.title = deriveTitle(message.content)
@@ -1008,6 +1067,27 @@ export interface ConversationsApi {
    * `SessionMeta.draft`. `undefined` when there is nothing to restore.
    */
   getDraftText: (id: string) => string | undefined
+  /**
+   * Record the composer's live attachment chips for a conversation, with why
+   * they changed. Kept per conversation like the text (the same `Attachment`
+   * objects, `File` included, so an image keeps its thumbnail across a
+   * switch). For server-backed sessions the chips are also uploaded
+   * (`session::put-attachment`) and parked with the draft through the same
+   * debounced `session::set-draft` save as the text; a chip the user removed
+   * releases its stored bytes.
+   */
+  setDraftAttachments: (
+    id: string,
+    attachments: Attachment[],
+    change?: DraftAttachmentChange,
+  ) => void
+  /**
+   * The chips to seed the composer with when (re)opening a conversation:
+   * what this tab last recorded via `setDraftAttachments`, else the
+   * server-restored `SessionMeta.draft_attachments`. `undefined` when there
+   * is nothing to restore.
+   */
+  getDraftAttachments: (id: string) => Attachment[] | undefined
 }
 
 /**
@@ -1190,8 +1270,16 @@ export function useConversations(
      `conversation.draftText`, so the in-tab value (which knows about sends
      and edits) always wins over the boot snapshot. */
   const draftTextsRef = useRef(new Map<string, string>())
-  const lastSavedDraftRef = useRef(new Map<string, string>())
-  const pendingDraftRef = useRef<{ id: string; text: string } | null>(null)
+  /* The chips, same idea: one live list per conversation, so the composer is
+     re-seeded with the very objects it held (a `File` and its thumbnail are
+     not persisted anywhere else). For server-backed sessions each chip is
+     uploaded as it lands and the parked list is saved with the text. */
+  const draftAttachmentsRef = useRef(createDraftAttachmentStore())
+  /** Per-session tail of the chip uploads, so two attach gestures in a row
+      store their files one at a time and the list is saved once, after. */
+  const draftUploadChainRef = useRef(new Map<string, Promise<void>>())
+  const lastSavedDraftRef = useRef(new Map<string, SavedDraft>())
+  const pendingDraftRef = useRef<PendingDraft | null>(null)
   const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   /** Per-session tail of the in-flight `session::set-draft` writes: saves
       chain so an older save can never land after (and clobber) a newer one
@@ -2074,6 +2162,8 @@ export function useConversations(
       hydrationRetryTimersRef.current.delete(id)
       revisionsRef.current.delete(id)
       draftTextsRef.current.delete(id)
+      draftAttachmentsRef.current.delete(id)
+      draftUploadChainRef.current.delete(id)
       lastSavedDraftRef.current.delete(id)
       if (pendingDraftRef.current?.id === id) pendingDraftRef.current = null
       setActiveId((current) => (current === id ? null : current))
@@ -2321,16 +2411,28 @@ export function useConversations(
     const pending = pendingDraftRef.current
     pendingDraftRef.current = null
     if (!pending) return
-    if (lastSavedDraftRef.current.get(pending.id) === pending.text) return
+    if (
+      draftSaveIsRedundant(lastSavedDraftRef.current.get(pending.id), pending)
+    )
+      return
     const chain = draftSaveChainRef.current
     const tail = (chain.get(pending.id) ?? Promise.resolve())
       .then(async () => {
         // Re-check under the chain: an earlier link may have saved this very
         // value already. The saved-marker moves only AFTER the RPC resolves —
         // a failed save stays eligible for retry on the next flush.
-        if (lastSavedDraftRef.current.get(pending.id) === pending.text) return
-        await setSessionDraft(pending.id, pending.text || null)
-        lastSavedDraftRef.current.set(pending.id, pending.text)
+        const saved = lastSavedDraftRef.current.get(pending.id)
+        if (draftSaveIsRedundant(saved, pending)) return
+        await setSessionDraft(
+          pending.id,
+          pending.text || null,
+          pending.attachmentIds,
+        )
+        lastSavedDraftRef.current.set(pending.id, {
+          text: pending.text,
+          // A text-only save leaves the server's list as it was.
+          attachmentIds: pending.attachmentIds ?? saved?.attachmentIds,
+        })
       })
       .catch((err) => {
         if (import.meta.env.DEV) {
@@ -2343,6 +2445,34 @@ export function useConversations(
     chain.set(pending.id, tail)
   }, [])
 
+  /** Queue one debounced save for a server-backed session. Text and list
+      changes for the same session fold into one pending write: a keystroke
+      keeps a pending list, and a list change keeps the pending text — the
+      case that matters is the post-send clear, where `''` and `[]` arrive
+      back to back and must land in ONE `set-draft` that empties both. */
+  const queueDraftSave = useCallback(
+    (id: string, patch: { text?: string; attachmentIds?: string[] }) => {
+      const pending = pendingDraftRef.current
+      if (pending && pending.id !== id) flushDraft()
+      const carried = pending?.id === id ? pending : undefined
+      const text =
+        patch.text ??
+        carried?.text ??
+        draftTextsRef.current.get(id) ??
+        conversationsRef.current.find((c) => c.id === id)?.draftText ??
+        ''
+      const attachmentIds = patch.attachmentIds ?? carried?.attachmentIds
+      pendingDraftRef.current = {
+        id,
+        text,
+        ...(attachmentIds !== undefined ? { attachmentIds } : {}),
+      }
+      if (draftTimerRef.current) clearTimeout(draftTimerRef.current)
+      draftTimerRef.current = setTimeout(flushDraft, DRAFT_SAVE_DEBOUNCE_MS)
+    },
+    [flushDraft],
+  )
+
   const setDraftText = useCallback(
     (id: string, text: string) => {
       draftTextsRef.current.set(id, text)
@@ -2351,14 +2481,9 @@ export function useConversations(
       // Local drafts have no session yet; their text still lives in the ref
       // map so in-tab switches keep it.
       if (!conv || conv.draft) return
-      if (pendingDraftRef.current && pendingDraftRef.current.id !== id) {
-        flushDraft()
-      }
-      pendingDraftRef.current = { id, text }
-      if (draftTimerRef.current) clearTimeout(draftTimerRef.current)
-      draftTimerRef.current = setTimeout(flushDraft, DRAFT_SAVE_DEBOUNCE_MS)
+      queueDraftSave(id, { text })
     },
-    [serverEnabled, flushDraft],
+    [serverEnabled, queueDraftSave],
   )
 
   const getDraftText = useCallback((id: string): string | undefined => {
@@ -2366,6 +2491,117 @@ export function useConversations(
     if (live !== undefined) return live || undefined
     return conversationsRef.current.find((c) => c.id === id)?.draftText
   }, [])
+
+  /** Store every chip in the list that has bytes but no server id yet, one
+      at a time and behind any upload already running for the session, then
+      park the list. Runs off the composer's event, never awaited by it. */
+  const storeDraftAttachments = useCallback(
+    (id: string) => {
+      const chain = draftUploadChainRef.current
+      const tail = (chain.get(id) ?? Promise.resolve())
+        .then(async () => {
+          // A chip whose upload failed is left without an id — the send path
+          // stores it then, as it always did — and is not retried in this
+          // run, or a store that is down would loop on it forever.
+          const failed = new Set<string>()
+          for (;;) {
+            // Re-read under the chain: the user may have removed the chip, or
+            // an earlier link may have stored it, while this one waited.
+            const chip = draftAttachmentsRef.current
+              .get(id)
+              ?.find((a) => a.file && !a.attachmentId && !failed.has(a.id))
+            if (!chip) break
+            const stored = await uploadAttachments(id, [chip])
+            const uploaded = stored.uploaded[0]
+            if (!uploaded) {
+              failed.add(chip.id)
+              if (import.meta.env.DEV) {
+                console.warn(
+                  '[conversations] draft attachment upload failed',
+                  stored.failures,
+                )
+              }
+              continue
+            }
+            const patched = draftAttachmentsRef.current.patch(id, chip.id, {
+              attachmentId: uploaded.attachmentId,
+            })
+            if (!patched) {
+              // Removed from the composer while its bytes were in flight:
+              // nothing references the copy, so it goes straight back out.
+              void deleteAttachment({
+                session_id: id,
+                attachment_id: uploaded.attachmentId,
+              }).catch((err) => {
+                if (import.meta.env.DEV) {
+                  console.warn(
+                    '[conversations] orphaned draft attachment delete failed',
+                    err,
+                  )
+                }
+              })
+              continue
+            }
+            // The composer's own chips learn the id through the conversation
+            // record (ChatView feeds it back as `syncedAttachments`), so a
+            // send reuses the stored bytes instead of uploading them again.
+            patchConversation(id, (c) => ({ ...c, draftAttachments: patched }))
+          }
+          const live = draftAttachmentsRef.current.get(id)
+          if (live)
+            queueDraftSave(id, { attachmentIds: draftAttachmentIds(live) })
+        })
+        .finally(() => {
+          if (chain.get(id) === tail) chain.delete(id)
+        })
+      chain.set(id, tail)
+    },
+    [patchConversation, queueDraftSave],
+  )
+
+  const setDraftAttachments = useCallback(
+    (
+      id: string,
+      attachments: Attachment[],
+      change: DraftAttachmentChange = { reason: 'attach' },
+    ) => {
+      const conv = conversationsRef.current.find((c) => c.id === id)
+      const previous =
+        draftAttachmentsRef.current.get(id) ?? conv?.draftAttachments ?? []
+      const next = draftAttachmentsRef.current.set(id, attachments)
+      // The record mirrors the live list so ChatView can hand ids and bytes
+      // learned later back to the composer, and so a not-yet-refreshed
+      // sidebar row reads the same chips this tab shows.
+      patchConversation(id, (c) => ({
+        ...c,
+        draftAttachments: next.length > 0 ? next : undefined,
+      }))
+      if (!serverEnabled) return
+      // Local drafts have no session to store into; their chips wait in the
+      // ref map and are uploaded by the first send, as before.
+      if (!conv || conv.draft) return
+      // Hydration only put bytes behind chips the server already lists.
+      if (change.reason === 'hydrate') return
+      void releaseRemovedDraftAttachments(id, previous, next, change.reason)
+      if (next.some((a) => a.file && !a.attachmentId)) {
+        storeDraftAttachments(id)
+        return
+      }
+      queueDraftSave(id, { attachmentIds: draftAttachmentIds(next) })
+    },
+    [serverEnabled, patchConversation, storeDraftAttachments, queueDraftSave],
+  )
+
+  const getDraftAttachments = useCallback(
+    (id: string): Attachment[] | undefined => {
+      // A recorded empty list is a real answer (the chips went out on a
+      // send); only an unknown conversation falls back to the boot snapshot.
+      const live = draftAttachmentsRef.current.get(id)
+      if (live !== undefined) return live.length > 0 ? live : undefined
+      return conversationsRef.current.find((c) => c.id === id)?.draftAttachments
+    },
+    [],
+  )
 
   /* A hidden tab may be a refresh in progress — flush the pending save so
      the debounce window doesn't swallow the last keystrokes. */
@@ -2404,6 +2640,8 @@ export function useConversations(
     ensureSession,
     setDraftText,
     getDraftText,
+    setDraftAttachments,
+    getDraftAttachments,
   }
 }
 

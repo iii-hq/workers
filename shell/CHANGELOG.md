@@ -140,6 +140,18 @@
 
 ### Fixed
 
+- **The Timeline showed other chats' files.** The turn history's workspace
+  watch records writes that bypass the shell and coder hooks (`sed -i`, a
+  formatter, a build step), and two chats working in the same folder at
+  once each had a watch on it — so every write one chat made landed in the
+  other's running turn as well, and both timelines listed the same
+  `discovery.rs`. A watch now takes a write as the session's own only when
+  it can be: a path a hooked call of another session just touched belongs
+  to that call, which records it with its pre-image, and where another
+  session's watch covers the same path, only a session with a hooked call
+  running or just finished (sub-agents included) records the write — an
+  idle chat did not make it. A single chat in a folder is recorded as
+  before.
 - **`coder::search` with `fuzzy_paths` ranks against the searched folder.**
   When the worker's own configured root sat inside the folder being
   searched (its cwd under the repo a chat works in), entries under that

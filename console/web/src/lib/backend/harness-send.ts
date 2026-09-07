@@ -9,6 +9,7 @@
  * transcript then streams via session-manager events, not from this response.
  */
 
+import type { FileBlock } from '@/lib/attachments/store'
 import type { IiiClient } from '@/lib/iii-client'
 
 /** Reasoning effort the harness forwards to the router. `off` is never sent. */
@@ -80,15 +81,29 @@ export interface HarnessTextBlock {
  * An image content block on a structured user message — wire-identical to the
  * harness's `ContentBlock::Image` (`harness/src/types/content.rs`), which the
  * Anthropic and OpenAI providers map onto their own image shapes. `data` is
- * base64 without a data-URL prefix.
+ * base64 without a data-URL prefix. `attachment_id` names the stored original
+ * (the `file` block on the same message) so session-manager can hand the
+ * picture back without its bytes when a reader asks for a light transcript.
  */
 export interface HarnessImageBlock {
   type: 'image'
   mime: string
   data: string
+  attachment_id?: string
 }
 
-export type HarnessContentBlock = HarnessTextBlock | HarnessImageBlock
+/**
+ * A reference to bytes session-manager stores — wire-identical to the
+ * harness's `ContentBlock::File`, which it strips before the model sees the
+ * message. The text and image expansions still carry what the model reads;
+ * this block is what lets the console hand the original back out later.
+ */
+export type HarnessFileBlock = FileBlock
+
+export type HarnessContentBlock =
+  | HarnessTextBlock
+  | HarnessImageBlock
+  | HarnessFileBlock
 
 /**
  * The structured form of `harness::send`'s `message` (MessageInput::Message

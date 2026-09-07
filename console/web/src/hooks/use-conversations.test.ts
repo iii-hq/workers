@@ -22,6 +22,7 @@ import {
   cancelHydrationRunsForSessions,
   completeFailedHydration,
   completePreSendMetaUpdate,
+  draftSaveIsRedundant,
   type HydrationRun,
   type HydrationUpsert,
   isUntouchedDraft,
@@ -140,6 +141,48 @@ describe('applyCatalogModelFallback', () => {
   })
 })
 
+describe('draftSaveIsRedundant', () => {
+  it('skips a save the server already holds and never a first list', () => {
+    // Nothing saved yet: everything goes.
+    expect(draftSaveIsRedundant(undefined, { id: 'c', text: '' })).toBe(false)
+    // Same text, text-only save: the server's list is untouched either way.
+    expect(
+      draftSaveIsRedundant(
+        { text: 'a', attachmentIds: ['x'] },
+        { id: 'c', text: 'a' },
+      ),
+    ).toBe(true)
+    // The list has never been sent: even an empty one must go (post-send
+    // clear of a session whose chips were parked by another tab).
+    expect(
+      draftSaveIsRedundant(
+        { text: '' },
+        { id: 'c', text: '', attachmentIds: [] },
+      ),
+    ).toBe(false)
+    // Same text and same list, in order.
+    expect(
+      draftSaveIsRedundant(
+        { text: 'a', attachmentIds: ['x', 'y'] },
+        { id: 'c', text: 'a', attachmentIds: ['x', 'y'] },
+      ),
+    ).toBe(true)
+    expect(
+      draftSaveIsRedundant(
+        { text: 'a', attachmentIds: ['x', 'y'] },
+        { id: 'c', text: 'a', attachmentIds: ['y', 'x'] },
+      ),
+    ).toBe(false)
+    // Text changed: goes regardless of the list.
+    expect(
+      draftSaveIsRedundant(
+        { text: 'a', attachmentIds: [] },
+        { id: 'c', text: 'b', attachmentIds: [] },
+      ),
+    ).toBe(false)
+  })
+})
+
 describe('mergeConversationMeta', () => {
   it('restores the parked composer draft from SessionMeta.draft', () => {
     const next = mergeConversationMeta(
@@ -155,6 +198,49 @@ describe('mergeConversationMeta', () => {
     expect(
       mergeConversationMeta(undefined, sessionMeta({ draft: '' })).draftText,
     ).toBe(undefined)
+  })
+
+  /* The chips take the same route as the text: parked server-side, restored
+     as chips that know their server id (no bytes — ChatView fetches those). */
+  it('restores parked draft attachments as chips with their attachmentId', () => {
+    const parked = {
+      attachment_id: 'a_shot',
+      session_id: 'console-1',
+      name: 'shot.png',
+      mime: 'image/png',
+      size: 42,
+      sha256: 'deadbeef',
+      created_at: 1,
+    }
+    const next = mergeConversationMeta(
+      undefined,
+      sessionMeta({ draft: 'see attached', draft_attachments: [parked] }),
+    )
+    expect(next.draftAttachments).toEqual([
+      {
+        id: 'a_shot',
+        name: 'shot.png',
+        size: 42,
+        type: 'image/png',
+        attachmentId: 'a_shot',
+      },
+    ])
+    expect(
+      mergeConversationMeta(undefined, sessionMeta({})).draftAttachments,
+    ).toBeUndefined()
+
+    // A directory refresh names the same attachment again: the chip this tab
+    // already hydrated (bytes, thumbnail) is kept rather than rebuilt bare.
+    const hydrated = {
+      ...next.draftAttachments?.[0],
+      file: new File(['x'], 'shot.png', { type: 'image/png' }),
+      dataUrl: 'data:image/png;base64,x',
+    } as NonNullable<Conversation['draftAttachments']>[number]
+    const refreshed = mergeConversationMeta(
+      { ...next, draftAttachments: [hydrated], hydrated: true },
+      sessionMeta({ draft_attachments: [parked], updated_at: 3_000 }),
+    )
+    expect(refreshed.draftAttachments?.[0]).toBe(hydrated)
   })
 
   it('restores the session thinking level and defaults older sessions', () => {
@@ -850,6 +936,30 @@ describe('appendMessageToConversation', () => {
     expect(next.status).toBe('working')
     expect(next.statusReason).toBeUndefined()
     expect(next.updatedAt).toBe(3_500)
+  })
+
+  it('a client-handled command row never marks the session working', () => {
+    // `/compact` is answered by the console, not the harness: no turn follows,
+    // so no `session::status-changed` would ever clear a `working` flip.
+    const next = appendMessageToConversation(
+      conversation({ status: 'idle', messages: [] }),
+      {
+        id: 'm1',
+        role: 'user',
+        content: '/compact keep the plan',
+        command: true,
+        createdAt: 3_000,
+      },
+      3_500,
+    )
+
+    expect(next.status).toBe('idle')
+    expect(next.messages).toHaveLength(1)
+    expect(next.updatedAt).toBe(3_500)
+    // Nor does it seed the title the way a first real prompt does.
+    expect(next.title).toBe(
+      conversation({ status: 'idle', messages: [] }).title,
+    )
   })
 
   it('upserts a durable lifecycle notice over its live fallback', () => {

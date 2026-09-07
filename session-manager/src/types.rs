@@ -82,8 +82,31 @@ pub enum ContentBlock {
     Image {
         /// MIME type, e.g. `image/png`.
         mime: String,
-        /// Base64-encoded image bytes.
+        /// Base64-encoded image bytes. Empty when the reader asked for
+        /// `include_image_data: false` and the block carries an
+        /// `attachment_id`: the original is then one
+        /// `session::get-attachment` away.
         data: String,
+        /// The stored original this inline copy was made from, when the
+        /// writer also parked it with `session::put-attachment`. Lets a
+        /// transcript reader skip the inline bytes and fetch them lazily;
+        /// model-bound consumers ignore it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attachment_id: Option<String>,
+    },
+    /// Reference to an attachment kept in the session's attachment store
+    /// (`session::put-attachment` / `session::get-attachment`). The bytes
+    /// are never inline; consumers that hand content to a model drop this
+    /// block and rely on the text expansion that travels beside it.
+    File {
+        /// Id returned by `session::put-attachment`.
+        attachment_id: String,
+        /// Original filename.
+        name: String,
+        /// MIME type, e.g. `application/pdf`.
+        mime: String,
+        /// Original byte length.
+        size: u64,
     },
     Thinking {
         text: String,
@@ -105,6 +128,62 @@ pub enum ContentBlock {
         #[serde(skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
     },
+}
+
+impl ContentBlock {
+    /// Every `attachment_id` referenced by `blocks` (recursing into
+    /// `function_result` content), first occurrence order, deduplicated.
+    /// Counts both `file` references and `image` blocks linked to a stored
+    /// original, so `session::fork` copies every attachment the history
+    /// points at and `session::delete-attachment` refuses each of them.
+    pub fn attachment_ids(blocks: &[ContentBlock]) -> Vec<String> {
+        fn walk(blocks: &[ContentBlock], out: &mut Vec<String>) {
+            for block in blocks {
+                match block {
+                    ContentBlock::File { attachment_id, .. }
+                    | ContentBlock::Image {
+                        attachment_id: Some(attachment_id),
+                        ..
+                    } => {
+                        if !out.iter().any(|id| id == attachment_id) {
+                            out.push(attachment_id.clone());
+                        }
+                    }
+                    ContentBlock::FunctionResult { content, .. } => walk(content, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(blocks, &mut out);
+        out
+    }
+
+    /// Blank the inline bytes of every `image` block that can be refetched
+    /// through its `attachment_id` (recursing into `function_result`
+    /// content). Images without a stored original keep their bytes: they
+    /// have nowhere else to be loaded from. Returns whether anything changed
+    /// so callers can skip the clone when the page has no such images.
+    pub fn elide_image_data(blocks: &mut [ContentBlock]) -> bool {
+        let mut changed = false;
+        for block in blocks {
+            match block {
+                ContentBlock::Image {
+                    data,
+                    attachment_id: Some(_),
+                    ..
+                } if !data.is_empty() => {
+                    data.clear();
+                    changed = true;
+                }
+                ContentBlock::FunctionResult { content, .. } => {
+                    changed |= Self::elide_image_data(content);
+                }
+                _ => {}
+            }
+        }
+        changed
+    }
 }
 
 /// The canonical transcript message union, discriminated by `role`.
@@ -190,6 +269,15 @@ impl AgentMessage {
         }
     }
 
+    pub fn content_mut(&mut self) -> &mut Vec<ContentBlock> {
+        match self {
+            AgentMessage::User { content, .. }
+            | AgentMessage::Assistant { content, .. }
+            | AgentMessage::FunctionResult { content, .. }
+            | AgentMessage::Custom { content, .. } => content,
+        }
+    }
+
     pub fn set_content(&mut self, new_content: Vec<ContentBlock>) {
         match self {
             AgentMessage::User { content, .. }
@@ -218,6 +306,39 @@ pub struct CustomPayload {
     /// Opaque app data.
     #[serde(default)]
     pub data: Value,
+}
+
+/// Metadata of one stored attachment. The bytes live in the session's
+/// attachment store (`session::get-attachment`), never inline in the
+/// transcript: a message references them through a
+/// [`ContentBlock::File`] block carrying the same `attachment_id`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AttachmentMeta {
+    /// Store-generated id (`a_<uuid>`), unique within the session.
+    pub attachment_id: String,
+    pub session_id: String,
+    /// Original filename, as uploaded.
+    pub name: String,
+    /// MIME type, as uploaded (`application/octet-stream` when unknown).
+    pub mime: String,
+    /// Decoded byte length.
+    pub size: u64,
+    /// Lowercase hex SHA-256 of the bytes.
+    pub sha256: String,
+    /// Milliseconds since epoch.
+    pub created_at: i64,
+}
+
+impl AttachmentMeta {
+    /// The reference block a message embeds to point at this attachment.
+    pub fn to_block(&self) -> ContentBlock {
+        ContentBlock::File {
+            attachment_id: self.attachment_id.clone(),
+            name: self.name.clone(),
+            mime: self.mime.clone(),
+            size: self.size,
+        }
+    }
 }
 
 /// The entry envelope giving each stored item identity, ordering and a
@@ -342,6 +463,12 @@ pub struct SessionMeta {
     /// `session::set-meta`; absent when nothing is parked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub draft: Option<String>,
+    /// Attachments parked with the draft (`session::set-draft`
+    /// `attachment_ids`), resolved to their stored metadata so a client can
+    /// rebuild the composer's chips and fetch the bytes back. Absent when
+    /// none are parked; never copied by `session::fork`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft_attachments: Option<Vec<AttachmentMeta>>,
     /// Milliseconds since epoch.
     pub created_at: i64,
     /// Milliseconds since epoch.
@@ -361,16 +488,89 @@ mod tests {
         let blocks: Vec<ContentBlock> = serde_json::from_value(json!([
             { "type": "text", "text": "hi" },
             { "type": "image", "mime": "image/png", "data": "aGk=" },
+            { "type": "file", "attachment_id": "a_1", "name": "report.pdf",
+              "mime": "application/pdf", "size": 12345 },
             { "type": "thinking", "text": "hmm", "signature": "sig" },
             { "type": "function_call", "id": "c1", "function_id": "f::g", "arguments": { "a": 1 } },
             { "type": "function_result", "function_call_id": "c1",
               "content": [{ "type": "text", "text": "out" }], "is_error": false }
         ]))
         .unwrap();
-        assert_eq!(blocks.len(), 5);
+        assert_eq!(blocks.len(), 6);
         let round = serde_json::to_value(&blocks).unwrap();
         assert_eq!(round[0], json!({ "type": "text", "text": "hi" }));
-        assert_eq!(round[3]["function_id"], "f::g");
+        assert_eq!(
+            round[2],
+            json!({ "type": "file", "attachment_id": "a_1", "name": "report.pdf",
+                    "mime": "application/pdf", "size": 12345 })
+        );
+        assert_eq!(round[4]["function_id"], "f::g");
+    }
+
+    #[test]
+    fn attachment_ids_are_collected_recursively_and_deduplicated() {
+        let blocks: Vec<ContentBlock> = serde_json::from_value(json!([
+            { "type": "text", "text": "see attached" },
+            { "type": "file", "attachment_id": "a_1", "name": "a.pdf", "mime": "application/pdf", "size": 1 },
+            // An inline image linked to its stored original counts too;
+            // one without a link has nothing to copy or protect.
+            { "type": "image", "mime": "image/png", "data": "aGk=", "attachment_id": "a_3" },
+            { "type": "image", "mime": "image/png", "data": "aGk=" },
+            { "type": "function_result", "function_call_id": "c1", "content": [
+                { "type": "file", "attachment_id": "a_2", "name": "b.png", "mime": "image/png", "size": 2 },
+                { "type": "file", "attachment_id": "a_1", "name": "a.pdf", "mime": "application/pdf", "size": 1 }
+            ] }
+        ]))
+        .unwrap();
+        assert_eq!(
+            ContentBlock::attachment_ids(&blocks),
+            vec!["a_1", "a_3", "a_2"]
+        );
+        assert!(ContentBlock::attachment_ids(&[]).is_empty());
+    }
+
+    #[test]
+    fn image_attachment_id_is_optional_and_omitted_when_absent() {
+        // Older writers never sent the field: it must deserialize as None
+        // and stay off the wire so their goldens keep matching.
+        let legacy: ContentBlock =
+            serde_json::from_value(json!({ "type": "image", "mime": "image/png", "data": "aGk=" }))
+                .unwrap();
+        assert_eq!(
+            serde_json::to_value(&legacy).unwrap(),
+            json!({ "type": "image", "mime": "image/png", "data": "aGk=" })
+        );
+        let linked: ContentBlock = serde_json::from_value(
+            json!({ "type": "image", "mime": "image/png", "data": "aGk=", "attachment_id": "a_1" }),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&linked).unwrap()["attachment_id"],
+            "a_1"
+        );
+    }
+
+    #[test]
+    fn elide_image_data_blanks_only_refetchable_images() {
+        let mut blocks: Vec<ContentBlock> = serde_json::from_value(json!([
+            { "type": "image", "mime": "image/png", "data": "aGk=", "attachment_id": "a_1" },
+            { "type": "image", "mime": "image/png", "data": "aGk=" },
+            { "type": "function_result", "function_call_id": "c1", "content": [
+                { "type": "image", "mime": "image/jpeg", "data": "aGk=", "attachment_id": "a_2" }
+            ] }
+        ]))
+        .unwrap();
+        assert!(ContentBlock::elide_image_data(&mut blocks));
+        let round = serde_json::to_value(&blocks).unwrap();
+        // Linked: bytes gone, link kept so the reader knows where to fetch.
+        assert_eq!(round[0]["data"], "");
+        assert_eq!(round[0]["attachment_id"], "a_1");
+        // Unlinked: nowhere else to load from, so the bytes stay.
+        assert_eq!(round[1]["data"], "aGk=");
+        // Nested inside a function result: also elided.
+        assert_eq!(round[2]["content"][0]["data"], "");
+        // Second pass finds nothing left to do.
+        assert!(!ContentBlock::elide_image_data(&mut blocks));
     }
 
     #[test]
@@ -458,6 +658,7 @@ mod tests {
             metadata: None,
             forked_from: None,
             draft: None,
+            draft_attachments: None,
             created_at: 1,
             updated_at: 1,
             message_count: 0,

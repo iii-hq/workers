@@ -59,6 +59,12 @@ interface MessageProps {
   spawnContext?: SpawnTaskContext
   /** Session agent profile name shown on assistant message headers. */
   agentName?: string
+  /**
+   * The conversation's session id, for chips whose original bytes live in
+   * that session's attachment store. Absent on surfaces with no live session
+   * (showcase, fixtures), where the chips stay display-only.
+   */
+  sessionId?: string
 }
 
 export interface SpawnTaskContext {
@@ -78,6 +84,7 @@ export function Message({
   defaultOpenCalls,
   registration,
   triggerNotification,
+  sessionId,
   spawnContext,
   agentName,
 }: MessageProps) {
@@ -96,7 +103,7 @@ export function Message({
       ) : message.validation ? (
         <ValidationNudgeMessage message={message} />
       ) : (
-        <UserMessage message={message} />
+        <UserMessage message={message} sessionId={sessionId} />
       )
     case 'assistant':
       return (
@@ -357,7 +364,13 @@ function SpawnTaskMessage({
   )
 }
 
-function UserMessage({ message }: { message: UserMessageType }) {
+function UserMessage({
+  message,
+  sessionId,
+}: {
+  message: UserMessageType
+  sessionId?: string
+}) {
   const attachments = message.attachments ?? []
   /* A skill invocation already renders as a command pill inside the prose
      (the markdown turns `/skill:<id>` into one wherever it sits), so its
@@ -392,7 +405,7 @@ function UserMessage({ message }: { message: UserMessageType }) {
       {chips.length > 0 ? (
         <div className="flex max-w-[92%] flex-wrap justify-end gap-2 sm:max-w-[80%]">
           {chips.map((a) => (
-            <AttachmentChip key={a.id} attachment={a} />
+            <AttachmentChip key={a.id} attachment={a} sessionId={sessionId} />
           ))}
         </div>
       ) : null}

@@ -6,6 +6,13 @@
       "entry_id": {
         "type": "string"
       },
+      "include_image_data": {
+        "description": "Default true. When false, `image` blocks that carry an `attachment_id` come back with `data: \"\"` (same rule as `session::messages`).",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
       "session_id": {
         "type": "string"
       }
@@ -256,8 +263,15 @@
           },
           {
             "properties": {
+              "attachment_id": {
+                "description": "The stored original this inline copy was made from, when the writer also parked it with `session::put-attachment`. Lets a transcript reader skip the inline bytes and fetch them lazily; model-bound consumers ignore it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "data": {
-                "description": "Base64-encoded image bytes.",
+                "description": "Base64-encoded image bytes. Empty when the reader asked for `include_image_data: false` and the block carries an `attachment_id`: the original is then one `session::get-attachment` away.",
                 "type": "string"
               },
               "mime": {
@@ -274,6 +288,43 @@
             "required": [
               "data",
               "mime",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Reference to an attachment kept in the session's attachment store (`session::put-attachment` / `session::get-attachment`). The bytes are never inline; consumers that hand content to a model drop this block and rely on the text expansion that travels beside it.",
+            "properties": {
+              "attachment_id": {
+                "description": "Id returned by `session::put-attachment`.",
+                "type": "string"
+              },
+              "mime": {
+                "description": "MIME type, e.g. `application/pdf`.",
+                "type": "string"
+              },
+              "name": {
+                "description": "Original filename.",
+                "type": "string"
+              },
+              "size": {
+                "description": "Original byte length.",
+                "format": "uint64",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "type": {
+                "enum": [
+                  "file"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "attachment_id",
+              "mime",
+              "name",
+              "size",
               "type"
             ],
             "type": "object"

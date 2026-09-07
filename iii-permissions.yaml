@@ -101,6 +101,11 @@ rules:
   - '!session::update-message'
   - '!session::fork'
   - '!session::set-active-leaf'
+  # Uploading/deleting attachments are transcript writes too (the stored file
+  # is what a `file` block resolves to). get-/list-attachments are reads and
+  # stay at the needs_approval default.
+  - '!session::put-attachment'
+  - '!session::delete-attachment'
   # Operator/automation health signal, not an agent tool: it can surface a
   # build-error string (e.g. a data_dir path). Operators/console reach it via
   # the privileged dispatch path that bypasses this agent gate.

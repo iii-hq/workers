@@ -429,26 +429,59 @@ function textOf(blocks: ContentBlock[]): string {
  * An image block is the picture itself, sent to a vision model. It becomes a
  * chip carrying its own thumbnail: without this a conversation reloaded from
  * history shows the question and no sign that a screenshot went with it.
+ * When the read left the bytes out (`data: ""`, `attachment_id` set) the
+ * chip carries the id instead and the thumbnail is fetched when the chip
+ * scrolls into view; a chip with neither `dataUrl` nor `file` but an
+ * `attachmentId` is what tells the renderer the bytes live in the store.
+ *
+ * A `file` block is a reference to the original bytes session-manager kept.
+ * The console sends it ALONGSIDE the expansion of the same file, so a message
+ * would otherwise grow two chips per attachment; `mergeFileChips` folds each
+ * pair into the one chip that can hand the original back out.
  */
 function splitUserContent(blocks: ContentBlock[]): {
   text: string
   attachments: Attachment[]
 } {
   let text = ''
-  const attachments: Attachment[] = []
+  const slots: ChipSlot[] = []
   let imageIndex = 0
   for (const block of blocks) {
     if (block.type === 'image') {
       imageIndex += 1
       const mime = block.mime || 'image/png'
-      attachments.push({
-        id: `image-${imageIndex}`,
-        name: `image ${imageIndex}`,
-        // Base64 inflates by a third; the original byte count is what a
-        // person recognises, so report that rather than the encoded length.
-        size: Math.floor((block.data?.length ?? 0) * 0.75),
-        type: mime,
-        dataUrl: block.data ? `data:${mime};base64,${block.data}` : undefined,
+      // The bytes, when present, are still what the chip is drawn from — an
+      // old worker that ignored `include_image_data` lands here and renders
+      // as it always did. The id rides along either way: it pairs the block
+      // with its `file` reference below, and when the bytes were left out it
+      // is all the chip has to fetch them by.
+      const attachmentId = block.attachment_id || undefined
+      slots.push({
+        kind: 'image',
+        chip: {
+          id: attachmentId ?? `image-${imageIndex}`,
+          name: `image ${imageIndex}`,
+          // Base64 inflates by a third; the original byte count is what a
+          // person recognises, so report that rather than the encoded length.
+          size: Math.floor((block.data?.length ?? 0) * 0.75),
+          type: mime,
+          dataUrl: block.data ? `data:${mime};base64,${block.data}` : undefined,
+          ...(attachmentId ? { attachmentId } : {}),
+        },
+      })
+      continue
+    }
+    if (block.type === 'file') {
+      slots.push({
+        kind: 'file',
+        mime: block.mime,
+        chip: {
+          id: block.attachment_id,
+          name: block.name,
+          size: block.size,
+          type: block.mime,
+          attachmentId: block.attachment_id,
+        },
       })
       continue
     }
@@ -456,22 +489,86 @@ function splitUserContent(blocks: ContentBlock[]): {
     const header = parseAttachedFileHeader(block.text)
     if (header) {
       const label = attachedFileLabel(header)
-      attachments.push({
-        id: `mention-${label}`,
-        name: header.error ? `${label} (${header.error})` : label,
-        size: header.size ?? 0,
-        type: 'text/x-file-mention',
+      slots.push({
+        kind: 'mention',
+        path: header.path,
+        chip: {
+          id: `mention-${label}`,
+          name: header.error ? `${label} (${header.error})` : label,
+          size: header.size ?? 0,
+          type: 'text/x-file-mention',
+        },
       })
       continue
     }
     const slash = parseSlashBlockHeader(block.text)
     if (slash) {
-      attachments.push(slashChip(slash, block.text.length))
+      slots.push({ kind: 'slash', chip: slashChip(slash, block.text.length) })
     } else {
       text += block.text
     }
   }
-  return { text, attachments }
+  return { text, attachments: mergeFileChips(slots) }
+}
+
+/** One chip and where it came from, so a `file` reference can find its twin. */
+type ChipSlot =
+  | { kind: 'image'; chip: Attachment }
+  | { kind: 'mention'; path: string; chip: Attachment }
+  | { kind: 'file'; mime: string; chip: Attachment }
+  | { kind: 'slash'; chip: Attachment }
+
+/**
+ * One chip per attachment, however many blocks it became on the wire.
+ *
+ * A document goes out as an `<attached-file path="…">` expansion plus a
+ * `file` reference to the same name; a picture as an image block plus a
+ * `file` reference with an image type. The reference is the chip that
+ * survives — it is the one that carries the real name, the real size and the
+ * id the bytes live under — but it takes what only its twin knows: the
+ * mention's label when that says more than the name (a line range, the
+ * reason a read failed), the image's thumbnail.
+ *
+ * Image blocks carry no name. One that names its stored original pairs with
+ * the reference of the same id; the rest pair by order alone. That holds
+ * because the send path writes both lists in attachment order, and a picture
+ * that never became an image block (refused for a model without vision, or
+ * too large) went out as a named failure expansion instead, which the name
+ * match above claims first. An image whose bytes were left out of the read
+ * brings nothing but its id to the merge: the reference already carries it,
+ * and the missing thumbnail is what marks the chip as one to fetch later.
+ */
+function mergeFileChips(slots: ChipSlot[]): Attachment[] {
+  const files = slots.filter((s) => s.kind === 'file')
+  if (files.length === 0) return slots.map((s) => s.chip)
+
+  const absorbed = new Set<ChipSlot>()
+  const unpairedImages = slots.filter((s) => s.kind === 'image')
+  for (const file of files) {
+    const mention = slots.find(
+      (s): s is Extract<ChipSlot, { kind: 'mention' }> =>
+        s.kind === 'mention' && !absorbed.has(s) && s.path === file.chip.name,
+    )
+    if (mention) {
+      absorbed.add(mention)
+      if (mention.chip.name !== file.chip.name) {
+        file.chip = { ...file.chip, name: mention.chip.name }
+      }
+      continue
+    }
+    if (!file.mime.startsWith('image/')) continue
+    const byId = unpairedImages.findIndex(
+      (s) => s.chip.attachmentId === file.chip.attachmentId,
+    )
+    const image =
+      byId >= 0 ? unpairedImages.splice(byId, 1)[0] : unpairedImages.shift()
+    if (!image) continue
+    absorbed.add(image)
+    if (image.chip.dataUrl) {
+      file.chip = { ...file.chip, dataUrl: image.chip.dataUrl }
+    }
+  }
+  return slots.filter((s) => !absorbed.has(s)).map((s) => s.chip)
 }
 
 /**

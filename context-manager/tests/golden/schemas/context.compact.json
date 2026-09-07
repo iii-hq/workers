@@ -204,6 +204,14 @@
       },
       "CompactOptions": {
         "properties": {
+          "instructions": {
+            "default": null,
+            "description": "One-shot caller guidance for the summariser — what to keep, drop, or emphasise (e.g. the text after a user's `/compact`). Applied within the fixed summary template, never replacing it. Trimmed; blank is ignored; cut past 2000 chars. Not carried forward — pass it again to steer a later compaction.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "lease_key": {
             "default": null,
             "description": "Mutual-exclusion key (e.g. a session id); default: hash of the message set.",
@@ -266,6 +274,13 @@
           },
           {
             "properties": {
+              "attachment_id": {
+                "description": "Optional link to the stored original in the session-manager attachment store. Transcript bookkeeping for lazy readers; the context manager neither reads nor strips it — it only has to ride through compaction untouched, and stay absent on the wire when the block never carried one.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "data": {
                 "description": "Base64-encoded image bytes.",
                 "type": "string"
@@ -284,6 +299,39 @@
             "required": [
               "data",
               "mime",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Reference to an attachment kept in the session-manager's attachment store. Carries no bytes and no model-visible text; the harness strips these before assembling context, so here it only has to deserialize (a transcript with attachments must never fail `count-tokens`). It contributes nothing to estimates, pruning or summaries.",
+            "properties": {
+              "attachment_id": {
+                "type": "string"
+              },
+              "mime": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "size": {
+                "format": "uint64",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "type": {
+                "enum": [
+                  "file"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "attachment_id",
+              "mime",
+              "name",
+              "size",
               "type"
             ],
             "type": "object"

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { Message } from '@/types/chat'
+import type { Attachment, Message } from '@/types/chat'
 import {
   applyEntryUpsert,
   applyFcallPatch,
@@ -172,6 +172,342 @@ describe('entrySegments', () => {
           dataUrl: 'data:image/png;base64,AAAA',
         },
       ],
+    })
+  })
+
+  /* A `file` block is the reference to the stored original. Alone it is the
+     whole chip; next to the expansion of the same file it must NOT become a
+     second chip, because the console sends both for every attachment. */
+  describe('file blocks', () => {
+    const fileBlock = {
+      type: 'file' as const,
+      attachment_id: 'a_1',
+      name: 'report.pdf',
+      mime: 'application/pdf',
+      size: 12345,
+    }
+
+    it('turns a lone file block into a downloadable chip', () => {
+      const [msg] = entrySegments({
+        entry_id: 'msg-5-user-0',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: 'read this' }, fileBlock],
+          timestamp: 1,
+        },
+      })
+      expect(msg).toMatchObject({
+        role: 'user',
+        content: 'read this',
+        attachments: [
+          {
+            id: 'a_1',
+            name: 'report.pdf',
+            size: 12345,
+            type: 'application/pdf',
+            attachmentId: 'a_1',
+          },
+        ],
+      })
+    })
+
+    it('folds a file block into its attached-file expansion as one chip', () => {
+      const [msg] = entrySegments({
+        entry_id: 'msg-6-user-0',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'summarise' },
+            {
+              type: 'text',
+              text: '<attached-file path="report.pdf" size="12345" format="pdf-markdown">\n# Report\n</attached-file>',
+            },
+            fileBlock,
+          ],
+          timestamp: 1,
+        },
+      })
+      const attachments = (msg as { attachments: unknown[] }).attachments
+      expect(attachments).toHaveLength(1)
+      expect(attachments[0]).toMatchObject({
+        id: 'a_1',
+        name: 'report.pdf',
+        size: 12345,
+        type: 'application/pdf',
+        attachmentId: 'a_1',
+      })
+      expect((msg as { content: string }).content).toBe('summarise')
+    })
+
+    /* The expansion's label can say more than the name — here, why the read
+       failed. That stays on the one surviving chip. */
+    it('keeps the expansion label when it carries more than the name', () => {
+      const [msg] = entrySegments({
+        entry_id: 'msg-7-user-0',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'summarise' },
+            {
+              type: 'text',
+              text: '<attached-file path="report.pdf" error="the pdf worker is not running" />',
+            },
+            fileBlock,
+          ],
+          timestamp: 1,
+        },
+      })
+      expect(msg).toMatchObject({
+        attachments: [
+          {
+            id: 'a_1',
+            name: 'report.pdf (the pdf worker is not running)',
+            attachmentId: 'a_1',
+          },
+        ],
+      })
+    })
+
+    it('merges an image block with its file block, keeping the thumbnail', () => {
+      const [msg] = entrySegments({
+        entry_id: 'msg-8-user-0',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'what is this?' },
+            {
+              type: 'file',
+              attachment_id: 'a_2',
+              name: 'shot.png',
+              mime: 'image/png',
+              size: 4096,
+            },
+            { type: 'image', mime: 'image/png', data: 'AAAA' },
+          ],
+          timestamp: 1,
+        },
+      })
+      expect(msg).toMatchObject({
+        attachments: [
+          {
+            id: 'a_2',
+            name: 'shot.png',
+            size: 4096,
+            type: 'image/png',
+            dataUrl: 'data:image/png;base64,AAAA',
+            attachmentId: 'a_2',
+          },
+        ],
+      })
+      expect((msg as { attachments: unknown[] }).attachments).toHaveLength(1)
+    })
+
+    /* Two pictures pair with their references by order: image blocks carry
+       no name, and the send path writes both lists in attachment order. */
+    it('pairs several images with their file blocks in order', () => {
+      const [msg] = entrySegments({
+        entry_id: 'msg-9-user-0',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'compare' },
+            {
+              type: 'file',
+              attachment_id: 'a_3',
+              name: 'before.png',
+              mime: 'image/png',
+              size: 1,
+            },
+            {
+              type: 'file',
+              attachment_id: 'a_4',
+              name: 'after.jpg',
+              mime: 'image/jpeg',
+              size: 2,
+            },
+            { type: 'image', mime: 'image/png', data: 'BBBB' },
+            { type: 'image', mime: 'image/jpeg', data: 'CCCC' },
+          ],
+          timestamp: 1,
+        },
+      })
+      expect(msg).toMatchObject({
+        attachments: [
+          { name: 'before.png', dataUrl: 'data:image/png;base64,BBBB' },
+          { name: 'after.jpg', dataUrl: 'data:image/jpeg;base64,CCCC' },
+        ],
+      })
+    })
+
+    /* A read with `include_image_data: false` leaves the picture's bytes out
+       and names the stored original instead. The two blocks still fold into
+       one chip, and that chip must carry the id to fetch by and no thumbnail
+       to draw from — the renderer reads exactly that as "fetch on view". */
+    it('merges an elided image with its file block into one lazy chip', () => {
+      const [msg] = entrySegments({
+        entry_id: 'msg-11-user-0',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'what is this?' },
+            {
+              type: 'file',
+              attachment_id: 'a_5',
+              name: 'shot.png',
+              mime: 'image/png',
+              size: 4096,
+            },
+            {
+              type: 'image',
+              mime: 'image/png',
+              data: '',
+              attachment_id: 'a_5',
+            },
+          ],
+          timestamp: 1,
+        },
+      })
+      const attachments = (msg as { attachments: Attachment[] }).attachments
+      expect(attachments).toHaveLength(1)
+      expect(attachments[0]).toMatchObject({
+        id: 'a_5',
+        name: 'shot.png',
+        size: 4096,
+        type: 'image/png',
+        attachmentId: 'a_5',
+      })
+      expect(attachments[0]).not.toHaveProperty('dataUrl')
+    })
+
+    /* With ids on both sides the pairing no longer depends on order, so a
+       transcript whose blocks were reordered still puts each thumbnail on
+       the right chip. */
+    it('pairs elided images with their file blocks by id, not by order', () => {
+      const [msg] = entrySegments({
+        entry_id: 'msg-12-user-0',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'compare' },
+            {
+              type: 'file',
+              attachment_id: 'a_6',
+              name: 'before.png',
+              mime: 'image/png',
+              size: 1,
+            },
+            {
+              type: 'file',
+              attachment_id: 'a_7',
+              name: 'after.png',
+              mime: 'image/png',
+              size: 2,
+            },
+            {
+              type: 'image',
+              mime: 'image/png',
+              data: 'AFTER',
+              attachment_id: 'a_7',
+            },
+            {
+              type: 'image',
+              mime: 'image/png',
+              data: '',
+              attachment_id: 'a_6',
+            },
+          ],
+          timestamp: 1,
+        },
+      })
+      const attachments = (msg as { attachments: Attachment[] }).attachments
+      expect(attachments).toHaveLength(2)
+      expect(attachments[0]).toMatchObject({
+        name: 'before.png',
+        attachmentId: 'a_6',
+      })
+      expect(attachments[0]).not.toHaveProperty('dataUrl')
+      expect(attachments[1]).toMatchObject({
+        name: 'after.png',
+        attachmentId: 'a_7',
+        dataUrl: 'data:image/png;base64,AFTER',
+      })
+    })
+
+    /* An older session-manager ignores `include_image_data` and answers with
+       the bytes; a chip drawn from them must look exactly as it did before. */
+    it('keeps the inline thumbnail when the worker still sends the bytes', () => {
+      const [msg] = entrySegments({
+        entry_id: 'msg-13-user-0',
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'file',
+              attachment_id: 'a_8',
+              name: 'shot.png',
+              mime: 'image/png',
+              size: 4096,
+            },
+            {
+              type: 'image',
+              mime: 'image/png',
+              data: 'AAAA',
+              attachment_id: 'a_8',
+            },
+          ],
+          timestamp: 1,
+        },
+      })
+      expect(msg).toMatchObject({
+        attachments: [
+          {
+            id: 'a_8',
+            name: 'shot.png',
+            attachmentId: 'a_8',
+            dataUrl: 'data:image/png;base64,AAAA',
+          },
+        ],
+      })
+    })
+
+    /* A transcript written before the store existed has no file blocks, and
+       its chips must not change. */
+    it('maps messages without file blocks exactly as before', () => {
+      const [msg] = entrySegments({
+        entry_id: 'msg-10-user-0',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'look' },
+            {
+              type: 'text',
+              text: '<attached-file path="notes.txt" size="7">\nabc\n</attached-file>',
+            },
+            { type: 'image', mime: 'image/png', data: 'AAAA' },
+          ],
+          timestamp: 1,
+        },
+      })
+      expect(msg).toMatchObject({
+        content: 'look',
+        attachments: [
+          {
+            id: 'mention-notes.txt',
+            name: 'notes.txt',
+            size: 7,
+            type: 'text/x-file-mention',
+          },
+          {
+            id: 'image-1',
+            name: 'image 1',
+            type: 'image/png',
+            dataUrl: 'data:image/png;base64,AAAA',
+          },
+        ],
+      })
+      for (const chip of (msg as { attachments: object[] }).attachments) {
+        expect(chip).not.toHaveProperty('attachmentId')
+      }
     })
   })
 

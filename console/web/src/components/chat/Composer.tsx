@@ -19,6 +19,10 @@ import {
 } from 'react'
 import { PermissionModePicker } from '@/components/permissions/PermissionModePicker'
 import { MOBILE_LAYOUT_QUERY, useMediaQuery } from '@/hooks/use-media-query'
+import {
+  type DraftAttachmentChange,
+  mergeSyncedAttachments,
+} from '@/lib/attachments/draft-attachments'
 import { attachmentsFromFiles } from '@/lib/attachments/from-files'
 import type { PermissionMode } from '@/lib/backend/approval-settings'
 import {
@@ -200,6 +204,24 @@ interface ComposerProps {
   /** Initial attachment chips (applied once on mount). */
   initialAttachments?: Attachment[]
   /**
+   * The live chip list, fired whenever it changes by a user gesture or a
+   * submit — never while a queued message is being browsed (those chips are
+   * not the draft). `reason` tells the per-session draft persistence whether
+   * a vanished chip was removed by hand (release its stored bytes) or went
+   * out on a message (keep them).
+   */
+  onAttachmentsChange?: (
+    attachments: Attachment[],
+    change: DraftAttachmentChange,
+  ) => void
+  /**
+   * What the host has since learned about chips already in the composer: the
+   * server id once a draft upload lands, the bytes and thumbnail once a
+   * restored chip is hydrated. Folded into the matching chips by id; never
+   * adds or removes one (the composer owns WHICH chips there are).
+   */
+  syncedAttachments?: Attachment[]
+  /**
    * Injected toolbar actions rendered beside the attach button (the
    * `host.chat.registerComposerAction` slot), already built by the host.
    */
@@ -271,6 +293,8 @@ export function Composer({
   initialText,
   onTextChange,
   initialAttachments,
+  onAttachmentsChange,
+  syncedAttachments,
   composerActions,
   functionEntries,
   searchFiles,
@@ -279,9 +303,17 @@ export function Composer({
   onEditQueued,
   onBrowseChange,
 }: ComposerProps) {
-  const [attachments, setAttachments] = useState<Attachment[]>(
+  const [attachments, setAttachmentsState] = useState<Attachment[]>(
     initialAttachments ?? [],
   )
+  // Ref mirror so handlers compute the next list synchronously (and report it
+  // once) instead of reporting from inside a state updater, which StrictMode
+  // runs twice.
+  const attachmentsRef = useRef<Attachment[]>(initialAttachments ?? [])
+  const setAttachments = useCallback((next: Attachment[]) => {
+    attachmentsRef.current = next
+    setAttachmentsState(next)
+  }, [])
   const [clearToken, setClearToken] = useState(0)
   const [mobileSettingsOpen, setMobileSettingsOpen] = useState(false)
   // Phone only: the chevron on the project strip folds the whole card away,
@@ -364,7 +396,18 @@ export function Composer({
       setHasText(result.target.text.trim().length > 0)
       return result.target.text
     },
-    [queuedForEdit, browseId, setBrowse],
+    [queuedForEdit, browseId, setBrowse, setAttachments],
+  )
+
+  // Every gesture-driven change goes through here so the host hears about it
+  // exactly once, with its reason. Browsed queue chips are not the draft, so
+  // the report is gated the same way `onTextChange` is.
+  const updateAttachments = useCallback(
+    (next: Attachment[], change: DraftAttachmentChange) => {
+      setAttachments(next)
+      if (browseIdRef.current === null) onAttachmentsChange?.(next, change)
+    },
+    [setAttachments, onAttachmentsChange],
   )
 
   const inputDisabled = blocked || (isStreaming && !queueWhileStreaming)
@@ -391,7 +434,10 @@ export function Composer({
     // The submitted text is no longer a draft; report the clear even if the
     // editor-clear update below is tag-filtered by the change plugin.
     onTextChange?.('')
-    setAttachments([])
+    // Same for the chips — and say WHY they went, so the draft store does not
+    // mistake a send for the user throwing them away. `setBrowse(null)` above
+    // means this always reports (the browse gate below is open).
+    updateAttachments([], { reason: browseId !== null ? 'edit' : 'submit' })
     setClearToken((t) => t + 1)
   }, [
     submitDisabled,
@@ -401,20 +447,41 @@ export function Composer({
     onEditQueued,
     setBrowse,
     onTextChange,
+    updateAttachments,
   ])
 
   const handleAttach = useCallback(
     (next: Attachment[]) => {
-      setAttachments((current) => [...current, ...next])
+      updateAttachments([...attachmentsRef.current, ...next], {
+        reason: 'attach',
+      })
       // Chips land in the card; a fold would hide what was just added.
       if (collapsedRef.current) setFolded(false)
     },
-    [setFolded],
+    [setFolded, updateAttachments],
   )
 
-  const handleRemoveAttachment = useCallback((id: string) => {
-    setAttachments((current) => current.filter((a) => a.id !== id))
-  }, [])
+  const handleRemoveAttachment = useCallback(
+    (id: string) => {
+      updateAttachments(
+        attachmentsRef.current.filter((a) => a.id !== id),
+        { reason: 'remove' },
+      )
+    },
+    [updateAttachments],
+  )
+
+  // Ids and bytes learned about chips after they were attached (see the
+  // prop). Merging by id keeps the composer's list authoritative: a chip the
+  // user removed in the meantime is simply not there to patch.
+  useEffect(() => {
+    if (!syncedAttachments) return
+    const next = mergeSyncedAttachments(
+      attachmentsRef.current,
+      syncedAttachments,
+    )
+    if (next !== attachmentsRef.current) setAttachments(next)
+  }, [syncedAttachments, setAttachments])
 
   const attachFiles = useCallback(
     async (files: File[]) => {

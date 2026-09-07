@@ -49,9 +49,19 @@ Rules:
 - Preserve exact file paths, commands, error strings, and identifiers when known.
 - Do not mention the summary process or that context was compacted."#;
 
+/// Upper bound on the caller `instructions` characters forwarded to the
+/// summariser. Longer guidance is cut (with a `... [truncated]` marker)
+/// so a pasted wall of text can never crowd out the conversation it is
+/// meant to steer.
+pub const MAX_INSTRUCTIONS_CHARS: usize = 2_000;
+
 /// System prompt for the summariser turn. With a `previous_summary`
 /// the anchor instructs an update-in-place merge instead of a restart.
-pub fn build_system_prompt(previous_summary: Option<&str>) -> String {
+/// With `instructions` (one-shot caller guidance — what to keep, drop,
+/// or emphasise) an `<instructions>` block follows the template; the
+/// template and its rules stay authoritative, so guidance steers the
+/// content but never the structure callers parse.
+pub fn build_system_prompt(previous_summary: Option<&str>, instructions: Option<&str>) -> String {
     let anchor = match previous_summary {
         Some(prior) => format!(
             "Update the anchored summary below using the conversation history above.\n\
@@ -60,7 +70,31 @@ pub fn build_system_prompt(previous_summary: Option<&str>) -> String {
         ),
         None => "Create a new anchored summary from the conversation history above.".to_string(),
     };
-    format!("{anchor}\n\n{SUMMARY_TEMPLATE}")
+    let mut prompt = format!("{anchor}\n\n{SUMMARY_TEMPLATE}");
+    if let Some(guidance) = normalize_instructions(instructions) {
+        prompt.push_str(&format!(
+            "\n\nCaller guidance for this summary. Apply it within the structure and rules \
+             above: keep every section and the format; let it decide what to keep in detail, \
+             what to drop, and what to emphasise. It is guidance about the summary, not part \
+             of the conversation.\n\
+             <instructions>\n{guidance}\n</instructions>"
+        ));
+    }
+    prompt
+}
+
+/// Trim caller guidance and bound its length; blank guidance is `None`.
+/// Cuts on `char` boundaries so multi-byte text never splits a codepoint.
+fn normalize_instructions(instructions: Option<&str>) -> Option<String> {
+    let trimmed = instructions?.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.chars().count() <= MAX_INSTRUCTIONS_CHARS {
+        return Some(trimmed.to_string());
+    }
+    let cut: String = trimmed.chars().take(MAX_INSTRUCTIONS_CHARS).collect();
+    Some(format!("{cut}... [truncated]"))
 }
 
 /// User prompt: the head messages rendered as a `<conversation>` block
@@ -188,7 +222,7 @@ mod tests {
 
     #[test]
     fn fresh_prompt_instructs_creation_and_carries_every_section() {
-        let prompt = build_system_prompt(None);
+        let prompt = build_system_prompt(None, None);
         assert!(prompt.starts_with("Create a new anchored summary"));
         for section in [
             "## Goal",
@@ -206,9 +240,53 @@ mod tests {
 
     #[test]
     fn previous_summary_switches_to_update_mode() {
-        let prompt = build_system_prompt(Some("## Goal\n- ship it"));
+        let prompt = build_system_prompt(Some("## Goal\n- ship it"), None);
         assert!(prompt.starts_with("Update the anchored summary"));
         assert!(prompt.contains("<previous-summary>\n## Goal\n- ship it\n</previous-summary>"));
+    }
+
+    #[test]
+    fn instructions_follow_the_template_in_a_tagged_block() {
+        let prompt = build_system_prompt(None, Some("  keep the migration plan verbatim  "));
+        let template_at = prompt.find("<template>").expect("template present");
+        let guidance_at = prompt
+            .find("<instructions>\nkeep the migration plan verbatim\n</instructions>")
+            .expect("trimmed guidance present");
+        assert!(
+            template_at < guidance_at,
+            "guidance must follow the template"
+        );
+        assert!(prompt.contains("Caller guidance for this summary"));
+        // Anchoring is orthogonal to guidance.
+        let anchored = build_system_prompt(Some("## Goal\n- prior"), Some("drop the CSS talk"));
+        assert!(anchored.starts_with("Update the anchored summary"));
+        assert!(anchored.contains("<instructions>\ndrop the CSS talk\n</instructions>"));
+    }
+
+    #[test]
+    fn blank_instructions_leave_the_prompt_unchanged() {
+        let plain = build_system_prompt(None, None);
+        assert_eq!(build_system_prompt(None, Some("")), plain);
+        assert_eq!(build_system_prompt(None, Some("  \n\t ")), plain);
+        assert!(!plain.contains("<instructions>"));
+    }
+
+    #[test]
+    fn oversized_instructions_are_cut_at_the_cap() {
+        let long = "k".repeat(MAX_INSTRUCTIONS_CHARS + 500);
+        let prompt = build_system_prompt(None, Some(&long));
+        let expected = format!(
+            "<instructions>\n{}... [truncated]\n</instructions>",
+            "k".repeat(MAX_INSTRUCTIONS_CHARS)
+        );
+        assert!(prompt.contains(&expected));
+        // Char-based cut: multi-byte text never splits a codepoint.
+        let wide = "é".repeat(MAX_INSTRUCTIONS_CHARS + 1);
+        let prompt = build_system_prompt(None, Some(&wide));
+        assert!(prompt.contains(&format!(
+            "{}... [truncated]",
+            "é".repeat(MAX_INSTRUCTIONS_CHARS)
+        )));
     }
 
     #[test]

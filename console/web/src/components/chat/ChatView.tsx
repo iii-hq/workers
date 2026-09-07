@@ -24,7 +24,18 @@ import { useLiveAnnouncer } from '@/hooks/use-live-announcer'
 import { DESKTOP_POINTER_QUERY, useMediaQuery } from '@/hooks/use-media-query'
 import { useWorktreeBinding } from '@/hooks/use-worktree-binding'
 import { useWorktreeEvents } from '@/hooks/use-worktree-events'
-import { expandAttachments, hasExpandableAttachments } from '@/lib/attachments'
+import { expandAttachments } from '@/lib/attachments'
+import type { DraftAttachmentChange } from '@/lib/attachments/draft-attachments'
+import {
+  hydrateDraftAttachments,
+  needsHydration,
+} from '@/lib/attachments/draft-hydrate'
+import {
+  type FileBlock,
+  hasStorableAttachments,
+  linkStoredAttachments,
+  uploadAttachments,
+} from '@/lib/attachments/store'
 import type { ChatBackend } from '@/lib/backend'
 import { approvalBelongsToConversationTree } from '@/lib/backend/approval-events-live'
 import {
@@ -56,6 +67,7 @@ import { newMessageId } from '@/lib/session-id'
 import {
   expandSlashInvocations,
   loadedSkillIds,
+  parseCompactCommand,
   slashChip,
 } from '@/lib/slash-commands'
 import {
@@ -728,14 +740,37 @@ export function ChatView({
         // and pictures have to reach the agent too, or editing a queued
         // message would silently drop what it carried.
         let attachedImages: HarnessImageBlock[] | undefined
+        let attachedFiles: FileBlock[] | undefined
         if (
           backend.id === 'real' &&
-          hasExpandableAttachments(payload.attachments)
+          hasStorableAttachments(payload.attachments)
         ) {
-          const expanded = await expandAttachments(payload.attachments, {
-            vision: visionRef.current.supports,
-            model: visionRef.current.model,
-          })
+          // The originals go to the store first, same as the live send: the
+          // edit replaces the queued content wholesale, so a message edited
+          // without re-storing would drain with no way back to its files.
+          const stored = await uploadAttachments(
+            conversationId,
+            payload.attachments,
+          )
+          if (stored.blocks.length > 0) attachedFiles = stored.blocks
+          for (const failure of stored.failures) {
+            onAppendMessage(
+              conversationId,
+              makeSystemNotice(
+                `could not store ${failure.name} — ${failure.reason}`,
+                'warn',
+              ),
+            )
+          }
+          // The stored ids go onto the chips first so each inline image block
+          // names its original, same as the live send path.
+          const expanded = await expandAttachments(
+            linkStoredAttachments(payload.attachments, stored.uploaded),
+            {
+              vision: visionRef.current.supports,
+              model: visionRef.current.model,
+            },
+          )
           if (expanded.blocks.length > 0) {
             attachedBlocks = [...(attachedBlocks ?? []), ...expanded.blocks]
           }
@@ -757,8 +792,8 @@ export function ChatView({
             conversationId,
             id,
             payload.text,
-            attachedBlocks || attachedImages
-              ? { attachedBlocks, attachedImages }
+            attachedBlocks || attachedImages || attachedFiles
+              ? { attachedBlocks, attachedImages, attachedFiles }
               : undefined,
           )
         } catch (err) {
@@ -1188,6 +1223,63 @@ export function ChatView({
     },
     [conversationsCtx, conversation.id],
   )
+  // The chips follow the same route as the text. The composer is remounted
+  // per conversation (ChatPanel keys this view), so without the seed every
+  // switch dropped them — the reported bug. `getDraftAttachments` falls back
+  // to the meta-restored list itself; no `??` here for the same reason as
+  // the text above.
+  const composerInitialAttachments = conversationsCtx
+    ? conversationsCtx.getDraftAttachments(conversation.id)
+    : conversation.draftAttachments
+  const handleComposerAttachmentsChange = useCallback(
+    (attachments: Attachment[], change: DraftAttachmentChange) => {
+      conversationsCtx?.setDraftAttachments(
+        conversation.id,
+        attachments,
+        change,
+      )
+    },
+    [conversationsCtx, conversation.id],
+  )
+  // Chips restored from a parked draft arrive as name/type/size only. Fetch
+  // their bytes in the background and rebuild the `File` (and thumbnail) so a
+  // send expands them exactly like a fresh pick; the chips show at once, and
+  // one that cannot be fetched stays as it is (its stored reference still
+  // sends). Stable callbacks in the deps: the context VALUE is rebuilt every
+  // render, and re-running on each would start duplicate fetches.
+  const getDraftAttachments = conversationsCtx?.getDraftAttachments
+  const setDraftAttachments = conversationsCtx?.setDraftAttachments
+  const hydratingRef = useRef(new Set<string>())
+  useEffect(() => {
+    if (backend.id !== 'real' || !getDraftAttachments || !setDraftAttachments)
+      return
+    const conversationId = conversation.id
+    const chips = getDraftAttachments(conversationId)
+    if (!chips?.some(needsHydration)) return
+    if (hydratingRef.current.has(conversationId)) return
+    hydratingRef.current.add(conversationId)
+    let cancelled = false
+    void hydrateDraftAttachments(conversationId, chips)
+      .then((patches) => {
+        if (cancelled || patches.size === 0) return
+        // Re-read: the user may have attached or removed chips meanwhile.
+        const live = getDraftAttachments(conversationId) ?? []
+        setDraftAttachments(
+          conversationId,
+          live.map((a) => {
+            const patch = patches.get(a.id)
+            return patch && !a.file ? { ...a, ...patch } : a
+          }),
+          { reason: 'hydrate' },
+        )
+      })
+      .finally(() => {
+        hydratingRef.current.delete(conversationId)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [backend.id, conversation.id, getDraftAttachments, setDraftAttachments])
 
   const handleSubmit = useCallback(
     async (payload: ComposerSubmitPayload) => {
@@ -1231,6 +1323,12 @@ export function ChatView({
       // `e_idem_<messageId>`; using the same id here lets the
       // session::message-added snapshot reconcile this optimistic row in place.
       const messageId = newMessageId()
+      const trimmed = payload.text.trim()
+      // `/compact` is handled here, not by the harness: no turn follows, so
+      // the row is flagged `command` and never marks the session working.
+      // Text after the command is one-shot guidance for the summariser.
+      const compact = parseCompactCommand(trimmed)
+      const isCompact = compact !== null
       const userMsg: UserMessage = {
         id: predictedUserEntryId(messageId),
         role: 'user',
@@ -1238,15 +1336,13 @@ export function ChatView({
         attachments:
           payload.attachments.length > 0 ? payload.attachments : undefined,
         createdAt: Date.now(),
+        ...(isCompact ? { command: true } : {}),
       }
 
       // Mid-stream sends are queued by the harness (MOT-3837): the message
       // waits above the composer instead of rendering mid-transcript, and pops
       // into the chat when its drained row arrives via session events.
       // `/compact` keeps the normal path (compactSession refuses while live).
-      const trimmed = payload.text.trim()
-      const isCompact =
-        trimmed === '/compact' || trimmed.startsWith('/compact ')
       const willQueue =
         !isCompact &&
         (isStreaming || serverWorking) &&
@@ -1284,7 +1380,7 @@ export function ChatView({
 
       if (!willQueue) onAppendMessage(conversationId, userMsg)
 
-      if (trimmed === '/compact' || trimmed.startsWith('/compact ')) {
+      if (compact) {
         if (!backend.compactSession) {
           onAppendMessage(
             conversationId,
@@ -1309,6 +1405,7 @@ export function ChatView({
             sessionId,
             model,
             contextWindow,
+            compact.instructions,
           )
           if (result.status === 'ok' && backend.id === 'real') {
             // Server-backed transcript: the compaction custom entry arrives
@@ -1391,14 +1488,40 @@ export function ChatView({
       // becomes a placeholder block plus a warn notice, so the model knows it
       // was handed something that could not be read.
       let attachedImages: HarnessImageBlock[] | undefined
+      let attachedFiles: FileBlock[] | undefined
       if (
         backend.id === 'real' &&
-        hasExpandableAttachments(payload.attachments)
+        hasStorableAttachments(payload.attachments)
       ) {
-        const expanded = await expandAttachments(payload.attachments, {
-          vision: visionRef.current.supports,
-          model: visionRef.current.model,
-        })
+        // The originals are stored before anything is derived from them.
+        // Every kind goes — the expansion below keeps only what a model can
+        // read, and the file a person may want back is exactly the one it
+        // could not. The `file` blocks this yields ADD to the expansions on
+        // the message; the harness strips them before the model sees it. A
+        // store failure is a notice, never a blocked send.
+        const stored = await uploadAttachments(sessionId, payload.attachments)
+        if (stored.blocks.length > 0) attachedFiles = stored.blocks
+        for (const failure of stored.failures) {
+          onAppendMessage(
+            conversationId,
+            makeSystemNotice(
+              `could not store ${failure.name} — ${failure.reason}`,
+              'warn',
+            ),
+          )
+        }
+        // The stored ids go onto the chips BEFORE the expansion so a picture's
+        // inline image block names its original. That link is what lets a
+        // later transcript read leave the bytes out and fetch them when the
+        // chip scrolls into view, instead of pulling every past screenshot
+        // on open.
+        const expanded = await expandAttachments(
+          linkStoredAttachments(payload.attachments, stored.uploaded),
+          {
+            vision: visionRef.current.supports,
+            model: visionRef.current.model,
+          },
+        )
         if (expanded.blocks.length > 0) {
           attachedBlocks = [...(attachedBlocks ?? []), ...expanded.blocks]
         }
@@ -1413,13 +1536,24 @@ export function ChatView({
         // cannot see, has finished its job too, and keeping its bytes would
         // hold the whole file in memory for as long as the conversation stays
         // open. Only the label depends on a matching entry.
+        //
+        // The stored id rides along on the same patch: it is what lets the
+        // chip hand the original back out once the bytes are gone from here.
         if (!willQueue) {
           const byId = new Map(expanded.read.map((r) => [r.id, r.label]))
+          const storedById = new Map(
+            stored.uploaded.map((u) => [u.id, u.attachmentId]),
+          )
           onPatchMessage(conversationId, userMsg.id, {
             attachments: (userMsg.attachments ?? []).map(({ file, ...a }) => {
               void file
               const label = byId.get(a.id)
-              return label ? { ...a, name: label } : a
+              const attachmentId = storedById.get(a.id)
+              return {
+                ...a,
+                ...(label ? { name: label } : {}),
+                ...(attachmentId ? { attachmentId } : {}),
+              }
             }),
           })
         }
@@ -1495,6 +1629,9 @@ export function ChatView({
               ...(attachedImages && attachedImages.length > 0
                 ? { attachedImages }
                 : {}),
+              ...(attachedFiles && attachedFiles.length > 0
+                ? { attachedFiles }
+                : {}),
             },
           )
         } catch (err) {
@@ -1546,6 +1683,9 @@ export function ChatView({
               : {}),
             ...(attachedImages && attachedImages.length > 0
               ? { attachedImages }
+              : {}),
+            ...(attachedFiles && attachedFiles.length > 0
+              ? { attachedFiles }
               : {}),
           },
         )) {
@@ -2357,6 +2497,7 @@ export function ChatView({
         <MessageList
           messages={conversation.messages}
           agentName={conversation.agentProfile?.name}
+          sessionId={conversation.id}
           spawnContext={{
             title: conversation.title,
             model: effectiveModel,
@@ -2495,6 +2636,9 @@ export function ChatView({
             }
             initialText={composerInitialText}
             onTextChange={handleComposerTextChange}
+            initialAttachments={composerInitialAttachments}
+            onAttachmentsChange={handleComposerAttachmentsChange}
+            syncedAttachments={conversation.draftAttachments}
             composerActions={composerActions}
             onSubmit={handleSubmit}
             onStop={handleStop}

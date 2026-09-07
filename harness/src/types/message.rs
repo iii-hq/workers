@@ -118,6 +118,27 @@ impl AgentMessage {
             AgentMessage::Custom(_) => "custom",
         }
     }
+
+    fn content_mut(&mut self) -> &mut Vec<ContentBlock> {
+        match self {
+            AgentMessage::User(m) => &mut m.content,
+            AgentMessage::Assistant(m) => &mut m.content,
+            AgentMessage::FunctionResult(m) => &mut m.content,
+            AgentMessage::Custom(m) => &mut m.content,
+        }
+    }
+
+    /// Remove every attachment reference from this message's content — `file`
+    /// blocks and the `attachment_id` link on `image` blocks (see
+    /// [`ContentBlock::strip_files`]). Call it on the MODEL-BOUND copy only —
+    /// the persisted transcript keeps its references. A no-op (no allocation)
+    /// when the message carries no reference.
+    pub fn strip_file_blocks(&mut self) {
+        let content = self.content_mut();
+        if ContentBlock::contains_attachment_refs(content) {
+            *content = ContentBlock::strip_files(content);
+        }
+    }
 }
 
 /// An empty assistant message to stream into (deterministic-id append

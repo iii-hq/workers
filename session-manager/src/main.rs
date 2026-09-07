@@ -16,7 +16,7 @@
 //!   5. Build the storage + event runtime from the `adapter` config
 //!      (`build_runtime`) and wrap it in the shared, hot-swappable `AppState`.
 //!   6. Register the `session::store::*` raw protocol (mode-gated: served only
-//!      while in fs mode), the 14 `session::*` functions (which read the live
+//!      while in fs mode), the 19 `session::*` functions (which read the live
 //!      runtime per call), the `configuration` change trigger (which rebuilds
 //!      and swaps the runtime on an adapter change), and `session::config-status`.
 //!   7. Sleep on Ctrl+C, then `shutdown_async` cleanly (both connections when a
@@ -153,7 +153,7 @@ async fn main() -> Result<()> {
     configuration::register_config_status(&iii, state.clone());
 
     tracing::info!(
-        "session-manager ready: 14 session::* functions + 6 custom trigger types (adapter hot-reloadable)"
+        "session-manager ready: 19 session::* functions + 6 custom trigger types (adapter hot-reloadable)"
     );
 
     tokio::signal::ctrl_c().await?;
