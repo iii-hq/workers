@@ -545,6 +545,48 @@ async fn multiple_capabilities_return_every_need_in_one_call() {
 }
 
 #[tokio::test]
+async fn eight_capabilities_keep_per_capability_coverage_across_batches() {
+    let deps = fixture_deps();
+    let response = ask_capabilities(
+        &deps,
+        &[
+            "register javascript functions on the engine bus",
+            "read and write persistent state values",
+            "take a screenshot of the page",
+            "send an email",
+            "run a shell command",
+            "create a github pull request",
+            // second batch
+            "run a sql query against a database",
+            "extract the text of a pdf document",
+        ],
+    )
+    .await;
+    let ids = function_ids(&response);
+    for expected in [
+        "code-runner::register_function",
+        "state::set",
+        "browser::screenshot",
+        "github::pr::create",
+        "pdf::extract-text",
+    ] {
+        assert!(
+            ids.iter().any(|id| id.starts_with(expected)),
+            "missing {expected}; ids: {ids:?}"
+        );
+    }
+    let namespaces = workers(&response);
+    for expected in ["email", "shell", "database"] {
+        assert!(namespaces.contains(&expected), "workers: {namespaces:?}");
+    }
+    assert!(
+        !response.guidance.contains("were searched"),
+        "{}",
+        response.guidance
+    );
+}
+
+#[tokio::test]
 async fn todo_app_capabilities_resolve_in_one_call() {
     let deps = fixture_deps();
     let response = ask_capabilities(

@@ -6,7 +6,7 @@
 //! split into five surfaces (all MCP-agnostic):
 //!
 //!   * **Search** (`directory::search_functions`): compact installed and
-//!     installable function candidates for one to six capabilities.
+//!     installable function candidates for the requested capabilities.
 //!   * **Skills** (`directory::skills::*`): a filesystem-backed markdown
 //!     reader keyed by short skill ids
 //!     (slashed-path-relative-to-`skills_folder`).
