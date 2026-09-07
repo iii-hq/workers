@@ -190,9 +190,9 @@ Pure and router-free; safe for cost-sensitive callers with no `llm-router`.
 `tokens` equals the sum of `by_role` plus the system-prompt and tools tokens
 (which belong to no role bucket). Counts customs, unlike `assemble`.
 
-### `context::prune` — placeholder verbose function outputs
+### `context::prune` — placeholder eligible old function outputs
 
-The cheap pass alone: rewrite verbose `function_result` outputs to
+The cheap pass alone: rewrite eligible `function_result` outputs to
 `[output of {function_id} pruned: was ~N tokens; re-call it if still
 needed]`. No LLM, no state, no removal.
 
@@ -202,16 +202,21 @@ needed]`. No LLM, no state, no removal.
   model?: ModelInput;              // only for token math; optional (heuristic needs none)
   options?: {
     protect_recent_tokens?: number;   // newest output tokens never pruned (default 40000)
+    decay_user_turns?: number;        // subsequent user turns before decay; null inherits, 0 disables (default 0)
+    protected_user_turns?: number;    // recent user turns exempt; null inherits, 0 disables (default 2)
     min_free_tokens?: number;         // skip the pass if it frees less (default 20000)
-    max_output_chars?: number;        // outputs at/under this are not "verbose" (default 2000)
+    max_output_chars?: number;        // larger outputs are immediately eligible; smaller ones may decay (default 2000)
     protected_functions?: string[];   // function_ids never pruned
   };
 }
 -> { messages: AgentMessage[]; pruned_tokens; pruned_parts; scanned_parts }
 ```
 
-The two most recent user turns are always exempt (a hard guard, independent of
-the window). The pass is idempotent.
+By default the two most recent user turns are exempt, independent of the token
+window. Age counts subsequent user messages, excluding wrappers that carry
+inline function results. The pass is idempotent. Age-only eligibility never
+replaces an output when the enclosing message would estimate larger; legacy
+verbosity eligibility retains its existing behavior.
 
 ### `context::compact` — summarise the head, keep a tail
 

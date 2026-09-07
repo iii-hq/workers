@@ -1,5 +1,5 @@
 {
-  "description": "Replace verbose function outputs with placeholders without summarising. A cheaper first pass before compaction.",
+  "description": "Replace eligible old function outputs with placeholders without summarising. A cheaper first pass before compaction.",
   "function_id": "context::prune",
   "request_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -407,9 +407,19 @@
       },
       "PruneOptions": {
         "properties": {
+          "decay_user_turns": {
+            "default": null,
+            "description": "Prune outputs after this many subsequent user turns. `null` uses worker config (default 0); `0` disables age-based pruning.",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "max_output_chars": {
             "default": null,
-            "description": "Per-output verbosity threshold in chars (default 2000): outputs at or under it are never pruned.",
+            "description": "Per-output verbosity threshold in chars (default 2000). Outputs at or under it can still be pruned after the configured decay age.",
             "format": "uint",
             "minimum": 0.0,
             "type": [
@@ -429,7 +439,7 @@
           },
           "protect_recent_tokens": {
             "default": null,
-            "description": "Newest function-output tokens never pruned (default 40000).",
+            "description": "Newest function-output tokens kept by normal pruning (default 40000).",
             "format": "uint64",
             "minimum": 0.0,
             "type": [
@@ -445,6 +455,16 @@
             },
             "type": [
               "array",
+              "null"
+            ]
+          },
+          "protected_user_turns": {
+            "default": null,
+            "description": "Most recent user turns exempt from normal pruning. `null` uses worker config (default 2); `0` disables only this exemption.",
+            "format": "uint",
+            "minimum": 0.0,
+            "type": [
+              "integer",
               "null"
             ]
           }

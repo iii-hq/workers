@@ -38,7 +38,19 @@ const PRUNING_FIELDS: NumericField[] = [
     key: 'protect_recent_tokens',
     label: 'Protected recent output (tokens)',
     defaultValue: 40_000,
-    description: 'Newest function-output tokens protected from age-based pruning.',
+    description: 'Newest function-output tokens kept during normal pruning. Set to 0 to disable this window.',
+  },
+  {
+    key: 'decay_user_turns',
+    label: 'Function result decay (user turns)',
+    defaultValue: 0,
+    description: 'Prune eligible outputs after this many subsequent user turns. Set to 0 to turn decay off.',
+  },
+  {
+    key: 'protected_user_turns',
+    label: 'Protected recent turns',
+    defaultValue: 2,
+    description: 'Keep outputs in this many most recent user turns. Set to 0 to disable this protection.',
   },
   {
     key: 'min_free_tokens',
@@ -50,7 +62,7 @@ const PRUNING_FIELDS: NumericField[] = [
     key: 'max_output_chars',
     label: 'Verbose output threshold (characters)',
     defaultValue: 2_000,
-    description: 'Shorter function outputs are not considered for normal pruning.',
+    description: 'Longer outputs are immediately eligible outside protection; shorter outputs can still decay.',
   },
   {
     key: 'max_result_tokens',

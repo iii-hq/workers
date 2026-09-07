@@ -1,5 +1,5 @@
 @pure
-Feature: context::prune — placeholder verbose function outputs
+Feature: context::prune — placeholder eligible old function outputs
 
   Contract (context-manager.md § context::prune, § Structural
   invariants): walk function_result content newest to oldest, freeing
@@ -8,8 +8,9 @@ Feature: context::prune — placeholder verbose function outputs
   all survive; placeholders name the source function and the freed
   size, and point back at the recovery path
   (`[output of {function_id} pruned: was ~N tokens; re-call it if
-  still needed]`). The most recent two user turns are always exempt
-  (prior-art guard, independent of the window).
+  still needed]`). A configurable number of recent user turns are exempt
+  (default two, independent of the token window), and smaller outputs can
+  become eligible after their configured decay age.
 
   Background:
     Given a user message "investigate the failure"
@@ -104,6 +105,45 @@ Feature: context::prune — placeholder verbose function outputs
     And the response field "pruned_parts" is 0
     And the response field "scanned_parts" is 1
     And response message 2 text is "value=42"
+
+  Scenario: prune inherits configured decay controls
+    Given config "decay_user_turns" is 2
+    And config "protected_user_turns" is 0
+    When I prune the history with options:
+      """
+      { "protect_recent_tokens": 0, "min_free_tokens": 1, "max_output_chars": 10000 }
+      """
+    Then the call succeeds
+    And the response field "pruned_parts" is 1
+    And response message 2 text is "[output of shell::run pruned: was ~2000 tokens; re-call it if still needed]"
+
+  Scenario: explicit zero disables configured decay
+    Given config "decay_user_turns" is 1
+    And config "protected_user_turns" is 0
+    When I prune the history with options:
+      """
+      { "protect_recent_tokens": 0, "min_free_tokens": 1, "max_output_chars": 10000,
+        "decay_user_turns": 0, "protected_user_turns": 0 }
+      """
+    Then the call succeeds
+    And the response field "pruned_parts" is 0
+    And the response field "scanned_parts" is 1
+    And response message 2 text has 8000 chars
+
+  Scenario: explicit zero removes the configured recent-turn exemption
+    Given an empty history
+    And config "protected_user_turns" is 2
+    And a user message "start"
+    And an assistant function call "c9" to "shell::run"
+    And a function result for call "c9" from "shell::run" of ~2000 tokens
+    When I prune the history with options:
+      """
+      { "protect_recent_tokens": 0, "min_free_tokens": 1, "max_output_chars": 100,
+        "decay_user_turns": 0, "protected_user_turns": 0 }
+      """
+    Then the call succeeds
+    And the response field "pruned_parts" is 1
+    And response message 2 text is "[output of shell::run pruned: was ~2000 tokens; re-call it if still needed]"
 
   # Prevents: the always-exempt recent turns being pruned under token
   # pressure — outputs the user is actively working with must survive

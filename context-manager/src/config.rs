@@ -33,16 +33,26 @@ pub struct WorkerConfig {
     #[serde(default = "default_tail_turns")]
     pub tail_turns: usize,
 
-    /// Newest function-output tokens never pruned (prune default).
+    /// Newest function-output tokens kept by normal pruning.
     #[serde(default = "default_protect_recent_tokens")]
     pub protect_recent_tokens: u64,
+
+    /// Prune function outputs after this many subsequent user turns.
+    /// `0` disables age-based pruning.
+    #[serde(default = "default_decay_user_turns")]
+    pub decay_user_turns: usize,
+
+    /// Most recent user turns always exempt from normal pruning.
+    /// `0` disables only this exemption.
+    #[serde(default = "default_protected_user_turns")]
+    pub protected_user_turns: usize,
 
     /// Skip pruning entirely when it would free fewer tokens than this.
     #[serde(default = "default_min_free_tokens")]
     pub min_free_tokens: u64,
 
-    /// Per-output verbosity threshold (chars): outputs at or under this
-    /// size are never considered verbose enough to prune.
+    /// Per-output verbosity threshold (chars). Larger outputs are immediately
+    /// eligible outside protection; smaller outputs may still decay by age.
     #[serde(default = "default_max_output_chars")]
     pub max_output_chars: usize,
 
@@ -161,6 +171,14 @@ fn default_protect_recent_tokens() -> u64 {
     40_000
 }
 
+fn default_decay_user_turns() -> usize {
+    0
+}
+
+fn default_protected_user_turns() -> usize {
+    2
+}
+
 fn default_min_free_tokens() -> u64 {
     20_000
 }
@@ -225,6 +243,8 @@ impl Default for WorkerConfig {
             reserved_pct: default_reserved_pct(),
             tail_turns: default_tail_turns(),
             protect_recent_tokens: default_protect_recent_tokens(),
+            decay_user_turns: default_decay_user_turns(),
+            protected_user_turns: default_protected_user_turns(),
             min_free_tokens: default_min_free_tokens(),
             max_output_chars: default_max_output_chars(),
             max_result_tokens: default_max_result_tokens(),
@@ -247,6 +267,8 @@ mod tests {
         assert_eq!(cfg.reserved_pct, 10);
         assert_eq!(cfg.tail_turns, 2);
         assert_eq!(cfg.protect_recent_tokens, 40_000);
+        assert_eq!(cfg.decay_user_turns, 0);
+        assert_eq!(cfg.protected_user_turns, 2);
         assert_eq!(cfg.min_free_tokens, 20_000);
         assert_eq!(cfg.max_output_chars, 2_000);
         assert_eq!(cfg.max_result_tokens, 20_000);
@@ -257,9 +279,25 @@ mod tests {
     }
 
     #[test]
+    fn decay_controls_have_defaults_and_accept_explicit_values() {
+        let defaults = WorkerConfig::from_json(&serde_json::json!({})).unwrap();
+        assert_eq!(defaults.to_json()["decay_user_turns"], 0);
+        assert_eq!(defaults.to_json()["protected_user_turns"], 2);
+
+        let configured = WorkerConfig::from_json(&serde_json::json!({
+            "decay_user_turns": 4,
+            "protected_user_turns": 0
+        }))
+        .unwrap();
+        assert_eq!(configured.to_json()["decay_user_turns"], 4);
+        assert_eq!(configured.to_json()["protected_user_turns"], 0);
+    }
+
+    #[test]
     fn custom_yaml_overrides_every_field() {
         let yaml = "reserved_tokens_cap: 1\nreserved_pct: 2\ntail_turns: 3\n\
-                    protect_recent_tokens: 4\nmin_free_tokens: 5\nmax_output_chars: 6\n\
+                    protect_recent_tokens: 4\ndecay_user_turns: 11\nprotected_user_turns: 12\n\
+                    min_free_tokens: 5\nmax_output_chars: 6\n\
                     max_result_tokens: 9\n\
                     lease_ttl_secs: 7\nallow_fallback_limits: false\nsummarizer_timeout_ms: 8\n\
                     lease_dir: /tmp/leases";
@@ -268,6 +306,8 @@ mod tests {
         assert_eq!(cfg.reserved_pct, 2);
         assert_eq!(cfg.tail_turns, 3);
         assert_eq!(cfg.protect_recent_tokens, 4);
+        assert_eq!(cfg.decay_user_turns, 11);
+        assert_eq!(cfg.protected_user_turns, 12);
         assert_eq!(cfg.min_free_tokens, 5);
         assert_eq!(cfg.max_output_chars, 6);
         assert_eq!(cfg.max_result_tokens, 9);
@@ -315,6 +355,8 @@ mod tests {
             "reserved_pct",
             "tail_turns",
             "protect_recent_tokens",
+            "decay_user_turns",
+            "protected_user_turns",
             "min_free_tokens",
             "max_output_chars",
             "max_result_tokens",
@@ -383,6 +425,8 @@ mod tests {
             tail_turns: base.tail_turns + 1,
             reserved_pct: base.reserved_pct + 1,
             protect_recent_tokens: base.protect_recent_tokens + 1,
+            decay_user_turns: base.decay_user_turns + 1,
+            protected_user_turns: base.protected_user_turns + 1,
             ..base.clone()
         };
         assert_eq!(base.boot_signature(), tuned.boot_signature());

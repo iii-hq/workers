@@ -127,6 +127,8 @@ async fn config_numeric(world: &mut ContextWorld, field: String, value: u64) {
         "reserved_pct" => world.config.reserved_pct = value,
         "tail_turns" => world.config.tail_turns = value as usize,
         "protect_recent_tokens" => world.config.protect_recent_tokens = value,
+        "decay_user_turns" => world.config.decay_user_turns = value as usize,
+        "protected_user_turns" => world.config.protected_user_turns = value as usize,
         "min_free_tokens" => world.config.min_free_tokens = value,
         "max_output_chars" => world.config.max_output_chars = value as usize,
         "lease_ttl_secs" => world.config.lease_ttl_secs = value,

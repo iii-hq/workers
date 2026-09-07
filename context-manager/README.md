@@ -92,7 +92,7 @@ full result retained in the session transcript. Requests that still cannot fit f
 with `context/overflow`; callers must not issue a provider request in that case.
 
 The other three functions: `context::count-tokens` (estimate messages + tools +
-system prompt vs a model), `context::prune` (replace verbose function outputs
+system prompt vs a model), `context::prune` (replace eligible old function outputs
 with `[output of {function_id} pruned: was ~N tokens; re-call it if still
 needed]` placeholders, no LLM involved), and `context::compact` (summarise the
 head, keep a recent tail verbatim — returns `ok | busy | empty | overflow`).
@@ -104,8 +104,10 @@ reserved_tokens_cap: 20000     # default reserve = min(cap, pct% of context wind
 reserved_pct: 10
 tail_turns: 2                  # user+assistant pairs kept verbatim by compaction
 protect_recent_tokens: 40000   # newest function-output tokens never pruned
+decay_user_turns: 0            # prune after this many subsequent user turns; 0 disables decay
+protected_user_turns: 2        # recent user turns exempt from normal pruning; 0 disables this guard
 min_free_tokens: 20000         # skip pruning when it would free less
-max_output_chars: 2000         # outputs at or under this size are never pruned
+max_output_chars: 2000         # larger outputs are immediately eligible; smaller ones may decay
 max_result_tokens: 20000       # per-result ceiling for assemble's unconditional cap pass; 0 disables
 lease_ttl_secs: 300            # compaction mutual-exclusion lease TTL
 allow_fallback_limits: true    # conservative 8192/1024 when limits can't resolve

@@ -72,7 +72,7 @@ Whatever capping, pruning, or compaction does, the returned context must still b
   of any boundary: the compaction tail never starts between an assistant's call and its result
   (providers reject orphaned results), so tail selection only cuts at user/assistant turn
   boundaries.
-- **Prune replaces, never removes.** Pruning rewrites a verbose output's content to a single text
+- **Prune replaces, never removes.** Pruning rewrites an eligible old output's content to a single text
   placeholder (`[output of {function_id} pruned: was ~N tokens; re-call it if still needed]`); the
   block, the message, and the `function_call_id` linkage all survive. The unconditional per-result
   cap pass (see `context::assemble`) replaces the same way, with its own marker: `[…result capped:
@@ -95,7 +95,7 @@ Whatever capping, pruning, or compaction does, the returned context must still b
   history. The main "sync messages with context" entry point.
 - `context::compact` — Summarise older history into a single compaction summary and return the
   preserved tail. Transient: the caller uses the result; the session keeps its full transcript.
-- `context::prune` — Strip/truncate verbose function outputs without summarising. The cheap policy
+- `context::prune` — Replace eligible old function outputs without summarising. The cheap policy
   pass, run on every call (not just when over budget).
 - `context::count-tokens` — Estimate token usage for a set of messages (+ optional invocation schema /
   system) vs a model.
@@ -302,7 +302,7 @@ worker log and callers should treat it as "compaction unavailable".
 
 ### `context::prune`
 
-Replace verbose function outputs with a `[output of {function_id} pruned: was ~N tokens; re-call
+Replace eligible old function outputs with a `[output of {function_id} pruned: was ~N tokens; re-call
 it if still needed]` placeholder, without summarising. Walks `function_result` content newest to
 oldest, freeing outputs outside a protected token window. Per the
 [structural invariants](#structural-invariants), pruning rewrites content in place — it never
@@ -318,12 +318,21 @@ type PruneRequest = {
   model?: ModelInput;              // only needed for token math; optional
   options?: {
     protect_recent_tokens?: number; // default 40000
+    decay_user_turns?: number;      // subsequent user turns before decay; null inherits, 0 disables (default 0)
+    protected_user_turns?: number;  // recent user turns exempt; null inherits, 0 disables (default 2)
     min_free_tokens?: number;       // skip if it would free less (default 20000)
-    max_output_chars?: number;      // per-output truncation cap (default 2000)
+    max_output_chars?: number;      // larger outputs immediately eligible; smaller outputs may decay (default 2000)
     protected_functions?: string[];     // function_ids never pruned
   };
 };
 ```
+
+Age is the number of subsequent user messages, excluding user wrappers that
+carry inline function results. Outputs inside either the protected-user-turn
+window or `protect_recent_tokens` window remain verbatim, as do protected
+functions. Age-only candidates are replaced only when the placeholder saves
+estimated tokens. `context::assemble` reads both decay controls from the live
+worker config; it does not expose per-call overrides for them.
 
 Response:
 
