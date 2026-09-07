@@ -269,7 +269,7 @@ fn render(skills: &[Skill], filter: Option<&[String]>) -> RenderedView {
         .filter(|ids| !ids.is_empty())
         .map(|ids| ids.iter().map(String::as_str).collect());
     let mut body = String::from(
-        "<available_skills>\nA `<skill id=\"...\">` block is already loaded; follow it directly without searching for or reloading it.\nFor any listed skill not already loaded, call the pre-verified `directory::skills::get` directly with payload `{\"id\":\"<exact id>\"}`. Skip function discovery and `engine::functions::info`.",
+        "<available_skills>\nA `<skill id=\"...\">` block is already loaded; follow it directly without searching for or reloading it.\nFor any listed skill not already loaded, call the pre-verified `directory::skills::get` directly with payload `{\"id\":\"<exact id>\"}`. Skip function discovery and `engine::functions::info`.\nBefore the FIRST call to a worker that has a listed skill, load that skill and follow it; the contract from `engine::functions::info` is only the schema.",
     );
     for skill in skills.iter().filter(|skill| {
         selected
@@ -591,11 +591,11 @@ mod tests {
         let rendered = render(&rows, None);
         assert_eq!(
             rendered.body,
-            "<available_skills>\nA `<skill id=\"...\">` block is already loaded; follow it directly without searching for or reloading it.\nFor any listed skill not already loaded, call the pre-verified `directory::skills::get` directly with payload `{\"id\":\"<exact id>\"}`. Skip function discovery and `engine::functions::info`.\n- **alpha** — Alpha title.\n- **z&lt;&amp;&gt;** — Does zed work.\n</available_skills>"
+            "<available_skills>\nA `<skill id=\"...\">` block is already loaded; follow it directly without searching for or reloading it.\nFor any listed skill not already loaded, call the pre-verified `directory::skills::get` directly with payload `{\"id\":\"<exact id>\"}`. Skip function discovery and `engine::functions::info`.\nBefore the FIRST call to a worker that has a listed skill, load that skill and follow it; the contract from `engine::functions::info` is only the schema.\n- **alpha** — Alpha title.\n- **z&lt;&amp;&gt;** — Does zed work.\n</available_skills>"
         );
         assert_eq!(
             rendered.fingerprint,
-            "sha256:655f1be2c82922f76c03a7a0b3ae9c6857f96acdd3e681b38a3c8aac47f4c55b"
+            "sha256:75673c3cde5879846d9909e68db00a749cc81dc5ce9dd9b9b9dec608e842677d"
         );
 
         assert!(parse_observation(&json!({"skills": [{

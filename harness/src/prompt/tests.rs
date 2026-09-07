@@ -102,7 +102,7 @@ fn default_discovery_prefers_search_functions_then_falls_back() {
         .find("Only when `directory::search_functions` is itself unavailable")
         .expect("prompt keeps engine::functions::list as the explicit fallback");
     let inventory = out[step_one..]
-        .find("Fixed-prefix inventory checks for a documented surface or after an install use `engine::functions::list")
+        .find("Fixed-prefix inventory checks for a documented surface use `engine::functions::list")
         .expect("prompt keeps inventory verification distinct from capability discovery");
     assert!(default_path < assist);
     assert!(assist < fallback);
