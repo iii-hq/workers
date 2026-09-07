@@ -72,6 +72,36 @@ iii trigger compose::add worker=iii-directory
 `iii trigger compose::add` resolves the worker and its dependencies, writes
 exact declarations to `worker-compose.yaml`, and reconciles the Compose project.
 
+For container settings, fetch `compose::schema { function_id: "compose::add" }` and use
+its `workers` list. For example, after registering the completion wake described below:
+
+```json
+{
+  "operation_id": "<operation-id>",
+  "workers": [
+    "state",
+    {
+      "worker": "iii-directory",
+      "start_after": ["state"],
+      "config_override": { "registry_search": true }
+    }
+  ]
+}
+```
+
+The list can mix worker names and objects. Each object accepts `scripts`, `config_name`,
+`config_override`, `working_dir`, `environment`, `env_file`, `startup_timeout`, and
+package `version` as well as `worker` and `start_after`. `scripts.run` is for local
+workers only. Supplied maps replace the whole field; omitted settings are retained.
+
+The returned `install.payload` from function search is a minimal shorthand. If the worker
+needs settings, replace its singular `worker` with an object in `workers`.
+Register a one-shot `compose-operation` wake before calling `compose::add`, use the same
+`operation_id` in both calls, and wait for terminal success before using the new functions.
+An acceptance response does not mean the worker is ready. See the
+[container settings example and completion flow](https://github.com/iii-hq/workers/blob/main/harness/README.md#adding-workers-with-container-settings)
+for field behavior, path resolution, and recovery.
+
 ---
 
 ## Skills

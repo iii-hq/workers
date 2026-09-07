@@ -279,8 +279,17 @@ user writes in another language; preserve proper names, URLs, and function IDs."
 const SEARCH_INSTALL_GUIDANCE: &str = "No INSTALLED function matched these capabilities. The \
 `installable` entries are registry workers whose functions WOULD match, \
 but they are NOT installed: calling their functions now FAILS with function_not_found. To \
-use one, run its `install` call exactly as given (compose::add), wait for it to report the \
-new worker ready, then call directory::search_functions again \
+use one, fetch compose::schema { function_id: \"compose::add\" }. The install.payload is a \
+minimal shorthand. Replace worker with objects in workers only if the returned schema \
+supports them, to set scripts, start_after, config_override, or other supported fields. \
+Otherwise keep install.payload as shorthand for defaults; if settings are required, \
+report that they cannot be applied and stop the installation. Explain the worker and \
+follow the caller's installation approval requirements; if approval is still needed, \
+wait for explicit confirmation before compose::add. Register a one-shot compose-operation \
+wake with terminal_only: true before compose::add and pass the same unique operation_id \
+in both calls. Read compose::operation once for race recovery; if terminal, unregister \
+the wake, otherwise wait for it. Wait for terminal success, not just acceptance, \
+then call directory::search_functions again \
 for the newly registered candidates and fetch selected contracts with one batched \
 engine::functions::info call. If none fit, search once more with concrete unmet \
 `capabilities`; for a need no function covers — authoring a worker, registering a new \
@@ -293,9 +302,18 @@ writes in another language; preserve proper names, URLs, and function IDs.";
 const SEARCH_INSTALL_NOTE: &str = "Select from `workers` before considering `installable`. The \
 `installable` entries are registry workers that are NOT installed: calling their functions now \
 FAILS with function_not_found. Do not pass an `installable` function ID to \
-engine::functions::info. Only when no `workers` entry fits, FIRST call the provided install \
-function with its payload (compose::add), wait for it to report the worker ready, then search \
-again and fetch selected contracts with one batched \
+engine::functions::info. Only when no `workers` entry fits, FIRST fetch compose::schema \
+{ function_id: \"compose::add\" }. The install.payload is a minimal shorthand. Replace worker \
+with objects in workers only if the returned schema supports them, to set scripts, \
+start_after, config_override, or other supported fields. Otherwise keep install.payload \
+as shorthand for defaults; if settings are required, report that they cannot be applied \
+and stop the installation. Explain the worker and follow the caller's installation \
+approval requirements; if approval is still needed, wait for explicit confirmation \
+before compose::add. Register a one-shot compose-operation wake with terminal_only: true \
+before compose::add and pass the same unique operation_id in both calls. Read \
+compose::operation once for race recovery; if terminal, unregister the wake, otherwise \
+wait for it. Wait for terminal success, not just acceptance, then search again and fetch \
+selected contracts with one batched \
 engine::functions::info call — never call an installable function before installing.";
 
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
@@ -2241,14 +2259,18 @@ mod tests {
         assert!(response
             .guidance
             .contains("Do not pass an `installable` function ID to engine::functions::info"));
-        let install_call = response
+        let install_schema = response
             .guidance
-            .find("FIRST call the provided install function")
-            .expect("mixed guidance installs before lookup");
+            .find("FIRST fetch compose::schema")
+            .expect("mixed guidance checks the install contract");
+        let wake = response
+            .guidance
+            .find("Register a one-shot compose-operation wake")
+            .expect("mixed guidance registers the completion wake before installing");
         let ready_wait = response
             .guidance
-            .find("wait for it to report the worker ready")
-            .expect("mixed guidance waits for compose readiness");
+            .find("Wait for terminal success, not just acceptance")
+            .expect("mixed guidance waits for successful completion");
         let search_again = response
             .guidance
             .find("then search again")
@@ -2257,7 +2279,8 @@ mod tests {
             .guidance
             .rfind("one batched engine::functions::info call")
             .expect("mixed guidance fetches the installed contract last");
-        assert!(install_call < ready_wait);
+        assert!(install_schema < wake);
+        assert!(wake < ready_wait);
         assert!(ready_wait < search_again);
         assert!(search_again < installed_info);
         assert_eq!(response.installable[0].install.function, "compose::add");
@@ -2265,6 +2288,33 @@ mod tests {
             response.installable[0].install.payload,
             json!({ "worker": "mailer" })
         );
+        *deps.catalog.write().await = Arc::new(Vec::new());
+        let installable_only = search_functions(
+            &deps,
+            SearchFunctionsRequest {
+                capabilities: vec!["send an email message".into()],
+            },
+        )
+        .await
+        .unwrap();
+        assert!(installable_only.workers.is_empty());
+        assert_eq!(installable_only.installable[0].name, "mailer");
+        for guidance in [&response.guidance, &installable_only.guidance] {
+            assert!(
+                guidance.contains("objects in workers only if the returned schema supports them")
+            );
+            assert!(guidance.contains("Otherwise keep install.payload as shorthand for defaults"));
+            assert!(
+                guidance.contains("report that they cannot be applied and stop the installation")
+            );
+            let approval = guidance
+                .find("if approval is still needed, wait for explicit confirmation before compose::add")
+                .expect("installation honors any outstanding approval requirement");
+            let registration = guidance
+                .find("Register a one-shot compose-operation wake")
+                .unwrap();
+            assert!(approval < registration);
+        }
         assert!(
             response.guidance.contains(
                 "Do not search for intrinsic reasoning, summarization, planning, or formatting"

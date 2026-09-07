@@ -312,7 +312,7 @@ outcome, not the caveats, and a pipeline waiting on that call stalls silently.
 - `engine::workers::list` — workers connected right now.
 - `engine::workers::info { name }` — one worker's functions, trigger types, and triggers.
 - `compose::status` — declared workers and their current state.
-- Compose ops: `compose::add` (declare and start a registry worker), `compose::up`,
+- Compose ops: `compose::add` (declare or configure package and local workers), `compose::up`,
   `compose::down`, `compose::restart`, `compose::update`, and `compose::remove`.
 - Get Compose contracts with `compose::schema { function_id: "compose::<operation>" }`.
   The harness routes these calls to its supervising Compose daemon and scopes them to its own
@@ -320,6 +320,64 @@ outcome, not the caveats, and a pipeline waiting on that call stalls silently.
 
 An empty list can mean lag, not absence. A successful call is the authoritative signal. Never
 unbind or re-register anything just because a list came back empty.
+
+### Adding workers with container settings
+
+Fetch `compose::schema { function_id: "compose::add" }` before choosing the payload.
+Use container objects only if the running daemon's schema supports them. The singular
+`worker` field remains a string shorthand. For settings, use `workers`, which can mix
+strings and objects. Put settings inside each object, not at the request's top level.
+Only `add` accepts objects; `update` and `remove` take worker names.
+
+After registering the one-shot wake described above, call `compose::add` with a payload
+like this (the local worker directory and env file must already exist):
+
+```json
+{
+  "operation_id": "<operation-id>",
+  "workers": [
+    "state",
+    {
+      "worker": "./workers/api",
+      "start_after": ["state"],
+      "scripts": {
+        "pre_run": "pnpm build",
+        "pre_run_timeout": "60s",
+        "run": "pnpm start",
+        "post_run": "echo stopped"
+      },
+      "config_name": "api",
+      "config_override": { "port": 3000 },
+      "working_dir": "./workers/api",
+      "environment": { "NODE_ENV": "development" },
+      "env_file": ["./api.env"],
+      "startup_timeout": "30s"
+    }
+  ]
+}
+```
+
+`worker` accepts a package name, `name@version`, registry reference, or local directory,
+including `package://` and `path://` sources. Objects also accept `version` for packages;
+it must agree with any version in `worker`. Omission resolves the latest matching package
+version, so keep an explicit version when it must stay pinned.
+
+Use `scripts` (plural); `scripts.run` is valid only for local workers. `start_after`
+contains container keys, derived from the last part of each worker name or directory;
+required package dependencies are also included. `config_name` selects the base configuration,
+and `config_override` supplies values over it. `environment` values must be strings.
+`startup_timeout` limits the wait for registration.
+
+Relative `worker`, `working_dir`, and `env_file` paths start at the compose file's directory.
+`working_dir` sets the process and hook directory; when omitted, local workers use their own
+directory and packages use the compose directory.
+
+For an existing container, omitted settings stay in place. A supplied field replaces that
+whole field, including `scripts`, `environment`, and `config_override`; these are not
+partial map edits. Use `{}` or `[]` to clear maps or lists. A supplied `start_after` replaces
+the list while retaining required package dependencies. Changes can restart running workers.
+The acceptance response does not mean ready: finish the same `compose-operation` workflow
+before using the worker.
 
 ## Triggers
 
