@@ -1647,6 +1647,10 @@ export function ShellExplorerPage({
           title: 'Toggle the terminal',
           detail: 'Open or close the terminal for this directory',
           keywords: ['pty', 'console', 'command line'],
+          shortcut: 'Ctrl+`',
+          // Fires from the editor and from the terminal itself, so one key
+          // opens it and hides it again. xterm leaves Ctrl+` uncancelled.
+          firesWhileTyping: true,
           run: toggleTerminal,
         },
         {

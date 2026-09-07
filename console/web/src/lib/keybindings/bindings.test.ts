@@ -124,6 +124,36 @@ describe('bindingMatchesEvent', () => {
       bindingMatchesEvent('Mod+K', press('j', { metaKey: true }), 'mac'),
     ).toBe(false)
   })
+
+  it('reaches punctuation through its physical key when the layout moved it', () => {
+    // Brazilian-Pro reports the backquote key as Dead; ABNT2 puts `'` there.
+    expect(
+      bindingMatchesEvent(
+        'Ctrl+`',
+        press('Dead', { ctrlKey: true, code: 'Backquote' }),
+        'mac',
+      ),
+    ).toBe(true)
+    expect(
+      bindingMatchesEvent(
+        'Ctrl+`',
+        press("'", { ctrlKey: true, code: 'Backquote' }),
+        'other',
+      ),
+    ).toBe(true)
+    // The physical key carries no shift state, so Shift has to agree.
+    expect(
+      bindingMatchesEvent(
+        'Ctrl+`',
+        press('~', { ctrlKey: true, shiftKey: true, code: 'Backquote' }),
+        'mac',
+      ),
+    ).toBe(false)
+    // No `code` (a synthetic event) keeps the plain key comparison.
+    expect(
+      bindingMatchesEvent('Ctrl+`', press('Dead', { ctrlKey: true }), 'mac'),
+    ).toBe(false)
+  })
 })
 
 describe('formatBinding', () => {

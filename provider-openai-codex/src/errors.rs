@@ -53,7 +53,9 @@ fn classify_openai_value(v: &Value, status: Option<u16>) -> Option<ErrorKind> {
     match err_type {
         "authentication_error" | "permission_error" => Some(ErrorKind::AuthExpired),
         "rate_limit_error" => Some(ErrorKind::RateLimited),
-        "insufficient_quota" => Some(ErrorKind::Permanent),
+        // `usage_limit_reached` is the ChatGPT-subscription cap (resets in
+        // hours): a wall like insufficient_quota, not a backoff-able 429.
+        "insufficient_quota" | "usage_limit_reached" => Some(ErrorKind::Permanent),
         "server_error" => Some(ErrorKind::Transient),
         "invalid_request_error" => {
             if status == Some(413) || is_context_overflow_message(msg) {
@@ -128,6 +130,9 @@ mod tests {
         let body = r#"{"error":{"message":"You have no credits remaining.","type":"insufficient_quota","code":"credit_balance_exhausted"}}"#;
         assert_eq!(classify(Some(429), body), ErrorKind::Permanent);
         assert_eq!(classify(None, body), ErrorKind::Permanent);
+
+        let body = r#"{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","plan_type":"pro","resets_at":1788773623,"eligible_promo":null,"resets_in_seconds":40037}}"#;
+        assert_eq!(classify(Some(429), body), ErrorKind::Permanent);
 
         let body = r#"{"error":{"message":"Incorrect API key provided.","type":"invalid_request_error","code":"invalid_api_key"}}"#;
         assert_eq!(classify(Some(401), body), ErrorKind::AuthExpired);

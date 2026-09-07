@@ -199,6 +199,30 @@ describe('createKeyDispatcher', () => {
       expect(seen).toEqual(['palette'])
     })
 
+    it('still answers for the pane focus was last in once focus fell to the body', () => {
+      const seen: string[] = []
+      const dispatcher = createKeyDispatcher(
+        () => ({}),
+        'mac',
+        (paneId) =>
+          paneId === 'pane-1'
+            ? [entry('pane-1', 'Ctrl+`', () => seen.push('toggle'))]
+            : [],
+      )
+      // Nothing was ever focused: no pane to fall back to.
+      dispatcher.onKeyDown(key('`', { ctrlKey: true }))
+      expect(seen).toEqual([])
+      // The terminal the chord closed took the focus with it; the next
+      // keystroke arrives from the body and still reaches the pane.
+      dispatcher.onFocusIn(pane('pane-1'))
+      dispatcher.onKeyDown(key('`', { ctrlKey: true }))
+      expect(seen).toEqual(['toggle'])
+      // Focus moving into another pane retargets the fallback.
+      dispatcher.onFocusIn(pane('pane-2'))
+      dispatcher.onKeyDown(key('`', { ctrlKey: true }))
+      expect(seen).toEqual(['toggle'])
+    })
+
     it('lets a pending page prefix take a letter that is also a single key', () => {
       const seen: string[] = []
       const dispatcher = createKeyDispatcher(
